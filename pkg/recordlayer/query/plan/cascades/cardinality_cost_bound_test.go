@@ -481,7 +481,7 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		child := pointLookupScan(t, "INU_PP", "ID")
 		p := mustBuild(t, captureBuild(plans.NewRecordQueryInUnionPlan(
 			child, []string{"inu_b"},
-			[]values.Value{mustCardinalityField(t, child, "K")}, false)))
+			[]values.Value{mustCardinalityField(t, child, "K")}, false, plans.UnboundedInUnionSize)))
 
 		p = p.WithInSources([][]any{{int64(1), int64(2), int64(3)}})
 		return p
@@ -490,7 +490,7 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		child := pointLookupScan(t, "INU_EMPTY", "ID")
 		p := mustBuild(t, captureBuild(plans.NewRecordQueryInUnionPlan(
 			child, []string{"inu_b2"},
-			[]values.Value{mustCardinalityField(t, child, "K")}, false)))
+			[]values.Value{mustCardinalityField(t, child, "K")}, false, plans.UnboundedInUnionSize)))
 
 		p = p.WithInSources([][]any{{}})
 		return p

@@ -21,16 +21,14 @@ type RecordQueryInUnionPlan struct {
 	bindingAliases []values.CorrelationIdentifier
 	comparisonKeys []values.Value
 	reverse        bool
-	// maxSize is DELIBERATELY EXCLUDED from structuralKey, and the reason is not
-	// self-evident — it changes whether the rule produces this plan at all, which is
-	// exactly the shape of thing identity normally has to carry (compare
-	// liveGroupsOnly on the aggregate-index plan, which IS in its key for precisely
-	// that reason).
-	//
-	// It is safe to exclude only because it is a per-RUN constant: every value comes
-	// from GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
-	// (rule_implement_in_union.go), so no two InUnion plans within one planner run can
-	// differ in it, and the memo therefore never has two candidates to confuse.
+	// maxSize is the most child executions (the product of the IN sources'
+	// sizes) the plan runs; execution refuses more with "too many IN values"
+	// before any child opens, as Java's executePlan does. It decides execution,
+	// not identity: it is DELIBERATELY EXCLUDED from structuralKey because every
+	// planned value comes from GetPlannerConfiguration().
+	// AttemptFailedInJoinAsUnionMaxSize (rule_implement_in_union.go, and the
+	// fetch push-through's rebuild copies it), a constant for every plan of one
+	// planner run, so the memo never holds two candidates differing in it.
 	//
 	// THAT ARGUMENT EXPIRES the moment maxSize becomes per-plan — a per-call override,
 	// a hint, a rule that derives it from the IN-list — at which point two plans
@@ -40,34 +38,25 @@ type RecordQueryInUnionPlan struct {
 	inSources [][]any
 }
 
+// UnboundedInUnionSize is the size of an in-union whose child executions are
+// not limited, for a caller that builds the plan by hand.
+const UnboundedInUnionSize = math.MaxInt32
+
+// NewRecordQueryInUnionPlan builds an in-union over named bindings. Like Java's
+// factory it requires the size: the most child executions the plan runs.
 func NewRecordQueryInUnionPlan(
 	inner RecordQueryPlan,
 	bindingNames []string,
 	comparisonKeys []values.Value,
 	reverse bool,
+	maxSize int,
 ) (*RecordQueryInUnionPlan, error) {
 	bindingAliases := make([]values.CorrelationIdentifier, len(bindingNames))
 	for i, name := range bindingNames {
 		bindingAliases[i] = values.NamedCorrelationIdentifier(name)
 	}
-	return NewRecordQueryInUnionPlanWithBindingAliases(
-		inner, bindingAliases, comparisonKeys, reverse)
-}
-
-// NewRecordQueryInUnionPlanWithBindingAliases preserves the exact correlation
-// kind of every IN binding. Planner-minted aliases are Unique identifiers; a
-// string round-trip remints them as Named identifiers with the same spelling,
-// which exact QOV lookup correctly treats as a different binding.
-func NewRecordQueryInUnionPlanWithBindingAliases(
-	inner RecordQueryPlan,
-	bindingAliases []values.CorrelationIdentifier,
-	comparisonKeys []values.Value,
-	reverse bool,
-) (*RecordQueryInUnionPlan, error) {
-	// A hand-built plan states no maximum, so it is unbounded; execution
-	// refuses a product of IN-source sizes above maxSize.
-	return NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
-		QuantifierOverPlan(inner), bindingAliases, comparisonKeys, reverse, math.MaxInt32)
+	return NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize(
+		inner, bindingAliases, comparisonKeys, reverse, maxSize)
 }
 
 func newRecordQueryInUnionPlanFromQuantifier(
@@ -93,6 +82,10 @@ func newRecordQueryInUnionPlanFromQuantifier(
 	}, nil
 }
 
+// NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize preserves the exact
+// correlation kind of every IN binding. Planner-minted aliases are Unique
+// identifiers; a string round-trip remints them as Named identifiers with the
+// same spelling, which exact QOV lookup correctly treats as a different binding.
 func NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize(
 	inner RecordQueryPlan,
 	bindingAliases []values.CorrelationIdentifier,

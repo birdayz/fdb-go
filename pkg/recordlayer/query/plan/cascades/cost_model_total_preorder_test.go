@@ -336,8 +336,8 @@ func inPlanCorpus(t *testing.T) []preorderCandidate {
 	return []preorderCandidate{
 		{"inJoin_sarged", mustPreorder(plans.NewRecordQueryInJoinPlan(indexSarged, bindingName, false, false))},
 		{"inJoin_unsarged", mustPreorder(plans.NewRecordQueryInJoinPlan(indexUnsarged, bindingName, false, false))},
-		{"inUnion_sarged", mustPreorder(plans.NewRecordQueryInUnionPlan(indexSarged, []string{bindingName}, nil, false))},
-		{"inUnion_unsarged", mustPreorder(plans.NewRecordQueryInUnionPlan(indexUnsarged, []string{bindingName}, nil, false))},
+		{"inUnion_sarged", mustPreorder(plans.NewRecordQueryInUnionPlan(indexSarged, []string{bindingName}, nil, false, plans.UnboundedInUnionSize))},
+		{"inUnion_unsarged", mustPreorder(plans.NewRecordQueryInUnionPlan(indexUnsarged, []string{bindingName}, nil, false, plans.UnboundedInUnionSize))},
 		{"plainIndex", plainIndex},
 		{"plainScan", scan},
 	}

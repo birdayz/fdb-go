@@ -34,6 +34,7 @@ func TestPlanningCostModel_InUnionRepeatedFullScanCannotWinScalarFallback(t *tes
 		[]string{"in_value"},
 		nil,
 		false,
+		plans.UnboundedInUnionSize,
 	)
 	inUnion = mustConstruct(t, inUnion, err)
 	inUnion = inUnion.WithInSources([][]any{{int64(1), int64(2)}})

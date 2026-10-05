@@ -345,7 +345,7 @@ func TestMigratedPlans_StructuralKeyContract(t *testing.T) {
 	// (Equatable/DeepEqual); binding NAMES excluded (only count structural).
 	iu := func(bindings []string, keys []values.Value, sources [][]any) *RecordQueryInUnionPlan {
 		p := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
-			return NewRecordQueryInUnionPlan(scan, bindings, keys, false)
+			return NewRecordQueryInUnionPlan(scan, bindings, keys, false, UnboundedInUnionSize)
 		})
 		p = p.WithInSources(sources)
 		return p

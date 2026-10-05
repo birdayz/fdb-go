@@ -39,6 +39,7 @@ func TestExecuteInUnion_KnownEmptySourceSkipsInner(t *testing.T) {
 				bindings,
 				nil,
 				false,
+				plans.UnboundedInUnionSize,
 			))
 			inUnion = inUnion.WithInSources(test.sources)
 
@@ -83,6 +84,7 @@ func TestExecuteInUnion_MultiBindingSingletonBindsCompleteContext(t *testing.T) 
 		[]string{firstBinding, secondBinding},
 		nil,
 		false,
+		plans.UnboundedInUnionSize,
 	))
 	inUnion = inUnion.WithInSources([][]any{{int64(11)}, {int64(22)}})
 
@@ -117,8 +119,8 @@ func TestExecuteInUnion_PreservesUniqueBindingIdentity(t *testing.T) {
 	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		mustTestQOV(t, binding, values.NotNullLong),
 	}))
-	inUnion := mustExecutorConstruct(plans.NewRecordQueryInUnionPlanWithBindingAliases(
-		inner, []values.CorrelationIdentifier{binding}, nil, false))
+	inUnion := mustExecutorConstruct(plans.NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize(
+		inner, []values.CorrelationIdentifier{binding}, nil, false, plans.UnboundedInUnionSize))
 	inUnion = inUnion.WithInSources([][]any{{int64(11), int64(22)}})
 	aliases := inUnion.GetBindingAliases()
 	if len(aliases) != 1 || aliases[0] != binding {
@@ -177,6 +179,7 @@ func TestExecuteInUnion_SingletonAppliesSkip(t *testing.T) {
 				test.bindings,
 				nil,
 				false,
+				plans.UnboundedInUnionSize,
 			))
 			inUnion = inUnion.WithInSources(test.sources)
 
@@ -231,6 +234,7 @@ func TestExecuteInUnion_RejectsMismatchedDimensions(t *testing.T) {
 				test.bindings,
 				nil,
 				false,
+				plans.UnboundedInUnionSize,
 			))
 			inUnion = inUnion.WithInSources(test.sources)
 			if _, err := executeInUnion(
@@ -509,7 +513,7 @@ func TestExecuteInUnion_MultiBindingRunsEveryCombination(t *testing.T) {
 	run := func(t *testing.T, comparisonKeys []values.Value, reverse bool) [][]any {
 		t.Helper()
 		inUnion := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(
-			inner, []string{firstBinding, secondBinding}, comparisonKeys, reverse))
+			inner, []string{firstBinding, secondBinding}, comparisonKeys, reverse, plans.UnboundedInUnionSize))
 		inUnion = inUnion.WithInSources([][]any{{int64(2), int64(1)}, {int64(20), int64(10), int64(30)}})
 		ctx := context.Background()
 		cursor, err := executeInUnion(ctx, inUnion, nil, EmptyEvaluationContext(), nil, recordlayer.ExecuteProperties{})

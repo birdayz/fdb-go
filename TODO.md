@@ -216,7 +216,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   Item 5, the size check, is done (see WS-E "IN semantics"). The record-layer
   oracle row `w8_rl_default_in2_order_by_pk` now fails at size 0 as Java's
   does, but it stays open on item 3's fetch placement. The SQL in-union
-  benchmarks stop at N=24. Still open: items 4, 6, 3, 9 and 10.
+  benchmarks stop at N=24. Items 4 and 6 are done. The unordered in-union
+  arm is deleted (one corpus plan, an unordered IN, became Java's in-join).
+  The size-less constructors are gone: `NewRecordQueryInUnionPlan` takes the
+  size, and the rule fails a call without a planner context. Still open:
+  items 3, 9 and 10.
 - [ ] Reconcile F-6/F-7b with RFC-191's existing `Fetch(InJoin)` ruling; see
   `DIVERGENCES.md` “Plan choice: an ordered IN over a non-covering index”.
 - [ ] RANK-index match-candidate gap and quoted dotted identifier GROUP BY/order

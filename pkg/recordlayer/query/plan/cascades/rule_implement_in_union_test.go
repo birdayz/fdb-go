@@ -4,13 +4,18 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-func TestImplementInUnionRule_FiresWithExplodeAndInner(t *testing.T) {
+// TestImplementInUnionRule_PreserveYieldsNothing pins RFC-257 WS-F 4.3 item 4:
+// with no ordering requested the rule builds no in-union, as Java's
+// ImplementInUnionRule skips a PRESERVE request; the IN is an in-join there.
+// Go's former unordered arm, a merge with no comparison key, is gone.
+func TestImplementInUnionRule_PreserveYieldsNothing(t *testing.T) {
 	t.Parallel()
 	scan := inRuleScanPlan()
 	sw := scan
@@ -32,20 +37,21 @@ func TestImplementInUnionRule_FiresWithExplodeAndInner(t *testing.T) {
 	)
 
 	outerRef := expressions.InitialOf(sel)
-	results := mustInRuleFire(t, NewImplementInUnionRule(), outerRef)
-	if len(results) == 0 {
-		t.Fatal("should fire with explode + inner quantifier")
+	if results := mustInRuleFire(t, NewImplementInUnionRule(), outerRef); len(results) != 0 {
+		t.Fatalf("no requested ordering yielded %d expression(s), want none", len(results))
 	}
 
-	found := false
-	for _, r := range results {
-		if _, ok := r.(*plans.RecordQueryInUnionPlan); ok {
-			found = true
-			break
-		}
+	// WS-F 4.3 item 6: the size comes from the planner configuration, and a
+	// rule call without a planner context is a harness defect, not size 0.
+	rule := NewImplementInUnionRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), sel)
+	if len(bindings) == 0 {
+		t.Fatal("fixture select does not bind the in-union matcher")
 	}
-	if !found {
-		t.Fatal("should yield *RecordQueryInUnionPlan")
+	call := &ImplementationRuleCall{Bindings: bindings[0], Reference: outerRef}
+	rule.OnMatch(call)
+	if call.Err() == nil {
+		t.Fatal("a rule call without a planner context did not fail")
 	}
 }
 

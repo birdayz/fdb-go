@@ -31,7 +31,7 @@ func wsbPlanBuilders(t testing.TB) []rfc176PlanBuilder {
 	return []rfc176PlanBuilder{
 		{"InUnion", func(vs []values.Value) RecordQueryPlan {
 			return mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
-				return NewRecordQueryInUnionPlan(inner, []string{"b1"}, vs, false)
+				return NewRecordQueryInUnionPlan(inner, []string{"b1"}, vs, false, UnboundedInUnionSize)
 			})
 		}},
 		{"Intersection", func(vs []values.Value) RecordQueryPlan {
@@ -125,10 +125,10 @@ func TestInUnionPlan_ComparandsJoinIdentity(t *testing.T) {
 	kB := []values.Value{testField(t, "B", values.NullableLong)}
 
 	a := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
-		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
+		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false, UnboundedInUnionSize)
 	})
 	b := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
-		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kB, false)
+		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kB, false, UnboundedInUnionSize)
 	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("in-union plans with different comparison keys must NOT compare equal")
@@ -136,7 +136,7 @@ func TestInUnionPlan_ComparandsJoinIdentity(t *testing.T) {
 
 	// Different IN-literals (Java: inSources.equals) break equality too.
 	c := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
-		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
+		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false, UnboundedInUnionSize)
 	})
 	a = a.WithInSources([][]any{{int64(1), int64(2)}})
 	c = c.WithInSources([][]any{{int64(1), int64(3)}})
@@ -146,7 +146,7 @@ func TestInUnionPlan_ComparandsJoinIdentity(t *testing.T) {
 
 	// Identical everything ⟹ equal + same hash.
 	d := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
-		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
+		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false, UnboundedInUnionSize)
 	})
 	d = d.WithInSources([][]any{{int64(1), int64(2)}})
 	if !a.EqualsPlanWithoutChildren(d) {

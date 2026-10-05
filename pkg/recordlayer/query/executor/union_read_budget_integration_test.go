@@ -56,7 +56,7 @@ func budgetUnionPlan(t *testing.T, kind string) plans.RecordQueryPlan {
 		if kind == "in_concat" {
 			keys = nil
 		}
-		p := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(scan, []string{"budget_binding"}, keys, false))
+		p := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(scan, []string{"budget_binding"}, keys, false, plans.UnboundedInUnionSize))
 		source := []any{int64(1), int64(2)}
 		if kind == "in_single" {
 			source = source[:1]

@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"errors"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -265,11 +266,13 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 
 	// Every plan this rule yields carries the configured maximum product of
 	// IN-source sizes; execution refuses a larger one (Java's
-	// ImplementInUnionRule reads it once, as here).
-	maxSize := 0
-	if call.Context != nil {
-		maxSize = call.Context.GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
+	// ImplementInUnionRule reads it once, as here). Java's rule call always has
+	// a planner context, so a call without one is a harness defect, not size 0.
+	if call.Context == nil {
+		call.Fail(errors.New("ImplementInUnionRule: rule call has no planner context to read the in-union size from"))
+		return
 	}
+	maxSize := call.Context.GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
 
 	for _, partition := range partitions {
 		innerPlans := partition.GetPlans()
@@ -402,23 +405,6 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				inUnionPlan = inUnionPlan.WithInSources(inSources)
 				call.YieldFinalExpression(inUnionPlan)
 			}
-		}
-
-		if richOrdering == nil || len(richOrdering.GetKeys()) == 0 {
-			newRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
-			// The InUnion is its own cascades expression carrying the live newRef
-			// inner edge (RFC-184 W2); its per-ordering winner resolves at
-			// extraction via ref.Winner(). No plan snapshot — the deferred-winner
-			// case.
-			inUnionPlan, err := plans.NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
-				expressions.NewPhysicalQuantifier(newRef),
-				bindingAliases, nil, false, maxSize)
-			if err != nil {
-				call.Fail(err)
-				return
-			}
-			inUnionPlan = inUnionPlan.WithInSources(inSources)
-			call.YieldFinalExpression(inUnionPlan)
 		}
 	}
 }

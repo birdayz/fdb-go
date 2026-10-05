@@ -95,6 +95,7 @@ func TestInUnionHintCost_UsesValueCombinationCount(t *testing.T) {
 				}), test.bindings,
 					nil,
 					false,
+					UnboundedInUnionSize,
 				)
 			})
 			plan = plan.WithInSources(test.sources)
@@ -140,6 +141,7 @@ func TestInUnionHintCost_SaturatesUnknownFanoutOverflow(t *testing.T) {
 		}), bindings,
 			nil,
 			false,
+			UnboundedInUnionSize,
 		)
 	})
 	plan = plan.WithInSources(sources)
@@ -198,6 +200,7 @@ func TestLiteralFanout_RejectsMismatchedDimensions(t *testing.T) {
 				}), test.bindings,
 					nil,
 					false,
+					UnboundedInUnionSize,
 				)
 			})
 			plan = plan.WithInSources(test.sources)
@@ -248,7 +251,7 @@ func TestInListBuildersPreserveNilVersusEmpty(t *testing.T) {
 		plan := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
 			return NewRecordQueryInUnionPlan(mustChecked(t, func() (*RecordQueryValuesPlan, error) {
 				return NewRecordQueryValuesPlan(nil)
-			}), []string{"a", "b"}, nil, false)
+			}), []string{"a", "b"}, nil, false, UnboundedInUnionSize)
 		})
 
 		if got := plan.WithInSources(nil).GetInSources(); got != nil {
@@ -294,7 +297,7 @@ func TestInListBuildersPreserveNilVersusEmpty(t *testing.T) {
 		plan := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
 			return NewRecordQueryInUnionPlan(mustChecked(t, func() (*RecordQueryValuesPlan, error) {
 				return NewRecordQueryValuesPlan(nil)
-			}), []string{"a", "b"}, nil, false)
+			}), []string{"a", "b"}, nil, false, UnboundedInUnionSize)
 		})
 
 		src := [][]any{{int64(1), int64(2)}}

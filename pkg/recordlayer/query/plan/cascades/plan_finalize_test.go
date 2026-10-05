@@ -457,7 +457,7 @@ var specimens = map[string]specimen{
 			child, cs := sentinelChild()
 			key := sentinel()
 			p := mustFinalizeConstruct(plans.NewRecordQueryInUnionPlan(
-				child, []string{"b"}, []values.Value{key}, false))
+				child, []string{"b"}, []values.Value{key}, false, plans.UnboundedInUnionSize))
 			return p, map[string]*values.RecordConstructorValue{
 				"innerQ": cs, "comparisonKeys": key,
 			}

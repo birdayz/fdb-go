@@ -1003,7 +1003,7 @@ func TestDownstreamLegWindows(t *testing.T) {
 		predicatesFilter = ojWiringMustConstruct(t, predicatesFilter, err)
 		inJoin, err := plans.NewRecordQueryInJoinPlan(nlj, "iv", false, false)
 		inJoin = ojWiringMustConstruct(t, inJoin, err)
-		inUnion, err := plans.NewRecordQueryInUnionPlan(nlj, []string{"iv"}, nil, false)
+		inUnion, err := plans.NewRecordQueryInUnionPlan(nlj, []string{"iv"}, nil, false, plans.UnboundedInUnionSize)
 		inUnion = ojWiringMustConstruct(t, inUnion, err)
 		wrappers := map[string]plans.RecordQueryPlan{
 			"in-memory sort":    inMemorySort,

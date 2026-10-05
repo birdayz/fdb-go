@@ -476,7 +476,7 @@ func TestComputeDistinctRecords_InUnionIsTrue(t *testing.T) {
 	// The InUnion is its own physical expression now (RFC-184 W2) — it IS the
 	// physicalPlanExpression computeDistinctRecords inspects.
 	iup := mustPropertiesConstruct(plans.NewRecordQueryInUnionPlan(
-		scan, []string{"b"}, nil, false))
+		scan, []string{"b"}, nil, false, plans.UnboundedInUnionSize))
 	if !computeDistinctRecords(iup, iup) {
 		t.Fatal("InUnion should be distinct")
 	}
@@ -566,6 +566,7 @@ func TestComputeCardinalities_InUnionLiteralFanout(t *testing.T) {
 				test.bindings,
 				nil,
 				false,
+				plans.UnboundedInUnionSize,
 			))
 			inUnion = inUnion.WithInSources(test.sources)
 			got := computeCardinalities(inUnion, inUnion)
@@ -582,7 +583,7 @@ func TestComputeCardinalities_InUnionMultipliesChildAndDegradesOverflow(t *testi
 	child := planPropertiesValues()
 	newInUnion := func(bindings []string, sources [][]any, childCardinality int64) *plans.RecordQueryInUnionPlan {
 		inUnion := mustPropertiesConstruct(plans.NewRecordQueryInUnionPlan(
-			child, bindings, nil, false))
+			child, bindings, nil, false, plans.UnboundedInUnionSize))
 		inUnion = inUnion.WithInSources(sources)
 		childRef := inUnion.GetInnerQuantifier().GetRangesOver()
 		pm := NewPlanPropertiesMap()

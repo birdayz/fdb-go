@@ -13118,8 +13118,8 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === not_exists_predicates.yaml#4
 sql:   SELECT o.id FROM orders o WHERE o.id IN (2, 3) AND NOT EXISTS (SELECT 1 FROM shipments s WHERE s.order_id = o.id)
-plan:  InUnion(FlatMap(outer=Scan(ORDERS, [=]), inner=Map(PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(SHIPMENTS), [1 preds])), [1 preds]), {_0: 1})), bindings=1, ASC)
-shape: RecordQueryInUnionPlan
+plan:  InJoin(FlatMap(outer=Scan(ORDERS, [=]), inner=Map(PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(SHIPMENTS), [1 preds])), [1 preds]), {_0: 1})), binding)
+shape: RecordQueryInJoinPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
 shape:     RecordQueryMapPlan
