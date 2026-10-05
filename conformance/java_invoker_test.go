@@ -293,13 +293,12 @@ func (p *JavaServerPool) Shutdown() {
 // Residual (see TODO): a server drop DURING a request is a distinct, rarer
 // failure a fresh connection cannot prevent — that needs a per-step
 // idempotency-aware retry, deliberately out of scope here.
+const defaultStepTimeout = 2 * time.Minute
+
 func newJavaHTTPClient() *http.Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.DisableKeepAlives = true
-	return &http.Client{
-		Timeout:   2 * time.Minute,
-		Transport: tr,
-	}
+	return &http.Client{Transport: tr}
 }
 
 // TestJavaHTTPClient_DisablesKeepAlives pins the flake fix: the client that
@@ -316,6 +315,16 @@ func TestJavaHTTPClient_DisablesKeepAlives(t *testing.T) {
 	if !tr.DisableKeepAlives {
 		t.Fatal("java HTTP client must set DisableKeepAlives=true — reusing a pooled connection the " +
 			"server has since closed causes the intermittent `POST /invoke: EOF` conformance flake")
+	}
+}
+
+// A client-wide timeout would cut a step short of its caller's deadline: the
+// target's planner overran a fixed two minutes on CI inside a spec allowed
+// twenty. Invoke bounds a step by the caller's deadline, or a default.
+func TestJavaHTTPClient_LeavesTheDeadlineToTheCaller(t *testing.T) {
+	t.Parallel()
+	if c := newJavaHTTPClient(); c.Timeout != 0 {
+		t.Fatalf("java HTTP client Timeout = %v, want none", c.Timeout)
 	}
 }
 
@@ -473,7 +482,11 @@ func startJavaServer() (*JavaInvoker, error) {
 			_ = invoker.Close() // kills the process group + reaps + deregisters
 			return nil, fmt.Errorf("server did not become ready in time")
 		default:
-			resp, err := invoker.httpClient.Get(baseURL + "/health")
+			var resp *http.Response
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/health", nil)
+			if err == nil {
+				resp, err = invoker.httpClient.Do(req)
+			}
 			if err == nil && resp.StatusCode == 200 {
 				_ = resp.Body.Close()
 				fmt.Fprintf(os.Stderr, "Java conformance server ready at %s\n", baseURL)
@@ -582,7 +595,13 @@ func (j *JavaInvoker) Invoke(ctx context.Context, stepName string, params map[st
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Make HTTP request
+	// A step is bounded by the caller's deadline; without one, by a default
+	// that catches a hung server.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultStepTimeout)
+		defer cancel()
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", j.baseURL+"/invoke", bytes.NewReader(reqBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
