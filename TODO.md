@@ -287,10 +287,21 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     The candidate now refuses to produce any scan when it has an opaque
     filter (`canProduceScanPlan`). Pin:
     `TestClosureSparseIndex_ServesNoQuery`, with a full-index control.
-  - The task budget. `TestPlanHarness_UnionWithFixedUnindexedFactor` hits
-    MaxTasks: one group grows to 2998 members, 1980 of them
-    MergeSortUnion plans. This is the OR-union budget the pruning comment
-    named.
+  - The task budget. `TestPlanHarness_FixedFactorUnionJavaComparable/#00`
+    (ORDER BY b, id) hits MaxTasks (150,000 tasks, 8.3 s). Its distinct-union
+    group grows to 2998 members, 1980 of them MergeSortUnion plans. This is
+    the OR-union budget the pruning comment named. Measured cause:
+    `ImplementDistinctUnionRule` fires once per union alternative, of which the
+    DNF expansion holds about 500. It fires under PRESERVE over legs of 3 to 11
+    disjuncts with 19 to 67 ordering partitions in all, and every firing
+    reaches 4 merge states. With the pruning on, a leg whose disjunct binds no
+    index has only the primary scan, and fewer states result. Each state yields
+    a pinned MergeSortUnion, so about 500 x 4 merges reach the group. Java has
+    no task cap here. A fix has to bound the merges built per union group, not
+    per alternative.
+  - `TestPlanHarness_UnionWithFixedUnindexedFactor` is a plan pin: the
+    two-residual tie now breaks toward a full covering scan, not the primary
+    scan.
   The rest are plan pins encoding the pruning: like-prefix and unindexed-IN
   full scans, ORDER BY elimination, the rfc202 generated index plans,
   order_by_nulls, the self-join probe, and the javacorpus run.
