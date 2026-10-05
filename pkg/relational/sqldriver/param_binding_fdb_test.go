@@ -4,6 +4,7 @@ package sqldriver_test
 // (Type.fromObject), not substituted into the SQL text.
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -109,5 +110,92 @@ func TestFDB_ParameterBinding(t *testing.T) {
 	}
 	if got, err := ids("SELECT id FROM U WHERE u = ?", u); err != nil || !slices.Equal(got, []int64{1}) {
 		t.Errorf("uuid parameter lookup: %v, %v", got, err)
+	}
+}
+
+// The binding order's lanes, stored and read back: bytes from [N]byte and a
+// named []byte, a UUID through a pointer, a null wrapper by its payload, and
+// empty arrays (static element type or untyped) as empty values, not NULL.
+func TestFDB_ParameterTypingOrder(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_param_typing")
+	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_param_typing")
+	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE param_typing_tmpl "+
+		"CREATE TABLE B (id BIGINT, b BYTES, PRIMARY KEY (id)) "+
+		"CREATE TABLE A (id BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id)) "+
+		"CREATE TABLE U (id BIGINT, u UUID, PRIMARY KEY (id))")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_param_typing/s WITH TEMPLATE param_typing_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PARAM_TYPING?cluster_file=%s&schema=S", clusterFilePath))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	code := func(err error) api.ErrorCode {
+		var apiErr *api.Error
+		if errors.As(err, &apiErr) {
+			return apiErr.Code
+		}
+		return ""
+	}
+
+	type blob []byte
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	exec("INSERT INTO B VALUES (?, ?), (?, ?)", int64(1), [4]byte{1, 2, 3, 4}, int64(2), blob{9})
+	for id, want := range map[int64][]byte{1: {1, 2, 3, 4}, 2: {9}} {
+		var got []byte
+		if err := db.QueryRowContext(ctx, "SELECT b FROM B WHERE id = ?", id).Scan(&got); err != nil || !bytes.Equal(got, want) {
+			t.Errorf("BYTES %d: %v, %v; want %v", id, got, err, want)
+		}
+	}
+
+	u := uuid.MustParse("123e4567-e89b-12d3-a456-426614174000")
+	exec("INSERT INTO U VALUES (?, ?), (?, ?)", int64(1), &u, int64(2), (*uuid.UUID)(nil))
+	var n int64
+	if err := db.QueryRowContext(ctx, "SELECT id FROM U WHERE u = ?", &u).Scan(&n); err != nil || n != 1 {
+		t.Errorf("*uuid.UUID lookup: %d, %v", n, err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT id FROM U WHERE u IS NULL").Scan(&n); err != nil || n != 2 {
+		t.Errorf("nil *uuid.UUID stored NULL: %d, %v", n, err)
+	}
+
+	// sql.NullInt64 is LONG: no INT overflow.
+	if err := db.QueryRowContext(ctx, "SELECT ? + 2147483647 FROM U WHERE id = 1", sql.NullInt64{Int64: 1, Valid: true}).Scan(&n); err != nil || n != 2147483648 {
+		t.Errorf("NullInt64 + INT_MAX = %d, %v", n, err)
+	}
+
+	exec("INSERT INTO A VALUES (?, ?), (?, ?), (?, ?)", int64(1), []int{}, int64(2), []int64(nil), int64(3), nil)
+	rows, err := db.QueryContext(ctx, "SELECT id, arr IS NULL, CARDINALITY(arr) FROM A ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for rows.Next() {
+		var id int64
+		var isNull bool
+		var card sql.NullInt64
+		if err := rows.Scan(&id, &isNull, &card); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%d:%t:%v", id, isNull, card))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+	if want := []string{"1:false:{0 true}", "2:false:{0 true}", "3:true:{0 false}"}; !slices.Equal(got, want) {
+		t.Errorf("empty and NULL arrays: %v, want %v", got, want)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM A WHERE id IN ?", []int{}).Scan(&n); err != nil || n != 0 {
+		t.Errorf("IN empty []int: %d, %v", n, err)
+	}
+
+	if _, err := db.ExecContext(ctx, "INSERT INTO A VALUES (?, ?)", int64(4), [][]int64{{1}}); code(err) != api.ErrCodeInvalidParameter {
+		t.Errorf("nested array parameter: want 22023, got %v", err)
 	}
 }

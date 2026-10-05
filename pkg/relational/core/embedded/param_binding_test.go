@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"bytes"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"math"
@@ -193,5 +194,93 @@ func TestBindStatementParameters_BatchBindsAllFirst(t *testing.T) {
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCharacterNotInRepertoire || !strings.Contains(apiErr.Message, "parameter 2") {
 		t.Fatalf("want 22021 naming parameter 2, got %v", err)
+	}
+}
+
+type blob []byte
+
+// The design's binding order where database/sql's own conversion would erase
+// a lane: known types (and pointers to them) before any Valuer, bytes before
+// the general array rule, and an array typed from its static element type.
+func TestParameterConstant_TypingOrder(t *testing.T) {
+	t.Parallel()
+	u := uuid.MustParse("123e4567-e89b-12d3-a456-426614174000")
+	arrayOf := func(code values.TypeCode) func(values.Type) bool {
+		return func(typ values.Type) bool {
+			at, ok := typ.(*values.ArrayType)
+			return ok && at.ElementType.Code() == code
+		}
+	}
+	is := func(code values.TypeCode) func(values.Type) bool {
+		return func(typ values.Type) bool { return typ.Code() == code }
+	}
+	for _, c := range []struct {
+		name string
+		in   any
+		want func(values.Type) bool
+	}{
+		{"*uuid.UUID", &u, is(values.TypeCodeUuid)},
+		{"nil *uuid.UUID", (*uuid.UUID)(nil), is(values.TypeCodeNull)},
+		{"nil value-receiver Valuer pointer", (*textValuer)(nil), is(values.TypeCodeNull)},
+		{"[16]byte", [16]byte{1}, is(values.TypeCodeBytes)},
+		{"[3]byte", [3]byte{1, 2, 3}, is(values.TypeCodeBytes)},
+		{"named []byte", blob{1}, is(values.TypeCodeBytes)},
+		{"sql.NullInt64", sql.NullInt64{Int64: 5, Valid: true}, is(values.TypeCodeLong)},
+		{"sql.NullInt64 invalid", sql.NullInt64{}, is(values.TypeCodeNull)},
+		{"sql.NullInt32", sql.NullInt32{Int32: 5, Valid: true}, is(values.TypeCodeInt)},
+		{"sql.Null[int64]", sql.Null[int64]{V: 5, Valid: true}, is(values.TypeCodeLong)},
+		{"sql.Null[uuid.UUID]", sql.Null[uuid.UUID]{V: u, Valid: true}, is(values.TypeCodeUuid)},
+		{"*sql.NullInt64", &sql.NullInt64{Int64: 5, Valid: true}, is(values.TypeCodeLong)},
+		{"empty []int", []int{}, is(values.TypeCodeNone)},
+		{"empty []any", []any{}, is(values.TypeCodeNone)},
+		{"empty []int32", []int32{}, arrayOf(values.TypeCodeInt)},
+		{"nil []string", []string(nil), arrayOf(values.TypeCodeString)},
+		{"empty []*int64", []*int64{}, arrayOf(values.TypeCodeLong)},
+		{"empty [][]byte", [][]byte{}, arrayOf(values.TypeCodeBytes)},
+		{"[][2]byte", [][2]byte{{1, 2}}, arrayOf(values.TypeCodeBytes)},
+		{"[]int mixed widths", []int{1, 3000000000}, arrayOf(values.TypeCodeLong)},
+		{"[]uuid.UUID", []uuid.UUID{u}, arrayOf(values.TypeCodeUuid)},
+	} {
+		v, err := parameterConstant(c.in)
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if !c.want(v.Type()) {
+			t.Errorf("%s: type %v", c.name, v.Type())
+		}
+	}
+	// [16]byte binds its bytes, not a UUID.
+	if v, _ := parameterConstant([16]byte{1, 2}); !bytes.Equal(v.(*values.ConstantValue).Value.([]byte), append([]byte{1, 2}, make([]byte, 14)...)) {
+		t.Errorf("[16]byte payload: %v", v)
+	}
+	// An empty array's value is empty, not NULL.
+	if v, _ := parameterConstant([]int{}); v.(*values.ConstantValue).Value == nil || len(v.(*values.ConstantValue).Value.([]any)) != 0 {
+		t.Errorf("empty []int payload: %#v", v)
+	}
+}
+
+// A directly nested array and a type with no binding are 22023 naming the
+// parameter and its Go type.
+func TestBindStatementParameters_UnsupportedTypeNamesParameter(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse("SELECT id FROM t WHERE id IN ? OR id = ?x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		args []driver.NamedValue
+		want string
+	}{
+		{[]driver.NamedValue{{Ordinal: 1, Value: [][]int{{1}}}, {Name: "x", Value: 1}}, "parameter 1 has unsupported type [][]int"},
+		{[]driver.NamedValue{{Ordinal: 1, Value: []int{1}}, {Name: "x", Value: struct{}{}}}, "parameter x has unsupported type struct {}"},
+		{[]driver.NamedValue{{Ordinal: 1, Value: []any{[]int{1}}}, {Name: "x", Value: 1}}, "parameter 1 has unsupported type []interface {}"},
+	} {
+		_, release, err := bindStatementParameters(root, c.args)
+		release()
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter || apiErr.Message != c.want {
+			t.Errorf("want 22023 %q, got %v", c.want, err)
+		}
 	}
 }

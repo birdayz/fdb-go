@@ -78,6 +78,10 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (string,
 			if errors.As(err, &badText) {
 				return api.NewErrorf(api.ErrCodeCharacterNotInRepertoire, "parameter %s is not valid UTF-8", param)
 			}
+			var unsupported *unsupportedParameterError
+			if errors.As(err, &unsupported) {
+				return api.NewErrorf(api.ErrCodeInvalidParameter, "parameter %s has unsupported type %T", param, raw)
+			}
 			if err != nil {
 				return err
 			}
@@ -110,43 +114,39 @@ func constantPayload(v values.Value) any {
 // parameterConstant types a driver value as Java's Type.fromObject types a
 // JDBC parameter: int32 is INT and int64 LONG (setInt, setLong), a Go int or
 // other narrow integer takes an unsuffixed literal's type, float32 is FLOAT,
-// float64 DOUBLE, a UUID is UUID, []byte is BYTES, any other slice an ARRAY of
-// its element type, and nil an untyped NULL.
+// float64 DOUBLE, a UUID is UUID, bytes are BYTES, any other slice an ARRAY of
+// its element type, and nil an untyped NULL. Known types, and pointers to
+// them, are typed before any Valuer, whose Value would erase their lane.
 func parameterConstant(raw any) (values.Value, error) {
-	switch v := raw.(type) {
-	case nil:
+	if raw == nil {
 		return values.NewNullValue(values.NullType), nil
-	case uuid.UUID:
-		return &values.ConstantValue{Value: [16]byte(v), Typ: values.NotNullUuid}, nil
-	case time.Time:
-		// DATE and TIMESTAMP are Go-only; a time binds as its canonical text,
-		// which the column assignment converts.
-		text := functions.FormatTimestamp(v)
-		if v.Hour() == 0 && v.Minute() == 0 && v.Second() == 0 && v.Nanosecond() == 0 {
-			text = functions.FormatDate(v)
+	}
+	if v, ok, err := knownParameter(raw); ok {
+		return v, err
+	}
+	rv := reflect.ValueOf(raw)
+	if rv.Kind() == reflect.Pointer && isKnownParameterType(rv.Type().Elem()) {
+		if rv.IsNil() {
+			return values.NewNullValue(values.NullType), nil
 		}
-		return &values.ConstantValue{Value: text, Typ: values.NotNullString}, nil
-	case api.Vector:
-		_, payload, stride, ok := vectorcodec.Payload(v)
-		if !ok || len(payload)%stride != 0 {
-			return nil, api.NewError(api.ErrCodeInvalidParameter, "invalid serialized VECTOR parameter")
+		return parameterConstant(rv.Elem().Interface())
+	}
+	if vr, ok := raw.(driver.Valuer); ok {
+		// As database/sql answers: a nil pointer whose Value has a value
+		// receiver is NULL, not a nil dereference.
+		if rv.Kind() == reflect.Pointer && rv.IsNil() && rv.Type().Elem().Implements(valuerType) {
+			return values.NewNullValue(values.NullType), nil
 		}
-		return &values.ConstantValue{Value: bytes.Clone(v), Typ: values.NewVectorType(false, stride*8, len(payload)/stride)}, nil
-	case []byte:
-		// Copied: the caller may reuse the buffer while the constant lives on in
-		// lazily fetched pages.
-		return &values.ConstantValue{Value: bytes.Clone(v), Typ: values.NotNullBytes}, nil
-	case driver.Valuer:
-		dv, err := v.Value()
+		dv, err := vr.Value()
 		if err != nil {
 			return nil, err
 		}
+		// driver.Value has no int32, so a Valuer's int64 carries no lane.
 		if i, ok := dv.(int64); ok {
 			return intParameter(i), nil
 		}
 		return parameterConstant(dv)
 	}
-	rv := reflect.ValueOf(raw)
 	switch rv.Kind() {
 	case reflect.Pointer:
 		if rv.IsNil() {
@@ -178,10 +178,83 @@ func parameterConstant(raw any) (values.Value, error) {
 	case reflect.Bool:
 		return values.NewBooleanValue(rv.Bool()), nil
 	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			// Copied: the caller may reuse the buffer while the constant lives on
+			// in lazily fetched pages. A [16]byte is BYTES; a UUID binds as
+			// uuid.UUID.
+			b := make([]byte, rv.Len())
+			reflect.Copy(reflect.ValueOf(b), rv)
+			return &values.ConstantValue{Value: b, Typ: values.NotNullBytes}, nil
+		}
 		return arrayParameter(rv)
 	}
-	return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "unsupported parameter type %T", raw)
+	return nil, &unsupportedParameterError{}
 }
+
+var valuerType = reflect.TypeFor[driver.Valuer]()
+
+// knownParameter types the values a Valuer would misreport: a UUID (its Value
+// is text), a time, a VECTOR, and database/sql's null wrappers, typed by their
+// payload (an invalid one is an untyped NULL).
+func knownParameter(raw any) (values.Value, bool, error) {
+	switch v := raw.(type) {
+	case uuid.UUID:
+		return &values.ConstantValue{Value: [16]byte(v), Typ: values.NotNullUuid}, true, nil
+	case time.Time:
+		// DATE and TIMESTAMP are Go-only; a time binds as its canonical text,
+		// which the column assignment converts.
+		text := functions.FormatTimestamp(v)
+		if v.Hour() == 0 && v.Minute() == 0 && v.Second() == 0 && v.Nanosecond() == 0 {
+			text = functions.FormatDate(v)
+		}
+		return &values.ConstantValue{Value: text, Typ: values.NotNullString}, true, nil
+	case api.Vector:
+		_, payload, stride, ok := vectorcodec.Payload(v)
+		if !ok || len(payload)%stride != 0 {
+			return nil, true, api.NewError(api.ErrCodeInvalidParameter, "invalid serialized VECTOR parameter")
+		}
+		return &values.ConstantValue{Value: bytes.Clone(v), Typ: values.NewVectorType(false, stride*8, len(payload)/stride)}, true, nil
+	}
+	if payload, valid, ok := sqlNullPayload(reflect.ValueOf(raw)); ok {
+		if !valid {
+			return values.NewNullValue(values.NullType), true, nil
+		}
+		v, err := parameterConstant(payload)
+		return v, true, err
+	}
+	return nil, false, nil
+}
+
+func isKnownParameterType(t reflect.Type) bool {
+	switch t {
+	case reflect.TypeFor[uuid.UUID](), reflect.TypeFor[time.Time](), reflect.TypeFor[api.Vector]():
+		return true
+	}
+	return isSQLNullType(t)
+}
+
+// isSQLNullType is database/sql's NullInt64, NullString, ..., and Null[T]: a
+// struct of the payload and a Valid flag.
+func isSQLNullType(t reflect.Type) bool {
+	if t.Kind() != reflect.Struct || t.PkgPath() != "database/sql" || t.NumField() != 2 {
+		return false
+	}
+	valid, ok := t.FieldByName("Valid")
+	return ok && valid.Type.Kind() == reflect.Bool && valid.Index[0] == 1
+}
+
+func sqlNullPayload(rv reflect.Value) (payload any, valid, ok bool) {
+	if !isSQLNullType(rv.Type()) {
+		return nil, false, false
+	}
+	return rv.Field(0).Interface(), rv.Field(1).Bool(), true
+}
+
+// unsupportedParameterError marks a value with no SQL type; the binder
+// reports it as 22023 naming the parameter and its Go type.
+type unsupportedParameterError struct{}
+
+func (*unsupportedParameterError) Error() string { return "unsupported parameter type" }
 
 // invalidUTF8ParameterError marks a string parameter that is not valid UTF-8;
 // the binder reports it as 22021 naming the parameter.
@@ -196,9 +269,18 @@ func intParameter(i int64) values.Value {
 	return &values.ConstantValue{Value: i, Typ: values.NotNullLong}
 }
 
-// arrayParameter types a slice as an ARRAY whose element type is the maximum
-// of its elements' types. A NULL element is refused, as every ARRAY element is.
+// arrayParameter types a slice or array as an ARRAY, once: from its static
+// element type where that has one (INT for int32, BYTES for []byte), else as
+// the maximum of its elements' types, as the target's array constructor
+// promotes them ([]int{1, 3000000000} is ARRAY<LONG>). An empty one with no
+// static type is the untyped empty array (NONE), which any array column
+// accepts. A NULL element is refused, as every ARRAY element is; a directly
+// nested array is not supported.
 func arrayParameter(rv reflect.Value) (values.Value, error) {
+	static, err := staticElementType(rv.Type().Elem())
+	if err != nil {
+		return nil, err
+	}
 	elems := make([]any, rv.Len())
 	var types []values.Type
 	for i := range elems {
@@ -216,16 +298,58 @@ func arrayParameter(rv reflect.Value) (values.Value, error) {
 		if !ok || c.Value == nil {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "An ARRAY value cannot have NULL elements")
 		}
+		if _, nested := c.Typ.(*values.ArrayType); nested || c.Typ.Code() == values.TypeCodeNone {
+			return nil, &unsupportedParameterError{}
+		}
 		elems[i] = c.Value
 		types = append(types, c.Typ)
 	}
-	var elemType values.Type = values.TypeUnknown
-	if len(types) > 0 {
-		elemType = values.MaximumTypeOfMany(types...)
-		if elemType == nil {
-			return nil, api.NewError(api.ErrCodeInvalidParameter, "ARRAY parameter elements have no common type")
-		}
-		elemType = values.WithNullability(elemType, false)
+	if static != nil {
+		return &values.ConstantValue{Value: elems, Typ: values.NewArrayType(false, static)}, nil
 	}
-	return &values.ConstantValue{Value: elems, Typ: values.NewArrayType(false, elemType)}, nil
+	if len(types) == 0 {
+		return &values.ConstantValue{Value: elems, Typ: values.NoneType}, nil
+	}
+	elemType := values.MaximumTypeOfMany(types...)
+	if elemType == nil {
+		return nil, api.NewError(api.ErrCodeInvalidParameter, "ARRAY parameter elements have no common type")
+	}
+	return &values.ConstantValue{Value: elems, Typ: values.NewArrayType(false, values.WithNullability(elemType, false))}, nil
+}
+
+// staticElementType is the element type an array of t has whatever its
+// values: nil where the type depends on the values (a Go int, an interface, a
+// Valuer), and an unsupported type for a nested array or a type with no
+// binding. A pointer element is typed by its pointee.
+func staticElementType(t reflect.Type) (values.Type, error) {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == reflect.TypeFor[uuid.UUID]() {
+		return values.NotNullUuid, nil
+	}
+	if isKnownParameterType(t) || t.Implements(valuerType) || reflect.PointerTo(t).Implements(valuerType) {
+		return nil, nil
+	}
+	switch t.Kind() {
+	case reflect.Int32:
+		return values.NotNullInt, nil
+	case reflect.Int64, reflect.Uint, reflect.Uint64:
+		return values.NotNullLong, nil
+	case reflect.Float32:
+		return values.NotNullFloat, nil
+	case reflect.Float64:
+		return values.NotNullDouble, nil
+	case reflect.String:
+		return values.NotNullString, nil
+	case reflect.Bool:
+		return values.NotNullBoolean, nil
+	case reflect.Slice, reflect.Array:
+		if t.Elem().Kind() == reflect.Uint8 {
+			return values.NotNullBytes, nil
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Interface:
+		return nil, nil
+	}
+	return nil, &unsupportedParameterError{}
 }
