@@ -416,6 +416,11 @@ func corpus() []Scenario {
 // byte-identical to the previous baseline INCLUDING their order ([1][2][3][4]
 // and [1][2][5][6][7]), so the merge demonstrably produced ascending id without
 // the sort.
+//
+// RFC-257 WS-F 4.3 item 2 moved both stanzas back to the sorted InJoin, rows
+// unchanged: a relational table's entry is (cat, record type, id), and Java
+// builds no in-union ordered by an id it reaches only past that record-type
+// coordinate.
 func TestGolden(t *testing.T) {
 	t.Parallel()
 	update := os.Getenv("GOLDEN_UPDATE") != ""

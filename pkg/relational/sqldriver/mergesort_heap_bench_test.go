@@ -150,7 +150,10 @@ func runInBench(b *testing.B, ib inBench) {
 func benchInUnionMergeSort(b *testing.B, numLegs, rowsPerLeg int) {
 	runInBench(b, inBench{
 		numLegs: numLegs, rowsPerLeg: rowsPerLeg,
-		query:    "SELECT id, g FROM T WHERE g IN (%s) ORDER BY g, id",
+		// ORDER BY g alone: id is the merge's free comparison-key suffix. A
+		// request naming id, which this index reaches only past the entry's
+		// record-type coordinate, builds no in-union (RFC-257 WS-F 4.3 item 2).
+		query:    "SELECT id, g FROM T WHERE g IN (%s) ORDER BY g",
 		wantPlan: "InUnion(",
 		disabled: []string{"ImplementInJoinRule"},
 	})

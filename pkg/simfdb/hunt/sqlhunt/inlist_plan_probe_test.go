@@ -64,13 +64,18 @@ func TestInListPlanShape(t *testing.T) {
 	// scan. See requestedOrderingAtInnerCurrent. The branch now measures 9.5
 	// ms/op here against master's 5.25.
 	//
-	// If the planner ever stops choosing an InUnion here, the comparison above
-	// needs re-taking and this fails rather than going quietly stale.
+	// If the planner ever changes its choice here, the comparison above needs
+	// re-taking and this fails rather than going quietly stale. The choice HAS
+	// changed once since: RFC-257 WS-F 4.3 item 2 builds no InUnion ordered by an
+	// id that idx_cat's entries (cat, record type, id) hold past the record-type
+	// coordinate, as Java builds none, so the ordered query is a sorted InJoin
+	// (`InMemorySort(InJoin(...IDX_CAT...))`). The planning-cost measurements
+	// above were taken on the InUnion and are not re-taken for it.
 	for _, probe := range []struct {
 		query string
 		want  string
 	}{
-		{"SELECT id, val FROM t WHERE cat IN (0, 1, 2, 3, 4) ORDER BY id", "InUnion"},
+		{"SELECT id, val FROM t WHERE cat IN (0, 1, 2, 3, 4) ORDER BY id", "InMemorySort([_current.ID#0 ASC], InJoin("},
 		{"SELECT id, val FROM t WHERE cat IN (0, 1, 2, 3, 4)", "InJoin"},
 	} {
 		var plan string

@@ -177,6 +177,98 @@ func TestImplementInUnionRuleSeparatesFixedAndDirectionalRichOrderings(t *testin
 	t.Fatal("rule did not yield an ordered InUnion over the fixed-bound index partition")
 }
 
+// TestImplementInUnionRule_RecordTypeHorizon pins RFC-257 WS-F 4.3 item 2. An
+// index scan's primary-key suffix that lies past the record-type coordinate of
+// the primary key still orders the scan, but the in-union rule builds no merge
+// for a request naming it: Java's data access stops at that coordinate and its
+// reference holds no such leg. A request on the IN column builds the merge, the
+// marked key its free comparison-key suffix, and a primary key with no
+// record-type coordinate (a record-layer type) keeps the merge ordered by it.
+func TestImplementInUnionRule_RecordTypeHorizon(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name             string
+		recordTypePrefix bool
+	}{
+		{"primary key after the record type", true},
+		{"primary key without a record type", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			explodeAlias := values.UniqueCorrelationIdentifier()
+			equality := predicates.EmptyComparisonRange().Merge(&predicates.Comparison{
+				Type:    predicates.ComparisonEquals,
+				Operand: inRuleQOV(explodeAlias, values.NotNullLong),
+			})
+			if !equality.Complete() || equality.Range == nil {
+				t.Fatal("construct exact IN-binding equality range")
+			}
+			base := inRuleQOV(values.UniqueCorrelationIdentifier(), inRuleRowType())
+			pk := []values.Value{inRuleField(base, 2)}
+			if tc.recordTypePrefix {
+				pk = append([]values.Value{values.NewRecordTypeValue(base)}, pk...)
+			}
+			index := mustInRuleConstruct(plans.NewRecordQueryIndexPlan(
+				"IDX_A", []*predicates.ComparisonRange{equality.Range}, []string{"T"}, inRuleRowType(), false)).
+				WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+				WithIndexMetadata([]string{"a"}, []string{"x"}, false).
+				WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
+				WithDistinctRecordsSignal(false).
+				WithCommonPrimaryKey(pk)
+
+			rich := index.HintRichOrdering()
+			if len(rich.GetKeys()) != 2 {
+				t.Fatalf("index ordering keys = %v, want (a, x)", rich.GetKeys())
+			}
+			a, x := rich.GetKeys()[0], rich.GetKeys()[1]
+			if rich.IsPastRecordTypeHorizon(a) || rich.IsPastRecordTypeHorizon(x) != tc.recordTypePrefix {
+				t.Fatalf("marks: a=%v x=%v, want x marked exactly when the primary key begins with the record type",
+					rich.IsPastRecordTypeHorizon(a), rich.IsPastRecordTypeHorizon(x))
+			}
+			request := func(v values.Value) *properties.RequestedOrdering {
+				return properties.NewRequestedOrdering(
+					[]properties.RequestedOrderingPart{{Value: v, SortOrder: properties.RequestedSortOrderAscending}},
+					properties.DistinctnessPreserveDistinctness, false)
+			}
+			if !rich.Satisfies(request(x)) {
+				t.Fatal("the primary-key suffix must still satisfy ORDER BY x (the read extension)")
+			}
+
+			innerRef := expressions.InitialOf(index)
+			pm := NewPlanPropertiesMap()
+			pm.Add(index)
+			innerRef.SetPlanProperties(pm)
+			innerQ := expressions.ForEachQuantifier(innerRef)
+			explodeQ := expressions.NamedForEachQuantifier(explodeAlias, expressions.InitialOf(
+				inRuleExplode(inRuleArray(values.NotNullLong, int64(1), int64(2)))))
+			selectRef := expressions.InitialOf(inRuleSelect(
+				inRuleFlowedObject(innerQ), []expressions.Quantifier{explodeQ, innerQ}, nil))
+			inUnions := func(requested *properties.RequestedOrdering) int {
+				constraints := NewConstraintMap()
+				Set(constraints, selectRef, RequestedOrderingConstraintKey,
+					[]*properties.RequestedOrdering{requested})
+				yielded, err := FireImplementationRule(NewImplementInUnionRule(), selectRef, constraints)
+				if err != nil {
+					t.Fatalf("fire InUnion rule: %v", err)
+				}
+				n := 0
+				for _, expression := range yielded {
+					if _, ok := expression.(*plans.RecordQueryInUnionPlan); ok {
+						n++
+					}
+				}
+				return n
+			}
+			if got := inUnions(request(x)); (got > 0) == tc.recordTypePrefix {
+				t.Errorf("ORDER BY x yielded %d in-union(s); want one exactly when x is not past the record type", got)
+			}
+			if got := inUnions(request(a)); got == 0 {
+				t.Error("ORDER BY a yielded no in-union; the marked key is a free comparison-key suffix")
+			}
+		})
+	}
+}
+
 func TestImplementInUnionRule_StrictSingleFailsClosed(t *testing.T) {
 	t.Parallel()
 

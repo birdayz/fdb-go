@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**395 scenarios · 3298 query/assertion cases** across 18 feature areas — 2898 supported, 106 unsupported-feature pins, 294 error-path pins.
+**396 scenarios · 3303 query/assertion cases** across 18 feature areas — 2903 supported, 106 unsupported-feature pins, 294 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -31,7 +31,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 47 | 323 | 267 | 33 | 23 |
 | CTEs | 15 | 202 | 161 | 4 | 37 |
-| Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
+| Set operations (UNION / INTERSECT / EXCEPT) | 13 | 73 | 64 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 241 | 201 | 3 | 37 |
 | Ordering & pagination | 19 | 145 | 140 | 0 | 5 |
 | Scalar functions & expressions | 35 | 392 | 334 | 21 | 37 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 44 | 429 | 382 | 9 | 38 |
-| **Total** | **395** | **3298** | **2898** | **106** | **294** |
+| **Total** | **396** | **3303** | **2903** | **106** | **294** |
 
 ## Aggregates & GROUP BY
 
@@ -263,6 +263,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `and_index_intersection_composite_pk` | 2 | 2 | 0 | 0 | 2-key pk merge |
 | `composite_aggregate_intersection` | 7 | 7 | 0 | 0 | Multi-aggregate queries using |
 | `in_over_intersection` | 7 | 7 | 0 | 0 | IN predicates layered over a pk-intersection. |
+| `in_union_record_type_horizon` | 5 | 5 | 0 | 0 | an IN-union ordered by the primary key |
 | `union` | 2 | 1 | 1 | 0 | UNION / UNION ALL — set operations over SELECT results. |
 | `union_aggregate_java` | 7 | 5 | 1 | 1 | Aggregate over UNION ALL patterns from |
 | `union_columns` | 12 | 7 | 2 | 3 | UNION column-binding: SQL standard is positional, not name-based. |

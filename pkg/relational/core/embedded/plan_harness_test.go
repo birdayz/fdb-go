@@ -318,16 +318,17 @@ func TestPlanHarness_InList(t *testing.T) {
 	}
 	t.Logf("plan: %s", plan)
 
-	// The IN-list must still be answered by an IN-list access path, or the
-	// no-sort assertion below could be satisfied by an unrelated plan shape.
-	if !strings.Contains(plan, "InUnion") && !strings.Contains(plan, "InJoin") {
-		t.Fatalf("expected an IN-list access path (InUnion or InJoin), got: %s", plan)
+	// The IN-list must still be answered by bounded per-value index reads, not
+	// by a scan of the table.
+	if !strings.Contains(plan, "InJoin(Map(IndexScan(IDX_CUSTOMER, [=])") {
+		t.Fatalf("expected an IN-join over IDX_CUSTOMER probes, got: %s", plan)
 	}
-	if strings.Contains(plan, "InMemorySort") {
-		t.Fatalf("ORDER BY id is being satisfied by an IN-MEMORY SORT: %s\n"+
-			"An IN-union merges the per-binding streams on id and delivers that "+
-			"ordering directly. Re-introducing the sort is a regression in plan "+
-			"quality even though the rows are correct.", plan)
+	// An IN-union merging the probes on id is NOT built: idx_customer's entries
+	// are (customer_id, record type, id), and Java builds no in-union ordered by
+	// an id it reaches only past that record-type coordinate (RFC-257 WS-F 4.3
+	// item 2; Java scans the table here). So the probes' rows are sorted.
+	if strings.Contains(plan, "InUnion") || !strings.HasPrefix(plan, "InMemorySort([_current.ID#0 ASC], InJoin(") {
+		t.Fatalf("ORDER BY id over IN probes of a one-column index must be a sorted InJoin: %s", plan)
 	}
 }
 

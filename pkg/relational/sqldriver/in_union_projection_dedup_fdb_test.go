@@ -7,7 +7,10 @@ package sqldriver_test
 // ties distinct records on (s, b), and the merge returned one of them. Java
 // 4.14.2.0 plans and answers it the same wrong way
 // (conformance/in_union_projection_dedup_java_probe_test.go). The arms that keep
-// the primary key still merge, over one IN and over two.
+// the primary key still merge, over one IN and over two. The index names the
+// primary key in its own key: a primary key reached only past the record-type
+// coordinate of the entry is no in-union key, in Go as in Java (RFC-257 WS-F 4.3
+// item 2).
 
 import (
 	"context"
@@ -27,7 +30,7 @@ func TestFDB_InUnionMergeKeyMustIdentifyRows(t *testing.T) {
 	}
 	ctx := context.Background()
 	const ddl = "CREATE TABLE t (pk1 BIGINT, pk2 BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (pk1, pk2)) " +
-		"CREATE INDEX t_asb ON t (a, s, b)"
+		"CREATE INDEX t_asb ON t (a, s, b, pk1, pk2)"
 	setup := openTestDB(t, "/testdb_iupd")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_iupd")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE iupd "+ddl)

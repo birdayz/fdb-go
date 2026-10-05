@@ -478,6 +478,11 @@ func richOrderingsEqual(a, b *properties.RichOrdering) bool {
 		if aok != bok || len(ab) != len(bb) {
 			return false
 		}
+		// The in-union rule reads the record-type horizon mark off the
+		// partition, so a marked and an unmarked key are different orderings.
+		if a.IsPastRecordTypeHorizon(ak[i]) != b.IsPastRecordTypeHorizon(bk[i]) {
+			return false
+		}
 		for j := range ab {
 			if ab[j] != bb[j] {
 				return false

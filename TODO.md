@@ -101,7 +101,8 @@ Never mark a whole workstream complete because one of its subitems passed.
   both rule arms carrying it, unit tests, and `in_union_max_size.yaml`. It cannot
   land before F-7b: Go plans `col1 IN (25) ORDER BY id` as InUnion where Java
   scans (`w8_in25_order_by_id_*`), so the check alone refuses a query that both
-  engines answer today.
+  engines answer today. F-7b item 2 removed that blocker: Go builds no in-union
+  ordered by a primary key reached past the record-type coordinate.
 - [ ] Semantics/pins: scalar variadic promoted-child types, Value nullability
   census, target simplification regime, adjacent/decorated literals and lexer
   boundaries, FROM-less metadata, LOG_QUERY. Decimal normalization and structured
@@ -199,6 +200,22 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   `w9_distinct_explain`. `w13_display_scan_explain` (a dotted escaped table gets
   no PK scan) needs RFC-238 §7c: storage names in the scan leaf and DML targets,
   a cascades matching change awaiting its ACK. Reassigned to that.
+  F-7b (design 4.3), the IN-list plans. Item 2 is done.
+  - An index plan's rich ordering marks the primary-key keys it reaches only past
+    the record-type coordinate (`WithPastRecordTypeHorizon`).
+  - Only the in-union rule reads the mark. It builds no merge for a request
+    naming a marked key, but a marked key may still be a free suffix.
+  - Sort elision is unchanged, and so is the `col1 = ? ORDER BY id` index read
+    (DIVERGENCES.md "an index read past the record-type coordinate").
+  - Ten corpus plans moved off `InUnion`, nine to `InMemorySort(InJoin)` and
+    one to a sorted range scan: every IN ordered by the primary key over an
+    index without `id`. The simfdb golden rows are unchanged. Four FDB tests in
+    `sqldriver_test` now name `id` in the index key to keep their merge; they
+    are full lane and have not run.
+  - The oracle's `w8_in_union`, `w8_in25_order_by_id` and `w8_tie_in_order_by_id`
+    explain rows have new Go pins and move to F-7c, whose cost model decides
+    between Go's sorted InJoin and Java's `SCAN | FILTER`.
+  Still open: item 5 (the stashed size check), 4, 6, 3, 9 and 10.
 - [ ] Reconcile F-6/F-7b with RFC-191's existing `Fetch(InJoin)` ruling; see
   `DIVERGENCES.md` “Plan choice: an ordered IN over a non-covering index”.
 - [ ] RANK-index match-candidate gap and quoted dotted identifier GROUP BY/order

@@ -704,15 +704,19 @@ func TestFDB_RFC106a_INJoinScanLimitAggregatesAcrossLegs(t *testing.T) {
 // the original hang report (a many-legged IN-union over a SECONDARY index,
 // each leg's entries fetched by indexFetchCursor wrapping the index_scan.go
 // leaf cursor). ORDER BY the primary key forces the InUnion (merge-sort) plan
-// shape: across IN values only the merge delivers it (verified by EXPLAIN).
+// shape: across IN values only the merge delivers it (verified by EXPLAIN). The
+// index names id in its own key, as an in-union ordered by a primary key
+// reached only past the entry's record-type coordinate is not built (RFC-257
+// WS-F 4.3 item 2), and the list stays within the relational configuration's
+// in-union size.
 func TestFDB_RFC106a_INUnionScanLimitAggregatesAcrossLegs(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/testdb_rfc106a_inunionscan", "inunionscan",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id)) "+
-			"CREATE INDEX payload_idx ON Item (payload)")
+			"CREATE INDEX payload_idx ON Item (payload, id)")
 	ctx := context.Background()
 
-	const rows = 30
+	const rows = 24
 	const scanLimit = 5
 
 	seed := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})

@@ -1938,6 +1938,14 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 			bm[key] = []properties.OrderingBinding{properties.SortedBinding(p.columnSortOrder(i))}
 		}
 	}
+	// The primary-key suffix of a key whose primary key begins with the
+	// record-type coordinate lies past that coordinate in the entry: Java's
+	// full key is (index key, record type, trimmed primary key), and its match
+	// ordering stops at the record-type part, which no comparison binds. The
+	// ordering claims these keys as before; the mark only tells the in-union
+	// rule that the target never builds a plan from them (WS-F 4.3 item 2).
+	var pastHorizon []values.Value
+	recordTypeHorizon := p.primaryKeyBeginsWithRecordType()
 	for j, col := range tail {
 		key := p.orderingKeyOf(split.fixedLen+j, col)
 		if key == nil {
@@ -1947,6 +1955,8 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		order := dir
 		if column := split.fixedLen + j; column < len(columnNames) {
 			order = p.columnSortOrder(column)
+		} else if recordTypeHorizon {
+			pastHorizon = append(pastHorizon, key)
 		}
 		bm[key] = []properties.OrderingBinding{properties.SortedBinding(order)}
 	}
@@ -1960,7 +1970,19 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	return properties.NewRichOrdering(bm, keys,
 		properties.DistinctOverAllKeysIf(p.IsStrictlySorted())).
 		WithStorageKeyComplete(storageComplete).
-		WithRecordIdentity(p.recordIdentityCoordinates())
+		WithRecordIdentity(p.recordIdentityCoordinates()).
+		WithPastRecordTypeHorizon(pastHorizon)
+}
+
+// primaryKeyBeginsWithRecordType reports whether the scanned records' primary
+// key starts with the record-type coordinate, as a relational table's does.
+func (p *RecordQueryIndexPlan) primaryKeyBeginsWithRecordType() bool {
+	pk := p.GetCommonPrimaryKeyValues()
+	if len(pk) == 0 {
+		return false
+	}
+	_, isRecordType := pk[0].(*values.RecordTypeValue)
+	return isRecordType
 }
 
 // recordIdentityCoordinates are the primary-key coordinates of a scan that

@@ -276,6 +276,15 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 			if requestedOrdering.IsPreserve() {
 				continue
 			}
+			// A requested part this partition reaches only past the record-type
+			// coordinate of its primary key is one the target's data access never
+			// satisfies, so its reference holds no such leg and it builds no
+			// in-union over one (WS-F 4.3 item 2). The marked key may still be a
+			// free comparison-key suffix past the request, as in the target's
+			// `COMPARE BY (_.COL1, _.ID)`.
+			if richOrdering.RequestReachesPastRecordTypeHorizon(requestedOrdering) {
+				continue
+			}
 
 			adjustedOrdering := adjustBindingsForInUnion(
 				richOrdering, explodeAliases, requestedOrdering)

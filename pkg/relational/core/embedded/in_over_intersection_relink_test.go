@@ -166,7 +166,9 @@ CREATE INDEX idx_b ON T_AB (b)`
 	// entirely and go silently green on a path it no longer covers. Without the
 	// ORDER BY there is no ordering for a union to satisfy, the IN-JOIN shape is
 	// the one planned, and the relink stays under test. (Measured: the same query
-	// WITH ORDER BY plans InUnion(IndexScan(IDX_A, [=]), bindings=1, ASC).)
+	// WITH ORDER BY id planned InUnion(IndexScan(IDX_A, [=]), bindings=1, ASC)
+	// until RFC-257 WS-F 4.3 item 2, which builds no in-union ordered by an id
+	// past the entry's record-type coordinate; it is now a sorted Fetch(InJoin).)
 	// SELECT *, deliberately: a projected list is the block's result, so the
 	// InJoin ranges over its Map (Java's INJOIN { ISCAN | MAP }) and no fetch
 	// ever sits directly under it.

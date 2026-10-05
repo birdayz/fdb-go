@@ -1,0 +1,60 @@
+# in_union_record_type_horizon.yaml — an IN-union ordered by the primary key
+#
+# A relational table's primary key begins with the record-type coordinate, so
+# an index entry is (index key, record type, id). Java's match ordering stops
+# at that record-type part, which no comparison binds: its data access serves
+# `col1 = ? ORDER BY id` with a table scan, and its IN-union rule never sees an
+# I1 leg ordered by id. Go reads past the coordinate (the plain equality keeps
+# its index scan, a declared read extension), but builds no IN-union from it
+# (RFC-257 WS-F 4.3 item 2). An index naming id in its own key reaches id
+# through a key part and keeps the IN-union in both engines. The rows are the
+# WS-F oracle's measured Java answers (w8_*).
+name: in_union_record_type_horizon
+schema_template: |
+  CREATE TABLE T1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+  CREATE INDEX I1 AS SELECT col1 FROM T1 ORDER BY col1
+  CREATE INDEX I2 AS SELECT col2 FROM T1 ORDER BY col2
+  CREATE TABLE T8 (id BIGINT, col1 BIGINT, PRIMARY KEY (id))
+  CREATE INDEX I8 AS SELECT col1, id FROM T8 ORDER BY col1, id
+setup:
+  - INSERT INTO T1 VALUES (1, 10, 1), (2, 10, NULL), (3, 20, 3), (4, NULL, NULL)
+  - INSERT INTO T8 VALUES (1, 20), (2, 10), (3, 20), (4, NULL), (5, 10)
+tests:
+  # w8_in_union_rows: Java SCAN([IS T1]) | FILTER _.COL1 IN ...
+  - query: SELECT id FROM T1 WHERE col1 IN (10, 20) ORDER BY id
+    plan_not_contains: InUnion
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # w8_in25_order_by_id_rows: the same with more values than the relational
+  # configuration's IN-union size, which no IN-union is built to exceed.
+  - query: SELECT id FROM T1 WHERE col1 IN (0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240) ORDER BY id
+    plan_not_contains: InUnion
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # w8_eq_order_by_id: one equality keeps Go's index read past the record type
+  # (Java: SCAN([IS T1]) | FILTER, declared DIFF-PATH).
+  - query: SELECT id FROM T1 WHERE col1 = 10 ORDER BY id
+    plan_contains: "IndexScan(I1, [=]"
+    plan_not_contains: InMemorySort
+    rows:
+      - [1]
+      - [2]
+  # Ordered by the IN column the merge may still run, id its free suffix.
+  - query: SELECT id, col1 FROM T1 WHERE col1 IN (20, 10) ORDER BY col1, id
+    rows:
+      - [1, 10]
+      - [2, 10]
+      - [3, 20]
+  # w8_explicit_id_in_order_by_id: Java INUNION over I8 COMPARE BY (_.ID, _.COL1).
+  - query: SELECT id FROM T8 WHERE col1 IN (10, 20) ORDER BY id
+    plan_contains: "InUnion("
+    plan_not_contains: InMemorySort
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [5]

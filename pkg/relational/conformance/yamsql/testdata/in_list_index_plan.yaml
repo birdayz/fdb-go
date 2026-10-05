@@ -10,7 +10,11 @@
 # served by an InJoin over its values sorted in that direction (Java's
 # OrderingProperty.visitInJoinPlan), which the cost model prefers, as Java's
 # does; an ORDER BY another column needs the IN-UNION merge across the
-# per-value streams, the only operator that orders across values.
+# per-value streams, the only operator that orders across values. The merge
+# orders by the primary key only over an index that names it in its own key:
+# a primary key reached past the entry's record-type coordinate is no in-union
+# key, in Go as in Java (RFC-257 WS-F 4.3 item 2), so over a one-column index
+# the per-value streams are sorted instead (in_union_record_type_horizon.yaml).
 #
 # The plan_contains assertions verify the optimization fires.
 name: in_list_index_plan
@@ -35,9 +39,10 @@ setup:
       (7, 'food', 'Coffee', 15),
       (8, 'food', 'Tea', 10)
 tests:
-  # IN-list on indexed column with small list, ORDER BY id — ordered IN-UNION
+  # IN-list on indexed column with small list, ORDER BY id — the id lies past
+  # the record-type coordinate of IDX_CATEGORY's entries, so no IN-UNION
   - query: SELECT id, category FROM items WHERE category IN ('books', 'electronics') ORDER BY id
-    plan_contains: "InUnion(Map(IndexScan(IDX_CATEGORY, [=] COVERING), {ID: _current.ID#0, CATEGORY: _current.CATEGORY#1}), bindings=1, ASC)"
+    plan_not_contains: InUnion
     rows:
       - [1, 'books']
       - [2, 'books']
@@ -51,9 +56,9 @@ tests:
       - [7, 'Coffee']
       - [8, 'Tea']
 
-  # IN-list on integer indexed column, ORDER BY id — ordered IN-UNION
+  # IN-list on integer indexed column, ORDER BY id — no IN-UNION, as above
   - query: SELECT id, name FROM items WHERE price IN (25, 45, 120) ORDER BY id
-    plan_contains: "InUnion(Map(IndexScan(IDX_PRICE, [=]), {ID: _current.ID#0, NAME: _current.NAME#2}), bindings=1, ASC)"
+    plan_not_contains: InUnion
     rows:
       - [1, 'Go Programming']
       - [3, 'Keyboard']
