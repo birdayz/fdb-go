@@ -115,9 +115,17 @@ Never mark a whole workstream complete because one of its subitems passed.
   A CAST never yields NULL from a non-NULL operand: an operand no arm converts
   is a cast error, and a RECORD cast passes an equal type through
   (`TestCastValue_NonNullOperandNeverCastsToNull`, every admitted pair).
-  Open: the per-class Value nullability table and its enumerating test (design
-  5.3), the simplification regime (design 5.4, gated on WS-F step 7), and
-  FROM-less metadata.
+  The per-class nullability table is `valueNullabilityCensus`
+  (`values/value_nullability_census_test.go`). It enumerates every Type()
+  class from the embedded sources and checks each fixed type against its entry.
+  Open: loosen the 15 `censusGoStricter` classes, which Go types NOT NULL where
+  Java types them nullable: AndOr, Not, Exists, EvaluatesTo, Rank, RowNumber,
+  RecordType, Incarnation, ConditionSelector, Collate, Distance, the four
+  *DistanceRowNumber, Empty and ToOrderedBytes. Several of them evaluate to
+  NULL. Each loosening needs its readers checked (uniqueness, promotion into NOT
+  NULL fields, AND/OR, IN-to-explode) and result-metadata pins. Also open: the
+  simplification regime (design 5.4, gated on WS-F step 7) and FROM-less
+  metadata.
 
 **Done:** every remaining WS-E design obligation is reconciled to implementation
 and an executable pin; temporal compatibility/repair documentation is shipped;
