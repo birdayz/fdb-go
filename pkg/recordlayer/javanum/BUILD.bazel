@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "javanum",
+    srcs = ["javanum.go"],
+    importpath = "fdb.dev/pkg/recordlayer/javanum",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "javanum_test",
+    srcs = ["javanum_test.go"],
+    embed = [":javanum"],
+)

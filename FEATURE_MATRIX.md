@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**389 scenarios · 3230 query/assertion cases** across 18 feature areas — 2833 supported, 103 unsupported-feature pins, 294 error-path pins.
+**390 scenarios · 3244 query/assertion cases** across 18 feature areas — 2847 supported, 103 unsupported-feature pins, 294 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 41 | 395 | 351 | 6 | 38 |
-| **Total** | **389** | **3230** | **2833** | **103** | **294** |
+| Other | 42 | 409 | 365 | 6 | 38 |
+| **Total** | **390** | **3244** | **2847** | **103** | **294** |
 
 ## Aggregates & GROUP BY
 
@@ -485,6 +485,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Scenario | Cases | Supported | Unsupported | Error-path | What it pins |
 |---|--:|--:|--:|--:|---|
 | `bare_col_with_agg` | 9 | 6 | 0 | 3 | SQL §7.10 GR1: when a SELECT list contains an aggregate function, |
+| `bound_parameter_bits` | 14 | 14 | 0 | 0 | a bound value is its own exact constant |
 | `bug_hunt_probes` | 13 | 9 | 1 | 3 | Throwaway probes targeting features likely to surface bugs: |
 | `cascades_plan_shapes` | 9 | 9 | 0 | 0 | Tests that verify the Cascades planner produces correct results for |
 | `collation_and_nan_pins` | 3 | 3 | 0 | 0 | documented Go-right divergences and |

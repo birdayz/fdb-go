@@ -91,7 +91,8 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (string,
 			}
 			expr.BindParameter(pp.GetStart(), v)
 			bound = append(bound, pp.GetStart())
-			fmt.Fprintf(&key, "\x00%s=%#v", v.Type(), constantPayload(v))
+			fmt.Fprintf(&key, "\x00%s=", v.Type())
+			writeBindingKey(&key, constantPayload(v))
 			return nil
 		}
 		for i := 0; i < n.GetChildCount(); i++ {
@@ -108,11 +109,60 @@ func bindStatementParameters(tree antlr.Tree, args []driver.NamedValue) (string,
 	return key.String(), release, nil
 }
 
+// constantPayload is a bound constant's carrier; a BOOLEAN binds as a
+// BooleanValue, whose payload is its bool (nil for NULL).
 func constantPayload(v values.Value) any {
-	if c, ok := v.(*values.ConstantValue); ok {
+	switch c := v.(type) {
+	case *values.ConstantValue:
 		return c.Value
+	case *values.BooleanValue:
+		if c.Value != nil {
+			return *c.Value
+		}
 	}
 	return nil
+}
+
+// writeBindingKey renders a bound carrier exactly for the plan-cache key: a
+// cached plan carries its bound constants, so values that render alike would
+// share one plan and run the first one's constant. Each carrier is tagged;
+// floats are their bits (NaN payloads and -0.0 distinct); strings and bytes
+// are length-prefixed, so NULL, an empty STRING and an empty BYTES differ and no text can
+// imitate a delimiter; an array is its count, then its elements.
+func writeBindingKey(b *strings.Builder, v any) {
+	switch x := v.(type) {
+	case nil:
+		b.WriteByte('N')
+	case bool:
+		if x {
+			b.WriteString("T")
+		} else {
+			b.WriteString("F")
+		}
+	case int64:
+		fmt.Fprintf(b, "L%d;", x)
+	case float64:
+		fmt.Fprintf(b, "D%016x", math.Float64bits(x))
+	case float32:
+		fmt.Fprintf(b, "R%08x", math.Float32bits(x))
+	case string:
+		fmt.Fprintf(b, "S%d:%s", len(x), x)
+	case []byte:
+		fmt.Fprintf(b, "B%d:%s", len(x), x)
+	case [16]byte:
+		fmt.Fprintf(b, "U%x", x)
+	case []any:
+		fmt.Fprintf(b, "A%d[", len(x))
+		for _, e := range x {
+			writeBindingKey(b, e)
+		}
+		b.WriteByte(']')
+	default:
+		// Every carrier parameterConstant produces is listed above; another
+		// is still keyed by its type and value, never dropped.
+		s := fmt.Sprintf("%T:%#v", x, x)
+		fmt.Fprintf(b, "?%d:%s", len(s), s)
+	}
 }
 
 // parameterConstant types a driver value as Java's Type.fromObject types a

@@ -166,7 +166,7 @@ func collect(dir string, reach *cascades.ReachabilityCollector) ([]Entry, Stats,
 			return nil, Stats{}, fmt.Errorf("load %s: %w", base, loadErr)
 		}
 		for i, t := range s.Tests {
-			args, argErr := statementArgs(&s.Tests[i])
+			args, argErr := StatementArgs(&s.Tests[i])
 			if argErr != nil {
 				return nil, Stats{}, fmt.Errorf("%s#%d: %w", base, i, argErr)
 			}
@@ -226,10 +226,10 @@ type Stats struct {
 // shared through planOne.
 type planFn func(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error)
 
-// statementArgs are a test's `args:`, numbered as database/sql numbers the
-// runner's positional arguments. The harness binds them, so a `?` plans with
+// StatementArgs are a test's `args:`, numbered as database/sql numbers the
+// runner's positional arguments. A harness binds them, so a `?` plans with
 // its driver value's type, exactly as the runner executes it.
-func statementArgs(t *yamsql.Test) ([]driver.NamedValue, error) {
+func StatementArgs(t *yamsql.Test) ([]driver.NamedValue, error) {
 	values, err := t.ArgValues()
 	if err != nil {
 		return nil, err

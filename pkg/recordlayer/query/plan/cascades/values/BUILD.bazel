@@ -124,6 +124,7 @@ go_library(
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer/javanum",
         "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/protoscope",
         "//pkg/recordlayer/query/plan/cascades/internal/fnv64",

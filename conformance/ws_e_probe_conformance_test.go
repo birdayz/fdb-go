@@ -1999,15 +1999,14 @@ var _ = Describe("WS-E target oracle v11", func() {
 // wsE11Pins is the measured outcome of every round-11 probe: the target's (4.14.2.0)
 // stored NaN bits per index entry, and Go's evaluator bits for the same
 // expressions on this tree (a FLOAT column reads back widened to float64, so its
-// Go pin is the widened bits). The target's CAST gives the canonical quiet NaNs,
-// 0x7ff8000000000000 and 0x7fc00000; Go's CAST to DOUBLE gives math.NaN()'s
-// 0x7ff8000000000001 (the PENDING divergence; step (6) makes it the target's, and
-// this pin flips with it). A NaN from a division is the hardware's, the negative
+// Go pin is the widened bits). Both engines' CASTs give the canonical quiet NaNs,
+// 0x7ff8000000000000 and 0x7fc00000 (Go's CAST parses with javanum since step (6);
+// it gave math.NaN()'s 0x7ff8000000000001 before). A NaN from a division is the hardware's, the negative
 // quiet NaN 0xfff8000000000000 on this machine, in both engines. Both engines
 // refuse a DOUBLE expression into the FLOAT column (22000): the assignment
 // lattice of 4.3, ported by RFC-257 WS-J v22 (values.CheckPromotionsTrie).
 var wsE11Pins = map[string]string{
-	"go_insert_cast_nan":        "7ff8000000000001 7ff8000000000000",
+	"go_insert_cast_nan":        "7ff8000000000000 7ff8000000000000",
 	"go_insert_div_nan":         "ERROR 22000: A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.: incompatible type: DOUBLE NULL cannot be promoted to FLOAT NULL",
 	"go_insert_float_div_nan":   "fff8000000000000 fff8000000000000",
 	"java_insert_cast_nan":      "OK 1",
@@ -2180,32 +2179,32 @@ var _ = Describe("WS-E target oracle v12", func() {
 // wsE12Pins is the measured outcome of every round-12 probe (captured from
 // /var/tmp/fdb-upgrade-recovery/wse12-cap1.log). The target's MIN and MAX of a column
 // holding the division's NaN store that NaN's own bits (fff8000000000000), Math.min and
-// Math.max returning the NaN operand; Go's store math.NaN()'s 7ff8000000000001. The
-// target's CAST is Double.parseDouble: a signed "NaN" (canonical bits either sign),
-// "Infinity" with a sign, the d/D/f/F suffixes, hex floats, and 1e400 as +Infinity are
-// accepted, and "nan", "inf", "infinity" and "1_000" refused; Go's strconv.ParseFloat
-// gives the reverse on every one of those, and math.NaN()'s bits for the NaNs it
-// accepts. Section 4.1(b) of ws-e-design.md ports both; these pins flip with it.
+// Math.max returning the NaN operand. The target's CAST is Double.parseDouble: a signed
+// "NaN" (canonical bits either sign), "Infinity" with a sign, the d/D/f/F suffixes, hex
+// floats, and 1e400 as +Infinity are accepted, and "nan", "inf", "infinity" and "1_000"
+// refused. Section 4.1(b) of ws-e-design.md ported both (javanum, javaMinF64): the Go
+// pins equal the target's. Before it Go's strconv.ParseFloat gave the reverse on each of
+// those spellings and Go's MIN/MAX stored math.NaN()'s 7ff8000000000001.
 var wsE12Pins = map[string]string{
 	"go_cast_00":          "OK 1",
-	"go_cast_01":          "ERROR 22F3H: Invalid cast operation Cannot cast string '-NaN' to DOUBLE: strconv.ParseFloat: parsing \"-NaN\": invalid syntax",
-	"go_cast_02":          "ERROR 22F3H: Invalid cast operation Cannot cast string '+NaN' to DOUBLE: strconv.ParseFloat: parsing \"+NaN\": invalid syntax",
-	"go_cast_03":          "OK 1",
-	"go_cast_04":          "OK 1",
+	"go_cast_01":          "OK 1",
+	"go_cast_02":          "OK 1",
+	"go_cast_03":          "ERROR 22F3H: Invalid cast operation Cannot cast string 'nan' to DOUBLE: For input string: \"nan\"",
+	"go_cast_04":          "ERROR 22F3H: Invalid cast operation Cannot cast string 'NAN' to DOUBLE: For input string: \"NAN\"",
 	"go_cast_05":          "OK 1",
 	"go_cast_06":          "OK 1",
 	"go_cast_07":          "OK 1",
-	"go_cast_08":          "OK 1",
-	"go_cast_09":          "OK 1",
-	"go_cast_10":          "ERROR 22F3H: Invalid cast operation Cannot cast string '1.5d' to DOUBLE: strconv.ParseFloat: parsing \"1.5d\": invalid syntax",
-	"go_cast_11":          "ERROR 22F3H: Invalid cast operation Cannot cast string '1.5D' to DOUBLE: strconv.ParseFloat: parsing \"1.5D\": invalid syntax",
-	"go_cast_12":          "ERROR 22F3H: Invalid cast operation Cannot cast string '1.5f' to DOUBLE: strconv.ParseFloat: parsing \"1.5f\": invalid syntax",
-	"go_cast_13":          "ERROR 22F3H: Invalid cast operation Cannot cast string '1.5F' to DOUBLE: strconv.ParseFloat: parsing \"1.5F\": invalid syntax",
+	"go_cast_08":          "ERROR 22F3H: Invalid cast operation Cannot cast string 'inf' to DOUBLE: For input string: \"inf\"",
+	"go_cast_09":          "ERROR 22F3H: Invalid cast operation Cannot cast string 'infinity' to DOUBLE: For input string: \"infinity\"",
+	"go_cast_10":          "OK 1",
+	"go_cast_11":          "OK 1",
+	"go_cast_12":          "OK 1",
+	"go_cast_13":          "OK 1",
 	"go_cast_14":          "OK 1",
 	"go_cast_15":          "OK 1",
 	"go_cast_16":          "OK 1",
-	"go_cast_17":          "OK 1",
-	"go_cast_18":          "ERROR 22F3H: Invalid cast operation Cannot cast string '1e400' to DOUBLE: strconv.ParseFloat: parsing \"1e400\": value out of range",
+	"go_cast_17":          "ERROR 22F3H: Invalid cast operation Cannot cast string '1_000' to DOUBLE: For input string: \"1_000\"",
+	"go_cast_18":          "OK 1",
 	"go_cast_19":          "OK 1",
 	"go_cast_20":          "OK 1",
 	"go_cast_21":          "OK 1",
@@ -2214,24 +2213,26 @@ var wsE12Pins = map[string]string{
 	"go_insert_min":       "OK 1",
 	"go_insert_one":       "OK 1",
 	"go_t_id1":            "fff8000000000000",
-	"go_t_id100":          "7ff8000000000001",
-	"go_t_id103":          "7ff8000000000001",
-	"go_t_id104":          "7ff8000000000001",
+	"go_t_id100":          "7ff8000000000000",
+	"go_t_id101":          "7ff8000000000000",
+	"go_t_id102":          "7ff8000000000000",
 	"go_t_id105":          "7ff0000000000000",
 	"go_t_id106":          "fff0000000000000",
 	"go_t_id107":          "7ff0000000000000",
-	"go_t_id108":          "7ff0000000000000",
-	"go_t_id109":          "7ff0000000000000",
+	"go_t_id110":          "3ff8000000000000",
+	"go_t_id111":          "3ff8000000000000",
+	"go_t_id112":          "3ff8000000000000",
+	"go_t_id113":          "3ff8000000000000",
 	"go_t_id114":          "3ff8000000000000",
 	"go_t_id115":          "4020000000000000",
 	"go_t_id116":          "4008000000000000",
-	"go_t_id117":          "408f400000000000",
+	"go_t_id118":          "7ff0000000000000",
 	"go_t_id119":          "0000000000000000",
 	"go_t_id120":          "3fe0000000000000",
 	"go_t_id121":          "4014000000000000",
 	"go_t_id2":            "3ff0000000000000",
-	"go_u_id10":           "7ff8000000000001",
-	"go_u_id11":           "7ff8000000000001",
+	"go_u_id10":           "fff8000000000000",
+	"go_u_id11":           "fff8000000000000",
 	"java_cast_00":        "OK 1",
 	"java_cast_01":        "OK 1",
 	"java_cast_02":        "OK 1",
@@ -2390,10 +2391,10 @@ func wseRequireNaNPinArch() {
 // Round v12, the NaN write divergence across the engines: a NaN Go's SQL CAST produces,
 // written by Go's record layer into a store the target created with a UNIQUE index on the
 // column, then the target's index probe for its own CAST NaN and the target's insert of
-// that NaN into the same UNIQUE index. Today Go's bits (7ff8000000000001) differ from the
-// target's (7ff8000000000000): the probe misses Go's row and the insert does not collide.
-// ws-e-design.md step (6) makes Go's CAST write the target's bits, and these pins flip:
-// the probe finds the Go-written row and the insert fails with 23505.
+// that NaN into the same UNIQUE index. Before ws-e-design.md step (6) Go's bits
+// (7ff8000000000001) differed from the target's (7ff8000000000000): the probe missed Go's
+// row and the insert did not collide. Go's CAST now writes the target's bits, so the probe
+// finds the Go-written row and the insert fails with 23505.
 var _ = Describe("WS-E target oracle v12 cross-engine NaN", func() {
 	It("records whether the target's index probe and UNIQUE index see a NaN Go's CAST wrote", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -2542,15 +2543,15 @@ var _ = Describe("WS-E target oracle v12 cross-engine NaN", func() {
 	})
 })
 
-// wsE12CrossPins is the measured outcome of the cross-engine NaN round (captured from
-// /var/tmp/fdb-upgrade-recovery/wse12x-cap1.log): Go's CAST wrote 7ff8000000000001, the
-// target's covering probe of T_D for its own NaN answers no rows, and the target's insert of
-// its NaN beside Go's row succeeds, leaving two NaN entries in the UNIQUE index.
+// wsE12CrossPins is the outcome of the cross-engine NaN round since step (6): Go's CAST
+// writes the target's 7ff8000000000000, the target's covering probe of T_D for its own NaN
+// answers Go's row, and the target's insert of its NaN beside it violates the UNIQUE index,
+// which keeps one NaN entry. (Captured before step (6), wse12x-cap1.log: Go wrote
+// 7ff8000000000001, the probe answered [], and the insert left two NaN entries.)
 var wsE12CrossPins = map[string]string{
-	"go_cast_nan_bits":              "7ff8000000000001",
-	"java_insert_nan_beside_go_row": "OK 1",
+	"go_cast_nan_bits":              "7ff8000000000000",
+	"java_insert_nan_beside_go_row": "ERROR 23505 RecordIndexUniquenessViolation Duplicate entry for unique index",
 	"java_probe_explain":            "COVERING(T_D [EQUALS CAST(@c9 AS DOUBLE)] -> [D: KEY:[0], ID: KEY:[2]]) | MAP (_.ID AS ID)",
-	"java_probe_rows":               "[]",
-	"t_d_id1":                       "7ff8000000000000",
-	"t_d_id2":                       "7ff8000000000001",
+	"java_probe_rows":               "[[2]]",
+	"t_d_id2":                       "7ff8000000000000",
 }

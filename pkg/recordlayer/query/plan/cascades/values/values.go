@@ -56,6 +56,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/pkg/recordlayer/javanum"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
@@ -4890,17 +4891,14 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 		case int64:
 			return float64(float32(val)), nil
 		case string:
-			// bitSize 32 rounds to binary32. ErrRange is NOT a failure here:
-			// Go reports binary32 overflow by returning ±Inf WITH an error,
-			// while Java's Float.parseFloat returns Infinity and throws only on
-			// malformed text (CastValue.java:201-205). Treating ErrRange as an
-			// invalid cast would reject `CAST('1e39' AS FLOAT)`, which Java
-			// accepts. The returned value is already the ±Inf Java produces.
-			f, err := strconv.ParseFloat(trimJavaWhitespace(val), 32)
-			if err != nil && !errors.Is(err, strconv.ErrRange) {
+			// Float.parseFloat (CastValue.java:201-205): Java's grammar, rounded
+			// once to binary32, an out-of-range magnitude ±Infinity or ±0, and
+			// Float.NaN's bits, which the record and the index key carry.
+			f, err := javanum.ParseFloat(val)
+			if err != nil {
 				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to FLOAT: %s", val, err)}
 			}
-			return f, nil
+			return float64(f), nil
 		case bool:
 			if val {
 				return float64(1), nil
@@ -4922,7 +4920,9 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 		case int64:
 			return float64(val), nil
 		case string:
-			f, err := strconv.ParseFloat(trimJavaWhitespace(val), 64)
+			// Double.parseDouble (CastValue.java:209-213): Java's grammar and
+			// Double.NaN's bits (Go's math.NaN() packs to another key).
+			f, err := javanum.ParseDouble(val)
 			if err != nil {
 				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast string '%s' to DOUBLE: %s", val, err)}
 			}

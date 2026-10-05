@@ -220,6 +220,7 @@ go_test(
         "one_final_member_test.go",
         "order_by_exact_metadata_test.go",
         "param_binding_test.go",
+        "param_cache_key_test.go",
         "plan_cache_key_test.go",
         "plan_cache_planner_bench_test.go",
         "plan_cache_scope_encoding_test.go",
@@ -513,6 +514,7 @@ go_test(
         "aggregate_merge_fixed_prefix_ordering_test.go",
         "template_routine_getters_test.go",
         "scan_type_test.go",
+        "param_cache_key_test.go",
     ],
     deps = [
         "//gen",

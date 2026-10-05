@@ -3631,23 +3631,6 @@ func executeAggregation(
 	return applySkipLimit(orElse, props.Skip, props.ReturnedRowLimit), nil
 }
 
-func toFloat64(v any) float64 {
-	switch n := v.(type) {
-	case int64:
-		return float64(n)
-	case float64:
-		return n
-	case int:
-		return float64(n)
-	case int32:
-		return float64(n)
-	case float32:
-		return float64(n)
-	default:
-		return math.NaN()
-	}
-}
-
 // aggKeyName delegates to the single naming authority
 // (expressions.AggregateKeyColumnName): the executor's emitted slot name and the
 // translator's baked ordinal must derive from ONE rule or they drift.

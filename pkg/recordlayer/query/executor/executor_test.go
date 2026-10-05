@@ -668,6 +668,47 @@ func TestQueryResult_FromStoredRecord_NilSafe(t *testing.T) {
 // total-order comparator. NaN PROPAGATES into both extremes (order-independent) and
 // -0.0 < +0.0. The old code used compareAny with native float </>, which left NaN
 // order-dependently ignored and -0.0/+0.0 first-seen-wins.
+// MIN and MAX are Math.min/Math.max line for line, so a NaN result is the NaN
+// OPERAND, bits included, in either arrival order (RFC-257 WS-E 5.3: the
+// target stores fff8000000000000 for MIN/MAX over 0.0/0.0's NaN, where Go once
+// stored math.NaN()'s 7ff8000000000001). FLOAT keeps a signaling payload: it is
+// never widened through a double.
+func TestAggMinMax_ReturnsTheNaNOperandsBits(t *testing.T) {
+	t.Parallel()
+	for _, bits := range []uint64{0xfff8000000000000, 0x7ff8000000000000, 0x7ff0000000000001, 0xfff00000deadbeef} {
+		nan := math.Float64frombits(bits)
+		for _, other := range []float64{1.0, math.Inf(1), math.Inf(-1), math.Copysign(0, -1)} {
+			for _, isMin := range []bool{true, false} {
+				for _, order := range [][2]float64{{nan, other}, {other, nan}} {
+					got := aggMinMax(aggMinMax(nil, order[0], isMin), order[1], isMin).(float64)
+					if math.Float64bits(got) != bits {
+						t.Errorf("min=%t over %v: %016x, want the NaN operand %016x", isMin, order, math.Float64bits(got), bits)
+					}
+				}
+			}
+		}
+	}
+	for _, bits := range []uint32{0xffc00000, 0x7fc00000, 0x7f800001} {
+		nan := math.Float32frombits(bits)
+		for _, isMin := range []bool{true, false} {
+			for _, order := range [][2]float32{{nan, 2}, {2, nan}} {
+				got := aggMinMax(aggMinMax(nil, order[0], isMin), order[1], isMin).(float32)
+				if math.Float32bits(got) != bits {
+					t.Errorf("float32 min=%t over %v: %08x, want the NaN operand %08x", isMin, order, math.Float32bits(got), bits)
+				}
+			}
+		}
+	}
+	// Two NaN operands: Java returns the first (`if (a != a) return a`).
+	a, b := math.Float64frombits(0xfff8000000000000), math.Float64frombits(0x7ff8000000000000)
+	if got := javaMinF64(a, b); math.Float64bits(got) != 0xfff8000000000000 {
+		t.Errorf("Math.min(NaN a, NaN b) = %016x, want a", math.Float64bits(got))
+	}
+	if got := javaMaxF64(b, a); math.Float64bits(got) != 0x7ff8000000000000 {
+		t.Errorf("Math.max(NaN b, NaN a) = %016x, want b", math.Float64bits(got))
+	}
+}
+
 func TestAggMinMax_FloatNaNAndSignedZero(t *testing.T) {
 	t.Parallel()
 	nan := math.NaN()
@@ -2822,49 +2863,21 @@ func TestMergeRows_ScalarOuter(t *testing.T) {
 	}
 }
 
-// --- toFloat64 unit tests ---
+// --- asFloat64 unit tests (the SUM/AVG operand conversion) ---
 
-func TestToFloat64_Int64(t *testing.T) {
+// Every numeric carrier widens exactly; anything else is refused, never
+// turned into a NaN that a SUM would then store (RFC-257 WS-E 5.3).
+func TestAsFloat64(t *testing.T) {
 	t.Parallel()
-	if v := toFloat64(int64(42)); v != 42.0 {
-		t.Fatalf("expected 42.0, got %v", v)
+	for in, want := range map[any]float64{int64(42): 42, 3.14: 3.14, int(7): 7, int32(100): 100, float32(0.5): 0.5} {
+		if v, ok := asFloat64(in); !ok || v != want {
+			t.Errorf("asFloat64(%#v) = %v, %v; want %v", in, v, ok, want)
+		}
 	}
-}
-
-func TestToFloat64_Float64(t *testing.T) {
-	t.Parallel()
-	if v := toFloat64(float64(3.14)); v != 3.14 {
-		t.Fatalf("expected 3.14, got %v", v)
-	}
-}
-
-func TestToFloat64_Int(t *testing.T) {
-	t.Parallel()
-	if v := toFloat64(int(7)); v != 7.0 {
-		t.Fatalf("expected 7.0, got %v", v)
-	}
-}
-
-func TestToFloat64_Int32(t *testing.T) {
-	t.Parallel()
-	if v := toFloat64(int32(100)); v != 100.0 {
-		t.Fatalf("expected 100.0, got %v", v)
-	}
-}
-
-func TestToFloat64_Unsupported(t *testing.T) {
-	t.Parallel()
-	v := toFloat64("hello")
-	if !math.IsNaN(v) {
-		t.Fatalf("expected NaN for string, got %v", v)
-	}
-}
-
-func TestToFloat64_Nil(t *testing.T) {
-	t.Parallel()
-	v := toFloat64(nil)
-	if !math.IsNaN(v) {
-		t.Fatalf("expected NaN for nil, got %v", v)
+	for _, in := range []any{"hello", nil, true} {
+		if v, ok := asFloat64(in); ok {
+			t.Errorf("asFloat64(%#v) = %v, accepted", in, v)
+		}
 	}
 }
 

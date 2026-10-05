@@ -48,8 +48,21 @@ Never mark a whole workstream complete because one of its subitems passed.
   supported; no legacy mixed-text pins or repair procedure. Full-lane copies
   (`sqldriver` param-rendering and temporal-comparand pins) are updated but
   were not run.
-- [ ] Complete immutable/bit-exact binding coverage, Java floating CAST/NaN bits,
-  and MIN/MAX operand-bit behavior.
+- [x] Bit-exact bindings and floating NaN bits: CAST(string AS DOUBLE/FLOAT) is
+  `javanum` (Java's grammar, single binary32 rounding, canonical NaN; replaces
+  recordlayer's private parser); MIN/MAX are `Math.min`/`Math.max` line for
+  line (NaN operand bits); the plan-cache key renders bound values exactly
+  (TRUE/FALSE shared a plan: wrong rows). Pins: `javanum_test` (+30 s fuzz),
+  `TestCastValue_StringToFloatingIsJavas`, `TestAggMinMax_ReturnsTheNaNOperandsBits`,
+  `param_cache_key_test.go` (red with the old key), `bound_parameter_bits.yaml`.
+  The Java-oracle pins (`ws_e_probe_conformance_test.go` v11/v12/cross) are
+  flipped to the target's outcomes but not yet run (full lane).
+- [ ] NaN equality over an index (design 5.3 "THE PORT"): the binder refuses a
+  NaN comparand (`scan_range_binding.go:35`, "exact indexed NaN equivalence is
+  unsupported") where Java probes. Port: the two NaN key ranges plus a key
+  filter for later components, below the continuation, for value-index and
+  primary-key scans; aggregate-index and vector-partition keep the refusal,
+  declared. Pins per caller and a resumed primary-key NaN scan.
 - [ ] Isolation: conflict-free index-state reads and DSN/SetOption options. The
   executor DML snapshot guard (`4f61e07b5`) and statement-class admission
   (`7287666da`) are already implemented.

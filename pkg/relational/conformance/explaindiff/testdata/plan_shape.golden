@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=389 queries=2937 dml=176 non_query=117 plan_errors=321 unexpected_errors=4
+# files=390 queries=2944 dml=176 non_query=124 plan_errors=321 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -2018,6 +2018,42 @@ plan:  Map(Map(Scan(LB), {_0: predicate, _1: _current.A#0}), {_0: _current._0#0}
 shape: RecordQueryMapPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryScanPlan
+=== bound_parameter_bits.yaml#5
+sql:   SELECT id, d FROM t WHERE id <= 5 ORDER BY id
+plan:  Map(Scan(T, [<>]), {ID: _current.ID#0, D: _current.D#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== bound_parameter_bits.yaml#6
+sql:   SELECT ? FROM t WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: NaN})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== bound_parameter_bits.yaml#7
+sql:   SELECT ? FROM t WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: NaN})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== bound_parameter_bits.yaml#8
+sql:   SELECT ? FROM t WHERE id = 1
+plan:  Map(Scan(T, [=]), {_0: -0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== bound_parameter_bits.yaml#9
+sql:   SELECT id FROM t WHERE id = 1 AND ?
+plan:  Map(Scan(T, [=]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== bound_parameter_bits.yaml#10
+sql:   SELECT id FROM t WHERE id = 1 AND ?
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== bound_parameter_bits.yaml#13
+sql:   SELECT id, s, b FROM t WHERE id >= 10 ORDER BY id
+plan:  Map(Scan(T, [<>]), {ID: _current.ID#0, S: _current.S#3, B: _current.B#4})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
 === bug_hunt_probes.yaml#0 expect-error=0AF00
 sql:   UPDATE t SET n = (SELECT MAX(n) FROM t) WHERE id = 1
 plan:  <PLAN-ERROR: 0AF00: subqueries are not supported in UPDATE ... SET>

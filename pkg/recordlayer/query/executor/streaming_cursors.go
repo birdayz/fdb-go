@@ -762,7 +762,11 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 				gs.allInt[i] = false
 				continue
 			}
-			num := toFloat64(val)
+			num, ok := asFloat64(val)
+			if !ok {
+				// Unreachable after isNumeric; an error, never a NaN, if not.
+				return fmt.Errorf("cannot aggregate non-numeric value of type %T", val)
+			}
 			// Java NumericAccumulator seeds from the first non-NULL partial.
 			// Adding it to an implicit +0 would change SUM/AVG(-0) to +0.
 			// The non-NULL count also preserves this distinction on resume.
@@ -881,17 +885,16 @@ func aggMinMax(acc, val any, isMin bool) any {
 	case aIsF32 || vIsF32:
 		// FLOAT lane (Java MIN_F/MAX_F over the float-promoted operand). An int
 		// side converts directly to float32 (Java's (float) promotion, one
-		// rounding); the min/max itself computes in float64 — exact for float32
-		// operands — and narrows back to one of them (or canonical NaN).
+		// rounding); the result is one of the two operands, bits included.
 		a, aok := asFloat32(acc)
 		v, vok := asFloat32(val)
 		if !aok || !vok {
 			return acc // contract guard
 		}
 		if isMin {
-			return float32(javaMinF64(float64(a), float64(v)))
+			return javaMinF32(a, v)
 		}
-		return float32(javaMaxF64(float64(a), float64(v)))
+		return javaMaxF32(a, v)
 	}
 	// Integer numerics (int64/int32/int). Row integers arrive int64 via the
 	// tupleElementToRowValue canonicalization; int32/int are accepted for
@@ -2209,18 +2212,66 @@ var (
 // check the infinity special cases FIRST, so Min(-Inf, NaN) = -Inf and
 // Max(+Inf, NaN) = +Inf — an evaluated-aggregate divergence from Java
 // whenever a set contains both an infinity and a NaN.
+//
+// They are Math.min(double, double) and Math.max line for line (JDK
+// Math.java), so a NaN
+// result is the NaN OPERAND with its own bits (Java's `if (a != a) return a`,
+// and `a <= b` is false for a NaN b, which returns b): a MIN over the NaN of
+// 0.0/0.0 stores 0xfff8000000000000 in both engines, never Go's
+// math.NaN(). -0.0 is below +0.0.
 func javaMinF64(a, b float64) float64 {
-	if math.IsNaN(a) || math.IsNaN(b) {
-		return math.NaN()
+	if a != a {
+		return a
 	}
-	return math.Min(a, b)
+	if a == 0 && b == 0 && math.Float64bits(b) == 1<<63 {
+		return b
+	}
+	if a <= b {
+		return a
+	}
+	return b
 }
 
 func javaMaxF64(a, b float64) float64 {
-	if math.IsNaN(a) || math.IsNaN(b) {
-		return math.NaN()
+	if a != a {
+		return a
 	}
-	return math.Max(a, b)
+	if a == 0 && b == 0 && math.Float64bits(a) == 1<<63 {
+		return b
+	}
+	if a >= b {
+		return a
+	}
+	return b
+}
+
+// javaMinF32 and javaMaxF32 are Math.min(float, float) and Math.max: the same
+// algorithm in binary32, so a FLOAT NaN operand keeps its exact bits (a trip
+// through float64 would quiet a signaling payload).
+func javaMinF32(a, b float32) float32 {
+	if a != a {
+		return a
+	}
+	if a == 0 && b == 0 && math.Float32bits(b) == 1<<31 {
+		return b
+	}
+	if a <= b {
+		return a
+	}
+	return b
+}
+
+func javaMaxF32(a, b float32) float32 {
+	if a != a {
+		return a
+	}
+	if a == 0 && b == 0 && math.Float32bits(a) == 1<<31 {
+		return b
+	}
+	if a >= b {
+		return a
+	}
+	return b
 }
 
 // BitmapAggregatePositionError rejects a negative bit or a result exceeding

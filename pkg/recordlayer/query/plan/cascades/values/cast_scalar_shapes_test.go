@@ -1,6 +1,7 @@
 package values
 
 import (
+	"errors"
 	"math"
 	"reflect"
 	"testing"
@@ -134,4 +135,40 @@ func FuzzCastValue_ScalarInvariants(f *testing.F) {
 			}
 		}
 	})
+}
+
+// CAST of a string to DOUBLE and FLOAT is Double.parseDouble and
+// Float.parseFloat (CastValue.java STRING_TO_DOUBLE/FLOAT): Java's grammar,
+// its NaN bits (the record and the index key carry them), and its message.
+func TestCastValue_StringToFloatingIsJavas(t *testing.T) {
+	t.Parallel()
+	cast := func(s string, target Type) (any, error) {
+		return NewCastValue(&ConstantValue{Value: s, Typ: NotNullString}, target).Evaluate(nil)
+	}
+	for _, s := range []string{"NaN", "-NaN", " +NaN "} {
+		for _, target := range []Type{NullableDouble, NullableFloat} {
+			got, err := cast(s, target)
+			if err != nil || math.Float64bits(got.(float64)) != 0x7ff8000000000000 {
+				t.Errorf("CAST(%q AS %s) = %v, %v; want the bits 7ff8000000000000", s, target, got, err)
+			}
+		}
+	}
+	for s, want := range map[string]float64{"1.5d": 1.5, "+Infinity": math.Inf(1), "1e400": math.Inf(1), "0x1.8p1": 3} {
+		if got, err := cast(s, NullableDouble); err != nil || got != want {
+			t.Errorf("CAST(%q AS DOUBLE) = %v, %v; want %v", s, got, err, want)
+		}
+	}
+	for _, s := range []string{"nan", "inf", "infinity", "1_000"} {
+		_, err := cast(s, NullableDouble)
+		var invalid *InvalidCastError
+		want := "Cannot cast string '" + s + "' to DOUBLE: For input string: \"" + s + "\""
+		if !errors.As(err, &invalid) || invalid.Message != want {
+			t.Errorf("CAST(%q AS DOUBLE) err = %v; want InvalidCastError %q", s, err, want)
+		}
+	}
+	// FLOAT rounds once, directly to binary32.
+	got, err := cast("1.0000000596046447753914720329472543003390683225006796419620513916015625", NullableFloat)
+	if err != nil || float32(got.(float64)) != math.Float32frombits(0x3f800001) {
+		t.Errorf("CAST(1 + 2^-24 + 2^-70 AS FLOAT) = %v, %v; want 1 + 2^-23", got, err)
+	}
 }
