@@ -105,12 +105,12 @@ func foldPredicateWithRanges(p *PredicateWithValueAndRanges) QueryPredicate {
 		return nil
 	}
 	if len(comps) == 1 {
-		return foldSingleComparison(p.value, comps[0])
+		return FoldComparisonMaybe(p.value, comps[0])
 	}
 	combined := TriTrue
 	unknown := false
 	for _, c := range comps {
-		folded := foldSingleComparison(p.value, c)
+		folded := FoldComparisonMaybe(p.value, c)
 		cp, ok := folded.(*ConstantPredicate)
 		if !ok {
 			unknown = true
@@ -127,7 +127,13 @@ func foldPredicateWithRanges(p *PredicateWithValueAndRanges) QueryPredicate {
 	return &ConstantPredicate{Value: combined}
 }
 
-func foldSingleComparison(lhsValue values.Value, comp Comparison) QueryPredicate {
+// FoldComparisonMaybe is Java's ConstantPredicateFoldingUtil.foldComparisonMaybe:
+// the constant a comparison of lhsValue folds to over EFFECTIVE constants, or
+// nil when it does not fold. IS [NOT] NULL is decided by a NULL or a NOT NULL
+// operand; a binary comparison with a NULL side is NULL; EQUALS and NOT_EQUALS
+// over two known literals (TRUE, FALSE, NULL) compare them; anything else,
+// including a comparison of two non-boolean literals, does not fold.
+func FoldComparisonMaybe(lhsValue values.Value, comp Comparison) QueryPredicate {
 	lhs := effectiveConstant(lhsValue)
 
 	if comp.Type == ComparisonIsNull {

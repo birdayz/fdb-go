@@ -50,6 +50,7 @@ func productionRuleSets() map[string][]any {
 		"DefaultImplementationRules":   anySlice(DefaultImplementationRules()),
 		"DefaultSimplifyRules":         anySlice(DefaultSimplifyRules()),
 		"NormalizationRules":           anySlice(NormalizationRules()),
+		"ConstantFoldingRules":         anySlice(constantFoldingRules()),
 		"RewritingImplementationRules": anySlice(RewritingImplementationRules()),
 	}
 }

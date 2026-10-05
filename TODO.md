@@ -139,12 +139,31 @@ Never mark a whole workstream complete because one of its subitems passed.
       value is not folded. Go keeps `NOT x` as a predicate value, which the
       simplifier does not enter (`coalesce_not_cast_null_head_where` is
       excluded from the yaml with that note).
-  - Still open: (c) ConstantFoldingRuleSet over the whole conjunction and
-    `rejectsNull` as `foldPredicateAtNull`; (e) the
-    NULL mapping; (f) `EffectiveConstant`; the deletion of the Go-only
-    driver and the `EvaluateConstant` arms of `SimplifyValue`; (g) the
-    REWRITING cost model rungs; the constant-evaluation census; and (j) the
-    oracle rows as Go assertions.
+  - (c), first half: Java's ConstantFoldingRuleSet is ported as
+    `constantFoldingRules` (`rule_constant_folding.go`): the default predicate
+    rules, `ValuePredicateSimplificationRule` (the leaves' PREDICATE value set,
+    with the ranges and multi-constraint folds) and
+    `ConstantFoldingValuePredicateRule` over effective constants
+    (`predicates.FoldComparisonMaybe`, Java's `foldComparisonMaybe`; Go's
+    boolean ValuePredicate folds as `value = TRUE`). Both of Java's consumers
+    run it: QueryPredicateSimplificationRule over the whole conjunction, and
+    `foldPredicateAtNull`, which no longer runs the Go-only
+    `DefaultSimplifyRules` (EvaluateConstant comparison folds, NOT over a
+    constant). No corpus plan moved; sqldriver, factorycorpus and javacorpus
+    pass.
+  - Still open: (c), second half, the deletion of `DefaultSimplifyRules`,
+    `NormalizationRules` and the rules only they register (AndFlatten,
+    OrFlatten, AndDedup, OrDedup, ComparisonConstantSimplify,
+    ValuePredicateConstantFold), now without a production caller; about 55
+    test references re-pinned to Java's set, where `5 = 5` does not fold
+    (`expr` walk/fullstack tests, the simplify fuzzers, `simplifier_test.go`).
+    `NotConstantSimplifyRule` stays for the translator's EXISTS fold. (e) the
+    NULL mapping and the null-strict collapse in both value sets (then
+    `substituteAndCollapse` reduces to the substitution); (f) `effectiveConstant`
+    is already Java's three shapes, the Object overload has no Go caller (Go
+    comparands are Values); the `EvaluateConstant` arms of `SimplifyValue`;
+    (g) the REWRITING cost model rungs; the constant-evaluation census; and (j)
+    the oracle rows as Go assertions.
   Done: LOG_QUERY (statement and connection) sets `PlanGenerationInfo.LogQuery`
   (`TestPlanLogging_LogQueryFlag`). Literal decoding and the decorated-literal
   refusals were already implemented and now have a fast-lane pin
