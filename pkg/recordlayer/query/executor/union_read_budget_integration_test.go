@@ -334,7 +334,7 @@ func TestIntegration_PermutedAggregateRepairStreamingMode(t *testing.T) {
 				props.DefaultCursorStreamingMode = tc.inherited
 				scanProps := recordlayer.NewScanProperties(props).WithStreamingMode(tc.effective)
 				cursor, err := newPermutedAggregateIndexCursor(s, idx, recordlayer.TupleRangeAll, nil, scanProps, 1, 0,
-					exactTestRowType(values.Field{Name: "price", FieldType: values.NullableLong}, values.Field{Name: "minimum", FieldType: values.NullableLong}))
+					exactTestRowType(values.Field{Name: "price", FieldType: values.NullableLong}, values.Field{Name: "minimum", FieldType: values.NullableLong}), nil)
 				if err != nil {
 					return nil, err
 				}

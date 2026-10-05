@@ -292,7 +292,10 @@ var specimens = map[string]specimen{
 				idx, "T", finalizeRowType("AggregateResult"), "COUNT"))
 			return p, map[string]*values.RecordConstructorValue{"indexPlan": s}
 		},
-		allow: map[string]string{"resultValue": resultValueIsMinted},
+		allow: map[string]string{
+			"resultValue": resultValueIsMinted,
+			"entryReader": "its entry leaves are read by the aggregate cursor against the scanned entry, never evaluated as a record constructor, so nothing in it is stamped",
+		},
 	},
 
 	"RecordQueryCoveringIndexPlan": {

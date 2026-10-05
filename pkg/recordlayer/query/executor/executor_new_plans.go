@@ -144,6 +144,11 @@ func executeAggregateIndexScan(
 		}
 	}
 
+	readerLeaves, err := aggregateReaderLeaves(p.GetEntryReader(), posType)
+	if err != nil {
+		return nil, fmt.Errorf("executor: aggregate index %q: %w", idxPlan.GetIndexName(), err)
+	}
+
 	// PERMUTED_MIN/MAX indexes keep the current extremum per group in the
 	// SECONDARY (permuted) subspace, not the primary VALUE tree; the aggregate
 	// value lives inside the entry KEY, not entry.Value. Scan BY_GROUP — the same
@@ -169,6 +174,7 @@ func executeAggregateIndexScan(
 					len(groupCols),
 					physicalGroupingPrefixCount,
 					posType,
+					readerLeaves,
 				)
 			},
 		)
@@ -205,6 +211,7 @@ func executeAggregateIndexScan(
 		inner:     indexCursor,
 		groupCols: groupCols,
 		posType:   posType,
+		reader:    readerLeaves,
 		// RFC-209 §5.3(a): the plan decides, the cursor obeys.
 		liveGroupsOnly: p.IsLiveGroupsOnly(),
 		// Stamped at mint time so the output boundary checks the row instead of
@@ -242,6 +249,40 @@ func (e *invalidPermutedAggregateScanError) Error() string {
 		e.physicalGroupingPrefixCount,
 		e.groupingCount,
 	)
+}
+
+// aggregateReaderLeaves checks the plan's entry reader against the row it
+// fills: one entry leaf per field, each of the field's type. A plan without a
+// reader gets nil and its cursor decodes the layout itself.
+func aggregateReaderLeaves(reader *values.RecordConstructorValue, posType *values.RecordType) ([]*values.IndexEntryObjectValue, error) {
+	if reader == nil {
+		return nil, nil
+	}
+	if len(reader.Fields) != len(posType.Fields) {
+		return nil, fmt.Errorf("entry reader has %d fields, the result row %d", len(reader.Fields), len(posType.Fields))
+	}
+	leaves := make([]*values.IndexEntryObjectValue, len(reader.Fields))
+	for i, field := range reader.Fields {
+		leaf, ok := field.Value.(*values.IndexEntryObjectValue)
+		if !ok || !leaf.Type().Equals(posType.Fields[i].FieldType) {
+			return nil, fmt.Errorf("entry reader field %d (%s) does not read the result's %s",
+				i, values.ExplainValue(field.Value), posType.Fields[i].FieldType)
+		}
+		leaves[i] = leaf
+	}
+	return leaves, nil
+}
+
+// readAggregateEntry fills slots from the reader's leaves.
+func readAggregateEntry(slots []any, leaves []*values.IndexEntryObjectValue, entry *recordlayer.IndexEntry) error {
+	for i, leaf := range leaves {
+		value, err := leaf.ReadTuples(entry.Key, entry.Value)
+		if err != nil {
+			return fmt.Errorf("executor: aggregate entry field %d: %w", i, err)
+		}
+		slots[i] = value
+	}
+	return nil
 }
 
 func permutedAggregateGroupingLayout(idx *recordlayer.Index) (groupingCount, physicalPrefixCount int, err error) {
@@ -293,6 +334,7 @@ func newPermutedAggregateIndexCursor(
 	groupCount int,
 	physicalGroupingPrefixCount int,
 	posType *values.RecordType,
+	reader []*values.IndexEntryObjectValue,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)
 	if !ok {
@@ -311,6 +353,7 @@ func newPermutedAggregateIndexCursor(
 		valueStart: physicalGroupingPrefixCount,
 		valueEnd:   totalSize - (gke.GetGroupingCount() - physicalGroupingPrefixCount),
 		posType:    posType,
+		reader:     reader,
 		// The MIN flavour needs the stored extremum repaired when it is NULL —
 		// see recordlayer.PermutedMinIgnoringNulls. The ordinary subspace's
 		// value span is stated in ORIGINAL column order, which is where the
@@ -334,7 +377,9 @@ type permutedAggregateIndexCursor struct {
 	valueStart int
 	valueEnd   int
 	posType    *values.RecordType
-	closed     bool
+	// reader is the plan's entry reader, when it carries one.
+	reader []*values.IndexEntryObjectValue
+	closed bool
 
 	// The MIN null repair. store/index/scanProps are what the repair reads
 	// with; ordinaryValueFrom/To bound the aggregated columns in the ORDINARY
@@ -366,6 +411,11 @@ func (c *permutedAggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.
 
 	key := result.GetValue().Key
 	slots := make([]any, len(c.posType.Fields))
+	if c.reader != nil {
+		if err := readAggregateEntry(slots, c.reader, result.GetValue()); err != nil {
+			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+		}
+	}
 
 	// Grouping key in original order: the first valueStart columns come straight
 	// from the key; the remaining grouping columns are the permuted suffix, which
@@ -385,7 +435,7 @@ func (c *permutedAggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.
 			continue
 		}
 		groupKey = append(groupKey, key[ki])
-		if i < len(slots) {
+		if c.reader == nil && i < len(slots) {
 			slots[i] = tupleElementToRowValue(key[ki])
 		}
 	}
@@ -408,8 +458,10 @@ func (c *permutedAggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.
 			if len(repaired) > 0 {
 				extremum = repaired[0]
 			}
+			slots[aggOrd] = tupleElementToRowValue(extremum)
+		} else if c.reader == nil {
+			slots[aggOrd] = tupleElementToRowValue(extremum)
 		}
-		slots[aggOrd] = tupleElementToRowValue(extremum)
 	}
 
 	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots}}
@@ -429,6 +481,8 @@ type aggregateIndexCursor struct {
 	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
 	groupCols []string
 	posType   *values.RecordType
+	// reader is the plan's entry reader, when it carries one.
+	reader []*values.IndexEntryObjectValue
 	// liveGroupsOnly drops entries whose stored aggregate is zero. Set only for
 	// a grouped COUNT(*) scan, where the stored value is the group's row count
 	// and a zero can therefore only be the residue of a vacated group (the
@@ -474,6 +528,13 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 	// from the index entry). Slot order matches c.posType: group cols then the
 	// aggregate column.
 	slots := make([]any, len(c.posType.Fields))
+	if c.reader != nil {
+		if err := readAggregateEntry(slots, c.reader, entry); err != nil {
+			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+		}
+		qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots, Layout: c.layout}}
+		return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
+	}
 
 	for i := range c.groupCols {
 		if i < len(entry.Key) {

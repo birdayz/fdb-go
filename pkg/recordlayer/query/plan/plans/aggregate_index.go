@@ -100,6 +100,12 @@ type RecordQueryAggregateIndexPlan struct {
 	// plan's match candidate; known is false for a plan built without one.
 	candidateGroupingCount int
 	candidateGroupingKnown bool
+
+	// entryReader reads an entry into the result row
+	// (AggregateIndexMatchCandidate.createIndexEntryToRecordValue). A pure
+	// function of the index and result type, so it stays out of identity,
+	// explain and execution salt; without one the cursor decodes the layout.
+	entryReader *values.RecordConstructorValue
 	// resultValue is the stable per-instance QuantifiedObjectValue standing for
 	// the rows this leaf emits — minted once at construction, returned by
 	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
@@ -255,6 +261,21 @@ func (p *RecordQueryAggregateIndexPlan) WithCandidateGroupingCount(n int) *Recor
 	cp.candidateGroupingCount = n
 	cp.candidateGroupingKnown = true
 	return &cp
+}
+
+// WithEntryReader attaches the reader the cursor builds each row with.
+func (p *RecordQueryAggregateIndexPlan) WithEntryReader(reader *values.RecordConstructorValue) *RecordQueryAggregateIndexPlan {
+	cp := *p
+	cp.entryReader = reader
+	return &cp
+}
+
+// GetEntryReader is the reader of an entry into the result row, or nil.
+func (p *RecordQueryAggregateIndexPlan) GetEntryReader() *values.RecordConstructorValue {
+	if p == nil {
+		return nil
+	}
+	return p.entryReader
 }
 
 // IsLiveGroupsOnly reports whether the scan drops zero-valued entries.
