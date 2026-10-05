@@ -207,6 +207,7 @@ go_test(
         "phase_root_translation_test.go",
         "physical_layout_carriage_test.go",
         "plan_serialization_test.go",
+        "plan_wire_numbering_test.go",
         "produces_source_test.go",
         "projection_duplicate_name_test.go",
         "projection_namer_nested_collapse_test.go",

@@ -13,12 +13,13 @@ import (
 // TupleSource enumerates the two tuple-bearing fields of an FDB
 // IndexEntry — the index KEY (primary scan tuple) or the index
 // VALUE (associated payload tuple). Mirrors Java's
-// `IndexKeyValueToPartialRecord.TupleSource`.
+// `IndexKeyValueToPartialRecord.TupleSource`, numbered as its proto
+// (PTupleSource), so the zero value is no source.
 type TupleSource int
 
 const (
 	// TupleSourceKey selects the index entry's KEY tuple.
-	TupleSourceKey TupleSource = iota
+	TupleSourceKey TupleSource = iota + 1
 	// TupleSourceValue selects the index entry's VALUE tuple.
 	TupleSourceValue
 	// TupleSourceOther reads the VALUE tuple, as every non-KEY source does
