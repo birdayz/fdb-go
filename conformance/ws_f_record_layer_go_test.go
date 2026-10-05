@@ -3,6 +3,7 @@ package conformance_test
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -224,6 +225,24 @@ func (d wsfIndexDef) IndexRootKeyExpression() *gen.KeyExpression {
 	return d.root.ToKeyExpression()
 }
 func (d wsfIndexDef) IndexKeyComponentTypes() []values.Type { return d.types(d.columns) }
+
+// IndexPrimaryKeyEntryOrdinals places each primary-key column in the entry key
+// after the index's own columns, where Index.trimPrimaryKey leaves it, or -1 for
+// one the index key already holds (embedded's metadataIndexDef derives the same
+// from the index). Without it the covering record omits the primary key.
+func (d wsfIndexDef) IndexPrimaryKeyEntryOrdinals() []int {
+	out := make([]int, len(d.primaryKey))
+	next := len(d.columns)
+	for i, column := range d.primaryKey {
+		out[i] = -1
+		if !slices.Contains(d.columns, column) {
+			out[i] = next
+			next++
+		}
+	}
+	return out
+}
+
 func (d wsfIndexDef) IndexPrimaryKeyComponentTypes() []values.Type {
 	return d.types(d.primaryKey)
 }

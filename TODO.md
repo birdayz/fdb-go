@@ -234,10 +234,18 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     `Fetch(InUnion(COVERING))` and leaves `wsfOpenUntil`. With the in-join
     disabled, `ORDER BY col1` is the same shape
     (`TestInUnion_MemoizesThePartitionWhole`). No corpus plan moved.
-  - The record-layer `w8_rl_default_in2_order_by_pk` still runs its in-union
-    over the fetching scan; the cause is not located.
-  Still open: items 9 and 10, the `w8_rl` fetch placement, and the DESC tie
-  row's cause.
+  - The record-layer `w8_rl_default_in2_order_by_pk` is now
+    `Fetch(InUnion(COVERING))` too, and it leaves `wsfOpenUntil`. The oracle's
+    Go index definition now states the primary key's entry positions, as
+    embedded's metadataIndexDef does; without them the covering record
+    omitted `order_id`. Predicted from the planner alone; the full lane has
+    not run.
+  Item 9's matcher is already Java's: `InComparisonToExplodeRule.onSelect`
+  rewrites a select holding the IN, and the `w8_rl` in-joins plan. The
+  one-value row `w8_rl_default_in1_order_by_price` is Go's single-element
+  collapse, which WS-E section 4 step (5) deletes, so it is reassigned there.
+  Still open: item 10 (the two-source in-union, WS-E section 4) and the DESC
+  tie row's cause (needs the W6 step 1 observer).
 - [ ] Reconcile F-6/F-7b with RFC-191's existing `Fetch(InJoin)` ruling; see
   `DIVERGENCES.md` “Plan choice: an ordered IN over a non-covering index”.
 - [ ] RANK-index match-candidate gap and quoted dotted identifier GROUP BY/order
