@@ -234,7 +234,8 @@ func (g *cascadesGenerator) planSelect(ctx context.Context, sel antlrgen.ISelect
 
 	// Explain-only mode: no FDB available, produce logical plan text only.
 	// Used by NewExplainOnlyGenerator / NewExplainOnlyGeneratorWithSchema.
-	if c.sess == nil || c.sess.DB == nil {
+	// A stored-query warm-up has no FDB either, but plans for real.
+	if (c.sess == nil || c.sess.DB == nil) && !c.offlineAllIndexesReadable {
 		return g.planSelectExplainOnly(sel, q)
 	}
 
@@ -376,6 +377,9 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, stateErr
 	}
 	popts.config.ReadableIndexes = readableIndexesFrom(md, indexStateSnapshot)
+	if g.c.offlineAllIndexesReadable {
+		popts.config.ReadableIndexes = cascades.AllIndexesReadable()
+	}
 	// A cross-row uniqueness proof is a statement about an INSTANT, so it only
 	// licenses anything when the WHOLE result comes from one read version.
 	// fetchPage routes on exactly this condition: with an explicit transaction
@@ -4812,15 +4816,23 @@ const defaultEmbeddedTemplate = "S"
 // the same cached schema the plan's metadata comes from (cachedMetaData). With
 // no session schema, or none cached (an explain-only generator without
 // metadata), it is defaultEmbeddedTemplate.
-// planCacheKey is a statement's plan-cache query key: the verbatim scope
-// (database, schema, metadata version, planner options), the transaction's
-// temporary functions (Java's transaction-bound metadata in QueryCacheKey),
-// and the token-rendered text. cacheable is false when the temporary
-// functions cannot be keyed.
+// planCacheKey is a statement's plan-cache query key, Java's QueryCacheKey
+// under the template's primary entry: the template version, the planner
+// options (the readable-index view included, read from this store before the
+// key is built), the transaction's temporary functions (Java's
+// transaction-bound metadata) and the token-rendered text. Every schema of one
+// template shares a plan, as in Java. A plan that ranked on this store's
+// collected statistics (PLANNER_STATISTICS) is the exception and stays keyed
+// to its database and schema. cacheable is false when the temporary functions
+// cannot be keyed.
 func (g *cascadesGenerator) planCacheKey(md *recordlayer.RecordMetaData, popts plannerOptions, text string) (cacheKey, bool) {
 	temp, cacheable := g.c.activeTx.planCacheComponent()
+	dbPath, schema := "", ""
+	if popts.useCollectedStatistics {
+		dbPath, schema = g.c.sess.DBPath, g.c.sess.Schema
+	}
 	var scope strings.Builder
-	scope.WriteString(planCacheScope(g.c.sess.DBPath, g.c.sess.Schema, md.Version(), popts.cacheKeyPart()))
+	scope.WriteString(planCacheScope(dbPath, schema, md.Version(), popts.cacheKeyPart()))
 	writeLengthPrefixed(&scope, temp)
 	return cacheKey{scope: scope.String(), sql: text}, cacheable
 }

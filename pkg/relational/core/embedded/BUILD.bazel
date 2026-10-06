@@ -45,6 +45,7 @@ go_library(
         "statement_options.go",
         "statistics_reader.go",
         "stmt.go",
+        "stored_query_warm_up.go",
         "subquery_clause.go",
         "subquery_walk.go",
         "system_rows.go",
@@ -532,6 +533,7 @@ go_test(
         "relational_plan_cache.go",
         "relational_plan_cache_test.go",
         "domain_registration_test.go",
+        "stored_query_warm_up.go",
     ],
     deps = [
         "//gen",

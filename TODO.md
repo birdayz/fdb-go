@@ -784,7 +784,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 - [x] CallSiteArguments, typed options and row-number encapsulation (`781468430`);
   macro catalog bytes/named calls and metadata getters have existing Java pins.
-- [ ] Engine-wide plan cache keyed by schema template, matching Java's
+- [x] Engine-wide plan cache keyed by schema template, matching Java's
   RelationalPlanCache; stored-query startup warming, invalidation, timing and
   counters. The existing per-connection cache does not satisfy this obligation.
   Done: `RelationalPlanCache`, one per driver connector, shared by every
@@ -800,8 +800,19 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   reset keeps the shared cache; PLAN_CACHE_* sizes/TTLs are DSN parameters;
   the corpus `check_cache` pass runs (Java's EmbeddedConfig one-hour TTLs,
   checks shuffled after the executions, +1 tertiary hit required; the
-  check-cache skip class is emptied). Open: stored-query warm-up (needs
-  per-template keys) and cache timing events.
+  check-cache skip class is emptied). Per-template keys and the stored-query
+  warm-up DONE (2026-10-06): the query key drops database and schema (kept
+  only for a PLANNER_STATISTICS plan), so a template's schemas share plans
+  as in Java; `WarmStoredQueries` ports OfflineStoredQueriesProcessor (catalog
+  read, offline planning with every index readable, DECLAREd functions
+  declared first, failures logged and counted) and runs at the connector's
+  start (`TestFDB_StoredQueriesWarmThePlanCache`: a stored query's first
+  execution hits, an unstored one misses). Cache timing: Go reports a
+  plan's cache outcome and planning duration per statement
+  (PlanGenerationInfo.Cache / PlanningDuration); Java's per-phase
+  RelationalEvent timers (LEX_PARSE, CACHE_LOOKUP, OPTIMIZE_PLAN, ...) have
+  no Go registry to land in, declared with the warm-up's counts (DIVERGENCES
+  "Engine-wide plan cache").
 
 ## 5. WS-I — shared APIs and lifecycle
 

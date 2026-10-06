@@ -95,3 +95,55 @@ func TestFDB_PlanCacheKeysTemporaryFunctions(t *testing.T) {
 		t.Errorf("f1 = id < 30 served the id < 50 plan: %v, want []", got)
 	}
 }
+
+// TestFDB_StoredQueriesWarmThePlanCache pins Java's OfflineStoredQueriesProcessor:
+// a connector's start plans every template's stored queries into its plan
+// cache, so a stored query's first execution on any schema of the template is
+// a cache hit. A stored query with a DECLAREd function warms the plan of a
+// transaction that declares that function as the template stores it.
+func TestFDB_StoredQueriesWarmThePlanCache(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := setupErrorTestDB(t, "/FRL/testdb_stored_query_warm", "stored_query_warm",
+		"CREATE TABLE T (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX t_v ON T (v) "+
+			"CREATE STORED QUERY q1 AS SELECT id FROM T WHERE v = 7 "+
+			"CREATE STORED QUERY q2 DECLARE FUNCTION f(IN x BIGINT) AS (SELECT id FROM T WHERE id = x) AS SELECT * FROM f(1)")
+	var cache *embedded.RelationalPlanCache
+	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) { cache = ec.SharedPlanCache() })
+	if _, err := conn.ExecContext(ctx, "INSERT INTO T VALUES (1, 7), (2, 8)"); err != nil {
+		t.Fatal(err)
+	}
+	hits := cache.Counts().TertiaryHit
+	var id int64
+	if err := conn.QueryRowContext(ctx, "SELECT id FROM T WHERE v = 7").Scan(&id); err != nil || id != 1 {
+		t.Fatalf("q1 = %d, %v; want 1", id, err)
+	}
+	if got := cache.Counts().TertiaryHit; got != hits+1 {
+		t.Fatalf("q1's first execution hit the cache %d times, want 1: the warm-up did not plan it", got-hits)
+	}
+	// Control: a query no template stores misses on its first execution.
+	hits = cache.Counts().TertiaryHit
+	if err := conn.QueryRowContext(ctx, "SELECT id FROM T WHERE v = 8").Scan(&id); err != nil || id != 2 {
+		t.Fatalf("control = %d, %v; want 2", id, err)
+	}
+	if got := cache.Counts().TertiaryHit; got != hits {
+		t.Fatalf("an unstored query hit the cache on its first execution")
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		"CREATE TEMPORARY FUNCTION f(IN x BIGINT) ON COMMIT DROP FUNCTION AS SELECT id FROM T WHERE id = x"); err != nil {
+		t.Fatal(err)
+	}
+	hits = cache.Counts().TertiaryHit
+	if err := tx.QueryRowContext(ctx, "SELECT * FROM f(1)").Scan(&id); err != nil || id != 1 {
+		t.Fatalf("q2 = %d, %v; want 1", id, err)
+	}
+	if got := cache.Counts().TertiaryHit; got != hits+1 {
+		t.Fatalf("q2's first execution hit the cache %d times, want 1", got-hits)
+	}
+}

@@ -1667,19 +1667,22 @@ the same gates as a literal of that type. A bound constant is planned in, so
 the plan-cache key carries the bindings; Java instead caches one plan per
 parameter types.
 
-## Engine-wide plan cache: keyed per schema, not per template
+## Engine-wide plan cache: literals are part of the key
 
 Go's driver shares one `RelationalPlanCache` across every connection of a connector, with Java's
-three stages, sizes, TTLs and PLAN_CACHE_* counts (`embedded/relational_plan_cache.go`). Java's
-secondary key is the literal-extracted query, the planner configuration, the readable-index
-metadata and the template version, so every schema of one template shares a plan. Go plans
-literals and bound values in, so its secondary key is the token-rendered query with its literals
-and its tertiary key the bound values; and it keeps the database path and schema name, so a plan is
-shared by the connections on one schema, not by the schemas of a template: a plan's index use
-depends on that store's index states, which Go keys only when the state snapshot was read. For the
-same reason Java's stored-query warm-up (`OfflineStoredQueriesProcessor`, which plans each
-template's stored queries at startup with no store) is not ported: a warm-up plan has no schema to
-be keyed under. A DDL on any connection drops every shared plan (Java invalidates by key version);
+three stages, sizes, TTLs and PLAN_CACHE_* counts (`embedded/relational_plan_cache.go`). As in Java,
+the primary key is the template, and the query key holds the template version and the planner
+configuration with the store's readable-index view, so every schema of one template shares a plan.
+Java's secondary key is the literal-extracted query; Go plans literals and bound values in, so its
+secondary key is the token-rendered query with its literals and its tertiary key the bound values.
+A plan ranked on a store's collected statistics (PLANNER_STATISTICS, a Go extension) stays keyed to
+its database and schema. The stored-query warm-up is Java's (`WarmStoredQueries`: at the
+connector's start, every template's stored queries are planned with no store, every index
+readable); its OFFLINE_STORED_QUERIES_* counts are `Connector.StoredQueryWarmUp` and a log line, as
+Go has no relational metric registry. For the same reason Java's per-phase planning timers
+(RelationalEvent LEX_PARSE, CACHE_LOOKUP, CACHE_BYPASS, OPTIMIZE_PLAN, TOTAL_GET_PLAN_QUERY) are one
+record per statement in Go: the plan-cache outcome and the planning duration
+(`PlanGenerationInfo.Cache`, `PlanningDuration`). A DDL on any connection drops every shared plan (Java invalidates by key version);
 CREATE/DROP TEMPORARY FUNCTION does not, and neither does a session reset: the transaction's
 temporary functions are part of the key (as Java's transaction-bound metadata is), and a temporary
 function whose body holds a parameter makes its statements uncached.

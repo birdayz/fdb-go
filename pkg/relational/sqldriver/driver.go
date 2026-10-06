@@ -218,8 +218,16 @@ type Connector struct {
 	// connector shares (Java's RelationalPlanCache, one per engine), sized
 	// by the DSN's PLAN_CACHE_* options.
 	planCache *embedded.RelationalPlanCache
-	initErr   error
+	// warmUp is the stored-query warm-up's outcome (Java's
+	// OFFLINE_STORED_QUERIES_* counts).
+	warmUp  embedded.StoredQueryWarmUpCounts
+	initErr error
 }
+
+// StoredQueryWarmUp returns what the connector's start planned into its plan
+// cache: Java's OFFLINE_STORED_QUERIES_* counts. Zero before the first
+// connection.
+func (c *Connector) StoredQueryWarmUp() embedded.StoredQueryWarmUpCounts { return c.warmUp }
 
 // Connect opens a connection. Honors ctx.Done() for cancellation.
 // On first call, initialises the FDB database and catalog (idempotent).
@@ -246,7 +254,7 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 
 // initialize opens FDB and wires catalog + factory. The catalog Bootstrap
 // (Initialize) is deferred — it runs on the first DDL transaction, not here.
-func (c *Connector) initialize(_ context.Context) error {
+func (c *Connector) initialize(ctx context.Context) error {
 	clusterFile := c.dsn.Options["cluster_file"]
 	if clusterFile == "" {
 		clusterFile = os.Getenv(defaultClusterFileEnv)
@@ -309,6 +317,11 @@ func (c *Connector) initialize(_ context.Context) error {
 	c.cat = cat
 	c.factory = ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(cat, c.ks)
 	c.planCache = embedded.NewRelationalPlanCache(c.connOpts)
+	// Java's RecordLayerEngine.makeEngine: the engine's start plans every
+	// template's stored queries into the shared cache. Failures are logged,
+	// never returned.
+	c.warmUp = embedded.WarmStoredQueries(ctx, c.planCache,
+		embedded.StoredQueryTemplates(ctx, c.fdbDB, c.cat))
 	return nil
 }
 

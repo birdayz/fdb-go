@@ -73,6 +73,10 @@ type EmbeddedConnection struct {
 	// PlanCache on its first query. DDL invalidates it.
 	planCache queryPlanCache
 
+	// offlineAllIndexesReadable plans with every index readable and no store,
+	// as Java plans a stored query at warm-up (WarmStoredQueries).
+	offlineAllIndexesReadable bool
+
 	// planLogger receives one PlanGenerationInfo per Plan() call for
 	// operational debuggability (RFC-034). nil = silent (the default).
 	// The Go analog of Java's RelationalLoggingUtil; sampling and
