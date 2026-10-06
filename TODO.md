@@ -113,7 +113,10 @@ Never mark a whole workstream complete because one of its subitems passed.
   Go extension that needs an owner decision. Decided with F-7c (2026-10-06):
   the cost model keeps the sorted probes for a multi-value IN (DIVERGENCES.md
   "an IN ordered by a key no probe provides"), so the collapse stays; its
-  deletion would turn the one-value form into the same sorted probe.
+  deletion would turn the one-value form into the same sorted probe. It is
+  declared (DIVERGENCES.md "a one-value IN is an equality"), and the WS-F
+  row `w8_rl_default_in1_order_by_price` is `DIFF-PATH single-element-in`
+  (the oracle's acceptance now reads DIFF-PATH for record-layer rows).
 - [ ] Semantics/pins: scalar variadic promoted-child types, Value nullability
   census, target simplification regime, adjacent/decorated literals and lexer
   boundaries, FROM-less metadata, LOG_QUERY. Decimal normalization and structured
@@ -473,7 +476,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   Item 9's matcher is already Java's: `InComparisonToExplodeRule.onSelect`
   rewrites a select holding the IN, and the `w8_rl` in-joins plan. The
   one-value row `w8_rl_default_in1_order_by_price` is Go's single-element
-  collapse, which WS-E section 4 step (5) deletes, so it is reassigned there.
+  collapse, declared `DIFF-PATH single-element-in` (WS-E section 4).
   Still open: item 10 (the two-source in-union, WS-E section 4) and the DESC
   tie row's cause (needs the W6 step 1 observer).
   F-7c LANDED (2026-10-06). The Go-only pruning in `abstract_data_access_rule.go`

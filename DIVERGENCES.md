@@ -881,6 +881,14 @@ Two-tier simplification matching Java's value rule sets:
 
 **Reversal.** A Java planner with an in-memory sort, or a measurement in which the ordered scan beats the sorted probes for these shapes, moves Go to Java's plan through the cost model, not by removing the sort.
 
+### Plan choice: a one-value IN is an equality (RFC-257 WS-E section 4 step 5)
+
+**Divergence.** Go rewrites `x IN (v)` (and a list whose values are all equal) to `x = v` before planning (`rule_in_to_explode.go`, the single-element arm); Java keeps a one-value IN-join over the same probe. On the record layer, `price IN (10) ORDER BY price` is Java's `[10 SORTED] | INJOIN q -> { COVERING(wsf_price [EQUALS q]) } | FETCH` and Go's `IndexScan(wsf_price, [=])` (`w8_rl_default_in1_order_by_price`, declared `DIFF-PATH single-element-in`); the same ids. Go's EXPLAIN shows `[=]` where Java's shows an IN source.
+
+**Why Go keeps it.** The WS-E design deletes the collapse as Go-only. Deleting it was measured twice (on F-7b's tree and after F-7c) and reverted: 13 to 15 corpus plans move, and the one-value IN ordered by the primary key goes from a streaming equality probe to `InMemorySort(InJoin(...))`, because Go's cost model keeps the sorted probes for an IN ordered by a key no probe provides (previous entry). The equality reads the same entries in the order the query asks for.
+
+**Reversal.** Binding a one-value in-join's value as a FIXED ordering part (a Go extension needing an owner decision), or the sorted-probe entry above reversing, lets the collapse go.
+
 ### IN-union size check: Go's product of IN-list sizes does not wrap
 
 **Divergence.** Both engines refuse an IN-union whose number of child executions, the product of its IN lists' sizes, exceeds the plan's maximum ("too many IN values", XXXXX; 24 in the relational configuration, `PlannerConfiguration.java:161`). Java multiplies in an `int` (`RecordQueryInUnionPlan.getValuesSize`, `:331-337`), so two lists of 65536 values multiply to 0 and the union answers as if a list were empty. Go's product saturates at `MaxInt64` and refuses (`inUnionValuesSize`, `TestInUnionValuesSize`).

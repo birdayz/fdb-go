@@ -271,20 +271,30 @@ func (c wsfConfiguredPlanContext) GetPlannerConfiguration() cascades.PlannerConf
 // for the w8_rl rows: the access path, the in-union size, and the ids or the fact of a
 // "too many IN values" failure (each engine words its error its own way).
 func wsfRLComparable(engine, line string) string {
+	path, tail, ok := wsfRLParts(engine, line)
+	if !ok {
+		return line
+	}
+	return path + " " + tail
+}
+
+// wsfRLParts splits a record-layer probe line into its access path and the
+// rest it is compared by (in-union size, ids or the execution outcome).
+func wsfRLParts(engine, line string) (path, tail string, ok bool) {
 	const prefix = "RL EXPLAIN "
 	if !strings.HasPrefix(line, prefix) {
-		return line
+		return "", "", false
 	}
 	rest := line[len(prefix):]
 	end := strings.Index(rest, `" size=`)
 	if end < 0 {
-		return line
+		return "", "", false
 	}
 	explain, err := strconv.Unquote(rest[:end+1])
 	if err != nil {
-		return line
+		return "", "", false
 	}
-	tail := rest[end+2:]
+	tail = rest[end+2:]
 	if i := strings.Index(tail, " EXECUTE-ERROR "); i >= 0 {
 		outcome := "EXECUTE-ERROR"
 		if strings.Contains(tail, "too many IN values") {
@@ -292,5 +302,5 @@ func wsfRLComparable(engine, line string) string {
 		}
 		tail = tail[:i] + " " + outcome
 	}
-	return wsfAccessPath(engine, explain) + " " + tail
+	return wsfAccessPath(engine, explain), tail, true
 }

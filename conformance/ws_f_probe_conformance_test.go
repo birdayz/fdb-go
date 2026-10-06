@@ -991,6 +991,7 @@ var wsfDeclaredPathReasons = map[string]string{
 	"covering-rank":                  "4.2 item 3: Go's primary-versus-index rank against the target's cyclic relation, final plan",
 	"rfc-191":                        "DIVERGENCES.md, ordered IN over a non-covering index: Go pushes a comparand in-join through its fetch, Fetch(InJoin) where Java plans Fetch(InUnion)",
 	"in-memory-sort":                 "DIVERGENCES.md, an IN ordered by a key no probe provides: Go's in-memory sort lets the IN probes compete with the ordered full scan, Java's only plan",
+	"single-element-in":              "DIVERGENCES.md, a one-value IN is an equality: Go plans `x IN (v)` as `x = v`, Java as a one-value IN-join over the same probe",
 }
 
 // wsfAtAcceptance reports whether a probe is at its acceptance entry. The entry's first
@@ -1008,6 +1009,14 @@ func wsfAtAcceptance(entry, java, goLine string) bool {
 		return wsfVerdict(want, java, goLine) == want
 	case "SAME-RL":
 		return strings.HasPrefix(java, "RL EXPLAIN ") && wsfRLComparable("java", java) == wsfRLComparable("go", goLine)
+	case "DIFF-PATH":
+		// A record-layer row: the declared Go path, a different target path,
+		// and the same size and ids.
+		if jp, jt, ok := wsfRLParts("java", java); ok {
+			gp, gt, gok := wsfRLParts("go", goLine)
+			i := strings.Index(entry, " -> ")
+			return gok && i >= 0 && gp == strings.TrimSpace(entry[i+len(" -> "):]) && jp != gp && jt == gt
+		}
 	}
 	je, jok := wsfExplainOf(java)
 	ge, gok := wsfExplainOf(goLine)
@@ -1271,7 +1280,7 @@ var wsfAcceptance = map[string]string{
 	"w8_or_two_indexes_explain":                  "SAME-PATH",
 	"w8_or_two_indexes_rows":                     "SAME",
 	"w8_prefer_index_neq_explain":                "SAME-PATH",
-	"w8_rl_default_in1_order_by_price":           "SAME-RL",
+	"w8_rl_default_in1_order_by_price":           "DIFF-PATH single-element-in -> ISCAN(wsf_price [=])",
 	"w8_rl_default_in2_no_sort":                  "SAME-RL",
 	"w8_rl_default_in2_order_by_pk":              "SAME-RL",
 	"w8_rl_default_in2_order_by_price":           "SAME-RL",
@@ -1355,8 +1364,7 @@ var wsfAcceptance = map[string]string{
 // wsfOpenUntil names, for each probe not yet at its acceptance verdict, the phase or
 // dependency that moves it there (ws-f-design.md section 12).
 var wsfOpenUntil = map[string]string{
-	"w6_left_join_indexed_explain":     "outer-join partition (a LEFT JOIN's preserved leg gets no data access: PartitionBinarySelectRule skips outer joins)",
-	"w8_rl_default_in1_order_by_price": "WS-E section 4 (single-element collapse)",
+	"w6_left_join_indexed_explain": "outer-join partition (a LEFT JOIN's preserved leg gets no data access: PartitionBinarySelectRule skips outer joins)",
 }
 
 // wsfPins is the measured target answer of every WS-F probe (4.14.2.0).
