@@ -26,8 +26,8 @@
 # blessing: metamorphic-tlp-only
 # oracles: tlp
 # feature-vector: shape=single;idx=B,E;proj=star;where=and(!cmp.eq,!cmp.eq,cmp.isnull,strfn.ge,numfn.ge,cast.eq);exists=ge.filtered;order=none
-# plan-shape: 351931285541676e
-# dedup-key: 8ac4afde76d9cf60
+# plan-shape: 7f3d726fcf8f6f73
+# dedup-key: b8a5696a1622103e
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 890 -seeds 1 -date 2026-08-01 -out <dir>
 ---
 schema_template: |-

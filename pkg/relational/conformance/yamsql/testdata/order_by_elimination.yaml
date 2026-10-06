@@ -236,8 +236,9 @@ tests:
   # and no ordering property states the primary key holds no NULL, so the
   # request sorts in memory; the elimination it had came from the Go-only
   # OrderedPrimaryScanRule, which a sort over the block no longer reaches.
+  # Under PREFER_INDEX (F-7c) the sort reads the covering index whole.
   - query: SELECT id FROM t ORDER BY id ASC NULLS LAST
-    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(Scan(T), {ID: _current.ID#0}))"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_NAME, [*] COVERING), {ID: _current.ID#0}))"
     rows:
       - [1]
       - [2]

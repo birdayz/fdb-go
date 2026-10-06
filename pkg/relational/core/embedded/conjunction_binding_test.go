@@ -119,10 +119,11 @@ CREATE INDEX idx_ab ON T(a, b)`
 		// that plan scans the table once per IN element. Criterion #6 of the
 		// cost model penalises an unSARGed IN-plan anywhere in the tree, so the
 		// single filtered scan wins — alone, beside a conjunct, and below an
-		// aggregate.
-		{"unindexed_in_alone", "SELECT id FROM t WHERE v IN (1, 2)", conjunctionBindingShape{scan: "PK", residuals: 1}},
-		{"unindexed_in_with_conjunct", "SELECT id FROM t WHERE v IN (1, 2) AND c > 3", conjunctionBindingShape{scan: "PK", residuals: 2}},
-		{"unindexed_in_under_aggregate", "SELECT COUNT(*) FROM t WHERE s IN ('x', 'y')", conjunctionBindingShape{scan: "PK", residuals: 1}},
+		// aggregate. The scan is IDX_A read whole, as Java reads it
+		// (measured: `ISCAN(IDX_A <,>)` for all three) under PREFER_INDEX (F-7c).
+		{"unindexed_in_alone", "SELECT id FROM t WHERE v IN (1, 2)", conjunctionBindingShape{scan: "IDX_A[]", residuals: 1}},
+		{"unindexed_in_with_conjunct", "SELECT id FROM t WHERE v IN (1, 2) AND c > 3", conjunctionBindingShape{scan: "IDX_A[]", residuals: 2}},
+		{"unindexed_in_under_aggregate", "SELECT COUNT(*) FROM t WHERE s IN ('x', 'y')", conjunctionBindingShape{scan: "IDX_A[]", residuals: 1}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

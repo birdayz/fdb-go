@@ -107,8 +107,11 @@ func TestFDB_DistinctOverUniqueIndexWithNulls(t *testing.T) {
 	// streaming retains only the previous row's key and so has no seen-set for a
 	// narrowing to shrink. `SELECT DISTINCT u FROM t ORDER BY u` therefore plans
 	// as a bare Distinct with no narrowed-by stamp, and asserting one there
-	// would be demanding an optimization that is intentionally withheld.
-	narrowed := "SELECT DISTINCT u FROM t"
+	// would be demanding an optimization that is intentionally withheld. The
+	// primary-key range keeps the access path on the base records: without it,
+	// PREFER_INDEX reads T_U whole (F-7c), in u order, which selects the
+	// streaming distinct for the same reason.
+	narrowed := "SELECT DISTINCT u FROM t WHERE id > 0"
 
 	if plan := w.ExplainInTx(elided); strings.Contains(plan, "Distinct(") {
 		t.Errorf("a NULL-rejecting conjunct covers the whole unique key, so the distinct should be "+
@@ -140,7 +143,7 @@ func TestFDB_DistinctOverUniqueIndexWithNulls(t *testing.T) {
 	// direction of retaining too little, the repeated NULLs would come back —
 	// which is exactly what this counts.
 	w.WantInTx("the exempt rows still collapse under the narrowing",
-		"SELECT COUNT(*) FROM (SELECT DISTINCT u FROM t) AS s", []string{"4"})
+		"SELECT COUNT(*) FROM (SELECT DISTINCT u FROM t WHERE id > 0) AS s", []string{"4"})
 }
 
 // TestFDB_DistinctOverUniqueIndexUnderMutation drives the same shapes while the
@@ -266,14 +269,16 @@ func TestFDB_DistinctOverUniqueIndexAtScale(t *testing.T) {
 	// dedup runs and where a wrong exempt set shows at full size: retaining too
 	// little returns 300 NULL rows instead of one, and the auto-commit arm above
 	// cannot see that because it never narrows. 300 exempt rows is also enough
-	// that an off-by-one in the retention would not hide in the count.
+	// that an off-by-one in the retention would not hide in the count. The
+	// primary-key range keeps the base-record scan the narrowing runs over
+	// (without it PREFER_INDEX reads T_U in u order and dedups streaming, F-7c).
 	w.WantInTx("distinct count under the narrowing",
-		"SELECT COUNT(*) FROM (SELECT DISTINCT u FROM t) AS s",
+		"SELECT COUNT(*) FROM (SELECT DISTINCT u FROM t WHERE id > 0) AS s",
 		[]string{"601"})
 	w.WantInTx("300 exempt rows collapse to one under the narrowing",
-		"SELECT COUNT(*) FROM (SELECT DISTINCT u FROM t WHERE u IS NULL) AS s",
+		"SELECT COUNT(*) FROM (SELECT DISTINCT u FROM t WHERE id > 0 AND u IS NULL) AS s",
 		[]string{"1"})
-	if plan := w.ExplainInTx("SELECT DISTINCT u FROM t"); !strings.Contains(plan, "narrowed-by:") &&
+	if plan := w.ExplainInTx("SELECT DISTINCT u FROM t WHERE id > 0"); !strings.Contains(plan, "narrowed-by:") &&
 		!strings.Contains(plan, "distinct-by:") {
 		t.Errorf("at 900 rows the distinct is neither narrowed nor elided, so the two counts above "+
 			"were taken on the full-dedup path and say nothing about the narrowing\n  plan: %s", plan)

@@ -20,9 +20,9 @@ func TestPlanningCostModel_InUnionRepeatedFullScanCannotWinScalarFallback(t *tes
 		scan = mustConstruct(t, scan, err)
 		filter, err := plans.NewRecordQueryPredicatesFilterPlan(
 			scan,
-			[]predicates.QueryPredicate{
-				predicates.NewConstantPredicate(predicates.TriTrue),
-			},
+			// A real conjunct: TRUE counts no residual conjunct, as in Java's
+			// NormalizedResidualPredicateProperty.
+			[]predicates.QueryPredicate{rungPredicate("K")},
 		)
 		return mustConstruct(t, filter, err)
 	}

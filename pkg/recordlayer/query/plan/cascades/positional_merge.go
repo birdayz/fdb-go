@@ -67,6 +67,23 @@ func (r *PartitionSelectRule) positionalMergeCase(
 				}
 				scavenged = true
 			}
+		} else if rt := legTypes[a]; rt != nil && rt.IsNullable() && !fov.Type().IsNullable() {
+			// The parent states the leg NULLABLE over a plain quantifier: the
+			// null-on-empty flag was eliminated under a predicate that rejects
+			// the null tuple, and the result value kept the leg's nullable row
+			// (EliminateNullOnEmptyRule keeps it, as Java's does). Java's merge
+			// slot narrows to the quantifier's NOT NULL row and its Reference
+			// takes the narrower member; Go's admission refuses a member whose
+			// type differs from its group's, and the planning failed (factory
+			// scenario fc_0000000556_q5, a LEFT JOIN leg under an IN). So the
+			// slot keeps the stated nullable row; the leg's NOT NULL rows are
+			// values of it (the executor's layout attach admits exactly that
+			// widening, PositionalRow.checkLayoutAttachable).
+			fov, err = values.NewQuantifiedObjectValue(a, values.WithNullability(fov.Type(), true))
+			if err != nil {
+				call.Fail(err)
+				return nil
+			}
 		}
 		if values.LegIdentityCensusEnabled() {
 			// What this slot ended up stating, counted where it is decided. The

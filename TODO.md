@@ -455,20 +455,51 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   collapse, which WS-E section 4 step (5) deletes, so it is reassigned there.
   Still open: item 10 (the two-source in-union, WS-E section 4) and the DESC
   tie row's cause (needs the W6 step 1 observer).
-  F-7c, measured and not landed. The SQL configuration already plans with
-  PREFER_INDEX and in-union size 24. What keeps Go from Java's predicate-free
-  index reads is the Go-only pruning in `abstract_data_access_rule.go`: a full
-  index scan with no search argument and no requested ordering is dropped.
-  With the pruning off, 53 corpus plans move, most of them from a filtered
-  primary scan to a covering full index scan. Four oracle rows reach Java's
-  path: `w8_covering_all`, `w8_covering_neq`, `w8_covering_id_neq` and
-  `w8_prefer_index_neq`. `SELECT * FROM T1` stays `Scan(T1)`, the declared
-  `w8_no_predicate` class. The explain-differ corpus took 14 s instead of 6 s,
-  which is the pruning's stated planning cost. The design orders F-6, the
-  covering emission gate, before F-7c, and requires the 1M stress comparison
-  with F-7c. F-6 needs no change: `ToScanPlan` is Java's `toEquivalentPlan`.
+  F-7c LANDED (2026-10-06). The Go-only pruning in `abstract_data_access_rule.go`
+  (a full index scan with no search argument and no requested ordering was
+  dropped) is deleted: a PRESERVE request is satisfied by every scan, as in
+  Java, and PREFER_INDEX ranks the full index scan against the primary scan.
+  - 64 corpus plans move, none regressed. Classified against Java's plan for
+    the same SQL (scratch oracle over every moved query): every query Java
+    plans with a data access is a full index read in Java (`ISCAN`/`COVERING
+    <,>`), none `SCAN`, and Go now reads the same index (26 rows); 33 rows Java
+    cannot run (DATE, LIMIT, UnableToPlan); 5 are pre-existing sargability gaps
+    (NaN IN probes, the DESC index) that move to the same index as Java. The
+    WS-F rows `w8_covering_all`, `_neq`, `_id_neq`, `w8_prefer_index_neq`,
+    `w9_distinct` and `w10_enum_distinct` reach SAME-PATH and leave
+    `wsfOpenUntil`; the WS-E v8 type-annulment EXPLAINs reach Java's `COVERING(T_N
+    <,>) | FILTER false`; Java's corpus file `versions-tests.yamsql` now passes
+    (javacorpus 130 pass).
+  - With it: the PLANNING residual rung is Java's NormalizedResidualPredicate-
+    Property (an ordered union on values ORs its legs' residuals, tautologies
+    dropped), so `(a=1 OR b=2) AND (c=10 OR c=20)` plans Java's union of the two
+    index probes (`TestPlanHarness_UnionWithFixedUnindexedFactor` re-pinned to
+    Java's measured plan; the old pin's "one access over two" claim was wrong).
+  - Two latent defects it reached, fixed: PartitionSelectRule's positional
+    merge typed a de-null-on-emptied leg's slot NOT NULL under a group typed
+    nullable (memo admission error 64, planning failed), and the executor
+    refused a NOT NULL row under the leg's nullable carrier. The slot keeps the
+    stated nullable row and the layout attach admits exactly that widening
+    (`TestLeftJoinLegUnderInPlans`,
+    `TestAttachOrdinalLayout_NotNullRowTakesNullableCarrier`). The factory full
+    corpus (8147 scenarios) passes: it failed 21 at the parent commit.
+  - Plan pins re-pinned to the new (Java) shapes; the DISTINCT-elision
+    (R2/R3) and proof-stamp FDB tests now pin a primary-key range so their
+    base-record-scan premise holds (bare, the unique index is read whole in
+    key order and dedups streaming). `TestPlanHarness_FixedFactorUnionJavaComparable`
+    unordered now stops at the task cap: Java does not plan that statement
+    either (StackOverflowError, `FixedFactorUnionScalarJava`).
+  - Still open: Java skips a match that satisfies none of the requested
+    orderings; Go does not (alone it moves 336 plans, a join's inner probe
+    among them: Go's request sets differ from Java's). Rows still open in
+    `wsfOpenUntil` as F-7c follow-ups: non-covering full index scan rank
+    (`w6_left_join_indexed`, `w8_no_predicate`), IN-join versus filtered scan
+    (`w8_in25`, `w8_in_union`, `w8_tie_in`), ordered union by primary key
+    (`w8_or_two_indexes`). The 1M stress comparison the design requires with
+    F-7c has NOT run (stress lane; needs the owner's go-ahead).
+  History, from the measurement before it landed:
   The fast lane with the pruning off failed 22 tests and exposed two defects
-  the pruning had masked, both of which block F-7c:
+  the pruning had masked, both of which blocked F-7c:
   - Wrong rows, FIXED. A unique index filtered by a Go closure (opaque
     filter) was served as a full index scan, as if it held every record:
     `TestClosureSparseUniqueIndex_IsNeverAnEliminationProof` planned

@@ -154,10 +154,14 @@ func TestFDB_UniquePendingIndexDoesNotEliminateDistinct(t *testing.T) {
 		t.Fatalf("inspect index state: %v", err)
 	}
 
-	// The predicate on OTHER cannot be served by an index on C1 alone, so the
-	// access path is a base-record scan: the executor's per-leaf index-state
-	// backstop is never consulted, and only the DISTINCT decision is in play.
-	const q = "SELECT DISTINCT C1 FROM T WHERE OTHER > 0"
+	// The predicate on OTHER cannot be served by an index on C1 alone, and the
+	// primary-key range makes the base-record scan the access path: under
+	// PREFER_INDEX a full scan of T_C1_UNIQ would otherwise win (F-7c), and the
+	// executor's per-leaf index-state backstop would refuse the pending index
+	// before the DISTINCT decision is in play. With the range, the base scan
+	// carries one residual against the index scan's two, so only the DISTINCT
+	// decision is in play.
+	const q = "SELECT DISTINCT C1 FROM T WHERE ID > 0 AND OTHER > 0"
 	plan, err := embedded.PlanRecordQueryWithMetadata(q, md, nil)
 	if err != nil {
 		t.Fatalf("plan %q: %v", q, err)

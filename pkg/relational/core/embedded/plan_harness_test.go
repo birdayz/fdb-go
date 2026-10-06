@@ -1397,9 +1397,10 @@ func TestPlanHarness_LikePrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
-	assertPlanContains(t, plan, "Scan(ORDERS)")
-	// LIKE prefix pushdown to index is a future optimization.
-	// Currently falls back to full scan + filter.
+	// A LIKE is not sargable (as in Java); PREFER_INDEX reads the covering
+	// index whole under the LIKE filter, Java's `COVERING(IDX_STATUS <,>) |
+	// FILTER _.STATUS LIKE` (F-7c, measured for like_prefix_pushdown.yaml).
+	assertPlanContains(t, plan, "PredicatesFilter(IndexScan(IDX_STATUS, [*] COVERING)")
 }
 
 // --- Multiple WHERE predicates ---
@@ -1584,7 +1585,9 @@ func TestPlanHarness_CaseWhen(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
-	assertPlanContains(t, plan, "Scan(ORDERS)")
+	// A predicate-free read of covered columns: PREFER_INDEX reads the
+	// covering index whole (F-7c).
+	assertPlanContains(t, plan, "IndexScan(IDX_AMOUNT, [*] COVERING)")
 }
 
 // --- COALESCE ---
@@ -1598,7 +1601,9 @@ func TestPlanHarness_Coalesce(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan: %s", plan)
-	assertPlanContains(t, plan, "Scan(ORDERS)")
+	// A predicate-free read of covered columns: PREFER_INDEX reads the
+	// covering index whole (F-7c).
+	assertPlanContains(t, plan, "IndexScan(IDX_CUSTOMER, [*] COVERING)")
 }
 
 func TestPlanHarness_StatsAffectGroupByPlan(t *testing.T) {
@@ -2694,9 +2699,12 @@ func TestPlanHarness_UnionWithFixedUnindexedFactor(t *testing.T) {
 	if hints == 0 || unions == 0 {
 		t.Fatalf("match-partition scheduling produced hints=%d stale=%d indexed unions=%d types=%v", hints, staleHints, unions, memoTypes)
 	}
-	// Java breaks the two-residual tie by preferring one data access over two.
-	assertPlanContains(t, plan, "PredicatesFilter(Scan(T)")
-	assertPlanNotContains(t, plan, "Union")
+	// Java plans the union of the two index probes, each under the shared
+	// residual (measured: `ISCAN(IX_A [EQUALS]) | FILTER c = 10 OR c = 20 ∪
+	// ISCAN(IX_B [EQUALS]) | FILTER ...`): its residual-conjunct rung ORs the
+	// legs of a union on values, so the union carries ONE conjunct against the
+	// single scan's two (NormalizedResidualPredicateProperty).
+	assertPlanContains(t, plan, "MergeSortUnion(PredicatesFilter(IndexScan(IX_A, [=]), [1 preds]), PredicatesFilter(IndexScan(IX_B, [=]), [1 preds])")
 }
 
 func TestPlanHarness_FixedFactorUnionConsumesCompositeBounds(t *testing.T) {
@@ -2888,11 +2896,23 @@ func TestPlanHarness_FixedFactorUnionJavaComparable(t *testing.T) {
 	t.Parallel()
 	const schema = "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)"
 	const sql = "SELECT t_rd.* FROM t_rd, (SELECT MIN(a) AS min_a FROM t_rd) AS m WHERE (((NOT (c = 7)) AND (d = 4.0) AND (b = 2)) OR ((NOT (a BETWEEN 1 AND 4)) AND (NOT (e > 0.1)) AND (c = 4 OR c = -4))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.a < t_rd.a AND r.a > 9) AND c <= m.min_a"
-	for _, order := range []string{" ORDER BY b, id", ""} {
-		t.Run(order, func(t *testing.T) {
-			assertFixedFactorUnionConverges(t, schema, sql+order)
-		})
-	}
+	t.Run("ordered", func(t *testing.T) {
+		assertFixedFactorUnionConverges(t, schema, sql+" ORDER BY b, id")
+	})
+	// Unordered, every leg's ordering partition reaches the distinct-union
+	// rule under PRESERVE, over the ~500 alternatives the nine-clause CNF gives
+	// PredicateToLogicalUnionRule (Java's own bound, DEFAULT_MAX_NUM_CONJUNCTS
+	// = 9, is 510 combinations), and Go stops at its task budget. Java does not
+	// plan this statement either: it ends in StackOverflowError, ordered and
+	// unordered (FixedFactorUnionScalarJava, conformance). Go planned it only
+	// while it dropped every full index scan under PRESERVE, a Go-only pruning
+	// F-7c removed. Both engines refuse the statement; the pin is Go's refusal.
+	t.Run("unordered", func(t *testing.T) {
+		_, err := PlanQueryForTest(sql, schema, nil)
+		if !errors.Is(err, cascades.ErrPlannerCapHit) {
+			t.Fatalf("unordered fixed-factor union: err = %v, want the planner task cap", err)
+		}
+	})
 }
 
 func TestPlanHarness_FixedFactorUnionCompleteSearch(t *testing.T) {

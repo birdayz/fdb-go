@@ -534,7 +534,12 @@ func TestPrepareMatchesAndCompensations_SingleMatch(t *testing.T) {
 // Go-only pruning: a match binding no search argument is realized only for a
 // request it orders, and a PRESERVE request (the top level's unsorted sort)
 // orders nothing.
-func TestPrepareMatchesAndCompensations_UnrestrictedScanNeedsAnOrder(t *testing.T) {
+// TestPrepareMatchesAndCompensations_UnrestrictedScanIsKept pins F-7c: a full
+// index scan with no search argument is an access under PRESERVE, as in Java
+// (PRESERVE is satisfied by every scan; AbstractDataAccessRule keeps the
+// match), so PREFER_INDEX can rank it against the primary scan. Go used to
+// drop it.
+func TestPrepareMatchesAndCompensations_UnrestrictedScanIsKept(t *testing.T) {
 	t.Parallel()
 
 	pm := makeDataAccessTestPartialMatch("unrestricted", 0, &testPlan{name: "full_scan"})
@@ -545,8 +550,8 @@ func TestPrepareMatchesAndCompensations_UnrestrictedScanNeedsAnOrder(t *testing.
 		[]PartialMatch{pm},
 		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		EmptyPlanContext(),
-	); len(accesses) != 0 {
-		t.Fatalf("PRESERVE realized %d unrestricted accesses, want 0", len(accesses))
+	); len(accesses) != 1 {
+		t.Fatalf("PRESERVE realized %d unrestricted accesses, want 1", len(accesses))
 	}
 	byID := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{

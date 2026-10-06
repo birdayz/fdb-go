@@ -2996,26 +2996,80 @@ func unmatchedFieldsForScan(pl *plans.RecordQueryScanPlan, ctx PlanContext) int 
 	return columnSize - numComparisons
 }
 
+// concreteResidualPredicatesWithContext is Java's
+// NormalizedResidualPredicateProperty.countNormalizedConjuncts over a concrete
+// plan (PlanningCostModel.java:147): the CNF full size of the plan's residual
+// predicate, 0 when it is a tautology. The residual is built bottom-up as Java's
+// visitor builds it (NormalizedResidualPredicateProperty.java:92-121): an
+// ordered union on values (Go's MergeSortUnion) ORs its legs' residuals, every
+// other node ANDs its children's residuals with its own predicates, and
+// tautologies are dropped at every node. A plain sum of per-node sizes is the
+// AND case only, so a union whose legs share a residual counted each leg's
+// copy, and lost to a single scan carrying both conjuncts where Java keeps the
+// union.
 func concreteResidualPredicatesWithContext(p plans.RecordQueryPlan, ctx PlanContext) int {
-	total := 0
-	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
-		classification, known := classifyConcretePlan(n)
-		if !known {
-			warnUnclassifiedPlanType(
-				ctx,
-				costModelDiagnosticResidual,
-				n,
-				"counted as having zero residual predicates; classify its predicate payload",
-			)
-			return true
+	residual := normalizedResidualPredicate(p, ctx)
+	if residual == nil || predicates.IsTautology(residual) {
+		return 0
+	}
+	return int(normalFormSize(residual, false, normalFormCNF))
+}
+
+// normalizedResidualPredicate is Java's NormalizedResidualPredicateVisitor
+// over a concrete plan; nil stands for TRUE.
+func normalizedResidualPredicate(p plans.RecordQueryPlan, ctx PlanContext) predicates.QueryPredicate {
+	if p == nil {
+		return nil
+	}
+	var terms []predicates.QueryPredicate
+	keep := func(pred predicates.QueryPredicate) {
+		if pred != nil && !predicates.IsTautology(pred) {
+			terms = append(terms, pred)
 		}
+	}
+	for _, child := range p.GetChildren() {
+		keep(normalizedResidualPredicate(child, ctx))
+	}
+	if _, onValues := p.(*plans.RecordQueryMergeSortUnionPlan); onValues {
+		// OrPredicate.orOrTrue: no leg residual is TRUE, one is itself.
+		switch len(terms) {
+		case 0:
+			return nil
+		case 1:
+			return terms[0]
+		}
+		return predicates.NewOr(terms...)
+	}
+	classification, known := classifyConcretePlan(p)
+	if !known {
+		warnUnclassifiedPlanType(
+			ctx,
+			costModelDiagnosticResidual,
+			p,
+			"counted as having zero residual predicates; classify its predicate payload",
+		)
+	} else if classification.residual == concreteResidualPredicateCNF {
 		// A materialized NLJ evaluates its join predicate per (outer, inner)
 		// pair. It is residual just like PredicatesFilter and legacy Filter;
-		// the shared taxonomy above keeps the logical and concrete walks aligned.
-		total += countClassifiedResidualPredicates(n, classification, ctx)
-		return true
-	})
-	return total
+		// the shared taxonomy keeps the logical and concrete walks aligned.
+		if carrier, ok := p.(expressions.RelationalExpressionWithPredicates); ok {
+			for _, pred := range carrier.GetPredicates() {
+				keep(pred)
+			}
+		} else {
+			countClassifiedResidualPredicates(p, classification, ctx) // reports the misclassification
+		}
+	} else if classification.residual != concreteResidualNeutral {
+		countClassifiedResidualPredicates(p, classification, ctx) // reports the missing policy
+	}
+	// AndPredicate.and: no conjunct is TRUE, one is itself.
+	switch len(terms) {
+	case 0:
+		return nil
+	case 1:
+		return terms[0]
+	}
+	return predicates.NewAnd(terms...)
 }
 
 // planMatchKind selects which operator a depth query targets.

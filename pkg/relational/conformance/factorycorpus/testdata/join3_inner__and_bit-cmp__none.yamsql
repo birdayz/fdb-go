@@ -776,8 +776,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=join3.inner;idx=A+B,D;proj=n24;where=and(bit.le,cmp.ne);order=none
-# plan-shape: af6472020abbe1a7
-# dedup-key: f30762665da225b0
+# plan-shape: e6a07ae931e0b320
+# dedup-key: 3be27c562c8089bd
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880050 -seeds 1 -date 2026-08-08 -out <dir>
 ---
 schema_template: |-
@@ -828,8 +828,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=join3.inner;idx=A+B,D;proj=n3;where=and(bit.le,cmp.ne);order=none
-# plan-shape: af6472020abbe1a7
-# dedup-key: 08f8586269944e30
+# plan-shape: e6a07ae931e0b320
+# dedup-key: 2bc37b5a9eedd875
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880050 -seeds 1 -date 2026-08-08 -out <dir>
 ---
 schema_template: |-
@@ -880,8 +880,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=join3.inner;idx=A+B,D;proj=n4;where=and(bit.le,cmp.ne);order=none
-# plan-shape: af6472020abbe1a7
-# dedup-key: 1b1c20aefb9bc80e
+# plan-shape: e6a07ae931e0b320
+# dedup-key: 84100fdb09c71ebc
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880050 -seeds 1 -date 2026-08-08 -out <dir>
 ---
 schema_template: |-
@@ -1342,8 +1342,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=join3.inner;idx=B,C,D;proj=n3;where=and(bit.lt,cmp.ne);order=asc+asc+asc
-# plan-shape: 37c3372faa4bbd21
-# dedup-key: 34eff61de708b222
+# plan-shape: 92fd9e651cd82482
+# dedup-key: 6bb918d825379d60
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880155 -seeds 1 -date 2026-08-08 -out <dir>
 ---
 schema_template: |-
@@ -1410,8 +1410,8 @@ test_block:
 # blessing: metamorphic
 # oracles: tlp,second-plan
 # feature-vector: shape=join3.inner;idx=B,C,D;proj=n4;where=and(bit.lt,cmp.ne);order=asc+asc+asc
-# plan-shape: 37c3372faa4bbd21
-# dedup-key: 5c049f9b05d91742
+# plan-shape: 92fd9e651cd82482
+# dedup-key: 8d3015889a609ee5
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1880155 -seeds 1 -date 2026-08-08 -out <dir>
 ---
 schema_template: |-

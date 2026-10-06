@@ -84,10 +84,10 @@ func TestImplementInUnionRuleSeparatesFixedAndDirectionalRichOrderings(t *testin
 	// fixed member (or vice versa, depending on insertion order).
 	bound := plans.RecordQueryPlan(boundIndex)
 	for range 2 {
+		// Real conjuncts: TRUE counts no residual conjunct, as in Java's
+		// NormalizedResidualPredicateProperty.
 		bound = mustInRuleConstruct(plans.NewRecordQueryPredicatesFilterPlan(
-			bound, []predicates.QueryPredicate{
-				predicates.NewConstantPredicate(predicates.TriTrue),
-			}))
+			bound, []predicates.QueryPredicate{rungPredicate("K")}))
 	}
 	boundExpr := bound.(expressions.RelationalExpression)
 	if !PlanningCostModelLess(unbound, boundExpr) {

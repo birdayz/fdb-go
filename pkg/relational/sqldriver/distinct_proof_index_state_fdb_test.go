@@ -23,10 +23,12 @@ import (
 // These queries are chosen so the stamp is the SOLE source of the dependency.
 // The NULL-rejecting variant that R2 fully elides moves the access path onto
 // U_EMAIL, so a plan-carries-U_EMAIL assertion there would hold through the
-// ordinary index-scan arm and would prove nothing about the stamp. The bare
-// query stays on a base scan, so if the stamp arm is removed the dependency set
-// is empty and every 40001 below disappears.
-const distinctProofQuery = "SELECT DISTINCT EMAIL FROM T"
+// ordinary index-scan arm and would prove nothing about the stamp. The query
+// stays on a base scan, so if the stamp arm is removed the dependency set is
+// empty and every 40001 below disappears. The primary-key range is what keeps
+// it there: a bare SELECT DISTINCT EMAIL reads U_EMAIL whole under
+// PREFER_INDEX (F-7c).
+const distinctProofQuery = "SELECT DISTINCT EMAIL FROM T WHERE ID > 0"
 
 const distinctProofWantRows = "a@example,b@example,c@example"
 
@@ -624,16 +626,19 @@ func TestFDB_DistinctProof_UnconditionalLicenseYieldsUnstampedPlan(t *testing.T)
 		// the predicate has to reject NULLs WITHOUT being sargable on the index.
 		// CHARACTER_LENGTH(EMAIL) >= 0 is UNKNOWN for a NULL EMAIL and so drops
 		// the row, while giving the access path nothing to bind.
-		{"whole_record", "SELECT DISTINCT * FROM T", "record-level distinctness"},
+		//
+		// Every arm carries the primary-key range ID > 0, which keeps the
+		// base-record scan: without it PREFER_INDEX reads U_EMAIL whole (F-7c).
+		{"whole_record", "SELECT DISTINCT * FROM T WHERE ID > 0", "record-level distinctness"},
 		{
 			"whole_record_null_rejected",
-			"SELECT DISTINCT * FROM T WHERE CHARACTER_LENGTH(EMAIL) >= 0",
+			"SELECT DISTINCT * FROM T WHERE ID > 0 AND CHARACTER_LENGTH(EMAIL) >= 0",
 			"record-level distinctness",
 		},
-		{"primary_key", "SELECT DISTINCT ID, EMAIL, PAD FROM T", "primary-key coverage"},
+		{"primary_key", "SELECT DISTINCT ID, EMAIL, PAD FROM T WHERE ID > 0", "primary-key coverage"},
 		{
 			"primary_key_null_rejected",
-			"SELECT DISTINCT ID, EMAIL, PAD FROM T WHERE CHARACTER_LENGTH(EMAIL) >= 0",
+			"SELECT DISTINCT ID, EMAIL, PAD FROM T WHERE ID > 0 AND CHARACTER_LENGTH(EMAIL) >= 0",
 			"primary-key coverage",
 		},
 	} {

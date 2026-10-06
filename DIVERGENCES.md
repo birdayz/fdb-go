@@ -2810,3 +2810,22 @@ prune gives. The rows are declared in `wseGoDivergences`
 (`conformance/ws_e_probe_conformance_test.go`); Go's answers and plans are pinned by the WS-E
 oracle's Go pins and `TestFoldTiePins_DecidingRung` (`pkg/relational/core/embedded`), which also
 records the rung that decides each row.
+
+## Full index reads under PREFER_INDEX (F-7c): what still differs
+
+Go keeps a full index scan with no search argument as an access path, as Java does, and PREFER_INDEX
+ranks it against the primary scan; both engines read the same index for the queries measured
+(TODO.md, WS-F F-7c). Plan-level differences that remain, answers equal:
+
+- A LEFT JOIN leg whose null-on-empty flag a WHERE predicate eliminated keeps its nullable row in the
+  select's result value, in both engines. When PartitionSelectRule merges such a leg, Java's merge slot
+  takes the leg's NOT NULL row and its Reference accepts the narrower member; Go's memo refuses a member
+  whose type differs from its group's, so Go's slot keeps the nullable row, and Go's executor admits the
+  leg's NOT NULL rows under that nullable carrier (`PositionalRow.checkLayoutAttachable`, the only type
+  disagreement it admits).
+- Java skips a data-access match that satisfies none of the requested orderings
+  (AbstractDataAccessRule.java:660-662); Go keeps it, because the request sets Go passes differ from
+  Java's (the check alone moves 336 corpus plans).
+- Among several full index reads that tie, the engines may pick different indexes: `SELECT id,
+  COALESCE(customer_id, 0) FROM orders` reads `IDX_AMOUNT` in Java and the covering `IDX_CUSTOMER` in
+  Go.

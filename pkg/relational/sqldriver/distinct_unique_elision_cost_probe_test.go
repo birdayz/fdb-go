@@ -510,24 +510,31 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// single-read-version shape, and reading it in auto-commit would assert the
 	// pre-fix behaviour.
 	ex := func(q string) string { return duecExplainInTx(t, ctx, db, q) }
+	// Every statement this probe reasons about as a BASE-RECORD scan carries the
+	// primary-key range `id >= 0` (every fixture id is non-negative). Bare, the
+	// planner reads the table's index whole under PREFER_INDEX (F-7c) — for
+	// `SELECT DISTINCT email`, BY_EMAIL in email order, which dedups STREAMING
+	// and has no seen-set to narrow — and every R3-versus-full comparison here
+	// would measure a different access path. The ORDER BY statements are meant
+	// to reach the index and stay bare.
 	const (
-		qA  = "SELECT email FROM users"
+		qA  = "SELECT email FROM users WHERE id >= 0"
 		qA2 = "SELECT email FROM users WHERE email IS NOT NULL"
-		qB  = "SELECT DISTINCT email FROM users"
+		qB  = "SELECT DISTINCT email FROM users WHERE id >= 0"
 		qC  = "SELECT DISTINCT email FROM users WHERE email IS NOT NULL"
-		qD  = "SELECT DISTINCT email_plain FROM users"
+		qD  = "SELECT DISTINCT email_plain FROM users WHERE id >= 0"
 	)
 	explains := map[string]string{}
 	for _, q := range []string{
 		qA, qA2, qB, qC, qD,
-		"SELECT DISTINCT email FROM users1", "SELECT DISTINCT email_plain FROM users1",
-		"SELECT DISTINCT email FROM users50", "SELECT DISTINCT email_plain FROM users50",
+		"SELECT DISTINCT email FROM users1 WHERE id >= 0", "SELECT DISTINCT email_plain FROM users1 WHERE id >= 0",
+		"SELECT DISTINCT email FROM users50 WHERE id >= 0", "SELECT DISTINCT email_plain FROM users50 WHERE id >= 0",
 		"SELECT DISTINCT email FROM users ORDER BY email",
 		"SELECT email FROM users ORDER BY email",
 		"SELECT DISTINCT email FROM users ORDER BY email LIMIT 10",
 		"SELECT email FROM users ORDER BY email LIMIT 10",
-		"SELECT DISTINCT email FROM users LIMIT 10",
-		"SELECT email FROM users LIMIT 10",
+		"SELECT DISTINCT email FROM users WHERE id >= 0 LIMIT 10",
+		"SELECT email FROM users WHERE id >= 0 LIMIT 10",
 	} {
 		explains[q] = ex(q)
 		t.Logf("EXPLAIN %-56s => %s", q, explains[q])
@@ -537,7 +544,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// base-record scan with no operator on top. If the access path moves, the
 	// comparison measures something else.
 	if strings.Contains(explains[qA], "Distinct(") ||
-		!strings.Contains(explains[qA], "Scan(USERS)") ||
+		!strings.Contains(explains[qA], "Scan(USERS") ||
 		strings.Contains(explains[qA], "IndexScan") {
 		t.Fatalf("row A is no longer a plain base-record scan: %s", explains[qA])
 	}
@@ -581,7 +588,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// Row D' — the full-distinct control. Same shape as B, no stamp.
 	if !strings.Contains(explains[qD], "Distinct(") ||
 		strings.Contains(explains[qD], "narrowed-by") ||
-		!strings.Contains(explains[qD], "Scan(USERS)") ||
+		!strings.Contains(explains[qD], "Scan(USERS") ||
 		strings.Contains(explains[qD], "IndexScan") {
 		t.Fatalf("the full-distinct control is no longer an unstamped distinct over a "+
 			"base scan: %s\nEMAIL_PLAIN must stay unindexed; if it acquires a proof "+
@@ -590,7 +597,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	}
 	// The sweep's two operators, at both densities.
 	for _, tbl := range []string{"users1", "users50"} {
-		r3, full := "SELECT DISTINCT email FROM "+tbl, "SELECT DISTINCT email_plain FROM "+tbl
+		r3, full := "SELECT DISTINCT email FROM "+tbl+" WHERE id >= 0", "SELECT DISTINCT email_plain FROM "+tbl+" WHERE id >= 0"
 		if !strings.Contains(explains[r3], "narrowed-by:BY_EMAIL") {
 			t.Fatalf("sweep %s: the R3 side is not narrowed: %s", tbl, explains[r3])
 		}
@@ -619,8 +626,8 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	for _, ac := range []struct{ tag, query string }{
 		{"B (R3)", qB},
 		{"C (R2)", qC},
-		{"S1-R3", "SELECT DISTINCT email FROM users1"},
-		{"S50-R3", "SELECT DISTINCT email FROM users50"},
+		{"S1-R3", "SELECT DISTINCT email FROM users1 WHERE id >= 0"},
+		{"S50-R3", "SELECT DISTINCT email FROM users50 WHERE id >= 0"},
 		{"R2 half-NULL", "SELECT DISTINCT email FROM users50 WHERE email IS NOT NULL"},
 	} {
 		plan := explainPlan(t, ctx, db, ac.query)
@@ -709,10 +716,10 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 		{"B", qB},
 		{"C", qC},
 		{"D'", qD},
-		{"S1-full", "SELECT DISTINCT email_plain FROM users1"},
-		{"S1-R3", "SELECT DISTINCT email FROM users1"},
-		{"S50-full", "SELECT DISTINCT email_plain FROM users50"},
-		{"S50-R3", "SELECT DISTINCT email FROM users50"},
+		{"S1-full", "SELECT DISTINCT email_plain FROM users1 WHERE id >= 0"},
+		{"S1-R3", "SELECT DISTINCT email FROM users1 WHERE id >= 0"},
+		{"S50-full", "SELECT DISTINCT email_plain FROM users50 WHERE id >= 0"},
+		{"S50-R3", "SELECT DISTINCT email FROM users50 WHERE id >= 0"},
 	}
 	for _, o := range order {
 		series[o.tag] = &duecSeries{tag: o.tag, query: o.query}
@@ -1086,10 +1093,10 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 		{"C", qC, false, "GUARD ONLY: R2 removed the operator, but master survives this too (streaming variant)"},
 		{"B", qB, false, "DISCRIMINATOR: R3 retains only exempt rows, and this store has none"},
 		{"D'", qD, true, "the full distinct retains one key per distinct value"},
-		{"S1-R3", "SELECT DISTINCT email FROM users1", false, "DISCRIMINATOR: R3 retains the single NULL key"},
-		{"S1-full", "SELECT DISTINCT email_plain FROM users1", true, "full: 99 001 keys"},
-		{"S50-R3", "SELECT DISTINCT email FROM users50", false, "DISCRIMINATOR: R3 retains the single NULL key"},
-		{"S50-full", "SELECT DISTINCT email_plain FROM users50", true, "full: 50 001 keys"},
+		{"S1-R3", "SELECT DISTINCT email FROM users1 WHERE id >= 0", false, "DISCRIMINATOR: R3 retains the single NULL key"},
+		{"S1-full", "SELECT DISTINCT email_plain FROM users1 WHERE id >= 0", true, "full: 99 001 keys"},
+		{"S50-R3", "SELECT DISTINCT email FROM users50 WHERE id >= 0", false, "DISCRIMINATOR: R3 retains the single NULL key"},
+		{"S50-full", "SELECT DISTINCT email_plain FROM users50 WHERE id >= 0", true, "full: 50 001 keys"},
 	} {
 		budgetArmsRan++
 		err := duecBudgetRun(t, ctx, bconn, c.query)
@@ -1150,8 +1157,8 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 		}},
 	} {
 		for _, c := range regime.tables {
-			r3 := regime.collect(t, ctx, "SELECT DISTINCT email FROM "+c.table)
-			full := regime.collect(t, ctx, "SELECT DISTINCT email_plain FROM "+c.table)
+			r3 := regime.collect(t, ctx, "SELECT DISTINCT email FROM "+c.table+" WHERE id >= 0")
+			full := regime.collect(t, ctx, "SELECT DISTINCT email_plain FROM "+c.table+" WHERE id >= 0")
 			if len(r3) != c.wantRows {
 				t.Fatalf("%s/%s: narrowed DISTINCT returned %d rows, want %d",
 					regime.name, c.table, len(r3), c.wantRows)
@@ -1688,12 +1695,12 @@ func duecAssertVariants(t *testing.T, explains map[string]string) {
 		wantStreaming  bool
 		wantNarrowable bool
 	}{
-		{"distinct", "SELECT DISTINCT email FROM users", true, false, false},
-		{"no_distinct", "SELECT email FROM users", false, false, false},
+		{"distinct", "SELECT DISTINCT email FROM users WHERE id >= 0", true, false, false},
+		{"no_distinct", "SELECT email FROM users WHERE id >= 0", false, false, false},
 		{"distinct_order", "SELECT DISTINCT email FROM users ORDER BY email", true, true, false},
 		{"no_distinct_order", "SELECT email FROM users ORDER BY email", false, false, false},
 		{"distinct_order_limit", "SELECT DISTINCT email FROM users ORDER BY email LIMIT 10", true, true, false},
-		{"distinct_limit", "SELECT DISTINCT email FROM users LIMIT 10", true, false, false},
+		{"distinct_limit", "SELECT DISTINCT email FROM users WHERE id >= 0 LIMIT 10", true, false, false},
 	}
 	for _, s := range shapes {
 		p, e := embedded.PlanRecordQueryWithMetadata(s.query, md, nil)
@@ -1796,8 +1803,8 @@ func TestFDB_DistinctUniqueElisionRetention(t *testing.T) {
 			query string
 			want  []int
 		}{
-			{"SELECT DISTINCT email, payload FROM USERS", []int{0}},
-			{"SELECT DISTINCT payload, email FROM USERS", []int{1}},
+			{"SELECT DISTINCT email, payload FROM USERS WHERE ID >= 0", []int{0}},
+			{"SELECT DISTINCT payload, email FROM USERS WHERE ID >= 0", []int{1}},
 		} {
 			got := duecDistinctIn(duecPlan(t, s.query, md, true)).GetNarrowedExemptSlots()
 			if len(got) != len(s.want) || (len(got) == 1 && got[0] != s.want[0]) {
@@ -1814,7 +1821,7 @@ func TestFDB_DistinctUniqueElisionRetention(t *testing.T) {
 		// the admitted count is the row count. A slot stuck at 0 admits 0.
 		if d.wantNulls > 0 {
 			r3PayloadFirst := duecRetained(t, ctx, db, md, ks,
-				"SELECT DISTINCT payload, email FROM USERS", duecRows, true)
+				"SELECT DISTINCT payload, email FROM USERS WHERE ID >= 0", duecRows, true)
 			if r3PayloadFirst.keys != d.wantNulls {
 				t.Fatalf("density %s: with EMAIL projected SECOND, R3 admitted %d rows, "+
 					"want exactly %d.\nThe exempt test is reading the wrong slot: 0 "+
@@ -1824,11 +1831,11 @@ func TestFDB_DistinctUniqueElisionRetention(t *testing.T) {
 		}
 
 		// Keys retained: what the seen-set holds and what rides the continuation.
-		fullKeys := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email FROM USERS", d.outRows, false)
-		r3Keys := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email FROM USERS", d.outRows, true)
+		fullKeys := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email FROM USERS WHERE ID >= 0", d.outRows, false)
+		r3Keys := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email FROM USERS WHERE ID >= 0", d.outRows, true)
 		// Rows entered: the structural claim of RFC-210 §2.1's sweep table.
-		fullRows := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email, payload FROM USERS", duecRows, false)
-		r3Rows := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email, payload FROM USERS", duecRows, true)
+		fullRows := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email, payload FROM USERS WHERE ID >= 0", duecRows, false)
+		r3Rows := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email, payload FROM USERS WHERE ID >= 0", duecRows, true)
 		t.Logf("RETAINED %-4s keys full=%-6d r3=%-6d | rows-entered full=%-6d r3=%-6d",
 			d.label, fullKeys.keys, r3Keys.keys, fullRows.keys, r3Rows.keys)
 

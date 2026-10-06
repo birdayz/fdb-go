@@ -1354,19 +1354,13 @@ var wsfAcceptance = map[string]string{
 // wsfOpenUntil names, for each probe not yet at its acceptance verdict, the phase or
 // dependency that moves it there (ws-f-design.md section 12).
 var wsfOpenUntil = map[string]string{
-	"w10_enum_distinct_explain":        "F-7c",
-	"w6_left_join_indexed_explain":     "F-7c",
-	"w8_covering_all_explain":          "F-7c",
-	"w8_covering_id_neq_explain":       "F-7c",
-	"w8_covering_neq_explain":          "F-7c",
-	"w8_in25_order_by_id_explain":      "F-7c",
-	"w8_in_union_explain":              "F-7c",
-	"w8_no_predicate_explain":          "F-7c",
-	"w8_or_two_indexes_explain":        "F-7c",
-	"w8_prefer_index_neq_explain":      "F-7c",
+	"w6_left_join_indexed_explain":     "F-7c follow-up (non-covering full index scan rank)",
+	"w8_in25_order_by_id_explain":      "F-7c follow-up (IN-join vs filtered scan rank)",
+	"w8_in_union_explain":              "F-7c follow-up (IN-join vs filtered scan rank)",
+	"w8_no_predicate_explain":          "F-7c follow-up (non-covering full index scan rank)",
+	"w8_or_two_indexes_explain":        "F-7c follow-up (ordered union by primary key)",
 	"w8_rl_default_in1_order_by_price": "WS-E section 4 (single-element collapse)",
-	"w8_tie_in_order_by_id_explain":    "F-7c",
-	"w9_distinct_explain":              "F-7c",
+	"w8_tie_in_order_by_id_explain":    "F-7c follow-up (IN-join vs filtered scan rank)",
 }
 
 // wsfPins is the measured target answer of every WS-F probe (4.14.2.0).
@@ -1530,7 +1524,7 @@ var wsfPins = map[string]string{
 
 // wsfGoPins is Go's measured answer of every WS-F probe at this tree.
 var wsfGoPins = map[string]string{
-	"w10_enum_distinct_explain":                  "OK EXPLAIN \"PredicatesFilter(Scan(T), [1 preds])\"",
+	"w10_enum_distinct_explain":                  "OK EXPLAIN \"Fetch(PredicatesFilter(IndexScan(T_M_IDX, [*, *] COVERING), [1 preds]))\"",
 	"w10_enum_distinct_rows":                     "OK [ID:BIGINT] [[1] [3] [5]]",
 	"w10_enum_eq_explain":                        "OK EXPLAIN \"IndexScan(T_M_IDX, [=, *])\"",
 	"w10_enum_eq_rows":                           "OK [ID:BIGINT] [[2] [4]]",
@@ -1570,9 +1564,9 @@ var wsfGoPins = map[string]string{
 	"w6_rewriting_inner_join_control":            "NO-GO-INSTRUMENT",
 	"w6_rewriting_left_join_indexed":             "NO-GO-INSTRUMENT",
 	"w6_rewriting_left_join_preserved_only":      "NO-GO-INSTRUMENT",
-	"w8_covering_all_explain":                    "OK EXPLAIN \"Map(Scan(T1), {COL1: _current.COL1#1})\"",
-	"w8_covering_id_neq_explain":                 "OK EXPLAIN \"Map(PredicatesFilter(Scan(T1), [1 preds]), {ID: _current.ID#0})\"",
-	"w8_covering_neq_explain":                    "OK EXPLAIN \"Map(PredicatesFilter(Scan(T1), [1 preds]), {COL1: _current.COL1#1})\"",
+	"w8_covering_all_explain":                    "OK EXPLAIN \"Map(IndexScan(I1, [*] COVERING), {COL1: _current.COL1#1})\"",
+	"w8_covering_id_neq_explain":                 "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(I1, [*] COVERING), [1 preds]), {ID: _current.ID#0})\"",
+	"w8_covering_neq_explain":                    "OK EXPLAIN \"Map(PredicatesFilter(IndexScan(I1, [*] COVERING), [1 preds]), {COL1: _current.COL1#1})\"",
 	"w8_eq_order_by_id_explain":                  "OK EXPLAIN \"IndexScan(I1, [=])\"",
 	"w8_eq_order_by_id_rows":                     "OK [ID:BIGINT] [[1] [2]]",
 	"w8_explicit_id_in_order_by_id_explain":      "OK EXPLAIN \"Fetch(InUnion(IndexScan(I8, [=, *] COVERING), bindings=1, ASC))\"",
@@ -1605,7 +1599,7 @@ var wsfGoPins = map[string]string{
 	"w8_no_predicate_explain":                    "OK EXPLAIN \"Scan(T1)\"",
 	"w8_or_two_indexes_explain":                  "OK EXPLAIN \"Fetch(UnorderedPrimaryKeyDistinct(UnorderedUnion(IndexScan(I1, [=] COVERING), IndexScan(I2, [=] COVERING))))\"",
 	"w8_or_two_indexes_rows":                     "OK [ID:BIGINT] [[1] [2] [3]]",
-	"w8_prefer_index_neq_explain":                "OK EXPLAIN \"PredicatesFilter(Scan(T1), [1 preds])\"",
+	"w8_prefer_index_neq_explain":                "OK EXPLAIN \"Fetch(PredicatesFilter(IndexScan(I1, [*] COVERING), [1 preds]))\"",
 	"w8_rl_default_in1_order_by_price":           "RL EXPLAIN \"IndexScan(wsf_price, [=])\" size=0 ids=[1 2 5]",
 	"w8_rl_default_in2_no_sort":                  "RL EXPLAIN \"Fetch(InJoin(IndexScan(wsf_price, [=] COVERING), binding))\" size=0 ids=[1 2 5 3]",
 	"w8_rl_default_in2_order_by_pk":              "RL EXPLAIN \"Fetch(InUnion(IndexScan(wsf_price, [=] COVERING), bindings=1, ASC))\" size=0 EXECUTE-ERROR too many IN values",
@@ -1657,7 +1651,7 @@ var wsfGoPins = map[string]string{
 	"w8_trace_in_no_order":                       "NO-GO-INSTRUMENT",
 	"w8_trace_in_order_by_col1":                  "NO-GO-INSTRUMENT",
 	"w8_trace_in_order_by_id":                    "NO-GO-INSTRUMENT",
-	"w9_distinct_explain":                        "OK EXPLAIN \"PredicatesFilter(Scan(T1), [1 preds])\"",
+	"w9_distinct_explain":                        "OK EXPLAIN \"Fetch(PredicatesFilter(IndexScan(I1, [*] COVERING), [1 preds]))\"",
 	"w9_distinct_rows":                           "OK [ID:BIGINT] [[3] [4]]",
 	"w9_multi_distinct_explain":                  "OK EXPLAIN \"Fetch(PredicatesFilter(IndexScan(I3, [=, *] COVERING), [1 preds]))\"",
 	"w9_multi_distinct_rows":                     "OK [ID:BIGINT] [[2]]",

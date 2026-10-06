@@ -57,8 +57,11 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		{
 			name: "like_prefix_full_scans",
 			sql:  "SELECT id FROM t2 WHERE status LIKE 'act%'",
-			want: "Map(PredicatesFilter(Scan(T2), [1 preds]), {ID: _current.ID#0})",
-			why: "CQ-33's defect: a LIKE conjunct cannot bind an index placeholder. " +
+			want: "Map(PredicatesFilter(IndexScan(IDX_STATUS, [*] COVERING), [1 preds]), {ID: _current.ID#0})",
+			why: "The scan is UNBOUNDED ([*]) with the LIKE applied above it: PREFER_INDEX " +
+				"reads the covering index whole, Java's `COVERING(IDX_STATUS <,>) | FILTER " +
+				"_.STATUS LIKE` (F-7c). " +
+				"CQ-33's defect: a LIKE conjunct cannot bind an index placeholder. " +
 				"If this now plans an IndexScan, SOMETHING has given the LIKE an access " +
 				"path — but an IndexScan alone does not establish that a LIKE->range " +
 				"producer landed, and does not by itself establish a bug either: an " +
@@ -74,7 +77,7 @@ func TestLikePrefix_IsNotSargable_AndTheCoveringStampIsLost(t *testing.T) {
 		{
 			name: "like_suffix_full_scans",
 			sql:  "SELECT id FROM t2 WHERE status LIKE '%act'",
-			want: "Map(PredicatesFilter(Scan(T2), [1 preds]), {ID: _current.ID#0})",
+			want: "Map(PredicatesFilter(IndexScan(IDX_STATUS, [*] COVERING), [1 preds]), {ID: _current.ID#0})",
 			why: "A leading-% LIKE has an EMPTY constant prefix, so no LIKE-derived range " +
 				"exists for it in any design. If this plans an IndexScan, the question to " +
 				"answer is whether the scan carries a bound DERIVED FROM THE LIKE (which " +

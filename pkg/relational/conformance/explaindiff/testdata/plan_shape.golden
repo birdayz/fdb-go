@@ -1811,11 +1811,11 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_java.yaml#2
 sql:   SELECT COUNT(*) FROM t1 WHERE col2 BETWEEN 4 AND 3
-plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], PredicatesFilter(IndexScan(I1, [*]), [2 preds])), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 === between_java.yaml#3
 sql:   SELECT id FROM t1 WHERE col2 NOT BETWEEN 2 AND 12 ORDER BY id
 plan:  Map(PredicatesFilter(Scan(T1), [1 preds]), {ID: _current.ID#0})
@@ -1824,11 +1824,11 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_java.yaml#4
 sql:   SELECT COUNT(*) FROM t1 WHERE col2 NOT BETWEEN 12 AND 2
-plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], PredicatesFilter(IndexScan(I1, [*]), [1 preds])), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 === between_java.yaml#5
 sql:   SELECT id FROM t1 WHERE col2 BETWEEN 2 AND 4 OR col2 BETWEEN 6 AND 7 ORDER BY id
 plan:  Map(PredicatesFilter(Scan(T1), [4 preds]), {ID: _current.ID#0})
@@ -1867,39 +1867,43 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_java.yaml#11
 sql:   SELECT COUNT(*) FROM t1 WHERE 4 BETWEEN 1 AND 10
-plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], Fetch(PredicatesFilter(IndexScan(I1, [*] COVERING), [2 preds]))), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryFetchFromPartialRecordPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryCoveringIndexPlan
 === between_java.yaml#12
 sql:   SELECT COUNT(*) FROM t1 WHERE 4 BETWEEN 5 AND 10
-plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], Fetch(PredicatesFilter(IndexScan(I1, [*] COVERING), [2 preds]))), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryFetchFromPartialRecordPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryCoveringIndexPlan
 === between_java.yaml#13
 sql:   SELECT COUNT(*) FROM t1 WHERE 2+2 BETWEEN 1+1 AND 3+3
-plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], Fetch(PredicatesFilter(IndexScan(I1, [*] COVERING), [2 preds]))), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryFetchFromPartialRecordPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryCoveringIndexPlan
 === between_java.yaml#14
 sql:   SELECT COUNT(*) FROM t1 WHERE null BETWEEN 1 AND 2
-plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], Fetch(PredicatesFilter(IndexScan(I1, [*] COVERING), [2 preds]))), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryFetchFromPartialRecordPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryCoveringIndexPlan
 === between_java.yaml#15
 sql:   SELECT COUNT(*) FROM t1 WHERE col2 BETWEEN null AND 10
-plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], PredicatesFilter(IndexScan(I1, [*]), [2 preds])), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 === bitwise.yaml#0
 sql:   SELECT a & b FROM t WHERE id = 1
 plan:  Map(Scan(T, [=]), {_0: (_current.A#1 & _current.B#2)})
@@ -2338,10 +2342,10 @@ shape:   RecordQueryMapPlan
 shape:     RecordQueryCoveringIndexPlan
 === bytes.yaml#2
 sql:   SELECT a FROM lb WHERE b <> x'cafe'
-plan:  Map(PredicatesFilter(Scan(LB), [1 preds]), {A: _current.A#0})
+plan:  Map(PredicatesFilter(IndexScan(IDX_LB_B, [*] COVERING), [1 preds]), {A: _current.A#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === bytes.yaml#3
 sql:   SELECT a FROM lb WHERE b IS NULL
 plan:  Map(IndexScan(IDX_LB_B, [=] COVERING), {A: _current.A#0})
@@ -2385,10 +2389,10 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === bytes.yaml#12
 sql:   SELECT a FROM lb WHERE b = null
-plan:  Map(PredicatesFilter(Scan(LB), [1 preds]), {A: _current.A#0})
+plan:  Map(PredicatesFilter(IndexScan(IDX_LB_B, [*] COVERING), [1 preds]), {A: _current.A#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === bytes.yaml#13
 sql:   SELECT x'cafe' = b FROM lb WHERE a = 2
 plan:  Map(Scan(LB, [=]), {_0: predicate})
@@ -7716,10 +7720,10 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryCoveringIndexPlan
 === fold_prune_regime.yaml#4 expect-error=22012
 sql:   SELECT id FROM T WHERE (1 / 0 = 1 OR 1 = 2) AND 1 = 2
-plan:  Map(PredicatesFilter(Scan(T), [2 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [2 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === fold_prune_regime.yaml#5
 sql:   SELECT id FROM T WHERE id = 5 AND (1 = 1 OR 1 / 0 = 1)
 plan:  Map(PredicatesFilter(Scan(T, [=]), [1 preds]), {ID: _current.ID#0})
@@ -7734,10 +7738,10 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === fold_prune_regime.yaml#7
 sql:   SELECT id FROM T WHERE n = 5 OR n = 5
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === fold_prune_regime.yaml#8
 sql:   SELECT id FROM T WHERE id = 5 AND NOT (n > 3)
 plan:  Map(PredicatesFilter(Scan(T, [=]), [1 preds]), {ID: _current.ID#0})
@@ -7752,46 +7756,46 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryCoveringIndexPlan
 === fold_prune_regime.yaml#10
 sql:   SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === fold_prune_regime.yaml#11
 sql:   SELECT id FROM T WHERE id IN (1, 2) AND COALESCE(1 / 0, 5) IS NULL
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === fold_prune_regime.yaml#12
 sql:   SELECT id FROM T WHERE n > 0 AND COALESCE(1 / 0, 5) IS NULL
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === fold_prune_regime.yaml#13
 sql:   SELECT id FROM T WHERE n = 5 AND COALESCE(1 / 0, 5) IS NULL
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === fold_prune_regime.yaml#14
 sql:   SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL AND COALESCE(1 / 0, 5) IS NULL
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === fold_prune_regime.yaml#15
 sql:   SELECT id FROM T WHERE id = 5 AND TRUE AND COALESCE(1 / 0, 5) IS NULL
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === fold_prune_regime.yaml#16
 sql:   SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NULL AND COALESCE(1 / 0, 5) IS NULL
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === fold_prune_regime.yaml#17
 sql:   SELECT id FROM T WHERE id = 5 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL
 plan:  Map(Scan(T, [=]), {ID: _current.ID#0})
@@ -7804,17 +7808,17 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryCoveringIndexPlan
 === fold_prune_unique_regime.yaml#0
 sql:   SELECT id FROM T WHERE n = 5 AND COALESCE(1 / 0, 5) IS NULL
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_UN, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === fold_prune_unique_regime.yaml#1
 sql:   SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL UNION ALL SELECT id FROM T WHERE id = 1
-plan:  UnorderedUnion(Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0}), Map(Scan(T, [=]), {ID: _current.ID#0}))
+plan:  UnorderedUnion(Map(PredicatesFilter(IndexScan(T_UN, [*] COVERING), [1 preds]), {ID: _current.ID#0}), Map(Scan(T, [=]), {ID: _current.ID#0}))
 shape: RecordQueryUnorderedUnionPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryCoveringIndexPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryScanPlan
 === function_in_predicate.yaml#0
@@ -10808,11 +10812,11 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryIndexPlan
 === join_index_correlation.yaml#1
 sql:   SELECT d.name, e.name FROM departments d, employees e WHERE e.dept_id = d.id AND e.salary > 90 ORDER BY d.name, e.name
-plan:  InMemorySort([_current.D.NAME#0 ASC, _current.E.NAME#1 ASC], FlatMap(outer=PredicatesFilter(Scan(EMPLOYEES), [1 preds]), inner=Scan(DEPARTMENTS, [=])))
+plan:  InMemorySort([_current.D.NAME#0 ASC, _current.E.NAME#1 ASC], FlatMap(outer=PredicatesFilter(IndexScan(IDX_DEPT, [*]), [1 preds]), inner=Scan(DEPARTMENTS, [=])))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 shape:     RecordQueryScanPlan
 === join_index_correlation.yaml#2
 sql:   SELECT d.name, COUNT(*) FROM departments d, employees e WHERE e.dept_id = d.id GROUP BY d.name ORDER BY d.name
@@ -10969,11 +10973,11 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === join_optimization_probes.yaml#2
 sql:   SELECT e.ename FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE d.dname = 'eng' AND e.salary >= 95 ORDER BY e.ename
-plan:  InMemorySort([_current.ENAME#0 ASC], FlatMap(outer=PredicatesFilter(Scan(EMP), [1 preds]), inner=PredicatesFilter(Scan(DEPT, [=]), [1 preds])))
+plan:  InMemorySort([_current.ENAME#0 ASC], FlatMap(outer=PredicatesFilter(IndexScan(IDX_EMP_DID, [*]), [1 preds]), inner=PredicatesFilter(Scan(DEPT, [=]), [1 preds])))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === join_optimization_probes.yaml#3
@@ -11531,10 +11535,10 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === like_patterns_java.yaml#3
 sql:   SELECT id FROM items WHERE name LIKE 'apple'
-plan:  Map(PredicatesFilter(Scan(ITEMS), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(IDX_NAME, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === like_patterns_java.yaml#4
 sql:   SELECT id, name FROM items WHERE name LIKE 'app__' ORDER BY id
 plan:  Map(PredicatesFilter(Scan(ITEMS), [1 preds]), {ID: _current.ID#0, NAME: _current.NAME#1})
@@ -11550,11 +11554,12 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryCoveringIndexPlan
 === like_patterns_java.yaml#6
 sql:   SELECT COUNT(*) FROM items WHERE name LIKE '%'
-plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(ITEMS), [1 preds])), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], Fetch(PredicatesFilter(IndexScan(IDX_NAME, [*] COVERING), [1 preds]))), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryFetchFromPartialRecordPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryCoveringIndexPlan
 === like_patterns_java.yaml#7
 sql:   SELECT id, name FROM items WHERE name LIKE 'bl%' ORDER BY id
 plan:  Map(PredicatesFilter(Scan(ITEMS), [1 preds]), {ID: _current.ID#0, NAME: _current.NAME#1})
@@ -11569,11 +11574,12 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === like_patterns_java.yaml#9
 sql:   SELECT COUNT(*) FROM items WHERE name LIKE 'xyz%'
-plan:  Map(StreamingAgg(keys=[], PredicatesFilter(Scan(ITEMS), [1 preds])), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], Fetch(PredicatesFilter(IndexScan(IDX_NAME, [*] COVERING), [1 preds]))), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryFetchFromPartialRecordPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryCoveringIndexPlan
 === like_prefix_pushdown.yaml#0
 sql:   SELECT name FROM t WHERE name LIKE 'a%' ORDER BY name
 plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {NAME: _current.NAME#0})
@@ -11679,16 +11685,16 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === like_prefix_pushdown.yaml#17
 sql:   SELECT id FROM t2 WHERE status LIKE 'awa%'
-plan:  Map(PredicatesFilter(Scan(T2), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(IDX_STATUS, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === like_prefix_pushdown.yaml#18
 sql:   SELECT id FROM t2 WHERE status LIKE 'zzz%'
-plan:  Map(PredicatesFilter(Scan(T2), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(IDX_STATUS, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === like_prefix_pushdown.yaml#19
 sql:   UPDATE t SET tag = 'updated' WHERE name LIKE 'a%'
 plan:  Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(PredicatesFilter(Scan(T), [1 preds])))
@@ -12552,10 +12558,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryCoveringIndexPlan
 === nan_index_equality.yaml#5
 sql:   SELECT id FROM f WHERE d IN (CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE))
-plan:  Map(PredicatesFilter(Scan(F), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(F_D, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === nan_index_equality.yaml#6
 sql:   SELECT id, g FROM f WHERE d = CAST('NaN' AS DOUBLE) ORDER BY g
 plan:  InMemorySort([_current.G#1 ASC], Map(IndexScan(F_DG, [=, *] COVERING), {ID: _current.ID#0, G: _current.G#2}))
@@ -12580,28 +12586,28 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === nan_index_equality.yaml#10
 sql:   SELECT id FROM f WHERE d IN (CAST('NaN' AS DOUBLE)) AND g IN (1, 2)
-plan:  Map(PredicatesFilter(Scan(F), [2 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(F_DG, [*, *] COVERING), [2 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === nan_index_equality.yaml#11
 sql:   SELECT id FROM f WHERE d IN (CAST('NaN' AS DOUBLE), 1.5) AND g = 1
-plan:  Map(PredicatesFilter(Scan(F), [2 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(F_DG, [*, *] COVERING), [2 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === nan_index_equality.yaml#12
 sql:   SELECT id FROM f WHERE d IN (CAST('NaN' AS DOUBLE)) AND g > 1
-plan:  Map(PredicatesFilter(Scan(F), [2 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(F_DG, [*, *] COVERING), [2 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === nan_index_equality.yaml#13
 sql:   SELECT id FROM f WHERE d + 0.0 = CAST('NaN' AS DOUBLE)
-plan:  Map(PredicatesFilter(Scan(F), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(F_D, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === negative_values.yaml#0
 sql:   SELECT id FROM accounts WHERE balance < 0 ORDER BY balance
 plan:  Map(InMemorySort([_current._1#1 ASC], Map(PredicatesFilter(Scan(ACCOUNTS), [1 preds]), {ID: _current.ID#0, _1: _current.BALANCE#1})), {ID: _current.ID#0})
@@ -14292,10 +14298,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === order_by_elimination.yaml#15
 sql:   SELECT id FROM t ORDER BY id ASC NULLS LAST
-plan:  InMemorySort([_current.ID#0 ASC], Map(Scan(T), {ID: _current.ID#0}))
+plan:  InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_NAME, [*] COVERING), {ID: _current.ID#0}))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryMapPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === order_by_elimination.yaml#16
 sql:   SELECT id FROM t ORDER BY id LIMIT 3
 plan:  Limit(3, Map(Scan(T), {ID: _current.ID#0}))
@@ -14508,10 +14514,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === order_by_limit.yaml#0
 sql:   SELECT id, grp, v FROM t ORDER BY grp, v DESC
-plan:  InMemorySort([_current.GRP#1 ASC, _current.V#2 DESC], Map(Scan(T), {ID: _current.ID#0, GRP: _current.GRP#1, V: _current.V#2}))
+plan:  InMemorySort([_current.GRP#1 ASC, _current.V#2 DESC], Map(IndexScan(IDX_V, [*]), {ID: _current.ID#0, GRP: _current.GRP#1, V: _current.V#2}))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryMapPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === order_by_limit.yaml#1
 sql:   SELECT id FROM t ORDER BY id LIMIT 3
 plan:  Limit(3, Map(Scan(T), {ID: _current.ID#0}))
@@ -14563,19 +14569,19 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === order_by_limit.yaml#10
 sql:   SELECT id FROM t ORDER BY v * 2, id
-plan:  Map(InMemorySort([_current._1#1 ASC, _current.ID#0 ASC], Map(Scan(T), {ID: _current.ID#0, _1: (_current.V#2 * 2)})), {ID: _current.ID#0})
+plan:  Map(InMemorySort([_current._1#1 ASC, _current.ID#0 ASC], Map(IndexScan(IDX_V, [*] COVERING), {ID: _current.ID#0, _1: (_current.V#2 * 2)})), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryMapPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryCoveringIndexPlan
 === order_by_limit.yaml#11
 sql:   SELECT id, v FROM t ORDER BY ABS(v - 3), id LIMIT 2
-plan:  Limit(2, Map(InMemorySort([_current._2#2 ASC, _current.ID#0 ASC], Map(Scan(T), {ID: _current.ID#0, V: _current.V#2, _2: ABS((_current.V#2 - 3))})), {ID: _current.ID#0, V: _current.V#1}))
+plan:  Limit(2, Map(InMemorySort([_current._2#2 ASC, _current.ID#0 ASC], Map(IndexScan(IDX_V, [*] COVERING), {ID: _current.ID#0, V: _current.V#2, _2: ABS((_current.V#2 - 3))})), {ID: _current.ID#0, V: _current.V#1}))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryMapPlan
-shape:         RecordQueryScanPlan
+shape:         RecordQueryCoveringIndexPlan
 === order_by_limit.yaml#12
 sql:   SELECT * FROM t ORDER BY v * 2, id
 plan:  InMemorySort([(_current.V#2 * 2) ASC, _current.ID#0 ASC], Scan(T))
@@ -14593,16 +14599,16 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryCoveringIndexPlan
 === order_by_nulls.yaml#2
 sql:   SELECT v FROM t ORDER BY v ASC NULLS LAST
-plan:  InMemorySort([_current.V#0 ASC], Map(Scan(T), {V: _current.V#1}))
+plan:  InMemorySort([_current.V#0 ASC], Map(IndexScan(IDX_V, [*] COVERING), {V: _current.V#1}))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryMapPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === order_by_nulls.yaml#3
 sql:   SELECT v FROM t ORDER BY v DESC NULLS FIRST
-plan:  InMemorySort([_current.V#0 DESC], Map(Scan(T), {V: _current.V#1}))
+plan:  InMemorySort([_current.V#0 DESC], Map(IndexScan(IDX_V, [*] COVERING), {V: _current.V#1}))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryMapPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === order_by_nulls_java.yaml#0
 sql:   SELECT id, price FROM items ORDER BY price, id
 plan:  InMemorySort([_current.PRICE#1 ASC, _current.ID#0 ASC], Map(Scan(ITEMS), {ID: _current.ID#0, PRICE: _current.PRICE#2}))
@@ -14764,10 +14770,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === ordering_through_a_projection.yaml#7
 sql:   SELECT u.h FROM (SELECT g + 1 AS h FROM ga) u ORDER BY u.h
-plan:  InMemorySort([_current.H#0 ASC], Map(Scan(GA), {H: (_current.G#1 + 1)}))
+plan:  InMemorySort([_current.H#0 ASC], Map(IndexScan(GA_G, [*] COVERING), {H: (_current.G#1 + 1)}))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryMapPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === ordering_through_a_projection.yaml#8
 sql:   SELECT u.id FROM (SELECT g AS id, id AS g FROM ga) u ORDER BY u.id
 plan:  Map(IndexScan(GA_G, [*] COVERING), {ID: _current.G#1})
@@ -16764,10 +16770,10 @@ shape:   RecordQueryMapPlan
 shape:     RecordQueryCoveringIndexPlan
 === rfc202_generated_index_plans.yaml#5
 sql:   SELECT id FROM t_desc WHERE a = 5
-plan:  Map(PredicatesFilter(Scan(T_DESC), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(DESC_IDX, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === rfc202_generated_index_plans.yaml#6
 sql:   SELECT a, COUNT(*) FROM t_cover GROUP BY a
 plan:  Map(StreamingAgg(keys=[_current.A#1], IndexScan(COVER_IDX, [*] COVERING)), {A: _current.A#0, _1: _current.COUNT(*)#1})
@@ -17316,10 +17322,10 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#25
 sql:   SELECT id FROM t WHERE status = NULL
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(IDX_STATUS, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#26
 sql:   SELECT id FROM t2 WHERE region = 'us' AND plan_name = NULL
 plan:  Map(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [=, *] COVERING), [1 preds]), {ID: _current.ID#0})
@@ -18681,70 +18687,70 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === temporal_promotion.yaml#10
 sql:   SELECT id FROM t WHERE CAST(s AS DATE) = CAST('2024-01-01 00:00:00' AS TIMESTAMP)
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#11
 sql:   SELECT id FROM t WHERE CAST(s AS DATE) < CAST('2024-01-01 10:00:00' AS TIMESTAMP)
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#12
 sql:   SELECT id FROM t WHERE CAST(s AS TIMESTAMP) = CAST('2024-01-01' AS DATE)
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#13
 sql:   SELECT id FROM t WHERE CAST(s AS TIMESTAMP) >= CAST('2024-01-01' AS DATE)
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#14
 sql:   SELECT id FROM t WHERE CAST(s AS TIMESTAMP) BETWEEN CAST('2024-01-01' AS DATE) AND CAST('2024-01-01 10:00:00' AS TIMESTAMP)
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#15
 sql:   SELECT id FROM t WHERE CAST(s AS DATE) IN (CAST('2024-01-01 00:00:00' AS TIMESTAMP), CAST('2024-01-03 00:00:00' AS TIMESTAMP))
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#16
 sql:   SELECT id FROM t WHERE CAST(s AS TIMESTAMP) IN (CAST('2024-01-01' AS DATE), CAST('2024-01-02' AS DATE))
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#17
 sql:   SELECT id FROM t WHERE CAST(s AS TIMESTAMP) IN (CAST('2024-01-02' AS DATE), CAST('2024-01-01 10:00:00' AS TIMESTAMP))
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#18
 sql:   SELECT id FROM t WHERE CAST(s AS TIMESTAMP) NOT IN (CAST('2024-01-01' AS DATE))
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#19
 sql:   SELECT id FROM t WHERE CAST(s AS TIMESTAMP) IN (CAST(COALESCE(s, '1999-01-01') AS DATE), CAST('2099-01-01' AS DATE))
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#20 expect-error=0A000
 sql:   SELECT id FROM t WHERE CAST(s AS TIMESTAMP) IN (CAST(s AS DATE), CAST('2099-01-01' AS DATE))
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#21
 sql:   SELECT CASE WHEN id = 1 THEN CAST('2024-01-01' AS DATE) ELSE CAST('2024-01-01 10:00:00' AS TIMESTAMP) END FROM t WHERE id <= 2
 plan:  Map(Scan(T, [<>]), {_0: CASE(WHEN(predicate, TRUE), [PROMOTE(CAST('2024-01-01' AS DATE) TO TIMESTAMP), CAST('2024-01-01 10:00:00' AS TIMESTAMP)])})
@@ -18752,10 +18758,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === temporal_promotion.yaml#22
 sql:   SELECT id FROM t WHERE CASE WHEN id = 1 THEN CAST('2024-01-01' AS DATE) ELSE CAST('2024-01-01 10:00:00' AS TIMESTAMP) END = CAST('2024-01-01 00:00:00' AS TIMESTAMP)
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*] COVERING), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === temporal_promotion.yaml#23
 sql:   SELECT id FROM t WHERE id <= 2 AND CASE WHEN id = 1 THEN CAST('2024-01-01' AS DATE) ELSE CAST('2024-01-01 10:00:00' AS TIMESTAMP) END < CAST('2024-01-01 00:00:00' AS TIMESTAMP)
 plan:  Map(PredicatesFilter(Scan(T, [<>]), [1 preds]), {ID: _current.ID#0})
@@ -18769,15 +18775,15 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === temporal_promotion.yaml#25
 sql:   SELECT id, COALESCE(CAST(s AS DATE), CAST('1999-01-01 12:00:00' AS TIMESTAMP)) FROM t
-plan:  Map(Scan(T), {ID: _current.ID#0, _1: COALESCE(PROMOTE(CAST(_current.S#1 AS DATE) TO TIMESTAMP), CAST('1999-01-01 12:00:00' AS TIMESTAMP))})
+plan:  Map(IndexScan(T_D, [*]), {ID: _current.ID#0, _1: COALESCE(PROMOTE(CAST(_current.S#1 AS DATE) TO TIMESTAMP), CAST('1999-01-01 12:00:00' AS TIMESTAMP))})
 shape: RecordQueryMapPlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryIndexPlan
 === temporal_promotion.yaml#26
 sql:   SELECT id FROM t WHERE COALESCE(CAST(s AS DATE), CAST('1999-01-01 12:00:00' AS TIMESTAMP)) = CAST('2024-01-02 00:00:00' AS TIMESTAMP)
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#27
 sql:   SELECT id, IFNULL(CAST(s AS DATE), CAST('1999-01-01 12:00:00' AS TIMESTAMP)) FROM t WHERE id IN (1, 4)
 plan:  InJoin(Map(Scan(T, [=]), {ID: _current.ID#0, _1: IFNULL(PROMOTE(CAST(_current.S#1 AS DATE) TO TIMESTAMP), CAST('1999-01-01 12:00:00' AS TIMESTAMP))}), binding)
@@ -18836,10 +18842,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryCoveringIndexPlan
 === temporal_promotion.yaml#38
 sql:   SELECT id FROM t WHERE s < ?
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#39
 sql:   SELECT ? FROM t WHERE id = 1
 plan:  Map(Scan(T, [=]), {_0: '2023-12-31 22:00:00'})
@@ -18852,34 +18858,34 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === temporal_promotion.yaml#41
 sql:   SELECT id FROM t WHERE CAST(s AS DATE) = ?
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#42
 sql:   SELECT id FROM t WHERE s = ?
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#43
 sql:   SELECT id FROM t WHERE s = ?
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#44
 sql:   SELECT id FROM t WHERE s = CAST(? AS DATE)
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#45
 sql:   SELECT id FROM t WHERE s = CAST(? AS DATE)
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(T_D, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === temporal_promotion.yaml#46 expect-error=22008
 sql:   SELECT ? FROM t WHERE id = 1
 plan:  <PLAN-ERROR: 22008: parameter 1 is the instant 10000-01-01T04:00:00Z, outside the TIMESTAMP years 0000-9999 in UTC>
@@ -19197,22 +19203,22 @@ sql:   SELECT v FROM a UNION SELECT v FROM b
 plan:  <PLAN-ERROR: 0AF00: only UNION ALL is supported>
 === union_aggregate_java.yaml#0
 sql:   SELECT col1, col2 FROM t1 UNION ALL SELECT col1, col2 FROM t1 ORDER BY col1, col2
-plan:  InMemorySort([_current.COL1#0 ASC, _current.COL2#1 ASC], UnorderedUnion(Map(Scan(T1), {COL1: _current.COL1#1, COL2: _current.COL2#2}), Map(Scan(T1), {COL1: _current.COL1#1, COL2: _current.COL2#2})))
+plan:  InMemorySort([_current.COL1#0 ASC, _current.COL2#1 ASC], UnorderedUnion(Map(IndexScan(VI1, [*]), {COL1: _current.COL1#1, COL2: _current.COL2#2}), Map(IndexScan(VI1, [*]), {COL1: _current.COL1#1, COL2: _current.COL2#2})))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryUnorderedUnionPlan
 shape:     RecordQueryMapPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 shape:     RecordQueryMapPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 === union_aggregate_java.yaml#1
 sql:   SELECT id AS w, col1 AS x, col2 AS y FROM t1 UNION ALL SELECT id, col1, col2 FROM t1 ORDER BY w
-plan:  InMemorySort([_current.W#0 ASC], UnorderedUnion(Map(Scan(T1), {W: _current.ID#0, X: _current.COL1#1, Y: _current.COL2#2}), Map(Scan(T1), {W: _current.ID#0, X: _current.COL1#1, Y: _current.COL2#2})))
+plan:  InMemorySort([_current.W#0 ASC], UnorderedUnion(Map(IndexScan(VI1, [*]), {W: _current.ID#0, X: _current.COL1#1, Y: _current.COL2#2}), Map(IndexScan(VI1, [*]), {W: _current.ID#0, X: _current.COL1#1, Y: _current.COL2#2})))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryUnorderedUnionPlan
 shape:     RecordQueryMapPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 shape:     RecordQueryMapPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 === union_aggregate_java.yaml#2
 sql:   SELECT SUM(y) AS s FROM (SELECT COUNT(*) AS y FROM t1 UNION ALL SELECT COUNT(*) AS y FROM t2) AS x
 plan:  Map(StreamingAgg(keys=[], UnorderedUnion(Map(StreamingAgg(keys=[], Scan(T1)), {Y: COALESCE(_current.COUNT(*)#0, 0)}), Map(StreamingAgg(keys=[], Scan(T2)), {Y: COALESCE(_current.COUNT(*)#0, 0)}))), {S: _current.SUM(Y)#0})
@@ -19240,11 +19246,11 @@ shape:           RecordQueryInMemorySortPlan
 shape:             RecordQueryScanPlan
 === union_aggregate_java.yaml#4
 sql:   SELECT col1, col2 FROM t1 UNION ALL SELECT col1, col2 FROM t2 ORDER BY col1, col2
-plan:  InMemorySort([_current.COL1#0 ASC, _current.COL2#1 ASC], UnorderedUnion(Map(Scan(T1), {COL1: _current.COL1#1, COL2: _current.COL2#2}), Map(Scan(T2), {COL1: _current.COL1#1, COL2: _current.COL2#2})))
+plan:  InMemorySort([_current.COL1#0 ASC, _current.COL2#1 ASC], UnorderedUnion(Map(IndexScan(VI1, [*]), {COL1: _current.COL1#1, COL2: _current.COL2#2}), Map(Scan(T2), {COL1: _current.COL1#1, COL2: _current.COL2#2})))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryUnorderedUnionPlan
 shape:     RecordQueryMapPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 shape:     RecordQueryMapPlan
 shape:       RecordQueryScanPlan
 === union_aggregate_java.yaml#5 expect-error=42F64

@@ -117,14 +117,14 @@ func PrepareMatchesAndCompensations(
 			pm,
 			translatedRequestedOrderings,
 		)
-		// Go-only pruning: a full index scan with neither a search argument
-		// nor a requested ordering is dropped; a PRESERVE request asks for no
-		// order. Java keeps it and PREFER_INDEX picks it for predicate-free
-		// reads, which changes only row order; keeping it costs 2-3x planning
-		// time and the OR-union task budget.
-		if !satisfiesAnOrder(satisfying) && !hasRestrictedScan(pm) {
-			continue
-		}
+		// No Go-only pruning (F-7c): a full index scan with no search argument
+		// is kept, as Java keeps it (a PRESERVE request is satisfied by every
+		// scan), and PREFER_INDEX ranks it against the primary scan. Java also
+		// skips a match that satisfies NONE of the requested orderings
+		// (AbstractDataAccessRule.java:660-662); Go does not yet, because
+		// Go's callers pass request sets Java's would not (measured: the
+		// check alone moves 336 corpus plans, a join's inner probe among
+		// them). TODO.md F-7c records it.
 
 		// Required-for-binding gate (Java AbstractDataAccessRule line 665):
 		// skip a match that did not bind every sargable alias the candidate
@@ -954,17 +954,6 @@ func matchBoundPrefixIsCorrelated(pm PartialMatch) bool {
 // Row-dependent bounds disqualify independently evaluated intersection legs.
 func comparisonRowCorrelated(c *predicates.Comparison) bool {
 	return c != nil && len(c.GetCorrelatedTo()) > 0
-}
-
-// satisfiesAnOrder reports whether any of the satisfied requests asks for an
-// order rather than preserving whatever order arrives.
-func satisfiesAnOrder(satisfying []*properties.RequestedOrdering) bool {
-	for _, requested := range satisfying {
-		if !requested.IsPreserve() {
-			return true
-		}
-	}
-	return false
 }
 
 // SatisfiesRequestedOrdering checks if a PartialMatch's matched

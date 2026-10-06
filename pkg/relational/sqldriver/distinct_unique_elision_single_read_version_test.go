@@ -68,7 +68,10 @@ func TestFDB_DistinctUniqueElisionFiresInExplicitTx(t *testing.T) {
 	// index's exempt keys, R2 removes it outright once a NULL-rejecting conjunct
 	// discharges the exempt set.
 	const (
-		narrowedQ = "SELECT DISTINCT email FROM t1"
+		// The primary-key range keeps the base-record scan the narrowing runs
+		// over: bare, PREFER_INDEX reads BY_EMAIL1 whole in email order and
+		// dedups streaming (F-7c).
+		narrowedQ = "SELECT DISTINCT email FROM t1 WHERE id > 0"
 		elidedQ   = "SELECT DISTINCT email FROM t3 WHERE email IS NOT NULL"
 	)
 
@@ -190,7 +193,7 @@ func TestFDB_DistinctUniqueElisionNotCachedAcrossReadVersionScope(t *testing.T) 
 	t.Cleanup(func() { _ = db.Close() })
 	mwjoMustExec(t, db, ctx, "INSERT INTO t1 (id, email) VALUES (1, 'a@x'), (2, 'b@x')")
 
-	const q = "SELECT DISTINCT email FROM t1"
+	const q = "SELECT DISTINCT email FROM t1 WHERE id > 0" // a base scan; see narrowedQ above
 	conn := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
 
 	tx, err := conn.BeginTx(ctx, nil)

@@ -49,12 +49,14 @@ func TestFDB_DefaultStatisticsPlanSelection(t *testing.T) {
 			}
 		}
 
-		// Full scan — plan should show Scan(ORDERS).
+		// Full read — PREFER_INDEX reads idx_customer whole, as Java plans a
+		// predicate-free SELECT * (`ISCAN(I1 <,>)`, the WS-F oracle's
+		// w8_no_predicate row; F-7c).
 		q1 := "SELECT id, customer_id, amount FROM orders"
 		plan1 := planExplainVia(t, ctx, db, q1)
 		t.Logf("full scan plan: %s", plan1)
-		if !strings.Contains(plan1, "Scan(ORDERS") {
-			t.Fatalf("expected Scan(ORDERS) in plan, got: %s", plan1)
+		if !strings.Contains(plan1, "IndexScan(IDX_CUSTOMER, [*])") {
+			t.Fatalf("expected the full IDX_CUSTOMER read in plan, got: %s", plan1)
 		}
 		rows1, err := db.QueryContext(ctx, q1)
 		if err != nil {

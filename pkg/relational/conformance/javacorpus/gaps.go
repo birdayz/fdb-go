@@ -169,10 +169,9 @@ var engineGaps = []EngineGap{
 	// struct POSITIONALLY, which is what Java's parseRecordFields does with a
 	// target type in hand.
 	//
-	// Java's T3 leg is a full scan of the version index T3_VERSION_WITH_COL1
-	// (PREFER_INDEX, col1 rides in its value) and answers in version order; Go
-	// prunes the unrestricted index scan and reads T3 in primary-key order.
-	{"versions-tests.yamsql", SkipConformanceScanChoiceOrder, `line 575: "select t3.\"__ROW_VERSION\" AS version3, t3.id AS id3, t4.\"__ROW_VERSION\" AS version4, t4.id AS id4, t3.col2, t4.col4 from t3, t4 where t3.col1 = 'b' AND t4.col1 …": cell mismatch at row 5, cell ID3: expected 7 (Integer), got 4 (Long)`, "abstract_data_access_rule.go"},
+	// versions-tests.yamsql PASSES since F-7c: Go keeps the unrestricted scan
+	// of the version index T3_VERSION_WITH_COL1, so PREFER_INDEX reads the T3
+	// leg in version order, as Java does.
 	// The seeded schedule reaches the EXISTS LIMIT extension first.
 	{"orderby.yamsql", SkipConformanceGoAccepts, `"select b from t1 where exists (select * from t1 order by b limit 1)": expecting statement to throw an error 0AF00, however it succeeded`, "RFC-128; TestCorpusReadSideExtensions"},
 	// Java cannot satisfy both join-leg orderings from indexes; Go sorts the joined rows.

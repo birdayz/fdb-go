@@ -43,7 +43,9 @@ tests:
       INNER JOIN dept AS d ON e.did = d.did
       WHERE d.dname = 'eng' AND e.salary >= 95
       ORDER BY e.ename
-    plan_contains: "FlatMap(outer=PredicatesFilter(Scan(EMP)"
+    # The outer leg reads IDX_EMP_DID whole under PREFER_INDEX (F-7c), as
+    # Java ranks a full index scan over the primary scan.
+    plan_contains: "FlatMap(outer=PredicatesFilter(IndexScan(IDX_EMP_DID, [*]), [1 preds])"
     plan_not_contains: "NestedLoopJoin"
     rows:
       - ['Alice']

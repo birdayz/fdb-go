@@ -87,8 +87,12 @@ func TestFDB_DistinctUniqueElisionPagingRepro(t *testing.T) {
 	//
 	//	R3 (narrowed)  — the operator survives but retains only exempt keys
 	//	R2 (elided)    — a NULL-rejecting conjunct removes the operator entirely
+	// The primary-key range keeps R3 on the base-record scan, resuming by
+	// primary key: a bare SELECT DISTINCT email reads BY_EMAIL1 whole in email
+	// order under PREFER_INDEX (F-7c) and dedups streaming, which has no
+	// seen-set to narrow.
 	const (
-		narrowedQ = "SELECT DISTINCT email FROM t1"
+		narrowedQ = "SELECT DISTINCT email FROM t1 WHERE id > 0"
 		controlQ  = "SELECT DISTINCT email_plain FROM t2"
 		elidedQ   = "SELECT DISTINCT email FROM t3 WHERE email IS NOT NULL"
 	)
@@ -134,7 +138,7 @@ func TestFDB_DistinctUniqueElisionPagingRepro(t *testing.T) {
 	//	     which is ahead of it and still behind (V+1, 2). This is why the page
 	//	     size is one row: the boundary has to fall between V's two possible
 	//	     positions, and only a page that ends immediately after V does.
-	if !strings.Contains(narrowedPlan, "Scan(T1)") || strings.Contains(narrowedPlan, "IndexScan") {
+	if !strings.Contains(narrowedPlan, "Scan(T1") || strings.Contains(narrowedPlan, "IndexScan") {
 		t.Fatalf("the R3 arm no longer resumes by primary key: %s", narrowedPlan)
 	}
 	if !strings.Contains(elidedPlan, "IndexScan(BY_EMAIL3") {

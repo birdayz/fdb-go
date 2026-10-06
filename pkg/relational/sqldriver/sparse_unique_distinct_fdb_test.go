@@ -99,15 +99,18 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 		var err error
 
 		// ---- the control fires ------------------------------------------
-		if fullExplain, err = explainPlanOnErr(ctx, a.tx, "SELECT DISTINCT email FROM fu"); err != nil {
+		// Every statement carries the primary-key range id > 0, which keeps
+		// the base-record scan the narrowing runs over: bare, PREFER_INDEX
+		// reads FULL_U whole in email order and dedups streaming (F-7c).
+		if fullExplain, err = explainPlanOnErr(ctx, a.tx, "SELECT DISTINCT email FROM fu WHERE id > 0"); err != nil {
 			return err
 		}
 		// ---- the sparse index is refused ---------------------------------
-		if sparseExplain, err = explainPlanOnErr(ctx, a.tx, "SELECT DISTINCT email FROM sp"); err != nil {
+		if sparseExplain, err = explainPlanOnErr(ctx, a.tx, "SELECT DISTINCT email FROM sp WHERE id > 0"); err != nil {
 			return err
 		}
 		// ---- and the rows are right --------------------------------------
-		if got, err = dusrvDrainTxErr(ctx, a.tx, "SELECT DISTINCT email FROM sp"); err != nil {
+		if got, err = dusrvDrainTxErr(ctx, a.tx, "SELECT DISTINCT email FROM sp WHERE id > 0"); err != nil {
 			return err
 		}
 		return nil

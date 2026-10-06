@@ -78,11 +78,16 @@ func TestFDB_SelfComparisonNotSargedToCircularRange(t *testing.T) {
 		if len(got) != 2 {
 			t.Errorf("%q: got %d rows %v, want 2 (ids 1,2)", q, len(got), got)
 		}
-		// The plan must keep the self-comparison as a residual filter, never an
-		// index range scan over T_A (which would seek the circular a=<b> range).
-		plan := mwjoExplainer(t, db, ctx)(q)
-		if strings.Contains(strings.ToUpper(plan), "INDEXSCAN(T_A") {
+		// The plan must keep the self-comparison as a residual filter, never a
+		// BOUNDED index range scan over T_A (which would seek the circular a=<b>
+		// range). T_A read whole ([*]) under the residual is PREFER_INDEX's
+		// predicate-free read (F-7c), not a SARG.
+		plan := strings.ToUpper(mwjoExplainer(t, db, ctx)(q))
+		if strings.Contains(plan, "INDEXSCAN(T_A") && !strings.Contains(plan, "INDEXSCAN(T_A, [*]") {
 			t.Errorf("%q SARG'd self-comparison into circular index range: %s", q, plan)
+		}
+		if !strings.Contains(plan, "PREDICATESFILTER(") {
+			t.Errorf("%q lost its residual self-comparison: %s", q, plan)
 		}
 	}
 

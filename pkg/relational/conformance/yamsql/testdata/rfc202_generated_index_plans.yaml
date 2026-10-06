@@ -81,9 +81,11 @@ tests:
 
   # A bounded query on the wrapped column must NOT claim the order-encoded
   # index as a scan prefix (the stored bytes are the TupleOrdering encoding,
-  # not the raw value) — correctness pin for the non-sargable direction.
+  # not the raw value) — correctness pin for the non-sargable direction. The
+  # index may be READ whole under PREFER_INDEX (F-7c), but unbounded ([*]),
+  # with `a = 5` applied above it.
   - query: SELECT id FROM t_desc WHERE a = 5
-    plan_not_contains: DESC_IDX
+    plan_contains: "PredicatesFilter(IndexScan(DESC_IDX, [*] COVERING), [1 preds])"
     rows:
       - [1]
 

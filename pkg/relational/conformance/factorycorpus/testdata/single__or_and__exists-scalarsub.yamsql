@@ -26,8 +26,8 @@
 # blessing: metamorphic-tlp-only
 # oracles: tlp
 # feature-vector: shape=single;idx=A,B,D;proj=star;where=or(and(in.in,cmp.le),and(arith.gt,cmp.eq,!strfn.ne));exists=le.bare;scalarsub=1;order=desc.nf+asc
-# plan-shape: 4024ef51556347c4
-# dedup-key: 289f754cf504f944
+# plan-shape: 2a305097e9fd3113
+# dedup-key: 655d187187df58c8
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1884183 -seeds 1 -date 2026-08-09 -out <dir>
 ---
 schema_template: |-
@@ -84,8 +84,8 @@ test_block:
 # blessing: metamorphic-tlp-only
 # oracles: tlp
 # feature-vector: shape=single;idx=A,B,D;proj=n1;where=or(and(in.in,cmp.le),and(arith.gt,cmp.eq,!strfn.ne));exists=le.bare;scalarsub=1;order=desc.nf+asc
-# plan-shape: 32f4b5014a6d745a
-# dedup-key: 7d1275ce7522f47f
+# plan-shape: c4bc1f7a38213f7a
+# dedup-key: c30813c242b179b8
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1884183 -seeds 1 -date 2026-08-09 -out <dir>
 ---
 schema_template: |-
@@ -142,8 +142,8 @@ test_block:
 # blessing: metamorphic-tlp-only
 # oracles: tlp
 # feature-vector: shape=single;idx=A,B,D;proj=n5;where=or(and(in.in,cmp.le),and(arith.gt,cmp.eq,!strfn.ne));exists=le.bare;scalarsub=1;order=desc.nf+asc
-# plan-shape: 32f4b5014a6d745a
-# dedup-key: 02e760d56a0a7ed7
+# plan-shape: c4bc1f7a38213f7a
+# dedup-key: 4ef9748b0d3ee193
 # reproduce: bazelisk run //cmd/factory-run -- -seed-start 1884183 -seeds 1 -date 2026-08-09 -out <dir>
 ---
 schema_template: |-

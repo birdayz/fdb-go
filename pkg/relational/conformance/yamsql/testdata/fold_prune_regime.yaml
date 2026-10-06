@@ -53,10 +53,10 @@ tests:
   - query: SELECT id FROM T WHERE n = 5 AND NOT (id > 3)
     rows: [[2]]
   # Type annulments: IS NULL over a NOT NULL COALESCE is FALSE beside every
-  # access path, so no row and no division. Java scans T_N `<,>` under
-  # `FILTER false`; Go scans T under its FALSE filter (plan-only).
+  # access path, so no row and no division. Both engines read T_N whole under
+  # the FALSE filter: Java's `COVERING(T_N <,>) | FILTER false`.
   - query: SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL
-    plan_contains: "PredicatesFilter(Scan(T), [1 preds])"
+    plan_contains: "PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds])"
     rows: []
   - query: SELECT id FROM T WHERE id IN (1, 2) AND COALESCE(1 / 0, 5) IS NULL
     rows: []
@@ -69,10 +69,10 @@ tests:
   # beside the probe (measured: no rows). Go keeps the duplicates and the fold
   # [FALSE] wins on the conjunct count.
   - query: SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL AND COALESCE(1 / 0, 5) IS NULL
-    plan_contains: "PredicatesFilter(Scan(T), [1 preds])"
+    plan_contains: "PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds])"
     rows: []
   - query: SELECT id FROM T WHERE id = 5 AND TRUE AND COALESCE(1 / 0, 5) IS NULL
-    plan_contains: "PredicatesFilter(Scan(T), [1 preds])"
+    plan_contains: "PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds])"
     rows: []
   - query: SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NULL AND COALESCE(1 / 0, 5) IS NULL
     rows: []

@@ -43,8 +43,12 @@ func TestFDB_SecondPlanPreconditionIgnoresGeneratedAliases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
+	// U has no secondary index, so both connections plan the alias query the
+	// same way: with an index, PREFER_INDEX reads it whole on the default
+	// connection (F-7c) while the second-plan rules scan the table.
 	const ddl = "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) " +
-		"CREATE INDEX idx_a ON t (a)"
+		"CREATE INDEX idx_a ON t (a) " +
+		"CREATE TABLE u (id BIGINT, b BIGINT, PRIMARY KEY (id))"
 	db := openFactorySchema(t, ctx, "zzalias", ddl)
 
 	defaultConn, err := factory.PinConn(ctx, db, nil)
@@ -60,8 +64,11 @@ func TestFDB_SecondPlanPreconditionIgnoresGeneratedAliases(t *testing.T) {
 	if _, err := defaultConn.ExecContext(ctx, "INSERT INTO t VALUES (1,5,10),(2,3,20)"); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
+	if _, err := defaultConn.ExecContext(ctx, "INSERT INTO u VALUES (1,10),(2,20)"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
 
-	const query = "SELECT (SELECT MIN(b) FROM t) FROM t"
+	const query = "SELECT (SELECT MIN(b) FROM u) FROM u"
 
 	rawBase := explainVia(t, ctx, defaultConn, query)
 	rawAlt := explainVia(t, ctx, altConn, query)

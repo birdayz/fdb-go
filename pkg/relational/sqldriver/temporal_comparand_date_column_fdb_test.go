@@ -117,11 +117,13 @@ func TestFDB_TemporalComparandDateColumn(t *testing.T) {
 			t.Errorf("%s: index=%s residual=%s plan=%s; want both %s over %s",
 				tc.name, idx, res, plan, tc.want, tc.scan)
 		}
-		// The copy R is not indexed, so its read must be a residual filter over
-		// the record scan; an index plan here would make the pair compare two
-		// index reads.
-		if !strings.Contains(resPlan, "PredicatesFilter(Scan(X)") || strings.Contains(resPlan, "IndexScan") {
-			t.Errorf("%s: the residual copy's plan is %s, want a PredicatesFilter over Scan(X)", tc.name, resPlan)
+		// The copy R is not indexed, so its comparison must be a residual
+		// filter; an index BOUND by it would make the pair compare two index
+		// reads. PREFER_INDEX may read X_D whole under the residual (F-7c):
+		// that read binds nothing.
+		boundIndex := strings.Contains(resPlan, "IndexScan") && !strings.Contains(resPlan, "IndexScan(X_D, [*])")
+		if !strings.Contains(resPlan, "PredicatesFilter(") || boundIndex {
+			t.Errorf("%s: the residual copy's plan is %s, want a PredicatesFilter over an unbounded read", tc.name, resPlan)
 		}
 	}
 }

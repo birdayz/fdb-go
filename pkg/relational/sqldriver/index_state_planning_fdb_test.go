@@ -354,8 +354,11 @@ func TestFDB_IndexStatePlanning_SecondaryUniqueIndexProvesDistinctnessOnlyWhileR
 	logger := &syncCaptureLogger{}
 	conn := installLogger(t, f.db, logger)
 
+	// The primary-key range keeps the bare query's base-record scan (and with
+	// it the hash distinct the narrowing applies to): without it PREFER_INDEX
+	// reads U_EMAIL whole in EMAIL order and dedups streaming (F-7c).
 	const (
-		bare         = "SELECT DISTINCT EMAIL FROM T"
+		bare         = "SELECT DISTINCT EMAIL FROM T WHERE ID > 0"
 		nullRejected = "SELECT DISTINCT EMAIL FROM T WHERE EMAIL IS NOT NULL"
 		wantRows     = "a@example,b@example,c@example"
 	)

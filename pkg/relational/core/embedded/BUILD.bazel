@@ -208,6 +208,7 @@ go_test(
         "key_component_types_test.go",
         "lateral_collection_binding_test.go",
         "lazy_leg_mint_winner_test.go",
+        "left_join_in_partition_plan_test.go",
         "like_prefix_not_sargable_test.go",
         "limit_over_projection_covering_test.go",
         "logical_builder_test.go",
@@ -517,6 +518,7 @@ go_test(
         "in_union_partition_test.go",
         "aggregate_ungrouped_candidate_test.go",
         "fold_tie_pins_test.go",
+        "left_join_in_partition_plan_test.go",
     ],
     deps = [
         "//gen",
