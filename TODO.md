@@ -374,8 +374,9 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   `rule_error_propagation_test.go`. Go's re-arm also stands in for a CHILD's
   membership change (a parent rule over a member whose child gained a
   member must re-fire), which Java gets from bottom-up task order, not from
-  forcing. The conversion needs that ordering first. The large join is not cured by D2: a 6-table FK chain still
-  hits the 150k task cap (5 tables: 20.5k tasks).
+  forcing. The conversion needs that ordering first. The large join is not cured by D2: a 6-table FK chain takes
+  134894 tasks (5 tables: 20k), at Java's own count (122839; see the
+  large-join item below).
 - [ ] Reconcile query-block acceptance with the current translator: top-level
   Sort(Select), ORDER BY resolution against projected Values, DISTINCT ordering,
   index-DDL root handling and ordered IN. Old blocker prose in `TODO_OLD.md`
@@ -589,12 +590,29 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   the decoded layout. Thirteen shapes measured against their twins (index and
   PK ordering, IN, DISTINCT, SUM index, intersection, ON-source) now match;
   `escaped_column_index.yaml` pins them with rows.
-- [ ] Close the large-join memo planning-cost regression introduced by
+- [x] Close the large-join memo planning-cost regression introduced by
   `54fcf78f0`. Preserve Java's block-Select architecture. Investigate a cheap
   negative filter or fewer sibling alternatives using Java's PartitionSelectRule
   and Reference.insert. Cross-batch reference-comparison caching was rejected for
   excessive live heap, not left as a recommended fix. Exact historical measurements
   and SHAs are in the archive's RFC-257 completion ledger.
+  Closed as Java parity (2026-10-06). Java avoids neither cost: its
+  Reference.insert scans every member with `isMemoizedExpression`
+  (Reference.java:996-1018, deep `findMatches` + `containsAllInMemo`), and
+  Go's relational switches (right-deep, deferred cross products) are Java's.
+  Measured with the target's `planRuleTraceOutcome` TASK-COUNT (a scratch
+  conformance probe, not kept) against Go's `plan-trace`, `SELECT t1.id FROM
+  t1..tn WHERE ti.next_id = ti+1.id`:
+  4 tables Java 6731 / Go 3652 tasks; 5 tables 26722 / 20092; 6 tables
+  122839 tasks in 77.7 s / 134894 in 23.5 s; a 6-way self-join `o_i.id =
+  o_i+1.id` Java 118219 in 54 s; at 7 tables both shapes take Java over two
+  minutes. Go's 7-way self-join stops at its 150k cap in ~45 s
+  (`TestPlannerCapHit_ProductionSelectPathSQLSTATE`). Two filters were
+  measured on it and reverted, neither moving the time: Java's same-reference
+  shortcut restricted to the group's free aliases, and pruning the quantifier
+  bijection by the aliases' result-value/predicate components (3.76M
+  node-equal pairs, 3.73M negative; the cost is the pair count, ~10 us each,
+  ~40% GC).
 - [ ] Re-measure planner/executor stress against the actual merge-base with
   explicit SHAs and equal row populations; resolve regressions, not just timeouts.
 
