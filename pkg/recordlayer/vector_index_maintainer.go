@@ -111,7 +111,6 @@ type vectorIndexMaintainer struct {
 	standardIndexMaintainer
 	hnswSubspace subspace.Subspace
 	hnswConfig   HNSWConfig
-	storageCache map[string]*hnswStorage // subspace bytes → cached storage
 
 	// A GUARDIANN index keeps its own configuration, and its deferred-task
 	// counts and merge lock in the index's secondary subspace.
@@ -143,7 +142,6 @@ func newVectorIndexMaintainer(
 		return &vectorIndexMaintainer{
 			standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 			hnswSubspace:            hnswSubspace,
-			storageCache:            make(map[string]*hnswStorage),
 			engine:                  engine,
 			guardiannConfig:         gc,
 			secondarySubspace:       secondarySubspace,
@@ -158,7 +156,6 @@ func newVectorIndexMaintainer(
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		hnswSubspace:            hnswSubspace,
 		hnswConfig:              config,
-		storageCache:            make(map[string]*hnswStorage),
 	}, nil
 }
 
@@ -190,18 +187,17 @@ func (m *vectorIndexMaintainer) numDimensions() int {
 	return m.hnswConfig.NumDimensions
 }
 
-// getStorageForPrefix returns a cached hnswStorage for the given prefix subspace.
-// Reuses existing storage (and its parsed node cache) within the same maintainer lifetime.
+// getStorageForPrefix returns a fresh hnswStorage for the given prefix
+// subspace: its parsed-node cache lives for ONE engine operation, as Java's
+// HNSW node caches are created per insert / delete / search. A cache shared
+// across operations would let a node a SNAPSHOT search fetched (no read
+// conflict) serve a later serializable insert in the same transaction, which
+// then commits without the conflict that read owes (RFC-257 WS-D section 1).
+// FDB's read-your-writes cache still serves repeated reads in a transaction.
 func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswStorage {
-	ss := m.getSubspaceForPrefix(prefix)
-	key := string(ss.Bytes())
-	if cached, ok := m.storageCache[key]; ok {
-		return cached
-	}
-	storage := newHNSWStorage(ss, m.hnswConfig)
+	storage := newHNSWStorage(m.getSubspaceForPrefix(prefix), m.hnswConfig)
 	storage.env = m.store.Env()
 	storage.timer = m.timer()
-	m.storageCache[key] = storage
 	return storage
 }
 
@@ -1252,11 +1248,8 @@ func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 			return err
 		}
 	}
-	// Every cached graph under the cleared range is now stale. The cache is
-	// per-maintainer (so per-transaction), and dropping all of it is both
-	// correct and cheap; keeping an entry whose bytes were just cleared would
-	// let a post-clear read resurrect deleted nodes from memory.
-	m.storageCache = make(map[string]*hnswStorage)
+	// No graph cache outlives an operation (getStorageForPrefix), so nothing
+	// cached can resurrect the cleared nodes.
 	return nil
 }
 

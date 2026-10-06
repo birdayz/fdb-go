@@ -305,6 +305,7 @@ go_test(
         "hnsw_distance_bytes_test.go",
         "hnsw_ef_search_fdb_test.go",
         "hnsw_iterator_error_test.go",
+        "hnsw_operation_local_cache_fdb_test.go",
         "hnsw_stats_test.go",
         "index_bug_verify_test.go",
         "index_candidacy_classification_test.go",

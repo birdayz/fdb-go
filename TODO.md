@@ -778,6 +778,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   +Inf, non-finite NaN, no clamp) and HNSW orders distances by Double.compare
   (`hnsw_cosine_java_test.go`, mutation-checked); SPFresh keeps its own
   clamped cosine (`spfreshVectorDistance`), as the design requires.
+  Operation-local caches done (2026-10-06): the maintainer no longer caches
+  HNSW storage across operations; each insert/delete/search gets its own
+  parsed-node cache, as Java's. The shared cache let a snapshot search's
+  nodes serve a later insert in the same transaction, which then committed
+  without the read conflicts it owed
+  (`hnsw_operation_local_cache_fdb_test.go`, mutation-checked).
 - [ ] Distinguishing pins for codecs, evaluator, collapse, bounce, reassignment,
   task counts and merge locks.
 - [ ] Runner: unified bounded attempts, per-owner retries, commit ownership and
