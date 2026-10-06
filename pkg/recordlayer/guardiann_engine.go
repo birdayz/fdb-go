@@ -358,17 +358,30 @@ func reportMergeProgress(control *IndexDeferredMaintenanceControl, executed int,
 }
 
 // disableOnNegativeTaskCount marks the index disabled at commit, as Java's
-// disableIndexOnNegativeTaskCount commit check does.
+// disableIndexOnNegativeTaskCount commit check does
+// (VectorIndexMaintainer.java:605-616, keyed "disableVectorIndexOnNegativeTaskCount:"
+// per index, so repeated trips disable once). At commit it runs after the
+// checks registered before it, the merger's heartbeat refresh among them,
+// which still see the index in its state; the disable then commits, and the
+// session's next refresh finds it disabled. Scoped to the store, as the
+// pending-queue overflow disable is, so DeleteStore cancels it.
 func (m *vectorIndexMaintainer) disableOnNegativeTaskCount() error {
 	s, ok := m.store.(*FDBRecordStore)
 	if !ok {
 		return nil
 	}
-	changed, err := s.MarkIndexDisabled(m.index.Name)
-	if changed {
-		s.context.Timer().Increment(CountVectorIndexDisabledOnNegativeTaskCount)
-	}
-	return err
+	name := pendingWriteCommitCheckPrefix(s.subspace) + "disableVectorIndexOnNegativeTaskCount:" + m.index.Name
+	indexName := m.index.Name
+	s.context.getOrCreateCommitCheck(name, func(string) CommitCheckFunc {
+		return func() error {
+			changed, err := s.MarkIndexDisabled(indexName)
+			if err == nil && changed {
+				s.context.Timer().Increment(CountVectorIndexDisabledOnNegativeTaskCount)
+			}
+			return err
+		}
+	})
+	return nil
 }
 
 // vectorMergeLock is VectorIndexMergeLock: a leased owner per partition.

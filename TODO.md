@@ -705,6 +705,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   fallbacks; empty-core repair; primary-preferred cleanup; underreplication
   deltas; committed negative-count disable. Checked decoding, task poisoning,
   KMeans preconditions and merge/drain target checks have prior fixes.
+  Committed negative-count disable is done: the disable is Java's keyed commit
+  check, run after the merger's heartbeat refresh, so it commits (it used to
+  roll back with the refresh's "Unexpected index state(s)"), and counts
+  `vector_index_disabled_on_negative_task_count`
+  (`guardiann_negative_count_test.go`).
 - [ ] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
   covering/rank results, search-free continuation replay, operation-local caches,
   partition locks, cosine zero/clamp, sample-UUID closure, option catalog/identity.
