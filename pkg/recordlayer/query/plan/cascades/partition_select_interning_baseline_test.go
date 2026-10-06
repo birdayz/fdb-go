@@ -365,9 +365,13 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 		// A re-exploration re-queues only the rules whose declared constraint
 		// changed (Java's dependency gate, RFC-257 WS-F D2): 564→546,
 		// 2367→2219, 13968→12985.
-		{3, 546},
-		{4, 2219},
-		{5, 12985},
+		// ImplementTypeFilterRule yields a scan the filter already covers bare
+		// rather than wrapping it (Java's per-partition rule, WS-F F-8), so
+		// the memo holds one plan fewer per covered scan: 546→526, 2219→2155,
+		// 12985→12775.
+		{3, 526},
+		{4, 2155},
+		{5, 12775},
 	}
 	for _, tc := range cases {
 		got := planChainTasks(t, tc.tables)
@@ -389,9 +393,11 @@ func TestUnionExplorationSchedulingCost(t *testing.T) {
 		// SelectMerge over pruned finals instead of in exploration: 4 fewer each.
 		// Java's dependency gate on re-exploration (WS-F D2): 558→546,
 		// 2361→2219, 2553→2379.
-		{"chain3", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 3) }, 546, 546},
-		{"chain4", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 4) }, 2219, 2219},
-		{"star3", func() expressions.RelationalExpression { return buildOrdinalStar(t, 3) }, 2379, 2379},
+		// Covered scans yielded without a type filter (WS-F F-8): 546→526,
+		// 2219→2155, 2379→2355.
+		{"chain3", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 3) }, 526, 526},
+		{"chain4", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 4) }, 2155, 2155},
+		{"star3", func() expressions.RelationalExpression { return buildOrdinalStar(t, 3) }, 2355, 2355},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

@@ -349,7 +349,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   and D3/D4 (conditional chains on progress) were already in place.
   Still open: D5's re-arm conversion (Go's group-wide `lastRearmTick` re-arm
   to Java's per-expression forced exploration), the `outerJoinCount` placement
-  review, and F-8. D5 measured and reverted (2026-10-06): forcing only the
+  review, and F-8. F-8 started (2026-10-06): ImplementTypeFilterRule is
+  Java's per-partition rule. Over each stored-record partition of the inner,
+  a plan the filter already covers is yielded bare and the others are grouped
+  by kept types into a TypeFilterPlan over `MemoizeMemberPlansFromOther`; no
+  winner is pre-selected. No corpus plan moved; tasks fell (chains 3/4/5
+  546→526, 2219→2155, 12985→12775; star 2379→2355). Still pre-selecting via
+  `getWinnerForOrdering`, one rule family per commit: insert, intersection,
+  the NLJ (3 sites), recursive DFS join (2), recursive level union (2),
+  temp-table insert. ImplementLimit's stays (approved Go extension).
+  D5 measured and reverted (2026-10-06): forcing only the
   members past the last round's count, with a re-arm no longer re-queuing
   every rule, moved no corpus plan but RAISED tasks (4-table chain 4500→4818,
   5-table 20557→21836) and broke `TestUnorderedUnionFetchSchedulingRetainsFutureFetchLeg`
@@ -497,6 +506,17 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     (`w8_in25`, `w8_in_union`, `w8_tie_in`), ordered union by primary key
     (`w8_or_two_indexes`). The 1M stress comparison the design requires with
     F-7c has NOT run (stress lane; needs the owner's go-ahead).
+  - Measured after F-7c (2026-10-06), both reverted: deleting the
+    single-element IN collapse (WS-E step 5) moves 13 plans, and the ORDER BY
+    rows still go from a streaming probe to `InMemorySort(InJoin(...))`;
+    ranking the in-memory-sort count FIRST (emulating Java, which has no
+    in-memory sort and so plans an order-providing plan wherever one exists)
+    flips 93 plans, several clearly worse (`cte.yaml#20` runs a streaming
+    aggregate per row of a full scan; `comma_join_exists.yaml#2` reverses the
+    driving table). The IN-join-versus-filtered-scan follow-up needs a narrower
+    rule than "sort-free first": Java's plans for these rows are order-
+    providing scans because Java cannot sort, not because its cost model
+    prefers them.
   History, from the measurement before it landed:
   The fast lane with the pruning off failed 22 tests and exposed two defects
   the pruning had masked, both of which blocked F-7c:

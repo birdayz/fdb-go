@@ -1,25 +1,24 @@
 package cascades
 
 import (
+	"sort"
+	"strings"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// ImplementTypeFilterRule implements a logical LogicalTypeFilterExpression
-// as a physical RecordQueryTypeFilterPlan, gated on the inner Reference
-// having at least one physical-plan member.
-//
-//	TypeFilter([T1, T2], inner-with-physical-member)
-//	  →  TypeFilterPlan([T1, T2], inner-physical)
-//
-// Same gating pattern as Implement{Filter,Sort,Distinct}.
-//
-// Java's ImplementTypeFilterRule consults PlanPartition properties
-// to filter only over partitions producing stored records (not
-// covering-index partitions); Go always emits the simple
-// type-filter.
+// ImplementTypeFilterRule implements a logical LogicalTypeFilterExpression,
+// Java's ImplementTypeFilterRule: over each plan partition of the inner that
+// produces stored records, a plan whose record types the filter already
+// covers is yielded as it is (no type filter needed), and the other plans are
+// grouped by the record types the filter keeps from them, each group yielding
+// one RecordQueryTypeFilterPlan over a reference restricted to it
+// (MemoizeMemberPlansFromOther). OptimizeGroup chooses among the yields; the
+// rule pre-selects nothing (RFC-257 WS-F F-8). A plan whose record types
+// cannot be stated keeps the filter.
 type ImplementTypeFilterRule struct {
 	matcher matching.BindingMatcher
 }
@@ -42,22 +41,56 @@ func (r *ImplementTypeFilterRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	winner, _ := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
-	if winner == nil {
-		return
+	filterTypes := map[string]struct{}{}
+	for _, rt := range tf.GetRecordTypes() {
+		filterTypes[rt] = struct{}{}
 	}
-	if _, ok := winner.(physicalPlanExpression); !ok {
-		return
+	computeRefPlanProperties(innerRef)
+	for _, partition := range ToPlanPartitions(innerRef) {
+		if !partition.GetPartitionPropertiesMap().GetBool(properties.PropStoredRecord) {
+			continue
+		}
+		var keys []string
+		unsatisfied := map[string][]expressions.RelationalExpression{}
+		kept := map[string][]string{}
+		for _, member := range partition.GetPhysicalExpressions() {
+			childTypes := properties.EvaluateRecordTypes(member)
+			covered := len(childTypes) > 0
+			var keep []string
+			for rt := range childTypes {
+				if _, ok := filterTypes[rt]; ok {
+					keep = append(keep, rt)
+				} else {
+					covered = false
+				}
+			}
+			if covered {
+				call.Yield(member)
+				continue
+			}
+			if len(childTypes) == 0 {
+				keep = append(keep, tf.GetRecordTypes()...)
+			}
+			sort.Strings(keep)
+			key := strings.Join(keep, "\x00")
+			if _, seen := unsatisfied[key]; !seen {
+				keys = append(keys, key)
+				kept[key] = keep
+			}
+			unsatisfied[key] = append(unsatisfied[key], member)
+		}
+		for _, key := range keys {
+			// The type filter is its own cascades expression (RFC-184 W2): it
+			// carries the live child edge directly.
+			innerQ := expressions.NewPhysicalQuantifier(call.MemoizeMemberPlansFromOther(innerRef, unsatisfied[key]))
+			tfPlan, err := plans.NewRecordQueryTypeFilterPlanFromQuantifier(kept[key], innerQ)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			call.Yield(tfPlan)
+		}
 	}
-	// The type filter is its own cascades expression now (RFC-184 W2) — it carries
-	// the live child edge directly, no physicalTypeFilterWrapper.
-	innerQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(winner))
-	tfPlan, err := plans.NewRecordQueryTypeFilterPlanFromQuantifier(tf.GetRecordTypes(), innerQ)
-	if err != nil {
-		call.Fail(err)
-		return
-	}
-	call.Yield(tfPlan)
 }
 
 var _ ExpressionRule = (*ImplementTypeFilterRule)(nil)
