@@ -250,6 +250,9 @@ Never mark a whole workstream complete because one of its subitems passed.
     (`TestRejectsNull_ShapesThroughThePortedSet`). `NOT (k = 5)` is not
     proven in either engine: children fold first, and the set has no NOT
     over a constant.
+  - (h): DIVERGENCES.md "Constant-fold defects and fold ties" records the
+    target's VerifyException (COALESCE under AND/NOT, beside an IN list) and
+    CASE-branch defects with Go's answers, and the schema-dependent hash ties.
   Done: LOG_QUERY (statement and connection) sets `PlanGenerationInfo.LogQuery`
   (`TestPlanLogging_LogQueryFlag`). Literal decoding and the decorated-literal
   refusals were already implemented and now have a fast-lane pin

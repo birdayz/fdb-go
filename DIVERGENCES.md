@@ -2783,3 +2783,30 @@ description is the object's class name and identity hash, different on every loa
 (`RecordMetadataDeserializer.generateInvokedRoutineBuilder`). Go describes a macro by
 its function name. A SQL-bodied function and a view are described by their stored
 definition in both engines.
+
+## Constant-fold defects and fold ties (WS-E 5.4(g)/(h))
+
+Java 4.14.2.0 fails on some well-typed predicates its simplification touches, with internal
+errors; Go answers them:
+
+- `WHERE COALESCE(TRUE, 1 / 0 = 1) AND n > 0` and `WHERE NOT COALESCE(FALSE, 1 / 0 = 1)`: Java
+  raises XX000 `VerifyException` (upstream bug). Go plans both. The AND row keeps the fold on the
+  conjunct count and answers the rows with `n > 0`. The NOT row is a hash tie that keeps the
+  unfolded `NOT (COALESCE(FALSE, ...) = TRUE)`, and a COALESCE evaluates every argument as Java's
+  does, so it raises 22012.
+- `WHERE id IN (1, 2) AND 1 / 0 = 1 AND 1 = 2`: Java raises XXXXX `VerifyException` beside the IN
+  list; Go raises the division (22012), as Java does for the same shape without the IN list.
+- `WHERE CASE WHEN id > 0 THEN 1 ELSE 1 / 0 END IS NULL`: Java raises 22000 (INCOMPATIBLE_TYPE on the
+  CASE branch); Go evaluates the CASE per row, and every row takes the literal branch, so no rows.
+
+A fold to NULL ties the unfolded predicate on every cost rung but the semantic hash. Java decides
+by `semanticHashCode`, so its answer for `WHERE (1 / 0) + CAST(NULL AS INTEGER) = 1` depends on the
+schema: `FILTER null` and no rows over a two-table template, the division over a seven-table one.
+Go's walker collapses arithmetic over a typed NULL when it builds the value, so its unfolded member is
+`NULL = 1` and both members answer no rows: the hash picks Go's plan, never its answer. Go answers no
+rows over both templates, so it differs from Java on the template where Java raises the division.
+`COALESCE(1 / 0, 5) IS NULL` folds to FALSE when Go builds it, with no tie, matching the answer Java's
+prune gives. The rows are declared in `wseGoDivergences`
+(`conformance/ws_e_probe_conformance_test.go`); Go's answers and plans are pinned by the WS-E
+oracle's Go pins and `TestFoldTiePins_DecidingRung` (`pkg/relational/core/embedded`), which also
+records the rung that decides each row.
