@@ -354,8 +354,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   2559→2379; right-deep hub+6 9308→7071), pins re-baselined. D1 (progress)
   and D3/D4 (conditional chains on progress) were already in place.
   Still open: D5's re-arm conversion (Go's group-wide `lastRearmTick` re-arm
-  to Java's per-expression forced exploration), the `outerJoinCount` placement
-  review. F-8 is done (2026-10-06). ImplementTypeFilterRule is
+  to Java's per-expression forced exploration). The `outerJoinCount` review
+  is closed (2026-10-06): the design kept it omitted with a PLANNING
+  re-derivation of `RewriteOuterJoinRule`, and WS-J's v36 fold superseded
+  that. `outerJoinCount` is the REWRITING comparator's first criterion, as
+  in Java (`rewritingComparator.compare`, LEFT OUTER selects), and
+  `RewriteOuterJoinRule` runs only in REWRITING (`RewritingRules`); no
+  PLANNING registration remains (DIVERGENCES.md, the REWRITING cost model).
+  F-8 is done (2026-10-06). ImplementTypeFilterRule is
   Java's per-partition rule. Over each stored-record partition of the inner,
   a plan the filter already covers is yielded bare and the others are grouped
   by kept types into a TypeFilterPlan over `MemoizeMemberPlansFromOther`; no
