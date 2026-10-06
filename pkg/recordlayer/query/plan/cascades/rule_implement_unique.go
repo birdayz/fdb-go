@@ -26,6 +26,11 @@ func NewImplementUniqueRule() *ImplementUniqueRule {
 
 func (r *ImplementUniqueRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *ImplementUniqueRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *ImplementUniqueRule) OnMatch(call *ImplementationRuleCall) {
 	expr := call.Bindings.Get(r.matcher).(*expressions.LogicalUniqueExpression)
 

@@ -156,6 +156,11 @@ func NewImplementInUnionRule() *ImplementInUnionRule {
 
 func (r *ImplementInUnionRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *ImplementInUnionRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 	selectExpr := call.Bindings.Get(r.matcher).(*expressions.SelectExpression)
 

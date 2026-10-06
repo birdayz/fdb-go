@@ -89,6 +89,11 @@ func admissibleStreamingAggInner(expr expressions.RelationalExpression) bool {
 	return plans.EvaluateContinuableWithoutDuplicates(p)
 }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *ImplementStreamingAggregationRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	gb := matching.Get[*expressions.GroupByExpression](call.Bindings, r.matcher)
 	for _, agg := range gb.GetAggregates() {

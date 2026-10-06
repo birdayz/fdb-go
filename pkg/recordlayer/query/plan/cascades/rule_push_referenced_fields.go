@@ -26,6 +26,11 @@ func NewPushReferencedFieldsThroughFilterRule() *PushReferencedFieldsThroughFilt
 
 func (r *PushReferencedFieldsThroughFilterRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REFERENCED_FIELDS).
+func (r *PushReferencedFieldsThroughFilterRule) ConstraintDependencies() []any {
+	return []any{ReferencedFieldsConstraintKey}
+}
+
 func (r *PushReferencedFieldsThroughFilterRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return
@@ -60,6 +65,11 @@ func NewPushReferencedFieldsThroughSelectRule() *PushReferencedFieldsThroughSele
 }
 
 func (r *PushReferencedFieldsThroughSelectRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+// ConstraintDependencies is Java's ImmutableSet.of(REFERENCED_FIELDS).
+func (r *PushReferencedFieldsThroughSelectRule) ConstraintDependencies() []any {
+	return []any{ReferencedFieldsConstraintKey}
+}
 
 func (r *PushReferencedFieldsThroughSelectRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
@@ -102,6 +112,11 @@ func (r *PushReferencedFieldsThroughDistinctRule) hasConstraintEffect(cm *Constr
 	return passThroughConstraintHasEffect(cm, ref, expr, ReferencedFieldsConstraintKey)
 }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REFERENCED_FIELDS).
+func (r *PushReferencedFieldsThroughDistinctRule) ConstraintDependencies() []any {
+	return []any{ReferencedFieldsConstraintKey}
+}
+
 func (r *PushReferencedFieldsThroughDistinctRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return
@@ -139,6 +154,11 @@ func (r *PushReferencedFieldsThroughUniqueRule) Matcher() matching.BindingMatche
 
 func (r *PushReferencedFieldsThroughUniqueRule) hasConstraintEffect(cm *ConstraintMap, ref *expressions.Reference, expr expressions.RelationalExpression) bool {
 	return passThroughConstraintHasEffect(cm, ref, expr, ReferencedFieldsConstraintKey)
+}
+
+// ConstraintDependencies is Java's ImmutableSet.of(REFERENCED_FIELDS).
+func (r *PushReferencedFieldsThroughUniqueRule) ConstraintDependencies() []any {
+	return []any{ReferencedFieldsConstraintKey}
 }
 
 func (r *PushReferencedFieldsThroughUniqueRule) OnMatch(call *ImplementationRuleCall) {

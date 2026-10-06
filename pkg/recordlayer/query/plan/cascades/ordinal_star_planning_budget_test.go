@@ -87,8 +87,8 @@ const starWallClockCeiling = 5 * time.Second
 //     re-explodes shared sub-products blows past the 100k budget (measured
 //     2026-10-01: hub+4 is the widest all-live star that still converges, at
 //     12,860 tasks; hub+5 exhausts the budget — see TestOrdinalStarRightDeepBudget).
-//   - task-count == 2559 ±2% — the STAR-topology search/admission sentinel,
-//     complementing the CHAIN baseline (564/2367): a different topology
+//   - task-count == 2379 ±2% — the STAR-topology search/admission sentinel,
+//     complementing the CHAIN baseline (546/2219): a different topology
 //     stresses structurally-identical sub-product proposals differently.
 //     IsOrdinalJoinRV admitting bare TYPED QOV fields keeps the
 //     post-translation MIXED upper RVs (ofOrdinal-over-merge alongside bare leg
@@ -143,8 +143,10 @@ func TestOrdinalStarPlanningBudget(t *testing.T) {
 	// member (ExactReplica): 6488→2093. A filter over one same-typed leg no
 	// longer claims another leg's pinned outer read as its own row: 2093→2087.
 	// Partitioning splits the merged hub range per spoke, so each spoke's part
-	// can be placed on its own: 2087→2559.
-	const wantTasks = 2559
+	// can be placed on its own: 2087→2559. A re-exploration re-queues only
+	// the rules whose declared constraint changed (Java's dependency gate,
+	// RFC-257 WS-F D2): 2559→2379.
+	const wantTasks = 2379
 	tol := wantTasks / 50 // ±2%
 
 	best := time.Hour

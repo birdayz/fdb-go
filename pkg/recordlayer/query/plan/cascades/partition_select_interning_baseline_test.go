@@ -362,9 +362,12 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 		// A filter over one same-typed leg no longer claims another leg's pinned
 		// outer read as its own row (ReanchorOwnedValueForLayout): 559→564,
 		// 2381→2367, 14163→13968.
-		{3, 564},
-		{4, 2367},
-		{5, 13968},
+		// A re-exploration re-queues only the rules whose declared constraint
+		// changed (Java's dependency gate, RFC-257 WS-F D2): 564→546,
+		// 2367→2219, 13968→12985.
+		{3, 546},
+		{4, 2219},
+		{5, 12985},
 	}
 	for _, tc := range cases {
 		got := planChainTasks(t, tc.tables)
@@ -384,9 +387,11 @@ func TestUnionExplorationSchedulingCost(t *testing.T) {
 		before, after int
 	}{
 		// SelectMerge over pruned finals instead of in exploration: 4 fewer each.
-		{"chain3", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 3) }, 558, 558},
-		{"chain4", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 4) }, 2361, 2361},
-		{"star3", func() expressions.RelationalExpression { return buildOrdinalStar(t, 3) }, 2553, 2553},
+		// Java's dependency gate on re-exploration (WS-F D2): 558→546,
+		// 2361→2219, 2553→2379.
+		{"chain3", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 3) }, 546, 546},
+		{"chain4", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 4) }, 2219, 2219},
+		{"star3", func() expressions.RelationalExpression { return buildOrdinalStar(t, 3) }, 2379, 2379},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

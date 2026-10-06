@@ -165,7 +165,10 @@ func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 		}
 	}
 	// Keep both growth and collapse alarms over the hub+6 all-live population.
-	const rightDeepObservedTasks = 9308
+	// 9308→7071: a re-exploration re-queues only the rules whose declared
+	// constraint changed (Java's dependency gate, RFC-257 WS-F D2); the table
+	// check above confirms the star is still all-live.
+	const rightDeepObservedTasks = 7071
 	rdTol := rightDeepObservedTasks / 50 // +/-2%, matching the Cascades-level star sentinel
 	if rdTasks < rightDeepObservedTasks-rdTol || rdTasks > rightDeepObservedTasks+rdTol {
 		t.Errorf("PLAN_RIGHT_DEEP tasks=%d, want %d +/-2%% ([%d,%d]) over the hub+6 all-live star. "+

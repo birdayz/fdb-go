@@ -34,6 +34,11 @@ func IsPhysicalLimit(expr expressions.RelationalExpression) bool {
 
 func (r *ImplementLimitRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+// ConstraintDependencies: the rule reads the requested orderings (Go-only rule).
+func (r *ImplementLimitRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
 	lim := matching.Get[*expressions.LogicalLimitExpression](call.Bindings, r.matcher)
 

@@ -24,9 +24,12 @@ func TestSelectOrderingAdmissionPreservesJoinExploration(t *testing.T) {
 		build   func() expressions.RelationalExpression
 		savings int
 	}{
-		{"chain3", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 3) }, 21},
-		{"chain4", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 4) }, 124},
-		{"star3", func() expressions.RelationalExpression { return buildOrdinalStar(t, 3) }, 145},
+		// The SELECT ordering rule declares its constraint (WS-F D2), so the
+		// unadmitted baseline re-fires it less on re-exploration: 21→15,
+		// 124→85, 145→93.
+		{"chain3", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 3) }, 15},
+		{"chain4", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 4) }, 85},
+		{"star3", func() expressions.RelationalExpression { return buildOrdinalStar(t, 3) }, 93},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

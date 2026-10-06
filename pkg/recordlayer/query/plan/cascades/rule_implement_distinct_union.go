@@ -40,6 +40,11 @@ func NewImplementDistinctUnionRule() *ImplementDistinctUnionRule {
 
 func (r *ImplementDistinctUnionRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *ImplementDistinctUnionRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *ImplementDistinctUnionRule) OnMatch(call *ImplementationRuleCall) {
 	distinct := call.Bindings.Get(r.matcher).(*expressions.LogicalUniqueExpression)
 

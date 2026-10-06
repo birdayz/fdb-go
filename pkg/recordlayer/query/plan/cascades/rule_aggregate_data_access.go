@@ -54,6 +54,13 @@ func NewAggregateDataAccessRule() *AggregateDataAccessRule {
 
 func (r *AggregateDataAccessRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+// ConstraintDependencies: the rule reads the requested orderings (a reverse
+// aggregate scan is built only when it serves one). Go-only declaration: Java's
+// data-access rules run from match partitions, not re-exploration.
+func (r *AggregateDataAccessRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 	gb := matching.Get[*expressions.GroupByExpression](call.Bindings, r.matcher)
 

@@ -254,6 +254,7 @@ go_test(
         "compensation_monoid_test.go",
         "compensation_test.go",
         "conditional_rules_test.go",
+        "constraint_dependencies_test.go",
         "correlated_intersection_guard_test.go",
         "cost_fuzz_test.go",
         "cost_model_total_preorder_test.go",
@@ -1183,6 +1184,7 @@ go_test(
         "rule_aggregate_roll_up.go",
         "rule_constant_folding.go",
         "rule_constant_folding_test.go",
+        "constraint_dependencies_test.go",
     ],
     deps = [
         "//gen",

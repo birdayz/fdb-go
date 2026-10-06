@@ -32,6 +32,11 @@ func NewImplementInJoinRule() *ImplementInJoinRule {
 
 func (r *ImplementInJoinRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *ImplementInJoinRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 	if call.IsConstraintOnly() || call.CancellationErr() != nil {
 		return

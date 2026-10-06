@@ -260,8 +260,22 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   deleted. Two corpus plans moved, both a self-join's inner leg, from a primary
   key range with a filter to the index equality probe, as PREFER_INDEX ranks
   them (`join_optimization_probes.yaml#4`, `multi_feature_integer.yaml#3`).
-  Still open: the design's D1/D2/D5 progress and staleness model, the
-  `outerJoinCount` placement review, and F-8.
+  D2 (rule dependencies) is done. The 23 Java rules that declare a constraint
+  (`ImmutableSet.of(REQUESTED_ORDERING | REFERENCED_FIELDS)`) declare it in Go
+  (`ConstraintDependencies`), as do the three Go-only readers
+  (AggregateDataAccess, ImplementLimit, PushRequestedOrderingThroughFilter).
+  An undeclared rule now has Java's empty set, so a re-exploration re-queues
+  only rules whose declared key changed since the group's last committed
+  exploration (`shouldPushRule`); Go's group-wide re-arm still re-queues all.
+  `TestRuleConstraintDependencies_DeclareWhatTheyRead` fails any rule method
+  that reads a constraint its type does not declare. No corpus plan moved;
+  tasks fall 4-24% (chains 3/4/5: 564→546, 2367→2219, 13968→12985; star
+  2559→2379; right-deep hub+6 9308→7071), pins re-baselined. D1 (progress)
+  and D3/D4 (conditional chains on progress) were already in place.
+  Still open: D5's re-arm conversion (Go's group-wide `lastRearmTick` re-arm
+  to Java's per-expression forced exploration), the `outerJoinCount` placement
+  review, and F-8. The large join is not cured by D2: a 6-table FK chain still
+  hits the 150k task cap (5 tables: 20.5k tasks).
 - [ ] Reconcile query-block acceptance with the current translator: top-level
   Sort(Select), ORDER BY resolution against projected Values, DISTINCT ordering,
   index-DDL root handling and ordered IN. Old blocker prose in `TODO_OLD.md`

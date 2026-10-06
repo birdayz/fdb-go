@@ -646,11 +646,16 @@ func (t *ExploreExprTask) shouldPushRule(rule matcherHaver) bool {
 	if !t.ReExplore {
 		return true
 	}
-	dependent, ok := rule.(interface{ ConstraintDependencies() []any })
-	if !ok {
-		return true
+	// Java's AbstractCascadesRule defaults to no constraint dependencies, so a
+	// re-exploration re-queues a rule only when it declares a constraint pushed
+	// since the group's last committed exploration (CascadesPlanner.java:956-970);
+	// a re-arm (lastRearmTick) still re-queues every rule. Each rule that reads a
+	// planner constraint declares it (ConstraintDependencies, RFC-257 WS-F D2).
+	var deps []any
+	if dependent, ok := rule.(interface{ ConstraintDependencies() []any }); ok {
+		deps = dependent.ConstraintDependencies()
 	}
-	return !t.Ref.ConstraintsMap().IsExploredForAttributes(dependent.ConstraintDependencies())
+	return !t.Ref.ConstraintsMap().IsExploredForAttributes(deps)
 }
 
 // TransformExprTask fires a single ExpressionRule on a (group, expression)

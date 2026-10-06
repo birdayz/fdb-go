@@ -52,6 +52,11 @@ func hasStrictSingleQuantifier(quantifiers []expressions.Quantifier) bool {
 	return false
 }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *ImplementNestedLoopJoinRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
 
