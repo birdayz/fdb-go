@@ -1753,6 +1753,12 @@ func (r *paginatingRows) Close() error {
 	return nil
 }
 
+// metaData is the result set's metadata (api.WithResultSetMetaDataObserver):
+// the labelled columns with their full types.
+func (r *paginatingRows) metaData() api.ResultSetMetaData {
+	return executor.NewResultSetMetaData(r.cols)
+}
+
 func (r *paginatingRows) ColumnTypeDatabaseTypeName(index int) string {
 	if index < 0 || index >= len(r.cols) {
 		return ""
@@ -4249,6 +4255,9 @@ func columnsOfRowType(rowType *values.RecordType) []executor.ColumnDef {
 			TypeName: typeName,
 			Nullable: nullable,
 		}
+		if dt, err := rowstruct.DataTypeOf(field.FieldType); err == nil {
+			cols[ordinal].DataType = dt
+		}
 	}
 	return cols
 }
@@ -4309,19 +4318,10 @@ func cascadesTypeName(t values.Type) string {
 		// mistyped it (review finding, pinned).
 		return "STRUCT"
 	case values.TypeCodeArray:
-		// The ELEMENT's name, which is CQ-74's truncation and NOT a fresh
-		// decision: a TOP-LEVEL array column already reports the bare element
-		// type, because its stored descriptor resolves and protoFieldTypeName
-		// reads the repeated field's kind (TestFDB_ArrayColumnMetadataIsTruncated
-		// is that behaviour's live sentinel, and it is where this changes back).
-		// An array leaf reached through a STRUCT PATH has no descriptor to
-		// resolve — descriptorForColumn matches BARE names against the join-leaf
-		// descriptors and a struct member is not a top-level field of any of
-		// them — so without this arm it fell to "" and then to "UNKNOWN", and one
-		// array answered two ways depending on how it was addressed.
-		if at, ok := t.(*values.ArrayType); ok {
-			return cascadesTypeName(at.ElementType)
-		}
+		// Java's getColumnTypeName for an array column is "ARRAY"
+		// (SqlTypeNamesSupport over Types.ARRAY); the element type is the
+		// column's DataType (ColumnDataType, Java's getArrayMetaData).
+		return "ARRAY"
 	}
 	return ""
 }

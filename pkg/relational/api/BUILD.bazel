@@ -24,6 +24,7 @@ go_library(
         "options.go",
         "parsetree.go",
         "resultset.go",
+        "resultset_observer.go",
         "row.go",
         "schema_exists_behavior.go",
         "sqltypes.go",

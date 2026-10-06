@@ -169,9 +169,15 @@ func TestProjectionlessExplodeColumnsUseFrozenExactRecordType(t *testing.T) {
 		t.Fatalf("construct projection-less record Explode: %v", err)
 	}
 	want := []executor.ColumnDef{
-		{Name: "quotedCase", TypeName: "BIGINT", Nullable: api.ColumnNullable},
-		{Name: "ARR", TypeName: "STRING", Nullable: api.ColumnNoNulls},
-		{Name: "NEST", TypeName: "STRUCT", Nullable: api.ColumnNullable},
+		{Name: "quotedCase", TypeName: "BIGINT", Nullable: api.ColumnNullable, DataType: api.NewLongType(true)},
+		{
+			Name: "ARR", TypeName: "ARRAY", Nullable: api.ColumnNoNulls,
+			DataType: api.NewArrayType(api.NewStringType(false), false),
+		},
+		{
+			Name: "NEST", TypeName: "STRUCT", Nullable: api.ColumnNullable,
+			DataType: api.NewStructType("NESTED", []api.StructField{api.NewStructField("N", api.NewIntegerType(false), 0)}, true),
+		},
 	}
 	if got := resultColumns(explode); !reflect.DeepEqual(got, want) {
 		t.Fatalf("projection-less Explode columns = %#v, want %#v", got, want)
@@ -211,8 +217,11 @@ func TestProjectionlessExplodeColumnsUseFrozenExactRecordType(t *testing.T) {
 	// WITH ORDINALITY flows the (element, ordinal) box, not the element's
 	// fields.
 	wantBox := []executor.ColumnDef{
-		{Name: "_0", TypeName: "STRUCT", Nullable: api.ColumnNoNulls},
-		{Name: "_1", TypeName: "INTEGER", Nullable: api.ColumnNoNulls},
+		{
+			Name: "_0", TypeName: "STRUCT", Nullable: api.ColumnNoNulls,
+			DataType: api.NewStructType("RECORD", []api.StructField{api.NewStructField("V", api.NewLongType(false), 0)}, false),
+		},
+		{Name: "_1", TypeName: "INTEGER", Nullable: api.ColumnNoNulls, DataType: api.NewIntegerType(false)},
 	}
 	if got := resultColumns(ordinal); !reflect.DeepEqual(got, wantBox) {
 		t.Fatalf("ordinality box columns = %#v, want %#v", got, wantBox)

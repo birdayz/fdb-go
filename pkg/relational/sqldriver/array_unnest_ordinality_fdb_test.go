@@ -4230,8 +4230,9 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				"1|[7 8]|1|5|7|1", "1|[7 8]|2|6|7|1", "1|[7 8]|3|7|7|1",
 				"1|[7 8]|1|5|8|2", "1|[7 8]|2|6|8|2", "1|[7 8]|3|7|8|2",
 			})
-		if types := embedded.ResultColumnTypesForPlan(mustPlan(t, md, `SELECT * FROM WSRC, WAUX, WSRC."WARR" AS "EL"`)); fmt.Sprintf("%v", types) != "[BIGINT INTEGER BIGINT INTEGER INTEGER]" {
-			t.Fatalf("star column types = %v, want [BIGINT INTEGER BIGINT INTEGER INTEGER] (the mixed element's INTEGER from the Explode collection)", types)
+		// WARR is an array column, "ARRAY" as Java's getColumnTypeName names it.
+		if types := embedded.ResultColumnTypesForPlan(mustPlan(t, md, `SELECT * FROM WSRC, WAUX, WSRC."WARR" AS "EL"`)); fmt.Sprintf("%v", types) != "[BIGINT ARRAY BIGINT INTEGER INTEGER]" {
+			t.Fatalf("star column types = %v, want [BIGINT ARRAY BIGINT INTEGER INTEGER] (the mixed element's INTEGER from the Explode collection)", types)
 		}
 	})
 

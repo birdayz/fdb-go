@@ -80,14 +80,11 @@ const (
 	//
 	// Java reads these off RelationalResultSetMetaData, which exposes
 	// getStructMetaData / getArrayMetaData / getTypeName recursively
-	// (CheckResultMetadataConfig.extractDescriptors). Go's driver cannot: the
-	// planned result type is flattened into `executor.ColumnDef`, whose
-	// `TypeName` is ONE string, so a struct column arrives as "STRUCT" with no
-	// fields, an array column arrives as its ELEMENT's type name rather than
-	// Java's "ARRAY(elem)", and a declared struct type name is not carried at
-	// all. The flat, scalar half of the directive IS asserted; only the
-	// descending half is declined, and it is declined with a name so the driver
-	// gap is sized rather than hidden inside a passing file.
+	// (CheckResultMetadataConfig.extractDescriptors). Go's driver reports the
+	// same through the column DataTypes it hands
+	// api.WithResultSetMetaDataObserver, and the runner compares them; this
+	// class is booked only for a result set that reported no metadata, whose
+	// `database/sql` type names are flat. The corpus has none today.
 	SkipResultMetadataNested SkipClass = "unsupported:result-metadata-nested"
 
 	// SkipCopyBlock is a `copy_block`, which moves data between two clusters.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 )
 
@@ -13,12 +14,13 @@ import (
 //
 // The expected side is an arbitrarily nested YAML shape and is ported whole,
 // because the shape is what the corpus writes and a partial reader would accept
-// a file it cannot actually check. The actual side is bounded by what the Go
-// driver surfaces, which today is one flat type name per column — so the
-// descending forms are declined by NAME (SkipResultMetadataNested) rather than
-// compared against a descriptor that was never populated. Comparing against an
-// unpopulated descriptor is the failure mode this split exists to prevent: it
-// would read as a Go/Java divergence when it is a metadata-pipeline truncation.
+// a file it cannot actually check. The actual side is the driver's result set
+// metadata (api.WithResultSetMetaDataObserver), whose column DataTypes carry
+// struct fields, declared type names and array element types. A result set
+// that reports no metadata has only `database/sql`'s flat type names, and then
+// the descending forms are declined by NAME (SkipResultMetadataNested) rather
+// than compared against a descriptor that was never populated, which would read
+// as a Go/Java divergence when it is a metadata-pipeline truncation.
 
 // columnDescriptor is CheckResultMetadataConfig.ColumnDescriptor.
 //
@@ -48,15 +50,14 @@ type columnDescriptor struct {
 }
 
 // extractDescriptors is CheckResultMetadataConfig.extractDescriptors over what
-// the Go driver actually hands back.
+// the Go driver hands back.
 //
 // Java walks StructMetaData recursively, branching on Types.STRUCT and
-// Types.ARRAY into getStructMetaData / getArrayMetaData. Go has neither branch
-// available: `database/sql` exposes ColumnTypeDatabaseTypeName, which the
-// driver answers from `executor.ColumnDef.TypeName` — a single string per
-// column with no field list, no element type and no declared type name. So
-// every descriptor produced here is the scalar form, and the caller must have
-// already declined any expectation that descends.
+// Types.ARRAY into getStructMetaData / getArrayMetaData. The driver's result
+// set metadata (resultSet.Meta, api.WithResultSetMetaDataObserver) carries each
+// column's DataType, which is that recursion's input. Without it only the flat
+// `database/sql` type name is known, every descriptor is the scalar form, and
+// the caller must have declined any expectation that descends.
 func extractDescriptors(rs *resultSet) []columnDescriptor {
 	if rs == nil {
 		return nil
@@ -64,28 +65,77 @@ func extractDescriptors(rs *resultSet) []columnDescriptor {
 	out := make([]columnDescriptor, len(rs.Cols))
 	for i, name := range rs.Cols {
 		out[i] = columnDescriptor{Name: name, TypeName: typeAt(rs, i)}
+		if rs.Meta == nil || i >= rs.Meta.ColumnCount() {
+			continue
+		}
+		if dt, err := rs.Meta.ColumnDataType(i + 1); err == nil {
+			out[i] = descriptorOf(name, dt, out[i].TypeName)
+		}
 	}
 	return out
 }
 
-// metadataDescends reports whether an expected `resultMetadata:` value is one
-// the Go driver cannot answer, and names the first column that makes it so.
-//
-// TWO different reasons live under one gate, and the class name
-// (`unsupported:result-metadata-nested`) is precise for only the first:
+// descriptorOf is one column of Java's extractDescriptors: a STRUCT is
+// "STRUCT" with its type name and fields, an ARRAY of STRUCT is
+// "ARRAY(STRUCT)" with the element's type name and fields, any other ARRAY is
+// buildArrayTypeName's "ARRAY(elem)", and a scalar keeps typeName, the
+// column's getColumnTypeName.
+func descriptorOf(name string, dt api.DataType, typeName string) columnDescriptor {
+	switch t := dt.(type) {
+	case *api.StructType:
+		return columnDescriptor{
+			Name: name, TypeName: "STRUCT",
+			StructTypeName: t.Name(), HasStructTypeName: true,
+			Fields: fieldDescriptors(t), HasFields: true,
+		}
+	case *api.ArrayType:
+		if elem, ok := t.ElementType().(*api.StructType); ok {
+			return columnDescriptor{
+				Name: name, TypeName: "ARRAY(STRUCT)",
+				StructTypeName: elem.Name(), HasStructTypeName: true,
+				Fields: fieldDescriptors(elem), HasFields: true,
+				IsArray: true,
+			}
+		}
+		return columnDescriptor{Name: name, TypeName: arrayTypeName(t)}
+	}
+	return columnDescriptor{Name: name, TypeName: typeName}
+}
+
+// fieldDescriptors are a struct's fields, each named by its JDBC type
+// (RelationalStructMetaData.getColumnTypeName).
+func fieldDescriptors(st *api.StructType) []columnDescriptor {
+	fields := st.Fields()
+	out := make([]columnDescriptor, len(fields))
+	for i, f := range fields {
+		out[i] = descriptorOf(f.Name(), f.Type(), jdbcTypeName(f.Type()))
+	}
+	return out
+}
+
+// arrayTypeName is Java's buildArrayTypeName: "ARRAY(" + the element's type
+// name + ")", recursively for an array of arrays.
+func arrayTypeName(at *api.ArrayType) string {
+	if inner, ok := at.ElementType().(*api.ArrayType); ok {
+		return "ARRAY(" + arrayTypeName(inner) + ")"
+	}
+	return "ARRAY(" + jdbcTypeName(at.ElementType()) + ")"
+}
+
+// jdbcTypeName is SqlTypeNamesSupport.getSqlTypeName of a type's JDBC code.
+func jdbcTypeName(dt api.DataType) string {
+	return string(api.SQLTypeNameFromJDBC(api.JDBCType(dt.Code())))
+}
+
+// metadataDescends reports whether an expected `resultMetadata:` value needs
+// more than flat type names, and names the first column that makes it so. The
+// runner declines such a directive only when the result set reported no
+// metadata (resultSet.Meta is nil):
 //
 //   - A COMPOSITE list (`[{X: BIGINT}]`, optionally led by a struct type name)
-//     compares against `ColumnDescriptor.fields` / `structTypeName`, which the
-//     driver leaves empty. Genuinely nested.
-//   - An `{array: …}` map over a SCALAR element compares against a flat
-//     `typeName` — Java's own descriptor for that case has `fields == null`,
-//     so nothing descends. It is declined because Go and Java SPELL the type
-//     differently: Java says `ARRAY(INTEGER)`, Go's driver reports the bare
-//     element name `INTEGER`. That is CQ-74's array half, not a nesting gap.
-//
-// They share a gate because they share a cause — `executor.ColumnDef` carrying
-// one flat string — and splitting the class would imply two independent fixes
-// where there is one. The imprecision is recorded rather than papered over.
+//     compares against `ColumnDescriptor.fields` / `structTypeName`.
+//   - An `{array: …}` map compares against Java's `ARRAY(elem)` spelling,
+//     built from the element type; `database/sql` names the column "ARRAY".
 //
 // A non-composite, non-map value (a bare integer, say) is NOT declined: Java
 // treats `{ID: 5}` as a plain mismatch (`entry.getValue() instanceof String`
@@ -102,10 +152,10 @@ func metadataDescends(raw *javayamsql.Value) (bool, string) {
 		switch c.Val.Untag().Kind {
 		case javayamsql.KindSeq:
 			return true, fmt.Sprintf("column %s expects a nested struct-field list, "+
-				"which the driver reports no fields for", c.Name)
+				"and the result set reported no metadata", c.Name)
 		case javayamsql.KindMap:
-			return true, fmt.Sprintf("column %s expects an array type, "+
-				"which the driver spells as the bare element type", c.Name)
+			return true, fmt.Sprintf("column %s expects an array element type, "+
+				"and the result set reported no metadata", c.Name)
 		}
 	}
 	return false, ""

@@ -21,6 +21,10 @@ type resultSet struct {
 	// distinction there: Objects.equals(1L, 1) is false).
 	Types []string
 	Rows  [][]any
+	// Meta is the result set's metadata as the driver opened it
+	// (api.WithResultSetMetaDataObserver), Java's rs.getMetaData(); nil when
+	// the driver reported none.
+	Meta api.ResultSetMetaData
 }
 
 // matchResultSet mirrors Matchers.matchResultSet.

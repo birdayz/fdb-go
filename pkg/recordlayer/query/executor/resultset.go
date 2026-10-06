@@ -62,6 +62,11 @@ type ColumnDef struct {
 	Label    string // display name (alias); empty means use Name
 	TypeName string // JDBC type name: BIGINT, STRING, DOUBLE, etc.
 	Nullable int    // api.ColumnNoNulls / ColumnNullable / ColumnNullableUnknown
+	// DataType is the column's full type: a struct's declared name and fields,
+	// an array's element type (Java's RelationalStructMetaData over the plan's
+	// result type). nil when the planned type has no public form; the type is
+	// then derived from TypeName.
+	DataType api.DataType
 }
 
 // NewRecordLayerResultSet constructs a ResultSet from an executor cursor
@@ -591,7 +596,15 @@ func (m *resultSetMetaData) ColumnDataType(columnIndex int) (api.DataType, error
 	if err != nil {
 		return nil, err
 	}
+	if dt := m.columns[columnIndex-1].DataType; dt != nil {
+		return dt, nil
+	}
 	return dataTypeFromName(name), nil
+}
+
+// NewResultSetMetaData is the metadata of a result set with these columns.
+func NewResultSetMetaData(columns []ColumnDef) api.ResultSetMetaData {
+	return &resultSetMetaData{columns: columns}
 }
 
 func dataTypeFromName(typeName string) api.DataType {
@@ -639,6 +652,10 @@ func jdbcTypeCode(typeName string) int {
 		return api.JDBCDate
 	case "TIMESTAMP":
 		return api.JDBCTimestamp
+	case "STRUCT":
+		return api.JDBCStruct
+	case "ARRAY":
+		return api.JDBCArray
 	default:
 		return api.JDBCOther
 	}

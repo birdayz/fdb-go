@@ -230,10 +230,12 @@ func TestJavaCorpusRuns(t *testing.T) {
 	t.Logf("NEGATIVE-EXECUTION %d manifest entries = %d booked + %d assertion-suppressed + %d claimed-earlier",
 		booked+suppressed+claimedEarlier, booked, suppressed, claimedEarlier)
 	// Transaction setups run since RFC-257, so the five transaction-setup
-	// negatives reach their own assertion (suppressed -> booked).
-	if booked != 31 || suppressed != 11 || claimedEarlier != 0 {
+	// negatives reach their own assertion (suppressed -> booked); the driver's
+	// nested result metadata (CQ-74 closed) does the same for the six
+	// check-result-metadata negatives on struct and array columns.
+	if booked != 37 || suppressed != 5 || claimedEarlier != 0 {
 		t.Errorf("negative-execution accounting drifted: %d booked / %d suppressed / %d claimed-earlier, "+
-			"pinned baseline is 31 / 11 / 0 (42 manifest entries)", booked, suppressed, claimedEarlier)
+			"pinned baseline is 37 / 5 / 0 (42 manifest entries)", booked, suppressed, claimedEarlier)
 	}
 
 	if got := census.Line(); got != pinnedLedger {
@@ -284,6 +286,9 @@ var maskedClasses = map[javacorpus.SkipClass]string{
 		"as the classifier's fallback bucket",
 	javacorpus.SkipDDLFunction: "EMPTIED by RFC-257: SQL, macro and temporary functions all build. " +
 		"Declared as the classifier's bucket for a template whose function declaration fails",
+	javacorpus.SkipResultMetadataNested: "EMPTIED by CQ-74's close: every query's result set reports its " +
+		"column DataTypes (api.WithResultSetMetaDataObserver), so the descending directives are compared. " +
+		"Declared for a result set that reports no metadata",
 	javacorpus.SkipCopyBlock: "the only copy_block file is copy-basic.yamsql, skipped earlier by " +
 		"required_clusters: 2 (unsupported:multi-cluster)",
 	javacorpus.SkipVersionGate: "provably unreachable with one version under test: the version is the " +

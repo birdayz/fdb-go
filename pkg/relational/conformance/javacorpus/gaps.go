@@ -30,9 +30,8 @@ var engineGaps = []EngineGap{
 	// (TestFDB_ArrayLiteralInsertValues pins it). Four of its six files
 	// progressed to DISTINCT next gaps, each re-measured below at its exact
 	// new rejection; array-column.yamsql passes outright and
-	// wrong-array-element-type.yamsql now reaches its resultMetadata
-	// assertion, where the CQ-74 metadata truncation declines the comparison
-	// (unsupported:result-metadata-nested).
+	// wrong-array-element-type.yamsql reaches its resultMetadata assertion,
+	// which fails as the negative expects since CQ-74 closed.
 	//
 	// cast-tests progresses past its array inserts and dies planning the
 	// FIRST test: an array subscript (`arr[1]`) inside an array constructor

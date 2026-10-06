@@ -502,7 +502,7 @@ func (r *runner) runConfig(ctx context.Context, conn execer, at, query string, c
 	// captures the column identity at the same point, so the descriptors here
 	// are the same pre-iteration read.
 	if meta != nil {
-		if descends, why := metadataDescends(meta.Raw); descends {
+		if descends, why := metadataDescends(meta.Raw); descends && rs.Meta == nil {
 			r.skip(SkipResultMetadataNested, at, why)
 		} else if err := matchMetadata(meta.Raw, extractDescriptors(rs)); err != nil {
 			return fmt.Errorf("%s: %q: %w", at, truncate(query), err)

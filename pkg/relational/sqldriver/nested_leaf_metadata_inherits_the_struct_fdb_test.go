@@ -38,8 +38,8 @@ package sqldriver_test
 //
 // The top-level arms are the controls: they say the nested answers are the
 // engine's answers for those column kinds rather than nested-specific accidents.
-// The array answer is CQ-74's truncation (the bare element type) — when the
-// driver learns to carry the array type, both arms move together.
+// The array answer is Java's getColumnTypeName, "ARRAY" (CQ-74 closed: it was
+// the bare element type); both arms moved together.
 
 import (
 	"context"
@@ -225,21 +225,18 @@ func TestFDB_NestedArrayLeafDoesNotInheritTheStructRootsMetadata(t *testing.T) {
 	}
 	// THE SOLE DETECTOR FOR THIS ARM — see the block above before touching it.
 	// The paired equality cannot catch a regression here because both sides share
-	// a derivation and fall to UNKNOWN together. MEASURED at "STRUCT" on both
-	// sides: the element type, so the array truncation (CQ-74) is applied
-	// consistently for a MESSAGE element and not only for scalar ones.
-	if structsType != "STRUCT" {
+	// a derivation and fall to UNKNOWN together. "ARRAY" on both sides, Java's
+	// getColumnTypeName for an array of any element type.
+	if structsType != "ARRAY" {
 		t.Errorf("a struct-array column reports DatabaseTypeName %q on BOTH sides, want "+
-			"STRUCT.\n"+
+			"ARRAY.\n"+
 			"\tTHIS ASSERTION IS THE ONLY ONE THAT CAN FAIL HERE: the paired check against "+
 			"`topstructs` above still HOLDS in this state, because both sides reach "+
 			"cascadesTypeName's ARRAY arm and lose it together (protoKindToTypeName has no "+
 			"MessageKind case, so a repeated MESSAGE answers UNKNOWN from the descriptor "+
 			"and the top-level twin falls through to the value's own type just as the "+
 			"nested member does). UNKNOWN on both sides is precisely the pre-ARRAY-arm "+
-			"behaviour this arm exists to detect.\n"+
-			"\tIf the driver has learned to carry the array type, this and the `vals`/`top` "+
-			"pair move together.", structsType)
+			"behaviour this arm exists to detect.", structsType)
 	}
 
 	// The arm that showed the mint defect producing a wrong answer rather than a

@@ -167,6 +167,15 @@ func NonArrayCorrelationError(typ values.Type) error {
 	return functions.NonArrayCorrelationError(text)
 }
 
+// DataTypeOf is the public DataType of a planned type: Java's
+// DataTypeUtils.toRelationalType, which a result set's metadata reports
+// (RelationalStructMetaData over the plan's result type). A struct keeps its
+// declared type name and its fields, an array its element type. A type with
+// no public form (a vector, an unresolved type) is an error.
+func DataTypeOf(typ values.Type) (api.DataType, error) {
+	return ordinalDataType(typ)
+}
+
 func ordinalDataType(typ values.Type) (api.DataType, error) {
 	if typ == nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "missing exact ordinal type")

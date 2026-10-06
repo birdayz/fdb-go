@@ -745,6 +745,8 @@ func execAny(ctx context.Context, db execer, query string) (int64, error) {
 
 // queryRows materialises a row-returning statement into a resultSet.
 func queryRows(ctx context.Context, db execer, query string) (*resultSet, error) {
+	var meta api.ResultSetMetaData
+	ctx = api.WithResultSetMetaDataObserver(ctx, func(md api.ResultSetMetaData) { meta = md })
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -755,7 +757,7 @@ func queryRows(ctx context.Context, db execer, query string) (*resultSet, error)
 	if err != nil {
 		return nil, err
 	}
-	rs := &resultSet{Cols: cols, Types: make([]string, len(cols))}
+	rs := &resultSet{Cols: cols, Types: make([]string, len(cols)), Meta: meta}
 	if ct, err := rows.ColumnTypes(); err == nil {
 		for i, c := range ct {
 			if i < len(rs.Types) {

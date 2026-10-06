@@ -751,8 +751,15 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   `Options.parseStringOption` (enum valueOf, comma-split collections,
   `Boolean.parseBoolean`), and the corpus runner routes a string option through
   it, as Java's `TestBlockOptions.parseConnectionOptions`.
-- [ ] JSON descriptor FieldOptions import; recursive result metadata in the
-  corpus runner.
+- [x] Recursive result metadata in the corpus runner (CQ-74 closed). A result
+  column carries its planned type (`executor.ColumnDef.DataType`, from
+  `rowstruct.DataTypeOf`); `api.WithResultSetMetaDataObserver` hands a query's
+  metadata to the caller, and the runner ports `extractDescriptors` over it.
+  An array column's `DatabaseTypeName` is Java's `ARRAY` (was the element
+  name). `unsupported:result-metadata-nested` emptied (190 inner, 6 file
+  skips): the check-result-metadata positives pass and the six struct/array
+  negatives fail on their metadata mismatch.
+- [ ] JSON descriptor FieldOptions import.
 - [ ] Relational queued-state plumbing; SQL vector-option and preference-cache pins.
 
 ## 7. Migration-wide acceptance and decisions

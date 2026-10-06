@@ -776,7 +776,13 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	if err != nil {
 		return nil, translateFDBError(err)
 	}
-	return rowsOrEmpty(result.Rows), nil
+	rows = rowsOrEmpty(result.Rows)
+	if observe := api.ResultSetMetaDataObserver(ctx); observe != nil {
+		if withMeta, ok := rows.(interface{ metaData() api.ResultSetMetaData }); ok {
+			observe(withMeta.metaData())
+		}
+	}
+	return rows, nil
 }
 
 // Prepare returns a prepared statement. DDL statements have no bind parameters.
