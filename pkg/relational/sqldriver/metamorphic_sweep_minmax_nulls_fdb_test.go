@@ -32,7 +32,7 @@ func TestFDB_MetamorphicMinMaxNullSweep(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_mm_minmax", "mmmm",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_mm_minmax", "mmmm",
 		"CREATE TABLE t (id BIGINT, g BIGINT, h BIGINT, v BIGINT, s STRING, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_min_v_g AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_max_v_g AS SELECT MAX(v) FROM t GROUP BY g "+

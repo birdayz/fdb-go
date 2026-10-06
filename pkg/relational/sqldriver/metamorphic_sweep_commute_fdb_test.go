@@ -69,7 +69,7 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_mhcommute", "mhcom",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_mhcommute", "mhcom",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) "+
 			"CREATE INDEX t_c ON t (c) CREATE INDEX t_s ON t (s) ")
@@ -171,7 +171,7 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 	// what makes an inclusive/exclusive confusion visible rather than a matter
 	// of which rows happened to exist.
 	t.Run("fixed boundaries with hand-computed answers", func(t *testing.T) {
-		w := mmNewTwin(t, ctx, "/testdb_mhcommute_fixed", "mhcomf",
+		w := mmNewTwin(t, ctx, "/FRL/testdb_mhcommute_fixed", "mhcomf",
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) ",
 			"CREATE INDEX t_a ON t (a) ")
 		// a = 10, 20, 30, and a NULL. 20 is the boundary every case below

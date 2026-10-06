@@ -122,7 +122,7 @@ func drainIDs(ctx context.Context, conn *sql.Conn, sqlText string) (int, error) 
 // the same option just paginates and the query completes with every row.
 func TestFDB_RFC106a_ScanLimitFail(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_scanfail", "scanfail",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_scanfail", "scanfail",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -161,7 +161,7 @@ func TestFDB_RFC106a_ScanLimitFail(t *testing.T) {
 // a 30-row table, EXACTLY 10 rows come back.
 func TestFDB_RFC106a_MaxRowsStatementWide(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_maxrows", "maxrows",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_maxrows", "maxrows",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -193,7 +193,7 @@ func TestFDB_RFC106a_MaxRowsStatementWide(t *testing.T) {
 // race. The same query with NO timeout completes and returns every row.
 func TestFDB_RFC106a_StatementTimeout(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_timeout", "timeout",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_timeout", "timeout",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -232,7 +232,7 @@ func TestFDB_RFC106a_StatementTimeout(t *testing.T) {
 // with no cap completes.
 func TestFDB_RFC106a_ResultSizeCap(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_bytes", "bytes",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_bytes", "bytes",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -313,7 +313,7 @@ func TestFDB_RFC106a_ResultSizeCap(t *testing.T) {
 // control (revert-proof: drop the props thread → subject goes green).
 func TestFDB_RFC106a_ScalarSubqueryHonorsLimit(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_ssqlimit", "ssqlimit",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_ssqlimit", "ssqlimit",
 		"CREATE TABLE Big (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE Small (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
@@ -362,7 +362,7 @@ func TestFDB_RFC106a_ScalarSubqueryHonorsLimit(t *testing.T) {
 // drop errIfBufferTruncated in scalar_subquery.go → this returns 0 rows, no err).
 func TestFDB_RFC106a_BufferedScanLimitErrorsNotTruncates(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_buftrunc", "buftrunc",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_buftrunc", "buftrunc",
 		"CREATE TABLE Big (id BIGINT, val STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE Small (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
@@ -404,7 +404,7 @@ func TestFDB_RFC106a_BufferedScanLimitErrorsNotTruncates(t *testing.T) {
 // ScannedRecordsLimit branch from countKVCursor.OnNext → all 50 groups return.
 func TestFDB_RFC106a_AggregateIndexScanLimit(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_aggscan", "aggscan",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_aggscan", "aggscan",
 		"CREATE TABLE ga (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g")
 	ctx := context.Background()
@@ -453,7 +453,7 @@ func TestFDB_RFC106a_AggregateIndexScanLimit(t *testing.T) {
 // before ReturnedRowLimit in countKVCursor → MAX_ROWS=5 errors 54F01.
 func TestFDB_RFC106a_RowLimitBeatsScanLimit(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_rowbeats", "rowbeats",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_rowbeats", "rowbeats",
 		"CREATE TABLE ga (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g")
 	ctx := context.Background()
@@ -488,7 +488,7 @@ func TestFDB_RFC106a_RowLimitBeatsScanLimit(t *testing.T) {
 // error.) Revert-proof: stream the DELETE (delete-as-you-go) → 5 rows commit, 45 remain.
 func TestFDB_RFC106a_DMLNoPartialMutationInExplicitTx(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_dmltx", "dmltx",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_dmltx", "dmltx",
 		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	const rows = 50
@@ -536,7 +536,7 @@ func TestFDB_RFC106a_DMLNoPartialMutationInExplicitTx(t *testing.T) {
 // (honest scope — this pins atomic abort, not the specific defensive line).
 func TestFDB_RFC106a_DMLDeadlineAbortsCleanly(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_dmldeadline", "dmldeadline",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_dmldeadline", "dmldeadline",
 		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	const rows = 30
@@ -580,7 +580,7 @@ func TestFDB_RFC106a_DMLDeadlineAbortsCleanly(t *testing.T) {
 // (row count > 51) or a loud out-of-band error — either fails this pin.
 func TestFDB_UnionAllResumesAcrossScanLimitPages(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_unionall", "unionall",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_unionall", "unionall",
 		"CREATE TABLE A (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE B (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
@@ -650,7 +650,7 @@ func TestFDB_UnionAllResumesAcrossScanLimitPages(t *testing.T) {
 // pages).
 func TestFDB_RFC106a_INJoinScanLimitAggregatesAcrossLegs(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_injoinscan", "injoinscan",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_injoinscan", "injoinscan",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -711,7 +711,7 @@ func TestFDB_RFC106a_INJoinScanLimitAggregatesAcrossLegs(t *testing.T) {
 // in-union size.
 func TestFDB_RFC106a_INUnionScanLimitAggregatesAcrossLegs(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_inunionscan", "inunionscan",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc106a_inunionscan", "inunionscan",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX payload_idx ON Item (payload, id)")
 	ctx := context.Background()

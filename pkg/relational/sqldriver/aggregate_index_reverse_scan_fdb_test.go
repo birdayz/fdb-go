@@ -31,7 +31,7 @@ func TestFDB_AggregateIndexReverseScan(t *testing.T) {
 		"CREATE INDEX mv_cnt13 AS SELECT COUNT(*) FROM t1 GROUP BY col1, col3 " +
 		"CREATE INDEX mv_sum13 AS SELECT SUM(col2) FROM t1 GROUP BY col1, col3 " +
 		"CREATE INDEX mv_cntv13 AS SELECT COUNT(col2) FROM t1 GROUP BY col1, col3 "
-	w := mmNewTwin(t, ctx, "/testdb_aggreverse", "aggreverse", table, indexes)
+	w := mmNewTwin(t, ctx, "/FRL/testdb_aggreverse", "aggreverse", table, indexes)
 
 	var rows []string
 	for id := int64(0); id < 40; id++ {

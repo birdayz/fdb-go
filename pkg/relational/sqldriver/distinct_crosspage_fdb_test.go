@@ -24,7 +24,7 @@ import (
 
 func TestFDB_SelectDistinct_CrossPageDedup(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_distinct_xpage", "distinctxpage",
+	db := setupErrorTestDB(t, "/FRL/testdb_distinct_xpage", "distinctxpage",
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON t (g)")
 	ctx := context.Background()
@@ -128,7 +128,7 @@ func TestFDB_SelectDistinct_CrossPageDedup(t *testing.T) {
 // whole scan — worst case for the fresh-per-page set.
 func TestFDB_SelectDistinct_CrossPageDedup_Unordered(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_distinct_unord", "distinctunord",
+	db := setupErrorTestDB(t, "/FRL/testdb_distinct_unord", "distinctunord",
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -189,7 +189,7 @@ func TestFDB_SelectDistinct_CrossPageDedup_Unordered(t *testing.T) {
 // continuation.
 func TestFDB_SelectDistinct_HashUnderLimit_CrossPage(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_distinct_hlim", "distincthlim",
+	db := setupErrorTestDB(t, "/FRL/testdb_distinct_hlim", "distincthlim",
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -244,7 +244,7 @@ func TestFDB_SelectDistinct_HashUnderLimit_CrossPage(t *testing.T) {
 // many distinct values forces the boundedSet charge to breach.
 func TestFDB_SelectDistinct_BudgetLoudFail(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_distinct_budget", "distinctbudget",
+	db := setupErrorTestDB(t, "/FRL/testdb_distinct_budget", "distinctbudget",
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -289,7 +289,7 @@ func TestFDB_SelectDistinct_BudgetLoudFail(t *testing.T) {
 // the cascades package.)
 func TestFDB_SelectDistinct_CrossPageDedup_WithFilter(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_distinct_xpage_filt", "distinctxpagefilt",
+	db := setupErrorTestDB(t, "/FRL/testdb_distinct_xpage_filt", "distinctxpagefilt",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON t (g)")
 	ctx := context.Background()

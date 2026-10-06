@@ -16,7 +16,7 @@ import (
 // and a group that has seen only ignored NULLs stays a present empty array.
 func TestFDB_ArrayAggRepeatedResume(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_array_agg_resume", "aaresume",
+	db := setupErrorTestDB(t, "/FRL/testdb_array_agg_resume", "aaresume",
 		"CREATE TYPE AS STRUCT pt (x BIGINT, tag STRING) "+
 			"CREATE TABLE t (g BIGINT, id BIGINT, n BIGINT, p pt, PRIMARY KEY (g, id))")
 	ctx := context.Background()

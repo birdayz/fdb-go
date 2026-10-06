@@ -91,10 +91,10 @@ func TestStoreAddressFlags_Validate(t *testing.T) {
 		wantErr string
 	}{
 		{"neither", storeAddressFlags{}, ""},
-		{"both relational", storeAddressFlags{database: "/d", schema: "s"}, ""},
-		{"database only", storeAddressFlags{database: "/d"}, "both"},
+		{"both relational", storeAddressFlags{database: "/FRL/d", schema: "s"}, ""},
+		{"database only", storeAddressFlags{database: "/FRL/d"}, "both"},
 		{"schema only", storeAddressFlags{schema: "s"}, "both"},
-		{"relational plus meta-file", storeAddressFlags{database: "/d", schema: "s", metaFile: "m.pb"}, "conflicting"},
+		{"relational plus meta-file", storeAddressFlags{database: "/FRL/d", schema: "s", metaFile: "m.pb"}, "conflicting"},
 		{"meta-file only", storeAddressFlags{metaFile: "m.pb"}, ""},
 	}
 	for _, tc := range cases {

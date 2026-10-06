@@ -45,7 +45,7 @@ func TestFDB_DistinctOverUniqueIndexWithNulls(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_distinct_uniq", "duq",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_distinct_uniq", "duq",
 		"CREATE TABLE t (id BIGINT, u BIGINT, d DOUBLE, g BIGINT, PRIMARY KEY (id)) ",
 		"CREATE UNIQUE INDEX t_u ON t (u) CREATE UNIQUE INDEX t_d ON t (d) ")
 
@@ -156,7 +156,7 @@ func TestFDB_DistinctOverUniqueIndexUnderMutation(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_distinct_uniq_mut", "duqm",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_distinct_uniq_mut", "duqm",
 		"CREATE TABLE t (id BIGINT, u BIGINT, g BIGINT, PRIMARY KEY (id)) ",
 		"CREATE UNIQUE INDEX t_u ON t (u) ")
 
@@ -197,7 +197,7 @@ func TestFDB_UniqueIndexRejectsDuplicates(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_uniq_enforce", "uqe",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_uniq_enforce", "uqe",
 		"CREATE TABLE t (id BIGINT, u BIGINT, PRIMARY KEY (id)) ",
 		"CREATE UNIQUE INDEX t_u ON t (u) ")
 	w.Exec("INSERT INTO t (id, u) VALUES (1, 10), (2, NULL), (3, NULL)")
@@ -235,7 +235,7 @@ func TestFDB_DistinctOverUniqueIndexAtScale(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_distinct_uniq_scale", "duqs",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_distinct_uniq_scale", "duqs",
 		"CREATE TABLE t (id BIGINT, u BIGINT, g BIGINT, PRIMARY KEY (id)) ",
 		"CREATE UNIQUE INDEX t_u ON t (u) ")
 

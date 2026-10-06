@@ -30,7 +30,7 @@ func TestFDB_MetamorphicShapeEquivalenceSweep(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_shapeequiv", "sheq",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_shapeequiv", "sheq",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, n BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE u (uid BIGINT, ug BIGINT, uv BIGINT, PRIMARY KEY (uid)) ",
 		"CREATE INDEX t_g ON t (g) "+

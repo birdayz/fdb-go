@@ -25,7 +25,7 @@ func TestFDB_AggregateIndexSum_NullVersusZero(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_sum_nullzero", "sumnz",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_sum_nullzero", "sumnz",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_sum_v_g AS SELECT SUM(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_cnt_g AS SELECT COUNT(*) FROM t GROUP BY g "+
@@ -108,7 +108,7 @@ func TestFDB_AggregateIndexSum_NullWithOtherAggregates(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_sum_companion", "sumcomp",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_sum_companion", "sumcomp",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_sum_v_g AS SELECT SUM(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_cnt_g AS SELECT COUNT(*) FROM t GROUP BY g "+
@@ -164,7 +164,7 @@ func TestFDB_AggregateIndexSum_ReadAlone(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_sum_nocountv", "sumnocv",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_sum_nocountv", "sumnocv",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_sum_v_g AS SELECT SUM(v) FROM t GROUP BY g ")
 	w.Exec("INSERT INTO t (id, g, v) VALUES (101, 1, 9), (102, 1, NULL), (201, 2, 4), (202, 2, -4)")

@@ -42,7 +42,7 @@ import (
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 
-	_ "fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/relational/sqldriver"
 )
 
 const (
@@ -53,6 +53,7 @@ const (
 )
 
 func main() {
+	sqldriver.RegisterDomainIfNotExists("FRL")
 	cfg := config{}
 	flag.Uint64Var(&cfg.seeds, "seeds", 400, "number of seeds to sweep")
 	flag.Uint64Var(&cfg.seedStart, "seed-start", 1, "first seed")

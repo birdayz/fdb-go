@@ -16,6 +16,7 @@ go_library(
 go_test(
     name = "explaindiff_test",
     srcs = [
+        "domain_registration_test.go",
         "explaindiff_internal_test.go",
         "explaindiff_test.go",
         "identifier_agreement_test.go",
@@ -40,6 +41,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/relational/conformance/yamsql",
         "//pkg/relational/core/embedded",
+        "//pkg/relational/core/keyspace",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
         "@com_github_antlr4_go_antlr_v4//:antlr",

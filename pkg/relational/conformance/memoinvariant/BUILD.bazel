@@ -19,6 +19,7 @@ go_test(
     # that decides how much is planned.
     timeout = "long",
     srcs = [
+        "domain_registration_test.go",
         "memoinvariant_test.go",
         "mutation_test.go",
         "seeds_default_test.go",
@@ -32,5 +33,6 @@ go_test(
         "//pkg/recordlayer/query/plan/plans",
         "//pkg/relational/conformance/rowdiff",
         "//pkg/relational/core/embedded",
+        "//pkg/relational/core/keyspace",
     ],
 )

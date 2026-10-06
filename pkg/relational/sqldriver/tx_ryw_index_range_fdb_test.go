@@ -116,7 +116,7 @@ func TestFDB_RFC198_ReadYourWritesThroughIndex(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := rfc198IndexedDB(t, "/testdb_rfc198_rywidx", "rfc198rywidx")
+	db := rfc198IndexedDB(t, "/FRL/testdb_rfc198_rywidx", "rfc198rywidx")
 	// A committed neighbour with a DIFFERENT v, so the index has pre-existing
 	// entries and an empty-index artifact cannot be mistaken for a pass.
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
@@ -223,7 +223,7 @@ func TestFDB_RFC198_ReadYourWritesOverClearedRange(t *testing.T) {
 	// Arming it for the whole test is safe because preflightTxBudget runs under
 	// `if r.tx != nil`: the seed INSERTs below are autocommit and never meet it.
 	key, clk := spikedClusterKey(t, 30*time.Second)
-	db := rfc198IndexedDBOn(t, key, "/testdb_rfc198_rywdel", "rfc198rywdel")
+	db := rfc198IndexedDBOn(t, key, "/FRL/testdb_rfc198_rywdel", "rfc198rywdel")
 	for _, v := range []struct{ id, v int64 }{{1, 100}, {2, 100}, {3, 100}, {4, 900}} {
 		mwjoMustExec(t, db, ctx,
 			fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", v.id, v.v))

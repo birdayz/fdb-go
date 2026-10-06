@@ -23,10 +23,11 @@ import (
 	"fdb.dev/pkg/relational/conformance/rowdiff"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 
-	_ "fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/relational/sqldriver"
 )
 
 func main() {
+	sqldriver.RegisterDomainIfNotExists("FRL")
 	seeds := flag.Uint64("seeds", 100, "number of seeds to run")
 	seedStart := flag.Uint64("seed-start", 1, "first seed number")
 	templates := flag.Bool("templates", true, "also run the directed template seeds (per-family hard gate)")

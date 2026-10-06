@@ -41,7 +41,7 @@ func TestFDB_ResultColumnMetadataCarriesNestedTypes(t *testing.T) {
 	}
 	defer cat.Close()
 
-	tmpl, dbPath, schema := id+"_TEMPLATE", "/"+id+"_DB", id+"_SCHEMA"
+	tmpl, dbPath, schema := id+"_TEMPLATE", "/FRL/"+id+"_DB", id+"_SCHEMA"
 	for _, stmt := range []string{
 		"DROP SCHEMA TEMPLATE IF EXISTS " + tmpl,
 		"DROP DATABASE IF EXISTS " + dbPath,

@@ -34,7 +34,7 @@ func TestFDB_AggregateIndexEqualityPrefixOrdering(t *testing.T) {
 		"CREATE INDEX t_max_b_a AS SELECT MAX(pk2) FROM t GROUP BY b, a " +
 		"CREATE INDEX t_cnt_pk1_a AS SELECT COUNT(*) FROM t GROUP BY pk1, a " +
 		"CREATE INDEX t_cnt_d_a AS SELECT COUNT(*) FROM t GROUP BY d, a "
-	w := mmNewTwin(t, ctx, "/testdb_aggprefixord", "aggprefixord", table, indexes)
+	w := mmNewTwin(t, ctx, "/FRL/testdb_aggprefixord", "aggprefixord", table, indexes)
 
 	var rows []string
 	for pk1 := int64(0); pk1 < 6; pk1++ {

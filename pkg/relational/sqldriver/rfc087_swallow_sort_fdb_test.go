@@ -24,7 +24,7 @@ import (
 // panic/goroutine crash or a non-api error.
 func TestFDB_RFC087_WhereConstTypeMismatch_NoCrash(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc087_swallow", "swallow",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc087_swallow", "swallow",
 		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO t (id) VALUES (1), (2)"); err != nil {
@@ -66,7 +66,7 @@ func TestFDB_RFC087_WhereConstTypeMismatch_NoCrash(t *testing.T) {
 // single-row sort never invokes the Less func).
 func TestFDB_RFC087_ComputedSortKeyOverflow_22003(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc087_sortovf", "sortovf",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc087_sortovf", "sortovf",
 		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx,

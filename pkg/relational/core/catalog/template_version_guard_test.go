@@ -25,7 +25,7 @@ func TestInMemory_VersionGuard_FreshTemplateRefusedWhileDroppedVersionBound(t *t
 	if err := tc.CreateTemplate(tx, buildTemplateAtVersion(t, "g", 3)); err != nil {
 		t.Fatal(err)
 	}
-	for _, db := range []string{"/db2", "/db1"} {
+	for _, db := range []string{"/FRL/db2", "/FRL/db1"} {
 		if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "g", 3).GenerateSchema(db, "s"), true, api.SchemaExistsError); err != nil {
 			t.Fatal(err)
 		}
@@ -35,9 +35,9 @@ func TestInMemory_VersionGuard_FreshTemplateRefusedWhileDroppedVersionBound(t *t
 	}
 	for _, v := range []int{0, 1, 3, 7} {
 		wantAPIError(t, tc.CreateTemplate(tx, buildTemplateAtVersion(t, "g", v)), api.ErrCodeInvalidSchemaTemplate,
-			"schema template g version "+strconv.Itoa(v)+" cannot be created: schemas are still bound to its dropped version 3 (/db1/s)")
+			"schema template g version "+strconv.Itoa(v)+" cannot be created: schemas are still bound to its dropped version 3 (/FRL/db1/s)")
 	}
-	for _, db := range []string{"/db1", "/db2"} {
+	for _, db := range []string{"/FRL/db1", "/FRL/db2"} {
 		if err := c.DeleteSchema(tx, db, "s"); err != nil {
 			t.Fatal(err)
 		}

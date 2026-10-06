@@ -488,7 +488,7 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 func TestFDB_TwoExistentialsNeverRepeatARow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/testdb_two_existentials", "twoexists",
+	db := setupErrorTestDB(t, "/FRL/testdb_two_existentials", "twoexists",
 		"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+

@@ -54,7 +54,7 @@ func TestFDB_InListRepeatedValueSelect(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmInListFixture(t, ctx, "/testdb_inlist_dup", "inld")
+	w := mmInListFixture(t, ctx, "/FRL/testdb_inlist_dup", "inld")
 
 	w.Want("a value repeated twice",
 		"SELECT id FROM t WHERE a IN (10, 10) ORDER BY id", []string{"1"})
@@ -113,7 +113,7 @@ func TestFDB_InListRepeatedValueDML(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmInListFixture(t, ctx, "/testdb_inlist_dup_dml", "inldd")
+	w := mmInListFixture(t, ctx, "/FRL/testdb_inlist_dup_dml", "inldd")
 
 	// v = v + 1 applied through a list that names the row's value twice. If the
 	// row is visited once per element, v ends at 102 rather than 101.

@@ -90,7 +90,7 @@ func assertErrorCode(t *testing.T, db *sql.DB, sql string, wantCode api.ErrorCod
 
 func TestFDB_Errors_PKConflictDuplicateInsert(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_pk", "errs_pk",
+	db := setupErrorTestDB(t, "/FRL/testdb_errs_pk", "errs_pk",
 		"CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	if _, err := db.ExecContext(context.Background(),
@@ -127,7 +127,7 @@ func TestFDB_Errors_PKConflictDuplicateInsert(t *testing.T) {
 
 func TestFDB_Errors_TypeMismatchInsert(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_tm", "errs_tm",
+	db := setupErrorTestDB(t, "/FRL/testdb_errs_tm", "errs_tm",
 		"CREATE TABLE Item (id BIGINT, qty BIGINT, PRIMARY KEY (id))")
 	// Inserting a STRING into a BIGINT column.
 	_, err := db.ExecContext(context.Background(),
@@ -147,7 +147,7 @@ func TestFDB_Errors_TypeMismatchInsert(t *testing.T) {
 
 func TestFDB_Errors_InvalidSQL(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_sql", "errs_sql",
+	db := setupErrorTestDB(t, "/FRL/testdb_errs_sql", "errs_sql",
 		"CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))")
 	_, err := db.ExecContext(context.Background(), "THIS IS NOT VALID SQL")
 	if err == nil {
@@ -168,7 +168,7 @@ func TestFDB_Errors_InvalidSQL(t *testing.T) {
 
 func TestFDB_Errors_UndefinedTable(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_undef", "errs_undef",
+	db := setupErrorTestDB(t, "/FRL/testdb_errs_undef", "errs_undef",
 		"CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))")
 	_, err := db.ExecContext(context.Background(),
 		"INSERT INTO NoSuchTable (id) VALUES (1)")
@@ -188,7 +188,7 @@ func TestFDB_Errors_UndefinedTable(t *testing.T) {
 // col_doesnt_exist FROM t must error with 42703 (undefined column).
 func TestFDB_Errors_UndefinedColumn(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_undef_col", "errs_undef_col",
+	db := setupErrorTestDB(t, "/FRL/testdb_errs_undef_col", "errs_undef_col",
 		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10)"); err != nil {
@@ -227,7 +227,7 @@ func TestFDB_Errors_UndefinedColumn(t *testing.T) {
 // qualified references.
 func TestFDB_Errors_UnknownQualifier(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_qual", "errs_qual",
+	db := setupErrorTestDB(t, "/FRL/testdb_errs_qual", "errs_qual",
 		"CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 'hello')"); err != nil {
@@ -265,7 +265,7 @@ func TestFDB_Errors_UnknownQualifier(t *testing.T) {
 // nonexistent table in a JOIN produces 42F01 (not 0AF00).
 func TestFDB_Errors_UndefinedTableInJoin(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_join_undef", "errs_join_undef",
+	db := setupErrorTestDB(t, "/FRL/testdb_errs_join_undef", "errs_join_undef",
 		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10)"); err != nil {

@@ -54,7 +54,7 @@ func TestFDB_CaseWithParenthesizedCondition(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_case_paren", "casepar",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_case_paren", "casepar",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, f BOOLEAN, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) ")
 	//  id=1: a=1 b=1  -> both conjuncts true
@@ -162,7 +162,7 @@ func TestFDB_CaseWithNonBooleanCondition(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_case_nonbool", "casenb",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_case_nonbool", "casenb",
 		"CREATE TABLE t (id BIGINT, a BIGINT, f BOOLEAN, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) ")
 	w.Exec("INSERT INTO t (id, a, f) VALUES (1, 1, true), (2, 0, false), (3, NULL, NULL)")
@@ -212,7 +212,7 @@ func TestFDB_CaseParenthesizedConditionPlanShape(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_case_paren_plan", "caseparp",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_case_paren_plan", "caseparp",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) ")
 	w.Exec("INSERT INTO t (id, a, b) VALUES (1, 1, 1)")

@@ -527,7 +527,16 @@ func (c *EmbeddedConnection) loadSchemaOfDatabase(txn api.Transaction, dbPath, s
 			return nil, api.NewErrorf(api.ErrCodeUndefinedDatabase, "Database <%s> does not exist", dbPath)
 		}
 	}
-	return s, err
+	if err != nil {
+		return nil, err
+	}
+	// Past the catalog checks Java's connect resolves the database's keyspace
+	// path (RecordLayerStorageCluster.loadDatabase → toDatabasePath): a
+	// database outside the registered domains is INVALID_PATH.
+	if _, err := keyspace.ToDatabasePath(dbPath); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func (c *EmbeddedConnection) invalidateSchemaCache(dbPath, schemaName string) {

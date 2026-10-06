@@ -62,7 +62,7 @@ func directAccess(t *testing.T, db *sql.DB, fn func(api.DirectAccessStatement) e
 // back.
 func TestFDB_DirectAccessNestedUUIDUniqueIndex(t *testing.T) {
 	t.Parallel()
-	db := openDirectAccessDB(t, "/testdb_direct_uuid_unique", "direct_uuid_unique")
+	db := openDirectAccessDB(t, "/FRL/testdb_direct_uuid_unique", "direct_uuid_unique")
 	ctx := context.Background()
 
 	nonUnique := uuid.New()
@@ -121,7 +121,7 @@ func TestFDB_DirectAccessNestedUUIDUniqueIndex(t *testing.T) {
 // REPLACE_ON_DUPLICATE_PK override, delete, and delete over a prefix.
 func TestFDB_DirectAccessRoundTrip(t *testing.T) {
 	t.Parallel()
-	db := openDirectAccessDB(t, "/testdb_direct_roundtrip", "direct_roundtrip")
+	db := openDirectAccessDB(t, "/FRL/testdb_direct_roundtrip", "direct_roundtrip")
 	ctx := context.Background()
 
 	u := []uuid.UUID{uuid.New(), uuid.New(), uuid.New(), uuid.New()}

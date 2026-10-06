@@ -32,7 +32,7 @@ func TestFDB_StreamingDistinctRequiresFullKeyOrdering(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_streamdist", "sd",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_streamdist", "sd",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_b ON t (b) ")
 
@@ -94,7 +94,7 @@ func TestFDB_StreamingDistinctAtScale(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_streamdist_scale", "sds",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_streamdist_scale", "sds",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) ")
 

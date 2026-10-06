@@ -68,7 +68,7 @@ func TestFDB_TimeBudgetCeiling_RecursionErrorsNotPartial(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := timeBudgetCeilingDB(t, "/ceiling_recursion")
+	db := timeBudgetCeilingDB(t, "/FRL/ceiling_recursion")
 
 	// No index on parent: every recursion level pays a full scan, which is
 	// exactly the shape that has no continuation to fall back on and must
@@ -134,7 +134,7 @@ func TestFDB_TimeBudgetCeiling_StreamingShapesPaginateComplete(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := timeBudgetCeilingDB(t, "/ceiling_streaming")
+	db := timeBudgetCeilingDB(t, "/FRL/ceiling_streaming")
 
 	// A small row count keeps the whole test in the low seconds even at a
 	// 1ms budget: ORDER BY re-scans from the top on every page (position

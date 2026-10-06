@@ -22,7 +22,7 @@ import (
 
 func TestFDB_CurrentTimestamp_CrossPage_Stable(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_cts_xpage", "cts_xpage",
+	db := setupErrorTestDB(t, "/FRL/testdb_cts_xpage", "cts_xpage",
 		"CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 

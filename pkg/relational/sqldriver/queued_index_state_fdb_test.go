@@ -28,7 +28,7 @@ func TestFDB_QueuedVectorIndexIsWriteOnlyToSQL(t *testing.T) {
 	const ddl = "CREATE TABLE docs (id BIGINT, embedding VECTOR(2, DOUBLE), PRIMARY KEY (id)) " +
 		"CREATE VECTOR INDEX docsIdx USING GUARDIANN ON docs (embedding) " +
 		"OPTIONS (metric = euclidean_metric, primary_cluster_min = 2, primary_cluster_max = 10, collapse_min_duplicates = 5)"
-	const dbPath, schemaName = "/testdb_queued_state", "queued_state"
+	const dbPath, schemaName = "/FRL/testdb_queued_state", "queued_state"
 	db := setupErrorTestDB(t, dbPath, schemaName, ddl)
 
 	tmpl, err := embedded.BuildSchemaTemplateFromDDLNamed(ddl, strings.ToUpper(schemaName)+"_TMPL")

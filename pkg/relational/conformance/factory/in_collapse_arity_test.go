@@ -45,7 +45,7 @@ func TestFDB_InCollapseArityAllRun(t *testing.T) {
 		t.Fatalf("open sys: %v", err)
 	}
 	defer setupDB.Close()
-	const dbPath, schema, tmpl = "/INARITY", "inarity", "inarityt"
+	const dbPath, schema, tmpl = "/FRL/INARITY", "inarity", "inarityt"
 	if _, err := setupDB.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("create database: %v", err)
 	}

@@ -42,7 +42,7 @@ func TestFDB_CreateTemplate_RefusesAReIssueBelowTheLatest(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return cat.SaveSchema(tx, tmpl.GenerateSchema("/deldb", "two"), true, api.SchemaExistsError)
+			return cat.SaveSchema(tx, tmpl.GenerateSchema("/FRL/deldb", "two"), true, api.SchemaExistsError)
 		})
 		// Java's deleteTemplate: the row goes, the binding stays.
 		eraseTemplateRow(t, cat, run, "del", 2)

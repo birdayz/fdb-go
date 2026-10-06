@@ -16,7 +16,7 @@ func TestFDB_ExistsOverANullSuppliedRowKeepsTheRow(t *testing.T) {
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	db, ctx := dgcOpen(t, "/testdb_nsexists", "nsexists",
+	db, ctx := dgcOpen(t, "/FRL/testdb_nsexists", "nsexists",
 		"CREATE TABLE w (id BIGINT, f BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE h (id BIGINT, f BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id)) "+
 			"CREATE TABLE q (id BIGINT, PRIMARY KEY (id)) "+
@@ -79,7 +79,7 @@ func TestFDB_ExistsOverScalarElementsFindingNoneUnderAJoin(t *testing.T) {
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	db, ctx := dgcOpen(t, "/testdb_scalarexists", "scalarexists",
+	db, ctx := dgcOpen(t, "/FRL/testdb_scalarexists", "scalarexists",
 		"CREATE TABLE t3 (id BIGINT, col2 BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t4 (id BIGINT, col2 BIGINT, col4 BIGINT ARRAY, PRIMARY KEY (id)) "+
 			"CREATE INDEX t4_col2 AS SELECT col2 FROM t4")

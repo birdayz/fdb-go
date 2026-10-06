@@ -258,12 +258,12 @@ func TestSaveSchema_RefusesInJavasOrder(t *testing.T) {
 				"Cannot create schema s because schema template missing version 7 does not exist.")
 			// A refused save with createDatabaseIfNecessary creates no database.
 			err = pc.run(func(tx api.Transaction) error {
-				return pc.cat.SaveSchema(tx, missing.GenerateSchema("/newdb", "s"), true, api.SchemaExistsError)
+				return pc.cat.SaveSchema(tx, missing.GenerateSchema("/FRL/newdb", "s"), true, api.SchemaExistsError)
 			})
 			wantAPIError(t, err, api.ErrCodeUnknownSchemaTemplate,
 				"Cannot create schema s because schema template missing version 7 does not exist.")
 			mustRun(t, pc.run, func(tx api.Transaction) error {
-				ok, err := pc.cat.DoesDatabaseExist(tx, "/newdb")
+				ok, err := pc.cat.DoesDatabaseExist(tx, "/FRL/newdb")
 				if err == nil && ok {
 					t.Fatal("a refused save created its database")
 				}

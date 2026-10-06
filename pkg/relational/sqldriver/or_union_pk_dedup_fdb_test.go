@@ -84,7 +84,7 @@ func TestFDB_OrUnionPrimaryKeyDedup_LeftJoin(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmOrUnionFixture(t, ctx, "/testdb_orunion_lj", "orunlj")
+	w := mmOrUnionFixture(t, ctx, "/FRL/testdb_orunion_lj", "orunlj")
 
 	twoWay := "SELECT d.did, u.uid FROM d LEFT JOIN u ON u.ua = d.da OR u.ub = d.db2 ORDER BY d.did, u.uid"
 	// Every case in this file is worthless if the plan stopped using the union,
@@ -187,7 +187,7 @@ func TestFDB_OrUnionPrimaryKeyDedup_OtherShapes(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmOrUnionFixture(t, ctx, "/testdb_orunion_other", "orunot")
+	w := mmOrUnionFixture(t, ctx, "/FRL/testdb_orunion_other", "orunot")
 
 	w.Want("inner join with OR ON",
 		"SELECT d.did, u.uid FROM d JOIN u ON u.ua = d.da OR u.ub = d.db2 ORDER BY d.did, u.uid",
@@ -223,7 +223,7 @@ func TestFDB_OrUnionPrimaryKeyDedup_ScaleAndMaintenance(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_orunion_scale", "orunsc",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_orunion_scale", "orunsc",
 		"CREATE TABLE d (did BIGINT, da BIGINT, db2 BIGINT, PRIMARY KEY (did)) "+
 			"CREATE TABLE u (uid BIGINT, ua BIGINT, ub BIGINT, pad STRING, PRIMARY KEY (uid)) ",
 		"CREATE INDEX u_ua ON u (ua) CREATE INDEX u_ub ON u (ub) ")
@@ -280,7 +280,7 @@ func TestFDB_UnionWithExistentialPredicate(t *testing.T) {
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	w := mmNewTwin(t, context.Background(), "/testdb_union_exists", "union_exists",
+	w := mmNewTwin(t, context.Background(), "/FRL/testdb_union_exists", "union_exists",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY(id)) ",
 		"CREATE INDEX ix_a ON t(a) CREATE INDEX ix_b ON t(b) ")
 	w.Exec("INSERT INTO t VALUES (1,0,0),(2,5,0),(3,0,7),(4,5,7),(5,0,0)")
@@ -301,7 +301,7 @@ func TestFDB_UnionWithUnmatchedFixedFactor(t *testing.T) {
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	w := mmNewTwin(t, context.Background(), "/testdb_union_fixed", "union_fixed",
+	w := mmNewTwin(t, context.Background(), "/FRL/testdb_union_fixed", "union_fixed",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, PRIMARY KEY(id)) ",
 		"CREATE INDEX ix_a ON t(a,d) CREATE INDEX ix_b ON t(b,d) ")
 	w.Exec("INSERT INTO t VALUES (1,1,0,10,9),(2,0,2,20,9),(3,1,2,10,9),(4,1,0,30,9),(5,0,2,NULL,9),(6,0,0,10,9),(7,1,2,10,8)")

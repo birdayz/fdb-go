@@ -25,7 +25,7 @@ import (
 func setupRowContDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/testdb_rowcont_"+tag, "rowcont"+tag,
+	db := setupErrorTestDB(t, "/FRL/testdb_rowcont_"+tag, "rowcont"+tag,
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON t (g) "+
 			"CREATE TABLE t2 (id BIGINT, PRIMARY KEY (id))")

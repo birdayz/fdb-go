@@ -87,7 +87,7 @@ const execStatsGroups = 5
 // index on (g) is what makes the selectivity dimension testable at all.
 func setupExecStatsDB(t *testing.T, name string) *sql.DB {
 	t.Helper()
-	db := setupErrorTestDB(t, "/testdb_"+name, name,
+	db := setupErrorTestDB(t, "/FRL/testdb_"+name, name,
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON t (g)")
 	ctx := context.Background()

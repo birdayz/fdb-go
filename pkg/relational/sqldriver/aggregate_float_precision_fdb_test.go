@@ -12,7 +12,7 @@ import (
 
 func TestFDB_AggregateFloatPrecision(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_aggfloatprecision", "aggfloatprecision",
+	db := setupErrorTestDB(t, "/FRL/testdb_aggfloatprecision", "aggfloatprecision",
 		"CREATE TABLE t (id BIGINT, g BIGINT, f FLOAT, d DOUBLE, PRIMARY KEY (g, id))")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

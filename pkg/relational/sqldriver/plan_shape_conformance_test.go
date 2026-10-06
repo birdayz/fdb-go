@@ -46,7 +46,8 @@ func setupPlanShapeDB(t *testing.T, suffix, templateDDL string) *sql.DB {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/FRL/planshape_%s_%s", suffix, t.Name())
+	// A subtest's name has a '/', and a database path is exactly /DOMAIN/DB.
+	dbPath := fmt.Sprintf("/FRL/planshape_%s_%s", suffix, strings.ReplaceAll(t.Name(), "/", "_"))
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

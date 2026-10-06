@@ -7,6 +7,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//cmd/frl/internal/cmd",
+        "//pkg/relational/core/keyspace",
         "@land_charm_fang_v2//:fang",
     ],
 )

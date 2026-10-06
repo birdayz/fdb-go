@@ -30,6 +30,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
 
 ### Changed
+- **Breaking:** a relational database path is `/DOMAIN/DATABASE`, as in Java, and its domain must be registered once per process before use: `sqldriver.RegisterDomainIfNotExists("FRL")` (Java's `RelationalKeyspaceProvider.instance().registerDomainIfNotExists`). The driver registers none; `frl` registers `FRL`, as Java's server and CLI do. A path outside the registered domains (including a one-segment `/name`) is INVALID_PATH (08F01) on CREATE DATABASE, on a schema's store and when connecting to a schema; a malformed path is 08F01 `invalid database path '…'` (was 22023). `/__SYS` needs no domain.
 - An array result column's `DatabaseTypeName` is `ARRAY`, as Java's `getColumnTypeName` (it was the element's type name), and its scan type is not a scalar. `api.WithResultSetMetaDataObserver` gives a query's result-set metadata, whose `ColumnDataType` carries a struct column's declared type name and fields and an array column's element type.
 - A SQL query block is one Select, as in Java 4.14.2.0: predicates reach a derived table's or CTE's access paths, a computed column without an alias is named by its position (`_0`), and EXPLAIN shows `Map(…, {…})` where it showed `Project(…)`.
 - A SQL function call binds its arguments as Java does (a one-row values source pushed into the body), so its body's predicates reach index scans and joins of calls plan in Java's order.

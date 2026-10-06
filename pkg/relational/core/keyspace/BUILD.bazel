@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "keyspace",
-    srcs = ["keyspace.go"],
+    srcs = [
+        "domains.go",
+        "keyspace.go",
+    ],
     importpath = "fdb.dev/pkg/relational/core/keyspace",
     visibility = ["//visibility:public"],
     deps = [
@@ -14,9 +17,13 @@ go_library(
 
 go_test(
     name = "keyspace_test",
-    srcs = ["keyspace_test.go"],
+    srcs = [
+        "domains_test.go",
+        "keyspace_test.go",
+    ],
+    embed = [":keyspace"],
     deps = [
-        ":keyspace",
         "//pkg/fdbgo/fdb/subspace",
+        "//pkg/relational/api",
     ],
 )

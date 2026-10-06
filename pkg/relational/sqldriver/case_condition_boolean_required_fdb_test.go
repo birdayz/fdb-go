@@ -50,7 +50,7 @@ func TestFDB_CaseConditionMustBeBoolean(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/testdb_case_boolcond", "caseboolcond",
+	db := setupErrorTestDB(t, "/FRL/testdb_case_boolcond", "caseboolcond",
 		"CREATE TABLE t (id BIGINT, a BIGINT, s STRING, f BOOLEAN, d DOUBLE, PRIMARY KEY (id))")
 	mwjoMustExec(t, db, ctx,
 		"INSERT INTO t (id, a, s, f, d) VALUES (1, 1, 'x', true, 1.5), (2, 0, 'y', false, 0.0)")

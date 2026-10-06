@@ -44,9 +44,9 @@ func TestCreateDatabase(t *testing.T) {
 	g := gomega.NewWithT(t)
 	cat, txn, f := newEnv(t)
 
-	g.Expect(f.CreateDatabase("/test", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/TEST/db", api.Options{}).Execute(txn)).To(gomega.Succeed())
 
-	exists, err := cat.DoesDatabaseExist(txn, "/test")
+	exists, err := cat.DoesDatabaseExist(txn, "/TEST/db")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(exists).To(gomega.BeTrue())
 }
@@ -56,8 +56,8 @@ func TestCreateDatabase_Duplicate(t *testing.T) {
 	g := gomega.NewWithT(t)
 	_, txn, f := newEnv(t)
 
-	g.Expect(f.CreateDatabase("/test", api.Options{}).Execute(txn)).To(gomega.Succeed())
-	err := f.CreateDatabase("/test", api.Options{}).Execute(txn)
+	g.Expect(f.CreateDatabase("/TEST/db", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	err := f.CreateDatabase("/TEST/db", api.Options{}).Execute(txn)
 	g.Expect(err).To(gomega.HaveOccurred())
 	var apiErr *api.Error
 	g.Expect(err).To(gomega.BeAssignableToTypeOf(apiErr))
@@ -68,10 +68,10 @@ func TestDropDatabase(t *testing.T) {
 	g := gomega.NewWithT(t)
 	cat, txn, f := newEnv(t)
 
-	g.Expect(f.CreateDatabase("/test", api.Options{}).Execute(txn)).To(gomega.Succeed())
-	g.Expect(f.DropDatabase("/test", true, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/TEST/db", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.DropDatabase("/TEST/db", true, api.Options{}).Execute(txn)).To(gomega.Succeed())
 
-	exists, err := cat.DoesDatabaseExist(txn, "/test")
+	exists, err := cat.DoesDatabaseExist(txn, "/TEST/db")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(exists).To(gomega.BeFalse())
 }
@@ -81,8 +81,8 @@ func TestDropDatabase_ThrowIfNotExist(t *testing.T) {
 	g := gomega.NewWithT(t)
 	_, txn, f := newEnv(t)
 
-	g.Expect(f.DropDatabase("/nope", true, api.Options{}).Execute(txn)).NotTo(gomega.Succeed())
-	g.Expect(f.DropDatabase("/nope", false, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.DropDatabase("/FRL/nope", true, api.Options{}).Execute(txn)).NotTo(gomega.Succeed())
+	g.Expect(f.DropDatabase("/FRL/nope", false, api.Options{}).Execute(txn)).To(gomega.Succeed())
 }
 
 func TestDropDatabase_ProtectedSys(t *testing.T) {
@@ -103,12 +103,12 @@ func TestDropDatabase_DropsSchemasFirst(t *testing.T) {
 
 	tmpl := buildTemplate(t, "T1", 1)
 	g.Expect(f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn)).To(gomega.Succeed())
-	g.Expect(f.CreateDatabase("/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
-	g.Expect(f.CreateSchema("/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/FRL/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateSchema("/FRL/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
 
-	g.Expect(f.DropDatabase("/db1", true, api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.DropDatabase("/FRL/db1", true, api.Options{}).Execute(txn)).To(gomega.Succeed())
 
-	exists, err := cat.DoesDatabaseExist(txn, "/db1")
+	exists, err := cat.DoesDatabaseExist(txn, "/FRL/db1")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(exists).To(gomega.BeFalse())
 }
@@ -120,10 +120,10 @@ func TestCreateSchema(t *testing.T) {
 
 	tmpl := buildTemplate(t, "T1", 1)
 	g.Expect(f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn)).To(gomega.Succeed())
-	g.Expect(f.CreateDatabase("/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
-	g.Expect(f.CreateSchema("/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/FRL/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateSchema("/FRL/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
 
-	schema, err := cat.LoadSchema(txn, "/db1", "s1")
+	schema, err := cat.LoadSchema(txn, "/FRL/db1", "s1")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(schema.MetadataName()).To(gomega.Equal("s1"))
 }
@@ -159,13 +159,13 @@ func TestCreateSchema_AlreadyExists(t *testing.T) {
 
 	tmpl := buildTemplate(t, "T1", 1)
 	g.Expect(f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn)).To(gomega.Succeed())
-	g.Expect(f.CreateDatabase("/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
-	g.Expect(f.CreateSchema("/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/FRL/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateSchema("/FRL/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
 
-	err := f.CreateSchema("/db1", "s1", "T1", api.Options{}).Execute(txn)
-	wantDDLError(g, err, api.ErrCodeSchemaAlreadyExists, "Schema /db1/s1 already exists.")
+	err := f.CreateSchema("/FRL/db1", "s1", "T1", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeSchemaAlreadyExists, "Schema /FRL/db1/s1 already exists.")
 	// The template is loaded before the existing schema is refused.
-	err = f.CreateSchema("/db1", "s1", "ghost", api.Options{}).Execute(txn)
+	err = f.CreateSchema("/FRL/db1", "s1", "ghost", api.Options{}).Execute(txn)
 	wantDDLError(g, err, api.ErrCodeUnknownSchemaTemplate, "SchemaTemplate 'ghost' is not in catalog")
 }
 
@@ -180,11 +180,11 @@ func TestCreateSchema_OverAGoneVersion(t *testing.T) {
 
 	g.Expect(f.SaveSchemaTemplate(buildTemplate(t, "T1", 1), api.Options{}).Execute(txn)).To(gomega.Succeed())
 	g.Expect(f.SaveSchemaTemplate(buildTemplate(t, "T2", 1), api.Options{}).Execute(txn)).To(gomega.Succeed())
-	g.Expect(f.CreateDatabase("/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
-	g.Expect(f.CreateSchema("/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/FRL/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateSchema("/FRL/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
 	g.Expect(f.DropSchemaTemplate("T1", true, api.Options{}).Execute(txn)).To(gomega.Succeed())
 
-	err := f.CreateSchema("/db1", "s1", "T2", api.Options{}).Execute(txn)
+	err := f.CreateSchema("/FRL/db1", "s1", "T2", api.Options{}).Execute(txn)
 	wantDDLError(g, err, api.ErrCodeUnknownSchemaTemplate, "SchemaTemplate=T1, version=1 is not in catalog")
 }
 
@@ -195,11 +195,11 @@ func TestDropSchema(t *testing.T) {
 
 	tmpl := buildTemplate(t, "T1", 1)
 	g.Expect(f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn)).To(gomega.Succeed())
-	g.Expect(f.CreateDatabase("/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
-	g.Expect(f.CreateSchema("/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
-	g.Expect(f.DropSchema("/db1", "s1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/FRL/db1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateSchema("/FRL/db1", "s1", "T1", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.DropSchema("/FRL/db1", "s1", api.Options{}).Execute(txn)).To(gomega.Succeed())
 
-	_, err := cat.LoadSchema(txn, "/db1", "s1")
+	_, err := cat.LoadSchema(txn, "/FRL/db1", "s1")
 	g.Expect(err).To(gomega.HaveOccurred())
 }
 

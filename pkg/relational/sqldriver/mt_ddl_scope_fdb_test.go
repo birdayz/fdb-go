@@ -107,8 +107,8 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 	const (
 		// The spellings CREATE DATABASE stores (unquoted paths fold whole);
 		// the refusals and catalog rows name these.
-		home    = "/MT_DDL_HOME"
-		foreign = "/MT_DDL_FOREIGN"
+		home    = "/FRL/MT_DDL_HOME"
+		foreign = "/FRL/MT_DDL_FOREIGN"
 	)
 
 	setup := openTestDB(t, home)
@@ -167,11 +167,14 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 		mwjoMustExec(t, db, ctx, "CREATE SCHEMA own_bare WITH TEMPLATE mt_ddl_tmpl")
 		mwjoMustExec(t, db, ctx, "DROP SCHEMA "+home+"/own_bare")
 
-		// Containment, not equality: a database nested under the session's own
-		// path is inside the tenant's scope.
-		nested := home + "/nested"
-		mwjoMustExec(t, db, ctx, "CREATE DATABASE "+nested)
-		mwjoMustExec(t, db, ctx, "DROP DATABASE "+nested)
+		// A database path is exactly /DOMAIN/DB (Java's keyspace), so nothing
+		// nests under the session's own database: the path is INVALID_PATH,
+		// not a scope refusal.
+		_, err := db.ExecContext(ctx, "CREATE DATABASE "+home+"/nested")
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidPath {
+			t.Fatalf("CREATE DATABASE nested: %v, want 08F01", err)
+		}
 	})
 
 	// Segment granularity: /mt_ddl_home must not confer authority over a
@@ -210,7 +213,7 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 
 	// The Java-parity default. This is a CONTRACT, not an accident.
 	t.Run("unrestricted_is_java_parity", func(t *testing.T) {
-		const target = "/MT_DDL_PARITY_TARGET"
+		const target = "/FRL/MT_DDL_PARITY_TARGET"
 		db := mtDDLOpen(t, home, false)
 
 		// Cross-database CREATE/DROP DATABASE from a foreign connection: Java
@@ -246,8 +249,8 @@ func TestFDB_RestrictDDLSurvivesDSNMutation(t *testing.T) {
 	ctx := context.Background()
 
 	const (
-		home    = "/MT_FREEZE_HOME"
-		foreign = "/MT_FREEZE_FOREIGN"
+		home    = "/FRL/MT_FREEZE_HOME"
+		foreign = "/FRL/MT_FREEZE_FOREIGN"
 	)
 
 	setup := openTestDB(t, home)
@@ -303,9 +306,15 @@ func TestFDB_CreateDatabaseRefusesSystemCatalogSpace(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := openTestDB(t, "/mt_sys_guard")
+	db := openTestDB(t, "/FRL/mt_sys_guard")
 
-	for _, path := range []string{"/__SYS/anything", "/__SYS/CATALOG", "/__SYS"} {
+	// A path inside /__SYS names no database (Java's toDatabasePath: INVALID_PATH);
+	// /__SYS itself is the system database, refused as 42501.
+	for path, want := range map[string]api.ErrorCode{
+		"/__SYS/anything": api.ErrCodeInvalidPath,
+		"/__SYS/CATALOG":  api.ErrCodeInvalidPath,
+		"/__SYS":          api.ErrCodeInsufficientPrivilege,
+	} {
 		_, err := db.ExecContext(ctx, "CREATE DATABASE "+path)
 		if err == nil {
 			t.Fatalf("CREATE DATABASE %s: expected rejection, got success", path)
@@ -314,14 +323,13 @@ func TestFDB_CreateDatabaseRefusesSystemCatalogSpace(t *testing.T) {
 		if !errors.As(err, &apiErr) {
 			t.Fatalf("CREATE DATABASE %s: not an *api.Error: %v", path, err)
 		}
-		if apiErr.Code != api.ErrCodeInsufficientPrivilege {
-			t.Fatalf("CREATE DATABASE %s: SQLSTATE = %q, want %q (%v)",
-				path, apiErr.Code, api.ErrCodeInsufficientPrivilege, err)
+		if apiErr.Code != want {
+			t.Fatalf("CREATE DATABASE %s: SQLSTATE = %q, want %q (%v)", path, apiErr.Code, want, err)
 		}
 	}
 
 	// A path that merely starts with the same characters is a normal database.
-	const lookalike = "/__SYSTEM_mt_guard"
+	const lookalike = "/FRL/__SYSTEM_mt_guard"
 	mwjoMustExec(t, db, ctx, "CREATE DATABASE "+lookalike)
 	mwjoMustExec(t, db, ctx, "DROP DATABASE "+lookalike)
 }

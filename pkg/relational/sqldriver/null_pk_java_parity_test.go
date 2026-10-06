@@ -51,7 +51,7 @@ import (
 // into a single-column BIGINT PK succeeds and stores tuple null.
 func TestFDB_NullPK_ExplicitNull_SingleColumn(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_nullpk_single", "nullpk_single",
+	db := setupErrorTestDB(t, "/FRL/testdb_nullpk_single", "nullpk_single",
 		"CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -126,7 +126,7 @@ func TestFDB_NullPK_ExplicitNull_SingleColumn(t *testing.T) {
 // live: `insert into B values (1, 2), (3, null), (null, 4), (null, null)`.
 func TestFDB_NullPK_CompositePartialNull(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_nullpk_comp", "nullpk_comp",
+	db := setupErrorTestDB(t, "/FRL/testdb_nullpk_comp", "nullpk_comp",
 		"CREATE TABLE B (b1 BIGINT, b2 DOUBLE, PRIMARY KEY (b1, b2))")
 	ctx := context.Background()
 
@@ -181,7 +181,7 @@ func TestFDB_NullPK_CompositePartialNull(t *testing.T) {
 // inserts-updates-deletes.yamsql:133-135).
 func TestFDB_NullPK_OmittedColumn(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_nullpk_omit", "nullpk_omit",
+	db := setupErrorTestDB(t, "/FRL/testdb_nullpk_omit", "nullpk_omit",
 		"CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 

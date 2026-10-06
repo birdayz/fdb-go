@@ -28,7 +28,7 @@ func TestFDB_SelfReferencingUpdateDoesNotChase(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_halloween", "hw",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_halloween", "hw",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) ")
 	w.Exec("INSERT INTO t (id, a, b) VALUES (1, 1, 10), (2, 2, 20), (3, 3, 30), (4, 4, 40), (5, 5, 50)")
@@ -85,7 +85,7 @@ func TestFDB_SelfReferencingDeleteTerminates(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_halloween_del", "hwd",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_halloween_del", "hwd",
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) ")
 
@@ -119,7 +119,7 @@ func TestFDB_InsertFromSelectOverTheSameTable(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_selfref_insert_select", "isel",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_selfref_insert_select", "isel",
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE u (id BIGINT, a BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX u_a ON u (a) ")

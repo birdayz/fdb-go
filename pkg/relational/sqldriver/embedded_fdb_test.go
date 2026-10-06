@@ -703,7 +703,7 @@ func TestFDB_EmbeddedCreateDatabaseIdempotencyFails(t *testing.T) {
 
 func TestFDB_EmbeddedDropDatabaseIfExists(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_drop_noexist")
+	db := openTestDB(t, "/FRL/testdb_drop_noexist")
 	ctx := context.Background()
 
 	// Drop with IF EXISTS on non-existent database should succeed.
@@ -714,7 +714,7 @@ func TestFDB_EmbeddedDropDatabaseIfExists(t *testing.T) {
 
 func TestFDB_EmbeddedCreateDropSchemaTemplate(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_schema_tmpl")
+	db := openTestDB(t, "/FRL/testdb_schema_tmpl")
 	ctx := context.Background()
 
 	if _, err := db.ExecContext(ctx,
@@ -730,7 +730,7 @@ func TestFDB_EmbeddedCreateDropSchemaTemplate(t *testing.T) {
 
 func TestFDB_EmbeddedCreateSchemaDuplicateTemplateFails(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_schema_tmpl_dup")
+	db := openTestDB(t, "/FRL/testdb_schema_tmpl_dup")
 	ctx := context.Background()
 
 	ddl := "CREATE SCHEMA TEMPLATE dup_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))"
@@ -772,7 +772,7 @@ func TestFDB_EmbeddedCreateSchemaFullFlow(t *testing.T) {
 
 func TestFDB_EmbeddedPingSucceeds(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_ping")
+	db := openTestDB(t, "/FRL/testdb_ping")
 	ctx := context.Background()
 
 	if err := db.PingContext(ctx); err != nil {
@@ -782,7 +782,7 @@ func TestFDB_EmbeddedPingSucceeds(t *testing.T) {
 
 func TestFDB_EmbeddedDropSchemaTemplateIfExists(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_drop_tmpl")
+	db := openTestDB(t, "/FRL/testdb_drop_tmpl")
 	ctx := context.Background()
 
 	// Drop a non-existent template with IF EXISTS must succeed.
@@ -793,7 +793,7 @@ func TestFDB_EmbeddedDropSchemaTemplateIfExists(t *testing.T) {
 
 func TestFDB_EmbeddedDropSchemaTemplateNotExistFails(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_drop_tmpl_fail")
+	db := openTestDB(t, "/FRL/testdb_drop_tmpl_fail")
 	ctx := context.Background()
 
 	// Drop a non-existent template without IF EXISTS must fail.
@@ -805,7 +805,7 @@ func TestFDB_EmbeddedDropSchemaTemplateNotExistFails(t *testing.T) {
 
 func TestFDB_EmbeddedSelectReturnsUnsupported(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_select")
+	db := openTestDB(t, "/FRL/testdb_select")
 	ctx := context.Background()
 
 	_, err := db.ExecContext(ctx, "SELECT 1")
@@ -849,7 +849,7 @@ func TestFDB_EmbeddedShowDatabases(t *testing.T) {
 
 func TestFDB_EmbeddedShowSchemaTemplates(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_show_tmpl")
+	db := openTestDB(t, "/FRL/testdb_show_tmpl")
 	ctx := context.Background()
 
 	const ddl = "CREATE SCHEMA TEMPLATE show_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))"
@@ -885,7 +885,7 @@ func TestFDB_EmbeddedShowSchemaTemplates(t *testing.T) {
 
 func TestFDB_EmbeddedCreateSchemaTemplateWithIndex(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_tmpl_idx")
+	db := openTestDB(t, "/FRL/testdb_tmpl_idx")
 	ctx := context.Background()
 
 	ddl := "CREATE SCHEMA TEMPLATE indexed_tmpl " +
@@ -901,7 +901,7 @@ func TestFDB_EmbeddedCreateSchemaTemplateWithIndex(t *testing.T) {
 
 func TestFDB_EmbeddedCreateSchemaTemplateWithUniqueIndex(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_tmpl_uniq")
+	db := openTestDB(t, "/FRL/testdb_tmpl_uniq")
 	ctx := context.Background()
 
 	ddl := "CREATE SCHEMA TEMPLATE unique_tmpl " +
@@ -1005,7 +1005,7 @@ func TestFDB_EmbeddedInsertMultiRow(t *testing.T) {
 func TestFDB_EmbeddedInsertNoSchemaFails(t *testing.T) {
 	t.Parallel()
 	// No schema= in DSN — INSERT should fail with "no schema selected".
-	db := openTestDB(t, "/testdb_insert_noschema")
+	db := openTestDB(t, "/FRL/testdb_insert_noschema")
 	ctx := context.Background()
 
 	_, err := db.ExecContext(ctx, "INSERT INTO Employee (emp_id) VALUES (1)")
@@ -9830,7 +9830,7 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	const dbID = "/TESTDB_RFC145_SWEEP" // the spelling CREATE DATABASE stores
+	const dbID = "/FRL/TESTDB_RFC145_SWEEP" // the spelling CREATE DATABASE stores
 	setup := openTestDB(t, dbID)
 	mustExec := func(sqlText string) {
 		t.Helper()

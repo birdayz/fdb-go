@@ -17,10 +17,14 @@ go_library(
 
 go_test(
     name = "session_test",
-    srcs = ["session_test.go"],
+    srcs = [
+        "domain_registration_test.go",
+        "session_test.go",
+    ],
     embed = [":session"],
     deps = [
         "//pkg/dst",
         "//pkg/relational/api",
+        "//pkg/relational/core/keyspace",
     ],
 )

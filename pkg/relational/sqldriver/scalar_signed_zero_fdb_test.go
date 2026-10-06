@@ -18,7 +18,7 @@ var scalarZeroFixtureID atomic.Uint64
 func TestFDB_ScalarMathSignedZero(t *testing.T) {
 	t.Parallel()
 	name := fmt.Sprintf("scalarzero_%d", scalarZeroFixtureID.Add(1))
-	db := setupErrorTestDB(t, "/testdb_"+name, name,
+	db := setupErrorTestDB(t, "/FRL/testdb_"+name, name,
 		"CREATE TABLE t (id BIGINT, z DOUBLE, f FLOAT, d DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE TABLE p (id BIGINT, v DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE TABLE q (id BIGINT, n BIGINT, PRIMARY KEY (id)) "+

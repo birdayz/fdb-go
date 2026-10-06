@@ -98,7 +98,7 @@ func seedNotExistsFixture(t *testing.T, ctx context.Context, db *sql.DB, rows in
 // TestSim_NotExistsTimeLimit_PaginatesNotErrors.
 func TestFDB_NotExistsOutOfBandStop_PaginatesNotErrors(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_notexists_oob", "neoob",
+	db := setupErrorTestDB(t, "/FRL/testdb_notexists_oob", "neoob",
 		"CREATE TABLE t_rd (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE uniq (id BIGINT, k BIGINT, v BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()

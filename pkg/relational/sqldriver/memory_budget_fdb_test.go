@@ -66,7 +66,7 @@ func withMemBudget(bytes int64) func(*embedded.EmbeddedConnection) {
 // buffered, so the budget bites.
 func TestFDB_RFC130_ByteBudgetTripsBeforeRowLimit(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc130_sortbudget", "sortbudget",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_sortbudget", "sortbudget",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -110,7 +110,7 @@ func TestFDB_RFC130_ByteBudgetTripsBeforeRowLimit(t *testing.T) {
 // reasonable budget would have tripped.)
 func TestFDB_RFC130_DefaultUnlimitedRegression(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc130_default", "rfc130default",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_default", "rfc130default",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -137,7 +137,7 @@ func TestFDB_RFC130_DefaultUnlimitedRegression(t *testing.T) {
 // but their SUM does, so a per-site (non-shared) counter would wrongly succeed.
 func TestFDB_RFC130_StatementWideAcrossTwoBranches(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc130_twobranch", "twobranch",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_twobranch", "twobranch",
 		"CREATE TABLE A (id BIGINT, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE B (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
@@ -192,7 +192,7 @@ func TestFDB_RFC130_StatementWideAcrossTwoBranches(t *testing.T) {
 // Control with no budget completes.
 func TestFDB_RFC130_RecursiveCTECrossLevel(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc130_rcte", "rfc130rcte",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_rcte", "rfc130rcte",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -247,7 +247,7 @@ func TestFDB_RFC130_RecursiveCTECrossLevel(t *testing.T) {
 // the old double-charge (~26KB > 20KB) — the revert-proof.
 func TestFDB_RFC130_RecursiveCTE_NoDoubleCharge(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc130_nodbl", "rfc130nodbl",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_nodbl", "rfc130nodbl",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -289,7 +289,7 @@ func TestFDB_RFC130_RecursiveCTE_NoDoubleCharge(t *testing.T) {
 // up front, see TestFDB_RFC130_UpdateEchoChargedNoPartial.)
 func TestFDB_RFC130_DeleteEchoNotDoubleCharged(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc130_dml", "rfc130dml",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_dml", "rfc130dml",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -321,7 +321,7 @@ func TestFDB_RFC130_DeleteEchoNotDoubleCharged(t *testing.T) {
 // charging it before any SaveRecord keeps the mutation all-or-nothing.
 func TestFDB_RFC130_UpdateEchoChargedNoPartial(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc130_upd", "rfc130upd",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_upd", "rfc130upd",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -352,7 +352,7 @@ func TestFDB_RFC130_UpdateEchoChargedNoPartial(t *testing.T) {
 // zero rows land in the destination (no partial INSERT).
 func TestFDB_RFC130_InsertEchoChargedNoPartial(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc130_ins", "rfc130ins",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_ins", "rfc130ins",
 		"CREATE TABLE Src (id BIGINT, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE Dst (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
@@ -389,7 +389,7 @@ func TestFDB_RFC130_InsertEchoChargedNoPartial(t *testing.T) {
 // the ~20KB total falls under the 25KB budget and the INSERT completes.
 func TestFDB_RFC130_DMLEchoChargesPrimaryKeyBytes(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc130_pk", "rfc130pk",
+	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_pk", "rfc130pk",
 		"CREATE TABLE Src (k STRING, PRIMARY KEY (k)) "+
 			"CREATE TABLE Dst (k STRING, PRIMARY KEY (k))")
 	ctx := context.Background()

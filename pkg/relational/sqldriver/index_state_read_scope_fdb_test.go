@@ -40,7 +40,7 @@ func TestFDB_IndexStateReadScope(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			dbName := "/TESTDB_INDEX_STATE_SCOPE_" + strings.ToUpper(tc.name)
+			dbName := "/FRL/TESTDB_INDEX_STATE_SCOPE_" + strings.ToUpper(tc.name)
 			setup := openTestDB(t, dbName)
 			for _, stmt := range []string{
 				"CREATE DATABASE " + dbName,

@@ -163,6 +163,7 @@ go_test(
         "distinct_scratch_wiring_test.go",
         "dml_pk_dedup_plan_test.go",
         "dml_private_echo_count_test.go",
+        "domain_registration_test.go",
         "dotted_identifier_gap_test.go",
         "driver_value_struct_test.go",
         "duplicate_from_alias_binding_test.go",
@@ -530,6 +531,7 @@ go_test(
         "vector_option_pins_test.go",
         "relational_plan_cache.go",
         "relational_plan_cache_test.go",
+        "domain_registration_test.go",
     ],
     deps = [
         "//gen",

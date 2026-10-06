@@ -15,7 +15,11 @@ go_library(
 
 go_test(
     name = "golden_test",
-    srcs = ["golden_test.go"],
+    srcs = [
+        "domain_registration_test.go",
+        "golden_test.go",
+    ],
     data = glob(["testdata/**"]),
     embed = [":golden"],
+    deps = ["//pkg/relational/core/keyspace"],
 )

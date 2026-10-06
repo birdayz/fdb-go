@@ -81,7 +81,7 @@ func TestWriteCatalogSchemas_JSONEmptyIsArray(t *testing.T) {
 
 func TestWriteCatalogSchemas_JSONShape(t *testing.T) {
 	t.Parallel()
-	rows := []schemaRow{{Database: "/d", Name: "s", Template: "t", TemplateVersion: 7}}
+	rows := []schemaRow{{Database: "/FRL/d", Name: "s", Template: "t", TemplateVersion: 7}}
 	var buf bytes.Buffer
 	if err := writeCatalogSchemas(&buf, rows, "json"); err != nil {
 		t.Fatalf("write: %v", err)
@@ -94,7 +94,7 @@ func TestWriteCatalogSchemas_JSONShape(t *testing.T) {
 		t.Fatalf("rows = %d; want 1", len(got))
 	}
 	r := got[0]
-	if r["database"] != "/d" || r["name"] != "s" || r["template"] != "t" ||
+	if r["database"] != "/FRL/d" || r["name"] != "s" || r["template"] != "t" ||
 		r["template_version"].(float64) != 7 {
 		t.Errorf("row shape wrong: %v", r)
 	}

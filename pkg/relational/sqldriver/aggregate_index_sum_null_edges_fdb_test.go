@@ -27,7 +27,7 @@ func TestFDB_AggregateIndexSum_AvgDoesNotInheritTheDefect(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_sum_avg", "sumavg",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_sum_avg", "sumavg",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_sum_v_g AS SELECT SUM(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_cnt_g AS SELECT COUNT(*) FROM t GROUP BY g "+
@@ -83,7 +83,7 @@ func TestFDB_AggregateIndexSum_GroupLifecycle(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_sum_lifecycle", "sumlc",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_sum_lifecycle", "sumlc",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_sum_v_g AS SELECT SUM(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_cnt_g AS SELECT COUNT(*) FROM t GROUP BY g ")
@@ -131,7 +131,7 @@ func TestFDB_AggregateIndexSum_NullGroupKey(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_sum_nullkey", "sumnk",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_sum_nullkey", "sumnk",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_sum_v_g AS SELECT SUM(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_cnt_g AS SELECT COUNT(*) FROM t GROUP BY g ")

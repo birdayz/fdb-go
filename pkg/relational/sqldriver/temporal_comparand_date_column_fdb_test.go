@@ -35,7 +35,7 @@ func TestFDB_TemporalComparandDateColumn(t *testing.T) {
 	}
 	t.Parallel()
 	ctx := context.Background()
-	const dbName = "testdb_temporal_comparand_date"
+	const dbName = "FRL/testdb_temporal_comparand_date"
 	setup := openTestDB(t, "/"+dbName)
 	mustExec := func(db *sql.DB, stmt string, args ...any) {
 		t.Helper()

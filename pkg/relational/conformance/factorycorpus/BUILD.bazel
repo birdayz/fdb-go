@@ -62,6 +62,7 @@ go_test(
         "blessing_ratchet_test.go",
         "census_test.go",
         "corpus_shared_test.go",
+        "domain_registration_test.go",
         "export_test.go",
         "family_test.go",
         "format_gate_test.go",
@@ -86,5 +87,6 @@ go_test(
         "//pkg/relational/conformance/javacorpus",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/keyspace",
     ],
 )

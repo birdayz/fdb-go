@@ -107,7 +107,7 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 	// U is the second relation for the join section: its (upk1, upk2) pair
 	// refers to t's composite primary key, with a composite index over the
 	// pair and a single-column index over its first half.
-	w := mmNewTwin(t, ctx, "/testdb_mhcpk", "mhcpk",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_mhcpk", "mhcpk",
 		mhcpkTable+
 			"CREATE TABLE u (uid BIGINT, upk1 BIGINT, upk2 BIGINT, uv BIGINT, us STRING, PRIMARY KEY (uid)) ",
 		"CREATE INDEX t_a ON t (a) "+
@@ -706,7 +706,7 @@ func TestFDB_MetamorphicCompositePrimaryKeyDML(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_mhcpkdml", "mhcpkdml", mhcpkTable,
+	w := mmNewTwin(t, ctx, "/FRL/testdb_mhcpkdml", "mhcpkdml", mhcpkTable,
 		"CREATE INDEX t_a ON t (a) "+
 			"CREATE INDEX t_s ON t (s) "+
 			"CREATE INDEX t_asb ON t (a, s, b) "+

@@ -10,6 +10,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 	"fdb.dev/pkg/relational/conformance/yamsql"
+	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 // Config parameterises one corpus run.
@@ -630,6 +631,8 @@ func (r *runner) open(t connTarget) (*sql.DB, error) {
 	if db, ok := r.dbs[t]; ok {
 		return db, nil
 	}
+	// Java's yaml runner registers FRL before it connects (Command.java).
+	keyspace.RegisterDomainIfNotExists("FRL")
 	// The plan cache Java's yaml tests run against (EmbeddedConfig.beforeAll):
 	// one-hour TTLs, so a slow block's check_cache pass still finds the plans
 	// its tests wrote, and ten templates.

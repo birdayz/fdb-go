@@ -27,7 +27,7 @@ func setupInUnionContDB(t *testing.T) *sql.DB {
 	// between them. The index names id in its own key: an in-union ordered by
 	// a primary key reached only past the entry's record-type coordinate is
 	// not built (RFC-257 WS-F 4.3 item 2).
-	return setupErrorTestDB(t, "/testdb_inunioncont", "inunioncont",
+	return setupErrorTestDB(t, "/FRL/testdb_inunioncont", "inunioncont",
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON t (g, id)")
 }

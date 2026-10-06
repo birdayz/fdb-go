@@ -45,13 +45,13 @@ import (
 // from the twin above because the join shape has nothing to do with indexes —
 // what it measures is whether the ON predicate is APPLIED, and a second schema
 // would only double the setup.
-func openParenDB(t *testing.T) *sql.DB { return openInJoinDB(t, "/testdb_in_join", "injoin_t") }
+func openParenDB(t *testing.T) *sql.DB { return openInJoinDB(t, "/FRL/testdb_in_join", "injoin_t") }
 
 // openParenDB2 is the same fixture under a distinct database path. Each arm
 // gets its own so the two can run in parallel without one's INSERTs being
 // visible to the other's assertions — a shared path would make the row counts
 // depend on scheduling.
-func openParenDB2(t *testing.T) *sql.DB { return openInJoinDB(t, "/testdb_in_param", "inparam_t") }
+func openParenDB2(t *testing.T) *sql.DB { return openInJoinDB(t, "/FRL/testdb_in_param", "inparam_t") }
 
 // openUUIDInDB builds a single-table fixture pairing a UUID column with a
 // STRING column, which is the only way to get a NON-CONSTANT item whose type
@@ -97,7 +97,7 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_in_nonconst", "innonconst",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_in_nonconst", "innonconst",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_b ON t (b) CREATE INDEX t_a ON t (a) ")
 	//  id=1: a=10 b=10   a == b

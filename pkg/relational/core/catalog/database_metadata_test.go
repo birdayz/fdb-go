@@ -76,7 +76,7 @@ func TestDatabaseMetaData_SchemasEmpty(t *testing.T) {
 func TestDatabaseMetaData_SchemasAllListed(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	for _, p := range [][2]string{{"/a", "s1"}, {"/a", "s2"}, {"/b", "s1"}} {
+	for _, p := range [][2]string{{"/FRL/a", "s1"}, {"/FRL/a", "s2"}, {"/FRL/b", "s1"}} {
 		if err := c.SaveSchema(tx, tmpl.GenerateSchema(p[0], p[1]), true, api.SchemaExistsError); err != nil {
 			t.Fatal(err)
 		}
@@ -88,7 +88,7 @@ func TestDatabaseMetaData_SchemasAllListed(t *testing.T) {
 	defer rs.Close()
 	rows := collectStrings(t, rs, 2)
 	want := [][]string{
-		{"s1", "/a"}, {"s2", "/a"}, {"s1", "/b"},
+		{"s1", "/FRL/a"}, {"s2", "/FRL/a"}, {"s1", "/FRL/b"},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("rows = %d, want %d: %v", len(rows), len(want), rows)
@@ -104,8 +104,8 @@ func TestDatabaseMetaData_SchemasFilteredPatterns(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
 	for _, p := range [][2]string{
-		{"/prod", "public"},
-		{"/prod", "staging"},
+		{"/FRL/prod", "public"},
+		{"/FRL/prod", "staging"},
 		{"/dev", "public"},
 		{"/dev", "private"},
 	} {
@@ -115,13 +115,13 @@ func TestDatabaseMetaData_SchemasFilteredPatterns(t *testing.T) {
 	}
 
 	// Catalog LIKE '/prod': only rows with db == /prod.
-	rs, err := md.SchemasFiltered(context.Background(), "/prod", "")
+	rs, err := md.SchemasFiltered(context.Background(), "/FRL/prod", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	rows := collectStrings(t, rs, 2)
 	rs.Close()
-	if len(rows) != 2 || rows[0][1] != "/prod" || rows[1][1] != "/prod" {
+	if len(rows) != 2 || rows[0][1] != "/FRL/prod" || rows[1][1] != "/FRL/prod" {
 		t.Errorf("filter by /prod: got %v", rows)
 	}
 

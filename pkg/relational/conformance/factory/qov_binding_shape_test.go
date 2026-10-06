@@ -81,7 +81,7 @@ func TestFDB_QOVBindingMinimalShape(t *testing.T) {
 		t.Fatalf("open sys: %v", err)
 	}
 	defer setupDB.Close()
-	const dbPath, schema, tmpl = "/QOVSHAPE", "qovshape", "qovshapet"
+	const dbPath, schema, tmpl = "/FRL/QOVSHAPE", "qovshape", "qovshapet"
 	if _, err := setupDB.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("create database: %v", err)
 	}

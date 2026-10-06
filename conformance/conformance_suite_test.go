@@ -10,6 +10,7 @@ import (
 	"time"
 
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/relational/core/keyspace"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 	. "github.com/onsi/ginkgo/v2"
 	"github.com/onsi/ginkgo/v2/types"
@@ -21,6 +22,13 @@ var (
 	sharedDB        gofdb.Database
 	suiteCtx        context.Context
 )
+
+// The Go side registers the domains of the paths these tests use: TEST, which
+// the Java conformance server registers (sql_plan_steps.java), and FRL.
+func init() {
+	keyspace.RegisterDomainIfNotExists("FRL")
+	keyspace.RegisterDomainIfNotExists("TEST")
+}
 
 var _ = BeforeSuite(func() {
 	suiteCtx = context.Background()

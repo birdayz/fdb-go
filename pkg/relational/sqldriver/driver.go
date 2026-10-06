@@ -9,7 +9,14 @@
 //	    _ "fdb.dev/pkg/relational/sqldriver"
 //	)
 //
+//	sqldriver.RegisterDomainIfNotExists("FRL")
 //	db, err := sql.Open("fdbsql", "fdbsql:///FRL/MYDB?cluster_file=/etc/foundationdb/fdb.cluster")
+//
+// A database path is /DOMAIN/DATABASE, and its domain must be registered
+// first, once per process, exactly as a Java program registers it with
+// RelationalKeyspaceProvider.instance().registerDomainIfNotExists. The driver
+// registers none itself (Java's engine neither); Java's server, CLI and
+// yaml-test runner use FRL. /__SYS, the system catalog, needs no domain.
 //
 // DSN shape mirrors Java's JDBC URI (minus the jdbc: prefix):
 //
@@ -326,4 +333,13 @@ var (
 
 func init() {
 	sql.Register(DriverName, &Driver{})
+}
+
+// RegisterDomainIfNotExists makes /name/DATABASE a valid database path for
+// every connection of the process: Java's
+// RelationalKeyspaceProvider.instance().registerDomainIfNotExists. Idempotent
+// and additive; a path under an unregistered domain is INVALID_PATH where Java
+// resolves it (CREATE DATABASE, a schema's store, connecting to a schema).
+func RegisterDomainIfNotExists(name string) {
+	keyspace.RegisterDomainIfNotExists(name)
 }

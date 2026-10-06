@@ -78,7 +78,7 @@ func TestFDB_OrUnionPrimaryKeyDedup_ConjunctionOfDisjunctions(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmOrEdgeFixture(t, ctx, "/testdb_oredge_prod", "oredgep")
+	w := mmOrEdgeFixture(t, ctx, "/FRL/testdb_oredge_prod", "oredgep")
 
 	// (a OR b) AND (c OR d): 13 (a,c), 14 (a,b,c), 15 (all), 17 (b,d).
 	q2x2 := "SELECT d.did, u.uid FROM d LEFT JOIN u ON " +
@@ -122,7 +122,7 @@ func TestFDB_OrUnionPrimaryKeyDedup_ConjunctLimit(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmOrEdgeFixture(t, ctx, "/testdb_oredge_limit", "oredgel")
+	w := mmOrEdgeFixture(t, ctx, "/FRL/testdb_oredge_limit", "oredgel")
 
 	// n disjunctions ANDed together, each satisfied by every row, so the answer
 	// is the whole table and a dedup failure shows as a duplicated uid rather
@@ -154,7 +154,7 @@ func TestFDB_OrUnionPrimaryKeyDedup_LegShapes(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmOrEdgeFixture(t, ctx, "/testdb_oredge_shapes", "oredges")
+	w := mmOrEdgeFixture(t, ctx, "/FRL/testdb_oredge_shapes", "oredges")
 
 	// Two points on the SAME index. This one DOES reach the union, and it plans
 	// as a union of one index with itself — so both legs emit rows of identical

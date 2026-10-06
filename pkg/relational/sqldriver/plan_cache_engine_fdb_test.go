@@ -15,7 +15,7 @@ import (
 func TestFDB_PlanCacheIsEngineWide(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/testdb_plan_cache_engine", "plan_cache_engine",
+	db := setupErrorTestDB(t, "/FRL/testdb_plan_cache_engine", "plan_cache_engine",
 		"CREATE TABLE T (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX t_v ON T (v)")
 
 	var shared [2]*embedded.RelationalPlanCache
@@ -48,7 +48,7 @@ func TestFDB_PlanCacheIsEngineWide(t *testing.T) {
 func TestFDB_PlanCacheKeysTemporaryFunctions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/testdb_plan_cache_tempfn", "plan_cache_tempfn",
+	db := setupErrorTestDB(t, "/FRL/testdb_plan_cache_tempfn", "plan_cache_tempfn",
 		"CREATE TABLE T1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO T1 VALUES (10, 1), (30, 2), (50, 3)"); err != nil {
 		t.Fatal(err)

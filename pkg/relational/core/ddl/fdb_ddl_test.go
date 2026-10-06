@@ -87,11 +87,11 @@ func TestFDB_CreateDatabase(t *testing.T) {
 	cat, _, f := newFDBEnv(t)
 
 	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
-		return f.CreateDatabase("/testdb", api.Options{}).Execute(txn)
+		return f.CreateDatabase("/FRL/testdb", api.Options{}).Execute(txn)
 	})).To(gomega.Succeed())
 
 	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
-		exists, err := cat.DoesDatabaseExist(txn, "/testdb")
+		exists, err := cat.DoesDatabaseExist(txn, "/FRL/testdb")
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 		g.Expect(exists).To(gomega.BeTrue())
 		return nil
@@ -112,17 +112,17 @@ func TestFDB_CreateAndDropSchema(t *testing.T) {
 		if err := f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn); err != nil {
 			return err
 		}
-		return f.CreateDatabase("/fdbdb", api.Options{}).Execute(txn)
+		return f.CreateDatabase("/FRL/fdbdb", api.Options{}).Execute(txn)
 	})).To(gomega.Succeed())
 
 	// CreateSchema creates catalog entry + FDB record store.
 	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
-		return f.CreateSchema("/fdbdb", "s1", "FDBSchema", api.Options{}).Execute(txn)
+		return f.CreateSchema("/FRL/fdbdb", "s1", "FDBSchema", api.Options{}).Execute(txn)
 	})).To(gomega.Succeed())
 
 	// Schema must now be in catalog.
 	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
-		schema, err := cat.LoadSchema(txn, "/fdbdb", "s1")
+		schema, err := cat.LoadSchema(txn, "/FRL/fdbdb", "s1")
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 		g.Expect(schema.MetadataName()).To(gomega.Equal("s1"))
 		return nil
@@ -130,11 +130,11 @@ func TestFDB_CreateAndDropSchema(t *testing.T) {
 
 	// DropSchema removes catalog entry (and FDB store when ks provided).
 	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
-		return f.DropSchema("/fdbdb", "s1", api.Options{}).Execute(txn)
+		return f.DropSchema("/FRL/fdbdb", "s1", api.Options{}).Execute(txn)
 	})).To(gomega.Succeed())
 
 	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
-		_, err := cat.LoadSchema(txn, "/fdbdb", "s1")
+		_, err := cat.LoadSchema(txn, "/FRL/fdbdb", "s1")
 		g.Expect(err).To(gomega.HaveOccurred())
 		return nil
 	})).To(gomega.Succeed())
@@ -154,18 +154,18 @@ func TestFDB_DropDatabase_Cascade(t *testing.T) {
 		if err := f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn); err != nil {
 			return err
 		}
-		if err := f.CreateDatabase("/cascadedb", api.Options{}).Execute(txn); err != nil {
+		if err := f.CreateDatabase("/FRL/cascadedb", api.Options{}).Execute(txn); err != nil {
 			return err
 		}
-		return f.CreateSchema("/cascadedb", "s1", "CascadeTemplate", api.Options{}).Execute(txn)
+		return f.CreateSchema("/FRL/cascadedb", "s1", "CascadeTemplate", api.Options{}).Execute(txn)
 	})).To(gomega.Succeed())
 
 	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
-		return f.DropDatabase("/cascadedb", true, api.Options{}).Execute(txn)
+		return f.DropDatabase("/FRL/cascadedb", true, api.Options{}).Execute(txn)
 	})).To(gomega.Succeed())
 
 	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
-		exists, err := cat.DoesDatabaseExist(txn, "/cascadedb")
+		exists, err := cat.DoesDatabaseExist(txn, "/FRL/cascadedb")
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 		g.Expect(exists).To(gomega.BeFalse())
 		return nil
@@ -194,21 +194,21 @@ func TestFDB_CatalogOnly(t *testing.T) {
 		if err := f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn); err != nil {
 			return err
 		}
-		return f.CreateDatabase("/catonly", api.Options{}).Execute(txn)
+		return f.CreateDatabase("/FRL/catonly", api.Options{}).Execute(txn)
 	})).To(gomega.Succeed())
 
 	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
-		return f.CreateSchema("/catonly", "s1", "CatalogOnlyTmpl", api.Options{}).Execute(txn)
+		return f.CreateSchema("/FRL/catonly", "s1", "CatalogOnlyTmpl", api.Options{}).Execute(txn)
 	})).To(gomega.Succeed())
 
 	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
-		schema, err := cat.LoadSchema(txn, "/catonly", "s1")
+		schema, err := cat.LoadSchema(txn, "/FRL/catonly", "s1")
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 		g.Expect(schema.MetadataName()).To(gomega.Equal("s1"))
 		return nil
 	})).To(gomega.Succeed())
 
 	g.Expect(runFDBTxn(t, func(txn api.Transaction) error {
-		return f.DropSchema("/catonly", "s1", api.Options{}).Execute(txn)
+		return f.DropSchema("/FRL/catonly", "s1", api.Options{}).Execute(txn)
 	})).To(gomega.Succeed())
 }

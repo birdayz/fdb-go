@@ -76,7 +76,7 @@ func TestFDB_CoveringIndexValueFidelityByType(t *testing.T) {
 		t.Run(tc.ddlType, func(t *testing.T) {
 			t.Parallel()
 			tag := strings.ToLower(tc.ddlType)
-			w := mmNewTwin(t, ctx, "/testdb_covfid_"+tag, "covfid"+tag,
+			w := mmNewTwin(t, ctx, "/FRL/testdb_covfid_"+tag, "covfid"+tag,
 				fmt.Sprintf("CREATE TABLE t (id BIGINT, cv %s, pad STRING, PRIMARY KEY (id)) ", tc.ddlType),
 				"CREATE INDEX t_cv ON t (cv) ")
 

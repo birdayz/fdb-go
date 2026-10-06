@@ -61,7 +61,7 @@ const minStraddleExecs = 3
 // per statement in every execution.
 func TestFDB_CurrentTimestamp_StatementStable_Select(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_cts_select", "cts_select",
+	db := setupErrorTestDB(t, "/FRL/testdb_cts_select", "cts_select",
 		"CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -127,7 +127,7 @@ func TestFDB_CurrentTimestamp_StatementStable_Select(t *testing.T) {
 // boundary between the two operand evaluations).
 func TestFDB_CurrentTimestamp_StatementStable_Where(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_cts_where", "cts_where",
+	db := setupErrorTestDB(t, "/FRL/testdb_cts_where", "cts_where",
 		"CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 

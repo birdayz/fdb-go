@@ -34,7 +34,7 @@ func TestFDB_RuntimeRangeSetLimitThroughFilterAndDistinct(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const path = "/testdb_range_budget"
+	const path = "/FRL/testdb_range_budget"
 	setup := openTestDB(t, path)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+path)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE range_budget "+

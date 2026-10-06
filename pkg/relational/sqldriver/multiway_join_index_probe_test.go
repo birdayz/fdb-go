@@ -156,7 +156,7 @@ func TestFDB_MultiwayJoinIndexProbe(t *testing.T) {
 func TestFDB_MergedJoinRangeSplitKeepsRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/testdb_merged_range_split", "mergedsplit",
+	db := setupErrorTestDB(t, "/FRL/testdb_merged_range_split", "mergedsplit",
 		"CREATE TABLE orders (id BIGINT, cust_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+

@@ -605,7 +605,7 @@ func TestFDB_Carry_OptionOnlyChangeIsRebuilt(t *testing.T) {
 func TestFDB_Carry_LongValueBitmapKeyIsRebuiltWithItsRows(t *testing.T) {
 	t.Parallel()
 	h := newFleetHarness(t)
-	const dbPath, name = "/carry_bitmap_long", "CARRY_BITMAP_LONG"
+	const dbPath, name = "/FRL/carry_bitmap_long", "CARRY_BITMAP_LONG"
 	body := "CREATE TABLE t(id BIGINT, v BIGINT, PRIMARY KEY(id)) " +
 		"CREATE INDEX agg_bucket AS SELECT bitmap_bucket_offset(id) FROM t ORDER BY bitmap_bucket_offset(id)"
 	built, err := embedded.BuildSchemaTemplateFromDDLNamed(body, name)

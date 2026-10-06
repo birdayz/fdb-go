@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1333,6 +1334,10 @@ func (c *EmbeddedConnection) checkSchemaTemplateDDLAllowed(operation string) err
 // Mirrors Java's SemanticAnalyzer.parseSchemaIdentifier.
 func parseSchemaIdentifier(id, currentDB string) (dbPath, schemaName string, err error) {
 	if strings.HasPrefix(id, "/") {
+		// SemanticAnalyzer.parseSchemaURI validates the whole identifier.
+		if err := validateDatabasePath(id); err != nil {
+			return "", "", err
+		}
 		idx := strings.LastIndex(id, "/")
 		if idx == len(id)-1 {
 			return "", "", api.NewErrorf(api.ErrCodeInvalidParameter,
@@ -1347,11 +1352,18 @@ func parseSchemaIdentifier(id, currentDB string) (dbPath, schemaName string, err
 	return currentDB, id, nil
 }
 
-// validateDatabasePath checks that the path starts with / and has a non-empty name.
+// databaseURIPattern is SemanticAnalyzer.validateDatabaseUri's pattern
+// (Java's \w is ASCII [A-Za-z0-9_]).
+var databaseURIPattern = regexp.MustCompile(`^/[A-Za-z0-9_][-a-zA-Z0-9_/]*[A-Za-z0-9_]$`)
+
+// validateDatabasePath is SemanticAnalyzer.validateDatabaseUri, which Java's
+// DDL runs on every database path it parses (CREATE/DROP DATABASE, SHOW
+// DATABASES WITH PREFIX, a schema identifier with a path). Whether the path
+// names a database of a registered domain is decided later, where Java
+// resolves it (keyspace.ToDatabasePath).
 func validateDatabasePath(p string) error {
-	if !strings.HasPrefix(p, "/") || len(p) < 2 || strings.HasSuffix(p, "/") {
-		return api.NewErrorf(api.ErrCodeInvalidParameter,
-			"database path must be /name (not empty, bare /, or trailing /): %q", p)
+	if !databaseURIPattern.MatchString(p) {
+		return api.NewErrorf(api.ErrCodeInvalidPath, "invalid database path '%s'", p)
 	}
 	return nil
 }

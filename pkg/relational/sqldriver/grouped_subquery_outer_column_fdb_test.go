@@ -40,7 +40,7 @@ import (
 // worked before: an outer read in the WHERE alone.
 func TestFDB_GroupedSubqueryProjectsAnOuterColumn(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_grouped_outer_column", "groupedoutercol", `
+	db := setupErrorTestDB(t, "/FRL/testdb_grouped_outer_column", "groupedoutercol", `
 		create table a(ida integer, x integer, primary key(ida))
 		create table b(idb integer, q integer, r integer, primary key(idb))
 		create index ib as select q from b`)

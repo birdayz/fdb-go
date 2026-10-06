@@ -16,7 +16,7 @@ func runSemanticScenario(t *testing.T, s *yamsql.Scenario) *yamsql.Result {
 		t.Skip("FDB not available (no Docker)")
 	}
 	name := sanitize(t.Name())
-	path := "/_" + name
+	path := "/FRL/_" + name
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=CONF", strings.ToUpper(path), clusterFilePath))
 	if err != nil {
 		t.Fatal(err)

@@ -35,7 +35,7 @@ func TestFDB_AggregateIndexResidual(t *testing.T) {
 		"CREATE INDEX t_cntv_abc AS SELECT COUNT(v) FROM t GROUP BY a, b, c " +
 		"CREATE INDEX t_cnt_abc AS SELECT COUNT(*) FROM t GROUP BY a, b, c " +
 		"CREATE INDEX t_cnt_d_a AS SELECT COUNT(*) FROM t GROUP BY d, a "
-	w := mmNewTwin(t, ctx, "/testdb_aggresidual", "aggresidual", table, indexes)
+	w := mmNewTwin(t, ctx, "/FRL/testdb_aggresidual", "aggresidual", table, indexes)
 
 	as := []string{"'x'", "'y'", "'z'", "NULL"}
 	bs := []string{"'p'", "'q'", "NULL"}
@@ -162,7 +162,7 @@ func TestFDB_BitmapAggregateIndex(t *testing.T) {
 	ctx := context.Background()
 	const table = `CREATE TABLE t (id BIGINT, category STRING, PRIMARY KEY(id)) `
 	const indexes = `CREATE INDEX bm AS SELECT bitmap_construct_agg(bitmap_bit_position(id)), category, bitmap_bucket_offset(id) FROM t GROUP BY category, bitmap_bucket_offset(id)`
-	w := mmNewTwin(t, ctx, "/testdb_bitmapagg", "bitmapagg", table, indexes)
+	w := mmNewTwin(t, ctx, "/FRL/testdb_bitmapagg", "bitmapagg", table, indexes)
 	w.Exec("INSERT INTO t VALUES (1, 'a'), (2, 'a'), (10001, 'a'), (3, 'b')")
 	queries := []string{
 		`SELECT category, bitmap_bucket_offset(id), bitmap_construct_agg(bitmap_bit_position(id)) FROM t GROUP BY category, bitmap_bucket_offset(id) ORDER BY category, bitmap_bucket_offset(id)`,
@@ -206,7 +206,7 @@ func TestFDB_AggregateIndexNestedLeafGrouping(t *testing.T) {
 		"CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM t_s GROUP BY home.city, home.zip, cat " +
 		"CREATE INDEX sum_home_cat_nn AS SELECT COUNT(v) FROM t_s GROUP BY home.city, home.zip, cat " +
 		"CREATE INDEX cnt_home_office AS SELECT COUNT(*) FROM t_s GROUP BY home.city, office.city "
-	w := mmNewTwin(t, ctx, "/testdb_aggnested", "aggnested", table, indexes)
+	w := mmNewTwin(t, ctx, "/FRL/testdb_aggnested", "aggnested", table, indexes)
 
 	cities := []string{"'a'", "'b'", "NULL"}
 	cats := []string{"'x'", "'y'"}

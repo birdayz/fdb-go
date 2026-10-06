@@ -88,10 +88,10 @@ func TestFDB_VersionGuard_FreshTemplateRefusedWhileDroppedVersionBound(t *testin
 		if err := tc.CreateTemplate(tx, buildVersionedTemplate(t, "g", 3)); err != nil {
 			return err
 		}
-		if err := cat.SaveSchema(tx, buildVersionedTemplate(t, "g", 3).GenerateSchema("/db2", "b"), true, api.SchemaExistsError); err != nil {
+		if err := cat.SaveSchema(tx, buildVersionedTemplate(t, "g", 3).GenerateSchema("/FRL/db2", "b"), true, api.SchemaExistsError); err != nil {
 			return err
 		}
-		return cat.SaveSchema(tx, buildVersionedTemplate(t, "g", 3).GenerateSchema("/db1", "a"), true, api.SchemaExistsError)
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "g", 3).GenerateSchema("/FRL/db1", "a"), true, api.SchemaExistsError)
 	})
 	// The target's DROP SCHEMA TEMPLATE drops regardless of bindings.
 	mustRun(t, run, func(tx api.Transaction) error { return tc.DeleteTemplate(tx, "g", true) })
@@ -99,15 +99,15 @@ func TestFDB_VersionGuard_FreshTemplateRefusedWhileDroppedVersionBound(t *testin
 	for _, v := range []int{0, 1, 3, 7} {
 		err := run(func(tx api.Transaction) error { return tc.CreateTemplate(tx, buildVersionedTemplate(t, "g", v)) })
 		wantAPIError(t, err, api.ErrCodeInvalidSchemaTemplate,
-			"schema template g version "+strconv.Itoa(v)+" cannot be created: schemas are still bound to its dropped version 3 (/db1/a)")
+			"schema template g version "+strconv.Itoa(v)+" cannot be created: schemas are still bound to its dropped version 3 (/FRL/db1/a)")
 	}
 
-	mustRun(t, run, func(tx api.Transaction) error { return cat.DeleteSchema(tx, "/db1", "a") })
+	mustRun(t, run, func(tx api.Transaction) error { return cat.DeleteSchema(tx, "/FRL/db1", "a") })
 	err := run(func(tx api.Transaction) error { return tc.CreateTemplate(tx, buildVersionedTemplate(t, "g", 1)) })
 	wantAPIError(t, err, api.ErrCodeInvalidSchemaTemplate,
-		"schema template g version 1 cannot be created: schemas are still bound to its dropped version 3 (/db2/b)")
+		"schema template g version 1 cannot be created: schemas are still bound to its dropped version 3 (/FRL/db2/b)")
 
-	mustRun(t, run, func(tx api.Transaction) error { return cat.DeleteSchema(tx, "/db2", "b") })
+	mustRun(t, run, func(tx api.Transaction) error { return cat.DeleteSchema(tx, "/FRL/db2", "b") })
 	mustRun(t, run, func(tx api.Transaction) error { return tc.CreateTemplate(tx, buildVersionedTemplate(t, "g", 1)) })
 }
 

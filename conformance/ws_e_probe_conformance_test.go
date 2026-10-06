@@ -850,7 +850,7 @@ var _ = Describe("WS-E target oracle v3", func() {
 			wseDML("snapshot_connection_update", "UPDATE L SET v = 99 WHERE id = ?", readL, wseLong(1)).on(snapshot),
 			wseDML("snapshot_connection_delete", "DELETE FROM L WHERE id = ?", readL, wseLong(1)).on(snapshot),
 			wseQuery("snapshot_connection_explain_insert", "EXPLAIN INSERT INTO L VALUES (5, 50)").on(snapshot),
-			wseDML("snapshot_connection_create_database", "CREATE DATABASE /FRL/WSE4_SNAPSHOT_DDL", "SELECT id FROM L ORDER BY id").on(snapshot),
+			wseDML("snapshot_connection_create_database", "CREATE DATABASE /TEST/WSE4_SNAPSHOT_DDL", "SELECT id FROM L ORDER BY id").on(snapshot),
 			wseDML("snapshot_connection_drop_database", "DROP DATABASE IF EXISTS /WSE4_SNAPSHOT_ABSENT", "SELECT id FROM L ORDER BY id").on(snapshot),
 			wseQuery("snapshot_connection_show_databases", "SHOW DATABASES").on(snapshot),
 			wseQuery("snapshot_connection_show_templates", "SHOW SCHEMA TEMPLATES").on(snapshot),

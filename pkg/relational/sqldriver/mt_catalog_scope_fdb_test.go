@@ -22,10 +22,13 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 // Fixture names are suffixed per test: every test in this package shares one
@@ -92,8 +95,8 @@ func mtScopeSetup(t *testing.T, ctx context.Context, suffix string) mtScopeFixtu
 	t.Helper()
 	f := mtScopeFixture{
 		// The spellings CREATE DATABASE stores (unquoted paths fold whole).
-		tenantA: strings.ToUpper("/mt_scope_a_" + suffix),
-		tenantB: strings.ToUpper("/mt_scope_b_" + suffix),
+		tenantA: strings.ToUpper("/FRL/mt_scope_a_" + suffix),
+		tenantB: strings.ToUpper("/FRL/mt_scope_b_" + suffix),
 		templA:  "mt_tmpl_a_" + suffix,
 		templB:  "mt_tmpl_b_" + suffix,
 	}
@@ -243,14 +246,16 @@ func TestFDB_MultiTenantCatalogScoping(t *testing.T) {
 		mtScopeAssertRows(t, "SHOW DATABASES segment granularity", got, []string{f.tenantA})
 	})
 
-	// Nested paths ARE in scope — containment, not equality.
-	t.Run("prefix_includes_nested_databases", func(t *testing.T) {
-		nested := f.tenantA + "/sub"
-		mwjoMustExec(t, db, ctx, "CREATE DATABASE "+nested)
-		t.Cleanup(func() { _, _ = db.ExecContext(ctx, "DROP DATABASE "+nested) })
-
+	// No database nests under another: a path is exactly /DOMAIN/DB (Java's
+	// keyspace), so a nested CREATE is INVALID_PATH and the scope stays one row.
+	t.Run("no_nested_databases", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, "CREATE DATABASE "+f.tenantA+"/sub")
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidPath {
+			t.Fatalf("CREATE DATABASE nested: %v, want 08F01", err)
+		}
 		got := mtScopeQueryRows(t, db, ctx, "SHOW DATABASES")
-		mtScopeAssertRows(t, "SHOW DATABASES nested", got, []string{f.tenantA, strings.ToUpper(nested)}) // the whole path folds
+		mtScopeAssertRows(t, "SHOW DATABASES", got, []string{f.tenantA})
 	})
 }
 

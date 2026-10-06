@@ -14,7 +14,7 @@ import (
 // with the first non-null operand, so an all-negative-zero group stays -0.
 func TestFDB_AggregateSignedZero(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_aggsignedzero", "aggsignedzero",
+	db := setupErrorTestDB(t, "/FRL/testdb_aggsignedzero", "aggsignedzero",
 		"CREATE TABLE t (id BIGINT, g BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_gid_d ON t (g, id, d)")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

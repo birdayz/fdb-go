@@ -227,7 +227,7 @@ func TestFDB_ReadYourWritesThroughValueIndex(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_ryw_value", "rywv",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_ryw_value", "rywv",
 		"CREATE TABLE t (id BIGINT, a BIGINT, s STRING, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_s ON t (s) ")
 	w.Exec("INSERT INTO t (id, a, s) VALUES (1, 10, 'x'), (2, 20, 'y')")
@@ -287,7 +287,7 @@ func TestFDB_ReadYourWritesThroughAggregateIndex(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_ryw_agg", "rywa",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_ryw_agg", "rywa",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_cnt AS SELECT COUNT(*) FROM t GROUP BY g "+
 			"CREATE INDEX t_sum AS SELECT SUM(v) FROM t GROUP BY g "+
@@ -369,7 +369,7 @@ func TestFDB_ReadYourWritesCommitAndRollback(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_ryw_exit", "rywx",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_ryw_exit", "rywx",
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_cnt AS SELECT COUNT(*) FROM t GROUP BY a ")
 	w.Exec("INSERT INTO t (id, a) VALUES (1, 10)")

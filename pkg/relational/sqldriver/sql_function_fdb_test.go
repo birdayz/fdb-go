@@ -235,7 +235,7 @@ func TestFDB_NestedSQLFunctionPlansThroughItsIndex(t *testing.T) {
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	db, ctx := dgcOpen(t, "/testdb_nestedfn", "nestedfn",
+	db, ctx := dgcOpen(t, "/FRL/testdb_nestedfn", "nestedfn",
 		"CREATE TABLE employees (id BIGINT, name STRING, department STRING, salary BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX dept_idx AS SELECT department, salary FROM employees ORDER BY department, salary "+
 			"CREATE FUNCTION employees_in_dept(IN dept STRING) AS SELECT id, name, salary FROM employees WHERE department = dept "+

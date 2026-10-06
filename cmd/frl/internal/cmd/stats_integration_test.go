@@ -36,7 +36,7 @@ import (
 func setupStatsDB(t *testing.T, name, ddl, dml string) string {
 	t.Helper()
 	bindConfig(t)
-	dbURI := "/frlstats_" + name
+	dbURI := "/FRL/frlstats_" + name
 	script := fmt.Sprintf(`
 CREATE DATABASE %s;
 

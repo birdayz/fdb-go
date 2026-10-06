@@ -91,7 +91,7 @@ func TestFDB_AggregateIndexMin_NullGroupKey(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_min_nullkey", "minnk",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_min_nullkey", "minnk",
 		"CREATE TABLE t (id BIGINT, g BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_min_v_g AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_min_v_gh AS SELECT MIN(v) FROM t GROUP BY g, h ")
@@ -127,7 +127,7 @@ func TestFDB_AggregateIndexMin_LongNullRuns(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_min_longnull", "minln",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_min_longnull", "minln",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_min_v_g AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_max_v_g AS SELECT MAX(v) FROM t GROUP BY g ")
@@ -181,7 +181,7 @@ func TestFDB_AggregateIndexMin_ValueExtremes(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_min_extremes", "minex",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_min_extremes", "minex",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, d DOUBLE, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_min_v AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_max_v AS SELECT MAX(v) FROM t GROUP BY g "+

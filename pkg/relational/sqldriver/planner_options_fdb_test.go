@@ -77,7 +77,7 @@ func sameInt64s(a, b []int64) bool {
 // self-joinable shape, plus a few rows so a plan can actually be executed.
 func plannerOptsDB(t *testing.T, tag string) *sql.DB {
 	t.Helper()
-	db := setupErrorTestDB(t, "/planopts_"+tag, "planopts"+tag,
+	db := setupErrorTestDB(t, "/FRL/planopts_"+tag, "planopts"+tag,
 		"CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, c STRING, PRIMARY KEY (id))"+
 			" CREATE INDEX idx_a ON T(a)"+
 			" CREATE INDEX idx_ab ON T(a, b)")
@@ -225,7 +225,7 @@ func starOptsDB(t *testing.T, tag string) *sql.DB {
 	for i := 1; i <= 6; i++ {
 		ddl += fmt.Sprintf(" CREATE TABLE S%d (id BIGINT, hid BIGINT, PRIMARY KEY (id))", i)
 	}
-	db := setupErrorTestDB(t, "/planstar_"+tag, "planstar"+tag, ddl)
+	db := setupErrorTestDB(t, "/FRL/planstar_"+tag, "planstar"+tag, ddl)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO H (id, v) VALUES (1, 10)"); err != nil {
 		t.Fatalf("INSERT H: %v", err)
@@ -377,7 +377,7 @@ func TestHasBushyJoin(t *testing.T) {
 func TestFDB_PlannerOptions_PlanRightDeepPreservesRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/planchain_rows", "planchainrows", chainDDL)
+	db := setupErrorTestDB(t, "/FRL/planchain_rows", "planchainrows", chainDDL)
 	seedChain(t, ctx, db)
 
 	base := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
@@ -426,7 +426,7 @@ var outerJoinChainQueries = map[string]string{
 func TestFDB_PlannerOptions_PlanRightDeepPreservesOuterJoinRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/planchain_oj", "planchainoj", chainDDL)
+	db := setupErrorTestDB(t, "/FRL/planchain_oj", "planchainoj", chainDDL)
 	seedChain(t, ctx, db)
 
 	base := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})

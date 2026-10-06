@@ -22,7 +22,8 @@ func qualityProbeDB(t *testing.T, suffix string) *sql.DB {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := fmt.Sprintf("/FRL/qp_%s_%s", suffix, t.Name())
+	// A subtest's name has a '/', and a database path is exactly /DOMAIN/DB.
+	dbPath := fmt.Sprintf("/FRL/qp_%s_%s", suffix, strings.ReplaceAll(t.Name(), "/", "_"))
 	db := openTestDB(t, dbPath)
 
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {

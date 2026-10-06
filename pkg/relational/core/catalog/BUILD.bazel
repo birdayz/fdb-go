@@ -44,6 +44,7 @@ go_test(
     srcs = [
         "benchmark_test.go",
         "database_metadata_test.go",
+        "domain_registration_test.go",
         "fdb_catalog_test.go",
         "fuzz_test.go",
         "integration_test.go",

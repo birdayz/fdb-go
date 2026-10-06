@@ -21,7 +21,7 @@ var modFixtureID atomic.Uint64
 func TestFDB_ModFloatZero(t *testing.T) {
 	t.Parallel()
 	name := fmt.Sprintf("modfloatzero_%d", modFixtureID.Add(1))
-	db := setupErrorTestDB(t, "/testdb_"+name, name,
+	db := setupErrorTestDB(t, "/FRL/testdb_"+name, name,
 		"CREATE TABLE t (id BIGINT, n BIGINT, f FLOAT, d DOUBLE, PRIMARY KEY (id))")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	// Cancel setup before parallel children resume: their deadlines must start
@@ -139,7 +139,7 @@ func TestFDB_ModFloatZero(t *testing.T) {
 func TestFDB_ModFunctionIndexRemainsRejected(t *testing.T) {
 	t.Parallel()
 	name := fmt.Sprintf("modindexboundary_%d", modFixtureID.Add(1))
-	db := setupErrorTestDB(t, "/testdb_"+name, name,
+	db := setupErrorTestDB(t, "/FRL/testdb_"+name, name,
 		"CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

@@ -20,7 +20,7 @@ func TestFDB_UnionLimitParameters(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const path = "/testdb_union_limit_parameters"
+	const path = "/FRL/testdb_union_limit_parameters"
 	setup := openTestDB(t, path)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+path)
 	mwjoMustExec(t, setup, ctx,

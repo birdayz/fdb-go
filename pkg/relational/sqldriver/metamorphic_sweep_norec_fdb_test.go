@@ -41,7 +41,7 @@ func TestFDB_MetamorphicNoRecPredicateSweep(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_norec", "norec",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_norec", "norec",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) "+
 			"CREATE INDEX t_ab ON t (a, b) "+

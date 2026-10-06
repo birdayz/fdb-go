@@ -30,7 +30,7 @@ func TestFDB_AggregateIndexMinMax_MixedNullGroups(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_minmax_mixed", "mmmix",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_minmax_mixed", "mmmix",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_min_v_g AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_max_v_g AS SELECT MAX(v) FROM t GROUP BY g ")
@@ -104,7 +104,7 @@ func TestFDB_AggregateIndexMinMax_NullTransitions(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_minmax_trans", "mmtr",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_minmax_trans", "mmtr",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_min_v_g AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_max_v_g AS SELECT MAX(v) FROM t GROUP BY g ")
@@ -168,7 +168,7 @@ func TestFDB_AggregateIndexMinMax_TypesAndCompositeKeys(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_minmax_types", "mmty",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_minmax_types", "mmty",
 		"CREATE TABLE t (id BIGINT, g1 BIGINT, g2 BIGINT, vi BIGINT, vd DOUBLE, vs STRING, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_min_vi AS SELECT MIN(vi) FROM t GROUP BY g1, g2 "+
 			"CREATE INDEX t_max_vi AS SELECT MAX(vi) FROM t GROUP BY g1, g2 "+

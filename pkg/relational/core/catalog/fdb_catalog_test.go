@@ -131,8 +131,8 @@ func TestFDB_ListDatabases(t *testing.T) {
 	cat, run := newFDBCatalogInSubspace(t)
 
 	g.Expect(run(func(tx api.Transaction) error {
-		g.Expect(cat.CreateDatabase(tx, "/a")).To(gomega.Succeed())
-		g.Expect(cat.CreateDatabase(tx, "/b")).To(gomega.Succeed())
+		g.Expect(cat.CreateDatabase(tx, "/FRL/a")).To(gomega.Succeed())
+		g.Expect(cat.CreateDatabase(tx, "/FRL/b")).To(gomega.Succeed())
 		return nil
 	})).To(gomega.Succeed())
 
@@ -146,7 +146,7 @@ func TestFDB_ListDatabases(t *testing.T) {
 			got = append(got, id)
 		}
 		g.Expect(rs.Err()).ToNot(gomega.HaveOccurred())
-		g.Expect(got).To(gomega.ConsistOf("/a", "/b"))
+		g.Expect(got).To(gomega.ConsistOf("/FRL/a", "/FRL/b"))
 		return nil
 	})).To(gomega.Succeed())
 }
@@ -350,14 +350,14 @@ func TestFDB_ListSchemasInDatabase(t *testing.T) {
 
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, tmpl)).To(gomega.Succeed())
-		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/db1", "s1"), true, api.SchemaExistsError)).To(gomega.Succeed())
-		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/db1", "s2"), true, api.SchemaExistsError)).To(gomega.Succeed())
-		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/db2", "s1"), true, api.SchemaExistsError)).To(gomega.Succeed())
+		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db1", "s1"), true, api.SchemaExistsError)).To(gomega.Succeed())
+		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db1", "s2"), true, api.SchemaExistsError)).To(gomega.Succeed())
+		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db2", "s1"), true, api.SchemaExistsError)).To(gomega.Succeed())
 		return nil
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
-		rs, err := cat.ListSchemasInDatabase(tx, "/db1", nil)
+		rs, err := cat.ListSchemasInDatabase(tx, "/FRL/db1", nil)
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		defer rs.Close()
 		var got []string
@@ -485,7 +485,7 @@ func TestFDB_SchemaRebindRejectsRecordTypeKeyChange(t *testing.T) {
 	bound := func(schema string) int {
 		var v int
 		g.Expect(run(func(tx api.Transaction) error {
-			s, lerr := cat.LoadSchema(tx, "/rebinddb", schema)
+			s, lerr := cat.LoadSchema(tx, "/FRL/rebinddb", schema)
 			g.Expect(lerr).ToNot(gomega.HaveOccurred())
 			v = s.SchemaTemplate().Version()
 			return nil
@@ -498,7 +498,7 @@ func TestFDB_SchemaRebindRejectsRecordTypeKeyChange(t *testing.T) {
 	carried1, carried2 := versions("rebind-key-tmpl")
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, carried1)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, carried1.GenerateSchema("/rebinddb", "carried"), true, api.SchemaExistsError)
+		return cat.SaveSchema(tx, carried1.GenerateSchema("/FRL/rebinddb", "carried"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 	g.Expect(run(func(tx api.Transaction) error {
 		return tc.CreateTemplate(tx, carried2)
@@ -510,7 +510,7 @@ func TestFDB_SchemaRebindRejectsRecordTypeKeyChange(t *testing.T) {
 		return nil
 	})).To(gomega.Succeed())
 	g.Expect(run(func(tx api.Transaction) error {
-		return cat.RepairSchema(tx, "/rebinddb", "carried")
+		return cat.RepairSchema(tx, "/FRL/rebinddb", "carried")
 	})).To(gomega.Succeed())
 	g.Expect(bound("carried")).To(gomega.Equal(2))
 
@@ -519,13 +519,13 @@ func TestFDB_SchemaRebindRejectsRecordTypeKeyChange(t *testing.T) {
 	raw1, raw2 := versions("rebind-key-raw")
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, raw1)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, raw1.GenerateSchema("/rebinddb", "pub"), true, api.SchemaExistsError)
+		return cat.SaveSchema(tx, raw1.GenerateSchema("/FRL/rebinddb", "pub"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 	g.Expect(run(func(tx api.Transaction) error {
 		return rawCreateTemplate(t, cat, tx, raw2)
 	})).To(gomega.Succeed())
 	rebindErr := run(func(tx api.Transaction) error {
-		return cat.RepairSchema(tx, "/rebinddb", "pub")
+		return cat.RepairSchema(tx, "/FRL/rebinddb", "pub")
 	})
 	g.Expect(rebindErr).To(gomega.HaveOccurred())
 	g.Expect(rebindErr.Error()).To(gomega.ContainSubstring("record type key changed"))
@@ -581,21 +581,21 @@ func TestFDB_SchemaRebindRejectsVersionGoingBackwards(t *testing.T) {
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, tmpl1)).To(gomega.Succeed())
 		g.Expect(tc.CreateTemplate(tx, tmpl2)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, tmpl2.GenerateSchema("/rebindverdb", "pub"), true, api.SchemaExistsError)
+		return cat.SaveSchema(tx, tmpl2.GenerateSchema("/FRL/rebindverdb", "pub"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 
 	downgradeErr := run(func(tx api.Transaction) error {
-		return cat.SaveSchema(tx, tmpl1.GenerateSchema("/rebindverdb", "pub"), true, api.SchemaExistsUpgrade)
+		return cat.SaveSchema(tx, tmpl1.GenerateSchema("/FRL/rebindverdb", "pub"), true, api.SchemaExistsUpgrade)
 	})
 	var apiErr *api.Error
 	g.Expect(errors.As(downgradeErr, &apiErr)).To(gomega.BeTrue(), "%v", downgradeErr)
 	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeSchemaAlreadyExists))
 	g.Expect(apiErr.Message).To(gomega.Equal(
-		"Cannot upgrade schema /rebindverdb/pub: new template version 1 is lower than existing version 2."))
+		"Cannot upgrade schema /FRL/rebindverdb/pub: new template version 1 is lower than existing version 2."))
 
 	// The binding is untouched: still v2.
 	g.Expect(run(func(tx api.Transaction) error {
-		s, lerr := cat.LoadSchema(tx, "/rebindverdb", "pub")
+		s, lerr := cat.LoadSchema(tx, "/FRL/rebindverdb", "pub")
 		g.Expect(lerr).ToNot(gomega.HaveOccurred())
 		g.Expect(s.SchemaTemplate().Version()).To(gomega.Equal(2))
 		return nil
@@ -603,7 +603,7 @@ func TestFDB_SchemaRebindRejectsVersionGoingBackwards(t *testing.T) {
 
 	// An EQUAL version is UPGRADE's no-op: it is accepted and writes nothing.
 	sameErr := run(func(tx api.Transaction) error {
-		return cat.SaveSchema(tx, tmpl2.GenerateSchema("/rebindverdb", "pub"), true, api.SchemaExistsUpgrade)
+		return cat.SaveSchema(tx, tmpl2.GenerateSchema("/FRL/rebindverdb", "pub"), true, api.SchemaExistsUpgrade)
 	})
 	g.Expect(sameErr).ToNot(gomega.HaveOccurred(),
 		"a same-name same-version save is the no-op arm and must be accepted")
@@ -765,13 +765,13 @@ func TestFDB_DeleteDatabase(t *testing.T) {
 
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, tmpl)).To(gomega.Succeed())
-		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/deldb", "s1"), true, api.SchemaExistsError)).To(gomega.Succeed())
-		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/deldb", "s2"), true, api.SchemaExistsError)).To(gomega.Succeed())
+		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/FRL/deldb", "s1"), true, api.SchemaExistsError)).To(gomega.Succeed())
+		g.Expect(cat.SaveSchema(tx, tmpl.GenerateSchema("/FRL/deldb", "s2"), true, api.SchemaExistsError)).To(gomega.Succeed())
 		return nil
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
-		ok, err := cat.DeleteDatabase(tx, "/deldb", true)
+		ok, err := cat.DeleteDatabase(tx, "/FRL/deldb", true)
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		g.Expect(ok).To(gomega.BeTrue())
 		return nil
@@ -779,15 +779,15 @@ func TestFDB_DeleteDatabase(t *testing.T) {
 
 	// Database and schemas are gone.
 	g.Expect(run(func(tx api.Transaction) error {
-		dbOK, err := cat.DoesDatabaseExist(tx, "/deldb")
+		dbOK, err := cat.DoesDatabaseExist(tx, "/FRL/deldb")
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		g.Expect(dbOK).To(gomega.BeFalse())
 
-		s1OK, err := cat.DoesSchemaExist(tx, "/deldb", "s1")
+		s1OK, err := cat.DoesSchemaExist(tx, "/FRL/deldb", "s1")
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		g.Expect(s1OK).To(gomega.BeFalse())
 
-		s2OK, err := cat.DoesSchemaExist(tx, "/deldb", "s2")
+		s2OK, err := cat.DoesSchemaExist(tx, "/FRL/deldb", "s2")
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		g.Expect(s2OK).To(gomega.BeFalse())
 		return nil
@@ -935,7 +935,7 @@ func TestFDB_SchemaRebindOfALiteralCarrierChange(t *testing.T) {
 	bound := func(schema string) int {
 		var v int
 		g.Expect(run(func(tx api.Transaction) error {
-			s, err := cat.LoadSchema(tx, "/widendb", schema)
+			s, err := cat.LoadSchema(tx, "/FRL/widendb", schema)
 			g.Expect(err).ToNot(gomega.HaveOccurred())
 			v = s.SchemaTemplate().Version()
 			return nil
@@ -947,7 +947,7 @@ func TestFDB_SchemaRebindOfALiteralCarrierChange(t *testing.T) {
 	carried1 := build("widen-carried", 1, &gen.Value{LongValue: proto.Int64(1)})
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, carried1)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, carried1.GenerateSchema("/widendb", "carried"), true, api.SchemaExistsError)
+		return cat.SaveSchema(tx, carried1.GenerateSchema("/FRL/widendb", "carried"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 	g.Expect(run(func(tx api.Transaction) error {
 		return tc.CreateTemplate(tx, build("widen-carried", 2, &gen.Value{IntValue: proto.Int32(1)}))
@@ -966,7 +966,7 @@ func TestFDB_SchemaRebindOfALiteralCarrierChange(t *testing.T) {
 		return nil
 	})).To(gomega.Succeed())
 	g.Expect(run(func(tx api.Transaction) error {
-		return cat.RepairSchema(tx, "/widendb", "carried")
+		return cat.RepairSchema(tx, "/FRL/widendb", "carried")
 	})).To(gomega.Succeed())
 	g.Expect(bound("carried")).To(gomega.Equal(2))
 
@@ -976,7 +976,7 @@ func TestFDB_SchemaRebindOfALiteralCarrierChange(t *testing.T) {
 	raw1 := build("widen-raw", 1, &gen.Value{LongValue: proto.Int64(1)})
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, raw1)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, raw1.GenerateSchema("/widendb", "pub"), true, api.SchemaExistsError)
+		return cat.SaveSchema(tx, raw1.GenerateSchema("/FRL/widendb", "pub"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 	for _, c := range []struct {
 		version int
@@ -986,7 +986,7 @@ func TestFDB_SchemaRebindOfALiteralCarrierChange(t *testing.T) {
 			return rawCreateTemplate(t, cat, tx, build("widen-raw", c.version, c.lit))
 		})).To(gomega.Succeed())
 		rebindErr := run(func(tx api.Transaction) error {
-			return cat.RepairSchema(tx, "/widendb", "pub")
+			return cat.RepairSchema(tx, "/FRL/widendb", "pub")
 		})
 		g.Expect(rebindErr).To(gomega.HaveOccurred(), "version %d", c.version)
 		g.Expect(rebindErr.Error()).To(gomega.ContainSubstring("key expression changed"), "version %d", c.version)

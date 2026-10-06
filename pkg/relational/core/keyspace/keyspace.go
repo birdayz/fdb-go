@@ -60,6 +60,12 @@ func (k *RelationalKeyspace) SchemaSubspace(dbPath, schemaName string) (subspace
 	if schemaName == "" {
 		return nil, api.NewError(api.ErrCodeInvalidParameter, "schemaName must not be empty")
 	}
+	// Java resolves a schema's store through toDatabasePath(dbUri).schemaPath
+	// (create/drop schema, every store open), so a database outside the
+	// registered domains is INVALID_PATH there.
+	if _, err := ToDatabasePath(dbPath); err != nil {
+		return nil, err
+	}
 	return k.root.Sub(tuple.Tuple{dbPath, schemaName}), nil
 }
 

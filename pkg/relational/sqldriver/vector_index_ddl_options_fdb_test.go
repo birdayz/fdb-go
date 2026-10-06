@@ -13,7 +13,7 @@ import (
 func TestFDB_VectorIndexDDLOptions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := openTestDB(t, "/testdb_vecopt")
+	db := openTestDB(t, "/FRL/testdb_vecopt")
 	for i, tc := range []struct {
 		using, options string
 		code           api.ErrorCode

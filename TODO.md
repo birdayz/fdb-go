@@ -942,9 +942,17 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     `keyspace.FDBResolver` is a Go-only format. These are byte-exact ports
     (about 2,800 lines of Java with `LocatableResolver`), then the keyspace tree,
     `sqldriver`, `catalog`, `ddl`, `fleet`, the `frl` CLI.
-  - About 820 single-segment database paths in 558 test files must gain a
-    domain. Waiting on the owner: the domain Go's driver registers (proposed
-    `FRL`, as Java's server) and leave to rename the test paths with a script.
+  - Domains: DONE (owner decision 2026-10-06, exactly Java). A process-wide
+    registry (`keyspace.RegisterDomainIfNotExists`, re-exported by
+    `sqldriver`), Java's path matcher (`keyspace.ToDatabasePath`, a port of
+    KeySpaceUtils.toKeySpacePath over RelationalKeyspaceProvider's tree) at
+    Java's sites (CREATE DATABASE, a schema's store resolution, connect), and
+    SemanticAnalyzer.validateDatabaseUri for parsed paths. The driver
+    registers nothing; `frl`, the factory/stress tools and the javacorpus
+    runner register FRL; test packages register FRL and TEST. About 3,700 test,
+    doc and help paths were renamed to `/FRL/...` by script. Open: the
+    byte-exact directory-layer layout below (the registry decides validity
+    only; keys still use the string path).
 - [ ] Reconcile living compatibility claims/CHANGELOG, run `just test-full` and
   required interop/performance checks, then final migration review and PR CI.
   Fix all Medium-or-higher findings before declaring completion.

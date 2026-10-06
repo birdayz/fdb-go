@@ -89,7 +89,7 @@ func TestFDB_RFC198_LostUpdateBecomes40001(t *testing.T) {
 	}
 	ctx := context.Background()
 	key, clk := spikedClusterKey(t, 30*time.Second)
-	db := rfc198SetupDBOn(t, key, "/testdb_rfc198_lostupd", "rfc198lu")
+	db := rfc198SetupDBOn(t, key, "/FRL/testdb_rfc198_lostupd", "rfc198lu")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
 	// THE WHOLE INTERLEAVING IS RETRYABLE — T1's read, T2's committed write, and
@@ -197,7 +197,7 @@ func TestFDB_RFC198_ReadConflictFromSelectAlone(t *testing.T) {
 	}
 	ctx := context.Background()
 	key, clk := spikedClusterKey(t, 30*time.Second)
-	db := rfc198SetupDBOn(t, key, "/testdb_rfc198_skew", "rfc198skew")
+	db := rfc198SetupDBOn(t, key, "/FRL/testdb_rfc198_skew", "rfc198skew")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (2, 200)")
 
@@ -276,7 +276,7 @@ func TestFDB_RFC198_ResultSetDiesWithItsTransaction(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := rfc198SetupDB(t, "/testdb_rfc198_doors", "rfc198doors")
+	db := rfc198SetupDB(t, "/FRL/testdb_rfc198_doors", "rfc198doors")
 	const rows = 20
 	for i := 0; i < rows; i++ {
 		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", i, i))

@@ -30,7 +30,7 @@ import (
 
 func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_agg_straddle", "aggstraddle",
+	db := setupErrorTestDB(t, "/FRL/testdb_agg_straddle", "aggstraddle",
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON t (g) "+
 			"CREATE TABLE td (id BIGINT, g DOUBLE, PRIMARY KEY (id)) "+

@@ -162,7 +162,7 @@ func TestFDB_TxBudget_PreemptsAnExplicitTransactionUnderALateClock(t *testing.T)
 	ctx := context.Background()
 	// Permanently late: the spike never ends, so every attempt must fail.
 	clk := newLateClock(30 * time.Second)
-	db := openLateClockDB(t, clk, "/testdb_txbudget_late", "txbudgetlate")
+	db := openLateClockDB(t, clk, "/FRL/testdb_txbudget_late", "txbudgetlate")
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -335,7 +335,7 @@ func TestFDB_TxBudget_RetryClearsAOneShotSpike(t *testing.T) {
 	}
 	ctx := context.Background()
 	clk := newLateClock(30 * time.Second)
-	db := openLateClockDB(t, clk, "/testdb_txbudget_spike", "txbudgetspike")
+	db := openLateClockDB(t, clk, "/FRL/testdb_txbudget_spike", "txbudgetspike")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
 	var attemptsRun int

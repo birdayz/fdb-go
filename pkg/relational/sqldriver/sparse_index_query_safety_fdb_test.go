@@ -80,7 +80,7 @@ func TestFDB_SparseIndexNotUsedWhereItWouldDropRows(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmSparseFixture(t, ctx, "/testdb_sparse_safety", "spsafe")
+	w := mmSparseFixture(t, ctx, "/FRL/testdb_sparse_safety", "spsafe")
 
 	// No filter on keep at all: the sparse index holds 2 of the 5 rows with a=5.
 	w.Want("an unfiltered equality sees every row",
@@ -140,7 +140,7 @@ func TestFDB_SparseIndexWithDisjunctivePredicate(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmSparseFixture(t, ctx, "/testdb_sparse_or", "spor")
+	w := mmSparseFixture(t, ctx, "/FRL/testdb_sparse_or", "spor")
 
 	// The index holds keep < -5 OR keep > 10. Rows for a=7: keep 3, -9, 0 — so
 	// only id 7 (keep=-9) is in it.
@@ -167,7 +167,7 @@ func TestFDB_SparseIndexUnderMutation(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmSparseFixture(t, ctx, "/testdb_sparse_mut", "spmut")
+	w := mmSparseFixture(t, ctx, "/FRL/testdb_sparse_mut", "spmut")
 
 	unfiltered := "SELECT id FROM t WHERE a = 5 ORDER BY id"
 	filtered := "SELECT id FROM t WHERE a = 5 AND keep > 0 ORDER BY id"
@@ -211,7 +211,7 @@ func TestFDB_SparseIndexRangeContainment(t *testing.T) {
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	w := mmNewTwin(t, context.Background(), "/testdb_sparse_ranges", "sparse_ranges",
+	w := mmNewTwin(t, context.Background(), "/FRL/testdb_sparse_ranges", "sparse_ranges",
 		"CREATE TABLE t (id BIGINT, a BIGINT, keep BIGINT, PRIMARY KEY(id)) ",
 		"CREATE INDEX sparse_a AS SELECT a FROM t WHERE keep > 0 ORDER BY a ")
 	w.Exec("INSERT INTO t VALUES (1,5,1),(2,5,10),(3,5,11),(4,5,20),(5,5,0),(6,5,NULL)")

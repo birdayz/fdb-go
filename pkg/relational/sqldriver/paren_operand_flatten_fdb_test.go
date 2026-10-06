@@ -56,7 +56,7 @@ func TestFDB_ParenthesizedOperandFlattens(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_paren_flatten", "parenflat",
+	w := mmNewTwin(t, ctx, "/FRL/testdb_paren_flatten", "parenflat",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, f BOOLEAN, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_b ON t (b) ")
 	//  id=1: a=1  b=10  s='x'   f=true
@@ -285,7 +285,7 @@ func TestFDB_ParenthesizedOperandDoesNotOverFlatten(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/testdb_paren_noflat", "parennoflat",
+	db := setupErrorTestDB(t, "/FRL/testdb_paren_noflat", "parennoflat",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1, 1, 10), (2, 2, 20)")
 
