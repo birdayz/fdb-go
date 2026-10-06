@@ -41,7 +41,7 @@ genrule(
                     2>&1 | tail -3
 
                 # One compile of FDB C++ peaks near 1.5 GB: one job per 2 GB
-                # available, at most one per core. -j$(nproc) on a 24-thread
+                # available, at most one per core. One job per core on a 24-thread
                 # host took 36 GB and pushed it into swap.
                 MEM_KB=$$(grep MemAvailable /proc/meminfo | tr -s " " | cut -d" " -f2)
                 JOBS=$$(( MEM_KB / 2097152 )); [ "$$JOBS" -ge 1 ] || JOBS=1; [ "$$JOBS" -le "$$(nproc)" ] || JOBS=$$(nproc)
