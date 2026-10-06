@@ -528,11 +528,14 @@ func CommonValueType(branches []Value) Type {
 		if branch == nil {
 			continue
 		}
-		if _, isNull := branch.(*NullValue); isNull {
+		typ := branch.Type()
+		// An untyped NULL only marks the result nullable; a typed one
+		// (CAST(NULL AS T), CastValue.inject) contributes its type to the
+		// maximum, as in Java.
+		if _, isNull := branch.(*NullValue); isNull && (typ == nil || typ.Code() == TypeCodeNull || typ.Code() == TypeCodeUnknown) {
 			sawNull = true
 			continue
 		}
-		typ := branch.Type()
 		if typ == nil || typ.Code() == TypeCodeNull {
 			if typ != nil {
 				sawNull = true

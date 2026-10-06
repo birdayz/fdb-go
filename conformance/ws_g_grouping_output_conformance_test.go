@@ -131,23 +131,12 @@ var _ = Describe("WSGGroupingOutputConformance", func() {
 			`SELECT g, ARRAY_AGG(n LIMIT 1), COUNT(*), SUM(n) FROM t GROUP BY g`,
 			`SELECT g, ARRAY_AGG(n IGNORE NULLS LIMIT 5), COUNT(n) FROM t GROUP BY g`,
 		}
-		// Declared: an array column's type is its element's (TODO CQ-74), and
-		// integral division by zero is 22012 where the target reports its
-		// ArithmeticException as UNKNOWN (DIVERGENCES.md, 22012).
+		// Declared: integral division by zero is 22012 where the target
+		// reports its ArithmeticException as UNKNOWN (DIVERGENCES.md, 22012).
 		divergent := map[string][2]string{
-			probes[0]: {`OK [ARRAY] [NULL] [[[10]]]`, `OK [BIGINT] [NULL] [[[10]]]`},
-			probes[1]: {`OK [ARRAY] [NULL] [[[]]]`, `OK [BIGINT] [NULL] [[[]]]`},
 			probes[2]: {`ERROR XXXXX`, `ERROR 22012`},
 			probes[3]: {`ERROR XXXXX`, `ERROR 22012`},
 			probes[4]: {`ERROR XXXXX`, `ERROR 22012`},
-			probes[5]: {
-				`OK [BIGINT ARRAY BIGINT BIGINT] [NULL NULL NULL NULL] [[1 [10] 3 10] [2 [4] 2 6]]`,
-				`OK [BIGINT BIGINT BIGINT BIGINT] [NULL NULL NULL NULL] [[1 [10] 3 10] [2 [4] 2 6]]`,
-			},
-			probes[6]: {
-				`OK [BIGINT ARRAY BIGINT] [NULL NULL NULL] [[1 [10 0] 2] [2 [4 2] 2]]`,
-				`OK [BIGINT BIGINT BIGINT] [NULL NULL NULL] [[1 [10 0] 2] [2 [4 2] 2]]`,
-			},
 		}
 		failures := wsgProbe(schema, setup, probes, divergent)
 		Expect(failures).To(BeEmpty(), strings.Join(failures, "\n"))

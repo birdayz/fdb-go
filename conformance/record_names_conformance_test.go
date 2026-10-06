@@ -60,14 +60,8 @@ var _ = Describe("RecordNamesConformance", func() {
 		} {
 			o.prepared(schema, setup, wseDML(fmt.Sprintf("d%02d", i), c.dml, c.follow))
 		}
-		// CQ-74 (TODO.md): Go names an array column's type by its element.
-		divergent := map[string][2]string{
-			"q14": {`OK [ARRAY] [NOT NULL] [[[map[X:10 Y:20]]]]`, `OK [STRUCT] [NOT NULL] [[[map[X:10 Y:20]]]]`},
-			"d10": {`OK [ARRAY] [NULL] [[[map[A:10 B:20]]] [NULL]] COUNT 1`, `OK [STRUCT] [NULL] [[[map[A:10 B:20]]] [NULL]] COUNT 1`},
-			"d11": {`OK [ARRAY] [NULL] [[[map[A:20 B:10]]] [NULL]] COUNT 1`, `OK [STRUCT] [NULL] [[[map[A:20 B:10]]] [NULL]] COUNT 1`},
-			"d12": {`OK [ARRAY] [NULL] [[[map[A:20 B:10]]]] COUNT 1`, `OK [STRUCT] [NULL] [[[map[A:20 B:10]]]] COUNT 1`},
-			"d13": {`OK [ARRAY] [NULL] [[[map[A:10 B:20] map[A:20 B:10]]]] COUNT 1`, `OK [STRUCT] [NULL] [[[map[A:10 B:20] map[A:20 B:10]]]] COUNT 1`},
-		}
+		// No declared divergences: CQ-74 made an array column's type ARRAY.
+		divergent := map[string][2]string{}
 		javaClass := regexp.MustCompile(`^ERROR (\S+) \S+ "`)
 		var failures []string
 		for _, name := range sortedStringKeys(o.got) {
