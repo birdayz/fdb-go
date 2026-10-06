@@ -290,7 +290,16 @@ Never mark a whole workstream complete because one of its subitems passed.
   Variadic promoted-child types: COALESCE/GREATEST/LEAST promote every argument
   to the common type with its own nullability, scalars included
   (`variadic_promotion.yaml`).
-  Still open: the simplification regime (design 5.4, gated on WS-F step 7).
+  Simplification regime (design 5.4): (a)-(j) implemented and pinned (the
+  sub-bullets above). Remaining, each owned elsewhere:
+  - the EXISTS bound-query fold stays until the mint-per-leg inner-shadow fix;
+  - the dense predicate-level map is WS-F's (Finding 6-followup);
+  - the walk-time typed-NULL arithmetic collapse and the IS NULL fold over a
+    NOT NULL constant are KEPT as Go extensions (DIVERGENCES "Constant-fold
+    defects and fold ties"): without them the answer of a fold tie depends on
+    the hash, as Java's does per schema. Removing them would also need the
+    pull-up DEFAULT-set result simplify (Expression.java:243-245), which Go
+    lacks.
 
 **Done:** every remaining WS-E design obligation is reconciled to implementation
 and an executable pin; temporal compatibility/repair documentation is shipped;
