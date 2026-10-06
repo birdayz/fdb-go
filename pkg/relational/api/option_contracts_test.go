@@ -78,3 +78,45 @@ func TestValidateOption(t *testing.T) {
 		}
 	}
 }
+
+// OptionFromString is Java's parseStringOption: each contract's fromString,
+// the result admitted by the same contract (withOptionFromString then
+// withOption).
+func TestOptionFromString(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name  OptionName
+		in    string
+		want  any
+		error string
+	}{
+		{OptIndexFetchMethod, "SCAN_AND_FETCH", IndexFetchScanAndFetch, ""},
+		{OptIndexFetchMethod, "USE_REMOTE_FETCH", IndexFetchUseRemoteFetch, ""},
+		{OptIndexFetchMethod, "scan_and_fetch", nil, "No enum constant IndexFetchMethod.scan_and_fetch"},
+		{OptVectorIndexEnginePreference, "PREFER_HNSW", VectorIndexPreferHNSW, ""},
+		{OptDryRun, "TRUE", true, ""},
+		{OptDryRun, "yes", false, ""}, // Boolean.parseBoolean
+		{OptMaxRows, "7", 7, ""},
+		{OptMaxRows, "2147483648", nil, `For input string: "2147483648"`},
+		{OptTransactionTimeout, "-1", int64(-1), ""},
+		{OptDisabledPlannerRules, "A, B ,C", []string{"A", "B", "C"}, ""},
+		{OptIndexHint, "IDX", "IDX", ""},
+		{OptContinuation, "x", nil, "Option CONTINUATION has no string form"},
+	} {
+		got, err := OptionFromString(c.name, c.in)
+		if c.error != "" {
+			var apiErr *Error
+			if !errors.As(err, &apiErr) || apiErr.Message != c.error {
+				t.Errorf("%s from %q: %v, %v; want error %q", c.name, c.in, got, err, c.error)
+			}
+			continue
+		}
+		if err != nil || !anyEqualValue(got, c.want) {
+			t.Errorf("%s from %q = %#v, %v; want %#v", c.name, c.in, got, err, c.want)
+			continue
+		}
+		if err := ValidateOption(c.name, got); err != nil {
+			t.Errorf("%s from %q = %#v refused by its contract: %v", c.name, c.in, got, err)
+		}
+	}
+}

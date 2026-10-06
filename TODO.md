@@ -745,8 +745,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   materialized and do not resume from a continuation. A bare UUID array is
   written (Java's repeated-field path cannot write it; see DIVERGENCES, Go-only
   extensions).
+- [x] Setup-block version gating (`e510c3d2a`: a setup block's
+  `supported_version` is checked before its connection options, as
+  `SetupBlock.java:95`). Typed INDEX_FETCH_METHOD: `api.OptionFromString` ports
+  `Options.parseStringOption` (enum valueOf, comma-split collections,
+  `Boolean.parseBoolean`), and the corpus runner routes a string option through
+  it, as Java's `TestBlockOptions.parseConnectionOptions`.
 - [ ] JSON descriptor FieldOptions import; recursive result metadata in the
-  corpus runner; setup version gating; typed INDEX_FETCH_METHOD.
+  corpus runner.
 - [ ] Relational queued-state plumbing; SQL vector-option and preference-cache pins.
 
 ## 7. Migration-wide acceptance and decisions

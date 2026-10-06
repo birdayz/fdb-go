@@ -212,6 +212,16 @@ func (m IndexFetchMethod) String() string {
 	}
 }
 
+// ParseIndexFetchMethod is the enum's valueOf.
+func ParseIndexFetchMethod(s string) (IndexFetchMethod, error) {
+	for _, m := range []IndexFetchMethod{IndexFetchScanAndFetch, IndexFetchUseRemoteFetch, IndexFetchUseRemoteFetchWithFallback} {
+		if m.String() == s {
+			return m, nil
+		}
+	}
+	return 0, NewErrorf(ErrCodeInvalidParameter, "No enum constant IndexFetchMethod.%s", s)
+}
+
 // VectorIndexEnginePreference mirrors Java's Options.VectorIndexEnginePreference.
 type VectorIndexEnginePreference int
 

@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
-	"strconv"
-	"strings"
 
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
@@ -71,33 +69,17 @@ func (r *runner) optionValue(name api.OptionName, v *javayamsql.Value) (any, err
 		}
 		return out, nil
 	case javayamsql.KindString:
-		switch api.DefaultOptionValues()[name].(type) {
-		case bool:
-			switch strings.ToLower(v.Str) {
-			case "true":
-				return true, nil
-			case "false":
-				return false, nil
-			}
-			return nil, fmt.Errorf("%q is not a boolean", v.Str)
-		case int, int64:
-			n, err := strconv.ParseInt(v.Str, 10, 64)
-			if err != nil {
-				return nil, err
-			}
-			return n, nil
-		case api.VectorIndexEnginePreference:
-			return api.ParseVectorIndexEnginePreference(v.Str)
-		case []string:
-			return nil, fmt.Errorf("a collection option spelled as the string %q is not supported", v.Str)
-		}
 		if name == api.OptEncryptionKeyStore && r.cfg.WorkingDir != "" && !filepath.IsAbs(v.Str) {
 			// A key store file named relative to the JVM's working directory,
 			// which Java's yaml-tests run in (the module directory); the
 			// corpus names `src/test/resources/serialization-keys.p12`.
 			return filepath.Join(r.cfg.WorkingDir, v.Str), nil
 		}
-		return v.Str, nil
+		// Java routes a string through the option's string conversion
+		// (withOptionFromString), so an enum (INDEX_FETCH_METHOD,
+		// VECTOR_INDEX_ENGINE_PREFERENCE) or a comma-separated collection can
+		// be spelled in the file.
+		return api.OptionFromString(name, v.Str)
 	}
 	return nil, fmt.Errorf("a value of kind %s is not supported", v.Kind)
 }

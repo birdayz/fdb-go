@@ -3,6 +3,8 @@ package api
 import (
 	"math"
 	"reflect"
+	"strconv"
+	"strings"
 )
 
 // optionContract is one option's admission rule, Java's OptionContract list
@@ -84,6 +86,51 @@ var optionContracts = map[OptionName]optionContract{
 	OptPlannerStatistics:            boolOption(),
 	OptRestrictDDLToSessionDatabase: boolOption(),
 	OptTransactionTags:              {kind: optionStrings},
+}
+
+// OptionFromString is the value name's contract parses from s, Java's
+// Options.parseStringOption (Options.java:462-469), which
+// Builder.withOptionFromString and Options.fromProperties use: a boolean is
+// Boolean.parseBoolean ("true" in any case, anything else false), an integer
+// Integer.parseInt / Long.parseLong, a string itself, a collection the
+// comma-separated, trimmed elements, an enum its valueOf. The result is not
+// validated; the caller sets it through the contract check as withOption does.
+// CONTINUATION has no string form (Java throws UnsupportedOperationException).
+func OptionFromString(name OptionName, s string) (any, error) {
+	contract, ok := optionContracts[name]
+	if !ok {
+		return nil, NewErrorf(ErrCodeInvalidParameter, "Unknown option %s", name)
+	}
+	switch contract.kind {
+	case optionBool:
+		return strings.EqualFold(s, "true"), nil
+	case optionInt:
+		n, err := strconv.ParseInt(s, 10, 32)
+		if err != nil {
+			return nil, NewErrorf(ErrCodeInvalidParameter, "For input string: \"%s\"", s)
+		}
+		return int(n), nil
+	case optionLong:
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return nil, NewErrorf(ErrCodeInvalidParameter, "For input string: \"%s\"", s)
+		}
+		return n, nil
+	case optionString:
+		return s, nil
+	case optionStrings:
+		parts := strings.Split(s, ",")
+		out := make([]string, len(parts))
+		for i, p := range parts {
+			out[i] = strings.TrimSpace(p)
+		}
+		return out, nil
+	case optionIndexFetchMethod:
+		return ParseIndexFetchMethod(s)
+	case optionVectorIndexEnginePreference:
+		return ParseVectorIndexEnginePreference(s)
+	}
+	return nil, NewErrorf(ErrCodeUnsupportedOperation, "Option %s has no string form", name)
 }
 
 // ValidateOption checks a value against its option's contract, as Java's
