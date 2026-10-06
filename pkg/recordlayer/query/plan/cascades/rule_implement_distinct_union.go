@@ -299,25 +299,36 @@ func (r *ImplementDistinctUnionRule) yieldFromMergedOrdering(
 			sort.SliceStable(candidates, func(i, j int) bool {
 				return tieBrokenLess(candidates[i], candidates[j])
 			})
-			var pinned expressions.RelationalExpression
+			// Every candidate that can feed the merge stays, each with its
+			// spine pinned, as Java's leg ranges over its whole partition: the
+			// leg's own optimization chooses, and a rule over the merge (the
+			// push through a fetch) sees every alternative of the leg.
+			var legRef *expressions.Reference
 			var childPlan plans.RecordQueryPlan
 			recordType := ""
 			for _, candidate := range candidates {
-				pinned, childPlan, recordType = pinDistinctUnionLeg(
+				pinned, candidatePlan, candidateType := pinDistinctUnionLeg(
 					candidate, legReq, call.CostModel(), comparisonKeyValues, commonPrimaryKey)
-				if pinned != nil {
-					break
+				if pinned == nil {
+					continue
+				}
+				if legRef == nil {
+					legRef = expressions.FinalOf(pinned)
+					childPlan, recordType = candidatePlan, candidateType
+					continue
+				}
+				if candidateType == recordType && candidatePlan.GetResultType().Equals(childPlan.GetResultType()) {
+					legRef.InsertFinal(pinned)
 				}
 			}
-			if pinned == nil || haveCommonRecordType && recordType != commonRecordType {
+			if legRef == nil || haveCommonRecordType && recordType != commonRecordType {
 				ok = false
 				break
 			}
 			commonRecordType = recordType
 			haveCommonRecordType = true
 			childPlans = append(childPlans, childPlan)
-			newQuantifiers = append(newQuantifiers,
-				expressions.NewPhysicalQuantifier(expressions.FinalOf(pinned)))
+			newQuantifiers = append(newQuantifiers, expressions.NewPhysicalQuantifier(legRef))
 		}
 		if !ok {
 			continue

@@ -1768,5 +1768,19 @@ func queryBody(t *testing.T, ref *expressions.Reference) *expressions.Reference 
 	if !ok || !sort.IsUnsorted() {
 		t.Fatalf("query top = %T, want the top level's unsorted sort", ref.Get())
 	}
-	return sort.GetInner().GetRangesOver()
+	body := sort.GetInner().GetRangesOver()
+	// A bare table read is stated as Java's block Select returning its row
+	// (topLevelSort); the body is the read under it.
+	if sel, isSelect := body.Get().(*expressions.SelectExpression); isSelect && len(sel.GetQuantifiers()) == 1 &&
+		len(sel.GetPredicates()) == 0 {
+		inner := sel.GetQuantifiers()[0]
+		switch inner.GetRangesOver().Get().(type) {
+		case *expressions.FullUnorderedScanExpression, *expressions.LogicalTypeFilterExpression:
+			if row, err := inner.RequireFlowedObjectValue(); err == nil &&
+				values.SemanticEqualsUnderAliasMap(sel.GetResultValue(), row, values.EmptyAliasMap()) {
+				return inner.GetRangesOver()
+			}
+		}
+	}
+	return body
 }

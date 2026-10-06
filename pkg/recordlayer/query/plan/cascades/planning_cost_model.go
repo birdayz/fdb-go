@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"io"
 	"log/slog"
+	"math"
 	"reflect"
 	"sync"
 
@@ -290,9 +291,9 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 	// different pairs of the same plans). These three depth rungs, the
 	// fetch/unmatchedFieldCount rungs, and the map/filter node-count rung
 	// below are therefore all UNGATED.
-	typeFilterDepthA := costExprDepth(a, matchTypeFilter)
-	typeFilterDepthB := costExprDepth(b, matchTypeFilter)
-	if typeFilterDepthA >= 0 && typeFilterDepthB >= 0 && typeFilterDepthA != typeFilterDepthB {
+	typeFilterDepthA := javaExpressionDepth(costExprDepth(a, matchTypeFilter))
+	typeFilterDepthB := javaExpressionDepth(costExprDepth(b, matchTypeFilter))
+	if typeFilterDepthA != typeFilterDepthB {
 		return intCompare(typeFilterDepthB, typeFilterDepthA)
 	}
 
@@ -305,9 +306,9 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		}
 		// Depth rung — sort-invariant, ungated (see the type-filter-depth
 		// comment above); the fetch-COUNT rungs are also ungated.
-		fetchDepthA := costExprDepth(a, matchFetch)
-		fetchDepthB := costExprDepth(b, matchFetch)
-		if fetchDepthA >= 0 && fetchDepthB >= 0 && fetchDepthA != fetchDepthB {
+		fetchDepthA := javaExpressionDepth(costExprDepth(a, matchFetch))
+		fetchDepthB := javaExpressionDepth(costExprDepth(b, matchFetch))
+		if fetchDepthA != fetchDepthB {
 			return intCompare(fetchDepthA, fetchDepthB)
 		}
 		if opsA.fetchCount != opsB.fetchCount {
@@ -317,9 +318,9 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 
 	// Depth rung — sort-invariant, ungated (see the type-filter-depth comment
 	// above).
-	distinctDepthA := costExprDepth(a, matchDistinct)
-	distinctDepthB := costExprDepth(b, matchDistinct)
-	if distinctDepthA >= 0 && distinctDepthB >= 0 && distinctDepthA != distinctDepthB {
+	distinctDepthA := javaExpressionDepth(costExprDepth(a, matchDistinct))
+	distinctDepthB := javaExpressionDepth(costExprDepth(b, matchDistinct))
+	if distinctDepthA != distinctDepthB {
 		return intCompare(distinctDepthB, distinctDepthA)
 	}
 
@@ -3314,6 +3315,17 @@ func stableHashComparison(h hash.Hash64, c *predicates.Comparison) {
 
 // costExprDepth returns the depth of a target operator, walking the concrete plan
 // tree for a physical expression and the logical memo otherwise.
+// javaExpressionDepth is a depth as Java's ExpressionDepthProperty states it:
+// a plan without the operator has it at Integer.MAX_VALUE, deeper than any
+// (ExpressionDepthProperty.java:107-113), so the depth rungs still rank a
+// plan without the operator against one with it.
+func javaExpressionDepth(depth int) int {
+	if depth < 0 {
+		return math.MaxInt
+	}
+	return depth
+}
+
 func costExprDepth(e expressions.RelationalExpression, kind planMatchKind) int {
 	if ph, ok := e.(physicalPlanExpression); ok {
 		if plan := ph.GetRecordQueryPlan(); plan != nil {

@@ -510,11 +510,37 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   - Still open: Java skips a match that satisfies none of the requested
     orderings; Go does not (alone it moves 336 plans, a join's inner probe
     among them: Go's request sets differ from Java's). Rows still open in
-    `wsfOpenUntil` as F-7c follow-ups: non-covering full index scan rank
-    (`w6_left_join_indexed`, `w8_no_predicate`), IN-join versus filtered scan
+    `wsfOpenUntil` as F-7c follow-ups: IN-join versus filtered scan
     (`w8_in25`, `w8_in_union`, `w8_tie_in`), ordered union by primary key
     (`w8_or_two_indexes`). The 1M stress comparison the design requires with
     F-7c has NOT run (stress lane; needs the owner's go-ahead).
+  - Follow-ups closed or re-diagnosed (2026-10-06):
+    - `w8_no_predicate` was no rank question: a bare `SELECT * FROM T1`
+      reached the planner as `Sort(Scan)`, with no Select for the data-access
+      rules to match, so no index read was ever built. `topLevelSort` now
+      states it as Java's generateSelect does, a block Select returning the
+      read's row, and Go reads `IndexScan(I1, [*])`, Java's `ISCAN(I1 <,>)`.
+      No corpus plan moved; the row leaves `wsfOpenUntil`.
+    - `w6_left_join_indexed` has the same cause one level down: a LEFT
+      JOIN's preserved leg gets no single-quantifier Select because Go's
+      PartitionBinarySelectRule skips outer joins (Java partitions the
+      null-on-empty select). Relabelled; it needs the outer-join partition.
+    - `w8_or_two_indexes`: Go builds the ordered union, but over two fetching
+      index scans; Java's `Fetch(COVERING ∪ COVERING COMPARE BY id)` needs
+      the union pushed below the fetch, and Go's merge-distinct identity
+      proof refuses a `Fetch(COVERING)` leg, so no such merge exists to push.
+    - The depth rungs now read an absent operator as Java's
+      `ExpressionDepthProperty` does (Integer.MAX_VALUE, deepest): Go skipped
+      the rung whenever one side lacked the operator. Only the distinct rung
+      can differ in practice. One factory scenario moved (3 projections, re-
+      blessed), to the plan Java measures for it: `(NOT e >= 4.0 AND s IS
+      NOT NULL) OR b IN (5, 5)` merges two IDX_S reads by (S, ID) instead of
+      deduplicating an IDX_S range and an IDX_B probe by primary key
+      (`TestPlanningCostModel_DistinctDepthRanksAbsentAsDeepest`, mutation-
+      checked). ImplementDistinctUnionRule's legs now range over every
+      member that can feed the merge, spines pinned, not the cheapest one
+      (F-8; no corpus plan moved;
+      `TestImplementDistinctUnionRule_LegKeepsEveryMergeableMember`).
   - Measured after F-7c (2026-10-06), both reverted: deleting the
     single-element IN collapse (WS-E step 5) moves 13 plans, and the ORDER BY
     rows still go from a streaming probe to `InMemorySort(InJoin(...))`;

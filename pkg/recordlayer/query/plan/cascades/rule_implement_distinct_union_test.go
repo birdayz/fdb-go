@@ -161,6 +161,47 @@ func TestImplementDistinctUnionRule_FiresWithPKAndStoredRecord(t *testing.T) {
 	}
 }
 
+// TestImplementDistinctUnionRule_LegKeepsEveryMergeableMember pins that the
+// rule pre-selects no leg member (RFC-257 WS-F F-8): a merge leg ranges over
+// every member of its group that can feed the merge, each spine pinned, as
+// Java's leg ranges over its whole partition, so the leg's own optimization
+// chooses and a rule over the merge sees every alternative.
+func TestImplementDistinctUnionRule_LegKeepsEveryMergeableMember(t *testing.T) {
+	t.Parallel()
+	scan, scanRef := makeScanWithPK("T", "id")
+	typeFiltered := mustDistinctUnionConstruct(plans.NewRecordQueryTypeFilterPlanFromQuantifier(
+		[]string{"T"}, expressions.NewPhysicalQuantifier(scanRef)))
+	refA := expressions.InitialOf(scan)
+	refA.Insert(typeFiltered)
+	pm := NewPlanPropertiesMap()
+	pm.Add(scan)
+	pm.Add(typeFiltered)
+	refA.SetPlanProperties(pm)
+	_, refB := makeScanWithPK("T", "id")
+
+	union := mustDistinctUnionConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		expressions.ForEachQuantifier(refA),
+		expressions.ForEachQuantifier(refB),
+	}))
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(
+		expressions.ForEachQuantifier(expressions.InitialOf(union))))
+
+	merges := 0
+	for _, r := range mustFireImplementationRule(t, NewImplementDistinctUnionRule(), expressions.InitialOf(distinct)) {
+		merge, ok := r.(*plans.RecordQueryMergeSortUnionPlan)
+		if !ok {
+			continue
+		}
+		merges++
+		if got := len(merge.GetQuantifiers()[0].GetRangesOver().AllMembers()); got != 2 {
+			t.Fatalf("leg A ranges over %d members, want both the scan and the type-filtered scan", got)
+		}
+	}
+	if merges == 0 {
+		t.Fatal("no merge yielded")
+	}
+}
+
 func TestImplementDistinctUnionRule_NoFireWithoutPK(t *testing.T) {
 	t.Parallel()
 	scan := distinctUnionScan("T", distinctUnionScanRowType())

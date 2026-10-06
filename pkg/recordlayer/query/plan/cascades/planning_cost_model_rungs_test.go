@@ -1013,3 +1013,30 @@ func TestRewritingCostModel_PredicateDepthRung(t *testing.T) {
 
 	assertStrictPlanningPreference(t, RewritingCostModelLess, pushed, pulled)
 }
+
+// TestPlanningCostModel_DistinctDepthRanksAbsentAsDeepest pins Java's
+// ExpressionDepthProperty: a plan without a distinct has it at
+// Integer.MAX_VALUE, deeper than any (ExpressionDepthProperty.java:107-113), so
+// the distinct-depth rung prefers it to a plan with one. Without that the rung
+// abstained whenever one side had no distinct and the simple-operation count
+// below decided: the distinct plan, which has no Map, won.
+func TestPlanningCostModel_DistinctDepthRanksAbsentAsDeepest(t *testing.T) {
+	t.Parallel()
+
+	withoutDistinct := rungMap(rungScan("T"))
+	withDistinct := mustRungConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(rungScan("T")))
+	if depth := costExprDepth(withoutDistinct, matchDistinct); depth >= 0 {
+		t.Fatalf("Map(Scan) distinct depth = %d, want none", depth)
+	}
+	if depth := costExprDepth(withDistinct, matchDistinct); depth != 0 {
+		t.Fatalf("PKDistinct(Scan) distinct depth = %d, want 0", depth)
+	}
+	opsWithout := concretePlanCounts(withoutDistinct, nil)
+	opsWith := concretePlanCounts(withDistinct, nil)
+	if opsWithout.mapCount+opsWithout.predicatesFilterCount <= opsWith.mapCount+opsWith.predicatesFilterCount {
+		t.Fatalf("precondition: the simple-operation rung must favour the distinct side (%d vs %d)",
+			opsWithout.mapCount+opsWithout.predicatesFilterCount, opsWith.mapCount+opsWith.predicatesFilterCount)
+	}
+
+	assertStrictPlanningPreference(t, PlanningCostModelLess, withoutDistinct, withDistinct)
+}

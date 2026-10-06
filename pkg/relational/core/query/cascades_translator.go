@@ -159,6 +159,25 @@ func (t *cascadesTranslator) topLevelSort(ref *expressions.Reference) (*expressi
 			return ref, nil
 		}
 	}
+	switch top.(type) {
+	case *expressions.FullUnorderedScanExpression, *expressions.LogicalTypeFilterExpression:
+		// A bare table read (`SELECT * FROM t`) is still a query block: Java's
+		// generateSelect states it as a Select returning its quantifier's row
+		// under the sort, and the data-access rules match the index candidates
+		// against that Select (`SELECT * FROM T1` reads ISCAN(I1 <,>) under
+		// PREFER_INDEX). Without it the read only ever planned as the primary
+		// scan.
+		q := expressions.ForEachQuantifier(ref)
+		row, err := q.RequireFlowedObjectValue()
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "query has no exact result row: %v", err)
+		}
+		block, err := expressions.NewSelectExpression(row, []expressions.Quantifier{q}, nil)
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "query block over a table read: %v", err)
+		}
+		ref = expressions.InitialOf(block)
+	}
 	sort, err := expressions.UnsortedLogicalSortExpression(expressions.ForEachQuantifier(ref))
 	if err != nil {
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "query has no exact result row: %v", err)
