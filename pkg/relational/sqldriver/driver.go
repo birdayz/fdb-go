@@ -207,7 +207,11 @@ type Connector struct {
 	cat     *catalog.RecordLayerStoreCatalog
 	ks      *keyspace.RelationalKeyspace
 	factory *ddl.RecordLayerMetadataOperationsFactory
-	initErr error
+	// planCache is the engine-wide plan cache every connection of this
+	// connector shares (Java's RelationalPlanCache, one per engine), sized
+	// by the DSN's PLAN_CACHE_* options.
+	planCache *embedded.RelationalPlanCache
+	initErr   error
 }
 
 // Connect opens a connection. Honors ctx.Done() for cancellation.
@@ -226,6 +230,7 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	}
 	conn := embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks)
 	conn.SetOptions(c.connOpts)
+	conn.SetPlanCache(c.planCache)
 	if c.dsn.Schema != "" {
 		conn.SetDefaultSchema(c.dsn.Schema)
 	}
@@ -296,6 +301,7 @@ func (c *Connector) initialize(_ context.Context) error {
 	}
 	c.cat = cat
 	c.factory = ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(cat, c.ks)
+	c.planCache = embedded.NewRelationalPlanCache(c.connOpts)
 	return nil
 }
 

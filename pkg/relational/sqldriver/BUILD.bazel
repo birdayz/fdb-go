@@ -539,6 +539,7 @@ go_test(
         "pipe_operator_probe_test.go",
         "pk_intersection_leg_bound_component_fdb_test.go",
         "plan_cache_bench_test.go",
+        "plan_cache_engine_fdb_test.go",
         "plan_logging_fdb_test.go",
         "plan_shape_conformance_test.go",
         "planner_cap_hit_fdb_test.go",

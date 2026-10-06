@@ -1667,6 +1667,20 @@ the same gates as a literal of that type. A bound constant is planned in, so
 the plan-cache key carries the bindings; Java instead caches one plan per
 parameter types.
 
+## Engine-wide plan cache: keyed per schema, not per template
+
+Go's driver shares one `RelationalPlanCache` across every connection of a connector, with Java's
+three stages, sizes, TTLs and PLAN_CACHE_* counts (`embedded/relational_plan_cache.go`). Java's
+secondary key is the literal-extracted query, the planner configuration, the readable-index
+metadata and the template version, so every schema of one template shares a plan. Go plans
+literals and bound values in, so its secondary key is the token-rendered query with its literals
+and its tertiary key the bound values; and it keeps the database path and schema name, so a plan is
+shared by the connections on one schema, not by the schemas of a template: a plan's index use
+depends on that store's index states, which Go keys only when the state snapshot was read. For the
+same reason Java's stored-query warm-up (`OfflineStoredQueriesProcessor`, which plans each
+template's stored queries at startup with no store) is not ported: a warm-up plan has no schema to
+be keyed under. A DDL on any connection drops every shared plan (Java invalidates by key version).
+
 ## Java's float `=` is bit identity, and contradicts itself (upstream bug)
 
 Go's `=` treats `-0.0 = 0.0` as TRUE, matching the SQL standard, Postgres and

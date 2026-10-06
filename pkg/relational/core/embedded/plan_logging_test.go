@@ -140,7 +140,7 @@ func TestPlanLogging_LimitIsCacheable(t *testing.T) {
 		t.Errorf("cache = %v, want miss (LIMIT now cacheable)", cap.events[0].Cache)
 	}
 	// LIMIT query is now cached: the physical plan carries the limit operator.
-	if n := g.cache.Len(); n != 1 {
+	if n := g.cache.numEntries(); n != 1 {
 		t.Errorf("cache len = %d, want 1 (LIMIT now cacheable)", n)
 	}
 

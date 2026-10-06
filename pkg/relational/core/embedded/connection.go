@@ -67,10 +67,11 @@ type EmbeddedConnection struct {
 	// nil means auto-commit mode.
 	activeTx *embeddedTx
 
-	// planCache caches Cascades physical plans keyed by normalized SQL
-	// hash. Per-connection (and therefore per-schema), invalidated on
-	// DDL. Lazily initialized on first query.
-	planCache *PlanCache
+	// planCache caches Cascades physical plans. A driver installs its
+	// engine-wide RelationalPlanCache (SetPlanCache), which every connection
+	// it opens shares; a connection built without one lazily makes its own
+	// PlanCache on its first query. DDL invalidates it.
+	planCache queryPlanCache
 
 	// planLogger receives one PlanGenerationInfo per Plan() call for
 	// operational debuggability (RFC-034). nil = silent (the default).
@@ -555,8 +556,28 @@ func (c *EmbeddedConnection) invalidateSchemaCache(dbPath, schemaName string) {
 	}
 }
 
+// SetPlanCache installs the plan cache this connection plans through: the
+// engine-wide cache its driver shares across connections (Java's
+// RelationalPlanCache, one per engine).
+func (c *EmbeddedConnection) SetPlanCache(cache *RelationalPlanCache) {
+	if cache == nil {
+		c.planCache = nil
+		return
+	}
+	c.planCache = cache
+}
+
+// SharedPlanCache is the engine-wide plan cache this connection plans
+// through, or nil when it plans through a cache of its own.
+func (c *EmbeddedConnection) SharedPlanCache() *RelationalPlanCache {
+	shared, _ := c.planCache.(*RelationalPlanCache)
+	return shared
+}
+
 // invalidatePlanCache clears all cached query plans. Called after any
-// DDL statement that may change table/index metadata.
+// DDL statement that may change table/index metadata. With an engine-wide
+// cache this drops every connection's plans: a DDL is rare, and the shared
+// key relies on the metadata version only for changes made elsewhere.
 func (c *EmbeddedConnection) invalidatePlanCache() {
 	if c.planCache != nil {
 		c.planCache.Invalidate()

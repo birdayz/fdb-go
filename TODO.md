@@ -738,6 +738,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] Engine-wide plan cache keyed by schema template, matching Java's
   RelationalPlanCache; stored-query startup warming, invalidation, timing and
   counters. The existing per-connection cache does not satisfy this obligation.
+  Done: `RelationalPlanCache`, one per driver connector, shared by every
+  connection, with Java's three stages (template / query / equivalence),
+  sizes, TTLs (primary expire-after-access, the others after-write) and the
+  PLAN_CACHE_* hit/miss/LRU-eviction counts (`relational_plan_cache_test.go`,
+  `TestFDB_PlanCacheIsEngineWide`). Declared (DIVERGENCES "Engine-wide plan
+  cache"): the query key keeps database and schema and Go's planned-in
+  literals, so plans are shared per schema, not per template. Open:
+  stored-query warm-up (needs per-template keys), cache timing events, and the
+  corpus `check_cache` pass (218 skipped checks), which can now read
+  `SharedPlanCache().Counts().TertiaryHit`.
 
 ## 5. WS-I — shared APIs and lifecycle
 

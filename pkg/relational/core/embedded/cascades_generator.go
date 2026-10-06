@@ -52,7 +52,7 @@ import (
 // around the connection's exec* methods.
 type cascadesGenerator struct {
 	c     *EmbeddedConnection
-	cache *PlanCache
+	cache queryPlanCache
 	// args are the statement's driver arguments; paramKey renders their
 	// bindings for the plan-cache key, since bound constants are planned in.
 	args     []driver.NamedValue
@@ -389,8 +389,11 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if so.rightDeep {
 		popts.config.ShouldJoinRightDeep = true
 	}
-	cacheScope := planCacheScope(g.c.sess.DBPath, g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
-	cacheSQL := planCacheText(q) + g.paramKey
+	planKey := cacheKey{
+		scope: planCacheScope(g.c.sess.DBPath, g.c.sess.Schema, md.Version(), popts.cacheKeyPart()),
+		sql:   planCacheText(q),
+	}
+	cacheTemplate := g.sessionTemplate()
 	cache := g.cache
 	// A temporary function is not part of the schema version the key names.
 	if so.noCache || (g.c.activeTx != nil && len(g.c.activeTx.tempFunctions) > 0) {
@@ -398,7 +401,8 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	}
 
 	if cache != nil {
-		if cachedPlan, cachedSubs, cachedLabels, ok := cache.GetWithOutputLabels(cacheScope, cacheSQL); ok {
+		if cached, ok := cache.lookup(cacheTemplate, planKey, g.paramKey); ok {
+			cachedPlan, cachedSubs, cachedLabels := cached.plan, cached.scalarSubs, cached.outputLabels
 			ls.setPlan(cachedPlan)
 			ls.setCache(PlanCacheHit)
 			return &cascadesPlan{
@@ -575,7 +579,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// not applied post-execution, so the cached plan is complete.
 	if cache != nil {
 		ls.setCache(PlanCacheMiss)
-		cache.PutWithOutputLabels(cacheScope, cacheSQL, physPlan, scalarSubs, outputLabels)
+		cache.store(cacheTemplate, planKey, g.paramKey, &planCacheEntry{plan: physPlan, scalarSubs: scalarSubs, outputLabels: outputLabels})
 	} else {
 		ls.setCache(PlanCacheSkip)
 	}

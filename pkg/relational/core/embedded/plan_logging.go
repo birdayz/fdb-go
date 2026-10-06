@@ -173,7 +173,7 @@ func (s *planLogScope) finish(err error) {
 	// only for HIT/MISS (the cache was consulted/mutated); SKIP and
 	// INCONCLUSIVE carry 0.
 	if s.g.cache != nil && (s.cache == PlanCacheHit || s.cache == PlanCacheMiss) {
-		info.CacheNumEntries = s.g.cache.Len()
+		info.CacheNumEntries = s.g.cache.numEntries()
 	}
 	if thresh := s.g.c.slowQueryThresholdMicros; thresh > 0 {
 		info.SlowQuery = info.PlanningDuration.Microseconds() > thresh
