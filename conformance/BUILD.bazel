@@ -85,6 +85,7 @@ java_test(
 # and the target below is hand-maintained (# keep): its srcs are the oracle specs
 # plus the shared helper files they compile against.
 # gazelle:exclude guardiann_probe_conformance_test.go
+# gazelle:exclude guardiann_byte_conformance_test.go
 # gazelle:exclude count_on_empty_conformance_test.go
 # gazelle:exclude function_columns_conformance_test.go
 # gazelle:exclude named_call_conformance_test.go
@@ -205,6 +206,7 @@ go_test(
     srcs = [
         "conformance_suite_test.go",
         "container_test.go",
+        "guardiann_byte_conformance_test.go",
         "guardiann_probe_conformance_test.go",
         "java_invoker_test.go",
         "store_helpers_test.go",

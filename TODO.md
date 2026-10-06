@@ -770,7 +770,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   the design's (d) fixture list: the JVM-row byte comparisons (bounce
   follow-up ids, bits-9 quantizer refusal, which Go does not raise) and the
   1020 race fixtures.
-- [ ] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
+- [x] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
   covering/rank results, search-free continuation replay, operation-local caches,
   partition locks, cosine zero/clamp, sample-UUID closure, option catalog/identity.
   efSearch defaults and bounded-beam use already have fixes. Cosine done
@@ -803,8 +803,30 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   and orderByDistance exist on GuardiANN's centroid HNSW
   (guardiann_centroids.go); its comparator now orders by Double.compare then
   key (`TestCentroidNodeOrder_IsDoubleCompareThenKey`, mutation-checked).
+  Covering/rank results and ordered retrieval checked against 4.14.2.0, no
+  gap: layer-0 nodes decode Java's 3- and 4-field tuples and a rewrite keeps
+  the fourth (`parseNodeValue`); an index entry is (prefix + PK, vector raw
+  bytes or null), Java's toIndexEntry, with no covering columns or rank; the
+  record layer's HNSW search is kNearestNeighborsSearch only (orderByDistance
+  is used by GuardiANN's centroid walk alone, ported), and cardinality reads
+  at most two layer-0 keys.
 - [ ] Distinguishing pins for codecs, evaluator, collapse, bounce, reassignment,
   task counts and merge locks.
+  Persisted-byte differential added (2026-10-06,
+  `conformance/guardiann_byte_conformance_test.go`): Java's Guardiann and Go's
+  engine (`recordlayer.NewGuardiannEngine`) run one deterministic insert /
+  split / delete scenario and every key and value under both subspaces must
+  match after the inserts, after EACH build task, after the deletes and after
+  the final drain. It found a real divergence: the KMeans input order. Java
+  collects a split's references in a HashMap<VectorId, ...> filled by
+  compute, whose values() order KMeans sums and the statistics fold in;
+  Go used encounter order, so centroids and M2 differed in the last bit. Go
+  now ports that traversal (`javaHashMapOrder`: bucket by spread hash at the
+  capacity compute leaves, head-of-bin insertion), pinned against a real
+  compute-filled HashMap at sizes either side of the resize points. Covers
+  identities, cluster metadata and statistics, references, the centroid
+  HNSW and the task queue for split; still to add: merge, collapse, bounce,
+  reassignment and RaBitQ-trained codecs.
 - [ ] Runner: unified bounded attempts, per-owner retries, commit ownership and
   deactivation, client proxy wait/body-chain causes, SPFresh stall bound and
   instrumentation. Apply the SPFresh paper review to affected algorithms.

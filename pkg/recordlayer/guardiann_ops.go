@@ -205,8 +205,16 @@ func (g *guardiann) cleanUpVectorReferences(tx fdb.ReadTransaction, clusters []g
 			}
 		}
 	}
+	// Java's vectorsByIdMap is a HashMap<VectorId, VectorReference>, and its
+	// values() order is what KMeans receives (it seeds and sums in that
+	// order, so it reaches the persisted centroids' last bits).
+	ids := make([]guardiannVectorID, len(merged))
+	for i, r := range merged {
+		ids[i] = r.id
+	}
 	out := merged[:0:0]
-	for _, r := range merged {
+	for _, i := range javaHashMapOrder(ids) {
+		r := merged[i]
 		if r.collapsed {
 			out = append(out, r)
 			continue

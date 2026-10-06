@@ -46,6 +46,13 @@ class GuardiannProbeSteps extends ConformanceBase {
         }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("rows", rows);
+        List<Tuple> primaryKeys = new ArrayList<>();
+        List<UUID> uuidList = new ArrayList<>();
+        for (int i = 0; i < packedPrimaryKeysHex.size(); i++) {
+            primaryKeys.add(Tuple.fromBytes(HexFormat.of().parseHex(packedPrimaryKeysHex.get(i))));
+            uuidList.add(UUID.fromString(uuids.get(i)));
+        }
+        result.put("hashMapOrder", GuardiannConformanceAccess.vectorIdHashMapOrder(primaryKeys, uuidList));
         result.put("javaFeatureVersion", Runtime.version().feature());
         // fdb-java's manifest carries no version; its jar name is the only version record.
         result.put("fdbJavaJar", new java.io.File(
@@ -170,6 +177,57 @@ class GuardiannProbeSteps extends ConformanceBase {
         result.put("afterSplit", runInContext(clusterFile, tenantName, context ->
                 GuardiannConformanceAccess.primaryCounts(guardiann, context.ensureActive())));
         return result;
+    }
+
+    /**
+     * Byte differential: a fixed insert / drain / delete / drain scenario on a
+     * deterministic-randomness GuardiANN, then every key and value under the
+     * subspace, the key relative to the subspace. Go runs the same scenario
+     * through its engine and must persist the same bytes.
+     */
+    @ConformanceStep("guardiannByteDumpProbe")
+    public Map<String, Object> guardiannByteDumpProbe(String clusterFile, String tenantName, byte[] subspace) {
+        Guardiann guardiann = smallGuardiann(subspace, 0);
+        for (int i = 0; i < 12; i++) {
+            insert(clusterFile, tenantName, guardiann, i, near(i));
+        }
+        for (int i = 0; i < 3; i++) {
+            insert(clusterFile, tenantName, guardiann, 1000 + i, far(i));
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("kvsAfterInserts", dumpSubspace(clusterFile, tenantName, subspace));
+        List<List<List<String>>> rounds = new ArrayList<>();
+        for (int round = 0; round < 40; round++) {
+            int executed = runInContext(clusterFile, tenantName, context ->
+                    guardiann.executeDeferredTasks(context.ensureActive(), 1, Long.MAX_VALUE).join());
+            if (executed == 0) {
+                break;
+            }
+            rounds.add(dumpSubspace(clusterFile, tenantName, subspace));
+        }
+        result.put("buildRounds", rounds);
+        result.put("buildExecutions", drainOneByOne(clusterFile, tenantName, guardiann));
+        result.put("kvsAfterBuild", dumpSubspace(clusterFile, tenantName, subspace));
+        delete(clusterFile, tenantName, guardiann, 3, near(3));
+        delete(clusterFile, tenantName, guardiann, 1001, far(1));
+        result.put("kvsAfterDeletes", dumpSubspace(clusterFile, tenantName, subspace));
+        result.put("deleteExecutions", drainOneByOne(clusterFile, tenantName, guardiann));
+        result.put("kvs", dumpSubspace(clusterFile, tenantName, subspace));
+        return result;
+    }
+
+    /** Every key (printable and hex, relative to the subspace) and value (hex) under subspace. */
+    private static List<List<String>> dumpSubspace(String clusterFile, String tenantName, byte[] subspace) {
+        return runInContext(clusterFile, tenantName, context -> {
+            List<List<String>> kvs = new ArrayList<>();
+            Subspace root = new Subspace(subspace);
+            for (com.apple.foundationdb.KeyValue kv : context.ensureActive().getRange(root.range()).asList().join()) {
+                byte[] key = java.util.Arrays.copyOfRange(kv.getKey(), subspace.length, kv.getKey().length);
+                kvs.add(List.of(com.apple.foundationdb.tuple.ByteArrayUtil.printable(key),
+                        java.util.HexFormat.of().formatHex(key), java.util.HexFormat.of().formatHex(kv.getValue())));
+            }
+            return kvs;
+        });
     }
 
     private static Map<String, Object> phase(Runnable action) {

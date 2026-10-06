@@ -184,6 +184,53 @@ type guardiannVectorID struct {
 	uuid tuple.UUID
 }
 
+// javaHashCode is the record VectorId(Tuple primaryKey, UUID uuid)'s
+// hashCode on the pinned JDK 21: 31 * primaryKey.hashCode() + uuid.hashCode(),
+// where fdb-java 7.1.26's Tuple.hashCode is Arrays.hashCode of the packed
+// bytes and UUID.hashCode folds msb ^ lsb (validated against real VectorId
+// instances by the GuardiANN target oracle).
+func (v guardiannVectorID) javaHashCode() int32 {
+	h := int32(1)
+	for _, c := range v.pk.Pack() {
+		h = 31*h + int32(int8(c))
+	}
+	hilo := int64(binary.BigEndian.Uint64(v.uuid[:8])) ^ int64(binary.BigEndian.Uint64(v.uuid[8:]))
+	return 31*h + (int32(hilo>>32) ^ int32(hilo))
+}
+
+// javaHashMapOrder returns the indices of ids in java.util.HashMap's
+// iteration order for a default HashMap (capacity 16, load factor 0.75) into
+// which each was inserted once, in index order, by HashMap.compute, as
+// Primitives.cleanUpVectorReferences inserts them. compute links a new key at
+// the HEAD of its bin (put appends at the tail) and resizes at the start of a
+// call that finds size above the threshold (put resizes after the insert). A
+// resize splits each bin keeping its order, so a bucket iterates its keys in
+// reverse insertion order, and the table has grown only while a later call
+// saw more than three quarters of it filled. Tree bins (eight or more keys in
+// one bucket of a table of at least 64) are not modeled; their order differs
+// only among those colliding keys.
+func javaHashMapOrder(ids []guardiannVectorID) []int {
+	capacity := 16
+	for len(ids)-1 > capacity*3/4 {
+		capacity *= 2
+	}
+	bucket := make([]int, len(ids))
+	order := make([]int, len(ids))
+	for i, id := range ids {
+		h := id.javaHashCode()
+		h ^= int32(uint32(h) >> 16) // HashMap.hash
+		bucket[i] = int(h) & (capacity - 1)
+		order[i] = i
+	}
+	sort.Slice(order, func(a, b int) bool {
+		if bucket[order[a]] != bucket[order[b]] {
+			return bucket[order[a]] < bucket[order[b]]
+		}
+		return order[a] > order[b]
+	})
+	return order
+}
+
 func (v guardiannVectorID) key() string {
 	return string(v.pk.Pack()) + string(v.uuid[:])
 }

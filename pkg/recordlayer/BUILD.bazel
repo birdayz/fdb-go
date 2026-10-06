@@ -34,6 +34,7 @@ go_library(
         "guardiann_config.go",
         "guardiann_consumer_outcome.go",
         "guardiann_engine.go",
+        "guardiann_harness.go",
         "guardiann_kmeans.go",
         "guardiann_ops.go",
         "guardiann_splitmerge.go",

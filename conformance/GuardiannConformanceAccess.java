@@ -21,6 +21,21 @@ public final class GuardiannConformanceAccess {
     }
 
     /** The hash of a real VectorId, as the target's HashMaps see it. */
+    /**
+     * The iteration order of a default HashMap&lt;VectorId, Integer&gt; filled
+     * with ids in list order by compute, as Primitives.cleanUpVectorReferences
+     * fills its map (compute links a new key at the head of its bin), whose
+     * values() order KMeans receives.
+     */
+    public static List<Integer> vectorIdHashMapOrder(final List<Tuple> primaryKeys, final List<UUID> uuids) {
+        final java.util.Map<VectorId, Integer> map = com.google.common.collect.Maps.newHashMap();
+        for (int i = 0; i < primaryKeys.size(); i++) {
+            final int index = i;
+            map.compute(new VectorId(primaryKeys.get(i), uuids.get(i)), (id, old) -> old == null ? index : old);
+        }
+        return new java.util.ArrayList<>(map.values());
+    }
+
     public static int vectorIdHash(final Tuple primaryKey, final UUID uuid) {
         return new VectorId(primaryKey, uuid).hashCode();
     }
