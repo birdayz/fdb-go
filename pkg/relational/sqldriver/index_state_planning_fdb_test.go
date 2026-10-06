@@ -75,7 +75,7 @@ func newIndexStatePlanningFixture(t *testing.T) *indexStatePlanningFixture {
 	// (upper-cased) names, so the out-of-band handle must ask for the same
 	// subspace the driver wrote.
 	ks := relkeyspace.New(subspace.Sub())
-	ss, err := ks.SchemaSubspace(strings.ToUpper(dbPath), strings.ToUpper(schemaName))
+	ss, err := ks.LookupSchemaSubspace(context.Background(), rdb, strings.ToUpper(dbPath), strings.ToUpper(schemaName))
 	if err != nil {
 		t.Fatalf("schema subspace: %v", err)
 	}

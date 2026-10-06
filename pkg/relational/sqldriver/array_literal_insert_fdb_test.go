@@ -13,7 +13,6 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -242,7 +241,7 @@ func TestFDB_ArrayLiteralInsertWireBytes(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	rlDB := recordlayer.NewFDBDatabase(rawDB)
-	ss := subspace.Sub().Sub(tuple.Tuple{"/FRL/ARRINS_WIRE", "MAIN"}) // CREATE DATABASE /FRL/arrins_wire stored it folded
+	ss := relationalStoreSubspace(t, "/FRL/ARRINS_WIRE", "MAIN") // CREATE DATABASE /FRL/arrins_wire stored it folded
 
 	var storedBytes []byte
 	_, err = rlDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

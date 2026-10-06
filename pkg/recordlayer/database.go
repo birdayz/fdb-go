@@ -54,6 +54,14 @@ type FDBDatabase struct {
 	// from the system-key gate and read globally even on a tenant transaction.
 	isTenant bool
 
+	// resolverCache is the directory cache of committed resolver mappings
+	// (Java's FDBDatabase.getDirectoryCache); reverseCacheEntry the long of
+	// the reverse directory cache's directory, resolved once.
+	resolverCacheOnce sync.Once
+	resolverCache     *resolverCache
+	reverseCacheMu    sync.Mutex
+	reverseCacheEntry *int64
+
 	// storeStateCache caches store state across transactions.
 	// Default: PassThroughRecordStoreStateCache (no caching).
 	// Matches Java's FDBDatabase.storeStateCache field.

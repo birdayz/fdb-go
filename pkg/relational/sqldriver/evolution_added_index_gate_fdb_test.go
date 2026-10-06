@@ -169,7 +169,8 @@ func evolIndexStates(t *testing.T, dbPath, schemaName string) map[string]recordl
 	if dbErr != nil {
 		t.Fatalf("open db: %v", dbErr)
 	}
-	ss, err := keyspace.New(subspace.Sub()).SchemaSubspace(dbPath, strings.ToUpper(schemaName))
+	ss, err := keyspace.New(subspace.Sub()).LookupSchemaSubspace(context.Background(),
+		recordlayer.NewFDBDatabase(rawDB), dbPath, strings.ToUpper(schemaName))
 	if err != nil {
 		t.Fatalf("schema subspace: %v", err)
 	}

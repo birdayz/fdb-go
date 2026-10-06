@@ -395,15 +395,15 @@ func TestIntegration_Stats_CollectDoesNotTouchTheStore(t *testing.T) {
 // the collector use, so it cannot drift from what it is asserting about.
 func snapshotStoreSubspace(t *testing.T, database, schema string) map[string]string {
 	t.Helper()
-	ss, err := relationalStoreSubspace(database, schema)
-	if err != nil {
-		t.Fatalf("resolve store subspace: %v", err)
-	}
 	fdbDB, err := openDatabase(fixture.clusterFilePath)
 	if err != nil {
 		t.Fatalf("open FDB: %v", err)
 	}
 	rec := recordlayer.NewFDBDatabase(fdbDB)
+	ss, err := relationalStoreSubspace(context.Background(), rec, database, schema)
+	if err != nil {
+		t.Fatalf("resolve store subspace: %v", err)
+	}
 	out := map[string]string{}
 	_, err = rec.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		begin, end := ss.FDBRangeKeys()

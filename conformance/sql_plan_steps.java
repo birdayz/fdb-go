@@ -1136,6 +1136,37 @@ class SqlPlanSteps {
         return out;
     }
 
+    /**
+     * TEST-ONLY (RFC-257 catalog/keyspace): the record-store prefix Java resolves for an
+     * existing schema ({@code toDatabasePath(dbPath).schemaPath(schemaName).toSubspace}),
+     * and whether Java's catalog holds the schema, so a schema Go created can be checked
+     * against the keys Java would open.
+     */
+    @ConformanceStep("schemaStorePrefixJava")
+    public JsonObject schemaStorePrefixJava(String clusterFile, String dbPath, String schemaName) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        byte[] prefix;
+        try (com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext ctx = sharedDatabase.openContext()) {
+            prefix = RelationalKeyspaceProvider.toDatabasePath(java.net.URI.create(dbPath), sharedKeySpace)
+                    .schemaPath(schemaName).toSubspace(ctx).getKey();
+        }
+        long rows;
+        try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:" + dbPath + "?schema=" + schemaName);
+             Statement st = conn.createStatement();
+             java.sql.ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM T")) {
+            rs.next();
+            rows = rs.getLong(1);
+        }
+        JsonObject out = new JsonObject();
+        JsonArray bytes = new JsonArray();
+        for (byte b : prefix) {
+            bytes.add(b & 0xff);
+        }
+        out.add("storePrefix", bytes);
+        out.addProperty("rows", rows);
+        return out;
+    }
+
     /** TEST-ONLY: drops a database {@link #wsjOpenStoreJava} kept. */
     @ConformanceStep("wsjDropDatabaseJava")
     public JsonObject wsjDropDatabaseJava(String clusterFile, String dbPath) throws Exception {

@@ -85,7 +85,7 @@ func (a *CreateSchemaConstantAction) createFDBStore(txn api.Transaction, tmpl ap
 		return api.NewErrorf(api.ErrCodeInternalError,
 			"CreateSchema requires *metadata.RecordLayerSchemaTemplate, got %T", tmpl)
 	}
-	ss, err := a.ks.SchemaSubspace(a.dbPath, a.schemaName)
+	ss, err := a.ks.SchemaSubspace(rctx, a.dbPath, a.schemaName)
 	if err != nil {
 		return err
 	}

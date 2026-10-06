@@ -1358,7 +1358,7 @@ func (c *EmbeddedConnection) CollectStatistics(
 				"planner would always reject",
 			c.sess.Schema, strings.Join(pair, " and "))
 	}
-	statsSubspace, storeSubspace, err := c.statisticsLocation()
+	statsSubspace, storeSubspace, err := c.statisticsLocation(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1409,7 +1409,7 @@ func (c *EmbeddedConnection) ClearStatistics(ctx context.Context) error {
 		return api.NewError(api.ErrCodeInvalidParameter,
 			"ClearStatistics requires a connection bound to a schema")
 	}
-	statsSubspace, storeSubspace, err := c.statisticsLocation()
+	statsSubspace, storeSubspace, err := c.statisticsLocation(ctx)
 	if err != nil {
 		return err
 	}

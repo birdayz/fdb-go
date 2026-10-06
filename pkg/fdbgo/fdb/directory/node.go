@@ -59,7 +59,7 @@ func (n *node) layer(rtr fdb.ReadTransaction) fdb.FutureByteSlice {
 	return n._layer
 }
 
-func (n *node) isInPartition(tr *fdb.Transaction, includeEmptySubpath bool) bool {
+func (n *node) isInPartition(tr fdb.WritableTransaction, includeEmptySubpath bool) bool {
 	return n.exists() && bytes.Compare(n._layer.MustGet(), []byte("partition")) == 0 && (includeEmptySubpath || len(n.targetPath) > len(n.path))
 }
 
@@ -67,7 +67,7 @@ func (n *node) getPartitionSubpath() []string {
 	return n.targetPath[len(n.path):]
 }
 
-func (n *node) getContents(dl directoryLayer, tr *fdb.Transaction) (DirectorySubspace, error) {
+func (n *node) getContents(dl directoryLayer, tr fdb.WritableTransaction) (DirectorySubspace, error) {
 	l, err := n._layer.Get()
 	if err != nil {
 		return nil, err

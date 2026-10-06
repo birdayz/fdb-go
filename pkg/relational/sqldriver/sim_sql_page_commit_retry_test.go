@@ -407,9 +407,9 @@ const staleFormatVersion = 13
 // pageRetrySchemaSubspace returns the subspace the driver stored the schema
 // under. The driver canonicalises the schema name to upper case, so an
 // out-of-band handle must ask for the same name the driver wrote.
-func pageRetrySchemaSubspace(t *testing.T) subspace.Subspace {
+func pageRetrySchemaSubspace(t *testing.T, ctx context.Context, rdb *recordlayer.FDBDatabase) subspace.Subspace {
 	t.Helper()
-	ss, err := relkeyspace.New(subspace.Sub()).SchemaSubspace("/FRL/SIMDB", "S")
+	ss, err := relkeyspace.New(subspace.Sub()).LookupSchemaSubspace(ctx, rdb, "/FRL/SIMDB", "S")
 	if err != nil {
 		t.Fatalf("schema subspace: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestPageRetry_StoreOpenWritesHeaderOnStaleFormat(t *testing.T) {
 	mustExecSQL(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 1)")
 
 	rdb := recordlayer.NewFDBDatabaseWithBackend(backend)
-	ss := pageRetrySchemaSubspace(t)
+	ss := pageRetrySchemaSubspace(t, ctx, rdb)
 
 	if got := readStoreFormatVersion(t, ctx, rdb, ss); got == staleFormatVersion {
 		t.Fatalf("the freshly created store already carries format version %d, which is the "+
@@ -572,7 +572,7 @@ func TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict(t *testing.T) {
 	conn := seedPageRetryRows(t, ctx, db)
 
 	rdb := recordlayer.NewFDBDatabaseWithBackend(backend)
-	ss := pageRetrySchemaSubspace(t)
+	ss := pageRetrySchemaSubspace(t, ctx, rdb)
 
 	// Warm the connection first: the one-shot catalog bootstrap and the metadata
 	// load each run their own transaction, and they would otherwise sit between

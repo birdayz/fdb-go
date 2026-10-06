@@ -48,7 +48,7 @@ func (a *DropSchemaConstantAction) deleteFDBStore(txn api.Transaction) error {
 			"DropSchema FDB store deletion requires a transaction whose Unwrap() returns *recordlayer.FDBRecordContext, got %T from %T",
 			txn.Unwrap(), txn)
 	}
-	ss, err := a.ks.SchemaSubspace(a.dbPath, a.schemaName)
+	ss, err := a.ks.SchemaSubspace(rctx, a.dbPath, a.schemaName)
 	if err != nil {
 		return err
 	}

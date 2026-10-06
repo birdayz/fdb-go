@@ -917,7 +917,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     ports of the same Lucene87 codec parts plus BlockTree and FST. It is a
     candidate reference or vendored start for a format-compatible port.
   The engine choice is made in the follow-up PR.
-- [ ] **Catalog/keyspace: DECIDED 2026-10-05, exactly Java's layout, no
+- [x] **Catalog/keyspace: DECIDED 2026-10-05, exactly Java's layout, no
   compatibility with the old Go layout.** Go's SQL driver uses the string-key
   catalog/schema layout `(__SYS, __SYS, CATALOG)` / `(dbPath, schemaName)`.
   Replace it with Java's `RelationalKeyspaceProvider` layout: the typed system
@@ -950,9 +950,27 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     SemanticAnalyzer.validateDatabaseUri for parsed paths. The driver
     registers nothing; `frl`, the factory/stress tools and the javacorpus
     runner register FRL; test packages register FRL and TEST. About 3,700 test,
-    doc and help paths were renamed to `/FRL/...` by script. Open: the
-    byte-exact directory-layer layout below (the registry decides validity
-    only; keys still use the string path).
+    doc and help paths were renamed to `/FRL/...` by script.
+  - Byte-exact layout: DONE (2026-10-06). The catalog store is `(NULL, NULL,
+    0)`; a schema store is `(domain, database, schema)`, the domain resolved by
+    the global FDB directory layer (ScopedDirectoryLayer.global, plus the
+    `recdb_rd_cache` reverse directory cache) and the names interned by the
+    domain's ScopedInterningLayer at `(domain, "IL")` (StringInterningLayer
+    mapping/reverse/counter at 2/1/0, state at -10, the record-layer
+    HighContentionAllocator). `pkg/recordlayer/locatable_resolver.go` ports
+    the resolution path: resolveWithMetadata in a committed child transaction
+    with the database's directory cache, readInTransaction (no create,
+    used by the frl CLI so a mistyped address interns nothing),
+    reverseLookup, the UNLOCKED state check. `pkg/fdbgo/fdb/directory` now
+    runs over any `fdb.WritableTransaction` (libfdb_c and the simulator too)
+    and takes an injected random source (the DST seam). Pinned by the Java
+    interop spec "Relational key space shared with Java" (each engine resolves
+    the other's schema at the same prefix and reads its rows; the interning
+    mapping moved off 2 reddens it). Not ported: resolver locking/migration/
+    setMapping/setWindow administration, the global root interning layer
+    (0xFC), and the in-memory reverse-directory cache's retriable mismatch.
+    `pkg/recordlayer/keyspace`'s Go-only `FDBResolver` has no users; remove it
+    with that package's review.
 - [ ] Reconcile living compatibility claims/CHANGELOG, run `just test-full` and
   required interop/performance checks, then final migration review and PR CI.
   Fix all Medium-or-higher findings before declaring completion.

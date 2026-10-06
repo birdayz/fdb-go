@@ -25,7 +25,6 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -42,7 +41,7 @@ func setIndexStateRaw(t *testing.T, dbPath, schema, indexName string, state reco
 	}
 	// The names CREATE DATABASE / CREATE SCHEMA stored: unquoted, folded (a
 	// database path whole).
-	ss := subspace.Sub().Sub(tuple.Tuple{strings.ToUpper(dbPath), strings.ToUpper(schema)}).Sub(recordlayer.IndexStateSpaceKey)
+	ss := relationalStoreSubspace(t, strings.ToUpper(dbPath), strings.ToUpper(schema)).Sub(recordlayer.IndexStateSpaceKey)
 	key := ss.Pack(tuple.Tuple{indexName})
 	if _, err := rawDB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		if state == recordlayer.IndexStateReadable {

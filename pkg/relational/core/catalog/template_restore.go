@@ -180,7 +180,7 @@ func (c *RecordLayerStoreCatalog) checkBoundStores(ctx context.Context, db *reco
 				return nil, err
 			}
 			for _, b := range batch {
-				ss, err := ks.SchemaSubspace(b.DatabaseID, b.SchemaName)
+				ss, err := ks.SchemaSubspace(rctx, b.DatabaseID, b.SchemaName)
 				if err != nil {
 					return nil, err
 				}

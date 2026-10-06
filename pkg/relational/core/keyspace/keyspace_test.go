@@ -9,42 +9,26 @@ import (
 
 func TestSchemaSubspace_EmptyPath(t *testing.T) {
 	t.Parallel()
-	ks := keyspace.New(subspace.Sub([]byte("test")))
-	_, err := ks.SchemaSubspace("", "s1")
-	if err == nil {
+	ks := keyspace.New(subspace.Sub())
+	if _, err := ks.SchemaSubspace(nil, "", "s1"); err == nil {
 		t.Fatal("expected error for empty dbPath, got nil")
 	}
 }
 
 func TestSchemaSubspace_EmptySchema(t *testing.T) {
 	t.Parallel()
-	ks := keyspace.New(subspace.Sub([]byte("test")))
-	_, err := ks.SchemaSubspace("/FRL/db", "")
-	if err == nil {
+	ks := keyspace.New(subspace.Sub())
+	if _, err := ks.SchemaSubspace(nil, "/FRL/db", ""); err == nil {
 		t.Fatal("expected error for empty schemaName, got nil")
 	}
 }
 
-func TestSchemaSubspace_Valid(t *testing.T) {
+// The catalog store is Java's __SYS (NULL) / __SYS (NULL) / CATALOG (LONG 0):
+// the tuple (null, null, 0).
+func TestCatalogSubspace_IsJavasSystemPath(t *testing.T) {
 	t.Parallel()
-	ks := keyspace.New(subspace.Sub([]byte("test")))
-	ss, err := ks.SchemaSubspace("/FRL/mydb", "myschema")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if ss == nil {
-		t.Fatal("expected non-nil subspace")
-	}
-}
-
-func TestCatalogSubspace_Distinct(t *testing.T) {
-	t.Parallel()
-	root := subspace.Sub([]byte("root"))
-	ks := keyspace.New(root)
-	catSS := ks.CatalogSubspace()
-	schemaSS, _ := ks.SchemaSubspace("/FRL/db", "s1")
-	if string(catSS.Bytes()) == string(schemaSS.Bytes()) {
-		t.Error("catalog and schema subspaces must be distinct")
+	if got := keyspace.New(subspace.Sub()).CatalogSubspace().Bytes(); string(got) != "\x00\x00\x14" {
+		t.Fatalf("catalog subspace %x, want 000014", got)
 	}
 }
 

@@ -1,23 +1,23 @@
-// Package keyspace defines the relational-layer FDB key structure.
+// Package keyspace defines the relational-layer FDB key structure, Java's
+// RelationalKeyspaceProvider byte for byte:
 //
-// The relational layer stores data under a two-level path:
+//	catalog store:  (NULL, NULL, 0)                  __SYS / __SYS / CATALOG
+//	user schema:    (domain, database, schema)        three longs
 //
-//	catalog store:  [root]["__SYS"]["__SYS"]["CATALOG"]
-//	user schemas:   [root][domain][dbPath][schemaName]
-//
-// This mirrors the Java RelationalKeyspaceProvider layout conceptually,
-// but uses plain tuple keys instead of DirectoryLayerDirectory —
-// Go-to-Go relational stores do not need to share keyspace with Java
-// relational stores. Only the RECORD LAYER data format (records,
-// indexes, catalog protos) must be Java-compatible, not the path
-// prefix scheme.
+// The domain is a directory of the FDB directory layer at the root (Java's
+// ScopedDirectoryLayer.global); the database and the schema are names interned
+// in the domain's interning layer at (domain, "IL") (ScopedInterningLayer).
+// A store written by Go is the store Java opens, and the reverse.
 package keyspace
 
 import (
+	"context"
 	"strings"
+	"sync"
 
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -37,6 +37,9 @@ const (
 // prefix), then call CatalogSubspace / SchemaSubspace to get per-object subspaces.
 type RelationalKeyspace struct {
 	root subspace.Subspace
+	// resolved caches committed schema resolutions: an interned name never
+	// changes its value (Java's directory cache relies on the same).
+	resolved sync.Map // dbPath "\x00" schema -> subspace.Subspace
 }
 
 // New returns a RelationalKeyspace rooted at root.
@@ -44,16 +47,21 @@ func New(root subspace.Subspace) *RelationalKeyspace {
 	return &RelationalKeyspace{root: root}
 }
 
-// CatalogSubspace returns the subspace for the system catalog record store
-// (the __SYS/CATALOG schema).
+// CatalogSubspace returns the subspace for the system catalog record store:
+// __SYS (NULL) / __SYS (NULL) / CATALOG (LONG 0).
 func (k *RelationalKeyspace) CatalogSubspace() subspace.Subspace {
-	return k.root.Sub(tuple.Tuple{SysName, SysName, CatalogName})
+	return k.root.Sub(nil, nil, int64(0))
 }
 
-// SchemaSubspace returns the subspace for a user schema identified by
-// (dbPath, schemaName). dbPath is the full database path (e.g. "/my/db").
-// Returns an error if dbPath or schemaName is empty.
-func (k *RelationalKeyspace) SchemaSubspace(dbPath, schemaName string) (subspace.Subspace, error) {
+// SchemaSubspace resolves a schema's record store subspace, Java's
+// toDatabasePath(dbUri).schemaPath(schemaName) resolved: the domain's
+// directory-layer long, then the database and schema names interned in the
+// domain's scope (created on first use, each in a transaction of its own, as
+// Java's resolveWithMetadata does).
+func (k *RelationalKeyspace) SchemaSubspace(rctx *recordlayer.FDBRecordContext, dbPath, schemaName string) (subspace.Subspace, error) {
+	if ss, ok := k.resolved.Load(dbPath + "\x00" + schemaName); ok {
+		return ss.(subspace.Subspace), nil
+	}
 	if dbPath == "" {
 		return nil, api.NewError(api.ErrCodeInvalidParameter, "dbPath must not be empty")
 	}
@@ -63,10 +71,100 @@ func (k *RelationalKeyspace) SchemaSubspace(dbPath, schemaName string) (subspace
 	// Java resolves a schema's store through toDatabasePath(dbUri).schemaPath
 	// (create/drop schema, every store open), so a database outside the
 	// registered domains is INVALID_PATH there.
-	if _, err := ToDatabasePath(dbPath); err != nil {
+	path, err := ToDatabasePath(dbPath)
+	if err != nil {
 		return nil, err
 	}
-	return k.root.Sub(tuple.Tuple{dbPath, schemaName}), nil
+	if path.System {
+		// __SYS's only store is the catalog (CATALOG, a LONG constant 0).
+		if schemaName == CatalogName {
+			return k.CatalogSubspace(), nil
+		}
+		return nil, api.NewErrorf(api.ErrCodeInvalidPath, "<%s/%s> is an invalid database path", dbPath, schemaName)
+	}
+	domain, err := recordlayer.ResolveWithMetadata(rctx, recordlayer.GlobalDirectoryLayer{}, path.Domain)
+	if err != nil {
+		return nil, err
+	}
+	scope := recordlayer.NewScopedInterningLayer(k.root.Sub(domain.Value, InterningLayerValue))
+	db, err := recordlayer.ResolveWithMetadata(rctx, scope, path.Database)
+	if err != nil {
+		return nil, err
+	}
+	schema, err := recordlayer.ResolveWithMetadata(rctx, scope, schemaName)
+	if err != nil {
+		return nil, err
+	}
+	ss := k.root.Sub(domain.Value, db.Value, schema.Value)
+	// Only a resolution its own committed transactions made is cacheable; over
+	// an external transaction it may still roll back.
+	if rctx.GetDatabase() != nil {
+		k.resolved.Store(dbPath+"\x00"+schemaName, ss)
+	}
+	return ss, nil
+}
+
+// LookupSchemaSubspace resolves a schema's store subspace without creating
+// any mapping (readInTransaction): a domain, database or schema name that was
+// never interned names no store, and is UNDEFINED_SCHEMA.
+func (k *RelationalKeyspace) LookupSchemaSubspace(ctx context.Context, db *recordlayer.FDBDatabase, dbPath, schemaName string) (subspace.Subspace, error) {
+	if ss, ok := k.resolved.Load(dbPath + "\x00" + schemaName); ok {
+		return ss.(subspace.Subspace), nil
+	}
+	path, err := ToDatabasePath(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	if path.System {
+		if schemaName == CatalogName {
+			return k.CatalogSubspace(), nil
+		}
+		return nil, api.NewErrorf(api.ErrCodeInvalidPath, "<%s/%s> is an invalid database path", dbPath, schemaName)
+	}
+	out, err := db.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		missing := api.NewErrorf(api.ErrCodeUndefinedSchema, "Schema <%s/%s> has no record store", dbPath, schemaName)
+		domain, ok, err := recordlayer.ReadInTransaction(rctx, recordlayer.GlobalDirectoryLayer{}, path.Domain)
+		if err != nil || !ok {
+			return nil, firstErr(err, missing)
+		}
+		scope := recordlayer.NewScopedInterningLayer(k.root.Sub(domain.Value, InterningLayerValue))
+		dbv, ok, err := recordlayer.ReadInTransaction(rctx, scope, path.Database)
+		if err != nil || !ok {
+			return nil, firstErr(err, missing)
+		}
+		sv, ok, err := recordlayer.ReadInTransaction(rctx, scope, schemaName)
+		if err != nil || !ok {
+			return nil, firstErr(err, missing)
+		}
+		return k.root.Sub(domain.Value, dbv.Value, sv.Value), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out.(subspace.Subspace), nil
+}
+
+func firstErr(err, otherwise error) error {
+	if err != nil {
+		return err
+	}
+	return otherwise
+}
+
+// SchemaSubspaceIn is SchemaSubspace for a caller outside a transaction: a
+// resolved schema comes from the keyspace's cache, otherwise it is resolved
+// in a transaction of the database's.
+func (k *RelationalKeyspace) SchemaSubspaceIn(ctx context.Context, db *recordlayer.FDBDatabase, dbPath, schemaName string) (subspace.Subspace, error) {
+	if ss, ok := k.resolved.Load(dbPath + "\x00" + schemaName); ok {
+		return ss.(subspace.Subspace), nil
+	}
+	out, err := db.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		return k.SchemaSubspace(rctx, dbPath, schemaName)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out.(subspace.Subspace), nil
 }
 
 // ParseDBPath breaks a URI-style database path like "/domain/db" into its

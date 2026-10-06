@@ -1402,7 +1402,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation,
 			"statement continuations are not supported: Go SQL tokens are engine-private and no resume entry point exists")
 	}
-	ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	ss, ssErr := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
 	if ssErr != nil {
 		return query.Result{}, ssErr
 	}
@@ -2800,7 +2800,7 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 	if !recordlayer.IsRecordTypeExpression(countKey) {
 		return nil
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
 	if err != nil {
 		return nil
 	}
@@ -2888,7 +2888,7 @@ func (g *cascadesGenerator) fetchIndexStateSnapshot(
 	if len(md.GetAllIndexes()) == 0 {
 		return nil, nil
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
 	if err != nil {
 		return nil, err
 	}

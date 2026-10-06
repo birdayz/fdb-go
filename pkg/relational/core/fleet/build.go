@@ -174,7 +174,7 @@ func BuildIndexes(
 	opts BuildOptions,
 ) (Result, error) {
 	return fanOut(ctx, ks, targets, opts.Options, func(ctx context.Context, t Target) (Event, error) {
-		ss, err := ks.SchemaSubspace(t.DatabaseID, t.SchemaName)
+		ss, err := ks.SchemaSubspaceIn(ctx, db, t.DatabaseID, t.SchemaName)
 		if err != nil {
 			return Event{}, err
 		}

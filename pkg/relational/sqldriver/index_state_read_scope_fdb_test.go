@@ -74,7 +74,7 @@ func TestFDB_IndexStateReadScope(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ss, err := keyspace.New(subspace.Sub()).SchemaSubspace(dbName, "S")
+			ss, err := keyspace.New(subspace.Sub()).LookupSchemaSubspace(ctx, recordlayer.NewFDBDatabase(rawDB), dbName, "S")
 			if err != nil {
 				t.Fatal(err)
 			}

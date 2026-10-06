@@ -112,7 +112,7 @@ var _ = Describe("WS-J existence policies answer as the target", func() {
 				return got
 			},
 			bareStore: func(dbPath, schema, template string) {
-				ss, err := ks.SchemaSubspace(dbPath, schema)
+				ss, err := ks.SchemaSubspaceIn(ctx, db, dbPath, schema)
 				Expect(err).NotTo(HaveOccurred())
 				_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					t, err := goCat.SchemaTemplateCatalog().LoadSchemaTemplateAtVersion(catalog.NewFDBTransaction(rtx), template, 1)

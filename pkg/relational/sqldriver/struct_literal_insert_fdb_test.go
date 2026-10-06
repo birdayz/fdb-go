@@ -58,7 +58,7 @@ func structInsertDB(t *testing.T, tag string) (*sql.DB, context.Context, subspac
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return db, ctx, subspace.Sub().Sub(tuple.Tuple{strings.ToUpper(dbPath), "MAIN"}) // the path CREATE DATABASE stored
+	return db, ctx, relationalStoreSubspace(t, strings.ToUpper(dbPath), "MAIN") // the path CREATE DATABASE stored
 }
 
 // structInsertMetaData rebuilds structInsertDDL's metadata out-of-band. The

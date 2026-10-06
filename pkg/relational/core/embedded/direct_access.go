@@ -72,7 +72,7 @@ func (s *directAccessStatement) run(ctx context.Context, tableName string, opts 
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"direct access to table %q of schema %q from a connection to schema %q", table, schemaName, c.sess.Schema)
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
 	if err != nil {
 		return nil, err
 	}

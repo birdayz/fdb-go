@@ -121,7 +121,7 @@ func collectStatisticsStep(
 		if ev, refused := ambiguousRefusal(md); refused {
 			return ev, nil
 		}
-		ss, err := ks.SchemaSubspace(t.DatabaseID, t.SchemaName)
+		ss, err := ks.SchemaSubspaceIn(ctx, db, t.DatabaseID, t.SchemaName)
 		if err != nil {
 			return Event{}, err
 		}

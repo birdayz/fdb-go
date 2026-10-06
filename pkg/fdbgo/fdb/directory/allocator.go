@@ -39,6 +39,8 @@ var (
 
 type highContentionAllocator struct {
 	counters, recent subspace.Subspace
+	// int63n draws a candidate; nil is math/rand.
+	int63n func(n int64) int64
 }
 
 func newHCA(s subspace.Subspace) highContentionAllocator {
@@ -65,7 +67,7 @@ func windowSize(start int64) int64 {
 	return 8192
 }
 
-func (hca highContentionAllocator) allocate(tr fdb.Transaction, s subspace.Subspace) (subspace.Subspace, error) {
+func (hca highContentionAllocator) allocate(tr fdb.WritableTransaction, s subspace.Subspace) (subspace.Subspace, error) {
 	for {
 		rr := tr.Snapshot().GetRange(hca.counters, fdb.RangeOptions{Limit: 1, Reverse: true})
 		kvs, e := rr.GetSliceWithError()
@@ -129,7 +131,11 @@ func (hca highContentionAllocator) allocate(tr fdb.Transaction, s subspace.Subsp
 			// full, so this should be expected to take 2 tries.  Under high
 			// contention (and when the window advances), there is an additional
 			// subsequent risk of conflict for this transaction.
-			candidate := rand.Int63n(window) + start
+			draw := rand.Int63n
+			if hca.int63n != nil {
+				draw = hca.int63n
+			}
+			candidate := draw(window) + start
 			key := hca.recent.Sub(candidate)
 
 			allocatorMutex.Lock()

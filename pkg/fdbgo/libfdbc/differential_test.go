@@ -3,6 +3,7 @@
 package libfdbc_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -286,18 +287,19 @@ func TestLibFDBC_RecordLayerDifferential(t *testing.T) {
 		}
 	})
 
-	t.Run("directory_layer_rejects_cgo_backend", func(t *testing.T) {
-		// Directory writes need concrete pure-Go transaction features (out of escape-hatch
-		// scope); with the cgo backend they must return UnsupportedBackendError, NOT panic
-		// on the concrete-type assertion.
-		_, err := directory.CreateOrOpen(cgoBackend, []string{"libfdbc_diff_dir_cgo"}, nil)
-		var ue *directory.UnsupportedBackendError
-		if !errors.As(err, &ue) {
-			t.Fatalf("directory.CreateOrOpen on cgo backend must return *UnsupportedBackendError, got %v", err)
+	t.Run("directory_layer_runs_on_both_backends", func(t *testing.T) {
+		// The directory layer runs over fdb.WritableTransaction, so both backends
+		// create directories, and each sees the other's.
+		cgoDir, err := directory.CreateOrOpen(cgoBackend, []string{"libfdbc_diff_dir_cgo"}, nil)
+		if err != nil {
+			t.Fatalf("directory.CreateOrOpen on cgo backend: %v", err)
 		}
-		// Still works on the pure-Go backend.
-		if _, err := directory.CreateOrOpen(goRaw, []string{"libfdbc_diff_dir_go"}, nil); err != nil {
-			t.Fatalf("directory.CreateOrOpen on pure-Go backend must succeed, got %v", err)
+		goDir, err := directory.CreateOrOpen(goRaw, []string{"libfdbc_diff_dir_cgo"}, nil)
+		if err != nil {
+			t.Fatalf("directory.CreateOrOpen on pure-Go backend: %v", err)
+		}
+		if !bytes.Equal(cgoDir.Bytes(), goDir.Bytes()) {
+			t.Fatalf("the backends opened different prefixes: %x vs %x", cgoDir.Bytes(), goDir.Bytes())
 		}
 	})
 

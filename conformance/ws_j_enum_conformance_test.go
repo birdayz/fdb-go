@@ -18,6 +18,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/keyspace"
 )
@@ -117,7 +118,7 @@ var _ = Describe("RFC-257 WS-J enum columns written and read by both engines", f
 			Expect(err).NotTo(HaveOccurred(), "Go: %s", r)
 		}
 		storeKVs := func(prefix tuple.Tuple, withValue bool) []string {
-			ss, err := keyspace.New(subspace.Sub()).SchemaSubspace(goDBPath, "S")
+			ss, err := keyspace.New(subspace.Sub()).LookupSchemaSubspace(ctx, recordlayer.NewFDBDatabase(sharedDB), goDBPath, "S")
 			Expect(err).NotTo(HaveOccurred())
 			rng := ss.Sub(prefix...)
 			var out []string

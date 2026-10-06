@@ -1,7 +1,6 @@
 package fleet
 
 import (
-	"bytes"
 	"errors"
 	"testing"
 
@@ -29,41 +28,6 @@ func TestGuardNotCatalogRefusesSystemDatabase(t *testing.T) {
 	var cte *CatalogTargetError
 	if !errors.As(err, &cte) {
 		t.Fatalf("want *CatalogTargetError, got %T: %v", err, err)
-	}
-}
-
-// TestGuardNotCatalogSubspaceCheckCannotCatchTheCatalogSchema is a NEGATIVE
-// result, pinned because it is the reason the name check exists at all.
-//
-// The frl CLI guards writes with a byte-prefix overlap test against
-// CatalogSubspace. That test CANNOT fire for the catalog's own schema row,
-// because the two keys have different shapes: CatalogSubspace is the 3-tuple
-// ("__SYS","__SYS","CATALOG") while any schema store is the 2-tuple
-// (dbPath, schemaName) — here ("/__SYS","CATALOG"). Different first element,
-// different arity, no shared prefix.
-//
-// If this test ever goes red, the keyspace layout has changed so that the
-// subspace check DOES cover the catalog schema, and the name check may be
-// reconsidered. Until then, deleting the name check silently re-arms
-// fan-out-writes-the-catalog.
-func TestGuardNotCatalogSubspaceCheckCannotCatchTheCatalogSchema(t *testing.T) {
-	t.Parallel()
-	ks := keyspace.New(subspace.Sub())
-
-	catalogBytes := ks.CatalogSubspace().Bytes()
-	schemaSS, err := ks.SchemaSubspace(catalog.SysDatabaseID, catalog.CatalogConstant)
-	if err != nil {
-		t.Fatalf("SchemaSubspace: %v", err)
-	}
-	target := schemaSS.Bytes()
-
-	if bytes.HasPrefix(target, catalogBytes) || bytes.HasPrefix(catalogBytes, target) {
-		t.Fatalf("the catalog subspace and the (%s,%s) schema subspace NOW overlap\n"+
-			"  catalog: %q\n  schema:  %q\n"+
-			"The subspace-overlap check alone would now catch the catalog schema. That is a "+
-			"keyspace-layout change, not a bug in this test — re-evaluate whether "+
-			"GuardNotCatalog still needs its separate name check.",
-			catalog.SysDatabaseID, catalog.CatalogConstant, catalogBytes, target)
 	}
 }
 

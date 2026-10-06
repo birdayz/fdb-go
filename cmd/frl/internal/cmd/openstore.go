@@ -214,7 +214,11 @@ func (t *storeTarget) describe() string {
 // subspace resolves the store's FDB subspace per the addressing mode.
 func (t *storeTarget) subspace() (subspace.Subspace, error) {
 	if t.relational() {
-		return relationalStoreSubspace(t.database, t.schema)
+		db, err := openDatabase(t.clusterFile())
+		if err != nil {
+			return nil, err
+		}
+		return relationalStoreSubspace(context.Background(), recordlayer.NewFDBDatabase(db), t.database, t.schema)
 	}
 	if t.keyspaceTuple != nil {
 		return subspaceFromTuple(t.keyspaceTuple), nil

@@ -373,7 +373,7 @@ func TestFDB_FleetBuildIndexesAcrossEveryTenant(t *testing.T) {
 		if err != nil {
 			t.Fatalf("pinned metadata %s: %v", tg, err)
 		}
-		ss, err := h.ks.SchemaSubspace(tg.DatabaseID, tg.SchemaName)
+		ss, err := h.ks.SchemaSubspaceIn(ctx, h.db, tg.DatabaseID, tg.SchemaName)
 		if err != nil {
 			t.Fatalf("subspace %s: %v", tg, err)
 		}

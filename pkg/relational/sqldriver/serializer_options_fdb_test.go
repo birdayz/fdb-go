@@ -185,7 +185,7 @@ func TestFDB_FleetBuildsAnEncryptedTenantThroughItsSerializer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ss, err := h.ks.SchemaSubspace(targets[0].DatabaseID, targets[0].SchemaName)
+	ss, err := h.ks.SchemaSubspaceIn(ctx, h.db, targets[0].DatabaseID, targets[0].SchemaName)
 	if err != nil {
 		t.Fatal(err)
 	}

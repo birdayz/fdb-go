@@ -362,12 +362,12 @@ func TestFDB_Carry_DroppedIndexBecomesAFormerIndex(t *testing.T) {
 // under the subspace key v1 stored for it (its name).
 func carryIndexEntries(t *testing.T, h *fleetHarness, dbPath, schema, index string) int {
 	t.Helper()
-	ss, err := h.ks.SchemaSubspace(dbPath, schema)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	ss, err := h.ks.SchemaSubspaceIn(ctx, h.db, dbPath, schema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
 	n, err := h.db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		begin, end := ss.Sub(int64(recordlayer.IndexKey), index).FDBRangeKeys()
 		kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()

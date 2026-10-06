@@ -148,12 +148,12 @@ func (e *restoreEnv) openStore(db, schema string, md []byte, fn func(*recordlaye
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	ss, err := e.ks.SchemaSubspace(db, schema)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ss, err := e.ks.SchemaSubspaceIn(ctx, testFDB, db, schema)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	if _, err := testFDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().SetContext(rctx).SetMetaDataProvider(rmd).SetSubspace(ss).CreateOrOpen()
 		if err != nil {
