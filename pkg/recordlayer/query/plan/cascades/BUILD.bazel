@@ -288,6 +288,7 @@ go_test(
         "final_member_invariant_test.go",
         "fk_chain_cardinality_test.go",
         "fold_placeholder_bindings_test.go",
+        "fold_prune_negative_control_test.go",
         "fused_max_match_fuzz_test.go",
         "fuzz_cte_test.go",
         "gathered_explode_owner_edge_test.go",
@@ -1185,6 +1186,7 @@ go_test(
         "rule_constant_folding.go",
         "rule_constant_folding_test.go",
         "constraint_dependencies_test.go",
+        "fold_prune_negative_control_test.go",
     ],
     deps = [
         "//gen",

@@ -233,8 +233,12 @@ Never mark a whole workstream complete because one of its subitems passed.
     (Go keeps the duplicates; the fold wins on the count, added to the tie
     pins). Plan-only difference: Java scans T_N `<,>` under `FILTER false`,
     Go scans T.
-  - Still open in (j): the negative-control unit test (REWRITING keeps the
-    fold, PLANNING alone would prefer the unfolded probe); the simplifier
+  - (j) negative control: `TestFoldPrune_NegativeControl` (cascades) ranks
+    the original and the fold directly. REWRITING keeps the fold; PLANNING
+    over the implemented plans prefers the unfolded probe for the
+    primary-key, primary-key IN, UNIQUE-index (provable cardinality 1) and
+    union-leg groups. So the REWRITING prune decides these folds.
+  - Still open in (j): the simplifier
     unit tests per head class and set; the EffectiveConstant shape table;
     the NOT FALSE head fixpoint test; `rejectsNull` re-derivation.
   Done: LOG_QUERY (statement and connection) sets `PlanGenerationInfo.LogQuery`
