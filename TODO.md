@@ -795,7 +795,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   `(count, tuple.UUID v4)`, Java's StorageHelpers.appendSampledVector (was a
   16-byte string element); a byte-string entry is still consumed
   (vector_index_test.go "writes a SAMPLES key", mutation-checked). GuardiANN
-  already wrote v4 tuple UUIDs.
+  already wrote v4 tuple UUIDs. Search-free continuation replay done: a
+  resumed single-partition scan searched (and now would have locked) before
+  replaying its continuation's page; it replays with no search and no lock,
+  as Java's scanSinglePartition (the multi-partition cursor already did;
+  vector_partition_lock_fdb_test.go, mutation-checked). Fetch, cardinality
+  and orderByDistance exist on GuardiANN's centroid HNSW
+  (guardiann_centroids.go); its comparator now orders by Double.compare then
+  key (`TestCentroidNodeOrder_IsDoubleCompareThenKey`, mutation-checked).
 - [ ] Distinguishing pins for codecs, evaluator, collapse, bounce, reassignment,
   task counts and merge locks.
 - [ ] Runner: unified bounded attempts, per-owner retries, commit ownership and

@@ -66,6 +66,32 @@ var _ = Describe("Vector partition locks", func() {
 				store.ReleaseWriteLock(partition1)
 				Eventually(same, 5*time.Second).Should(Receive(BeNil()), "%s of partition 1", name)
 			}
+
+			// A resumed scan replays its continuation's materialized page with no
+			// search and so no lock (Java's scanSinglePartition): it runs beside
+			// the partition's writer and returns the rest of the page.
+			first := store.ScanVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)}, []float64{15}, 10, 100, nil, ForwardScan())
+			r, err := first.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r.HasNext()).To(BeTrue())
+			cont, err := r.GetContinuation().ToBytes()
+			Expect(err).NotTo(HaveOccurred())
+			store.AcquireWriteLock(partition1)
+			resumed := make(chan int, 1)
+			go func() {
+				cursor := store.ScanVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)}, []float64{15}, 10, 100, cont, ForwardScan())
+				n := 0
+				for {
+					r, err := cursor.OnNext(ctx)
+					if err != nil || !r.HasNext() {
+						break
+					}
+					n++
+				}
+				resumed <- n
+			}()
+			Eventually(resumed, 5*time.Second).Should(Receive(Equal(1)), "the resumed scan waited for the partition's writer or lost its page")
+			store.ReleaseWriteLock(partition1)
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

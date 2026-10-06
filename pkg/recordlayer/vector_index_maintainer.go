@@ -491,9 +491,15 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 		return m.newVectorMultiPartitionCursor(prefix, queryVector, k, opts, pSize, continuation, scanProperties)
 	}
 
-	entries, err := m.searchOnePartition(m.readTx(scanProperties), prefix, queryVector, k, opts)
-	if err != nil {
-		return &errorCursor[*IndexEntry]{err: err}
+	// A continuation carries the whole materialized page: Java's
+	// scanSinglePartition replays it with no search and no lock, so a resumed
+	// scan reads nothing of the graph.
+	var entries []*IndexEntry
+	if len(continuation) == 0 {
+		var err error
+		if entries, err = m.searchOnePartition(m.readTx(scanProperties), prefix, queryVector, k, opts); err != nil {
+			return &errorCursor[*IndexEntry]{err: err}
+		}
 	}
 	cursor, err := m.newVectorSearchCursor(entries, continuation, prefix)
 	if err != nil {
