@@ -2121,7 +2121,7 @@ var _ = Describe("WS-E target oracle v11", func() {
 		goClusterFile := writeClusterFileToTemp(clusterFile)
 		defer func() { _ = os.Remove(goClusterFile) }()
 		suffix := strings.ReplaceAll(uuid.New().String()[:8], "-", "")
-		goTemplate, goDB, goSchema := "WSE11_GO_"+suffix, "/WSE11_GO_"+suffix, "S_"+suffix
+		goTemplate, goDB, goSchema := "WSE11_GO_"+suffix, "/TEST/WSE11_GO_"+suffix, "S_"+suffix
 		sysDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", goClusterFile))
 		Expect(err).NotTo(HaveOccurred())
 		defer sysDB.Close()
@@ -2286,7 +2286,7 @@ var _ = Describe("WS-E target oracle v12", func() {
 		goClusterFile := writeClusterFileToTemp(clusterFile)
 		defer func() { _ = os.Remove(goClusterFile) }()
 		suffix := strings.ReplaceAll(uuid.New().String()[:8], "-", "")
-		goTemplate, goDB, goSchema := "WSE12_GO_"+suffix, "/WSE12_GO_"+suffix, "S_"+suffix
+		goTemplate, goDB, goSchema := "WSE12_GO_"+suffix, "/TEST/WSE12_GO_"+suffix, "S_"+suffix
 		sysDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", goClusterFile))
 		Expect(err).NotTo(HaveOccurred())
 		defer sysDB.Close()
@@ -2604,7 +2604,7 @@ var _ = Describe("WS-E target oracle v12 cross-engine NaN", func() {
 		goClusterFile := writeClusterFileToTemp(clusterFile)
 		defer func() { _ = os.Remove(goClusterFile) }()
 		suffix := strings.ReplaceAll(uuid.New().String()[:8], "-", "")
-		goTemplate, goDB, goSchema := "WSE12X_GO_"+suffix, "/WSE12X_GO_"+suffix, "S_"+suffix
+		goTemplate, goDB, goSchema := "WSE12X_GO_"+suffix, "/TEST/WSE12X_GO_"+suffix, "S_"+suffix
 		sysDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", goClusterFile))
 		Expect(err).NotTo(HaveOccurred())
 		defer sysDB.Close()
