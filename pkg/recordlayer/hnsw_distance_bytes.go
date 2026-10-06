@@ -110,16 +110,15 @@ func vectorDistanceFromBytes(query []float64, stored []byte, metric VectorMetric
 }
 
 // cosineFromAccums finishes the cosine-distance computation from the running
-// dot product and squared norms — identical clamping to cosineDistance.
+// dot product and squared norms, in Java's CosineMetric order: a zero norm is
+// +Inf, then a non-finite norm or dot product is NaN; no clamp.
 func cosineFromAccums(dot, normA, normB float64) float64 {
 	if normA == 0 || normB == 0 {
-		return 1.0
+		return math.Inf(1)
 	}
-	sim := dot / (math.Sqrt(normA) * math.Sqrt(normB))
-	if sim > 1.0 {
-		sim = 1.0
-	} else if sim < -1.0 {
-		sim = -1.0
+	if math.IsInf(normA, 0) || math.IsNaN(normA) || math.IsInf(normB, 0) || math.IsNaN(normB) ||
+		math.IsInf(dot, 0) || math.IsNaN(dot) {
+		return math.NaN()
 	}
-	return 1.0 - sim
+	return 1.0 - dot/(math.Sqrt(normA)*math.Sqrt(normB))
 }

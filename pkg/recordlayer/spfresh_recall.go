@@ -171,7 +171,7 @@ func MeasureSPFreshRecall(ctx context.Context, store *FDBRecordStore, indexName 
 		// metric, smaller = nearer), then select the k-th smallest by sorting
 		// the float slice — no vectorDistance call inside the sort comparator.
 		for i := range corpus {
-			dists[i] = vectorDistance(query, corpus[i].vec, config.Metric)
+			dists[i] = spfreshVectorDistance(query, corpus[i].vec, config.Metric)
 		}
 		sort.Float64s(dists)
 		kthDist := dists[k-1]
@@ -193,7 +193,7 @@ func MeasureSPFreshRecall(ctx context.Context, store *FDBRecordStore, indexName 
 			if !ok {
 				continue // result is not a live indexed record (orphan) — not a true hit
 			}
-			if vectorDistance(query, v, config.Metric) <= kthDist+tol {
+			if spfreshVectorDistance(query, v, config.Metric) <= kthDist+tol {
 				hits++
 			}
 		}

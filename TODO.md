@@ -773,7 +773,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
   covering/rank results, search-free continuation replay, operation-local caches,
   partition locks, cosine zero/clamp, sample-UUID closure, option catalog/identity.
-  efSearch defaults and bounded-beam use already have fixes.
+  efSearch defaults and bounded-beam use already have fixes. Cosine done
+  (2026-10-06): the HNSW/GuardiANN cosine is Java's CosineMetric (zero vector
+  +Inf, non-finite NaN, no clamp) and HNSW orders distances by Double.compare
+  (`hnsw_cosine_java_test.go`, mutation-checked); SPFresh keeps its own
+  clamped cosine (`spfreshVectorDistance`), as the design requires.
 - [ ] Distinguishing pins for codecs, evaluator, collapse, bounce, reassignment,
   task counts and merge locks.
 - [ ] Runner: unified bounded attempts, per-owner retries, commit ownership and

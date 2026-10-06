@@ -1317,7 +1317,7 @@ func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, e
 				continue
 			}
 			dist := g.computeDistance(query, r.vecBytes)
-			if dist < bestDist {
+			if hnswDistLess(dist, bestDist) {
 				bestDist = dist
 				bestPK, err = decodeNestedPK(r.span)
 				if err != nil {
@@ -1395,7 +1395,7 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 
 			// Early termination: if closest unprocessed candidate is farther
 			// than our worst result, all remaining candidates are too.
-			if len(results) >= ef && closest.dist > results[len(results)-1].dist {
+			if len(results) >= ef && hnswDistLess(results[len(results)-1].dist, closest.dist) {
 				done = true
 				break
 			}
@@ -1440,13 +1440,13 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 			}
 			dist := g.computeDistance(query, r.vecBytes)
 
-			if len(results) < ef || dist < results[len(results)-1].dist {
+			if len(results) < ef || hnswDistLess(dist, results[len(results)-1].dist) {
 				// r.spanStr is already computed by loadNodeLayerBatch — no double Pack().
 				heap.Push(candidates, distItem{pkSpan: r.span, dist: dist, spanStr: r.spanStr})
 				// Binary-search insertion into sorted results (O(log n) find + O(n) shift).
 				c := hnswCandidate{pkSpan: r.span, vector: hnswVector{data: r.vecBytes}, dist: dist}
 				pos := sort.Search(len(results), func(i int) bool {
-					return results[i].dist > dist
+					return hnswDistLess(dist, results[i].dist)
 				})
 				results = append(results, hnswCandidate{})
 				copy(results[pos+1:], results[pos:])
@@ -1474,7 +1474,7 @@ func (g *hnswGraph) selectNeighbors(candidates []hnswCandidate, maxConn int) []h
 
 	// Sort candidates by distance (ascending).
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].dist < candidates[j].dist
+		return hnswDistLess(candidates[i].dist, candidates[j].dist)
 	})
 
 	// Only apply the heuristic for metrics satisfying triangle inequality.
@@ -2947,7 +2947,13 @@ type distItem struct {
 }
 
 func (h distHeap) Len() int           { return len(h) }
-func (h distHeap) Less(i, j int) bool { return h[i].dist < h[j].dist }
+func (h distHeap) Less(i, j int) bool { return hnswDistLess(h[i].dist, h[j].dist) }
 func (h distHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 func (h *distHeap) Push(x any)        { *h = append(*h, x.(distItem)) }
 func (h *distHeap) Pop() any          { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
+
+// hnswDistLess orders distances as Java's NodeReferenceWithDistance comparator
+// does (Comparator.comparing over a boxed Double, i.e. Double.compare): a NaN
+// distance, which a cosine over non-finite components yields, is the farthest,
+// and -0.0 precedes 0.0.
+func hnswDistLess(a, b float64) bool { return compareFloat64Java(a, b) < 0 }

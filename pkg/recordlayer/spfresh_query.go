@@ -795,5 +795,5 @@ func (s *spfreshSearcher) resolveForward(tx fdb.ReadTransaction, cellID, childA,
 
 // spfreshMetricDistance computes the exact metric distance for re-ranking.
 func spfreshMetricDistance(metric VectorMetric, a, b []float64) float64 {
-	return vectorDistance(a, b, metric)
+	return spfreshVectorDistance(a, b, metric)
 }

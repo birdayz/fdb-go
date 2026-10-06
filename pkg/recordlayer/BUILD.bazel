@@ -301,6 +301,7 @@ go_test(
         "guardiann_unsplittable_test.go",
         "guardiann_vectors_test.go",
         "helpers_coverage_test.go",
+        "hnsw_cosine_java_test.go",
         "hnsw_distance_bytes_test.go",
         "hnsw_ef_search_fdb_test.go",
         "hnsw_iterator_error_test.go",

@@ -106,8 +106,37 @@ func euclideanSquareDistance(a, b []float64) float64 {
 	return sum
 }
 
-// cosineDistance computes 1 - cosine_similarity.
+// cosineDistance computes 1 - cosine_similarity, as Java's
+// MetricDefinition.CosineMetric.distance does: a zero vector is +Inf from
+// every vector, a non-finite norm or dot product is NaN, and the similarity
+// is not clamped (rounding may put it just outside [-1, 1]).
 func cosineDistance(a, b []float64) float64 {
+	dot := 0.0
+	normA := 0.0
+	normB := 0.0
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		dot += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
+	}
+	return cosineFromAccums(dot, normA, normB)
+}
+
+// spfreshVectorDistance is SPFresh's metric route, which keeps its own cosine
+// (a zero vector at distance 1, the similarity clamped to [-1, 1]); SPFresh
+// is a Go engine with no Java counterpart (RFC-257 WS-D section 2).
+func spfreshVectorDistance(a, b []float64, metric VectorMetric) float64 {
+	if metric == VectorMetricCosine {
+		return spfreshCosineDistance(a, b)
+	}
+	return vectorDistance(a, b, metric)
+}
+
+func spfreshCosineDistance(a, b []float64) float64 {
 	dot := 0.0
 	normA := 0.0
 	normB := 0.0

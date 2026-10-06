@@ -4,6 +4,11 @@ Read `CLAUDE.md` for the project rules; it is the shared engineering guide.
 
 ## Efficient validation
 
+**Never run `go test`.** Not for a package, not for a single test, not for a
+quick check, not with `-run`. Every test run goes through Bazel: `just test`,
+`just test-full`, or `bazelisk test` on a target. This holds for focused
+debugging too; use Bazel's `--test_arg`/`--test_filter` when you must narrow.
+
 **Run tests with `just test`. Do not pick targets yourself** with `bazelisk test
 //pkg/...:foo_test`, `--test_filter`, or `go test`. Bazel's cache already
 reruns exactly the targets your change affects, dependents included, and

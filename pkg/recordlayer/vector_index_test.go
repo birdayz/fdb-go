@@ -58,9 +58,9 @@ var _ = Describe("Distance Metrics", func() {
 		neg := []float64{-1.0, -2.0, -3.0}
 		Expect(cosineDistance(a, neg)).To(BeNumerically("~", 2.0, 1e-9))
 
-		// Zero vector returns 1.0 (special case).
+		// A zero vector is +Inf from every vector (Java's CosineMetric).
 		zero := []float64{0.0, 0.0}
-		Expect(cosineDistance(zero, x)).To(BeNumerically("~", 1.0, 1e-9))
+		Expect(math.IsInf(cosineDistance(zero, x), 1)).To(BeTrue())
 	})
 
 	It("inner product distance is negative dot product", func() {
@@ -2810,8 +2810,8 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		// Euclidean-square: 3^2 + 4^2 = 25 (no sqrt)
 		Expect(vectorDistance(a, b, VectorMetricEuclideanSquare)).To(BeNumerically("~", 25.0, 1e-9))
 
-		// Cosine: 1 - dot/(normA*normB). dot=0 when b=0,0 -> special case returns 1.
-		Expect(vectorDistance(a, b, VectorMetricCosine)).To(BeNumerically("~", 1.0, 1e-9))
+		// Cosine: 1 - dot/(normA*normB); b is a zero vector, +Inf (Java's CosineMetric).
+		Expect(math.IsInf(vectorDistance(a, b, VectorMetricCosine), 1)).To(BeTrue())
 
 		// Inner product: -dot = -(3*0 + 4*0) = 0
 		Expect(vectorDistance(a, b, VectorMetricInnerProduct)).To(BeNumerically("~", 0.0, 1e-9))
@@ -3415,7 +3415,10 @@ var _ = Describe("HNSW High-Dimensional Vectors", func() {
 	})
 })
 
-var _ = Describe("Cosine Distance Clamping", func() {
+// SPFresh's own cosine clamps the similarity to [-1, 1]; the HNSW/GuardiANN
+// cosine is Java's CosineMetric, which does not (hnsw_cosine_java_test.go).
+var _ = Describe("SPFresh Cosine Distance Clamping", func() {
+	cosineDistance := spfreshCosineDistance
 	It("cosine distance is non-negative even for identical vectors", func() {
 		v := []float64{1.0, 0.0, 0.0}
 		dist := cosineDistance(v, v)
