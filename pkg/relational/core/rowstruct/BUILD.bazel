@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "rowstruct",
     srcs = [
+        "builder.go",
         "ordinal.go",
         "rowstruct.go",
     ],
@@ -15,6 +16,7 @@ go_library(
         "//pkg/relational/api",
         "//pkg/relational/core/functions",
         "//pkg/relational/core/metadata",
+        "@com_github_google_uuid//:uuid",
         "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )

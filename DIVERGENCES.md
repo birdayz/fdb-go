@@ -942,6 +942,7 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | Symbolic logical operators (`&&`, `\|\|`) | `SqlFunctionCatalogImpl` only registers `and`/`or`; symbolic forms throw UNSUPPORTED_QUERY | Evaluated as AND/OR |
 | `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; throws UNSUPPORTED_QUERY | SQL-standard XOR with NULL propagation |
 | Scalar subqueries in expressions | Grammar has no `subqueryExpressionAtom` (parse error) | Translated via `ScalarSubqueryValue` (`DecorrelateValuesRule` covers the other values-box patterns) |
+| Direct-API insert of a bare `UUID ARRAY` | `RecordTypeTable.toDynamicMessage` (4.14.2.0) converts a UUID attribute (#4243) but its repeated-field path calls `addRepeatedField` with the unconverted `java.util.UUID`, which protobuf refuses for the UUID message field (read from source, not measured) | Each element is written as the two-word UUID message (`embedded/direct_access.go` `directFieldValue`); UUIDs inside structs in an array match Java |
 
 Go-only plan types: `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryValuesPlan`, `RecordQueryNestedLoopJoinPlan`. `RecordQueryMergeSortUnionPlan` is Go's collapsed ordered-union counterpart, not a semantic extension; its `removeDuplicates=false` mode is an extension. Go also has a keyless concat shape named `RecordQueryUnionPlan`; Java's same-named class is keyed and ordered, so the Go shape—not the class name—is the extension.
 

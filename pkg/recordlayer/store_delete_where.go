@@ -105,8 +105,8 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 				// the clear to a single type. Matches Java's
 				// canDeleteWhereForIndexOnStoredTypes which throws
 				// "Index X applies to more record types than just Y".
-				return fmt.Errorf("deleteRecordsWhere: index %q applies to more record types than just the target; "+
-					"add RecordTypeKey() prefix to enable scoped delete", idx.Name)
+				return &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: index %q applies to more record types than just the target; "+
+					"add RecordTypeKey() prefix to enable scoped delete", idx.Name)}
 			}
 
 			if len(indexTypeNames) > 1 {
@@ -116,7 +116,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 				// canDeleteWhereForIndexOnStoredTypes.
 				idxPrefix, ok = computeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
 				if !ok {
-					return fmt.Errorf("deleteRecordsWhere: multi-type index %q cannot be cleared with prefix %v", idx.Name, prefix)
+					return &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: multi-type index %q cannot be cleared with prefix %v", idx.Name, prefix)}
 				}
 			} else {
 				// Single-type index. Clearing ALL of it is correct ONLY when the
@@ -136,9 +136,9 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 				// from every query served by that index.
 				idxPrefix, pkOffset, ok = computeSingleTypeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
 				if !ok {
-					return fmt.Errorf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
+					return &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
 						"the prefix does not match the index's leading key expression columns, so the "+
-						"clear cannot be scoped to the deleted records", idx.Name, prefix)
+						"clear cannot be scoped to the deleted records", idx.Name, prefix)}
 				}
 			}
 		} else {
@@ -146,8 +146,8 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 			// expression columns so we can do a range clear.
 			idxPrefix, ok = computeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
 			if !ok {
-				return fmt.Errorf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
-					"leading index expression does not match PK prefix", idx.Name, prefix)
+				return &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
+					"leading index expression does not match PK prefix", idx.Name, prefix)}
 			}
 		}
 

@@ -12,6 +12,7 @@ go_library(
         "ddl.go",
         "ddl_normalizer.go",
         "decimal_constants.go",
+        "direct_access.go",
         "dml_returning.go",
         "execution_logging.go",
         "index_onsource.go",
@@ -89,6 +90,7 @@ go_library(
         "@com_github_google_uuid//:uuid",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/dynamicpb",
     ],
 )
 
@@ -155,6 +157,7 @@ go_test(
         "derived_outer_join_leg_type_test.go",
         "derived_source_exists_plan_test.go",
         "derived_unnest_test.go",
+        "direct_access_test.go",
         "distinct_scratch_retry_charge_test.go",
         "distinct_scratch_wiring_test.go",
         "dml_pk_dedup_plan_test.go",
@@ -519,6 +522,8 @@ go_test(
         "aggregate_ungrouped_candidate_test.go",
         "fold_tie_pins_test.go",
         "left_join_in_partition_plan_test.go",
+        "direct_access.go",
+        "direct_access_test.go",
     ],
     deps = [
         "//gen",
@@ -551,6 +556,7 @@ go_test(
         "//pkg/relational/core/query/expr",
         "//pkg/relational/core/query/logical",
         "//pkg/relational/core/query/semantic",
+        "//pkg/relational/core/rowstruct",
         "//pkg/relational/core/session",
         "//pkg/relational/internal/queryfixtures",
         "//pkg/simfdb",

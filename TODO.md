@@ -733,7 +733,17 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## 6. WS-K — harness and relational entry points
 
-- [ ] Direct-API Struct inserts: UUID scalar/nested/array and nested unique index.
+- [x] Direct-API Struct inserts: UUID scalar/nested/array and nested unique index.
+  Go's `api.DirectAccessStatement` had no implementation; it is now ported
+  (`embedded/direct_access.go`: insert, get, scan, delete, delete-range over
+  Java's KeyBuilder and `toDynamicMessage` with the #4243 UUID case;
+  `rowstruct.StructBuilder`/`ArrayBuilder`). Pinned by
+  `TestFDB_DirectAccessNestedUUIDUniqueIndex` (Java's
+  `insertToArrayNestedUuidFieldMarkedUnique`) and the round-trip test.
+  Limitations: the connection's own schema only, no INDEX_HINT, scans are
+  materialized and do not resume from a continuation. A bare UUID array is
+  written (Java's repeated-field path cannot write it; see DIVERGENCES, Go-only
+  extensions).
 - [ ] JSON descriptor FieldOptions import; recursive result metadata in the
   corpus runner; setup version gating; typed INDEX_FETCH_METHOD.
 - [ ] Relational queued-state plumbing; SQL vector-option and preference-cache pins.

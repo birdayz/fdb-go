@@ -205,6 +205,14 @@ func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 	return convertScalarProtoValue(fd, val)
 }
 
+// ConvertElementToProtoValue converts one non-repeated value against fd, an
+// array's element field included: the scalar lanes ConvertToProtoValue applies
+// to every element of an array (UUID, enum by name, a STRUCT as its field map),
+// without its array arm, which reads fd as the array itself.
+func ConvertElementToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect.Value, error) {
+	return convertScalarProtoValue(fd, val)
+}
+
 // appendArrayElements converts each evaluated array-literal element through
 // the scalar lanes against the (effective) repeated field descriptor.
 func appendArrayElements(list protoreflect.List, elemFD protoreflect.FieldDescriptor, elems []any) error {
