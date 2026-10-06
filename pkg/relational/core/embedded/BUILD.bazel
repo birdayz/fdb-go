@@ -170,6 +170,7 @@ go_test(
         "explain_no_silent_degrade_test.go",
         "float_order_by_sort_retention_test.go",
         "float_ordering_claim_plan_test.go",
+        "fold_tie_pins_test.go",
         "from_item_classification_test.go",
         "fromless_metadata_test.go",
         "group_key_pull_up_guard_test.go",
@@ -515,6 +516,7 @@ go_test(
         "fromless_metadata_test.go",
         "in_union_partition_test.go",
         "aggregate_ungrouped_candidate_test.go",
+        "fold_tie_pins_test.go",
     ],
     deps = [
         "//gen",

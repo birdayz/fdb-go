@@ -203,8 +203,27 @@ Never mark a whole workstream complete because one of its subitems passed.
     unchanged; the WS-E oracle passes with no Go pin moved. The dense
     predicate-level map is WS-F's (Finding 6-followup), and the hash rung stays
     Go's `deepHash` (no `semanticHashCode` port).
-  - Still open: (g)/(j) the per-row tie pins (two schemas, 20 cold plans, the
-    deciding rung, both hash-inversion mutation runs).
+  - (g)/(j) tie pins: `TestFoldTiePins_DecidingRung` (embedded, fast lane)
+    plans each tie row 20 times cold over the v5 and v4 schemas and asserts
+    the plan, the kept member's predicates and the deciding rung. Mutation
+    runs: inverting REWRITING's `deepHash` flips the six rewriting-hash rows
+    (the five div0 rows keep `NULL = 1`, the NOT row keeps `NOT (FALSE)`) and
+    nothing else; inverting PLANNING's `costExprHash` flips only
+    `in_cast_null_join_inner_empty` (NLJ sides swap). Both redden the test.
+    `null_strict_div0_cast_null_is_null_where` and the COALESCE-under-AND row
+    are decided on the conjunct count.
+    Go-only: the walker collapses arithmetic over a typed NULL and folds IS
+    [NOT] NULL over a NOT NULL constant (`expr.ResolveArithmetic`,
+    `ResolveIsNull`). So the div0 pair is `NULL = 1` vs `UNKNOWN`, both
+    answering no rows, and the hash picks the plan, not the answer; and
+    `COALESCE(1 / 0, 5) IS NULL` reaches the memo already `FALSE`. Measured
+    with both folds removed: the pairs become Java's, Go's hash then keeps
+    the unfolded `COALESCE(1 / 0, 5) IS NULL` (22012 where the target
+    answers `[]`), and six projections lose their NULL collapse (arithmetic
+    yaml #14-17 and #19, simplification_regime #25), because Go has no
+    DEFAULT-set simplify of result values at pull-up (Expression.java:
+    243-245). The walk-time folds stay until that pull-up simplify is
+    ported.
   Done: LOG_QUERY (statement and connection) sets `PlanGenerationInfo.LogQuery`
   (`TestPlanLogging_LogQueryFlag`). Literal decoding and the decorated-literal
   refusals were already implemented and now have a fast-lane pin
