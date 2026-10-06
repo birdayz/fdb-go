@@ -716,19 +716,21 @@ func aggregateVectors(samples []aggregatedVector) (aggregatedVector, error) {
 	return aggregatedVector{count: count, vec: sum}, nil
 }
 
-// appendSampledVector writes one SAMPLES entry. Key: samplesSubspace.Pack(count, uniqueBytes);
-// value: Tuple{serializeVector(vec)}. Matches Java StorageAdapter.appendSampledVector — the
-// per-entry count is in the key, the (raw) vector in the value. The unique key element is random
-// (Java uses UUID.randomUUID); it is ignored on read, so any unique value works and does not
-// affect the order-independent aggregate.
+// appendSampledVector writes one SAMPLES entry. Key: samplesSubspace.Pack(count, uuid);
+// value: Tuple{serializeVector(vec)}. Matches Java StorageHelpers.appendSampledVector — the
+// per-entry count is in the key, the (raw) vector in the value, and the unique element is a tuple
+// UUID, Java's UUID.randomUUID (version 4, IETF variant). It is ignored on read, so entries an
+// older Go wrote with a byte-string element stay consumable.
 func (s *hnswStorage) appendSampledVector(tx fdb.WritableTransaction, count int, vec []float64) error {
-	var uniq [16]byte
+	var uniq tuple.UUID
 	// Draw the unique key element through the DST randomness seam (crypto/rand
 	// in production, the seeded source in simulation) so a run is reproducible.
 	if _, err := s.env.Read(uniq[:]); err != nil {
 		return fmt.Errorf("hnsw stats: sample key entropy: %w", err)
 	}
-	key := s.samplesSubspace.Pack(tuple.Tuple{int64(count), uniq[:]})
+	uniq[6] = uniq[6]&0x0f | 0x40 // version 4
+	uniq[8] = uniq[8]&0x3f | 0x80 // IETF variant
+	key := s.samplesSubspace.Pack(tuple.Tuple{int64(count), uniq})
 	value := tuple.Tuple{serializeVector(vec)}.Pack()
 	tx.Set(fdb.Key(key), value)
 	return nil

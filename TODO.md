@@ -791,7 +791,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   catalog (aliases, alias conflicts, Java parsing) was already ported
   (`hnsw_options.go`); a plan carries only Java's two SQL vector options
   (RowNumberValue.SUPPORTED_OPTIONS: ef_search, return_vectors), both in the
-  continuation salt.
+  continuation salt. Sample-UUID closure done: HNSW SAMPLES keys are
+  `(count, tuple.UUID v4)`, Java's StorageHelpers.appendSampledVector (was a
+  16-byte string element); a byte-string entry is still consumed
+  (vector_index_test.go "writes a SAMPLES key", mutation-checked). GuardiANN
+  already wrote v4 tuple UUIDs.
 - [ ] Distinguishing pins for codecs, evaluator, collapse, bounce, reassignment,
   task counts and merge locks.
 - [ ] Runner: unified bounded attempts, per-owner retries, commit ownership and

@@ -1586,6 +1586,41 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("writes a SAMPLES key as (count, version-4 tuple UUID) and still consumes a byte-string one", func() {
+		// Java StorageHelpers.appendSampledVector: Tuple.from(partialCount,
+		// UUID.randomUUID()). An older Go wrote a 16-byte string there; the
+		// element is ignored on read, so those entries are still consumed.
+		config := HNSWConfig{NumDimensions: 2, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, EfRepair: 64, Metric: VectorMetricEuclidean}
+		storage := newHNSWStorage(specSubspace().Sub("hnsw-sample-uuid"), config)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(storage.appendSampledVector(tx, 3, []float64{1, 2})).To(Succeed())
+			tx.Set(fdb.Key(storage.samplesSubspace.Pack(tuple.Tuple{int64(2), make([]byte, 16)})),
+				tuple.Tuple{serializeVector([]float64{5, 6})}.Pack())
+			r, perr := fdb.PrefixRange(storage.samplesSubspace.Bytes())
+			Expect(perr).NotTo(HaveOccurred())
+			kvs, gerr := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+			Expect(gerr).NotTo(HaveOccurred())
+			var uuids int
+			for _, kv := range kvs {
+				key, uerr := storage.samplesSubspace.Unpack(kv.Key)
+				Expect(uerr).NotTo(HaveOccurred())
+				if u, ok := key[1].(tuple.UUID); ok {
+					uuids++
+					Expect(key[0]).To(Equal(int64(3)))
+					Expect(u[6]>>4).To(Equal(byte(4)), "version 4")
+					Expect(u[8]>>6).To(Equal(byte(2)), "IETF variant")
+				}
+			}
+			Expect(uuids).To(Equal(1))
+			consumed, cerr := storage.consumeSampledVectors(tx, 10)
+			Expect(cerr).NotTo(HaveOccurred())
+			Expect(consumed).To(HaveLen(2))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("insert single node and search returns it", func() {
 		graph := makeRaBitQGraph(8, 4)
 
