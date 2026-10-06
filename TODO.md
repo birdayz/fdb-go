@@ -502,6 +502,23 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   collapse, declared `DIFF-PATH single-element-in` (WS-E section 4).
   Still open: item 10 (the two-source in-union, WS-E section 4) and the DESC
   tie row's cause (needs the W6 step 1 observer).
+  Item 10 measured (2026-10-06), both variants reverted. Go's WHERE carrier
+  (the filter arm of InComparisonToExplodeRule) explodes one IN per firing,
+  so two lists nest two one-source in-unions; ImplementInUnionRule itself
+  already takes every explode of a select. (1) Exploding every IN into one
+  predicate-free select builds Java's two-source in-union (`InUnion(...,
+  bindings=2)` with the in-join disabled) and moves no golden plan, but loses
+  Go's in-join over one list with the other as a residual: `a IN (7, 8) AND
+  d IN (9, 3)` falls from `InJoin(PredicatesFilter(IndexScan(IDX_A, [=])))`
+  to a full IDX_A read with both INs residual (a factory scenario drifted).
+  The split rule skips a predicate-free select, and PartitionSelectRule's
+  partitions are not the in-join rule's shape. (2) Java's form, the
+  equalities in the select itself, plans `InJoin(FlatMap(IndexScan,
+  Map(Filter(Explode))))` at five times the tasks. Java plans that query as
+  nested FLATMAPs over both explodes with an intersection of the two index
+  probes. The nested in-unions are reachable only with the in-join disabled
+  (the 5x5 and 4x6 rows are DIFF-PATH rfc-191), so the port waits on Go's
+  in-join rules accepting a select with several explodes.
   F-7c LANDED (2026-10-06). The Go-only pruning in `abstract_data_access_rule.go`
   (a full index scan with no search argument and no requested ordering was
   dropped) is deleted: a PRESERVE request is satisfied by every scan, as in
