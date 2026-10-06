@@ -22,11 +22,11 @@ type centroidNode struct {
 	distance float64
 }
 
-// lessCentroidNode is NodeReferenceWithDistance.comparator: distance, then
-// primary key.
+// lessCentroidNode is NodeReferenceWithDistance.comparator: distance by
+// Double.compare (NaN last, -0.0 before 0.0), then primary key.
 func lessCentroidNode(a, b centroidNode) bool {
-	if a.distance != b.distance {
-		return a.distance < b.distance
+	if c := compareFloat64Java(a.distance, b.distance); c != 0 {
+		return c < 0
 	}
 	return bytes.Compare(a.span, b.span) < 0
 }

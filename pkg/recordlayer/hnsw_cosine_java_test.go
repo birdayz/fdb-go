@@ -73,3 +73,26 @@ func TestHnswDistanceOrder_IsDoubleCompare(t *testing.T) {
 		t.Fatalf("heap order %v, want [-0 0 1 3 +Inf NaN]", got)
 	}
 }
+
+// TestCentroidNodeOrder_IsDoubleCompareThenKey pins GuardiANN's centroid walk
+// comparator (NodeReferenceWithDistance.comparator): Double.compare on the
+// distance, so NaN is last and -0.0 precedes 0.0, then the primary key.
+func TestCentroidNodeOrder_IsDoubleCompareThenKey(t *testing.T) {
+	t.Parallel()
+	negZero := math.Copysign(0, -1)
+	cases := []struct {
+		a, b centroidNode
+		want bool
+	}{
+		{centroidNode{span: []byte{2}, distance: negZero}, centroidNode{span: []byte{1}, distance: 0}, true},
+		{centroidNode{span: []byte{1}, distance: 0}, centroidNode{span: []byte{2}, distance: negZero}, false},
+		{centroidNode{span: []byte{1}, distance: math.NaN()}, centroidNode{span: []byte{2}, distance: math.Inf(1)}, false},
+		{centroidNode{span: []byte{2}, distance: math.Inf(1)}, centroidNode{span: []byte{1}, distance: math.NaN()}, true},
+		{centroidNode{span: []byte{1}, distance: 3}, centroidNode{span: []byte{2}, distance: 3}, true},
+	}
+	for i, c := range cases {
+		if got := lessCentroidNode(c.a, c.b); got != c.want {
+			t.Errorf("case %d: less = %v, want %v", i, got, c.want)
+		}
+	}
+}
