@@ -254,6 +254,7 @@ go_test(
         "semantic_hasher_identity_test.go",
         "simplifier_value_test.go",
         "simplify_coalesce_carrier_test.go",
+        "simplify_coalesce_head_class_test.go",
         "simplify_semantics_fuzz_test.go",
         "source_relative_baked_test.go",
         "statement_clock_dependency_test.go",
@@ -618,6 +619,7 @@ go_test(
         "values_helpers_test.go",
         "values_java_inspired_test.go",
         "values_test.go",
+        "simplify_coalesce_head_class_test.go",
     ],
     deps = [
         "//gen",

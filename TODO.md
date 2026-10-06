@@ -238,9 +238,18 @@ Never mark a whole workstream complete because one of its subitems passed.
     over the implemented plans prefers the unfolded probe for the
     primary-key, primary-key IN, UNIQUE-index (provable cardinality 1) and
     union-leg groups. So the REWRITING prune decides these folds.
-  - Still open in (j): the simplifier
-    unit tests per head class and set; the EffectiveConstant shape table;
-    the NOT FALSE head fixpoint test; `rejectsNull` re-derivation.
+  - (f)/(j) the rest: `effectiveConstant` is now exactly Java's
+    `from(Value)` (a non-boolean literal takes the type arm; only an
+    untyped constant changes, from NOT_NULL to UNKNOWN; corpus unchanged),
+    pinned shape by shape (`TestEffectiveConstant_JavaShapes`). The COALESCE
+    head classes not yet pinned (a `NOT FALSE` head never folds at a
+    fixpoint, an arithmetic head is not evaluated, a `CAST(NULL)` head
+    collapses and is skipped) are pinned per set
+    (`TestSimplifyCoalesce_HeadClassesPerSet`). `rejectsNull` is pinned over
+    13 rejecting and accepting shapes through the ported set
+    (`TestRejectsNull_ShapesThroughThePortedSet`). `NOT (k = 5)` is not
+    proven in either engine: children fold first, and the set has no NOT
+    over a constant.
   Done: LOG_QUERY (statement and connection) sets `PlanGenerationInfo.LogQuery`
   (`TestPlanLogging_LogQueryFlag`). Literal decoding and the decorated-literal
   refusals were already implemented and now have a fast-lane pin

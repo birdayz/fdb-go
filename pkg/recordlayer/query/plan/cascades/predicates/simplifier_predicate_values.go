@@ -211,6 +211,13 @@ const (
 	ecUnknown
 )
 
+// effectiveConstant is Java's EffectiveConstant.from(Value)
+// (ConstantPredicateFoldingUtil.java:282-301): a NullValue (or a nil / NULL
+// literal) is NULL, a BOOLEAN literal is its value, and anything else is
+// NOT_NULL when its type is NOT NULL and UNKNOWN otherwise. A non-boolean
+// literal takes the type arm like every other value (a non-nil ConstantValue
+// is typed NOT NULL, as a target literal is). Java's Object overload, for a
+// SimpleComparison's literal comparand, has no Go planning caller.
 func effectiveConstant(v values.Value) effectiveConstantKind {
 	if v == nil {
 		return ecNull
@@ -237,7 +244,6 @@ func effectiveConstant(v values.Value) effectiveConstantKind {
 			}
 			return ecFalse
 		}
-		return ecNotNull
 	}
 	if typ := v.Type(); typ != nil && !typ.IsNullable() {
 		return ecNotNull

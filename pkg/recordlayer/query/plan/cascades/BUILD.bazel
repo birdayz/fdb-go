@@ -433,6 +433,7 @@ go_test(
         "quantifier_match_enumerator_test.go",
         "reference_winner_test.go",
         "referenced_fields_readers_test.go",
+        "rejects_null_shapes_test.go",
         "requested_ordering_current_space_test.go",
         "restricted_final_reference_test.go",
         "restricted_inner_reference_test.go",
@@ -1187,6 +1188,7 @@ go_test(
         "rule_constant_folding_test.go",
         "constraint_dependencies_test.go",
         "fold_prune_negative_control_test.go",
+        "rejects_null_shapes_test.go",
     ],
     deps = [
         "//gen",
