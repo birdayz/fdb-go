@@ -525,6 +525,7 @@ go_test(
         "vector_engine_test.go",
         "vector_index_test.go",
         "vector_index_tuple_test.go",
+        "vector_partition_lock_fdb_test.go",
         "version_bug_verify_test.go",
         "version_index_test.go",
         "version_range_test.go",

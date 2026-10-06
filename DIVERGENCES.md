@@ -2879,6 +2879,17 @@ window option `EF_SEARCH = 2147483646` fails with `OutOfMemoryError` and `214748
 Every value either engine accepts searches the same beam; both answers are pinned in
 `conformance/window_options_conformance_test.go`.
 
+## A vector search holds its partition lock for the search, not the cursor
+
+Both engines read-lock `LockIdentifier(partitionSubspace)` for a vector scan, the key a write to
+that partition write-locks. Java's `AsyncLockCursor` keeps the read lock until the cursor is
+exhausted or closed; Go releases it once the search has materialized the page
+(`searchOnePartition`). The page is already materialized in Java too, so what a scan returns is the
+same; the longer hold only delays a same-context writer, which in synchronous Go would deadlock
+shapes that work (a LIMIT abandoning the vector cursor, `INSERT ... SELECT` over a vector scan,
+UPDATE/DELETE with a vector subquery whose cursor is open). Pinned by
+`vector_partition_lock_fdb_test.go`.
+
 ## Named macro arguments (upstream bug)
 
 Java 4.14.2.0 validates a named macro call by name (`UserDefinedFunctionCatalog.lookup`) but

@@ -783,7 +783,15 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   parsed-node cache, as Java's. The shared cache let a snapshot search's
   nodes serve a later insert in the same transaction, which then committed
   without the read conflicts it owed
-  (`hnsw_operation_local_cache_fdb_test.go`, mutation-checked).
+  (`hnsw_operation_local_cache_fdb_test.go`, mutation-checked). Partition
+  locks done: the executor's scan read-locked nothing and SearchKNN the whole
+  index subspace, so neither excluded a partition writer; both now read-lock
+  the partition subspace for the search (`vector_partition_lock_fdb_test.go`,
+  each path mutation-checked; hold span declared in DIVERGENCES). The option
+  catalog (aliases, alias conflicts, Java parsing) was already ported
+  (`hnsw_options.go`); a plan carries only Java's two SQL vector options
+  (RowNumberValue.SUPPORTED_OPTIONS: ef_search, return_vectors), both in the
+  continuation salt.
 - [ ] Distinguishing pins for codecs, evaluator, collapse, bounce, reassignment,
   task counts and merge locks.
 - [ ] Runner: unified bounded attempts, per-owner retries, commit ownership and

@@ -510,6 +510,13 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 // fan-out (RFC-046). Mirrors Java's VectorIndexMaintainer.kNearestNeighborSearch
 // + toIndexEntry.
 func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, prefix tuple.Tuple, queryVector []float64, k int, opts VectorIndexScanOptions) ([]*IndexEntry, error) {
+	// Java's scan read-locks LockIdentifier(partitionSubspace), the key a
+	// write to this partition write-locks (withPrefixWriteLock). The lock
+	// covers the search that materializes the page, not the cursor's life
+	// (RFC-257 WS-D section 1, declared in DIVERGENCES).
+	lockKey := string(m.getSubspaceForPrefix(prefix).Bytes())
+	m.store.AcquireReadLock(lockKey)
+	defer m.store.ReleaseReadLock(lockKey)
 	if m.engine == VectorEngineGuardiann {
 		results, err := m.searchGuardiann(readTx, prefix, queryVector, k, opts)
 		if err != nil {
@@ -1115,9 +1122,9 @@ func VectorDistanceScanRangeOrdered(queryVector []float64, k, efSearch, cRerank 
 // reconstructs full primary keys using getEntryPrimaryKey so callers can use
 // them directly with LoadRecord.
 func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]VectorSearchResult, error) {
-	// Acquire read lock on HNSW subspace — prevent graph mutations during search.
-	// Matches Java's VectorIndexMaintainer.scan() which acquires a read lock.
-	lockKey := string(m.hnswSubspace.Bytes())
+	// Read-lock the partition a write to it write-locks, as Java's
+	// VectorIndexMaintainer.scan does (LockIdentifier(partitionSubspace)).
+	lockKey := string(m.getSubspaceForPrefix(prefix).Bytes())
 	m.store.AcquireReadLock(lockKey)
 	defer m.store.ReleaseReadLock(lockKey)
 
