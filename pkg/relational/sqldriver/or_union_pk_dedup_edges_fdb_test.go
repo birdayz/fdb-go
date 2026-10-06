@@ -162,8 +162,7 @@ func TestFDB_OrUnionPrimaryKeyDedup_LegShapes(t *testing.T) {
 	// position. No record can satisfy both points here, so what this pins is
 	// that the dedup does not collapse rows it should keep.
 	sameIdx := "SELECT d.did, u.uid FROM d LEFT JOIN u ON u.ua = d.da OR u.ua = 1 ORDER BY d.did, u.uid"
-	w.WantPlanContains("same-index disjuncts reach the union", sameIdx, "UnorderedUnion")
-	w.WantPlanContains("and dedup by primary key", sameIdx, "UnorderedPrimaryKeyDistinct")
+	wantPrimaryKeyDedupBelowFetch(t, "same-index disjuncts", w.Explain(sameIdx))
 	w.Want("same index, disjoint points", sameIdx,
 		[]string{"1|10", "1|11", "1|12", "1|13", "1|14", "1|15", "1|16", "1|17", "1|18"})
 

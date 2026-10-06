@@ -506,11 +506,10 @@ func TestImplementDistinctUnionRule_RejectsPrimaryKeyThroughReshapingProjection(
 	}
 }
 
-// TestImplementDistinctUnionRule_FetchDoesNotRestoreProjectedRows pins the Go
-// executor contract (which differs from the Java plan model): Fetch currently
-// executes its child unchanged because index scans already return record
-// payloads. It therefore cannot turn (ID,constant) back into the full stored
-// row, and must not make a row-shaping projection eligible for PK dedup.
+// TestImplementDistinctUnionRule_FetchDoesNotRestoreProjectedRows pins that a
+// row-shaping projection below a Fetch stays ineligible for PK dedup: the
+// proof admits only operators that select rows between a Fetch and its covering
+// scan, and (ID,constant) carries no stored-row identity of its own.
 func TestImplementDistinctUnionRule_FetchDoesNotRestoreProjectedRows(t *testing.T) {
 	t.Parallel()
 
@@ -660,6 +659,34 @@ func TestMergeDistinctLegProducesDistinctRecords_IndexSignal(t *testing.T) {
 	scalar, _ := distinctUnionIndexLeg(&createsDuplicates)
 	if !mergeDistinctLegProducesDistinctRecords(scalar) {
 		t.Fatal("scalar index with an explicit !createsDuplicates signal should prove distinctness")
+	}
+}
+
+// TestMergeDistinctStoredRecordIdentity_CoveringOnlyUnderAFetch pins the
+// covering arm: a bare covering index emits a partial row its base primary key
+// does not identify, so it proves nothing; under a primary-key Fetch, which
+// loads the stored record that key names, it proves the index's record type,
+// as the plain index scan does. It is what lets an ordered union of covering
+// legs push below one fetch (Java's `COVERING ∪ COVERING COMPARE BY (_.ID) |
+// FETCH`, w8_or_two_indexes).
+func TestMergeDistinctStoredRecordIdentity_CoveringOnlyUnderAFetch(t *testing.T) {
+	t.Parallel()
+
+	index, _ := distinctUnionIndexLeg(nil)
+	pk := index.GetCommonPrimaryKeyValues()
+	if recordType, ok := mergeDistinctStoredRecordIdentity(index, pk); !ok || recordType != "T" {
+		t.Fatalf("index scan identity = (%q,%v), want (T,true)", recordType, ok)
+	}
+	covering := mustDistinctUnionConstruct(plans.NewRecordQueryCoveringIndexPlan(index))
+	if recordType, ok := mergeDistinctStoredRecordIdentity(covering, pk); ok {
+		t.Fatalf("a bare covering scan proved identity %q", recordType)
+	}
+	coveringRef := expressions.FinalOf(covering)
+	computeRefPlanProperties(coveringRef)
+	fetch := mustDistinctUnionConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+		expressions.ForEachQuantifier(coveringRef), nil, index.GetResultType(), plans.FetchIndexRecordsPrimaryKey))
+	if recordType, ok := mergeDistinctStoredRecordIdentity(fetch, pk); !ok || recordType != "T" {
+		t.Fatalf("Fetch(Covering) identity = (%q,%v), want (T,true)", recordType, ok)
 	}
 }
 

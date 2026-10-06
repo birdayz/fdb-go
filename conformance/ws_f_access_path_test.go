@@ -312,7 +312,9 @@ func wsfGoPlan(s string) *wsfPathNode {
 		return &wsfPathNode{op: "DEFAULTONEMPTY", children: []*wsfPathNode{plan(0)}}
 	case "NestedLoopJoin":
 		return &wsfPathNode{op: "NLJ", children: []*wsfPathNode{plan(-2), plan(-1)}}
-	case "Union", "UnorderedUnion":
+	case "Union", "UnorderedUnion", "MergeSortUnion":
+		// MergeSortUnion is the target's ordered union (`∪ ... COMPARE BY`);
+		// its trailing keys and direction arguments are not plans.
 		n := &wsfPathNode{op: "UNION"}
 		for i := range args {
 			if a := arg(i); strings.Contains(a, "(") {
@@ -346,6 +348,20 @@ func TestWSFUnorderedPrimaryKeyDistinctPath(t *testing.T) {
 	want := "FETCH(PK-DISTINCT(UNION(COVERING(I1 [=]) COVERING(I2 [=]))))"
 	if got != want {
 		t.Fatalf("access path = %q, want %q", got, want)
+	}
+}
+
+func TestWSFMergeSortUnionIsTheTargetsOrderedUnion(t *testing.T) {
+	t.Parallel()
+	goPlan := "Fetch(MergeSortUnion(IndexScan(I1, [=] COVERING), IndexScan(I2, [=] COVERING), keys=[1], ASC DISTINCT))"
+	javaPlan := "COVERING(I1 [EQUALS promote(@c7 AS LONG)] -> [COL1: KEY:[0], ID: KEY:[2]]) ∪ " +
+		"COVERING(I2 [EQUALS promote(@c11 AS LONG)] -> [COL2: KEY:[0], ID: KEY:[2]]) COMPARE BY (_.ID) | FETCH"
+	want := "FETCH(UNION(COVERING(I1 [=]) COVERING(I2 [=])))"
+	if got := wsfAccessPath("go", goPlan); got != want {
+		t.Fatalf("go access path = %q, want %q", got, want)
+	}
+	if got := wsfAccessPath("java", javaPlan); got != want {
+		t.Fatalf("java access path = %q, want %q", got, want)
 	}
 }
 

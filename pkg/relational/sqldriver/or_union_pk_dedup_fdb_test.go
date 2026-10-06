@@ -28,6 +28,21 @@ import (
 	"testing"
 )
 
+// wantPrimaryKeyDedupBelowFetch requires the OR's union legs to be deduplicated
+// by primary key below the fetch: a merge of the legs ordered by the primary key
+// (`Fetch(MergeSortUnion(... DISTINCT))`) or a primary-key distinct over an
+// unordered union (`Fetch(UnorderedPrimaryKeyDistinct(UnorderedUnion(...)))`).
+func wantPrimaryKeyDedupBelowFetch(t *testing.T, name, plan string) {
+	t.Helper()
+	merged := strings.Contains(plan, "Fetch(MergeSortUnion(") && strings.Contains(plan, "DISTINCT)")
+	distinct := strings.Contains(plan, "Fetch(UnorderedPrimaryKeyDistinct(UnorderedUnion(")
+	if !merged && !distinct {
+		t.Errorf("%s: the union legs are not deduplicated by primary key below the fetch, so "+
+			"duplicates are fetched before being discarded (Java's PushDistinctThroughFetchRule / "+
+			"PushSetOperationThroughFetchRule).\n  plan: %s", name, plan)
+	}
+}
+
 // mmOrUnionFixture builds the two-table fixture every case in this file shares.
 //
 //	d = drivers, one row per case, carrying the two correlated values
@@ -73,23 +88,20 @@ func TestFDB_OrUnionPrimaryKeyDedup_LeftJoin(t *testing.T) {
 
 	twoWay := "SELECT d.did, u.uid FROM d LEFT JOIN u ON u.ua = d.da OR u.ub = d.db2 ORDER BY d.did, u.uid"
 	// Every case in this file is worthless if the plan stopped using the union,
-	// so the operator is pinned before the rows are.
-	w.WantPlanContains("two-way OR reaches the union", twoWay, "UnorderedUnion")
-	// …and the dedup above it is the PRIMARY-KEY one, sitting BELOW the fetch —
-	// Java's shape. Pinned separately from the rows because the correct rows are
+	// so the union and its dedup are pinned before the rows are: the dedup is
+	// by PRIMARY KEY and sits BELOW the fetch — Java's shape. Equality probes
+	// merge ordered by the primary key (Java's `COVERING ∪ COVERING COMPARE BY
+	// (_.ID) | FETCH`); otherwise an unordered union carries a primary-key
+	// distinct. Pinned separately from the rows because the correct rows are
 	// also produced by the slower Distinct-above-Fetch arrangement, so a row
 	// assertion alone cannot tell the repaired plan from a merely-correct one.
-	w.WantPlanContains("dedup is by primary key", twoWay, "UnorderedPrimaryKeyDistinct")
-	if plan := w.Explain(twoWay); !strings.Contains(plan, "Fetch(UnorderedPrimaryKeyDistinct(") {
-		t.Errorf("the primary-key dedup is not below the fetch, so duplicates are fetched before "+
-			"being discarded — Java pushes it through (PushDistinctThroughFetchRule).\n  plan: %s", plan)
-	}
+	wantPrimaryKeyDedupBelowFetch(t, "two-way OR", w.Explain(twoWay))
 	w.Want("two-way OR", twoWay,
 		[]string{"1|10", "1|20", "1|40", "1|50", "1|60", "1|70", "1|90"})
 
 	threeWay := "SELECT d.did, u.uid FROM d LEFT JOIN u ON u.ua = d.da OR u.ub = d.db2 OR u.uc = d.dc " +
 		"ORDER BY d.did, u.uid"
-	w.WantPlanContains("three-way OR reaches the union", threeWay, "UnorderedUnion")
+	wantPrimaryKeyDedupBelowFetch(t, "three-way OR", w.Explain(threeWay))
 	// uid 70 satisfies all three legs and must still appear exactly once.
 	w.Want("three-way OR", threeWay,
 		[]string{"1|10", "1|20", "1|30", "1|40", "1|50", "1|60", "1|70", "1|90"})

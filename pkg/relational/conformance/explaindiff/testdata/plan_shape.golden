@@ -9599,11 +9599,11 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === index_range_and_or.yaml#7
 sql:   SELECT id, col1 FROM t1 WHERE col1 = 10 OR col1 = 20 ORDER BY id
-plan:  Map(MergeSortUnion(IndexScan(I1, [=]), IndexScan(I1, [=]), keys=[1], ASC DISTINCT), {ID: _current.ID#0, COL1: _current.COL1#1})
+plan:  Map(MergeSortUnion(IndexScan(I1, [=] COVERING), IndexScan(I1, [=] COVERING), keys=[1], ASC DISTINCT), {ID: _current.ID#0, COL1: _current.COL1#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMergeSortUnionPlan
-shape:     RecordQueryIndexPlan
-shape:     RecordQueryIndexPlan
+shape:     RecordQueryCoveringIndexPlan
+shape:     RecordQueryCoveringIndexPlan
 === index_range_and_or.yaml#8
 sql:   SELECT id, col1, col2 FROM t1 WHERE col1 = 20 AND col2 > 10 ORDER BY id
 plan:  Map(PredicatesFilter(IndexScan(I1, [=]), [1 preds]), {ID: _current.ID#0, COL1: _current.COL1#1, COL2: _current.COL2#2})
@@ -9645,18 +9645,18 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryCoveringIndexPlan
 === index_range_predicates_java.yaml#5
 sql:   SELECT id FROM t1 WHERE col1 = 10 OR col1 = 30 ORDER BY id
-plan:  Map(MergeSortUnion(IndexScan(I1, [=]), IndexScan(I1, [=]), keys=[1], ASC DISTINCT), {ID: _current.ID#0})
+plan:  Map(MergeSortUnion(IndexScan(I1, [=] COVERING), IndexScan(I1, [=] COVERING), keys=[1], ASC DISTINCT), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMergeSortUnionPlan
-shape:     RecordQueryIndexPlan
-shape:     RecordQueryIndexPlan
+shape:     RecordQueryCoveringIndexPlan
+shape:     RecordQueryCoveringIndexPlan
 === index_range_predicates_java.yaml#6
 sql:   SELECT id FROM t1 WHERE (col1 = 20 OR col1 = 10) AND (col1 = 20 OR col1 = 10) ORDER BY id
-plan:  Map(MergeSortUnion(IndexScan(I1, [=]), IndexScan(I1, [=]), keys=[1], ASC DISTINCT), {ID: _current.ID#0})
+plan:  Map(MergeSortUnion(IndexScan(I1, [=] COVERING), IndexScan(I1, [=] COVERING), keys=[1], ASC DISTINCT), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMergeSortUnionPlan
-shape:     RecordQueryIndexPlan
-shape:     RecordQueryIndexPlan
+shape:     RecordQueryCoveringIndexPlan
+shape:     RecordQueryCoveringIndexPlan
 === index_range_predicates_java.yaml#7
 sql:   SELECT id, col1 FROM t1 WHERE col1 >= 20 ORDER BY col1, id
 plan:  Map(IndexScan(I1, [<>] COVERING), {ID: _current.ID#0, COL1: _current.COL1#1})
@@ -13790,18 +13790,18 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === null_safe_equality_scan.yaml#15
 sql:   SELECT id, ts FROM scoped_item WHERE scope.scope_id IS NOT DISTINCT FROM ? AND ((ts = ? AND id > ?) OR (ts > ?)) ORDER BY ts DESC, id DESC
-plan:  Map(MergeSortUnion(IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, =, <>]) REVERSE, IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, <>, *]) REVERSE, keys=[3], DESC DISTINCT), {ID: _current.ID#0, TS: _current.TS#2})
+plan:  Map(MergeSortUnion(IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, =, <>] COVERING) REVERSE, IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, <>, *] COVERING) REVERSE, keys=[3], DESC DISTINCT), {ID: _current.ID#0, TS: _current.TS#2})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMergeSortUnionPlan
-shape:     RecordQueryIndexPlan
-shape:     RecordQueryIndexPlan
+shape:     RecordQueryCoveringIndexPlan
+shape:     RecordQueryCoveringIndexPlan
 === null_safe_equality_scan.yaml#16
 sql:   SELECT id, ts FROM scoped_item WHERE scope.scope_id IS NOT DISTINCT FROM ? AND ((ts = ? AND id > ?) OR (ts > ?)) ORDER BY ts DESC, id DESC
-plan:  Map(MergeSortUnion(IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, =, <>]) REVERSE, IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, <>, *]) REVERSE, keys=[3], DESC DISTINCT), {ID: _current.ID#0, TS: _current.TS#2})
+plan:  Map(MergeSortUnion(IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, =, <>] COVERING) REVERSE, IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, <>, *] COVERING) REVERSE, keys=[3], DESC DISTINCT), {ID: _current.ID#0, TS: _current.TS#2})
 shape: RecordQueryMapPlan
 shape:   RecordQueryMergeSortUnionPlan
-shape:     RecordQueryIndexPlan
-shape:     RecordQueryIndexPlan
+shape:     RecordQueryCoveringIndexPlan
+shape:     RecordQueryCoveringIndexPlan
 === nullif_coalesce_combined_java.yaml#0 expect-error=0AF00
 sql:   SELECT id, val / NULLIF(divisor, 0) FROM data WHERE val IS NOT NULL ORDER BY id
 plan:  <PLAN-ERROR: 0AF00: Unsupported operator NULLIF>

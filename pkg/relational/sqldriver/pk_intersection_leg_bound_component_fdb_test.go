@@ -177,8 +177,8 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 		if c.table == "d" {
 			// The union arm proves nothing unless the plan actually unions the
 			// two index probes; a nested-loop fallback answers the same rows.
-			if n := unorderedUnionsIn(plan); n == 0 {
-				t.Errorf("the OR arm no longer reaches an UnorderedUnion of the two index probes\n  sql:  %s\n  plan: %s", c.sql, plan.Explain())
+			if n := primaryKeyDedupUnionsIn(plan); n == 0 {
+				t.Errorf("the OR arm no longer reaches a union of the two index probes deduplicated on the whole primary key\n  sql:  %s\n  plan: %s", c.sql, plan.Explain())
 			} else {
 				unions += n
 			}
@@ -213,17 +213,31 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 		t.Error("no intersection was built over TJ — the per-leg proof is declining the SOUND merge whose legs all fix pk2")
 	}
 	if unions == 0 {
-		t.Error("no UnorderedUnion was built for the OR arms — the union path over the same two legs is unmeasured")
+		t.Error("no union was built for the OR arms — the union path over the same two legs is unmeasured")
 	}
 }
 
-// unorderedUnionsIn counts the UnorderedUnion plans in the typed plan tree.
-func unorderedUnionsIn(plan plans.RecordQueryPlan) int {
+// primaryKeyDedupUnionsIn counts the unions in the typed plan tree that
+// deduplicate on the whole primary key: an UnorderedUnion (under its
+// primary-key distinct), or a distinct merge whose comparison keys are both
+// primary-key components (Java's COMPARE BY (_.PK1, _.PK2)).
+func primaryKeyDedupUnionsIn(plan plans.RecordQueryPlan) int {
 	n := 0
 	var walk func(p plans.RecordQueryPlan)
 	walk = func(p plans.RecordQueryPlan) {
-		if _, ok := p.(*plans.RecordQueryUnorderedUnionPlan); ok {
+		switch u := p.(type) {
+		case *plans.RecordQueryUnorderedUnionPlan:
 			n++
+		case *plans.RecordQueryMergeSortUnionPlan:
+			var names []string
+			for _, kv := range u.GetComparisonKeys() {
+				if fv, ok := values.AsFieldValue(kv); ok {
+					names = append(names, fv.DisplayName())
+				}
+			}
+			if strings.Join(names, ",") == "PK1,PK2" {
+				n++
+			}
 		}
 		for _, c := range p.GetChildren() {
 			walk(c)

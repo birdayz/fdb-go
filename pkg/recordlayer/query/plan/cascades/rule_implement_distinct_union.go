@@ -423,22 +423,25 @@ func mergeDistinctStoredRecordIdentity(
 	commonPrimaryKey []values.Value,
 ) (string, bool) {
 	return mergeDistinctStoredRecordIdentityAtDepth(
-		plan, commonPrimaryKey, 0,
+		plan, commonPrimaryKey, 0, false,
 	)
 }
 
-// Fetch, Projection, and Map deserve special care here. In the current Go
-// executor Fetch is a transparent pass-through (index scans already return the
-// record payload); it is not the Java restoration boundary that turns an
-// arbitrary partial row back into a full record. Projection and Map always
-// construct a new PositionalRow, even for their planner-level "identity"
-// shapes. Consequently Fetch may recurse, but no row-shaping operator below or
-// above it can participate in this proof. Bare covering indexes are rejected
-// for the same reason: their base PK need not identify the emitted index row.
+// Fetch, Projection, and Map deserve special care here. A primary-key Fetch
+// loads, for each input row, the stored record its primary key names
+// (executeFetchFromPartialRecord), so it emits exactly the record that key
+// identifies whatever partial row came in: a covering index scan below it,
+// through operators that only select rows, proves identity by its index's
+// record type and primary key (underFetch). A bare covering index is refused:
+// its base PK need not identify the emitted index row. Projection and Map
+// always construct a new PositionalRow, even for their planner-level
+// "identity" shapes, so no row-shaping operator below or above a Fetch can
+// participate in this proof.
 func mergeDistinctStoredRecordIdentityAtDepth(
 	plan plans.RecordQueryPlan,
 	commonPrimaryKey []values.Value,
 	depth int,
+	underFetch bool,
 ) (string, bool) {
 	if plan == nil || len(commonPrimaryKey) == 0 || depth >= maxMergeDistinctIdentityDepth {
 		return "", false
@@ -453,8 +456,19 @@ func mergeDistinctStoredRecordIdentityAtDepth(
 
 	case *plans.RecordQueryCoveringIndexPlan:
 		// A bare covering scan emits a partial/index-shaped row. The base PK
-		// identifies the record it came from, not necessarily that emitted row.
-		return "", false
+		// identifies the record it came from, not necessarily that emitted row;
+		// under a primary-key Fetch the emitted row is that record.
+		if !underFetch {
+			return "", false
+		}
+		index := p.GetIndexPlan()
+		if index == nil {
+			return "", false
+		}
+		return mergeDistinctLeafRecordIdentity(
+			index.GetRecordTypes(), index.GetCommonPrimaryKeyValues(), commonPrimaryKey,
+			index.GetPrimaryKeyComponentTypes(), len(index.GetPKColumnNames()),
+		)
 
 	case *plans.RecordQueryIndexPlan:
 		return mergeDistinctLeafRecordIdentity(
@@ -466,11 +480,8 @@ func mergeDistinctStoredRecordIdentityAtDepth(
 		if p.GetFetchIndexRecords() != plans.FetchIndexRecordsPrimaryKey {
 			return "", false
 		}
-		// The Go executor currently treats Fetch as transparent. Preserve that
-		// exact runtime contract and require its input to have already proved
-		// complete stored-row identity.
 		return mergeDistinctUnaryChildIdentity(
-			plan, commonPrimaryKey, depth+1,
+			plan, commonPrimaryKey, depth+1, true,
 		)
 
 	case *plans.RecordQueryFilterPlan,
@@ -481,7 +492,7 @@ func mergeDistinctStoredRecordIdentityAtDepth(
 		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
 		// These operators select/remove rows but never reshape a surviving row.
 		return mergeDistinctUnaryChildIdentity(
-			plan, commonPrimaryKey, depth+1,
+			plan, commonPrimaryKey, depth+1, underFetch,
 		)
 
 	case *plans.RecordQueryMapPlan:
@@ -508,6 +519,7 @@ func mergeDistinctUnaryChildIdentity(
 	plan plans.RecordQueryPlan,
 	commonPrimaryKey []values.Value,
 	depth int,
+	underFetch bool,
 ) (string, bool) {
 	quantifiers := plan.GetQuantifiers()
 	if len(quantifiers) != 1 {
@@ -526,7 +538,7 @@ func mergeDistinctUnaryChildIdentity(
 			continue
 		}
 		memberRecordType, proved := mergeDistinctStoredRecordIdentityAtDepth(
-			physical.GetRecordQueryPlan(), commonPrimaryKey, depth,
+			physical.GetRecordQueryPlan(), commonPrimaryKey, depth, underFetch,
 		)
 		if !proved || foundPhysical && memberRecordType != recordType {
 			return "", false

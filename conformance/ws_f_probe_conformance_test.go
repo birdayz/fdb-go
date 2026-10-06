@@ -1357,7 +1357,6 @@ var wsfOpenUntil = map[string]string{
 	"w6_left_join_indexed_explain":     "outer-join partition (a LEFT JOIN's preserved leg gets no data access: PartitionBinarySelectRule skips outer joins)",
 	"w8_in25_order_by_id_explain":      "F-7c follow-up (IN-join vs filtered scan rank)",
 	"w8_in_union_explain":              "F-7c follow-up (IN-join vs filtered scan rank)",
-	"w8_or_two_indexes_explain":        "F-7c follow-up (ordered union by primary key: the merge's identity proof refuses a Fetch(COVERING) leg, so the union never pushes below the fetch)",
 	"w8_rl_default_in1_order_by_price": "WS-E section 4 (single-element collapse)",
 	"w8_tie_in_order_by_id_explain":    "F-7c follow-up (IN-join vs filtered scan rank)",
 }
@@ -1596,7 +1595,7 @@ var wsfGoPins = map[string]string{
 	"w8_iup_order_by_id":                         "NO-GO-INSTRUMENT",
 	"w8_iup_tie_order_by_col1":                   "NO-GO-INSTRUMENT",
 	"w8_no_predicate_explain":                    "OK EXPLAIN \"IndexScan(I1, [*])\"",
-	"w8_or_two_indexes_explain":                  "OK EXPLAIN \"Fetch(UnorderedPrimaryKeyDistinct(UnorderedUnion(IndexScan(I1, [=] COVERING), IndexScan(I2, [=] COVERING))))\"",
+	"w8_or_two_indexes_explain":                  "OK EXPLAIN \"Fetch(MergeSortUnion(IndexScan(I1, [=] COVERING), IndexScan(I2, [=] COVERING), keys=[1], ASC DISTINCT))\"",
 	"w8_or_two_indexes_rows":                     "OK [ID:BIGINT] [[1] [2] [3]]",
 	"w8_prefer_index_neq_explain":                "OK EXPLAIN \"Fetch(PredicatesFilter(IndexScan(I1, [*] COVERING), [1 preds]))\"",
 	"w8_rl_default_in1_order_by_price":           "RL EXPLAIN \"IndexScan(wsf_price, [=])\" size=0 ids=[1 2 5]",

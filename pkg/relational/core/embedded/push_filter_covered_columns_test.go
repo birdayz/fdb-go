@@ -243,15 +243,26 @@ func TestPushFilter_StillPushesCoveredColumns(t *testing.T) {
 					if !ok {
 						t.Fatalf("want filter below fetch or covering union: %s", plan)
 					}
-					distinct, ok := fetch.GetInner().(*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan)
-					if !ok {
-						t.Fatalf("want primary-key distinct union: %s", plan)
+					// The union deduplicates by primary key: a merge ordered by
+					// it (Java's COMPARE BY (_.ID)), or an unordered union under
+					// a primary-key distinct.
+					var legs []plans.RecordQueryPlan
+					switch inner := fetch.GetInner().(type) {
+					case *plans.RecordQueryMergeSortUnionPlan:
+						legs = inner.GetChildren()
+					case *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+						union, isUnion := inner.GetChildren()[0].(*plans.RecordQueryUnorderedUnionPlan)
+						if !isUnion {
+							t.Fatalf("want two disjunctive scans: %s", plan)
+						}
+						legs = union.GetChildren()
+					default:
+						t.Fatalf("want a primary-key distinct union: %s", plan)
 					}
-					union, ok := distinct.GetChildren()[0].(*plans.RecordQueryUnorderedUnionPlan)
-					if !ok || len(union.GetChildren()) != 2 {
+					if len(legs) != 2 {
 						t.Fatalf("want two disjunctive scans: %s", plan)
 					}
-					for _, leg := range union.GetChildren() {
+					for _, leg := range legs {
 						covering, ok := leg.(*plans.RecordQueryCoveringIndexPlan)
 						if !ok {
 							t.Fatalf("union leg must cover before fetch: %T", leg)

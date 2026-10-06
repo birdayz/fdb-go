@@ -511,8 +511,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     orderings; Go does not (alone it moves 336 plans, a join's inner probe
     among them: Go's request sets differ from Java's). Rows still open in
     `wsfOpenUntil` as F-7c follow-ups: IN-join versus filtered scan
-    (`w8_in25`, `w8_in_union`, `w8_tie_in`), ordered union by primary key
-    (`w8_or_two_indexes`). The 1M stress comparison the design requires with
+    (`w8_in25`, `w8_in_union`, `w8_tie_in`). The 1M stress comparison the design requires with
     F-7c has NOT run (stress lane; needs the owner's go-ahead).
   - Follow-ups closed or re-diagnosed (2026-10-06):
     - `w8_no_predicate` was no rank question: a bare `SELECT * FROM T1`
@@ -525,10 +524,19 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
       JOIN's preserved leg gets no single-quantifier Select because Go's
       PartitionBinarySelectRule skips outer joins (Java partitions the
       null-on-empty select). Relabelled; it needs the outer-join partition.
-    - `w8_or_two_indexes`: Go builds the ordered union, but over two fetching
-      index scans; Java's `Fetch(COVERING ∪ COVERING COMPARE BY id)` needs
-      the union pushed below the fetch, and Go's merge-distinct identity
-      proof refuses a `Fetch(COVERING)` leg, so no such merge exists to push.
+    - `w8_or_two_indexes` is done: Go built the ordered union only over two
+      fetching index scans, because the merge-distinct identity proof refused
+      a `Fetch(COVERING)` leg on the stale premise that Go's Fetch passes its
+      child through (it loads the stored record by primary key since
+      RFC-220). A covering scan now proves its index's identity under a
+      primary-key Fetch (through row-selecting operators only), so the merge
+      pushes below the fetch: `Fetch(MergeSortUnion(COVERING, COVERING))`,
+      Java's `COVERING ∪ COVERING COMPARE BY (_.ID) | FETCH`
+      (`TestMergeDistinctStoredRecordIdentity_CoveringOnlyUnderAFetch`). Five
+      corpus plans move to covering merges that fetch nothing
+      (`index_range_*`, `null_safe_equality_scan#15/16`), two factory
+      scenarios filter on index entries before fetching; the OR-union FDB
+      tests accept the merge as the primary-key dedup below the fetch.
     - The depth rungs now read an absent operator as Java's
       `ExpressionDepthProperty` does (Integer.MAX_VALUE, deepest): Go skipped
       the rung whenever one side lacked the operator. Only the distinct rung

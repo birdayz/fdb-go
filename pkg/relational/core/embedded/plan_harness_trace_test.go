@@ -11,7 +11,9 @@ func TestPlanPhysicalForTestTracedAccountsForTheWholeRun(t *testing.T) {
 	t.Parallel()
 	const schema = "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_a ON t (a) CREATE INDEX idx_b ON t (b)"
 	trace := cascades.NewPlannerTrace()
-	plan, err := PlanPhysicalForTestTraced("SELECT * FROM t WHERE a = 1 OR b = 2", schema, nil, trace)
+	// A range arm keeps the union unordered by primary key (two equality
+	// arms merge by id, Java's COMPARE BY (_.ID)).
+	plan, err := PlanPhysicalForTestTraced("SELECT * FROM t WHERE a > 1 OR b = 2", schema, nil, trace)
 	if err != nil {
 		t.Fatal(err)
 	}

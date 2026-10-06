@@ -117,12 +117,12 @@ tests:
   # away; Go plans that form after WS-E's simplification regime.)
   - query: SELECT id, ts FROM scoped_item WHERE scope.scope_id IS NOT DISTINCT FROM ? AND ((ts = ? AND id > ?) OR (ts > ?)) ORDER BY ts DESC, id DESC
     args: [{kind: int64, value: "1"}, {kind: int64, value: "100"}, {kind: string, value: "item_1"}, {kind: int64, value: "100"}]
-    plan_contains: "IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, =, <>]) REVERSE"
+    plan_contains: "IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, =, <>] COVERING) REVERSE"
     rows:
       - ["item_4", 300]
   - query: SELECT id, ts FROM scoped_item WHERE scope.scope_id IS NOT DISTINCT FROM ? AND ((ts = ? AND id > ?) OR (ts > ?)) ORDER BY ts DESC, id DESC
     args: [{kind: "null"}, {kind: int64, value: "100"}, {kind: string, value: "item_1"}, {kind: int64, value: "100"}]
-    plan_contains: "IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, =, <>]) REVERSE"
+    plan_contains: "IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, =, <>] COVERING) REVERSE"
     rows:
       - ["item_5", 300]
       - ["item_3", 200]

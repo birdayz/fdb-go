@@ -144,7 +144,7 @@ tests:
 
   # or_with_equality_on_indexed_col
   - query: SELECT id, col1 FROM t1 WHERE col1 = 10 OR col1 = 20 ORDER BY id
-    plan_contains: "Map(MergeSortUnion(IndexScan(I1, [=]), IndexScan(I1, [=]), keys=[1], ASC DISTINCT), {ID: _current.ID#0, COL1: _current.COL1#1})"
+    plan_contains: "Map(MergeSortUnion(IndexScan(I1, [=] COVERING), IndexScan(I1, [=] COVERING), keys=[1], ASC DISTINCT), {ID: _current.ID#0, COL1: _current.COL1#1})"
     plan_not_contains: "PredicatesFilter"
     rows:
       - [1, 10]
