@@ -518,14 +518,24 @@ func TestPlannerOptions_CacheKeyPart(t *testing.T) {
 	both := part(api.NewOptionsBuilder().
 		Set(api.OptPlanRightDeep, true).
 		Set(api.OptDisabledPlannerRules, []string{"MatchLeafRule"}))
+	// VECTOR_INDEX_ENGINE_PREFERENCE is part of Java's PlannerConfiguration
+	// equality and hash (PlannerConfiguration.java:131,153), so each preference
+	// keys its own plans; NO_PREFERENCE is the default's key.
+	preferHNSW := part(api.NewOptionsBuilder().Set(api.OptVectorIndexEnginePreference, api.VectorIndexPreferHNSW))
+	preferGuardiann := part(api.NewOptionsBuilder().Set(api.OptVectorIndexEnginePreference, api.VectorIndexPreferGuardiann))
+	if noPreference := part(api.NewOptionsBuilder().Set(api.OptVectorIndexEnginePreference, api.VectorIndexNoPreference)); noPreference != base {
+		t.Fatalf("NO_PREFERENCE keys %q, want the default's %q", noPreference, base)
+	}
 
 	seen := map[string]string{}
 	for label, got := range map[string]string{
-		"default":    base,
-		"right-deep": rightDeep,
-		"one rule":   oneRule,
-		"no rewrite": noRewrite,
-		"both":       both,
+		"default":          base,
+		"right-deep":       rightDeep,
+		"one rule":         oneRule,
+		"no rewrite":       noRewrite,
+		"both":             both,
+		"prefer hnsw":      preferHNSW,
+		"prefer guardiann": preferGuardiann,
 	} {
 		if prev, dup := seen[got]; dup {
 			t.Fatalf("%q and %q share cache key part %q — one would serve the other's plan", label, prev, got)

@@ -759,8 +759,25 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   name). `unsupported:result-metadata-nested` emptied (190 inner, 6 file
   skips): the check-result-metadata positives pass and the six struct/array
   negatives fail on their metadata mismatch.
-- [ ] JSON descriptor FieldOptions import.
-- [ ] Relational queued-state plumbing; SQL vector-option and preference-cache pins.
+- [ ] JSON descriptor FieldOptions import (#4540). Harness-only in Java
+  (`CommandUtil.loadRecordMetaDataFromJson` for the yaml `load schema
+  template` command); Go has no JSON metadata import and its runner books
+  every `load schema template` / `set schema state` file as
+  `unsupported:schema-command` (9 files). Porting it needs that command pair
+  in the runner, the yaml-tests protos as Go descriptors (Bazel
+  `go_proto_library`), and relational table generations
+  (`RecordLayerTable.addGeneration`, the check #4540's file exercises), which
+  Go's schema template does not model.
+- [x] Relational queued-state plumbing; SQL vector-option and preference-cache pins.
+  Relational planning reads only READABLE indexes and the fleet build treats
+  WRITE_ONLY_WITH_QUEUE as write-only; `TestFDB_QueuedVectorIndexIsWriteOnlyToSQL`
+  pins a format-15 store with a queued GuardiANN index through SQL (format and
+  state kept, INSERT queued, the index-only KNN unplannable with 0AF00). Java's
+  only other relational reach is `RecordLayerSetStoreStateConstantAction`, the
+  yaml `set schema state` command (see the JSON item). Every
+  `SUPPORTED_VECTOR_OPTIONS` entry is pinned to its canonical option key and
+  serialized value (`TestVectorIndexSQLOptionsStoreJavasOptions`), and each
+  engine preference keys its own plans (`TestPlannerOptions_CacheKeyPart`).
 
 ## 7. Migration-wide acceptance and decisions
 

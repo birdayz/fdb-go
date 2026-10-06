@@ -572,6 +572,7 @@ go_test(
         "qualified_nested_accessor_matrix_fdb_test.go",
         "quality_probes_test.go",
         "query_labels_test.go",
+        "queued_index_state_fdb_test.go",
         "quoted_dot_nested_label_fdb_test.go",
         "quoted_dotted_group_by_fdb_test.go",
         "quoted_machine_alias_fdb_test.go",

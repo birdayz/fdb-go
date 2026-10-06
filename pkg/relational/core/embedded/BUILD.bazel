@@ -289,6 +289,7 @@ go_test(
         "value_compare_test.go",
         "vector_ddl_test.go",
         "vector_limit_projection_test.go",
+        "vector_option_pins_test.go",
         "vector_plan_test.go",
         "version_index_covering_test.go",
     ],
@@ -524,6 +525,7 @@ go_test(
         "left_join_in_partition_plan_test.go",
         "direct_access.go",
         "direct_access_test.go",
+        "vector_option_pins_test.go",
     ],
     deps = [
         "//gen",
