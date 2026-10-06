@@ -260,7 +260,9 @@ func TestHandleSuccess(t *testing.T) {
 
 	t.Run("resets failure count and increments success count", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 0, 0)
+		// A positive increaseLimitAfter counts successes; the default (-1)
+		// re-increases, and so resets the count, at every one.
+		th := newIndexingThrottle(100, 3, 0, 0).withLimits(100, 0, 10)
 		th.consecutiveFailureCount = 5
 		th.consecutiveSuccessCount = 0
 		th.handleSuccess(50)
@@ -274,7 +276,7 @@ func TestHandleSuccess(t *testing.T) {
 
 	t.Run("increments consecutiveSuccessCount on repeated calls", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(100, 3, 0, 0)
+		th := newIndexingThrottle(100, 3, 0, 0).withLimits(100, 0, 10)
 		th.handleSuccess(10)
 		th.handleSuccess(20)
 		th.handleSuccess(30)
@@ -318,9 +320,12 @@ func TestGetLimit(t *testing.T) {
 func TestIncreaseLimit(t *testing.T) {
 	t.Parallel()
 
-	t.Run("increases after 10 consecutive successes", func(t *testing.T) {
+	// Java's handleLimitsPostRunnerTransaction re-increases once the earlier
+	// consecutive successes reach increaseLimitAfter: with N = 10, on the
+	// eleventh success.
+	t.Run("increases after increaseLimitAfter consecutive successes", func(t *testing.T) {
 		t.Parallel()
-		th := newIndexingThrottle(200, 5, 0, 0)
+		th := newIndexingThrottle(200, 5, 0, 0).withLimits(200, 0, 10)
 		// Decrease to force a low limit
 		th.decreaseLimit(100) // limit = 90
 		th.decreaseLimit(90)  // limit = 72
@@ -328,18 +333,50 @@ func TestIncreaseLimit(t *testing.T) {
 			t.Fatalf("expected limit 72, got %d", th.getLimit())
 		}
 
-		// 9 successes — should NOT increase yet
-		for i := 0; i < 9; i++ {
+		for i := 0; i < 10; i++ {
 			th.handleSuccess(72)
 		}
 		if th.getLimit() != 72 {
-			t.Errorf("limit should not change after 9 successes, got %d", th.getLimit())
+			t.Errorf("limit should not change after 10 successes, got %d", th.getLimit())
 		}
 
-		// 10th success — should increase (72 < 100, so doubles to 144)
+		// 11th success — should increase (72 < 100, so doubles to 144)
 		th.handleSuccess(72)
 		if th.getLimit() != 144 {
-			t.Errorf("expected limit 144 after 10 successes, got %d", th.getLimit())
+			t.Errorf("expected limit 144 after 11 successes, got %d", th.getLimit())
+		}
+	})
+
+	// Java's default increaseLimitAfter, DO_NOT_RE_INCREASE_LIMIT (-1), makes
+	// that check always true, so the limit re-increases after every success.
+	t.Run("default re-increases after every success", func(t *testing.T) {
+		t.Parallel()
+		th := newIndexingThrottle(200, 5, 0, 0)
+		th.decreaseLimit(100) // limit = 90
+		th.handleSuccess(90)
+		if th.getLimit() != 180 {
+			t.Errorf("expected limit 180 after one success, got %d", th.getLimit())
+		}
+		th.handleSuccess(180)
+		if th.getLimit() != 200 {
+			t.Errorf("expected limit capped at 200, got %d", th.getLimit())
+		}
+	})
+
+	// getInitialLimit: a positive initial limit (capped at the maximum) is the
+	// start; a re-increase climbs to the maximum, not to the start.
+	t.Run("initial limit below the maximum", func(t *testing.T) {
+		t.Parallel()
+		th := newIndexingThrottle(200, 5, 0, 0).withLimits(200, 50, doNotReIncreaseLimit)
+		if th.getLimit() != 50 {
+			t.Fatalf("start = %d, want the initial limit 50", th.getLimit())
+		}
+		th.handleSuccess(50)
+		if th.getLimit() != 100 {
+			t.Errorf("after a success = %d, want 100", th.getLimit())
+		}
+		if got := newIndexingThrottle(200, 5, 0, 0).withLimits(200, 500, doNotReIncreaseLimit).getLimit(); got != 200 {
+			t.Errorf("initial limit above the maximum starts at %d, want 200", got)
 		}
 	})
 
@@ -362,9 +399,7 @@ func TestIncreaseLimit(t *testing.T) {
 		th := newIndexingThrottle(200, 5, 0, 0)
 		th.recordsLimit = 3 // force tiny limit
 
-		for i := 0; i < 10; i++ {
-			th.handleSuccess(3)
-		}
+		th.handleSuccess(3)
 		// 3 < 5, so adds 5 → 8
 		if th.getLimit() != 8 {
 			t.Errorf("expected limit 8, got %d", th.getLimit())
@@ -376,9 +411,7 @@ func TestIncreaseLimit(t *testing.T) {
 		th := newIndexingThrottle(10000, 5, 0, 0)
 		th.recordsLimit = 150
 
-		for i := 0; i < 10; i++ {
-			th.handleSuccess(150)
-		}
+		th.handleSuccess(150)
 		// 150 >= 100, so 4*150/3 = 200
 		if th.getLimit() != 200 {
 			t.Errorf("expected limit 200, got %d", th.getLimit())

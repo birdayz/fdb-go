@@ -187,6 +187,10 @@ func (store *FDBRecordStore) VacuumReadableIndexesBuildData() {
 	}
 }
 
+// EventWaitDeleteStore is FDBStoreTimer.Waits.WAIT_DELETE_STORE, the wait a
+// caller records around a store deletion (Java's relational DROP SCHEMA).
+var EventWaitDeleteStore = Event{"wait_delete_store", "wait for delete store", KindTimed}
+
 // DeleteStore completely removes all data in a store subspace.
 // Matches Java's header-aware FDBRecordStore.deleteStoreAsync.
 func DeleteStore(ctx *FDBRecordContext, ss subspace.Subspace) error {

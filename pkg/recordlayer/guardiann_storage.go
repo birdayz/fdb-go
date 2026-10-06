@@ -43,6 +43,9 @@ type guardiann struct {
 	// poison makes the enclosing record context uncommittable; nil outside a
 	// record store.
 	poison func(error)
+	// timer counts the vector references read (Java's OnRead.onVectorRead);
+	// nil outside a record store.
+	timer *StoreTimer
 }
 
 func newGuardiann(ss subspace.Subspace, config guardiannConfig, env *dst.Env, listener guardiannListener) *guardiann {
@@ -354,6 +357,7 @@ func (g *guardiann) fetchVectorRefs(tx fdb.ReadTransaction, clusterID tuple.UUID
 		if err != nil {
 			return nil, err
 		}
+		g.timer.Increment(CountVectorVectorReads)
 		out = append(out, ref)
 	}
 	return out, nil
@@ -365,6 +369,9 @@ func (g *guardiann) fetchVectorRef(tx fdb.ReadTransaction, clusterID tuple.UUID,
 		return nil, err
 	}
 	ref, err := vectorRefFromValue(pk, b, g.codec.decode)
+	if err == nil {
+		g.timer.Increment(CountVectorVectorReads)
+	}
 	return &ref, err
 }
 

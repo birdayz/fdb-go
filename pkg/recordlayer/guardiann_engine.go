@@ -140,8 +140,21 @@ func decodeTaskCount(v []byte) int64 {
 	return int64(binary.LittleEndian.Uint64(v))
 }
 
-// guardiannRegister composes TaskCountRegister and MaintenanceControlRegister.
+// The vector counters Java 4.14 adds to FDBStoreTimer.Counts: references
+// GuardiANN reads (OnRead.onVectorRead), deferred tasks it enqueues and executes
+// (OnWrite), and indexes disabled because a task count went negative
+// (VectorIndexMaintainer.disableIndexOnNegativeTaskCount).
+var (
+	CountVectorVectorReads                      = Event{"vector_vector_reads", "vector references read", KindCount}
+	CountVectorTaskEnqueued                     = Event{"vector_task_enqueued", "vector maintenance tasks enqueued", KindCount}
+	CountVectorTaskExecuted                     = Event{"vector_task_executed", "vector maintenance tasks executed", KindCount}
+	CountVectorIndexDisabledOnNegativeTaskCount = Event{"vector_index_disabled_on_negative_task_count", "vector indexes disabled on negative task count", KindCount}
+)
+
+// guardiannRegister composes TaskCountRegister and MaintenanceControlRegister,
+// and counts task events on the store's timer as Java's OnWrite does.
 type guardiannRegister struct {
+	timer    *StoreTimer
 	tx       fdb.WritableTransaction
 	counts   vectorTaskCounts
 	prefix   tuple.Tuple
@@ -151,6 +164,7 @@ type guardiannRegister struct {
 }
 
 func (r *guardiannRegister) onTaskEnqueued() {
+	r.timer.Increment(CountVectorTaskEnqueued)
 	r.counts.adjust(r.tx, r.prefix, littleEndianOne)
 	if r.control != nil && !r.signaled {
 		r.signaled = true
@@ -158,7 +172,18 @@ func (r *guardiannRegister) onTaskEnqueued() {
 	}
 }
 
-func (r *guardiannRegister) onTaskExecuted() { r.counts.adjust(r.tx, r.prefix, littleEndianMinusOne) }
+func (r *guardiannRegister) onTaskExecuted() {
+	r.timer.Increment(CountVectorTaskExecuted)
+	r.counts.adjust(r.tx, r.prefix, littleEndianMinusOne)
+}
+
+// timer is the store context's timer, or nil.
+func (m *vectorIndexMaintainer) timer() *StoreTimer {
+	if s, ok := m.store.(*FDBRecordStore); ok {
+		return s.context.Timer()
+	}
+	return nil
+}
 
 func (m *vectorIndexMaintainer) mergeControl() *IndexDeferredMaintenanceControl {
 	if s, ok := m.store.(*FDBRecordStore); ok {
@@ -170,6 +195,7 @@ func (m *vectorIndexMaintainer) mergeControl() *IndexDeferredMaintenanceControl 
 func (m *vectorIndexMaintainer) guardiannFor(prefix tuple.Tuple, listener guardiannListener) *guardiann {
 	g := newGuardiann(m.getSubspaceForPrefix(prefix), m.guardiannConfig, m.store.Env(), listener)
 	g.poison = m.poisonTask
+	g.timer = m.timer()
 	return g
 }
 
@@ -189,7 +215,7 @@ func (m *vectorIndexMaintainer) poisonTask(err error) {
 func (m *vectorIndexMaintainer) applyGuardiannEntry(prefix, pk tuple.Tuple, vector gVector, remove bool) error {
 	control := m.mergeControl()
 	maintainInTransaction := control == nil || control.ShouldAutoMergeDuringCommit()
-	reg := &guardiannRegister{tx: m.tx, counts: m.taskCounts, prefix: prefix, index: m.index}
+	reg := &guardiannRegister{timer: m.timer(), tx: m.tx, counts: m.taskCounts, prefix: prefix, index: m.index}
 	if !maintainInTransaction {
 		reg.control = control
 	}
@@ -303,7 +329,7 @@ func (m *vectorIndexMaintainer) drainOwnedPrefix(lock vectorMergeLock, owned pre
 		quota = vectorMergeDefaultTimeQuota
 		control.SetTimeQuotaMillis(quota.Milliseconds())
 	}
-	reg := &guardiannRegister{tx: m.tx, counts: m.taskCounts, prefix: owned.prefix, index: m.index}
+	reg := &guardiannRegister{timer: m.timer(), tx: m.tx, counts: m.taskCounts, prefix: owned.prefix, index: m.index}
 	g := m.guardiannFor(owned.prefix, reg)
 	executed, err := g.executeDeferredTasks(m.tx, int(min(owned.count, int64(budget))), m.store.Env().Now().Add(quota))
 	if err != nil {
@@ -338,7 +364,10 @@ func (m *vectorIndexMaintainer) disableOnNegativeTaskCount() error {
 	if !ok {
 		return nil
 	}
-	_, err := s.MarkIndexDisabled(m.index.Name)
+	changed, err := s.MarkIndexDisabled(m.index.Name)
+	if changed {
+		s.context.Timer().Increment(CountVectorIndexDisabledOnNegativeTaskCount)
+	}
 	return err
 }
 

@@ -52,5 +52,10 @@ func (a *DropSchemaConstantAction) deleteFDBStore(txn api.Transaction) error {
 	if err != nil {
 		return err
 	}
-	return recordlayer.DeleteStore(rctx, ss)
+	// Java's DropSchemaConstantAction waits on the deletion under
+	// WAIT_DELETE_STORE (asyncToSync records the wait).
+	start := rctx.Env().Now()
+	err = recordlayer.DeleteStore(rctx, ss)
+	rctx.Timer().Record(recordlayer.EventWaitDeleteStore, rctx.Env().Now().Sub(start).Nanoseconds())
+	return err
 }

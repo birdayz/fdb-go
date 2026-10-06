@@ -378,6 +378,16 @@ type OnlineIndexer struct {
 	// OnlineIndexer.fallbackToRecordsScan). Like Java's, it is never reset: a
 	// later BuildIndex on the same indexer keeps scanning records.
 	fallbackToRecordsScan bool
+
+	// initialLimit, increaseLimitAfter, maxWriteLimitBytes and
+	// transactionTimeLimitMs are Java's OnlineIndexOperationConfig fields of
+	// those names: the starting per-transaction limit (0 = limit), the
+	// successes before a re-increase, and the approximate transaction size and
+	// age past which a range commits early (0 = no such limit).
+	initialLimit           int
+	increaseLimitAfter     int
+	maxWriteLimitBytes     int64
+	transactionTimeLimitMs int64
 	// enforcedStampOverwrite is Java IndexingBase.enforceStampOverwrite, set with
 	// the fallback: the records scan must replace the abandoned method's stamp.
 	enforcedStampOverwrite bool
@@ -554,6 +564,11 @@ func NewOnlineIndexerBuilder() *OnlineIndexerBuilder {
 			maxRetries:          100,
 			recordsPerSecond:    10000, // matches Java DEFAULT_RECORDS_PER_SECOND
 			markReadableEnabled: true,  // Java buildIndex() defaults markReadable=true
+			// Java DO_NOT_RE_INCREASE_LIMIT, DEFAULT_WRITE_LIMIT_BYTES and
+			// DEFAULT_TRANSACTION_TIME_LIMIT (OnlineIndexOperationConfig.java:40-72).
+			increaseLimitAfter:     doNotReIncreaseLimit,
+			maxWriteLimitBytes:     900_000,
+			transactionTimeLimitMs: 4_000,
 			// Java DEFAULT_PROGRESS_LOG_INTERVAL = -1 → progress logging is OFF by
 			// default; opt in via SetProgressLogIntervalMillis.
 			progressLogIntervalMillis: -1,
@@ -723,6 +738,37 @@ func (b *OnlineIndexerBuilder) SetTargetIndexes(indexes []*Index) *OnlineIndexer
 // SetSubspace sets the store subspace.
 func (b *OnlineIndexerBuilder) SetSubspace(ss subspace.Subspace) *OnlineIndexerBuilder {
 	b.indexer.subspace = ss
+	return b
+}
+
+// SetInitialLimit is Java's setInitialLimit: the per-transaction record limit
+// a build starts at, at most the limit; 0 starts at the limit.
+func (b *OnlineIndexerBuilder) SetInitialLimit(limit int) *OnlineIndexerBuilder {
+	b.indexer.initialLimit = limit
+	return b
+}
+
+// SetIncreaseLimitAfter is Java's setIncreaseLimitAfter: the consecutive
+// successful transactions after which a lowered limit re-increases toward the
+// limit.
+func (b *OnlineIndexerBuilder) SetIncreaseLimitAfter(n int) *OnlineIndexerBuilder {
+	b.indexer.increaseLimitAfter = n
+	return b
+}
+
+// SetMaxWriteLimitBytes is Java's setMaxWriteLimitBytes: a range commits once
+// its transaction's approximate size passes this many bytes (default 900,000;
+// 0 or less disables the check).
+func (b *OnlineIndexerBuilder) SetMaxWriteLimitBytes(n int64) *OnlineIndexerBuilder {
+	b.indexer.maxWriteLimitBytes = n
+	return b
+}
+
+// SetTransactionTimeLimitMilliseconds is Java's
+// setTransactionTimeLimitMilliseconds: a range commits once its transaction
+// is older than this (default 4,000 ms; 0 or less disables the check).
+func (b *OnlineIndexerBuilder) SetTransactionTimeLimitMilliseconds(ms int64) *OnlineIndexerBuilder {
+	b.indexer.transactionTimeLimitMs = ms
 	return b
 }
 
@@ -960,7 +1006,8 @@ func (b *OnlineIndexerBuilder) Build() (*OnlineIndexer, error) {
 	b.indexer.leaseLengthMs = resolvedLeaseLengthMs(b.indexer.leaseLengthMs)
 
 	// Create adaptive throttle (matches Java's IndexingThrottle initialization)
-	b.indexer.throttle = newIndexingThrottle(b.indexer.limit, b.indexer.maxRetries, b.indexer.recordsPerSecond, b.indexer.enforcedPostTransactionDelay)
+	b.indexer.throttle = newIndexingThrottle(b.indexer.limit, b.indexer.maxRetries, b.indexer.recordsPerSecond, b.indexer.enforcedPostTransactionDelay).
+		withLimits(b.indexer.limit, b.indexer.initialLimit, b.indexer.increaseLimitAfter)
 
 	return &b.indexer, nil
 }
@@ -1922,6 +1969,7 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 		recordsProcessed = 0
 		mergeRequests = nil
 		hasMore = false
+		started := rtx.Env().Now()
 
 		store, err := oi.openStore(rtx)
 		if err != nil {
@@ -1976,6 +2024,9 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 
 		var scannedCount int
 		var extraPK tuple.Tuple
+		// reachedLimits: the last record indexed took the transaction past its
+		// time or write limit, so the next record ends the range.
+		var reachedLimits bool
 
 		for rec, iterErr := range Seq2(cursor, ctx) {
 			if iterErr != nil {
@@ -1984,7 +2035,7 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 
 			scannedCount++
 
-			if scannedCount > oi.limit {
+			if scannedCount > oi.limit || reachedLimits {
 				extraPK = rec.PrimaryKey
 				break
 			}
@@ -1996,6 +2047,7 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 			}
 
 			// Update each target index that applies to this record.
+			indexed := false
 			for _, idx := range oi.targetIndexes {
 				if !oi.shouldIndexRecordForIndex(rec, idx) {
 					continue
@@ -2006,6 +2058,12 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 				}
 				if err := maintainer.Update(nil, rec); err != nil {
 					return nil, fmt.Errorf("index %q record pk=%v: %w", idx.Name, rec.PrimaryKey, err)
+				}
+				indexed = true
+			}
+			if indexed {
+				if reachedLimits, err = oi.transactionReachedLimits(rtx, started); err != nil {
+					return nil, err
 				}
 			}
 			// Count ALL scanned records, not just indexed ones.
@@ -2099,6 +2157,24 @@ func (oi *OnlineIndexer) buildIndexingStamp() *gen.IndexBuildIndexingStamp {
 	}
 }
 
+// transactionReachedLimits is Java's IndexingBase.hadTransactionReachedLimits:
+// the range's transaction is older than the transaction time limit or larger
+// than the write limit, so the range commits before its next record (which
+// becomes the range's exclusive end, as a record past the count limit does).
+func (oi *OnlineIndexer) transactionReachedLimits(rtx *FDBRecordContext, started time.Time) (bool, error) {
+	if oi.transactionTimeLimitMs > 0 && rtx.Env().Now().Sub(started).Milliseconds() > oi.transactionTimeLimitMs {
+		return true, nil
+	}
+	if oi.maxWriteLimitBytes > 0 {
+		size, err := rtx.GetApproximateTransactionSize()
+		if err != nil {
+			return false, err
+		}
+		return size > oi.maxWriteLimitBytes, nil
+	}
+	return false, nil
+}
+
 // buildRangeByIndex processes one chunk via the BY_INDEX strategy: scans the
 // source index to find records, then feeds them to the target index maintainer.
 // Range tracking uses source index entry keys (not primary keys).
@@ -2114,6 +2190,7 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 		recordsProcessed = 0
 		mergeRequests = nil
 		hasMore = false
+		started := rtx.Env().Now()
 
 		store, err := oi.openStore(rtx)
 		if err != nil {
@@ -2197,6 +2274,7 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 		}
 		var scannedCount int
 		var extraKey tuple.Tuple
+		var reachedLimits bool // as in buildRange
 
 		for indexedRec, iterErr := range Seq2(cursor, ctx) {
 			if iterErr != nil {
@@ -2205,7 +2283,7 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 
 			scannedCount++
 
-			if scannedCount > oi.limit {
+			if scannedCount > oi.limit || reachedLimits {
 				extraKey = indexedRec.IndexEntry.Key
 				break
 			}
@@ -2226,6 +2304,9 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 			}
 			if err := maintainer.Update(nil, rec); err != nil {
 				return nil, fmt.Errorf("index record pk=%v: %w", rec.PrimaryKey, err)
+			}
+			if reachedLimits, err = oi.transactionReachedLimits(rtx, started); err != nil {
+				return nil, err
 			}
 		}
 

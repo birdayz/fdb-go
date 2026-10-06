@@ -18,11 +18,21 @@ type indexingThrottle struct {
 	// OnlineIndexOperationConfig.enforcedPostTransactionDelay (0 = disabled).
 	enforcedPostTransactionDelay int
 
+	// maxLimit is the ceiling a re-increase stops at (Java getMaxLimit).
+	maxLimit int
+	// increaseLimitAfter is Java's OnlineIndexOperationConfig.increaseLimitAfter:
+	// the consecutive successes after which the limit re-increases. Its default
+	// DO_NOT_RE_INCREASE_LIMIT (-1) is documented as never re-increasing, but
+	// Java's check (consecutiveSuccessCount >= increaseLimitAfter,
+	// IndexingThrottle.java:220) is then always true, so the limit re-increases
+	// after every success; Go follows the code.
+	increaseLimitAfter int
+
 	// Adaptive limit state (matches Java's IndexingThrottle.Booker)
 	recordsLimit              int // current per-transaction limit
 	lastFailureRecordsScanned int // records scanned when last failure occurred
 	consecutiveFailureCount   int // for oneToNineFactor
-	consecutiveSuccessCount   int // for optional limit increase (unused by default)
+	consecutiveSuccessCount   int // successes since the last re-increase
 
 	// Rate limiter state (matches Java's Booker.waitTimeMilliseconds)
 	forcedDelayTimestamp           time.Time // next allowed transaction start
@@ -37,7 +47,25 @@ func newIndexingThrottle(initialLimit, maxRetries, recordsPerSecond, enforcedPos
 		recordsPerSecond:             recordsPerSecond,
 		enforcedPostTransactionDelay: enforcedPostTransactionDelay,
 		recordsLimit:                 initialLimit,
+		maxLimit:                     initialLimit,
+		increaseLimitAfter:           doNotReIncreaseLimit,
 	}
+}
+
+// doNotReIncreaseLimit is Java's OnlineIndexOperationConfig.DO_NOT_RE_INCREASE_LIMIT.
+const doNotReIncreaseLimit = -1
+
+// withLimits sets Java's maxLimit, initialLimit and increaseLimitAfter: the
+// limit starts at the initial limit when positive (capped at the maximum), else
+// at the maximum (OnlineIndexOperationConfig.getInitialLimit).
+func (t *indexingThrottle) withLimits(maxLimit, initialLimit, increaseLimitAfter int) *indexingThrottle {
+	t.maxLimit, t.increaseLimitAfter = maxLimit, increaseLimitAfter
+	t.initialLimit = maxLimit
+	if initialLimit > 0 && initialLimit < maxLimit {
+		t.initialLimit = initialLimit
+	}
+	t.recordsLimit = t.initialLimit
+	return t
 }
 
 // getLimit returns the current per-transaction record limit.
@@ -100,17 +128,17 @@ func (t *indexingThrottle) decreaseLimit(recordsScanned int) {
 // and applies rate limiting delay.
 // Matches Java's IndexingThrottle.handleSuccess() + increaseLimit().
 func (t *indexingThrottle) handleSuccess(recordsScanned int) {
-	t.consecutiveFailureCount = 0
-	t.consecutiveSuccessCount++
 	t.recordsScannedSinceForcedDelay += recordsScanned
-
-	// After 10 consecutive successes, gradually increase the limit back toward
-	// initialLimit. Matches Java's config.getIncreaseLimitAfter() = 10.
-	const increaseLimitAfter = 10
-	if t.consecutiveSuccessCount >= increaseLimitAfter && t.recordsLimit < t.initialLimit {
+	// Java's handleLimitsPostRunnerTransaction: re-increase once the count of
+	// earlier consecutive successes reaches increaseLimitAfter, then count
+	// afresh, so a positive N re-increases on the (N+1)th success.
+	if t.consecutiveSuccessCount >= t.increaseLimitAfter {
 		t.increaseLimit()
 		t.consecutiveSuccessCount = 0
+	} else {
+		t.consecutiveSuccessCount++
 	}
+	t.consecutiveFailureCount = 0
 }
 
 // increaseLimit gradually increases the per-transaction limit.
@@ -122,9 +150,12 @@ func (t *indexingThrottle) handleSuccess(recordsScanned int) {
 //	limit < 100: double
 //	limit >= 100: multiply by 4/3
 //
-// Never exceeds initialLimit.
+// Never exceeds maxLimit, and is a no-op at it.
 func (t *indexingThrottle) increaseLimit() {
 	oldLimit := t.recordsLimit
+	if oldLimit >= t.maxLimit {
+		return
+	}
 	var newLimit int
 	if oldLimit < 5 {
 		newLimit = oldLimit + 5
@@ -137,9 +168,8 @@ func (t *indexingThrottle) increaseLimit() {
 	if newLimit <= oldLimit {
 		newLimit = oldLimit + 1
 	}
-	// Cap at initialLimit
-	if newLimit > t.initialLimit {
-		newLimit = t.initialLimit
+	if newLimit > t.maxLimit {
+		newLimit = t.maxLimit
 	}
 	t.recordsLimit = newLimit
 }

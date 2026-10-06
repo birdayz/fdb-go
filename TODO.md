@@ -742,8 +742,23 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     `PutInSession`, and the readable / write-only / queued index-update sets
     filled per index update. Java's two write-only keys share the name
     "writeOnlyIndexesUpdated" and so one set; Go keeps that.
-- [ ] Client range/HNSW/GuardiANN/vector-task/queue timer instrumentation;
+- [x] Client range/HNSW/GuardiANN/vector-task/queue timer instrumentation;
   online-indexer configuration limits; ICU byte baseline.
+  - Timers: HNSW node reads/writes by layer and bytes with the generic
+    index key/value counters (HnswVectorIndexEngine OnRead/OnWrite); GuardiANN
+    `vector_vector_reads`, task enqueued/executed, disabled-on-negative-count;
+    `wait_delete_store` around DROP SCHEMA's deletion. The pending-queue
+    counters were already in. Pinned by `vector_counters_test.go`.
+  - Client range instrumentation: Java's 4.14 change is EventKeeperTranslator's
+    count/event dispatch over fdb-java's EventKeeper; neither Go client has an
+    EventKeeper, so there is nothing to translate (pre-existing, no analogue).
+  - Online-indexer limits: initial limit, increaseLimitAfter (Java's default
+    -1 re-increases after every success, as its code does, not as its doc
+    says), the 900,000-byte write limit and 4,000 ms transaction time limit,
+    which end a range early (`hadTransactionReachedLimits`). Pinned by the
+    throttle tests and `online_indexer_txn_limits_test.go`.
+  - ICU: declared in DIVERGENCES ("Collation keys are not ICU's"); no byte
+    baseline, since matching ICU 78.3 sort keys means porting ICU collation.
 - [x] Lucene backend: out of scope for this migration PR (#786), owner decision;
   tracked as a separate follow-up PR (section 7).
 

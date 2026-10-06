@@ -1691,6 +1691,9 @@ type hnswStorage struct {
 	config          HNSWConfig
 	cache           map[string]*parsedNode // FDB key → parsed node (nil = not found)
 	stats           *HNSWStats             // optional I/O counters (nil = no tracking)
+	// timer counts node reads and writes on the store timer, as Java's
+	// HnswVectorIndexEngine OnRead / OnWrite listeners do (nil = none).
+	timer *StoreTimer
 
 	// scan opens a range iterator for a layer scan. nil in production (uses the real
 	// tx.GetRange().Iterator() via scanIter); tests set it to inject a fake iterator so
@@ -1727,6 +1730,70 @@ func (s *hnswStorage) getKey(tx fdb.ReadTransaction, key fdb.Key) ([]byte, error
 		return s.get(tx, key)
 	}
 	return tx.Get(key).Get()
+}
+
+// The HNSW node counters of FDBStoreTimer.Counts, which Java's
+// HnswVectorIndexEngine OnRead / OnWrite listeners record: nodes read and
+// written, and their key-value bytes, split by layer 0 and the layers above.
+var (
+	CountVectorNodeReads       = Event{"vector_node_reads", "intermediate nodes read", KindCount}
+	CountVectorNodeReadBytes   = Event{"vector_node_read_bytes", "intermediate node bytes read", KindSize}
+	CountVectorNode0Reads      = Event{"vector_node0_reads", "intermediate nodes read", KindCount}
+	CountVectorNode0ReadBytes  = Event{"vector_node0_read_bytes", "intermediate node bytes read", KindSize}
+	CountVectorNodeWrites      = Event{"vector_node_writes", "intermediate nodes written", KindCount}
+	CountVectorNodeWriteBytes  = Event{"vector_node_write_bytes", "intermediate node bytes written", KindSize}
+	CountVectorNode0Writes     = Event{"vector_node0_writes", "intermediate nodes written", KindCount}
+	CountVectorNode0WriteBytes = Event{"vector_node0_write_bytes", "intermediate node bytes written", KindSize}
+)
+
+// recordKeyValueRead is OnRead.onKeyValueRead: the generic index-load counters
+// (VectorIndexInstrumentation.recordKeyValueRead) and the layer's node bytes.
+// A missing value reads as zero bytes.
+func (s *hnswStorage) recordKeyValueRead(layer int, key, value []byte) {
+	if s.timer == nil {
+		return
+	}
+	s.timer.Increment(CountLoadIndexKey)
+	s.timer.IncrementBy(CountLoadIndexKeyBytes, int64(len(key)))
+	s.timer.IncrementBy(CountLoadIndexValueBytes, int64(len(value)))
+	bytes := CountVectorNodeReadBytes
+	if layer == 0 {
+		bytes = CountVectorNode0ReadBytes
+	}
+	s.timer.IncrementBy(bytes, int64(len(key)+len(value)))
+}
+
+// recordNodeRead is OnRead.onNodeRead.
+func (s *hnswStorage) recordNodeRead(layer int) {
+	if layer == 0 {
+		s.timer.Increment(CountVectorNode0Reads)
+	} else {
+		s.timer.Increment(CountVectorNodeReads)
+	}
+}
+
+// recordKeyValueWritten is OnWrite.onKeyValueWritten.
+func (s *hnswStorage) recordKeyValueWritten(layer int, key, value []byte) {
+	if s.timer == nil {
+		return
+	}
+	s.timer.Increment(CountSaveIndexKey)
+	s.timer.IncrementBy(CountSaveIndexKeyBytes, int64(len(key)))
+	s.timer.IncrementBy(CountSaveIndexValueBytes, int64(len(value)))
+	bytes := CountVectorNodeWriteBytes
+	if layer == 0 {
+		bytes = CountVectorNode0WriteBytes
+	}
+	s.timer.IncrementBy(bytes, int64(len(key)+len(value)))
+}
+
+// recordNodeWritten is OnWrite.onNodeWritten.
+func (s *hnswStorage) recordNodeWritten(layer int) {
+	if layer == 0 {
+		s.timer.Increment(CountVectorNode0Writes)
+	} else {
+		s.timer.Increment(CountVectorNodeWrites)
+	}
 }
 
 func newHNSWStorage(ss subspace.Subspace, config HNSWConfig) *hnswStorage {
@@ -1776,7 +1843,10 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.WritableTransaction, layer int, prima
 	if existing := s.cache[string(key)]; existing != nil {
 		additional = existing.additional
 	}
-	tx.Set(fdb.Key(key), append(value.Pack(), additional...))
+	packed := append(value.Pack(), additional...)
+	tx.Set(fdb.Key(key), packed)
+	s.recordKeyValueWritten(layer, key, packed)
+	s.recordNodeWritten(layer)
 
 	// Update cache with parsed data so subsequent reads skip tuple.Unpack.
 	// The cache holds neighbors as nested-encoded spans (Tuple{pk}.Pack()).
@@ -1910,10 +1980,12 @@ func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKe
 	if err != nil {
 		return nil, nil, fmt.Errorf("hnsw: get node layer %d: %w", layer, err)
 	}
+	s.recordKeyValueRead(layer, key, data)
 	if data == nil {
 		s.cache[cacheKey] = nil // cache negative result
 		return nil, nil, fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
 	}
+	s.recordNodeRead(layer)
 
 	// Parse and cache the result.
 	var additional []byte
@@ -1987,11 +2059,13 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 			results[p.idx].err = fmt.Errorf("hnsw: get node layer %d: %w", layer, err)
 			continue
 		}
+		s.recordKeyValueRead(layer, []byte(p.key), data)
 		if data == nil {
 			s.cache[p.key] = nil // cache negative result
 			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
 			continue
 		}
+		s.recordNodeRead(layer)
 		vecBytes, neighbors, additional, parseErr := parseNodeValue(data)
 		if parseErr != nil {
 			results[p.idx].err = parseErr
@@ -2074,6 +2148,10 @@ func (s *hnswStorage) loadEdgeListsBatch(tx fdb.ReadTransaction, layer int, pks 
 			results[p.idx].err = fmt.Errorf("hnsw: get node layer %d: %w", layer, err)
 			continue
 		}
+		s.recordKeyValueRead(layer, []byte(p.cacheKey), data)
+		if data != nil {
+			s.recordNodeRead(layer)
+		}
 		if data == nil {
 			s.cache[p.cacheKey] = nil
 			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d: %w", layer, errHNSWNotPresent)
@@ -2108,6 +2186,8 @@ func (s *hnswStorage) preloadLayer(tx fdb.ReadTransaction, layer int) error {
 		if err != nil {
 			return fmt.Errorf("hnsw: preload layer %d get kv: %w", layer, err)
 		}
+		s.recordKeyValueRead(layer, kv.Key, kv.Value)
+		s.recordNodeRead(layer)
 		cacheKey := string(kv.Key)
 		if _, ok := s.cache[cacheKey]; ok {
 			continue // already cached (e.g. from a save earlier in this tx)
@@ -2342,6 +2422,7 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.WritableTransaction, layer in
 		edgeKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey, nbPK})
 		edgeValue := tuple.Tuple{nbVecBytes}.Pack()
 		tx.Set(fdb.Key(edgeKey), edgeValue)
+		s.recordKeyValueWritten(layer, edgeKey, edgeValue)
 
 		// Record the vector so later same-tx saves can resolve it (merges into a
 		// vector-less source entry — see cacheNeighborVector).
@@ -2351,6 +2432,7 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.WritableTransaction, layer in
 			cached.vecBytes = nbVecBytes
 		}
 	}
+	s.recordNodeWritten(layer)
 
 	// Update the cache for this node so loadNodeLayerDispatch returns
 	// neighbors from cache without hitting FDB.
@@ -2458,6 +2540,7 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 			return nil, nil, fmt.Errorf("hnsw: inlining get kv layer %d: %w", layer, err)
 		}
 		foundAnyKV = true
+		s.recordKeyValueRead(layer, kv.Key, kv.Value)
 
 		// Unpack the key to get (layer, sourcePK, neighborPK).
 		keyTuple, unpackErr := fastSubspaceUnpack(kv.Key, len(s.dataSubspace.Bytes()))
@@ -2496,6 +2579,8 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 	if _, err := iter.Get(); err != nil {
 		return nil, nil, fmt.Errorf("hnsw: inlining scan layer %d: %w", layer, err)
 	}
+	// An inlining node is read from its (possibly empty) edge range.
+	s.recordNodeRead(layer)
 
 	if !foundAnyKV {
 		// Empty range — return a node with an EMPTY neighbor list, never an error.
@@ -2562,6 +2647,7 @@ func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) er
 		if err != nil {
 			return fmt.Errorf("hnsw: preload inlining layer %d get kv: %w", layer, err)
 		}
+		s.recordKeyValueRead(layer, kv.Key, kv.Value)
 
 		keyTuple, unpackErr := fastSubspaceUnpack(kv.Key, len(s.dataSubspace.Bytes()))
 		if unpackErr != nil || len(keyTuple) < 3 {
@@ -2598,6 +2684,7 @@ func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) er
 
 	// Populate cache: one entry per source node with its neighbor list.
 	for sourceKey, edges := range nodeEdges {
+		s.recordNodeRead(layer)
 		sourcePK := nodePKs[sourceKey]
 		compactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), sourcePK})
 		if _, ok := s.cache[string(compactKey)]; ok {
