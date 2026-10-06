@@ -744,10 +744,15 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   PLAN_CACHE_* hit/miss/LRU-eviction counts (`relational_plan_cache_test.go`,
   `TestFDB_PlanCacheIsEngineWide`). Declared (DIVERGENCES "Engine-wide plan
   cache"): the query key keeps database and schema and Go's planned-in
-  literals, so plans are shared per schema, not per template. Open:
-  stored-query warm-up (needs per-template keys), cache timing events, and the
-  corpus `check_cache` pass (218 skipped checks), which can now read
-  `SharedPlanCache().Counts().TertiaryHit`.
+  literals, so plans are shared per schema, not per template. Also done:
+  UPDATE/DELETE plans are cached (INSERT never, Java's shouldNotCache); the
+  transaction's temporary functions are part of the key, so their DDL no
+  longer invalidates (`TestFDB_PlanCacheKeysTemporaryFunctions`); a session
+  reset keeps the shared cache; PLAN_CACHE_* sizes/TTLs are DSN parameters;
+  the corpus `check_cache` pass runs (Java's EmbeddedConfig one-hour TTLs,
+  checks shuffled after the executions, +1 tertiary hit required; the
+  check-cache skip class is emptied). Open: stored-query warm-up (needs
+  per-template keys) and cache timing events.
 
 ## 5. WS-I — shared APIs and lifecycle
 

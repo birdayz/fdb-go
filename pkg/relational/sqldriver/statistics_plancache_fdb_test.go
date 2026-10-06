@@ -97,8 +97,8 @@ func TestFDB_StatisticsChangesInvalidateCachedPlans(t *testing.T) {
 		})
 	}
 
-	// The SELECT is what the cache keys on. DML is never cached (PlanCacheSkip),
-	// so the inserts above contribute no cacheable entry for this query.
+	// The SELECT is what the cache keys on. An INSERT is never cached
+	// (PlanCacheSkip), so the inserts above contribute no entry for this query.
 	const q = "SELECT pkside.v, fkside.id FROM pkside, fkside WHERE fkside.fk = pkside.id"
 	runQuery := func(what string) {
 		t.Helper()

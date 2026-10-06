@@ -19,7 +19,10 @@ func TestConnectionOptions_UnknownParameterIsRefused(t *testing.T) {
 	_, err = dsn.ConnectionOptions()
 	var apiErr *api.Error
 	const want = "unknown DSN parameter dryrun, zz; accepted parameters are cluster_file, dry_run, " +
-		"isolation_level_snapshot, planner_statistics, restrict_ddl_to_session_database, schema, transaction_tags"
+		"isolation_level_snapshot, plan_cache_primary_max_entries, plan_cache_primary_time_to_live_millis, " +
+		"plan_cache_secondary_max_entries, plan_cache_secondary_time_to_live_millis, " +
+		"plan_cache_tertiary_max_entries, plan_cache_tertiary_time_to_live_millis, " +
+		"planner_statistics, restrict_ddl_to_session_database, schema, transaction_tags"
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter || apiErr.Message != want {
 		t.Fatalf("ConnectionOptions = %v; want 22023 %q", err, want)
 	}
@@ -58,5 +61,32 @@ func TestConnectionOptions_AcceptedParameters(t *testing.T) {
 	}
 	if _, err := bad.ConnectionOptions(); err == nil {
 		t.Fatal("dry_run=maybe accepted")
+	}
+}
+
+// The engine plan cache's sizes and TTLs are DSN parameters named by the
+// lower-cased option, converted and checked by the option's contract.
+func TestConnectionOptions_PlanCacheParameters(t *testing.T) {
+	t.Parallel()
+	dsn, err := ParseDSN("fdbsql:///db?plan_cache_tertiary_max_entries=4&plan_cache_secondary_time_to_live_millis=60000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err := dsn.ConnectionOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Get(api.OptPlanCacheTertiaryMaxEntries) != 4 || opts.Get(api.OptPlanCacheSecondaryTimeToLiveMillis) != int64(60000) {
+		t.Fatalf("options %v", opts.AllEntries())
+	}
+	for _, bad := range []string{"plan_cache_secondary_max_entries=0", "plan_cache_primary_time_to_live_millis=x"} {
+		d, err := ParseDSN("fdbsql:///db?" + bad)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var apiErr *api.Error
+		if _, err := d.ConnectionOptions(); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter {
+			t.Errorf("%s: %v, want 22023", bad, err)
+		}
 	}
 }

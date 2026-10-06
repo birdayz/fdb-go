@@ -139,8 +139,9 @@ const (
 	// cannot hide inside the two named ones.
 	SkipDDLOther SkipClass = "unsupported-DDL:other"
 
-	// SkipCheckCache is the extra `check_cache` pass, whose assertion needs a
-	// per-connection plan-cache metric collector.
+	// SkipCheckCache is a `check_cache` run on a connection without a shared
+	// plan cache, whose hit count the assertion reads (Java skips the run on a
+	// connection without a metric collector).
 	SkipCheckCache SkipClass = "unsupported:check-cache"
 
 	// SkipRandomInjection is a `!r` / `!a` generator segment, whose value comes

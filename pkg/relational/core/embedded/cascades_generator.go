@@ -389,14 +389,10 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if so.rightDeep {
 		popts.config.ShouldJoinRightDeep = true
 	}
-	planKey := cacheKey{
-		scope: planCacheScope(g.c.sess.DBPath, g.c.sess.Schema, md.Version(), popts.cacheKeyPart()),
-		sql:   planCacheText(q),
-	}
+	planKey, cacheable := g.planCacheKey(md, popts, planCacheText(q))
 	cacheTemplate := g.sessionTemplate()
 	cache := g.cache
-	// A temporary function is not part of the schema version the key names.
-	if so.noCache || (g.c.activeTx != nil && len(g.c.activeTx.tempFunctions) > 0) {
+	if so.noCache || !cacheable {
 		cache = nil
 	}
 
@@ -905,11 +901,13 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return g.planDMLExplainOnly(dml)
 	}
 
-	// DML is never cached; the cache event is always Skip on success.
-	// Log the original whitespace-preserved SQL (see planSelectCascades).
+	// UPDATE and DELETE plans are cached as SELECT plans are; INSERT plans are
+	// not (Java's PlanGenerator.shouldNotCache: an INSERT's plan carries its
+	// rows). Log the original whitespace-preserved SQL (see planSelectCascades).
+	so := statementOptionsFor(dml, c.Options())
 	ls := g.beginPlanLog(ctx, canonicalTextOf(dml))
 	if ls != nil {
-		ls.setLogQuery(statementOptionsFor(dml, c.Options()).logQuery)
+		ls.setLogQuery(so.logQuery)
 	}
 	defer func() { ls.finish(err) }()
 
@@ -926,7 +924,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// ExecuteProperties.setDryRun (QueryPlan.java:435) → the DML plans branch to
 	// dryRunSave/DeleteRecordAsync. The flag is the statement's typed OPTIONS clause
 	// merged with the connection's DRY_RUN (Java's PlanGenerator merge, :170), decided
-	// here per statement (DML plans are never cached) and carried on the cascadesPlan →
+	// here per statement (it is not part of a cached plan) and carried on the cascadesPlan →
 	// paginatingRows.dryRun → ExecuteProperties.DryRun, where executeInsert/Update/Delete
 	// branch onto the store DryRun* primitives. A connection DRY_RUN set through SetOption
 	// lasts one pool borrow: ResetSession restores the connector's options, so the next
@@ -934,7 +932,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// QUERY remain accepted-and-ignored hints. Detection walks the whole DML subtree so the
 	// INSERT…SELECT spelling — whose OPTIONS the grammar attaches to the inner SELECT, not
 	// insertStatement.queryOptions — cannot silently bypass DRY RUN and commit.
-	dryRun := statementOptionsFor(dml, g.c.Options()).dryRun
+	dryRun := so.dryRun
 
 	var logicalOp logical.LogicalOperator
 	var insStmt antlrgen.IInsertStatementContext
@@ -1164,6 +1162,38 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// can move between pages and be emitted twice. See
 	// PlannerConfiguration.SingleReadVersion.
 	popts.config.SingleReadVersion = g.c.activeTx != nil
+
+	// The plan cache, keyed as a SELECT's is. The statement's checks above
+	// ran, and its RETURNING labels and explain come from the logical plan,
+	// so a hit supplies only the physical plan and its scalar subqueries.
+	planKey, cacheable := g.planCacheKey(md, popts, planCacheText(dml))
+	var cache queryPlanCache
+	if dml.InsertStatement() == nil && !so.noCache && cacheable {
+		cache = g.cache
+	}
+	cacheTemplate := g.sessionTemplate()
+	newDMLPlan := func(physPlan plans.RecordQueryPlan, subs []PlannedScalarSubquery) *cascadesPlan {
+		ls.setPlan(physPlan)
+		return &cascadesPlan{
+			conn:             g.c,
+			md:               md,
+			physicalPlan:     physPlan,
+			explain:          logicalOp.Explain(""),
+			scalarSubqueries: subs,
+			sql:              g.c.execLogSQL(dml),
+
+			indexDependencies: collectPlanIndexDependencies(md, physPlan, subs),
+			dryRun:            dryRun,
+			outputLabels:      outputLabels,
+		}
+	}
+	if cache != nil {
+		if cached, ok := cache.lookup(cacheTemplate, planKey, g.paramKey); ok {
+			ls.setCache(PlanCacheHit)
+			return newDMLPlan(cached.plan, cached.scalarSubs), nil
+		}
+	}
+
 	// Collected statistics take precedence; the legacy count-key source is the
 	// fallback. Placed after popts exists, since gate 1 reads the flag from it.
 	dmlStats, dmlStructurallyRefused := g.fetchCollectedStatistics(ctx, md, popts)
@@ -1217,20 +1247,13 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, dmlSubErr
 	}
 
-	ls.setPlan(physPlan)
-	ls.setCache(PlanCacheSkip)
-	return &cascadesPlan{
-		conn:             g.c,
-		md:               md,
-		physicalPlan:     physPlan,
-		explain:          logicalOp.Explain(""),
-		scalarSubqueries: dmlScalarSubs,
-		sql:              g.c.execLogSQL(dml),
-
-		indexDependencies: collectPlanIndexDependencies(md, physPlan, dmlScalarSubs),
-		dryRun:            dryRun,
-		outputLabels:      outputLabels,
-	}, nil
+	if cache != nil {
+		ls.setCache(PlanCacheMiss)
+		cache.store(cacheTemplate, planKey, g.paramKey, &planCacheEntry{plan: physPlan, scalarSubs: dmlScalarSubs})
+	} else {
+		ls.setCache(PlanCacheSkip)
+	}
+	return newDMLPlan(physPlan, dmlScalarSubs), nil
 }
 
 // planDMLExplainOnly produces a PlanFunc for DML (INSERT/UPDATE/DELETE) in
@@ -4789,6 +4812,19 @@ const defaultEmbeddedTemplate = "S"
 // the same cached schema the plan's metadata comes from (cachedMetaData). With
 // no session schema, or none cached (an explain-only generator without
 // metadata), it is defaultEmbeddedTemplate.
+// planCacheKey is a statement's plan-cache query key: the verbatim scope
+// (database, schema, metadata version, planner options), the transaction's
+// temporary functions (Java's transaction-bound metadata in QueryCacheKey),
+// and the token-rendered text. cacheable is false when the temporary
+// functions cannot be keyed.
+func (g *cascadesGenerator) planCacheKey(md *recordlayer.RecordMetaData, popts plannerOptions, text string) (cacheKey, bool) {
+	temp, cacheable := g.c.activeTx.planCacheComponent()
+	var scope strings.Builder
+	scope.WriteString(planCacheScope(g.c.sess.DBPath, g.c.sess.Schema, md.Version(), popts.cacheKeyPart()))
+	writeLengthPrefixed(&scope, temp)
+	return cacheKey{scope: scope.String(), sql: text}, cacheable
+}
+
 func (g *cascadesGenerator) sessionTemplate() string {
 	if g.c != nil {
 		if tmpl := g.c.cachedSchemaTemplate(); tmpl != nil {

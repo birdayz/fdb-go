@@ -18,19 +18,26 @@ import (
 // preparedMix is TestBlock.getRunAsPreparedMix. Draw the cache-pass choice even
 // when its metric assertion is unavailable, preserving Java's random stream.
 func preparedMix(kind string, repetitions int64, random *javaRandom) []bool {
+	mix, _ := preparedMixAndCacheCheck(kind, repetitions, random)
+	return mix
+}
+
+// preparedMixAndCacheCheck is getRunAsPreparedMix whole: the repetitions' mix
+// and whether the check_cache run is prepared (its Pair's right side).
+func preparedMixAndCacheCheck(kind string, repetitions int64, random *javaRandom) ([]bool, bool) {
 	out := make([]bool, repetitions)
 	if kind == "simple" {
-		return out
+		return out, false
 	}
 	if kind == "prepared" {
 		for i := range out {
 			out[i] = true
 		}
-		return out
+		return out, true
 	}
 	if repetitions == 1 {
 		out[0] = random.next(1) != 0
-		return out
+		return out, out[0]
 	}
 	for {
 		hasSimple, hasPrepared := false, false
@@ -40,8 +47,7 @@ func preparedMix(kind string, repetitions int64, random *javaRandom) []bool {
 			hasPrepared = hasPrepared || out[i]
 		}
 		if hasSimple && hasPrepared {
-			random.next(1)
-			return out
+			return out, random.next(1) != 0
 		}
 	}
 }

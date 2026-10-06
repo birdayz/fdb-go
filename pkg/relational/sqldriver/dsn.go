@@ -102,7 +102,7 @@ const (
 
 // acceptedDSNParams is every query parameter the driver reads. cluster_file
 // and schema are read from the same map as the options.
-var acceptedDSNParams = []string{
+var acceptedDSNParams = append([]string{
 	"cluster_file",
 	DryRunParam,
 	IsolationLevelSnapshotParam,
@@ -110,6 +110,27 @@ var acceptedDSNParams = []string{
 	RestrictDDLToSessionDatabaseParam,
 	"schema",
 	TransactionTagsParam,
+}, planCacheDSNParams()...)
+
+// planCacheOptions are the engine plan cache's sizes and TTLs, which a DSN
+// sets by the lower-cased option name (`plan_cache_tertiary_max_entries=4`):
+// Java's FRL takes them as engine options (EmbeddedConfig sets them for the
+// yaml tests). The connector's shared plan cache is built from them.
+var planCacheOptions = []api.OptionName{
+	api.OptPlanCachePrimaryMaxEntries,
+	api.OptPlanCachePrimaryTimeToLiveMillis,
+	api.OptPlanCacheSecondaryMaxEntries,
+	api.OptPlanCacheSecondaryTimeToLiveMillis,
+	api.OptPlanCacheTertiaryMaxEntries,
+	api.OptPlanCacheTertiaryTimeToLiveMillis,
+}
+
+func planCacheDSNParams() []string {
+	out := make([]string, len(planCacheOptions))
+	for i, o := range planCacheOptions {
+		out[i] = strings.ToLower(string(o))
+	}
+	return out
 }
 
 // ConnectionOptions converts the DSN's query parameters into the api.Options
@@ -174,6 +195,20 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 			return nil, err
 		}
 		opts = opts.With(api.OptTransactionTags, tags)
+	}
+	for _, name := range planCacheOptions {
+		raw, present := d.Options[strings.ToLower(string(name))]
+		if !present {
+			continue
+		}
+		v, err := api.OptionFromString(name, raw)
+		if err == nil {
+			err = api.ValidateOption(name, v)
+		}
+		if err != nil {
+			return nil, err
+		}
+		opts = opts.With(name, v)
 	}
 	return opts, nil
 }

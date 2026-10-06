@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/relational/conformance/javayamsql"
+	"fdb.dev/pkg/relational/core/embedded"
 )
 
 // blockOptions is TestBlock.TestBlockOptions after the defaults < preset <
@@ -81,6 +82,9 @@ type executable struct {
 	// rep is the 0-based repetition index, carried for failure messages.
 	rep      int64
 	prepared bool
+	// checkCache marks the check_cache pass's run: the query must be served
+	// from the plan cache (QueryExecutor.executeStatementAndCheckCacheIfNeeded).
+	checkCache bool
 }
 
 func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *javayamsql.Block) error {
@@ -93,12 +97,6 @@ func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *jav
 	}
 
 	o := resolveOptions(b)
-	if o.CheckCache {
-		// The extra pass is cheap; the assertion attached to it is not. Java
-		// compares PLAN_CACHE_TERTIARY_HIT before and after and requires
-		// exactly +1, which needs a per-connection metric collector.
-		r.skip(SkipCheckCache, where, "check_cache pass needs a per-connection plan-cache metric collector")
-	}
 
 	target, err := r.resolveConnect(resource, b.Connect)
 	if err != nil {
@@ -115,17 +113,27 @@ func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *jav
 
 	// Java builds `repetition` executables per test and then shuffles the
 	// flattened list, so the copies of one test do not stay adjacent.
-	var execs []executable
+	//
+	// With check_cache, each test runs once more after all of them, and that
+	// run must be served from the plan cache (TestBlock.java:394-406: its
+	// prepared choice is getRunAsPreparedMix's right side, and the checks are
+	// shuffled after the tests, with the same Random).
+	var execs, checks []executable
 	random := newJavaRandom(blockSeed(o, where))
 	for _, t := range b.Tests {
-		mix := preparedMix(o.StatementType, o.Repetition, random)
+		mix, checkPrepared := preparedMixAndCacheCheck(o.StatementType, o.Repetition, random)
 		for i := int64(0); i < o.Repetition; i++ {
 			execs = append(execs, executable{test: t, rep: i, prepared: mix[i]})
+		}
+		if o.CheckCache {
+			checks = append(checks, executable{test: t, rep: o.Repetition, prepared: checkPrepared, checkCache: true})
 		}
 	}
 	if o.Mode != "ordered" {
 		shuffle(execs, random)
+		shuffle(checks, random)
 	}
+	execs = append(execs, checks...)
 
 	// connection_lifecycle: BLOCK holds one connection for every executable,
 	// TEST takes a fresh one per executable. Mode `parallelized` shares the
@@ -262,11 +270,46 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 	}
 
 	cfg := plan.Consuming[0]
+	// The cache check (executeStatementAndCheckCacheIfNeeded) counts the
+	// plan-cache hits of the statement's execution. An expected error has no
+	// execution to check: Java's check follows a statement that ran.
+	checkCache := e.checkCache && cfg.Kind != javayamsql.ConfigError
+	var hitsBefore int64
+	if checkCache {
+		var supported bool
+		if hitsBefore, supported = planCacheHits(conn); !supported {
+			// Java: a connection without a metric collector skips the run.
+			r.skip(SkipCheckCache, at, "the connection has no shared plan cache")
+			return nil
+		}
+	}
 	if err := r.runConfigWithSetups(ctx, conn, at, query, cfg, plan, e.prepared, args); err != nil {
 		return err
 	}
+	if checkCache {
+		if hits, _ := planCacheHits(conn); hits != hitsBefore+1 {
+			return fmt.Errorf("%s: %q: Expected to retrieve the plan from the cache (plan-cache hits %d -> %d)",
+				at, truncate(query), hitsBefore, hits)
+		}
+	}
 	r.result.QueriesRun++
 	return nil
+}
+
+// planCacheHits is the connection's plan-cache PLAN_CACHE_TERTIARY_HIT count,
+// and whether the connection has a plan cache to read it from.
+func planCacheHits(conn *sql.Conn) (int64, bool) {
+	var hits int64
+	supported := false
+	_ = conn.Raw(func(dc any) error {
+		if ec, ok := dc.(*embedded.EmbeddedConnection); ok {
+			if cache := ec.SharedPlanCache(); cache != nil {
+				hits, supported = cache.Counts().TertiaryHit, true
+			}
+		}
+		return nil
+	})
+	return hits, supported
 }
 
 // runConfigWithSetups is executeWithSetup: the setups and the query share one

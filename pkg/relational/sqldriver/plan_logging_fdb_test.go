@@ -87,8 +87,9 @@ func TestFDB_PlanLogging_DML(t *testing.T) {
 	if ev.Err != nil {
 		t.Errorf("unexpected error in planning event: %v", ev.Err)
 	}
-	if ev.Cache != embedded.PlanCacheSkip {
-		t.Errorf("DML cache event = %v, want skip", ev.Cache)
+	// A DELETE is planned into the plan cache (an INSERT is not).
+	if ev.Cache != embedded.PlanCacheMiss {
+		t.Errorf("DML cache event = %v, want miss", ev.Cache)
 	}
 	if ev.PlanHash == 0 {
 		t.Errorf("DML plan hash should be non-zero")

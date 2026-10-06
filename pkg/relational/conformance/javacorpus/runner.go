@@ -632,7 +632,12 @@ func (r *runner) open(t connTarget) (*sql.DB, error) {
 	if db, ok := r.dbs[t]; ok {
 		return db, nil
 	}
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", t.Path, r.cfg.ClusterFile)
+	// The plan cache Java's yaml tests run against (EmbeddedConfig.beforeAll):
+	// one-hour TTLs, so a slow block's check_cache pass still finds the plans
+	// its tests wrote, and ten templates.
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&plan_cache_primary_time_to_live_millis=3600000"+
+		"&plan_cache_secondary_time_to_live_millis=3600000&plan_cache_tertiary_time_to_live_millis=3600000"+
+		"&plan_cache_primary_max_entries=10", t.Path, r.cfg.ClusterFile)
 	if t.Schema != "" {
 		dsn += "&schema=" + t.Schema
 	}

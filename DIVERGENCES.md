@@ -1679,7 +1679,10 @@ shared by the connections on one schema, not by the schemas of a template: a pla
 depends on that store's index states, which Go keys only when the state snapshot was read. For the
 same reason Java's stored-query warm-up (`OfflineStoredQueriesProcessor`, which plans each
 template's stored queries at startup with no store) is not ported: a warm-up plan has no schema to
-be keyed under. A DDL on any connection drops every shared plan (Java invalidates by key version).
+be keyed under. A DDL on any connection drops every shared plan (Java invalidates by key version);
+CREATE/DROP TEMPORARY FUNCTION does not, and neither does a session reset: the transaction's
+temporary functions are part of the key (as Java's transaction-bound metadata is), and a temporary
+function whose body holds a parameter makes its statements uncached.
 
 ## Java's float `=` is bit identity, and contradicts itself (upstream bug)
 

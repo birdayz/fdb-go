@@ -286,6 +286,9 @@ var maskedClasses = map[javacorpus.SkipClass]string{
 		"as the classifier's fallback bucket",
 	javacorpus.SkipDDLFunction: "EMPTIED by RFC-257: SQL, macro and temporary functions all build. " +
 		"Declared as the classifier's bucket for a template whose function declaration fails",
+	javacorpus.SkipCheckCache: "EMPTIED by the engine-wide plan cache: the check_cache pass runs each " +
+		"test once more and asserts one PLAN_CACHE_TERTIARY_HIT, read from the connection's shared cache. " +
+		"Declared for a connection with no shared cache",
 	javacorpus.SkipResultMetadataNested: "EMPTIED by CQ-74's close: every query's result set reports its " +
 		"column DataTypes (api.WithResultSetMetaDataObserver), so the descending directives are compared. " +
 		"Declared for a result set that reports no metadata",

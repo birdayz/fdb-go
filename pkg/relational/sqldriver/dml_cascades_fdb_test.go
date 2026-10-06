@@ -409,10 +409,31 @@ func TestFDB_DMLCascades_ExplainPlanShapes(t *testing.T) {
 	if !strings.Contains(del, "Delete(") {
 		t.Fatalf("DELETE plan %q is not a Delete plan", del)
 	}
-	for _, ev := range events {
-		if ev.Cache != embedded.PlanCacheSkip {
-			// DML is never cached.
-			t.Errorf("DML cache event = %v, want skip", ev.Cache)
-		}
+	// Java's PlanGenerator.shouldNotCache: an INSERT is never cached; a
+	// DELETE is planned into the cache, and the same DELETE again hits it.
+	if events[0].Cache != embedded.PlanCacheSkip {
+		t.Errorf("INSERT cache event = %v, want skip", events[0].Cache)
+	}
+	if events[1].Cache != embedded.PlanCacheMiss {
+		t.Errorf("DELETE cache event = %v, want miss", events[1].Cache)
+	}
+	if _, err := conn.ExecContext(ctx, "DELETE FROM Item WHERE price = 10"); err != nil {
+		t.Fatalf("DELETE again: %v", err)
+	}
+	if events := logger.snapshot(); events[len(events)-1].Cache != embedded.PlanCacheHit {
+		t.Errorf("repeated DELETE cache event = %v, want hit", events[len(events)-1].Cache)
+	}
+	if _, err := conn.ExecContext(ctx, "UPDATE Item SET price = 30 WHERE id = 2"); err != nil {
+		t.Fatalf("UPDATE: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, "UPDATE Item SET price = 30 WHERE id = 2"); err != nil {
+		t.Fatalf("UPDATE again: %v", err)
+	}
+	if events := logger.snapshot(); events[len(events)-1].Cache != embedded.PlanCacheHit {
+		t.Errorf("repeated UPDATE cache event = %v, want hit", events[len(events)-1].Cache)
+	}
+	var price int64
+	if err := conn.QueryRowContext(ctx, "SELECT price FROM Item WHERE id = 2").Scan(&price); err != nil || price != 30 {
+		t.Errorf("after the cached UPDATE: price = %d, %v; want 30", price, err)
 	}
 }

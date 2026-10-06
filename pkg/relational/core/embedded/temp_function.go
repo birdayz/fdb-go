@@ -2,6 +2,9 @@ package embedded
 
 import (
 	"context"
+	"strings"
+
+	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
@@ -102,6 +105,29 @@ func (tx *embeddedTx) dropTempFunction(name string) bool {
 		}
 	}
 	return false
+}
+
+// planCacheComponent is the transaction's temporary functions as a plan-cache
+// key component, Java's getTransactionBoundMetadataAsString in QueryCacheKey:
+// a plan reads the functions, so it is cached under their definitions. ok is
+// false when a definition may hold a parameter marker, whose bound value the
+// key would not carry; such a statement is not cached.
+func (tx *embeddedTx) planCacheComponent() (component string, ok bool) {
+	if tx == nil || len(tx.tempFunctions) == 0 {
+		return "", true
+	}
+	var b strings.Builder
+	for _, f := range tx.tempFunctions {
+		raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(f)
+		if err != nil {
+			return "", false
+		}
+		if def := f.GetSqlFunction().GetDefinition(); strings.ContainsAny(def, "?$") {
+			return "", false
+		}
+		writeLengthPrefixed(&b, string(raw))
+	}
+	return b.String(), true
 }
 
 // withTempFunctions is md as this transaction sees it.

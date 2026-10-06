@@ -963,7 +963,14 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 		tx.rctx.Cancel()
 	}
 	c.sess.ResetSchemaCache()
-	c.invalidatePlanCache()
+	// A connection's own cache is dropped with its borrow. The engine-wide
+	// cache is not: its keys carry the schema, the metadata version and the
+	// planner options, so the next borrower cannot be served a plan built for
+	// another schema state, and clearing it here would empty every
+	// connection's plans at every pool checkout.
+	if c.SharedPlanCache() == nil {
+		c.invalidatePlanCache()
+	}
 	// A SetOption made through Conn.Raw lasts for that borrow only.
 	c.options = c.baseOptions
 	return nil
@@ -1058,9 +1065,11 @@ func (c *EmbeddedConnection) execStatement(ctx context.Context, stmt antlrgen.IS
 		default:
 			return 0, api.NewError(api.ErrCodeUnsupportedOperation, "unsupported DDL statement")
 		}
-		if err == nil {
-			// DDL changes schema metadata — invalidate cached query plans
-			// so subsequent queries are re-planned against the new schema.
+		// DDL changes schema metadata — invalidate cached query plans so
+		// subsequent queries are re-planned against the new schema. A
+		// temporary function changes none: plans that read one are keyed by
+		// the transaction's functions (planCacheComponent).
+		if err == nil && ddl.CreateTempFunction() == nil && ddl.DropTempFunction() == nil {
 			c.invalidatePlanCache()
 		}
 		return n, err
