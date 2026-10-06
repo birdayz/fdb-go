@@ -952,6 +952,26 @@ func TestRewritingCostModel_ResidualConjunctRung(t *testing.T) {
 	assertStrictPlanningPreference(t, RewritingCostModelLess, oneConjunct, twoConjuncts)
 }
 
+// TestRewritingCostModel_TautologyCountsNoConjunct pins Java's tautology drop
+// on the residual-conjunct rung (NormalizedResidualPredicateProperty.java:81-121):
+// a TRUE predicate counts 0, so a fold that leaves `[A, TRUE]` beats the
+// original `[A, B]` on the count rather than tying into the hash (WS-E 5.4(g)).
+func TestRewritingCostModel_TautologyCountsNoConjunct(t *testing.T) {
+	t.Parallel()
+
+	scanRef := expressions.InitialOf(rungFullScan("T"))
+	withTrue := makeRewritingRungSelect(scanRef, []predicates.QueryPredicate{
+		rungPredicate("A"), predicates.NewConstantPredicate(predicates.TriTrue),
+	})
+	original := makeRewritingRungSelect(scanRef, []predicates.QueryPredicate{rungPredicate("A"), rungPredicate("B")})
+
+	scope := &rewritingComparator{clientTrees: true}
+	if got := scope.residualConjuncts(withTrue, map[*expressions.Reference]bool{}); got != 1 {
+		t.Fatalf("[A, TRUE] residual count = %d, want 1", got)
+	}
+	assertStrictPlanningPreference(t, RewritingCostModelLess, withTrue, original)
+}
+
 // TestRewritingCostModel_PredicateDepthRung ties the first three REWRITING
 // tiers and moves the same single predicate between the outer and inner
 // Select. The pushed-down predicate, closer to the leaf, must win.

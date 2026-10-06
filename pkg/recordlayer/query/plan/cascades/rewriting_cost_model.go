@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
 // rewritingComparator is Java's RewritingCostModel.compare over the tree a
@@ -149,6 +150,12 @@ func (c *rewritingComparator) exprCount(e expressions.RelationalExpression, filt
 // (NormalizedResidualPredicateProperty.java:81-90) is
 // `getDefaultInstanceForCnf().getMetrics(p).getNormalFormFullSize()`, which
 // sizes `NOT(a OR b)` as 2, a negated Or being a major whose children SUM.
+//
+// A tautology counts 0: Java's visitor drops tautologies at every expression
+// before it ANDs the residual (NormalizedResidualPredicateProperty.java:105-
+// 121), and countNormalizedConjuncts counts a tautological residual as 0
+// (:81-90). So a fold to TRUE has one conjunct fewer than its original and
+// wins on this rung, as in Java, instead of tying into the hash (WS-E 5.4(g)).
 func (c *rewritingComparator) residualConjuncts(e expressions.RelationalExpression, visiting map[*expressions.Reference]bool) int {
 	if e == nil {
 		return 0
@@ -156,6 +163,9 @@ func (c *rewritingComparator) residualConjuncts(e expressions.RelationalExpressi
 	count := 0
 	if wp, ok := e.(expressions.RelationalExpressionWithPredicates); ok {
 		for _, p := range wp.GetPredicates() {
+			if predicates.IsTautology(p) {
+				continue
+			}
 			count += int(normalFormSize(p, false, normalFormCNF))
 		}
 	}

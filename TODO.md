@@ -194,11 +194,17 @@ Never mark a whole workstream complete because one of its subitems passed.
     moved with the arms removed. The remaining `EvaluateConstant` callers read
     comparands for plan properties (equality shapes, ordering, intermediate
     matching) or translator checks and rewrite nothing.
-  - Still open: (f) `effectiveConstant`
-    is already Java's three shapes, the Object overload has no Go caller (Go
-    comparands are Values); the `EvaluateConstant` arms of `SimplifyValue`;
-    (g) the REWRITING cost model rungs; the constant-evaluation census; and (j)
-    the oracle rows as Go assertions.
+  - (f) closed: `effectiveConstant` already has Java's three shapes, and the
+    Object overload has no Go caller (Go comparands are Values).
+  - (g), the conjunct rung: `residualConjuncts` drops tautologies as Java's
+    NormalizedResidualPredicateProperty does (java:81-121), so `[A, TRUE]`
+    beats `[A, B]` on the count instead of tying into the hash
+    (`TestRewritingCostModel_TautologyCountsNoConjunct`). Corpus golden
+    unchanged; the WS-E oracle passes with no Go pin moved. The dense
+    predicate-level map is WS-F's (Finding 6-followup), and the hash rung stays
+    Go's `deepHash` (no `semanticHashCode` port).
+  - Still open: (g)/(j) the per-row tie pins (two schemas, 20 cold plans, the
+    deciding rung, both hash-inversion mutation runs).
   Done: LOG_QUERY (statement and connection) sets `PlanGenerationInfo.LogQuery`
   (`TestPlanLogging_LogQueryFlag`). Literal decoding and the decorated-literal
   refusals were already implemented and now have a fast-lane pin
