@@ -58,7 +58,10 @@ func (g *guardiann) updateAndEnqueueReassign(tx fdb.WritableTransaction, random 
 		g.writeClusterMetadata(tx, m.withAdditionalVectorsAndStates(underrepAdded, replicatedAdded, stats, clusterStateReassign))
 		return &id, nil
 	}
-	if primaryAdded != 0 || replicatedAdded != 0 {
+	// Java persists only a primary or replica delta (Primitives.java:1254), so an
+	// underreplication-only change is lost; Go persists it (RFC-257 WS-D
+	// declared (h)).
+	if primaryAdded != 0 || replicatedAdded != 0 || underrepAdded != 0 {
 		g.writeClusterMetadata(tx, m.withAdditionalVectorsAndStates(underrepAdded, replicatedAdded, stats, 0))
 	}
 	return nil, nil
@@ -76,15 +79,21 @@ func (g *guardiann) updateAndEnqueueSplitMerge(tx fdb.WritableTransaction, rando
 	return id, nil
 }
 
-// updateAndEnqueueMergeOrReassign follows a primary delete.
+// updateAndEnqueueMergeOrReassign follows a primary delete. underrepAdded is
+// -1 when the deleted primary was underreplicated: Java never decrements the
+// count for it, so a cluster's underreplicated count can exceed its primaries;
+// Go keeps it the number of physical underreplicated primaries (RFC-257 WS-D
+// declared (h)).
 func (g *guardiann) updateAndEnqueueMergeOrReassign(tx fdb.WritableTransaction, random *splittableRandom,
-	m guardiannClusterMetadata, centroid gVector, stats guardiannRunningStats,
+	m guardiannClusterMetadata, centroid gVector, stats guardiannRunningStats, underrepAdded int,
 ) error {
-	merged, err := g.enqueueMergeIfUndersized(tx, random, m, centroid, stats, m.numPrimary()-1)
+	lowered := m
+	lowered.numUnderrep += underrepAdded
+	merged, err := g.enqueueMergeIfUndersized(tx, random, lowered, centroid, stats, m.numPrimary()-1)
 	if err != nil || merged {
 		return err
 	}
-	_, err = g.updateAndEnqueueReassign(tx, random, m, centroid, -1, 0, 0, stats, nil)
+	_, err = g.updateAndEnqueueReassign(tx, random, m, centroid, -1, underrepAdded, 0, stats, nil)
 	return err
 }
 
@@ -183,8 +192,12 @@ func (g *guardiann) cleanUpVectorReferences(tx fdb.ReadTransaction, clusters []g
 				continue
 			}
 			old := merged[i]
+			// A primary is kept whichever copy comes first: Java's incoming-
+			// replica branch (Primitives.mergeVectorReference) replaces an earlier
+			// primary with a replica, so a repartitioning loses the primary
+			// (RFC-257 WS-D declared (h)). Two replicas keep Java's priority rule.
 			switch {
-			case r.primary && old.primary:
+			case old.primary:
 			case r.primary:
 				merged[i] = r
 			case old.replicationPriority() <= r.replicationPriority():
@@ -466,7 +479,11 @@ func (g *guardiann) delete(tx fdb.WritableTransaction, pk tuple.Tuple, vector gV
 			if err != nil {
 				return err
 			}
-			if err := g.updateAndEnqueueMergeOrReassign(tx, random.split(), c.meta, c.centroid, stats); err != nil {
+			underrepAdded := 0
+			if ref.underrep {
+				underrepAdded = -1
+			}
+			if err := g.updateAndEnqueueMergeOrReassign(tx, random.split(), c.meta, c.centroid, stats, underrepAdded); err != nil {
 				return err
 			}
 		} else if _, err := g.updateAndEnqueueReassign(tx, random.split(), c.meta, c.centroid, 0, 0, -1, c.meta.stats, nil); err != nil {

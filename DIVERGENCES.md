@@ -2820,6 +2820,19 @@ partition fails. RFC-257 WS-D declared (h). Pinned by "GuardiANN unsplittable cl
   core. It force-reassigns the neighbours and lets the kept cluster take the ordinary undersized-merge
   rule, so deleting everything ends at one retained empty cluster.
 
+## GuardiANN keeps primaries and underreplication counts exact
+
+In each case below Go matches the invariant, not Java's drift. RFC-257 WS-D declared (h); pinned by
+"GuardiANN reference counts" and the structure test's per-cluster check.
+
+- **Underreplicated count.** Java never decrements a cluster's underreplicated count when an
+  underreplicated primary is deleted. It also drops an underreplication-only metadata change
+  (Primitives.java:1254 writes only on a primary or replica delta), so the count can exceed the
+  cluster's primaries. Go keeps it equal to the physical underreplicated primaries.
+- **Reference dedup.** Java's cleanup dedup (`mergeVectorReference`) replaces an earlier primary
+  with a later replica of the same vector, so a repartitioning can lose the primary. Go keeps the
+  primary in either encounter order.
+
 ## GuardiANN refuses inserts no search can find
 
 With `guardiannInsertMaxCandidateClusters` below 1 Java writes an inserted vector's identity and no

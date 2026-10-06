@@ -30,6 +30,7 @@ func (l *countingListener) onTaskExecuted() { l.executed++ }
 type guardiannSnapshot struct {
 	clusters  map[tuple.UUID]guardiannClusterMetadata
 	primaries map[tuple.UUID]int // primary references per cluster
+	underrep  map[tuple.UUID]int // underreplicated primary references per cluster
 	tasks     int
 	centroids int
 	vectors   int
@@ -37,7 +38,10 @@ type guardiannSnapshot struct {
 }
 
 func readGuardiann(tx fdb.ReadTransaction, g *guardiann) guardiannSnapshot {
-	s := guardiannSnapshot{clusters: map[tuple.UUID]guardiannClusterMetadata{}, primaries: map[tuple.UUID]int{}}
+	s := guardiannSnapshot{
+		clusters: map[tuple.UUID]guardiannClusterMetadata{}, primaries: map[tuple.UUID]int{},
+		underrep: map[tuple.UUID]int{},
+	}
 	count := func(ss subspace.Subspace) []fdb.KeyValue {
 		r, err := fdb.PrefixRange(ss.Bytes())
 		Expect(err).NotTo(HaveOccurred())
@@ -59,6 +63,9 @@ func readGuardiann(tx fdb.ReadTransaction, g *guardiann) guardiannSnapshot {
 		Expect(err).NotTo(HaveOccurred())
 		if ref.primary {
 			s.primaries[k[0].(tuple.UUID)]++
+		}
+		if ref.isUnderreplicated() {
+			s.underrep[k[0].(tuple.UUID)]++
 		}
 	}
 	s.tasks = len(count(g.sub(gSubTasks)))
@@ -140,6 +147,7 @@ var _ = Describe("GuardiANN structure", func() {
 			total := 0
 			for id, m := range snap.clusters {
 				Expect(snap.primaries[id]).To(Equal(m.numPrimary()), "cluster %s primary count", id)
+				Expect(m.numUnderrep).To(Equal(snap.underrep[id]), "cluster %s underreplicated count", id)
 				// A REASSIGN whose task found the cluster also SPLIT_MERGE is
 				// consumed, and a split that then finds the cluster in bounds
 				// clears only its own state (Java's ReassignTask.runTask and

@@ -725,8 +725,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   admission bound, the terminal reconcile with `ClusterUnsplittableError`
   above the hard cap, the zero-primary new-child drop, and the empty merge
   core. Not done: the design's performance-criterion timing runs (peel at
-  W = B under suite load) and the d = 768/2048 acceptance fixtures. Open:
-  primary-preferred cleanup, underreplication deltas, declared (d) (no inline
+  W = B under suite load) and the d = 768/2048 acceptance fixtures.
+  Primary-preferred cleanup and underreplication deltas are done, declared (h)
+  (DIVERGENCES "GuardiANN keeps primaries and underreplication counts exact",
+  `guardiann_counts_test.go`, mutation-checked). Open: declared (d) (no inline
   task for a delete whose head task a Go consumer refuses).
 - [ ] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
   covering/rank results, search-free continuation replay, operation-local caches,

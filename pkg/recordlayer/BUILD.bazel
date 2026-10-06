@@ -285,6 +285,7 @@ go_test(
         "function_key_expression_test.go",
         "fuzz_test.go",
         "guardiann_codec_test.go",
+        "guardiann_counts_test.go",
         "guardiann_decode_test.go",
         "guardiann_fdb_test.go",
         "guardiann_insert_admission_test.go",
