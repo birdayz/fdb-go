@@ -42,6 +42,11 @@ func (m *vectorIndexMaintainer) SerializePendingWriteQueue(oldRecord, newRecord 
 		if i == 0 {
 			entries.OldEntries = append(entries.OldEntries, packed)
 		} else {
+			// Refuse at enqueue an insert replay would refuse, rather than
+			// queue an entry that can never be applied.
+			if err := m.insertAdmission(); err != nil {
+				return nil, m.refuseCapability(err)
+			}
 			entries.NewEntries = append(entries.NewEntries, packed)
 		}
 	}

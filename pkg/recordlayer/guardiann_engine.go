@@ -210,9 +210,58 @@ func (m *vectorIndexMaintainer) poisonTask(err error) {
 	s.context.getOrCreateCommitCheck(name, func(string) CommitCheckFunc { return func() error { return err } })
 }
 
+// VectorCapabilityError is a vector index operation Go refuses where Java would
+// accept a write no query can use (RFC-257 WS-D section 1, "capability
+// errors"). It is Go-only and terminal: no retry owner retries it.
+type VectorCapabilityError struct {
+	IndexName string
+	Engine    string
+	Operation string
+	Option    string
+	Value     int
+	Reason    string
+}
+
+func (e *VectorCapabilityError) Error() string {
+	return fmt.Sprintf("vector index %q (%s): %s refused: %s = %d %s",
+		e.IndexName, e.Engine, e.Operation, e.Option, e.Value, e.Reason)
+}
+
+// insertAdmission refuses a GuardiANN insert into an index whose
+// insertMaxCandidateClusters is below 1: Java writes the vector's identity and
+// no reference, so no search can ever return it, and the knob is immutable
+// (declared in DIVERGENCES.md, "GuardiANN refuses inserts no search can find").
+func (m *vectorIndexMaintainer) insertAdmission() error {
+	if m.engine != VectorEngineGuardiann || m.guardiannConfig.insertMaxCandidateClusters >= 1 {
+		return nil
+	}
+	return &VectorCapabilityError{
+		IndexName: m.index.Name, Engine: "GUARDIANN", Operation: "insert",
+		Option: IndexOptionGuardiannInsertMaxCandidateClusters, Value: m.guardiannConfig.insertMaxCandidateClusters,
+		Reason: "leaves no cluster to hold the vector, so no search could return it",
+	}
+}
+
+// refuseCapability poisons the context with err (the keyed
+// vectorCapability/<store>/<index> commit check) and returns it: the refusal
+// may follow buffered record writes, which must not commit without their
+// index entry.
+func (m *vectorIndexMaintainer) refuseCapability(err error) error {
+	if s, ok := m.store.(*FDBRecordStore); ok && s.context != nil {
+		name := fmt.Sprintf("vectorCapability/%x/%s", s.subspace.Bytes(), m.index.Name)
+		s.context.getOrCreateCommitCheck(name, func(string) CommitCheckFunc { return func() error { return err } })
+	}
+	return err
+}
+
 // applyGuardiannEntry is VectorIndexMaintainer.updateIndexEntry over the
 // GuardiANN engine.
 func (m *vectorIndexMaintainer) applyGuardiannEntry(prefix, pk tuple.Tuple, vector gVector, remove bool) error {
+	if !remove {
+		if err := m.insertAdmission(); err != nil {
+			return m.refuseCapability(err)
+		}
+	}
 	control := m.mergeControl()
 	maintainInTransaction := control == nil || control.ShouldAutoMergeDuringCommit()
 	reg := &guardiannRegister{timer: m.timer(), tx: m.tx, counts: m.taskCounts, prefix: prefix, index: m.index}

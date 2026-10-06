@@ -2751,6 +2751,16 @@ later insert of that key is a no-op until the record is deleted. Go checks the c
 rows and the identity UUID is not drawn from the operation RNG, so every successful insert
 writes Java's bytes. Pinned by "GuardiANN deferred hard cap".
 
+## GuardiANN refuses inserts no search can find
+
+With `guardiannInsertMaxCandidateClusters` below 1 Java writes an inserted vector's identity and no
+reference, so no search ever returns it, and the option is immutable (measured: `found=0`). Go
+refuses the insert with a typed `VectorCapabilityError`, at the engine and at pending-queue enqueue
+(so a queued index refuses the save instead of holding an entry no replay can apply), and poisons
+the transaction (`vectorCapability/<store>/<index>` commit check) so the record write cannot commit
+without its entry. Deletes, `deleteWhere`, clear, disable and drop still work. RFC-257 WS-D
+declared (b); pinned by "GuardiANN insert admission".
+
 ## HAVING without GROUP BY over a select list without an aggregate (upstream bug)
 
 SQL treats a query with HAVING and no GROUP BY as one group: `SELECT 7 FROM t HAVING COUNT(*) > 0`

@@ -286,6 +286,7 @@ go_test(
         "guardiann_codec_test.go",
         "guardiann_decode_test.go",
         "guardiann_fdb_test.go",
+        "guardiann_insert_admission_test.go",
         "guardiann_insert_cap_fdb_test.go",
         "guardiann_kmeans_test.go",
         "guardiann_negative_count_test.go",

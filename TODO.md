@@ -709,7 +709,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   check, run after the merger's heartbeat refresh, so it commits (it used to
   roll back with the refresh's "Unexpected index state(s)"), and counts
   `vector_index_disabled_on_negative_task_count`
-  (`guardiann_negative_count_test.go`).
+  (`guardiann_negative_count_test.go`). Zero-candidate admission is done:
+  `insertMaxCandidateClusters < 1` refuses the insert (engine and queue
+  enqueue) with a poisoning `VectorCapabilityError`, declared (b)
+  (`guardiann_insert_admission_test.go`). Open: n<k/peel/unsplittable split
+  fallbacks, empty-core repair, primary-preferred cleanup, underreplication
+  deltas, and the knob-consumer capability errors / declared (c) livelocks.
 - [ ] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
   covering/rank results, search-free continuation replay, operation-local caches,
   partition locks, cosine zero/clamp, sample-UUID closure, option catalog/identity.
