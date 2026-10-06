@@ -389,10 +389,27 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   forcing. The conversion needs that ordering first. The large join is not cured by D2: a 6-table FK chain takes
   134894 tasks (5 tables: 20k), at Java's own count (122839; see the
   large-join item below).
-- [ ] Reconcile query-block acceptance with the current translator: top-level
+- [x] Reconcile query-block acceptance with the current translator: top-level
   Sort(Select), ORDER BY resolution against projected Values, DISTINCT ordering,
   index-DDL root handling and ordered IN. Old blocker prose in `TODO_OLD.md`
   predates later fixes; do not reimplement the already-landed single-Select port.
+  Reconciled (2026-10-06), each against the current tree:
+  - Top-level Sort(Select): `topLevelSort` states every top as Java's
+    `generateSelect` does, an unsorted sort over the block, and now a bare
+    table read as a block Select under it (`TestTranslateScan` and the
+    `queryBody` helper); an ORDER BY is `sortedBlock`'s Sort over the block's
+    Select with the keys pulled up, and an unprojected key adds the Select
+    above the sort (`orderBySorts`).
+  - ORDER BY against projected Values (old blocker b): over a join `ORDER BY
+    a.id` is sort-free with the ordered outer, projected or not
+    (`ambiguous_column.yaml`, golden `Map(FlatMap(outer=Scan(A), ...))`).
+  - DISTINCT ordering (old blocker a): `SELECT DISTINCT category FROM t ORDER
+    BY category` keeps its order (`distinct_order_by.yaml`, golden).
+  - Index-DDL root: `ddl.checkTop` is `DdlVisitor.java:274`'s `viewPlan
+    instanceof LogicalSortExpression` (`index_ddl_resolver_arms_test.go`).
+  - Ordered IN (old blocker c): the ordered in-join is DIVERGENCES.md's
+    RFC-191 entry, and IN ordered by an unprobed key is the in-memory-sort
+    entry; both declared in the WS-F oracle.
 - [x] Explicit raw KEY/VALUE readers, ordered-bytes evaluation, extraction trie,
   covering reader/Value plan, aggregate cardinality/distinctness/entry readers
   (`c1ad5a87d` through `d819eb25e`). Plan transport remains outside this closure.
