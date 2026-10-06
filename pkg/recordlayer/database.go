@@ -131,6 +131,12 @@ type FDBDatabaseFactory struct {
 	mu        sync.Mutex
 	databases map[string]*FDBDatabase
 
+	// knobs are the client knobs set (SetKnob), knobOrder the order they were
+	// first set, and inited whether the client has started (the first open).
+	knobs     map[string]string
+	knobOrder []string
+	inited    bool
+
 	// StoreStateCacheFactory creates a store state cache for each new database.
 	// If nil, PassThroughStoreStateCache is used.
 	StoreStateCacheFactory func() FDBRecordStoreStateCache
@@ -152,6 +158,9 @@ func (f *FDBDatabaseFactory) GetDatabase(clusterFile string) (*FDBDatabase, erro
 
 	if db, ok := f.databases[clusterFile]; ok {
 		return db, nil
+	}
+	if err := f.startClientLocked(); err != nil {
+		return nil, fmt.Errorf("open database %q: %w", clusterFile, err)
 	}
 
 	// Open through the build-tag-selectable seam (RFC-109): the default build is
@@ -687,8 +696,11 @@ type FDBRecordContext struct {
 	// SPFresh keeps its tx-local routing cache here so a same-transaction
 	// write-then-search pairs up even when the statements open separate
 	// stores.
+	// Keys are strings or typed ContextSessionKey names (contextSessionKeyID),
+	// which never equal a string key, as Java's ContextSessionKey never equals a
+	// String.
 	sessionMu sync.Mutex
-	session   map[string]any
+	session   map[any]any
 
 	pendingWriteQueueOptions atomic.Pointer[PendingWriteQueueOptions]
 
@@ -722,7 +734,7 @@ func (rc *FDBRecordContext) PutSession(key string, value any) {
 	rc.sessionMu.Lock()
 	defer rc.sessionMu.Unlock()
 	if rc.session == nil {
-		rc.session = make(map[string]any)
+		rc.session = make(map[any]any)
 	}
 	rc.session[key] = value
 }
@@ -1383,43 +1395,89 @@ func buildVersionstampedValue(version *FDBRecordVersion) ([]byte, error) {
 // lockRegistry provides per-key read-write locks within a transaction context.
 // Matches Java's LockRegistry (ConcurrentHashMap<LockIdentifier, AtomicReference<AsyncLock>>).
 // Used by tree-structured indexes (HNSW, R-tree) to serialize mutations.
+//
+// An entry lives while anyone holds or waits for its lock, and is removed when
+// the last of them releases (Java 4.14 #4545: a completed lock is removed only
+// when no registered work depends on it). Removing it any earlier would let a
+// later caller create a second live lock for the same key.
 type lockRegistry struct {
 	mu    sync.Mutex
-	locks map[string]*sync.RWMutex
+	locks map[string]*lockEntry
 }
 
-func (r *lockRegistry) getOrCreate(key string) *sync.RWMutex {
+// lockEntry is one key's lock and the number of holders and waiters it has,
+// counted under lockRegistry.mu.
+type lockEntry struct {
+	rw   sync.RWMutex
+	refs int
+}
+
+// acquire registers one more holder or waiter of key's lock.
+func (r *lockRegistry) acquire(key string) *lockEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.locks == nil {
-		r.locks = make(map[string]*sync.RWMutex)
+		r.locks = make(map[string]*lockEntry)
 	}
-	if m, ok := r.locks[key]; ok {
-		return m
+	e, ok := r.locks[key]
+	if !ok {
+		e = &lockEntry{}
+		r.locks[key] = e
 	}
-	m := &sync.RWMutex{}
-	r.locks[key] = m
-	return m
+	e.refs++
+	return e
+}
+
+// held is key's entry, which the caller holds.
+func (r *lockRegistry) held(key string) *lockEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.locks[key]
+	if !ok {
+		panic(fmt.Sprintf("recordlayer: unlock of an unlocked key %q", key))
+	}
+	return e
+}
+
+// release drops one holder of key's lock, removing the entry with the last.
+func (r *lockRegistry) release(key string, e *lockEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e.refs--
+	if e.refs == 0 {
+		delete(r.locks, key)
+	}
+}
+
+// size is the number of live entries.
+func (r *lockRegistry) size() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.locks)
 }
 
 // WriteLock acquires an exclusive lock for the given key.
 // Matches Java's FDBRecordContext.doWithWriteLock(LockIdentifier).
 func (r *lockRegistry) WriteLock(key string) {
-	r.getOrCreate(key).Lock()
+	r.acquire(key).rw.Lock()
 }
 
 // WriteUnlock releases the exclusive lock for the given key.
 func (r *lockRegistry) WriteUnlock(key string) {
-	r.getOrCreate(key).Unlock()
+	e := r.held(key)
+	e.rw.Unlock()
+	r.release(key, e)
 }
 
 // ReadLock acquires a shared lock for the given key.
 // Matches Java's FDBRecordContext.doWithReadLock(LockIdentifier).
 func (r *lockRegistry) ReadLock(key string) {
-	r.getOrCreate(key).RLock()
+	r.acquire(key).rw.RLock()
 }
 
 // ReadUnlock releases the shared lock for the given key.
 func (r *lockRegistry) ReadUnlock(key string) {
-	r.getOrCreate(key).RUnlock()
+	e := r.held(key)
+	e.rw.RUnlock()
+	r.release(key, e)
 }

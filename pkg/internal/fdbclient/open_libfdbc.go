@@ -16,3 +16,8 @@ const Backend = "libfdb_c"
 func Open(clusterFile string) (fdb.BackendDatabase, error) {
 	return libfdbc.Open(clusterFile)
 }
+
+// SetKnob sets a client knob, "name=value", on libfdb_c.
+func SetKnob(knob string) error {
+	return libfdbc.SetKnob(knob)
+}

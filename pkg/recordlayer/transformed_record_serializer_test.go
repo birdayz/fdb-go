@@ -457,6 +457,17 @@ func TestTransformedSerializer_DeserializeReattempts(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%+v: %v, want %q", c, err, c.want)
 		}
+		// Java's log info: RESULT=failure with the configured RETRY_COUNT when
+		// every attempt failed, RESULT=success with the succeeding attempt
+		// when failOnDeserializeReattempt refuses it.
+		wantCount, wantResult := c.reattempts, "failure"
+		if c.failOnReattempt {
+			wantCount, wantResult = c.failures, "success"
+		}
+		var rse *RecordSerializationError
+		if !errors.As(err, &rse) || rse.RetryCount != wantCount || rse.RetryResult != wantResult {
+			t.Errorf("%+v: %#v, want RetryCount %d RetryResult %q", c, err, wantCount, wantResult)
+		}
 	}
 	// A permanently corrupt body fails every attempt.
 	corrupt := append([]byte(nil), stored...)

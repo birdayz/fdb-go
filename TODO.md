@@ -725,8 +725,23 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## 5. WS-I — shared APIs and lifecycle
 
-- [ ] Lock-registry cleanup; serializer retry diagnostics; typed client knobs
+- [x] Lock-registry cleanup; serializer retry diagnostics; typed client knobs
   (read C++ 7.3.77); typed session/index-update sets and write-only key collisions.
+  - Lock registry (#4545): an entry counts its holders and waiters and is
+    removed with the last (`TestLockRegistryRemovesCompletedLocks`).
+  - Serializer retries (#4290): the read retries were ported; a failure now
+    carries Java's RETRY_COUNT / RESULT (and META_DATA_VERSION on a refused
+    reattempt) as `RecordSerializationError` fields.
+  - Client knobs (#4488): `FDBClientKnob` (Java's 19, typed), `SetKnob` /
+    `SetKnobByName` / `Knobs` / `ClearKnobs` with Java's validation (decode
+    without '#', `Double.parseDouble`'s grammar, boolean or int). They are set
+    before the factory's first open, through `fdbclient.SetKnob`: the `knob`
+    network option on libfdb_c, a refused open on the pure-Go client
+    (DIVERGENCES "Client knobs").
+  - Session sets (#4289): `ContextSessionKey`, `GetInSession` /
+    `PutInSession`, and the readable / write-only / queued index-update sets
+    filled per index update. Java's two write-only keys share the name
+    "writeOnlyIndexesUpdated" and so one set; Go keeps that.
 - [ ] Client range/HNSW/GuardiANN/vector-task/queue timer instrumentation;
   online-indexer configuration limits; ICU byte baseline.
 - [x] Lucene backend: out of scope for this migration PR (#786), owner decision;

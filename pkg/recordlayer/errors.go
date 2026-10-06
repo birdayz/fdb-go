@@ -367,6 +367,16 @@ func (*UnsupportedFeatureForFormatVersionError) JavaRecordCoreException() {}
 type RecordSerializationError struct {
 	Message string
 	Cause   error
+	// RetryCount and RetryResult are the log keys Java's
+	// decryptAndDecompressWithRetries adds to a read's failure: the configured
+	// reattempt count and "failure" when every attempt failed, or the attempt
+	// that succeeded and "success" when failOnDeserializeReattempt refuses a
+	// reattempt's success. RetryResult is "" on every other error.
+	RetryCount  int
+	RetryResult string
+	// MetaDataVersion is the reading store's metadata version on a refused
+	// reattempt (Java's META_DATA_VERSION log key), when a store read it.
+	MetaDataVersion int
 	// generalSecurity marks the wrapping of a cipher failure, Java's
 	// GeneralSecurityException, which the write-time encryption validation
 	// catches and a key manager's own RecordSerializationException it does not.

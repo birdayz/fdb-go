@@ -524,7 +524,7 @@ func (store *FDBRecordStore) rememberRetirementMetadata() {
 	ctx.sessionMu.Lock()
 	defer ctx.sessionMu.Unlock()
 	if ctx.session == nil {
-		ctx.session = make(map[string]any)
+		ctx.session = make(map[any]any)
 	}
 	current, _ := ctx.session[key].(*FDBRecordStore)
 	if current == nil || current.metaData.Version() <= store.metaData.Version() {

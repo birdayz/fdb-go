@@ -1211,17 +1211,31 @@ func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *
 	if state.IsDisabled() {
 		return nil
 	}
+	// Each update is recorded in the context's index-update set for its state
+	// (Java's FDBRecordStore.updateSecondaryIndexes, #4289).
 	if state.IsWriteOnlyWithQueue() {
 		data, err := maintainer.SerializePendingWriteQueue(oldRecord, newRecord)
 		if err != nil {
 			return err
 		}
-		return store.enqueuePendingIndexWrite(index, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_UPDATE.Enum(), Data: data})
+		if err := store.enqueuePendingIndexWrite(index, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_UPDATE.Enum(), Data: data}); err != nil {
+			return err
+		}
+		store.context.addToSessionSet(WriteOnlyWithQueueIndexesUpdated, index.Name)
+		return nil
 	}
 	if state.IsWriteOnlyNoQueue() {
-		return maintainer.UpdateWhileWriteOnly(oldRecord, newRecord)
+		if err := maintainer.UpdateWhileWriteOnly(oldRecord, newRecord); err != nil {
+			return err
+		}
+		store.context.addToSessionSet(WriteOnlyIndexesUpdated, index.Name)
+		return nil
 	}
-	return maintainer.Update(oldRecord, newRecord)
+	if err := maintainer.Update(oldRecord, newRecord); err != nil {
+		return err
+	}
+	store.context.addToSessionSet(ReadableIndexesUpdated, index.Name)
+	return nil
 }
 
 // shouldIndexRecordForIndex checks if a record matches the given index's record types.
@@ -2281,7 +2295,12 @@ func (store *FDBRecordStore) readStoredRecord(stored []byte) ([]byte, error) {
 	if reader == nil {
 		reader = plainTransformedReader
 	}
-	return reader.untransform(stored)
+	out, err := reader.untransform(stored)
+	var rse *RecordSerializationError
+	if err != nil && errors.As(err, &rse) && rse.RetryResult == "success" && store.metaData != nil {
+		rse.MetaDataVersion = store.metaData.Version()
+	}
+	return out, err
 }
 
 // writeStoredRecord is the bytes a record's union message is stored as: the

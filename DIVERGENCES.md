@@ -1116,6 +1116,14 @@ path is identical to Java, only the execute-then-throw side effect differs.
 option-by-option, with the `libfdb_c` C++ reference for each, in
 [`pkg/fdbgo/fdb/OPTIONS.md`](pkg/fdbgo/fdb/OPTIONS.md) (RFC-133).
 
+### Client knobs (Java 4.14 #4488)
+
+`FDBDatabaseFactory.SetKnob` / `SetKnobByName` validate and record a knob as Java's factory does, and
+set it (`knob` network option, `name=value`) before the factory's first open, or at once after it.
+On the libfdb_c backend that is Java's behaviour. The pure-Go client has no knob table: a recorded
+knob fails the open with `fdbclient.UnsupportedKnobError` (2006, invalid_option_value) instead of
+being silently ignored.
+
 ### Cluster-file re-watch / coordinator-set rotation (RFC-111)
 
 | Aspect | C++ `libfdb_c` | Go | Why |

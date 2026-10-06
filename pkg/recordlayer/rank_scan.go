@@ -30,6 +30,11 @@ type RecordCoreArgumentError struct {
 	HasSubspaceKey bool
 	// Plan is the refused plan's class name (LogMessageKeys.PLAN).
 	Plan string
+	// ClientKnobName, ClientKnobValue and Expected are a refused client knob's
+	// log keys (CLIENT_KNOB_NAME, CLIENT_KNOB_VALUE, EXPECTED).
+	ClientKnobName  string
+	ClientKnobValue string
+	Expected        string
 	// Cause is the exception Java's constructor chains (the key store's
 	// IOException / GeneralSecurityException in KeyStoreSerializationKeyManager).
 	Cause error
@@ -52,6 +57,12 @@ func (e *RecordCoreArgumentError) Error() string {
 	}
 	if e.Plan != "" {
 		fields = append(fields, "plan="+e.Plan)
+	}
+	if e.ClientKnobName != "" {
+		fields = append(fields, fmt.Sprintf("client_knob_name=%q", e.ClientKnobName))
+	}
+	if e.Expected != "" {
+		fields = append(fields, fmt.Sprintf("client_knob_value=%q", e.ClientKnobValue), "expected="+e.Expected)
 	}
 	msg := e.Message
 	if len(fields) > 0 {

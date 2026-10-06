@@ -403,9 +403,20 @@ func (s *TransformedRecordSerializer) untransform(stored []byte) ([]byte, error)
 	}
 	switch {
 	case succeededAt < 0:
+		// Java rethrows the last failure with RETRY_COUNT and RESULT=failure
+		// added; a serialization error carries them, any other error (a key
+		// manager's own) is returned as it is.
+		if rse, ok := lastErr.(*RecordSerializationError); ok {
+			annotated := *rse
+			annotated.RetryCount, annotated.RetryResult = s.deserializeReattemptCount, "failure"
+			return nil, &annotated
+		}
 		return nil, lastErr
 	case succeededAt > 0 && s.failOnDeserializeReattempt:
-		return nil, &RecordSerializationError{Message: "deserialization error", Cause: lastErr}
+		return nil, &RecordSerializationError{
+			Message: "deserialization error", Cause: lastErr,
+			RetryCount: succeededAt, RetryResult: "success",
+		}
 	}
 	return out, nil
 }
