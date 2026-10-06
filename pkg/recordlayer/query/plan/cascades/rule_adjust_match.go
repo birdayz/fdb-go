@@ -377,20 +377,42 @@ func adjustMatchForSelect(sel *expressions.SelectExpression, pm *PartialMatchImp
 		Build()
 }
 
-// correlatedToEquals is Go's stand-in for Java's check
+// correlatedToEquals is Java's check
 //
-//	!candidateExpression.getCorrelatedTo().equals(otherRangesOver.getCorrelatedTo())
+//	candidateExpression.getCorrelatedTo().equals(otherRangesOver.getCorrelatedTo())
 //
-// Since AdjustMatch fires on single-quantifier expressions where the
-// quantifier IS the child, the expression's full getCorrelatedTo
-// equals its node-local correlations union the child's — so requiring
-// ZERO node-local correlations verifies the expression introduces no
-// correlations beyond what the child already has. This is a stricter
-// approximation of Java's set equality (part of the
-// Quantifier.GetCorrelatedTo divergence, DIVERGENCES.md): switching to
-// the full Reference.GetCorrelatedTo comparison on both sides changes
-// what adjusts and needs its own review cycle.
-func correlatedToEquals(expr expressions.RelationalExpression, _ *expressions.Reference) bool {
+// for a single-quantifier expression over otherRangesOver. Java's
+// getCorrelatedTo is the child's correlations union the expression's own,
+// where the own correlations exclude the aliases the expression owns (its
+// quantifiers) and a placeholder contributes its value and ranges, never its
+// parameter alias (PredicateWithValueAndRanges.getCorrelatedTo). So the two
+// are equal exactly when the expression's own correlations, so read, are
+// already among the child's. Go's node-local set counts both kinds; they are
+// removed here.
+func correlatedToEquals(expr expressions.RelationalExpression, child *expressions.Reference) bool {
 	nodeCorrs := expr.GetCorrelatedToWithoutChildren()
-	return len(nodeCorrs) == 0
+	if len(nodeCorrs) == 0 {
+		return true
+	}
+	excluded := map[values.CorrelationIdentifier]struct{}{}
+	for _, q := range expr.GetQuantifiers() {
+		excluded[q.GetAlias()] = struct{}{}
+	}
+	if sel, ok := expr.(*expressions.SelectExpression); ok {
+		for _, p := range sel.GetPredicates() {
+			if ph, ok := p.(*predicates.Placeholder); ok {
+				excluded[ph.GetParameterAlias()] = struct{}{}
+			}
+		}
+	}
+	childCorrs := child.GetCorrelatedTo()
+	for alias := range nodeCorrs {
+		if _, ok := excluded[alias]; ok {
+			continue
+		}
+		if _, ok := childCorrs[alias]; !ok {
+			return false
+		}
+	}
+	return true
 }

@@ -501,6 +501,7 @@ go_test(
         "null_pk_java_parity_test.go",
         "null_safe_join_probe_test.go",
         "null_supplied_exists_outer_fdb_test.go",
+        "nullable_group_by_index_fdb_test.go",
         "nullif_unsupported_fdb_test.go",
         "nulls_counterflow_repro_test.go",
         "nulls_order_probe_test.go",

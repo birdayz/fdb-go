@@ -1239,7 +1239,7 @@ var wsfAcceptance = map[string]string{
 	"w13_subscript_zero":                         "SAME",
 	"w6_left_join_indexed_explain":               "SAME-PATH",
 	"w6_left_join_indexed_rows_unordered":        "SAME",
-	"w6_left_join_preserved_only_explain":        "DIFF-PATH rfc152-materialized-outer-join -> NLJ(SCAN(T1) SCAN(T6))",
+	"w6_left_join_preserved_only_explain":        "DIFF-PATH rfc152-materialized-outer-join -> NLJ(ISCAN(I1) ISCAN(I6))",
 	"w6_left_join_preserved_only_rows_unordered": "SAME",
 	"w6_rewriting_inner_join_control":            "DIFF target-only measurement: Go has no counterpart instrument here (section 13)",
 	"w6_rewriting_left_join_indexed":             "DIFF target-only measurement: Go has no counterpart instrument here (section 13)",
@@ -1363,9 +1363,7 @@ var wsfAcceptance = map[string]string{
 
 // wsfOpenUntil names, for each probe not yet at its acceptance verdict, the phase or
 // dependency that moves it there (ws-f-design.md section 12).
-var wsfOpenUntil = map[string]string{
-	"w6_left_join_indexed_explain": "outer-join partition (a LEFT JOIN's preserved leg gets no data access: PartitionBinarySelectRule skips outer joins)",
-}
+var wsfOpenUntil = map[string]string{}
 
 // wsfPins is the measured target answer of every WS-F probe (4.14.2.0).
 var wsfPins = map[string]string{
@@ -1561,9 +1559,9 @@ var wsfGoPins = map[string]string{
 	"w13_subscript_sum":                          "OK [_0:BIGINT] [[15]]",
 	"w13_subscript_where":                        "OK [ID:BIGINT] [[1]]",
 	"w13_subscript_zero":                         "OK [_0:BIGINT] [[NULL]]",
-	"w6_left_join_indexed_explain":               "OK EXPLAIN \"FlatMap(outer=Scan(T1), inner=DefaultOnEmpty(IndexScan(I6, [=])))\"",
+	"w6_left_join_indexed_explain":               "OK EXPLAIN \"FlatMap(outer=IndexScan(I1, [*]), inner=DefaultOnEmpty(IndexScan(I6, [=])))\"",
 	"w6_left_join_indexed_rows_unordered":        "OK [A:BIGINT B:BIGINT] [[1 1] [2 1] [3 2] [4 NULL]]",
-	"w6_left_join_preserved_only_explain":        "OK EXPLAIN \"NestedLoopJoin(LEFT OUTER, [1 preds], Scan(T1), Scan(T6))\"",
+	"w6_left_join_preserved_only_explain":        "OK EXPLAIN \"NestedLoopJoin(LEFT OUTER, [1 preds], IndexScan(I1, [*]), IndexScan(I6, [*]))\"",
 	"w6_left_join_preserved_only_rows_unordered": "OK [A:BIGINT B:BIGINT] [[1 1] [1 2] [1 3] [2 NULL] [3 NULL] [4 NULL]]",
 	"w6_rewriting_inner_join_control":            "NO-GO-INSTRUMENT",
 	"w6_rewriting_left_join_indexed":             "NO-GO-INSTRUMENT",

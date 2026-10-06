@@ -486,3 +486,33 @@ index probe, 0 newly unplannable. The causes:
   `IDX_AB [=, *]` plus a key probe).
 - The retired candidate became the same (feature vector, plan shape) point as
   `fc_0000000204_q2_p0..p2`, which stays.
+
+---
+
+## A leaf match climbs to the candidate root — PLAN CHANGE, Java's index access for bare legs
+
+**Retired: 6 scenarios (`fc_0000000350_q3_p0..p2`, `fc_0000000815_q2_p0..p2`).
+Re-blessed plan-shape and dedup-key headers: 3125 of 8147 scenarios. Result
+rows: UNCHANGED.**
+Machine ledger: `retirements/2026-10-06-rfc257-leaf-match-climbs-to-candidate-root.json`.
+
+Measured with `cmd/factory-plan-census` against the base commit's corpus over
+8051 comparable scenarios: 3164 plans moved, 0 lost an equality index probe,
+3 lost all index access, 6 gained an unbounded full scan, 0 newly unplannable.
+The causes:
+
+- AdjustMatchRule's correlation check is Java's subset check
+  (`SelectExpression.adjustMatch`): a leaf match on a bare join leg or an
+  aggregation input climbs through the candidate's Select to its
+  MatchableSort. Such a leg now gets the full index scan Java's
+  WithPrimaryKeyDataAccessRule gives it (`ISCAN(I <,>)`, measured on the JVM),
+  where Go used to plan a primary scan, and a GROUP BY over an indexed column
+  streams off the index instead of sorting a scan.
+- An existential FlatMap plans one outer per ordering requested of the outer
+  group, as Java's per-ordering roll-up does, so an ORDER BY the primary key
+  keeps the sort-free primary-scan outer next to the cheaper unordered index
+  outer.
+- The retired candidates became the same (feature vector, plan shape) points as
+  `fc_0000000091_q2_p0..p2` and `fc_0000000447_q4_p0..p2`, which stay. The
+  re-bless used `cmd/factory-rebless-plan-shapes -retire-collisions`, which
+  retires only a moved scenario and keeps an unmoved holder of the point.

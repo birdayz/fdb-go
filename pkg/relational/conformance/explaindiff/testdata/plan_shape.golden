@@ -1213,52 +1213,49 @@ shape:         RecordQueryStreamingAggregationPlan
 shape:           RecordQueryScanPlan
 === aggregate_over_record.yaml#0
 sql:   SELECT COUNT((T1.*)) FROM T1
-plan:  Map(StreamingAgg(keys=[], Scan(T1)), {_0: COALESCE(_current.COUNT((T1.*))#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(I1, [*])), {_0: COALESCE(_current.COUNT((T1.*))#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === aggregate_over_record.yaml#1
 sql:   SELECT COUNT((T1.id, T1.col1, T1.col2)) FROM T1
-plan:  Map(StreamingAgg(keys=[], Scan(T1)), {_0: COALESCE(_current.COUNT((T1.ID,T1.COL1,T1.COL2))#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(I1, [*])), {_0: COALESCE(_current.COUNT((T1.ID,T1.COL1,T1.COL2))#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === aggregate_over_record.yaml#2
 sql:   SELECT COUNT((T1.col2, T1.col1, T1.id)) FROM T1
-plan:  Map(StreamingAgg(keys=[], Scan(T1)), {_0: COALESCE(_current.COUNT((T1.COL2,T1.COL1,T1.ID))#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(I1, [*])), {_0: COALESCE(_current.COUNT((T1.COL2,T1.COL1,T1.ID))#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === aggregate_over_record.yaml#3
 sql:   SELECT COUNT((T1.id, T1.col2)) FROM T1
-plan:  Map(StreamingAgg(keys=[], Scan(T1)), {_0: COALESCE(_current.COUNT((T1.ID,T1.COL2))#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(I1, [*])), {_0: COALESCE(_current.COUNT((T1.ID,T1.COL2))#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === aggregate_over_record.yaml#4
 sql:   SELECT col1, COUNT((T1.*)) FROM T1 GROUP BY col1
-plan:  Map(StreamingAgg(keys=[_current.COL1#1], InMemorySort([_current.COL1#1 ASC], Scan(T1))), {COL1: _current.COL1#0, _1: _current.COUNT((T1.*))#1})
+plan:  Map(StreamingAgg(keys=[_current.COL1#1], IndexScan(I1, [*])), {COL1: _current.COL1#0, _1: _current.COUNT((T1.*))#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === aggregate_over_record.yaml#5
 sql:   SELECT col1 FROM T1 GROUP BY col1 HAVING COUNT((T1.*)) > 5
-plan:  Map(PredicatesFilter(StreamingAgg(keys=[_current.COL1#1], InMemorySort([_current.COL1#1 ASC], Scan(T1))), [1 preds]), {COL1: _current.COL1#0})
+plan:  Map(PredicatesFilter(StreamingAgg(keys=[_current.COL1#1], IndexScan(I1, [*])), [1 preds]), {COL1: _current.COL1#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
-shape:       RecordQueryInMemorySortPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 === aggregate_over_record.yaml#6
 sql:   SELECT col1 FROM T1 GROUP BY col1 ORDER BY COUNT((T1.*))
-plan:  Map(InMemorySort([_current._1#1 ASC], Map(StreamingAgg(keys=[_current.COL1#1], InMemorySort([_current.COL1#1 ASC], Scan(T1))), {COL1: _current.COL1#0, _1: _current.COUNT((T1.*))#1})), {COL1: _current.COL1#0})
+plan:  Map(InMemorySort([_current._1#1 ASC], Map(StreamingAgg(keys=[_current.COL1#1], IndexScan(I1, [*])), {COL1: _current.COL1#0, _1: _current.COUNT((T1.*))#1})), {COL1: _current.COL1#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryMapPlan
 shape:       RecordQueryStreamingAggregationPlan
-shape:         RecordQueryInMemorySortPlan
-shape:           RecordQueryScanPlan
+shape:         RecordQueryIndexPlan
 === aggregate_sum_large.yaml#0
 sql:   SELECT SUM(val) FROM t
 plan:  Map(StreamingAgg(keys=[], Scan(T)), {_0: _current.SUM(VAL)#0})
@@ -2416,11 +2413,10 @@ shape:   RecordQueryMapPlan
 shape:     RecordQueryCoveringIndexPlan
 === cascades_plan_shapes.yaml#3
 sql:   SELECT customer_id, SUM(total) FROM orders GROUP BY customer_id ORDER BY customer_id
-plan:  Map(StreamingAgg(keys=[_current.CUSTOMER_ID#1], InMemorySort([_current.CUSTOMER_ID#1 ASC], Scan(ORDERS))), {CUSTOMER_ID: _current.CUSTOMER_ID#0, _1: _current.SUM(TOTAL)#1})
+plan:  Map(StreamingAgg(keys=[_current.CUSTOMER_ID#1], IndexScan(IDX_CUSTOMER, [*])), {CUSTOMER_ID: _current.CUSTOMER_ID#0, _1: _current.SUM(TOTAL)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === cascades_plan_shapes.yaml#4
 sql:   SELECT COUNT(*) FROM orders WHERE status = 'shipped'
 plan:  Map(StreamingAgg(keys=[], IndexScan(IDX_STATUS, [=] COVERING)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
@@ -2429,12 +2425,11 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryCoveringIndexPlan
 === cascades_plan_shapes.yaml#5
 sql:   WITH customer_totals AS ( SELECT customer_id, SUM(total) AS total_spend FROM orders GROUP BY customer_id ) SELECT customer_id, total_spend FROM customer_totals WHERE total_spend > 130 ORDER BY customer_id
-plan:  Map(PredicatesFilter(StreamingAgg(keys=[_current.CUSTOMER_ID#1], InMemorySort([_current.CUSTOMER_ID#1 ASC], Scan(ORDERS))), [1 preds]), {CUSTOMER_ID: _current.CUSTOMER_ID#0, TOTAL_SPEND: _current.SUM(TOTAL)#1})
+plan:  Map(PredicatesFilter(StreamingAgg(keys=[_current.CUSTOMER_ID#1], IndexScan(IDX_CUSTOMER, [*])), [1 preds]), {CUSTOMER_ID: _current.CUSTOMER_ID#0, TOTAL_SPEND: _current.SUM(TOTAL)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
-shape:       RecordQueryInMemorySortPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 === cascades_plan_shapes.yaml#6
 sql:   SELECT id FROM orders o WHERE EXISTS (SELECT 1 FROM orders o2 WHERE o2.customer_id = o.customer_id AND o2.id != o.id) ORDER BY id
 plan:  FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(IndexScan(IDX_CUSTOMER, [=]), [1 preds])), [1 preds]))
@@ -2598,11 +2593,11 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === case_when_in_java.yaml#3
 sql:   SELECT CASE WHEN category <= 20 THEN 'low' ELSE 'high' END AS tier, COUNT(*) FROM products GROUP BY tier ORDER BY tier
-plan:  Map(StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['low', 'high'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['low', 'high']) ASC], Scan(PRODUCTS))), {TIER: _current.CASE(WHEN(predicate, TRUE), ['low', 'high'])#0, _1: _current.COUNT(*)#1})
+plan:  Map(StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['low', 'high'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['low', 'high']) ASC], IndexScan(IDX_CATEGORY, [*]))), {TIER: _current.CASE(WHEN(predicate, TRUE), ['low', 'high'])#0, _1: _current.COUNT(*)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 === case_when_in_java.yaml#4
 sql:   SELECT id, CASE WHEN price > 400 THEN CASE WHEN category = 30 THEN 'premium-30' ELSE 'premium-other' END ELSE 'standard' END AS classification FROM products WHERE id IN (5, 6, 7, 8) ORDER BY id
 plan:  InJoin(Map(Scan(PRODUCTS, [=]), {ID: _current.ID#0, CLASSIFICATION: CASE(WHEN(predicate, TRUE), [CASE(WHEN(predicate, TRUE), ['premium-30', 'premium-other']), 'standard'])}), binding ASC)
@@ -7024,18 +7019,16 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryCoveringIndexPlan
 === escaped_table_grouped_aggregate.yaml#2
 sql:   SELECT g, MAX(v) FROM u GROUP BY g ORDER BY g
-plan:  Map(StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(U))), {G: _current.G#0, _1: _current.MAX(V)#1})
+plan:  Map(StreamingAgg(keys=[_current.G#1], IndexScan(U_G, [*])), {G: _current.G#0, _1: _current.MAX(V)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === escaped_table_grouped_aggregate.yaml#3
 sql:   SELECT g, MAX(v) FROM "AGG$T" GROUP BY g ORDER BY g
-plan:  Map(StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(AGG$T))), {G: _current.G#0, _1: _current.MAX(V)#1})
+plan:  Map(StreamingAgg(keys=[_current.G#1], IndexScan(AGG_G, [*])), {G: _current.G#0, _1: _current.MAX(V)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === escaped_table_secondary_index.yaml#0
 sql:   SELECT id FROM "MY$TABLE" WHERE name = 'beta'
 plan:  Map(IndexScan(IDX_NAME, [=] COVERING), {ID: _current.ID#0})
@@ -7587,17 +7580,17 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === flatmap_secondary_index.yaml#0
 sql:   SELECT c.name, i.title FROM categories c, items i WHERE c.id = i.cat_id ORDER BY c.name, i.title
-plan:  InMemorySort([_current.NAME#0 ASC, _current.TITLE#1 ASC], FlatMap(outer=Scan(CATEGORIES), inner=IndexScan(IDX_ITEMS_CAT, [=])))
+plan:  InMemorySort([_current.NAME#0 ASC, _current.TITLE#1 ASC], FlatMap(outer=IndexScan(IDX_CATEGORIES_NAME, [*]), inner=IndexScan(IDX_ITEMS_CAT, [=])))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryFlatMapPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 shape:     RecordQueryIndexPlan
 === flatmap_secondary_index.yaml#1
 sql:   SELECT c.name, i.title FROM categories c LEFT JOIN items i ON c.id = i.cat_id ORDER BY c.name, i.title
-plan:  InMemorySort([_current.NAME#0 ASC, _current.TITLE#1 ASC], FlatMap(outer=Scan(CATEGORIES), inner=DefaultOnEmpty(IndexScan(IDX_ITEMS_CAT, [=]))))
+plan:  InMemorySort([_current.NAME#0 ASC, _current.TITLE#1 ASC], FlatMap(outer=IndexScan(IDX_CATEGORIES_NAME, [*]), inner=DefaultOnEmpty(IndexScan(IDX_ITEMS_CAT, [=]))))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryFlatMapPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 shape:     RecordQueryDefaultOnEmptyPlan
 shape:       RecordQueryIndexPlan
 === flatmap_secondary_index.yaml#2
@@ -7615,10 +7608,10 @@ shape:   RecordQueryIndexPlan
 shape:   RecordQueryIndexPlan
 === flatmap_secondary_index.yaml#4
 sql:   SELECT c.priority, c.name, i.title FROM categories c, items i WHERE c.id = i.cat_id ORDER BY c.priority
-plan:  InMemorySort([_current.PRIORITY#0 ASC], FlatMap(outer=Scan(CATEGORIES), inner=IndexScan(IDX_ITEMS_CAT, [=])))
+plan:  InMemorySort([_current.PRIORITY#0 ASC], FlatMap(outer=IndexScan(IDX_CATEGORIES_NAME, [*]), inner=IndexScan(IDX_ITEMS_CAT, [=])))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryFlatMapPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 shape:     RecordQueryIndexPlan
 === flatmap_three_way.yaml#0
 sql:   SELECT r.name, s.name, p.name FROM regions r, stores s, products p WHERE s.region_id = r.id AND p.store_id = s.id ORDER BY r.name, s.name, p.name
@@ -9712,11 +9705,10 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryCoveringIndexPlan
 === index_scan_direction.yaml#7
 sql:   SELECT category, COUNT(*), MIN(ts), MAX(ts) FROM events GROUP BY category ORDER BY category
-plan:  Map(StreamingAgg(keys=[_current.CATEGORY#2], InMemorySort([_current.CATEGORY#2 ASC], Scan(EVENTS))), {CATEGORY: _current.CATEGORY#0, _1: _current.COUNT(*)#1, _2: _current.MIN(TS)#2, _3: _current.MAX(TS)#3})
+plan:  Map(StreamingAgg(keys=[_current.CATEGORY#2], IndexScan(IDX_CATEGORY, [*])), {CATEGORY: _current.CATEGORY#0, _1: _current.COUNT(*)#1, _2: _current.MIN(TS)#2, _3: _current.MAX(TS)#3})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === index_scan_order.yaml#0
 sql:   SELECT id FROM t ORDER BY id
 plan:  Map(Scan(T), {ID: _current.ID#0})
@@ -10704,11 +10696,11 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === join_exists_self.yaml#3
 sql:   SELECT COUNT(*) FROM t AS o WHERE EXISTS (SELECT 1 FROM t WHERE t.id = o.id AND t.status = 'active')
-plan:  Map(StreamingAgg(keys=[], FlatMap(outer=Scan(T), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds]))), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], FlatMap(outer=IndexScan(IDX_STATUS, [*]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T, [=]), [1 preds])), [1 preds]))), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryFirstOrDefaultPlan
 shape:           RecordQueryPredicatesFilterPlan
@@ -10965,10 +10957,10 @@ shape:       RecordQueryScanPlan
 shape:     RecordQueryIndexPlan
 === join_optimization_probes.yaml#1
 sql:   SELECT e.ename FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE e.salary > d.did * 50 ORDER BY e.ename
-plan:  InMemorySort([_current.ENAME#0 ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(Scan(DEPT, [=]), [1 preds])))
+plan:  InMemorySort([_current.ENAME#0 ASC], FlatMap(outer=IndexScan(IDX_EMP_DID, [*]), inner=PredicatesFilter(Scan(DEPT, [=]), [1 preds])))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryFlatMapPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === join_optimization_probes.yaml#2
@@ -10991,11 +10983,11 @@ shape:         RecordQueryScanPlan
 shape:       RecordQueryIndexPlan
 === join_optimization_probes.yaml#4
 sql:   SELECT a.ename, b.ename FROM emp AS a INNER JOIN emp AS b ON a.did = b.did WHERE a.eid < b.eid ORDER BY a.eid, b.eid
-plan:  Map(InMemorySort([_current._2#2 ASC, _current._3#3 ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [=]), [1 preds]))), {A.ENAME: _current.A.ENAME#0, B.ENAME: _current.B.ENAME#1})
+plan:  Map(InMemorySort([_current._2#2 ASC, _current._3#3 ASC], FlatMap(outer=IndexScan(IDX_EMP_DID, [*]), inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [=]), [1 preds]))), {A.ENAME: _current.A.ENAME#0, B.ENAME: _current.B.ENAME#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryIndexPlan
 === join_optimization_probes.yaml#5
@@ -12251,28 +12243,28 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryIndexPlan
 === multi_feature_integer.yaml#1
 sql:   SELECT name FROM products WHERE price > (SELECT MIN(price) FROM products WHERE category = 1) AND category = 2 ORDER BY price
-plan:  Map(InMemorySort([_current._1#1 ASC], Map(PredicatesFilter(Scan(PRODUCTS), [2 preds]), {NAME: _current.NAME#3, _1: _current.PRICE#2})), {NAME: _current.NAME#0})
+plan:  Map(InMemorySort([_current._1#1 ASC], Map(PredicatesFilter(IndexScan(IDX_CAT, [*]), [2 preds]), {NAME: _current.NAME#3, _1: _current.PRICE#2})), {NAME: _current.NAME#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryMapPlan
 shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:         RecordQueryIndexPlan
 === multi_feature_integer.yaml#2
 sql:   SELECT p.name FROM products p WHERE EXISTS ( SELECT 1 FROM products p2 WHERE p2.category = p.category AND p2.id != p.id ) ORDER BY p.name
-plan:  InMemorySort([_current.NAME#0 ASC], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(IndexScan(IDX_CAT, [=]), [1 preds])), [1 preds])))
+plan:  InMemorySort([_current.NAME#0 ASC], FlatMap(outer=IndexScan(IDX_CAT, [*]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(IndexScan(IDX_CAT, [=]), [1 preds])), [1 preds])))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryFlatMapPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryFirstOrDefaultPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryIndexPlan
 === multi_feature_integer.yaml#3
 sql:   SELECT a.name, b.name FROM products a JOIN products b ON a.category = b.category AND a.id < b.id ORDER BY a.name, b.name
-plan:  InMemorySort([_current.A.NAME#0 ASC, _current.B.NAME#1 ASC], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(IndexScan(IDX_CAT, [=]), [1 preds])))
+plan:  InMemorySort([_current.A.NAME#0 ASC, _current.B.NAME#1 ASC], FlatMap(outer=IndexScan(IDX_CAT, [*]), inner=PredicatesFilter(IndexScan(IDX_CAT, [=]), [1 preds])))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryFlatMapPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryIndexPlan
 === multi_feature_integer.yaml#4
@@ -12307,10 +12299,10 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryIndexPlan
 === multi_feature_integer.yaml#10
 sql:   SELECT COUNT(*) FROM products
-plan:  Map(StreamingAgg(keys=[], Scan(PRODUCTS)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(IDX_CAT, [*] COVERING)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === multi_feature_join_agg_exists.yaml#0
 sql:   SELECT s.name, SUM(p.price * i.qty) FROM stores s, inventory i, products p WHERE i.store_id = s.id AND i.product_id = p.id GROUP BY s.name ORDER BY s.name
 plan:  Map(StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(STORES), inner=FlatMap(outer=Scan(INVENTORY, [=]), inner=Scan(PRODUCTS, [=]))))), {NAME: _current.NAME#0, _1: _current.SUM(P.PRICE*I.QTY)#1})
@@ -14584,9 +14576,9 @@ shape:       RecordQueryMapPlan
 shape:         RecordQueryCoveringIndexPlan
 === order_by_limit.yaml#12
 sql:   SELECT * FROM t ORDER BY v * 2, id
-plan:  InMemorySort([(_current.V#2 * 2) ASC, _current.ID#0 ASC], Scan(T))
+plan:  InMemorySort([(_current.V#2 * 2) ASC, _current.ID#0 ASC], IndexScan(IDX_V, [*]))
 shape: RecordQueryInMemorySortPlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryIndexPlan
 === order_by_nulls.yaml#0
 sql:   SELECT v FROM t ORDER BY v ASC
 plan:  Map(IndexScan(IDX_V, [*] COVERING), {V: _current.V#1})
@@ -14867,42 +14859,41 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === output_column_naming.yaml#0
 sql:   SELECT MAX(a) AS agg FROM t
-plan:  Map(StreamingAgg(keys=[], Scan(T)), {AGG: _current.MAX(A)#0})
+plan:  Map(StreamingAgg(keys=[], IndexScan(IDX_A, [*])), {AGG: _current.MAX(A)#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === output_column_naming.yaml#1
 sql:   SELECT COUNT(*) AS cnt FROM t
-plan:  Map(StreamingAgg(keys=[], Scan(T)), {CNT: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(IDX_B, [*] COVERING)), {CNT: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === output_column_naming.yaml#2
 sql:   SELECT SUM(a) AS total FROM t
-plan:  Map(StreamingAgg(keys=[], Scan(T)), {TOTAL: _current.SUM(A)#0})
+plan:  Map(StreamingAgg(keys=[], IndexScan(IDX_A, [*])), {TOTAL: _current.SUM(A)#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === output_column_naming.yaml#3
 sql:   SELECT MAX(a) FROM t
-plan:  Map(StreamingAgg(keys=[], Scan(T)), {_0: _current.MAX(A)#0})
+plan:  Map(StreamingAgg(keys=[], IndexScan(IDX_A, [*])), {_0: _current.MAX(A)#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === output_column_naming.yaml#4
 sql:   SELECT b AS g, MAX(a) AS agg FROM t GROUP BY b
-plan:  Map(StreamingAgg(keys=[_current.B#2], InMemorySort([_current.B#2 ASC], Scan(T))), {G: _current.B#0, AGG: _current.MAX(A)#1})
+plan:  Map(StreamingAgg(keys=[_current.B#2], IndexScan(IDX_B, [*])), {G: _current.B#0, AGG: _current.MAX(A)#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === output_column_naming.yaml#5
 sql:   SELECT l.id AS l_id, r.id AS r_id FROM t AS l JOIN t AS r ON l.a = r.b ORDER BY l.id, r.id LIMIT 20
-plan:  Limit(20, InMemorySort([_current.L_ID#0 ASC, _current.R_ID#1 ASC], FlatMap(outer=Scan(T), inner=IndexScan(IDX_B, [=]))))
+plan:  Limit(20, InMemorySort([_current.L_ID#0 ASC, _current.R_ID#1 ASC], FlatMap(outer=IndexScan(IDX_A, [*]), inner=IndexScan(IDX_A, [=]))))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryIndexPlan
 shape:       RecordQueryIndexPlan
 === output_column_naming.yaml#6
 sql:   SELECT id AS renamed FROM t ORDER BY id LIMIT 2
@@ -17134,10 +17125,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_types.yaml#4
 sql:   SELECT id FROM t WHERE name = (SELECT name FROM t WHERE id = 2)
-plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+plan:  Map(PredicatesFilter(IndexScan(IDX_T_SCORE, [*]), [1 preds]), {ID: _current.ID#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryIndexPlan
 === scalar_subquery_types.yaml#5
 sql:   SELECT id FROM t WHERE active = (SELECT active FROM t WHERE id = 1) ORDER BY id
 plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
@@ -17261,10 +17252,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#14
 sql:   SELECT COUNT(*) FROM t
-plan:  Map(StreamingAgg(keys=[], Scan(T)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(IDX_V, [*] COVERING)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#15
 sql:   SELECT id, amount FROM t2 WHERE region = 'us' AND plan_name = 'pro' ORDER BY id
 plan:  Map(IndexScan(IDX_REGION_PLAN, [=, =]), {ID: _current.ID#0, AMOUNT: _current.AMOUNT#3})
@@ -17421,15 +17412,15 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#42
 sql:   SELECT COUNT(*) FROM t
-plan:  Map(StreamingAgg(keys=[], Scan(T)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(IDX_V, [*] COVERING)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#43
 sql:   DELETE FROM t2
-plan:  Delete(T2, Scan(T2))
+plan:  Delete(T2, IndexScan(IDX_REGION_PLAN, [*, *]))
 shape: RecordQueryDeletePlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#45
 sql:   SELECT id FROM t2 WHERE region = 'us' AND plan_name > 'a' ORDER BY id
 plan:  InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_REGION_PLAN, [=, <>] COVERING), {ID: _current.ID#0}))
@@ -17496,15 +17487,15 @@ shape:   RecordQueryMapPlan
 shape:     RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#56
 sql:   SELECT COUNT(*) FROM t2
-plan:  Map(StreamingAgg(keys=[], Scan(T2)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(IDX_REGION_PLAN, [*, *] COVERING)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#57
 sql:   DELETE FROM t2
-plan:  Delete(T2, Scan(T2))
+plan:  Delete(T2, IndexScan(IDX_REGION_PLAN, [*, *]))
 shape: RecordQueryDeletePlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#59
 sql:   SELECT id FROM t2 WHERE region < 'us' ORDER BY id
 plan:  InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_REGION_PLAN, [<>, *] COVERING), {ID: _current.ID#0}))
@@ -17543,9 +17534,9 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === secondary_index_pushdown.yaml#65
 sql:   DELETE FROM t
-plan:  Delete(T, Scan(T))
+plan:  Delete(T, IndexScan(IDX_STATUS, [*]))
 shape: RecordQueryDeletePlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#67
 sql:   SELECT id FROM t WHERE v BETWEEN 20 AND 40 ORDER BY id
 plan:  InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_V, [<>] COVERING), {ID: _current.ID#0}))
@@ -17561,18 +17552,18 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#69
 sql:   SELECT id FROM t WHERE v NOT BETWEEN 20 AND 40 ORDER BY id
-plan:  InMemorySort([_current.ID#0 ASC], Map(UnorderedPrimaryKeyDistinct(UnorderedUnion(IndexScan(IDX_V, [<>] COVERING), IndexScan(IDX_V, [<>] COVERING))), {ID: _current.ID#0}))
+plan:  InMemorySort([_current.ID#0 ASC], Map(UnorderedPrimaryKeyDistinct(UnorderedUnion(IndexScan(IDX_V, [<>]), IndexScan(IDX_V, [<>]))), {ID: _current.ID#0}))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryMapPlan
 shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
 shape:       RecordQueryUnorderedUnionPlan
-shape:         RecordQueryCoveringIndexPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:         RecordQueryIndexPlan
+shape:         RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#70
 sql:   DELETE FROM t2
-plan:  Delete(T2, Scan(T2))
+plan:  Delete(T2, IndexScan(IDX_REGION_PLAN, [*, *]))
 shape: RecordQueryDeletePlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#72
 sql:   SELECT id FROM t2 WHERE region = 'us' AND plan_name BETWEEN 'a' AND 'b' ORDER BY id
 plan:  InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_REGION_PLAN, [=, <>] COVERING), {ID: _current.ID#0}))
@@ -17587,9 +17578,9 @@ shape:   RecordQueryMapPlan
 shape:     RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#74
 sql:   DELETE FROM t
-plan:  Delete(T, Scan(T))
+plan:  Delete(T, IndexScan(IDX_STATUS, [*]))
 shape: RecordQueryDeletePlan
-shape:   RecordQueryScanPlan
+shape:   RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#75
 sql:   SELECT id FROM t WHERE v > 10
 plan:  Map(IndexScan(IDX_V, [<>] COVERING), {ID: _current.ID#0})
@@ -19221,13 +19212,13 @@ shape:     RecordQueryMapPlan
 shape:       RecordQueryIndexPlan
 === union_aggregate_java.yaml#2
 sql:   SELECT SUM(y) AS s FROM (SELECT COUNT(*) AS y FROM t1 UNION ALL SELECT COUNT(*) AS y FROM t2) AS x
-plan:  Map(StreamingAgg(keys=[], UnorderedUnion(Map(StreamingAgg(keys=[], Scan(T1)), {Y: COALESCE(_current.COUNT(*)#0, 0)}), Map(StreamingAgg(keys=[], Scan(T2)), {Y: COALESCE(_current.COUNT(*)#0, 0)}))), {S: _current.SUM(Y)#0})
+plan:  Map(StreamingAgg(keys=[], UnorderedUnion(Map(StreamingAgg(keys=[], IndexScan(VI1, [*] COVERING)), {Y: COALESCE(_current.COUNT(*)#0, 0)}), Map(StreamingAgg(keys=[], Scan(T2)), {Y: COALESCE(_current.COUNT(*)#0, 0)}))), {S: _current.SUM(Y)#0})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryUnorderedUnionPlan
 shape:       RecordQueryMapPlan
 shape:         RecordQueryStreamingAggregationPlan
-shape:           RecordQueryScanPlan
+shape:           RecordQueryCoveringIndexPlan
 shape:       RecordQueryMapPlan
 shape:         RecordQueryStreamingAggregationPlan
 shape:           RecordQueryScanPlan
@@ -19601,22 +19592,22 @@ shape:         RecordQueryStreamingAggregationPlan
 shape:           RecordQueryScanPlan
 === unique_constraint_violation.yaml#3
 sql:   SELECT COUNT(*) FROM t
-plan:  Map(StreamingAgg(keys=[], Scan(T)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(IDX_VAL, [*] COVERING)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === unique_index_violation.yaml#1
 sql:   SELECT COUNT(*) FROM Users
-plan:  Map(StreamingAgg(keys=[], Scan(USERS)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(IDX_USERS_EMAIL, [*] COVERING)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === unique_index_violation.yaml#3
 sql:   SELECT COUNT(*) FROM Users
-plan:  Map(StreamingAgg(keys=[], Scan(USERS)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(IDX_USERS_EMAIL, [*] COVERING)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === unique_index_violation.yaml#4
 sql:   SELECT id FROM Users WHERE email = 'alice@example.com'
 plan:  Map(IndexScan(IDX_USERS_EMAIL, [=] COVERING), {ID: _current.ID#0})
@@ -19624,10 +19615,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryCoveringIndexPlan
 === unique_violation.yaml#3
 sql:   SELECT COUNT(*) FROM t
-plan:  Map(StreamingAgg(keys=[], Scan(T)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
+plan:  Map(StreamingAgg(keys=[], IndexScan(T_EMAIL, [*] COVERING)), {_0: COALESCE(_current.COUNT(*)#0, 0)})
 shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryScanPlan
+shape:     RecordQueryCoveringIndexPlan
 === unique_violation.yaml#4
 sql:   SELECT name, email FROM t WHERE id = 1
 plan:  Map(Scan(T, [=]), {NAME: _current.NAME#1, EMAIL: _current.EMAIL#2})

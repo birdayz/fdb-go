@@ -75,13 +75,16 @@ tests:
   # (TestComparisonSetKey_*, TestSetDifferenceEmpty). The join rule's choice of
   # inner leg ranks with the SQL configuration's PREFER_INDEX since RFC-257 WS-F
   # F-7a (it ranked with the record layer's PREFER_SCAN default before), so the
-  # did probe serves the inner leg. Rows are the correctness pin here.
+  # did probe serves the inner leg. Rows are the correctness pin here. Java
+  # cannot plan this ORDER BY (UnableToPlanException, 4.14.2.0); without it
+  # Java drives the outer off a full IDX_EMP_DID scan, and Go's in-memory sort
+  # sits over that same join.
   - query: |-
       SELECT a.ename, b.ename FROM emp AS a
       INNER JOIN emp AS b ON a.did = b.did
       WHERE a.eid < b.eid
       ORDER BY a.eid, b.eid
-    plan_contains: "FlatMap(outer=Scan(EMP), inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [=])"
+    plan_contains: "FlatMap(outer=IndexScan(IDX_EMP_DID, [*]), inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [=])"
     plan_not_contains: "NestedLoopJoin"
     rows:
       - ['Alice', 'Bob']

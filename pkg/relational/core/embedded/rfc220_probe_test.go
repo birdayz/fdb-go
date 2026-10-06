@@ -68,10 +68,12 @@ func TestCoveringLeafMetadataQueriesStillPlanAsCoveringLeaves(t *testing.T) {
 // on the specific shape that breaks — the filtered variants, where the index is
 // legitimately usable.
 //
-// The nofilter case is the control and is NOT a bug: a value index stores no
-// entry for a NULL key, so GROUP BY over a nullable column without an
-// IS NOT NULL filter must not stream off the index or it would drop the NULL
-// group entirely. It asserts the sort STAYS.
+// The nullable case streams off the index too: a value index stores an entry
+// for a NULL key (the NULL tuple element sorts first), so the NULL group is
+// read from it like any other, as in Java. (An earlier revision of this test
+// asserted the opposite; the leaf match could not climb to the candidate root
+// then, and the sort it pinned was that gap, not a NULL rule.
+// TestFDB_NullableGroupByOverIndexKeepsTheNullGroup proves the rows.)
 func TestStreamingAggEnumeratesEveryOrderedChildMember(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -97,11 +99,11 @@ func TestStreamingAggEnumeratesEveryOrderedChildMember(t *testing.T) {
 			wantReason: "same shape without the CTE wrapper",
 		},
 		{
-			name: "nullable_group_by_must_not_use_the_index",
+			name: "nullable_group_by_streams_off_the_index",
 			sql: `SELECT category, SUM(price) AS total FROM products
 				GROUP BY category ORDER BY category`,
-			wantIndex:  false,
-			wantReason: "a value index has no entry for a NULL key, so streaming off idx_cat would drop the NULL group",
+			wantIndex:  true,
+			wantReason: "idx_cat holds the NULL key as well, so it supplies the grouping order for every group",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

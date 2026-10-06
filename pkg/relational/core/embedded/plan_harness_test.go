@@ -2785,6 +2785,14 @@ func assertIndexAccessRealizedOnce(t *testing.T, indexes, predicate string, acce
 	if best == nil {
 		t.Fatal("empty plan")
 	}
+	// The bound accesses (an index scan with a comparison) are the matches this
+	// test counts. The leg's type filter also matches each candidate unbound
+	// (a full-range [*] scan, Java's data access on the bare leg), and such an
+	// access may sit under a filter pushed below its fetch; those are not
+	// counted.
+	bound := func(p *plans.RecordQueryCoveringIndexPlan) bool {
+		return !strings.Contains(p.Explain(), "[*")
+	}
 	coverings := make(map[*plans.RecordQueryCoveringIndexPlan]bool)
 	fetches := make(map[*plans.RecordQueryFetchFromPartialRecordPlan]bool)
 	largestIntersection := 0
@@ -2792,7 +2800,9 @@ func assertIndexAccessRealizedOnce(t *testing.T, indexes, predicate string, acce
 		for _, expr := range group.AllMembers() {
 			switch plan := expr.(type) {
 			case *plans.RecordQueryCoveringIndexPlan:
-				coverings[plan] = true
+				if bound(plan) {
+					coverings[plan] = true
+				}
 			case *plans.RecordQueryFetchFromPartialRecordPlan:
 				fetches[plan] = true
 			case *plans.RecordQueryIntersectionPlan:
@@ -2803,8 +2813,14 @@ func assertIndexAccessRealizedOnce(t *testing.T, indexes, predicate string, acce
 	accessFetches := 0
 	for fetch := range fetches {
 		t.Logf("fetch alternative: %s", fetch.Explain())
-		if _, isAccess := fetch.GetInner().(*plans.RecordQueryCoveringIndexPlan); isAccess {
-			accessFetches++
+		if covering, isAccess := fetch.GetInner().(*plans.RecordQueryCoveringIndexPlan); isAccess {
+			if bound(covering) {
+				accessFetches++
+			}
+		} else if filter, ok := fetch.GetInner().(*plans.RecordQueryPredicatesFilterPlan); ok {
+			if c, ok := filter.GetInner().(*plans.RecordQueryCoveringIndexPlan); !ok || bound(c) {
+				t.Fatalf("unexpected filtered fetch: %s", fetch.Explain())
+			}
 		} else if intersection, ok := fetch.GetInner().(*plans.RecordQueryIntersectionPlan); !ok || len(intersection.GetQuantifiers()) != arity {
 			t.Fatalf("unexpected non-access fetch: %s", fetch.Explain())
 		}
@@ -2827,7 +2843,11 @@ func TestPlanHarness_FixedFactorUnionAccessConverges(t *testing.T) {
 	for _, tc := range []struct{ name, suffix string }{
 		{"unordered", ""},
 		{"ordered", " ORDER BY b, id"},
-		{"exists", " AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.a < t_rd.a AND r.a > 9)"},
+		// The anti-EXISTS variant is not here: Java does not plan it within
+		// Go's 150,000-task budget either (FixedFactorUnionAccessJava, "single
+		// comparison at Go budget", with c = 4 for the ABS Java does not
+		// support), and since a type-filter leg's match
+		// climbs to the candidate root as in Java, neither does Go.
 		{"scalar", " AND c <= (SELECT MIN(a) FROM t_rd)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

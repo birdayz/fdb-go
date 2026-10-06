@@ -555,7 +555,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     either (StackOverflowError, `FixedFactorUnionScalarJava`).
   - Still open: Java skips a match that satisfies none of the requested
     orderings; Go does not (alone it moves 336 plans, a join's inner probe
-    among them: Go's request sets differ from Java's). Rows still open in
+    among them: Go's request sets differ from Java's). Re-measured after the
+    leaf climb (2026-10-06), reverted: under ORDER BY a join leg is asked for
+    a concrete ordering no probe provides (Java cannot plan those queries),
+    and the skip drops the leg's probes, so yamsql join scenarios degrade to
+    scans. It needs Go's in-memory sort to request PRESERVE below it too. Rows still open in
     `wsfOpenUntil` as F-7c follow-ups: none. The IN-join versus filtered scan
     rows (`w8_in25`, `w8_in_union`, `w8_tie_in`) are declared `DIFF-PATH
     in-memory-sort` (DIVERGENCES.md "an IN ordered by a key no probe
@@ -569,10 +573,32 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
       states it as Java's generateSelect does, a block Select returning the
       read's row, and Go reads `IndexScan(I1, [*])`, Java's `ISCAN(I1 <,>)`.
       No corpus plan moved; the row leaves `wsfOpenUntil`.
-    - `w6_left_join_indexed` has the same cause one level down: a LEFT
-      JOIN's preserved leg gets no single-quantifier Select because Go's
-      PartitionBinarySelectRule skips outer joins (Java partitions the
-      null-on-empty select). Relabelled; it needs the outer-join partition.
+    - `w6_left_join_indexed` DONE (2026-10-06), and the diagnosis above was
+      wrong: measured on the JVM (`planRuleTrace`), Java's preserved leg is a
+      bare LogicalTypeFilter with no Select, and WithPrimaryKeyDataAccessRule
+      gives it `ISCAN(I1 <,>)` because the leaf match climbs through the
+      candidate's Select to its MatchableSort (`SelectExpression.adjustMatch`).
+      Go's AdjustMatchRule refused the climb (it required zero node-local
+      correlations); it now runs Java's subset check (node-local correlations
+      minus own quantifiers and placeholder parameters within the child's).
+      The row is SAME-PATH: `FlatMap(outer=IndexScan(I1, [*]),
+      inner=DefaultOnEmpty(IndexScan(I6, [=])))`
+      (`TestAdjustMatches_LeafMatchClimbsToTheCandidateRoot`). Bare join legs
+      and aggregation inputs now read the full index scan Java reads (oracle-
+      checked: MAX/SUM/COUNT and GROUP BY stream off `ISCAN(I <,>)`, DELETE
+      reads `ISCAN | DELETE`); a GROUP BY over an indexed column streams with
+      no sort. With it, an existential FlatMap plans one outer per ordering
+      requested of the outer group (Java's per-ordering roll-up), else
+      `EXISTS ... ORDER BY id` sorted a cheaper full index scan instead of
+      using the PK-ordered outer. javacorpus `array-agg-documentation-
+      queries.yamsql` now runs its scan-choice row (class retired); 3125
+      factory headers re-blessed, 6 duplicate points retired (RETIREMENT_
+      LEDGER.md; census: 0 equality-probe losses). Left: `secondary_index_
+      pushdown.yaml#69` (`v NOT BETWEEN .. ORDER BY id`) lost COVERING on its
+      union legs, a fetch per entry where the legs were covering; Java plans
+      the ordered SCAN | FILTER there (in-memory-sort divergence). Follow-up:
+      with the climb working, the Go-only OrderedIndexScanRule /
+      OrderedPrimaryScanRule can be measured for retirement.
     - `w8_or_two_indexes` is done: Go built the ordered union only over two
       fetching index scans, because the merge-distinct identity proof refused
       a `Fetch(COVERING)` leg on the stale premise that Go's Fetch passes its

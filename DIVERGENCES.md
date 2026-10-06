@@ -2970,10 +2970,13 @@ ranks it against the primary scan; both engines read the same index for the quer
   disagreement it admits).
 - Java skips a data-access match that satisfies none of the requested orderings
   (AbstractDataAccessRule.java:660-662); Go keeps it, because the request sets Go passes differ from
-  Java's (the check alone moves 336 corpus plans).
+  Java's (the check alone moves 336 corpus plans). Under an ORDER BY no probe provides, Java cannot
+  plan the query and Go's in-memory sort needs the leg's probes, so the skip waits on the sort
+  requesting PRESERVE below it.
 - Among several full index reads that tie, the engines may pick different indexes: `SELECT id,
   COALESCE(customer_id, 0) FROM orders` reads `IDX_AMOUNT` in Java and the covering `IDX_CUSTOMER` in
-  Go.
+  Go; `SELECT COUNT(*) FROM t` over IDX_A and IDX_B reads `ISCAN(IDX_A <,>)` in Java and the covering
+  IDX_B in Go, and `SUM(a)` reads IDX_B in Java and IDX_A in Go.
 
 ## Implementation rules that still choose a child (F-8)
 
@@ -2984,7 +2987,9 @@ insert, temp-table insert, intersection and recursive (DFS join, level union) ru
 
 - `ImplementLimitRule` has no Java counterpart (Java SQL has no LIMIT). It implements LIMIT over the
   cheapest child plan satisfying each requested ordering, the approved Go extension.
-- `ImplementNestedLoopJoinRule` takes the leg groups' preserve winners. Java rolls the existential inner
+- `ImplementNestedLoopJoinRule` takes the leg groups' preserve winners (for an existential select's
+  outer, also the cheapest member per ordering requested of the outer group, Java's per-ordering
+  roll-up). Java rolls the existential inner
   up into one partition, so its FirstOrDefault ranges over every inner plan and that reference's own
   cost comparison resolves it; Go's correlated-inner rewrites need a concrete plan, so the rule takes
   the same local choice with the same comparator. Yielding per inner member instead moved 3 golden and

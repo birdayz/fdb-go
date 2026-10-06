@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
@@ -2664,10 +2665,53 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// it), because the choice then happens at the parent group instead; per
 	// outer member too exhausts the task budget on a union-heavy outer
 	// (TestPlanHarness_FixedFactorUnionJavaComparable).
-	outerExpr, _ := getWinnerForOrdering(outerRef, properties.PreserveOrdering(), call.CostModel())
-	if outerExpr == nil {
-		return
+	//
+	// The outer is rolled up per ordering, as Java does: besides the preserve
+	// winner, the cheapest outer member satisfying each ordering requested of
+	// the outer group seeds its own FlatMap. Without it a cheaper unordered
+	// outer (a full index scan) is the only seed, and an ORDER BY its group
+	// can satisfy (the primary key) needs an in-memory sort Java never plans.
+	for _, outerExpr := range existentialOuterSeeds(call, outerRef) {
+		r.implementExistentialSelectFrom(call, sel, quants, aliases, outerRef, innerRef, outerExpr)
+		if call.Err() != nil {
+			return
+		}
 	}
+}
+
+// existentialOuterSeeds returns the outer group's preserve winner followed by
+// the distinct cheapest members satisfying each ordering requested of it.
+func existentialOuterSeeds(call *ExpressionRuleCall, outerRef *expressions.Reference) []expressions.RelationalExpression {
+	less := call.CostModel()
+	winner, _ := getWinnerForOrdering(outerRef, properties.PreserveOrdering(), less)
+	if winner == nil {
+		return nil
+	}
+	seeds := []expressions.RelationalExpression{winner}
+	requested, _ := Get(call.Constraints, outerRef, RequestedOrderingConstraintKey)
+	for _, ro := range requested {
+		if ro == nil || ro.IsPreserve() {
+			continue
+		}
+		best := bestSatisfyingMember(outerRef, ro, less)
+		if best == nil || slices.Contains(seeds, best) {
+			continue
+		}
+		seeds = append(seeds, best)
+	}
+	return seeds
+}
+
+// implementExistentialSelectFrom plans the existential FlatMap over one outer
+// seed.
+func (r *ImplementNestedLoopJoinRule) implementExistentialSelectFrom(
+	call *ExpressionRuleCall,
+	sel *expressions.SelectExpression,
+	quants []expressions.Quantifier,
+	aliases []string,
+	outerRef, innerRef *expressions.Reference,
+	outerExpr expressions.RelationalExpression,
+) {
 	outerPh, ok := outerExpr.(physicalPlanExpression)
 	if !ok {
 		return

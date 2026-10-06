@@ -119,12 +119,13 @@ func PrepareMatchesAndCompensations(
 		)
 		// No Go-only pruning (F-7c): a full index scan with no search argument
 		// is kept, as Java keeps it (a PRESERVE request is satisfied by every
-		// scan), and PREFER_INDEX ranks it against the primary scan. Java also
-		// skips a match that satisfies NONE of the requested orderings
-		// (AbstractDataAccessRule.java:660-662); Go does not yet, because
-		// Go's callers pass request sets Java's would not (measured: the
-		// check alone moves 336 corpus plans, a join's inner probe among
-		// them). TODO.md F-7c records it.
+		// scan). Java also skips a match that satisfies NONE of the requested
+		// orderings (AbstractDataAccessRule.java:660-662); Go does not yet.
+		// Java has no in-memory sort, so under an ORDER BY a join leg is asked
+		// for an ordering no probe provides and Java cannot plan the query;
+		// Go sorts, and the skip would drop those legs' probes (measured: the
+		// yamsql join scenarios degrade to scans). The skip needs Go's sort
+		// extension to request PRESERVE below it first. TODO.md F-7c.
 
 		// Required-for-binding gate (Java AbstractDataAccessRule line 665):
 		// skip a match that did not bind every sargable alias the candidate

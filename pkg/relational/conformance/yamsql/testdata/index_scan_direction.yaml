@@ -96,9 +96,10 @@ tests:
     rows:
       - [3]
 
-  # Multi-value aggregate with indexed filter
+  # Multi-value aggregate grouped by an indexed column: streams off the
+  # index's order with no sort, as Java's ISCAN(IDX_CATEGORY <,>) | AGG does.
   - query: SELECT category, COUNT(*), MIN(ts), MAX(ts) FROM events GROUP BY category ORDER BY category
-    plan_contains: "Map(StreamingAgg(keys=[_current.CATEGORY#2], InMemorySort([_current.CATEGORY#2 ASC], Scan(EVENTS))), {CATEGORY: _current.CATEGORY#0, _1: _current.COUNT(*)#1, _2: _current.MIN(TS)#2, _3: _current.MAX(TS)#3})"
+    plan_contains: "Map(StreamingAgg(keys=[_current.CATEGORY#2], IndexScan(IDX_CATEGORY, [*])), {CATEGORY: _current.CATEGORY#0, _1: _current.COUNT(*)#1, _2: _current.MIN(TS)#2, _3: _current.MAX(TS)#3})"
     rows:
       - ['error', 2, 50, 300]
       - ['login', 3, 100, 250]

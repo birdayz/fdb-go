@@ -209,10 +209,6 @@ const (
 	// DDL then stores unquoted names as written, Go folds them, and the file's
 	// verbatim connect URI names a schema only Java stored.
 	SkipGapCaseSensitiveIdentifiers SkipClass = "engine-gap:case-sensitive-identifiers"
-	// SkipConformanceScanChoiceOrder is an order-sensitive answer that follows
-	// Java's PREFER_INDEX choice of a full index scan for a predicate-free read,
-	// which Go prunes (abstract_data_access_rule.go); the rows are the same.
-	SkipConformanceScanChoiceOrder SkipClass = "conformance:scan-choice-order"
 )
 
 // AllSkipClasses is every declared reason class.
@@ -249,7 +245,6 @@ func AllSkipClasses() []SkipClass {
 		SkipGapErrorClass,
 		SkipConformanceGoAccepts,
 		SkipConformanceJavaPlannerBug,
-		SkipConformanceScanChoiceOrder,
 		SkipGapStarGroupBy,
 		SkipGapCaseSensitiveIdentifiers,
 		SkipCheckCache,

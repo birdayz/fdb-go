@@ -259,7 +259,7 @@ var engineGaps = []EngineGap{
 	// it sits two arms after this one — so it does not run. That shape is
 	// covered Go-side instead by `nested_struct_cardinality_index.yaml`, which
 	// asserts the index scan Java plans.
-	{"documentation-queries/array-agg-documentation-queries.yamsql", SkipConformanceScanChoiceOrder, `line 55: "SELECT ARRAY_AGG(amount IGNORE NULLS) AS amounts FROM sales": cell mismatch`, "abstract_data_access_rule.go"},
+	{"documentation-queries/array-agg-documentation-queries.yamsql", SkipConformanceGoAccepts, `line 84: "SELECT p.pid, (SELECT ARRAY_AGG(c.val IGNORE NULLS) FROM child c WHERE c.pid = p.pid) FROM parent p": expecting statement to throw an error 42601`, "scalar subquery in the SELECT list is a Go grammar extension"},
 	{"arrays-cardinality.yamsql", SkipConformanceJavaPlannerBug, `line 187: "SELECT \"id\" FROM \"tab1_indexed\" WHERE CARDINALITY(\"int_arr\") = NULL": result does not contain all expected rows, expected 1 row(s), got 0 row(s)`, "Issue #4170"},
 
 	// NULL into a NOT NULL ARRAY column: Go raises the clean 23502 at plan

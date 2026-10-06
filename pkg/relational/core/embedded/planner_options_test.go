@@ -322,8 +322,11 @@ func TestPlannerOptions_DisablePlannerRewriting(t *testing.T) {
 		// refused at memo admission for carrying a differently-NAMED row, a
 		// rejection that went away when record names left exact-type identity.
 		// The fixture's point is the SHAPE (a rewritten outer join: FlatMap over a
-		// DefaultOnEmpty index probe), which is unchanged.
-		const wantBase = "FlatMap(outer=Scan(T), inner=DefaultOnEmpty(IndexScan(IDX_A, [=])))"
+		// DefaultOnEmpty index probe), which is unchanged. The preserved leg is
+		// a full IDX_A scan: its match climbs to the candidate's MatchableSort
+		// as Java's does (SelectExpression.adjustMatch), and Java's own plan
+		// for this shape is ISCAN(..) | FLATMAP (WS-F w6_left_join_indexed).
+		const wantBase = "FlatMap(outer=IndexScan(IDX_A, [*]), inner=DefaultOnEmpty(IndexScan(IDX_A, [=])))"
 		if base != wantBase {
 			t.Fatalf("default plan = %q, want %q — the fixture must start from the REWRITTEN "+
 				"outer join for the contrast to mean anything", base, wantBase)
@@ -331,7 +334,7 @@ func TestPlannerOptions_DisablePlannerRewriting(t *testing.T) {
 
 		off := api.NewOptionsBuilder().Set(api.OptDisablePlannerRewriting, true).Build()
 		got := explainWithOptions(t, sql, indexedTableDDL, off)
-		const wantOff = "NestedLoopJoin(LEFT OUTER, [1 preds], Scan(T), Scan(T))"
+		const wantOff = "NestedLoopJoin(LEFT OUTER, [1 preds], IndexScan(IDX_A, [*]), IndexScan(IDX_A, [*]))"
 		if got != wantOff {
 			t.Fatalf("with rewriting disabled, plan = %q, want %q — the option is accepted and "+
 				"ignored if the plan is unchanged", got, wantOff)

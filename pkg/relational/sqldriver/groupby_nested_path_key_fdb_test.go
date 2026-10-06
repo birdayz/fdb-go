@@ -175,16 +175,17 @@ func TestFDB_GroupByNestedPathKey(t *testing.T) {
 		eq(t, q, rowsOf(t, q, 2), "[[1 1] [2 2] [3 3] [4 4] [8 8] [7 7] [6 6] [5 5]]")
 	})
 
-	t.Run("plan_shape_is_the_read_side_fallback", func(t *testing.T) {
-		// Recorded, not aspirational: Go does NOT match index i2 for a nested
-		// grouping key (aggColumnMatches offers a length-1 candidate; a nested
-		// path has length >= 2 and the length gate rejects it before comparing
-		// a segment), so it groups over a base-record scan ordered by an
-		// in-memory sort. Asserting the shape here is what makes a later
-		// aggregate-index match a visible, deliberate change rather than a
-		// silent one — and it pins that there is exactly ONE sort, below the
-		// aggregation, so the grouping order is being CONSUMED rather than
-		// re-established above it.
+	t.Run("plan_shape_streams_off_the_value_index", func(t *testing.T) {
+		// Recorded, not aspirational: Go does NOT match index i2 as an
+		// aggregate index for a nested grouping key (aggColumnMatches offers a
+		// length-1 candidate; a nested path has length >= 2 and the length gate
+		// rejects it before comparing a segment). The value-index match climbs
+		// to the candidate's MatchableSort (Java's adjustMatch), so the
+		// grouping streams off a full scan of i2, which provides the order.
+		// Asserting the shape here is what makes a later aggregate-index match
+		// a visible, deliberate change rather than a silent one — and it pins
+		// that there is NO sort above the aggregation, so the grouping order
+		// is being CONSUMED rather than re-established above it.
 		var plan string
 		if err := db.QueryRowContext(ctx,
 			"EXPLAIN SELECT max(q.s) FROM nested GROUP BY r.v.z ORDER BY r.v.z").
@@ -194,7 +195,7 @@ func TestFDB_GroupByNestedPathKey(t *testing.T) {
 		// The grouping key is not projected, so the block carries it as `_1`
 		// and one more Map drops it (Java's generateSelect).
 		want := "Map(Map(StreamingAgg(keys=[_current.R#2.V#1.Z#1], " +
-			"InMemorySort([_current.R#2.V#1.Z#1 ASC], Scan(NESTED))), " +
+			"IndexScan(I2, [*])), " +
 			"{_0: _current.MAX(Q.S)#1, _1: _current.NESTED.R.V.Z#0}), {_0: _current._0#0})"
 		if plan != want {
 			t.Fatalf("plan shape moved.\n  got:  %s\n  want: %s\n"+
