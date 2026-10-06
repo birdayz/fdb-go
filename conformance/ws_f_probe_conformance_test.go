@@ -990,6 +990,7 @@ var wsfDeclaredPathReasons = map[string]string{
 	"sparse-param-plan-constraint":   "5, item 3: a real (not substituted) ? parameter implies no sparse index until WS-H ports the plan-constraint identity; WS-E section 4 moves the prepared row here",
 	"covering-rank":                  "4.2 item 3: Go's primary-versus-index rank against the target's cyclic relation, final plan",
 	"rfc-191":                        "DIVERGENCES.md, ordered IN over a non-covering index: Go pushes a comparand in-join through its fetch, Fetch(InJoin) where Java plans Fetch(InUnion)",
+	"in-memory-sort":                 "DIVERGENCES.md, an IN ordered by a key no probe provides: Go's in-memory sort lets the IN probes compete with the ordered full scan, Java's only plan",
 }
 
 // wsfAtAcceptance reports whether a probe is at its acceptance entry. The entry's first
@@ -1244,7 +1245,7 @@ var wsfAcceptance = map[string]string{
 	"w8_in24_order_by_col1_rows":                 "SAME",
 	"w8_in25_order_by_col1_explain":              "DIFF-PATH rfc-191 -> FETCH(INJOIN(COVERING(I1 [=])))",
 	"w8_in25_order_by_col1_rows":                 "DIFF the target's IN-union fails past its 24 values (\"too many IN values\"); Go's sorted in-join answers (RFC-191)",
-	"w8_in25_order_by_id_explain":                "SAME-PATH",
+	"w8_in25_order_by_id_explain":                "DIFF-PATH in-memory-sort -> SORT(FETCH(INJOIN(COVERING(I1 [=]))))",
 	"w8_in25_order_by_id_rows":                   "SAME",
 	"w8_in25_param_order_by_col1_rows":           "DIFF the target's IN-union caps a parameter list at its limit (\"too many IN values\"); Go answers",
 	"w8_in25_param_order_by_id_rows":             "SAME",
@@ -1257,7 +1258,7 @@ var wsfAcceptance = map[string]string{
 	"w8_in_subquery_order_by_col1_explain":       "SAME-STATE both refuse with 0AF00; the message difference is declared by WS-E (ws-e-design.md section 8, [subquery_order])",
 	"w8_in_subquery_order_by_col1_rows":          "SAME-STATE both refuse with 0AF00; the message difference is declared by WS-E (ws-e-design.md section 8, [subquery_order])",
 	"w8_in_subquery_rows_unordered":              "SAME-STATE both refuse with 0AF00; the message difference is declared by WS-E (ws-e-design.md section 8, [subquery_order])",
-	"w8_in_union_explain":                        "SAME-PATH",
+	"w8_in_union_explain":                        "DIFF-PATH in-memory-sort -> SORT(FETCH(INJOIN(COVERING(I1 [=]))))",
 	"w8_in_union_rows":                           "SAME",
 	"w8_intersection_in_order_by_id_explain":     "DIFF-PATH record-type-horizon -> FILTER(ISCAN(I2 [=]))",
 	"w8_intersection_in_order_by_id_rows":        "SAME",
@@ -1316,7 +1317,7 @@ var wsfAcceptance = map[string]string{
 	"w8_tie_in_order_by_col1_desc_rows":          "SAME",
 	"w8_tie_in_order_by_col1_explain":            "SAME-PATH",
 	"w8_tie_in_order_by_col1_rows":               "SAME",
-	"w8_tie_in_order_by_id_explain":              "SAME-PATH",
+	"w8_tie_in_order_by_id_explain":              "DIFF-PATH in-memory-sort -> SORT(INJOIN(COVERING(I5 [=])))",
 	"w8_tie_in_order_by_id_rows":                 "SAME",
 	"w8_trace_in_no_order":                       "DIFF target-only measurement: Go has no counterpart instrument here (section 13)",
 	"w8_trace_in_order_by_col1":                  "DIFF target-only measurement: Go has no counterpart instrument here (section 13)",
@@ -1355,10 +1356,7 @@ var wsfAcceptance = map[string]string{
 // dependency that moves it there (ws-f-design.md section 12).
 var wsfOpenUntil = map[string]string{
 	"w6_left_join_indexed_explain":     "outer-join partition (a LEFT JOIN's preserved leg gets no data access: PartitionBinarySelectRule skips outer joins)",
-	"w8_in25_order_by_id_explain":      "F-7c follow-up (IN-join vs filtered scan rank)",
-	"w8_in_union_explain":              "F-7c follow-up (IN-join vs filtered scan rank)",
 	"w8_rl_default_in1_order_by_price": "WS-E section 4 (single-element collapse)",
-	"w8_tie_in_order_by_id_explain":    "F-7c follow-up (IN-join vs filtered scan rank)",
 }
 
 // wsfPins is the measured target answer of every WS-F probe (4.14.2.0).

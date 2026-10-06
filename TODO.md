@@ -110,7 +110,10 @@ Never mark a whole workstream complete because one of its subitems passed.
   A one-value `IN (?)` ordered by the primary key would buffer its whole
   result. Before the collapse goes, either F-7c's cost model has to choose
   the streaming plan, or a one-literal in-join has to bind its value FIXED, a
-  Go extension that needs an owner decision.
+  Go extension that needs an owner decision. Decided with F-7c (2026-10-06):
+  the cost model keeps the sorted probes for a multi-value IN (DIVERGENCES.md
+  "an IN ordered by a key no probe provides"), so the collapse stays; its
+  deletion would turn the one-value form into the same sorted probe.
 - [ ] Semantics/pins: scalar variadic promoted-child types, Value nullability
   census, target simplification regime, adjacent/decorated literals and lexer
   boundaries, FROM-less metadata, LOG_QUERY. Decimal normalization and structured
@@ -510,8 +513,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   - Still open: Java skips a match that satisfies none of the requested
     orderings; Go does not (alone it moves 336 plans, a join's inner probe
     among them: Go's request sets differ from Java's). Rows still open in
-    `wsfOpenUntil` as F-7c follow-ups: IN-join versus filtered scan
-    (`w8_in25`, `w8_in_union`, `w8_tie_in`). The 1M stress comparison the design requires with
+    `wsfOpenUntil` as F-7c follow-ups: none. The IN-join versus filtered scan
+    rows (`w8_in25`, `w8_in_union`, `w8_tie_in`) are declared `DIFF-PATH
+    in-memory-sort` (DIVERGENCES.md "an IN ordered by a key no probe
+    provides"): Java's only plan for them is the ordered scan, because it has
+    no in-memory sort. The 1M stress comparison the design requires with
     F-7c has NOT run (stress lane; needs the owner's go-ahead).
   - Follow-ups closed or re-diagnosed (2026-10-06):
     - `w8_no_predicate` was no rank question: a bare `SELECT * FROM T1`
