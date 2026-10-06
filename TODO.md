@@ -729,7 +729,8 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   (read C++ 7.3.77); typed session/index-update sets and write-only key collisions.
 - [ ] Client range/HNSW/GuardiANN/vector-task/queue timer instrumentation;
   online-indexer configuration limits; ICU byte baseline.
-- [ ] Resolve the Lucene backend scope decision below before claiming parity.
+- [x] Lucene backend: out of scope for this migration PR (#786), owner decision;
+  tracked as a separate follow-up PR (section 7).
 
 ## 6. WS-K — harness and relational entry points
 
@@ -791,7 +792,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   aggregate-empty-table.yamsql T2 blocks: every plan shape and answer, the
   commented-out residue reads included. Not ported: roll-up inside the
   multi-aggregate intersection.
-- [ ] **Lucene: DECIDED 2026-10-05, in scope, in process.** Java runs Apache
+- [x] **Lucene: DE-SCOPED from PR #786 by the owner; a separate follow-up PR.**
+  It is still to be done (the 2026-10-05 in-scope decision stands for the
+  port), but it does not gate this migration's completion or parity claim;
+  the Lucene queue/heartbeat/quota/spell-check/state contracts go with it.
+  The notes below are the follow-up's starting point. Java runs Apache
   Lucene 8.11.1 inside the JVM (`fdb-record-layer-lucene`, 28.7k lines of main
   Java, 7 protos). It stores the segment files in FDB through `FDBDirectory`,
   with `LuceneOptimizedCodec` over Lucene87 parts (Lucene84 postings, Lucene80
@@ -803,7 +808,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   - `geange/lucene-go` (Apache-2.0, Lucene 8.11.2 base, experimental) has
     ports of the same Lucene87 codec parts plus BlockTree and FST. It is a
     candidate reference or vendored start for a format-compatible port.
-  Deferred by the owner on 2026-10-05; the engine choice waits with it.
+  The engine choice is made in the follow-up PR.
 - [ ] **Catalog/keyspace: DECIDED 2026-10-05, exactly Java's layout, no
   compatibility with the old Go layout.** Go's SQL driver uses the string-key
   catalog/schema layout `(__SYS, __SYS, CATALOG)` / `(dbPath, schemaName)`.
