@@ -2785,6 +2785,41 @@ mutable and evolving them repairs it. Where Java instead throws (a concurrency b
 same `IllegalArgumentException` message at the same statement. RFC-257 WS-D declared (c); pinned by
 "GuardiANN knob consumers".
 
+## GuardiANN splits what Java cannot
+
+Where Java's split or merge task throws, and so fails the same way on every later run, Go ends it.
+In deferred mode Java strands the cluster at the hard cap; inline, every later insert into the
+partition fails. RFC-257 WS-D declared (h). Pinned by "GuardiANN unsplittable clusters" and
+`TestGuardiannPeelAdmission`.
+
+- **Candidate with fewer cleaned vectors than k.** Java hands it to `KMeans.fit`, which throws
+  (KMeans.java:136), even beside a feasible candidate. Go scores it INVALID without calling KMeans.
+- **Split with no usable candidate and no collapse.** Java throws at orElseThrow
+  (SplitMergeTask.java:397), for example on a lone cluster whose KMeans isolates a group smaller than
+  `minChildFraction` (10 points and 1 outlier).
+  - Go first runs an iterated outlier peel. Each round removes the undersized child from the fitted
+    mass; at least 2^(r+1) - 1 members have left by round r. It refits k = 2 on what remains,
+    reassigns every primary and takes the first partition that is not INVALID. That is at most
+    floor(log2(n - 1)) refits.
+  - The peel runs only when its work floor(log2(n-1)) * n * d * max(I*(R+1), 32) / 32 is at most
+    1.96e7, which covers n = 2000 up to d = 980.
+  - Otherwise Go reconciles the cluster in place: it removes stale references, recomputes counts and
+    statistics (the stored distance maximum is never lowered), clears SPLIT_MERGE and applies the
+    ordinary merge rule.
+  - If the reconciled count is above `primaryClusterHardMax`, Go fails with
+    `ClusterUnsplittableError`. This error poisons the transaction and is deliberately not the insert
+    cap's capacity error.
+  - The reconcile reads the replicas' identities too, which adds read conflicts Java's task does not
+    have.
+- **New split/merge child with no primary.** Final ownership against the new and the neighbouring
+  centroids can leave a child with no primary; Java asserts against this (SplitMergeTask.java:909).
+  Go drops that child before any write and recomputes replicas without it. The cause set stays every
+  minted id, and the bounce names only the surviving children.
+- **Merge whose core holds no live primary.** Java calls KMeans with k = 1 on nothing. Go keeps the
+  lowest-UUID core cluster, empty and stateless with its lifetime peak, and deletes the rest of the
+  core. It force-reassigns the neighbours and lets the kept cluster take the ordinary undersized-merge
+  rule, so deleting everything ends at one retained empty cluster.
+
 ## GuardiANN refuses inserts no search can find
 
 With `guardiannInsertMaxCandidateClusters` below 1 Java writes an inserted vector's identity and no

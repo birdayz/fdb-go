@@ -49,6 +49,8 @@ type guardiann struct {
 	// indexName names the index in capability errors; empty outside a
 	// record store.
 	indexName string
+	// prefix is the grouping prefix of the partition, for errors.
+	prefix tuple.Tuple
 }
 
 // parallelismError is MoreAsyncUtil.forEach's refusal of a parallelism below

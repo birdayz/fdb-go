@@ -718,7 +718,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   empty-list task back; split-merge/reassign/collapse/bounce/delete
   concurrency below 1 fails with forEach's IllegalArgumentException at Java's
   statement (`guardiann_knob_consumers_test.go`). The KMeans knobs had prior
-  fixes. Open: n<k/peel/unsplittable split fallbacks, empty-core repair,
+  fixes. Split fallbacks and empty-core repair are done, declared (h)
+  (DIVERGENCES "GuardiANN splits what Java cannot",
+  `guardiann_unsplittable_test.go`, each fixture mutation-checked). They cover
+  the n<k INVALID rule, the admitted outlier peel with its geometric floor and
+  admission bound, the terminal reconcile with `ClusterUnsplittableError`
+  above the hard cap, the zero-primary new-child drop, and the empty merge
+  core. Not done: the design's performance-criterion timing runs (peel at
+  W = B under suite load) and the d = 768/2048 acceptance fixtures. Open:
   primary-preferred cleanup, underreplication deltas, declared (d) (no inline
   task for a delete whose head task a Go consumer refuses).
 - [ ] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,

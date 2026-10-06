@@ -13,6 +13,10 @@ type repartitioningCandidate struct {
 	cls       *clusterClassification
 	primaries []guardiannVectorRef
 	kMeans    kMeansResult
+	// nk marks a candidate with fewer cleaned primaries than its k, which the
+	// Go n<k rule scores INVALID without calling KMeans (Java throws
+	// "vectors.size() must be >= k" at KMeans.java:136); kMeans is empty.
+	nk bool
 }
 
 func (g *guardiann) runSplitMerge(tx fdb.WritableTransaction, t *guardiannTask) error {
@@ -82,6 +86,9 @@ func (g *guardiann) kMeansCandidate(cls *clusterClassification, refs []guardiann
 			primaries = append(primaries, r)
 			vectors = append(vectors, r.vector)
 		}
+	}
+	if k >= 1 && len(vectors) < k {
+		return &repartitioningCandidate{cls: cls, primaries: primaries, nk: true}, nil
 	}
 	result, err := kMeansFit(random, g.codec, vectors, k, g.config.kMeansMaxIterations, g.config.kMeansMaxRestarts)
 	if err != nil {
@@ -168,7 +175,9 @@ func (g *guardiann) selectSplitCandidate(tx fdb.WritableTransaction, t *guardian
 		g.writeClusterMetadata(tx, target.withStates(clusterStateCollapse))
 		return nil, nil
 	}
-	return nil, &RecordCoreError{Message: "no valid split candidate"}
+	// Java throws here (orElseThrow, SplitMergeTask.java:397, or KMeans.java:136
+	// for an n<k candidate) and fails the same way forever.
+	return g.unsplittable(tx, random, target, t.centroid, inner[0], cands[0])
 }
 
 func (g *guardiann) selectMergeCandidate(tx fdb.WritableTransaction, t *guardiannTask, random *splittableRandom, num int,
@@ -205,6 +214,11 @@ func (g *guardiann) selectMergeCandidate(tx fdb.WritableTransaction, t *guardian
 	if best := selectBestCandidate(scored); best != nil {
 		return best, nil
 	}
+	if cands[0].nk {
+		// The 2->1 fallback's core holds no live primary: Java calls KMeans
+		// with k = 1 on no vectors and throws (KMeans.java:136) forever.
+		return nil, g.mergeEmptyCore(tx, random, c21)
+	}
 	return cands[0], nil
 }
 
@@ -240,8 +254,12 @@ func isBetterCandidate(r, incumbent evaluationResult) bool {
 	return r.scoreGain > incumbent.scoreGain
 }
 
-// scoreCandidate is SplitMergeTask.scoreCandidate.
+// scoreCandidate is SplitMergeTask.scoreCandidate; an n<k candidate is
+// INVALID.
 func (g *guardiann) scoreCandidate(current []guardiannCluster, cand *repartitioningCandidate) (evaluationResult, error) {
+	if cand.nk {
+		return evaluationResult{decision: decisionInvalidCandidate}, nil
+	}
 	var curVectors []gVector
 	var assignment []int
 	centroids := make([]gVector, len(current))
@@ -275,28 +293,67 @@ func (g *guardiann) scoreCandidate(current []guardiannCluster, cand *repartition
 
 func (g *guardiann) applyRepartitioning(tx fdb.WritableTransaction, random *splittableRandom, cand *repartitioningCandidate) error {
 	cls := cand.cls
-	clusters := newOrderedClusters()
 	var newIDs []tuple.UUID
-	for _, c := range cand.kMeans.centroids {
+	for range cand.kMeans.centroids {
 		id, err := g.randomUUID(random)
 		if err != nil {
 			return err
 		}
 		newIDs = append(newIDs, id)
-		clusters.put(guardiannClusterWithDistance{meta: guardiannClusterMetadata{id: id, stats: runningStatsIdentity()}, centroid: c})
 	}
-	for _, c := range cls.neighboring {
-		clusters.put(c)
+	// nearestOver is assignPrimaryVectorReferences' map of the new clusters
+	// and the neighbours, its statistics from the clusters' own, and the
+	// primaries' nearest clusters over it.
+	nearestOver := func(drop map[tuple.UUID]bool) (*orderedClusters, map[tuple.UUID]guardiannRunningStats, map[string][]guardiannClusterWithDistance, error) {
+		clusters := newOrderedClusters()
+		for i, c := range cand.kMeans.centroids {
+			if !drop[newIDs[i]] {
+				clusters.put(guardiannClusterWithDistance{meta: guardiannClusterMetadata{id: newIDs[i], stats: runningStatsIdentity()}, centroid: c})
+			}
+		}
+		for _, c := range cls.neighboring {
+			clusters.put(c)
+		}
+		stats := map[tuple.UUID]guardiannRunningStats{}
+		for _, k := range clusters.keys {
+			stats[k] = clusters.values[k].meta.stats
+		}
+		inverted, updates, err := g.computeNearestClusters(cand.primaries, clusters.list())
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		mergeStatsUpdates(stats, updates)
+		return clusters, stats, inverted, nil
 	}
-	stats := map[tuple.UUID]guardiannRunningStats{}
-	for _, k := range clusters.keys {
-		stats[k] = clusters.values[k].meta.stats
-	}
-	inverted, updates, err := g.computeNearestClusters(cand.primaries, clusters.list())
+	clusters, stats, inverted, err := nearestOver(nil)
 	if err != nil {
 		return err
 	}
-	mergeStatsUpdates(stats, updates)
+	// Java asserts every written cluster holds a primary (SplitMergeTask.java:
+	// 909), so a new cluster that final ownership against the new AND the
+	// neighbouring centroids leaves without one fails the task forever. Go
+	// drops such a cluster before any write (no centroid, metadata or
+	// references) and recomputes ownership and replicas without it, so it can
+	// neither receive nor occlude a replica; homes do not change, because a
+	// dropped cluster was nobody's nearest. RFC-257 WS-D declared (h).
+	homes := map[tuple.UUID]bool{}
+	for _, r := range cand.primaries {
+		homes[inverted[r.id.key()][0].meta.id] = true
+	}
+	drop := map[tuple.UUID]bool{}
+	var surviving []tuple.UUID
+	for _, id := range newIDs {
+		if homes[id] {
+			surviving = append(surviving, id)
+		} else {
+			drop[id] = true
+		}
+	}
+	if len(drop) > 0 {
+		if clusters, stats, inverted, err = nearestOver(drop); err != nil {
+			return err
+		}
+	}
 	assignment := newOrderedAssignments()
 	topKs := map[tuple.UUID]*guardiannTopK{}
 	var topKOrder []tuple.UUID
@@ -335,7 +392,7 @@ func (g *guardiann) applyRepartitioning(tx fdb.WritableTransaction, random *spli
 			return err
 		}
 	}
-	for _, id := range newIDs {
+	for _, id := range surviving {
 		c := g.codec.toClientCoordinates(clusters.values[id].centroid)
 		if err := g.centroids.insertTyped(tx, tuple.Tuple{id}, c.data, c.typ); err != nil {
 			return err
@@ -362,12 +419,14 @@ func (g *guardiann) applyRepartitioning(tx fdb.WritableTransaction, random *spli
 			dependents = appendUniqueUUID(dependents, *id)
 		}
 	}
-	if len(dependents) > 0 {
+	// The cause set stays every minted id, so neighbours are force-reassigned
+	// as after any split; the bounce reassigns the surviving new clusters.
+	if len(dependents) > 0 && len(surviving) > 0 {
 		id, err := g.normalPriorityTaskID(random)
 		if err != nil {
 			return err
 		}
-		g.writeTask(tx, &guardiannTask{kind: taskBounce, id: id, targets: newIDs, dependents: dependents, finalKind: taskReassign})
+		g.writeTask(tx, &guardiannTask{kind: taskBounce, id: id, targets: surviving, dependents: dependents, finalKind: taskReassign})
 	}
 	return nil
 }

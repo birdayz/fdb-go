@@ -197,6 +197,7 @@ func (m *vectorIndexMaintainer) guardiannFor(prefix tuple.Tuple, listener guardi
 	g.poison = m.poisonTask
 	g.timer = m.timer()
 	g.indexName = m.index.Name
+	g.prefix = prefix
 	return g
 }
 
