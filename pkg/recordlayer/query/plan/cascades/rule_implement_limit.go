@@ -13,7 +13,10 @@ import (
 // produces.
 //
 // Go-only extension: Java doesn't support LIMIT in SQL; it uses
-// ExecuteProperties.setReturnedRowLimit() at the JDBC layer.
+// ExecuteProperties.setReturnedRowLimit() at the JDBC layer. With no Java
+// counterpart to follow, the rule keeps its rule-time choice of the cheapest
+// child plan per requested ordering (RFC-257 WS-F F-8, the approved Go
+// extension; DIVERGENCES.md "Implementation rules that still choose a child").
 type ImplementLimitRule struct {
 	matcher matching.BindingMatcher
 }

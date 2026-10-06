@@ -3,7 +3,6 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -20,7 +19,10 @@ import (
 // Both legs must already have physical plans available (yielded by
 // prior TempTableInsert → inner plan implement rules).
 //
-// Mirrors Java's ImplementRecursiveLevelUnionRule.
+// Mirrors Java's ImplementRecursiveLevelUnionRule: each leg ranges over a
+// reference holding every plan of its rolled-up plan partition
+// (memoizeMemberPlansFromOther), so the rule pre-selects nothing and the legs'
+// own optimization chooses (RFC-257 WS-F F-8).
 type ImplementRecursiveLevelUnionRule struct {
 	matcher matching.BindingMatcher
 }
@@ -46,22 +48,16 @@ func (r *ImplementRecursiveLevelUnionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	initialWinner, _ := getWinnerForOrdering(initialRef, properties.PreserveOrdering(), call.CostModel())
-	recursiveWinner, _ := getWinnerForOrdering(recursiveRef, properties.PreserveOrdering(), call.CostModel())
-	if initialWinner == nil || recursiveWinner == nil {
-		return
-	}
-	if _, ok := initialWinner.(physicalPlanExpression); !ok {
-		return
-	}
-	if _, ok := recursiveWinner.(physicalPlanExpression); !ok {
+	initialPlans := rolledUpPhysicalMembers(initialRef)
+	recursivePlans := rolledUpPhysicalMembers(recursiveRef)
+	if len(initialPlans) == 0 || len(recursivePlans) == 0 {
 		return
 	}
 
 	// The plan carries its two leg edges directly — one live quantifier per
-	// winner, no separate physical wrapper (RFC-184 W2).
-	initQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(initialWinner))
-	recQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(recursiveWinner))
+	// leg, no separate physical wrapper (RFC-184 W2).
+	initQ := expressions.NewPhysicalQuantifier(call.MemoizeMemberPlansFromOther(initialRef, initialPlans))
+	recQ := expressions.NewPhysicalQuantifier(call.MemoizeMemberPlansFromOther(recursiveRef, recursivePlans))
 	plan, err := plans.NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
 		initQ, recQ,
 		recUnion.GetTempTableScanAlias(),
@@ -73,6 +69,17 @@ func (r *ImplementRecursiveLevelUnionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	call.Yield(plan)
+}
+
+// rolledUpPhysicalMembers returns the physical plans of ref's plan partitions
+// rolled up into one (Java's planPartitions(rollUpPartitions(any(...)))).
+func rolledUpPhysicalMembers(ref *expressions.Reference) []expressions.RelationalExpression {
+	computeRefPlanProperties(ref)
+	var out []expressions.RelationalExpression
+	for _, partition := range RollUpPlanPartitions(ToPlanPartitions(ref)) {
+		out = append(out, partition.GetPhysicalExpressions()...)
+	}
+	return out
 }
 
 var _ ExpressionRule = (*ImplementRecursiveLevelUnionRule)(nil)

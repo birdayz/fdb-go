@@ -2829,3 +2829,19 @@ ranks it against the primary scan; both engines read the same index for the quer
 - Among several full index reads that tie, the engines may pick different indexes: `SELECT id,
   COALESCE(customer_id, 0) FROM orders` reads `IDX_AMOUNT` in Java and the covering `IDX_CUSTOMER` in
   Go.
+
+## Implementation rules that still choose a child (F-8)
+
+Java's implementation rules pre-select no child plan: each yields per plan partition over a reference
+restricted to the partition's plans, and the planner's group optimization chooses. Go's type-filter,
+insert, temp-table insert, intersection and recursive (DFS join, level union) rules do the same
+(TODO.md, WS-F F-8). Two rules still choose at rule time:
+
+- `ImplementLimitRule` has no Java counterpart (Java SQL has no LIMIT). It implements LIMIT over the
+  cheapest child plan satisfying each requested ordering, the approved Go extension.
+- `ImplementNestedLoopJoinRule` takes the leg groups' preserve winners. Java rolls the existential inner
+  up into one partition, so its FirstOrDefault ranges over every inner plan and that reference's own
+  cost comparison resolves it; Go's correlated-inner rewrites need a concrete plan, so the rule takes
+  the same local choice with the same comparator. Yielding per inner member instead moved 3 golden and
+  15 factory plans, several to a fetch before the residual, because the choice then moves to the
+  parent group; per outer member exhausts the task budget on a union-heavy outer.

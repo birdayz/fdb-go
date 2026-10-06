@@ -2650,6 +2650,20 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		return
 	}
 
+	// Java's rule rolls the legs' plan partitions up (the outer per ordering,
+	// the inner to ONE partition under a preserve request) and ranges each
+	// edge over a reference holding every plan of its partition, which that
+	// reference's own cost comparison resolves. The existential inner is
+	// frozen under FirstOrDefault and rewritten per concrete plan below
+	// (correlated-layout normalization), so Go takes that same local choice
+	// here, with the same comparator: the group's preserve winner. The outer
+	// member only seeds the outer layout; the FlatMap's outer edge interns it
+	// back to its whole group. Measured and reverted (RFC-257 WS-F F-8,
+	// 2026-10-06): yielding per inner member moved 3 golden and 15 factory
+	// plans, several worse (a fetch before the residual instead of after
+	// it), because the choice then happens at the parent group instead; per
+	// outer member too exhausts the task budget on a union-heavy outer
+	// (TestPlanHarness_FixedFactorUnionJavaComparable).
 	outerExpr, _ := getWinnerForOrdering(outerRef, properties.PreserveOrdering(), call.CostModel())
 	if outerExpr == nil {
 		return

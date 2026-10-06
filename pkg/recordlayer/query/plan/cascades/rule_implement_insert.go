@@ -3,22 +3,14 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// ImplementInsertRule implements a logical InsertExpression as a
-// physical RecordQueryInsertPlan, gated on the inner Reference
-// having at least one physical-plan member.
-//
-//	Insert(target, type, inner-with-physical-member)
-//	  →  InsertPlan(target, type, inner-physical)
-//
-// Same gating pattern as Implement{Filter,Sort,Distinct,TypeFilter}.
-//
-// Java's ImplementInsertRule consults PlanPartition properties for
-// dispatch; Go always emits the simple INSERT plan. Per-row
-// transforms (UPSERT, ON CONFLICT, etc.) are not implemented.
+// ImplementInsertRule implements a logical InsertExpression as a physical
+// RecordQueryInsertPlan, Java's ImplementInsertRule: one INSERT plan per plan
+// partition of the inner, ranging over a reference restricted to that
+// partition's plans (MemoizeMemberPlansFromOther). OptimizeGroup chooses among
+// the yields; the rule pre-selects nothing (RFC-257 WS-F F-8).
 type ImplementInsertRule struct {
 	matcher matching.BindingMatcher
 }
@@ -40,22 +32,24 @@ func (r *ImplementInsertRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	winner, _ := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
-	if winner == nil {
-		return
+	computeRefPlanProperties(innerRef)
+	for _, partition := range ToPlanPartitions(innerRef) {
+		members := partition.GetPhysicalExpressions()
+		if len(members) == 0 {
+			continue
+		}
+		// The INSERT plan is its own cascades expression (RFC-184 W2): it
+		// carries the live child edge directly. The edge keeps the logical
+		// alias (Java's physicalBuilder().morphFrom(innerQuantifier)).
+		innerQ := expressions.NamedPhysicalQuantifier(ins.GetInner().GetAlias(),
+			call.MemoizeMemberPlansFromOther(innerRef, members))
+		insPlan, err := plans.NewRecordQueryInsertPlanFromQuantifier(innerQ, ins.GetTargetRecordType(), ins.GetTargetType())
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(insPlan)
 	}
-	if _, ok := winner.(physicalPlanExpression); !ok {
-		return
-	}
-	// The INSERT plan is its own cascades expression now (RFC-184 W2) — it carries
-	// the live child edge directly, no physicalInsertWrapper.
-	innerQ := expressions.NamedPhysicalQuantifier(ins.GetInner().GetAlias(), call.MemoizeExpression(winner))
-	insPlan, err := plans.NewRecordQueryInsertPlanFromQuantifier(innerQ, ins.GetTargetRecordType(), ins.GetTargetType())
-	if err != nil {
-		call.Fail(err)
-		return
-	}
-	call.Yield(insPlan)
 }
 
 var _ ExpressionRule = (*ImplementInsertRule)(nil)

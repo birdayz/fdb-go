@@ -349,15 +349,23 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   and D3/D4 (conditional chains on progress) were already in place.
   Still open: D5's re-arm conversion (Go's group-wide `lastRearmTick` re-arm
   to Java's per-expression forced exploration), the `outerJoinCount` placement
-  review, and F-8. F-8 started (2026-10-06): ImplementTypeFilterRule is
+  review. F-8 is done (2026-10-06). ImplementTypeFilterRule is
   Java's per-partition rule. Over each stored-record partition of the inner,
   a plan the filter already covers is yielded bare and the others are grouped
   by kept types into a TypeFilterPlan over `MemoizeMemberPlansFromOther`; no
   winner is pre-selected. No corpus plan moved; tasks fell (chains 3/4/5
-  546→526, 2219→2155, 12985→12775; star 2379→2355). Still pre-selecting via
-  `getWinnerForOrdering`, one rule family per commit: insert, intersection,
-  the NLJ (3 sites), recursive DFS join (2), recursive level union (2),
-  temp-table insert. ImplementLimit's stays (approved Go extension).
+  546→526, 2219→2155, 12985→12775; star 2379→2355). Insert and temp-table
+  insert yield per plan partition; intersection legs range over every
+  ordering-satisfying stored-record member (spines pinned) in one fresh
+  reference; the level union's legs range over their rolled-up partitions;
+  the DFS join yields one plan per initial plan under the insert, its
+  recursive leg over the rolled-up partition below the insert. None moved a
+  corpus plan. Kept, in DIVERGENCES.md "Implementation rules that still
+  choose a child": ImplementLimit (approved Go extension) and the NLJ, whose
+  preserve-winner pick is the local choice Java's rolled-up inner partition
+  makes. Per-inner-member yields were measured and reverted: 3 golden and 15
+  factory plans moved, several to a fetch before the residual; per outer
+  member too, the fixed-factor harness hits the task cap.
   D5 measured and reverted (2026-10-06): forcing only the
   members past the last round's count, with a re-arm no longer re-queuing
   every rule, moved no corpus plan but RAISED tasks (4-table chain 4500→4818,
