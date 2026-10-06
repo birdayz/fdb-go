@@ -58,15 +58,15 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nzsarg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nzsarg")
+	setup := openTestDB(t, "/FRL/testdb_nzsarg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nzsarg")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzsarg "+
 		"CREATE TABLE d (id BIGINT, v DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE INDEX d_v ON d (v) "+
 		"CREATE TABLE f (id BIGINT, v FLOAT, PRIMARY KEY (id)) "+
 		"CREATE INDEX f_v ON f (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nzsarg/s WITH TEMPLATE nzsarg")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NZSARG?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nzsarg/s WITH TEMPLATE nzsarg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NZSARG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

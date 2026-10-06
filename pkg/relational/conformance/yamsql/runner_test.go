@@ -193,7 +193,7 @@ func execScenario(path, name string) scenarioOutcome {
 	}
 
 	// Unique DSN path + template per test to keep parallel runs isolated.
-	dbPath := "/_conf_" + sanitize(name)
+	dbPath := "/FRL/_conf_" + sanitize(name)
 	tmplName := "CONF_TMPL_" + strings.ToUpper(sanitize(name))
 	schemaName := "conf"
 	// schema= is a lazy default — the schema need not exist at sql.Open

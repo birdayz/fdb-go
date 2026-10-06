@@ -36,14 +36,14 @@ import (
 func openArrayInDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_in_arraycol")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_in_arraycol")
+	setup := openTestDB(t, "/FRL/testdb_in_arraycol")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_arraycol")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE inarr_t "+
 		"CREATE TABLE t (id BIGINT, b BIGINT, s STRING, xs BIGINT ARRAY, ss STRING ARRAY, "+
 		"PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_in_arraycol/s WITH TEMPLATE inarr_t")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_arraycol/s WITH TEMPLATE inarr_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///TESTDB_IN_ARRAYCOL?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_ARRAYCOL?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -57,13 +57,13 @@ func openArrayInDB(t *testing.T) *sql.DB {
 func openArrayUUIDDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_in_arruuid")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_in_arruuid")
+	setup := openTestDB(t, "/FRL/testdb_in_arruuid")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_arruuid")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE inarruuid_t "+
 		"CREATE TABLE u (id BIGINT, uu UUID, s STRING, us STRING ARRAY, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_in_arruuid/s WITH TEMPLATE inarruuid_t")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_arruuid/s WITH TEMPLATE inarruuid_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///TESTDB_IN_ARRUUID?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_ARRUUID?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

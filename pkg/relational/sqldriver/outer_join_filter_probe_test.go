@@ -21,15 +21,15 @@ func TestFDB_OuterJoinFilterProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_oj_filter")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_oj_filter")
+	setup := openTestDB(t, "/FRL/testdb_oj_filter")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_oj_filter")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE oj_filter "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_oj_filter/s WITH TEMPLATE oj_filter")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OJ_FILTER?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_oj_filter/s WITH TEMPLATE oj_filter")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OJ_FILTER?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

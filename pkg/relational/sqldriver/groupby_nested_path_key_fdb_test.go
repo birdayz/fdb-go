@@ -47,8 +47,8 @@ func TestFDB_GroupByNestedPathKey(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/gbnpk")
-	mustExec(t, setup, ctx, "CREATE DATABASE /gbnpk")
+	setup := openTestDB(t, "/FRL/gbnpk")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/gbnpk")
 	// The corpus schema verbatim (groupby-tests.yamsql:22-29) — a two-level
 	// struct (st3.v is an st1, whose member is z) so the key is a genuine
 	// three-segment descent, plus the index the Java plan uses.
@@ -59,9 +59,9 @@ func TestFDB_GroupByNestedPathKey(t *testing.T) {
 		"CREATE TYPE AS STRUCT st4(s BIGINT, t BIGINT) "+
 		"CREATE TABLE nested(id BIGINT, q st4, r st3, PRIMARY KEY(q.s, r.u.w)) "+
 		"CREATE INDEX i2 AS SELECT r.v.z FROM nested ORDER BY r.v.z")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /gbnpk/s WITH TEMPLATE gbnpk_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/gbnpk/s WITH TEMPLATE gbnpk_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///GBNPK?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/GBNPK?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -238,8 +238,8 @@ func TestFDB_FloatOrderingClaim_Differential(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_focd")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_focd")
+	setup := openTestDB(t, "/FRL/testdb_focd")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_focd")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE focd "+
 		// fi: the shape under test — a compound index whose leading column is
 		// equality-bound, leaving the DOUBLE as the leading sorted coordinate.
@@ -248,8 +248,8 @@ func TestFDB_FloatOrderingClaim_Differential(t *testing.T) {
 		// no claimed scan order to elide onto and must sort with CompareFloat64.
 		"CREATE TABLE fo (id BIGINT, e DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX fi_ae ON fi (a, e)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_focd/s WITH TEMPLATE focd")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FOCD?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_focd/s WITH TEMPLATE focd")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FOCD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -395,14 +395,14 @@ func TestFDB_FloatOrderingClaim_Differential_Float32(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_focd32")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_focd32")
+	setup := openTestDB(t, "/FRL/testdb_focd32")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_focd32")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE focd32 "+
 		"CREATE TABLE gi (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE go_ (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX gi_ag ON gi (a, g)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_focd32/s WITH TEMPLATE focd32")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FOCD32?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_focd32/s WITH TEMPLATE focd32")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FOCD32?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -498,15 +498,15 @@ func TestFDB_FloatOrderingClaim_EqualityBoundFloat(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_foceq")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_foceq")
+	setup := openTestDB(t, "/FRL/testdb_foceq")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_foceq")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE foceq "+
 		// The float is the index's LEADING column, so an equality on it is the
 		// fixed prefix and the primary key is the whole sorted suffix.
 		"CREATE TABLE fq (id BIGINT, e DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE INDEX fq_e ON fq (e)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_foceq/s WITH TEMPLATE foceq")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FOCEQ?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_foceq/s WITH TEMPLATE foceq")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FOCEQ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

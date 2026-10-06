@@ -44,14 +44,14 @@ func TestFDB_IsNullOverComparison(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_isnullcmp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_isnullcmp")
+	setup := openTestDB(t, "/FRL/testdb_isnullcmp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_isnullcmp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE isnullcmp "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, f BOOLEAN, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_isnullcmp/s WITH TEMPLATE isnullcmp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ISNULLCMP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_isnullcmp/s WITH TEMPLATE isnullcmp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ISNULLCMP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

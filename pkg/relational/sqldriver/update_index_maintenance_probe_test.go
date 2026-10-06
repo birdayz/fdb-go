@@ -20,14 +20,14 @@ func TestFDB_UpdateIndexMaintenanceProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_updidx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_updidx")
+	setup := openTestDB(t, "/FRL/testdb_updidx")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_updidx")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE updidx "+
 			"CREATE TABLE t (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_status ON t (status) CREATE INDEX t_amount ON t (amount)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_updidx/s WITH TEMPLATE updidx")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UPDIDX?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_updidx/s WITH TEMPLATE updidx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPDIDX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

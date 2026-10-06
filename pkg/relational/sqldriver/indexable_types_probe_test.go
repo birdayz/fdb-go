@@ -21,8 +21,8 @@ func TestFDB_IndexableTypesProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := openTestDB(t, "/testdb_idxty")
-	mwjoMustExec(t, db, ctx, "CREATE DATABASE /testdb_idxty")
+	db := openTestDB(t, "/FRL/testdb_idxty")
+	mwjoMustExec(t, db, ctx, "CREATE DATABASE /FRL/testdb_idxty")
 
 	indexable := func(name, ty string) {
 		t.Run(name, func(t *testing.T) {
@@ -51,8 +51,8 @@ func TestFDB_IndexableTypesProbe(t *testing.T) {
 		const u = "550e8400-e29b-41d4-a716-446655440000"
 		mwjoMustExec(t, db, ctx,
 			"CREATE SCHEMA TEMPLATE idxty_uuid CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id)) CREATE INDEX t_v ON t (v)")
-		mwjoMustExec(t, db, ctx, "CREATE SCHEMA /testdb_idxty/suuid WITH TEMPLATE idxty_uuid")
-		udb, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_IDXTY?cluster_file=%s&schema=SUUID", clusterFilePath))
+		mwjoMustExec(t, db, ctx, "CREATE SCHEMA /FRL/testdb_idxty/suuid WITH TEMPLATE idxty_uuid")
+		udb, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXTY?cluster_file=%s&schema=SUUID", clusterFilePath))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}

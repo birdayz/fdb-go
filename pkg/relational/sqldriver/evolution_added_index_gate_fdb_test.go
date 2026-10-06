@@ -229,7 +229,7 @@ func TestFDB_EvolutionAddedValueIndexAnsweredBeforeReconciliation(t *testing.T) 
 	ctx := context.Background()
 	h := newEvolHarness(t)
 
-	const dbPath = "/testdb_evolvalue"
+	const dbPath = "/FRL/testdb_evolvalue"
 	const schemaName = "S"
 	const tmplName = "evolvalue"
 
@@ -348,7 +348,7 @@ func TestFDB_EvolutionAddedAggregateIndexAnsweredBeforeReconciliation(t *testing
 	ctx := context.Background()
 	h := newEvolHarness(t)
 
-	const dbPath = "/testdb_evolagg"
+	const dbPath = "/FRL/testdb_evolagg"
 	const schemaName = "S"
 	const tmplName = "evolagg"
 
@@ -442,7 +442,7 @@ func TestFDB_EvolutionAddedAggregateIndexOnEmptyStoreStillBuildsInline(t *testin
 	ctx := context.Background()
 	h := newEvolHarness(t)
 
-	const dbPath = "/testdb_evolaggempty"
+	const dbPath = "/FRL/testdb_evolaggempty"
 	const schemaName = "S"
 	const tmplName = "evolaggempty"
 

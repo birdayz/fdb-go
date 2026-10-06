@@ -29,7 +29,7 @@ import (
 func TestFDB_LeftJoinExistsResidual(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/i2_noop"
+	dbPath := "/FRL/i2_noop"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

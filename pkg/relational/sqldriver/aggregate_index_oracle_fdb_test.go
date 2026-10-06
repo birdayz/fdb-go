@@ -25,8 +25,8 @@ func TestFDB_AggregateIndexOracle(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggoracle")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggoracle")
+	setup := openTestDB(t, "/FRL/testdb_aggoracle")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggoracle")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggoracle "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, v BIGINT, PRIMARY KEY (id)) "+
@@ -39,8 +39,8 @@ func TestFDB_AggregateIndexOracle(t *testing.T) {
 			"CREATE INDEX max_v_by_a AS SELECT MAX(v) FROM t GROUP BY a "+
 			"CREATE INDEX min_v_by_ab AS SELECT MIN(v) FROM t GROUP BY a, b "+
 			"CREATE INDEX sum_v_by_s AS SELECT SUM(v) FROM t GROUP BY s")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggoracle/s WITH TEMPLATE aggoracle")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGORACLE?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggoracle/s WITH TEMPLATE aggoracle")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGORACLE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

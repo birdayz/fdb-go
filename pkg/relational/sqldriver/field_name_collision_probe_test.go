@@ -32,7 +32,7 @@ func TestFDB_FieldNameCollisionAcrossEscaping(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := "/fieldcollide"
+	dbPath := "/FRL/fieldcollide"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,

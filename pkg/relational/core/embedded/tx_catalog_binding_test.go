@@ -77,12 +77,12 @@ func newSimBackend(t *testing.T, seed uint64) *simBackend {
 
 // connect builds a connection the way the SQL driver's Connector does —
 // New(...) plus SetDefaultSchema, both taking their names verbatim. DDL folds
-// unquoted identifiers, a database path whole: `CREATE DATABASE /simdb`
-// stores /SIMDB and `CREATE SCHEMA /simdb/s` stores (/SIMDB, S). So a
-// connection names what that DDL created as "/SIMDB" and "S"; the verbatim
+// unquoted identifiers, a database path whole: `CREATE DATABASE /FRL/simdb`
+// stores /FRL/SIMDB and `CREATE SCHEMA /FRL/simdb/s` stores (/FRL/SIMDB, S). So a
+// connection names what that DDL created as "/FRL/SIMDB" and "S"; the verbatim
 // rule is pinned by TestSetDefaultSchemaIsVerbatim below.
 func (b *simBackend) connect(schema string) *EmbeddedConnection {
-	c := New("/SIMDB", b.fdbDB, b.cat, b.factory, b.ks)
+	c := New("/FRL/SIMDB", b.fdbDB, b.cat, b.factory, b.ks)
 	if schema != "" {
 		c.SetDefaultSchema(schema)
 	}
@@ -152,8 +152,8 @@ func TestSetSchemaRefusesAMissingSchema(t *testing.T) {
 	err := c.SetSchema("s")
 	var ae *api.Error
 	if !errors.As(err, &ae) || ae.Code != api.ErrCodeUndefinedSchema ||
-		ae.Message != "Schema s does not exist in /SIMDB" {
-		t.Fatalf("SetSchema(s) = %v, want %s \"Schema s does not exist in /SIMDB\"", err, api.ErrCodeUndefinedSchema)
+		ae.Message != "Schema s does not exist in /FRL/SIMDB" {
+		t.Fatalf("SetSchema(s) = %v, want %s \"Schema s does not exist in /FRL/SIMDB\"", err, api.ErrCodeUndefinedSchema)
 	}
 	if got := c.GetSchema(); got != "S" {
 		t.Fatalf("a refused SetSchema moved the session to %q", got)
@@ -195,7 +195,7 @@ func TestSetSchemaReadsInsideTheOpenTransaction(t *testing.T) {
 	if got := queryOneInt64(t, c, "SELECT v FROM t WHERE id = 1"); got != 1 {
 		t.Fatalf("v = %d, want 1", got)
 	}
-	if _, err := b.connect("").ExecContext(ctx, "DROP SCHEMA /SIMDB/S", nil); err != nil {
+	if _, err := b.connect("").ExecContext(ctx, "DROP SCHEMA /FRL/SIMDB/S", nil); err != nil {
 		t.Fatalf("drop the schema from another connection: %v", err)
 	}
 	if err := c.SetSchema("S"); err != nil {
@@ -218,10 +218,10 @@ func bootstrapTwoTemplates(t *testing.T, admin *EmbeddedConnection) {
 	t.Helper()
 	ctx := context.Background()
 	for _, stmt := range []string{
-		"CREATE DATABASE /simdb",
+		"CREATE DATABASE /FRL/simdb",
 		"CREATE SCHEMA TEMPLATE tmpl_plain CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		"CREATE SCHEMA TEMPLATE tmpl_indexed CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_v ON t (v)",
-		"CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl_plain",
+		"CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl_plain",
 	} {
 		if _, err := admin.ExecContext(ctx, stmt, nil); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
@@ -235,8 +235,8 @@ func swapSchemaToIndexed(t *testing.T, b *EmbeddedConnection) {
 	t.Helper()
 	ctx := context.Background()
 	for _, stmt := range []string{
-		"DROP SCHEMA /simdb/s",
-		"CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl_indexed",
+		"DROP SCHEMA /FRL/simdb/s",
+		"CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl_indexed",
 	} {
 		if _, err := b.ExecContext(ctx, stmt, nil); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
@@ -299,7 +299,7 @@ func TestCatalogBinding_NoSilentZeroRows(t *testing.T) {
 	// The mid-transaction invalidation (what a DDL issued on this connection
 	// does through invalidateSchemaCache): the binding entry is dropped and
 	// statement 2 must RE-READ.
-	connA.invalidateSchemaCache("/SIMDB", "S")
+	connA.invalidateSchemaCache("/FRL/SIMDB", "S")
 
 	// Cross-connection DDL commits a schema whose plan for the next statement
 	// would be an index scan.
@@ -417,7 +417,7 @@ func TestCatalogBinding_ConcurrentDDLConflictsCommit(t *testing.T) {
 	connA := b.connect("")
 	bootstrapTwoTemplates(t, connA)
 	// A second schema for A's write, untouched by B's DDL.
-	if _, err := connA.ExecContext(ctx, "CREATE SCHEMA /simdb/other WITH TEMPLATE tmpl_plain", nil); err != nil {
+	if _, err := connA.ExecContext(ctx, "CREATE SCHEMA /FRL/simdb/other WITH TEMPLATE tmpl_plain", nil); err != nil {
 		t.Fatalf("create other schema: %v", err)
 	}
 	connA.SetDefaultSchema("S")

@@ -69,8 +69,8 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_omlnon")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_omlnon")
+	setup := openTestDB(t, "/FRL/testdb_omlnon")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_omlnon")
 	// `d` makes a DEPTH-3 descent (`m.n.d.dk`) expressible. Depth is not a
 	// separate mechanism — FuseNestedSuffix loops over the whole suffix and
 	// legRef is arity-blind — but "structurally covered" is not a measurement,
@@ -80,9 +80,9 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 		"CREATE TYPE AS STRUCT dst (dk BIGINT) "+
 		"CREATE TYPE AS STRUCT gst (sk BIGINT, co BIGINT, d dst) "+
 		"CREATE TABLE nt(id BIGINT, sk BIGINT, n gst, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_omlnon/s WITH TEMPLATE omlnon_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_omlnon/s WITH TEMPLATE omlnon_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_OMLNON?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_OMLNON?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

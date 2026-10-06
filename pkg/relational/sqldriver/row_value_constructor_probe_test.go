@@ -20,12 +20,12 @@ func TestFDB_RowValueConstructorProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_rvc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rvc")
+	setup := openTestDB(t, "/FRL/testdb_rvc")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvc")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rvc CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX rvc_ab AS SELECT a,b FROM t ORDER BY a,b")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rvc/s WITH TEMPLATE rvc")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_RVC?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvc/s WITH TEMPLATE rvc")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RVC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

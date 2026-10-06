@@ -44,14 +44,14 @@ func TestFDB_ArrayComparison(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_arraycmp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_arraycmp")
+	setup := openTestDB(t, "/FRL/testdb_arraycmp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_arraycmp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE arraycmp "+
 			"CREATE TABLE dummy (pk BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE TABLE t1 (pk BIGINT, arr INTEGER ARRAY, arr_nn INTEGER ARRAY NOT NULL, PRIMARY KEY (pk))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_arraycmp/s WITH TEMPLATE arraycmp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ARRAYCMP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_arraycmp/s WITH TEMPLATE arraycmp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ARRAYCMP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

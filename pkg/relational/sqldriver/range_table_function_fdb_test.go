@@ -15,12 +15,12 @@ import (
 func TestFDB_RangeTableFunction(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_rangefn")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_rangefn")
+	setup := openTestDB(t, "/FRL/testdb_rangefn")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rangefn")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE rangefn_tpl "+
 		"CREATE TABLE t1 (id BIGINT, col1 STRING, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rangefn/s WITH TEMPLATE rangefn_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_RANGEFN?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rangefn/s WITH TEMPLATE rangefn_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RANGEFN?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

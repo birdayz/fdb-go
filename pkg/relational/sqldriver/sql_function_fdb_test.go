@@ -17,15 +17,15 @@ import (
 func TestFDB_SQLFunctions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_sqlfn")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_sqlfn")
+	setup := openTestDB(t, "/FRL/testdb_sqlfn")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sqlfn")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sqlfn_tpl "+
 		"CREATE TABLE t (id BIGINT, g BIGINT, s STRING, PRIMARY KEY (id)) "+
 		"CREATE FUNCTION below(IN n BIGINT, IN tag STRING DEFAULT 'x') AS SELECT id, s FROM t WHERE id < n AND s = tag "+
 		"CREATE FUNCTION all_x(IN n BIGINT DEFAULT 10) AS SELECT * FROM below(n) "+
 		"CREATE VIEW v AS SELECT id FROM below(3, 'y')")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sqlfn/s WITH TEMPLATE sqlfn_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_SQLFN?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sqlfn/s WITH TEMPLATE sqlfn_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_SQLFN?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -85,16 +85,16 @@ func TestFDB_SQLFunctions(t *testing.T) {
 func TestFDB_MacroFunctions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_macro")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_macro")
+	setup := openTestDB(t, "/FRL/testdb_macro")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_macro")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE macro_tpl "+
 		"CREATE TYPE AS STRUCT pt(x BIGINT, y BIGINT) "+
 		"CREATE TABLE t (id BIGINT, p pt, PRIMARY KEY (id)) "+
 		"CREATE FUNCTION px(IN a TYPE pt) RETURNS BIGINT AS a.x "+
 		"CREATE FUNCTION plus(IN a BIGINT, IN b BIGINT DEFAULT 10) RETURNS BIGINT RETURN a + b "+
 		"CREATE FUNCTION big(IN a BIGINT) AS SELECT id FROM t WHERE px(p) > a")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_macro/s WITH TEMPLATE macro_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_MACRO?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_macro/s WITH TEMPLATE macro_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_MACRO?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -146,13 +146,13 @@ func TestFDB_MacroFunctions(t *testing.T) {
 func TestFDB_TemporaryFunctions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_tempfn")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_tempfn")
+	setup := openTestDB(t, "/FRL/testdb_tempfn")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_tempfn")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE tempfn_tpl "+
 		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE FUNCTION kept(IN n BIGINT) AS SELECT id FROM t WHERE id = n")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_tempfn/s WITH TEMPLATE tempfn_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_TEMPFN?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_tempfn/s WITH TEMPLATE tempfn_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_TEMPFN?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

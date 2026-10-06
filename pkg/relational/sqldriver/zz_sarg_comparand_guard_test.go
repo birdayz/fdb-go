@@ -50,15 +50,15 @@ func TestFDB_SelfComparisonNotSargedToCircularRange(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_selfcmp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_selfcmp")
+	setup := openTestDB(t, "/FRL/testdb_selfcmp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_selfcmp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE selfcmp_tmpl "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_selfcmp/s WITH TEMPLATE selfcmp_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_selfcmp/s WITH TEMPLATE selfcmp_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SELFCMP?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELFCMP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -115,15 +115,15 @@ func TestFDB_CompositeJoinDrivesProbeSide(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_compjoin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_compjoin")
+	setup := openTestDB(t, "/FRL/testdb_compjoin")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_compjoin")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE compjoin_tmpl "+
 			"CREATE TABLE t (id BIGINT, fk BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE u (id BIGINT, c BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_compjoin/s WITH TEMPLATE compjoin_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_compjoin/s WITH TEMPLATE compjoin_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_COMPJOIN?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COMPJOIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

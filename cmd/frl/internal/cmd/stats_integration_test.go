@@ -241,7 +241,7 @@ func TestStats_RequiresRelationalAddressing(t *testing.T) {
 		want string
 	}{
 		{"no database", []string{"stats", "show", "--schema", "main"}, "--database"},
-		{"no schema", []string{"stats", "show", "--database", "/x"}, "--schema"},
+		{"no schema", []string{"stats", "show", "--database", "/FRL/x"}, "--schema"},
 		{"collect no database", []string{"stats", "collect", "--schema", "main"}, "--database"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -257,7 +257,7 @@ func TestStats_RequiresRelationalAddressing(t *testing.T) {
 }
 
 func TestStats_RejectsUnknownOutputFormat(t *testing.T) {
-	_, err := runCmd(t, "stats", "show", "--database", "/x", "--schema", "main", "-o", "yaml")
+	_, err := runCmd(t, "stats", "show", "--database", "/FRL/x", "--schema", "main", "-o", "yaml")
 	if err == nil {
 		t.Fatal("expected an error for an unsupported output format")
 	}
@@ -323,7 +323,7 @@ func TestIntegration_Stats_FleetCollectIsReadableByTheConnection(t *testing.T) {
 func TestStats_AllSchemasRejectsASingleSchema(t *testing.T) {
 	// Two conflicting targets. Silently preferring one would collect a
 	// different set of schemas than the operator named.
-	_, err := runCmd(t, "stats", "collect", "--database", "/x", "--schema", "main", "--all-schemas")
+	_, err := runCmd(t, "stats", "collect", "--database", "/FRL/x", "--schema", "main", "--all-schemas")
 	if err == nil {
 		t.Fatal("expected --all-schemas + --schema to be rejected")
 	}
@@ -518,7 +518,7 @@ func TestStats_ShowJSONCarriesSyntheticTypes(t *testing.T) {
 	var buf bytes.Buffer
 	render := &cobra.Command{}
 	render.SetOut(&buf)
-	if rErr := renderStatsStatus(render, "json", "/x/MAIN", embedded.StatisticsStatus{
+	if rErr := renderStatsStatus(render, "json", "/FRL/x/MAIN", embedded.StatisticsStatus{
 		Refusal:        embedded.StatisticsSyntheticTypes,
 		SyntheticTypes: []string{"JoinedAB"},
 	}); rErr != nil {
@@ -542,7 +542,7 @@ func TestStats_ShowJSONCarriesSyntheticTypes(t *testing.T) {
 	// independently. Both names must survive -- either table can be renamed to
 	// break the collision, so naming only one is half an instruction.
 	buf.Reset()
-	if rErr := renderStatsStatus(render, "json", "/x/MAIN", embedded.StatisticsStatus{
+	if rErr := renderStatsStatus(render, "json", "/FRL/x/MAIN", embedded.StatisticsStatus{
 		Refusal:        embedded.StatisticsAmbiguousNames,
 		AmbiguousTypes: []string{"MY__1TABLE", "MY__01TABLE"},
 	}); rErr != nil {
@@ -577,7 +577,7 @@ func TestStats_AbortedCollectionIsNotRenderedAsSuccess(t *testing.T) {
 		},
 		RecordsScanned: 51,
 	}
-	if err := renderCollectReport(render, "text", "/x/MAIN", aborted, time.Second); err != nil {
+	if err := renderCollectReport(render, "text", "/FRL/x/MAIN", aborted, time.Second); err != nil {
 		t.Fatalf("renderCollectReport: %v", err)
 	}
 	out := buf.String()
@@ -595,7 +595,7 @@ func TestStats_AbortedCollectionIsNotRenderedAsSuccess(t *testing.T) {
 		Skipped:        map[string]string{},
 		RecordsScanned: 7,
 	}
-	if err := renderCollectReport(render, "text", "/x/MAIN", ok, time.Second); err != nil {
+	if err := renderCollectReport(render, "text", "/FRL/x/MAIN", ok, time.Second); err != nil {
 		t.Fatalf("renderCollectReport (success): %v", err)
 	}
 	if !strings.Contains(buf.String(), "collected statistics for") {
@@ -617,7 +617,7 @@ func TestStats_FailedReadIsReportedAsUnknownNotAbsent(t *testing.T) {
 	var buf bytes.Buffer
 	render := &cobra.Command{}
 	render.SetOut(&buf)
-	if err := renderStatsStatus(render, "text", "/x/MAIN", embedded.StatisticsStatus{
+	if err := renderStatsStatus(render, "text", "/FRL/x/MAIN", embedded.StatisticsStatus{
 		Refusal: embedded.StatisticsReadFailed,
 		ReadErr: errors.New("operation_failed on GetRange"),
 	}); err != nil {
@@ -651,7 +651,7 @@ func TestStats_TornSetIsRenderedAsStoredAndRepairable(t *testing.T) {
 	var buf bytes.Buffer
 	render := &cobra.Command{}
 	render.SetOut(&buf)
-	if err := renderStatsStatus(render, "text", "/x/MAIN", embedded.StatisticsStatus{
+	if err := renderStatsStatus(render, "text", "/FRL/x/MAIN", embedded.StatisticsStatus{
 		Refusal:     embedded.StatisticsTorn,
 		ReadRefusal: recordlayer.StatisticsReadCountMismatch,
 	}); err != nil {
@@ -722,7 +722,7 @@ func TestStats_EveryNotFoundRefusalIsClassified(t *testing.T) {
 			var buf bytes.Buffer
 			render := &cobra.Command{}
 			render.SetOut(&buf)
-			if err := renderStatsStatus(render, "text", "/x/MAIN", embedded.StatisticsStatus{
+			if err := renderStatsStatus(render, "text", "/FRL/x/MAIN", embedded.StatisticsStatus{
 				Refusal: tc.refusal,
 			}); err != nil {
 				t.Fatalf("renderStatsStatus: %v", err)
@@ -774,7 +774,7 @@ func TestStats_ShowJSONCarriesTheReadDiagnosis(t *testing.T) {
 		var buf bytes.Buffer
 		render := &cobra.Command{}
 		render.SetOut(&buf)
-		if err := renderStatsStatus(render, "json", "/x/MAIN", st); err != nil {
+		if err := renderStatsStatus(render, "json", "/FRL/x/MAIN", st); err != nil {
 			t.Fatalf("renderStatsStatus: %v", err)
 		}
 		var got map[string]any
@@ -880,7 +880,7 @@ func TestStats_EveryDiagnosisFieldReachesBothRenderPaths(t *testing.T) {
 		var buf bytes.Buffer
 		c := &cobra.Command{}
 		c.SetOut(&buf)
-		if err := renderStatsStatus(c, format, "/x/MAIN", st); err != nil {
+		if err := renderStatsStatus(c, format, "/FRL/x/MAIN", st); err != nil {
 			t.Fatalf("renderStatsStatus(%s): %v", format, err)
 		}
 		return buf.String()
@@ -939,7 +939,7 @@ func TestStats_ShowJSONFoundIsTriState(t *testing.T) {
 		var buf bytes.Buffer
 		c := &cobra.Command{}
 		c.SetOut(&buf)
-		if err := renderStatsStatus(c, "json", "/x/MAIN", st); err != nil {
+		if err := renderStatsStatus(c, "json", "/FRL/x/MAIN", st); err != nil {
 			t.Fatalf("renderStatsStatus: %v", err)
 		}
 		var got map[string]any
@@ -1011,7 +1011,7 @@ func TestStats_OperatorFacingNamesAreDecoded(t *testing.T) {
 		var buf bytes.Buffer
 		c := &cobra.Command{}
 		c.SetOut(&buf)
-		if err := renderStatsStatus(c, format, "/x/MAIN", st); err != nil {
+		if err := renderStatsStatus(c, format, "/FRL/x/MAIN", st); err != nil {
 			t.Fatalf("renderStatsStatus(%s): %v", format, err)
 		}
 		return buf.String()
@@ -1078,7 +1078,7 @@ func TestStats_CollectPathDecodesNames(t *testing.T) {
 		var buf bytes.Buffer
 		c := &cobra.Command{}
 		c.SetOut(&buf)
-		if err := renderCollectReport(c, format, "/x/MAIN", r, time.Second); err != nil {
+		if err := renderCollectReport(c, format, "/FRL/x/MAIN", r, time.Second); err != nil {
 			t.Fatalf("renderCollectReport(%s): %v", format, err)
 		}
 		return buf.String()
@@ -1226,7 +1226,7 @@ func TestStats_SyntheticTypeNamesAreRenderedVerbatim(t *testing.T) {
 		var buf bytes.Buffer
 		c := &cobra.Command{}
 		c.SetOut(&buf)
-		if err := renderStatsStatus(c, format, "/x/MAIN", st); err != nil {
+		if err := renderStatsStatus(c, format, "/FRL/x/MAIN", st); err != nil {
 			t.Fatalf("renderStatsStatus(%s): %v", format, err)
 		}
 		out := buf.String()
@@ -1327,7 +1327,7 @@ func TestRenderersFeedTheWholeUnionToTheDecoder(t *testing.T) {
 			Skipped:   map[string]string{b: "exceeds MaxRecordsPerType"},
 		}
 		out := render(t, func(c *cobra.Command) error {
-			return renderCollectReport(c, "json", "/x/MAIN", rep, time.Second)
+			return renderCollectReport(c, "json", "/FRL/x/MAIN", rep, time.Second)
 		})
 		// Decoding b yields a's stored name, so under the split BOTH must print
 		// stored. Seeing MY$TABLE means only `collected` was fed to the decision.
@@ -1350,7 +1350,7 @@ func TestRenderersFeedTheWholeUnionToTheDecoder(t *testing.T) {
 			MissingTypes: []string{b},
 		}
 		out := render(t, func(c *cobra.Command) error {
-			return renderStatsStatus(c, "json", "/x/MAIN", st)
+			return renderStatsStatus(c, "json", "/FRL/x/MAIN", st)
 		})
 		if strings.Contains(out, "MY$TABLE") {
 			t.Errorf("per_type was decoded while missing_types straddled the collision "+
@@ -1391,7 +1391,7 @@ func TestSourceDecodedAndVerbatimNamesJoinTheDecision(t *testing.T) {
 		var buf bytes.Buffer
 		c := &cobra.Command{}
 		c.SetOut(&buf)
-		if err := renderStatsStatus(c, "json", "/x/MAIN", st); err != nil {
+		if err := renderStatsStatus(c, "json", "/FRL/x/MAIN", st); err != nil {
 			t.Fatalf("render: %v", err)
 		}
 		// per_type's key must stay stored: decoding it yields MY$TABLE, which is
@@ -1428,7 +1428,7 @@ func TestSourceDecodedAndVerbatimNamesJoinTheDecision(t *testing.T) {
 		var buf bytes.Buffer
 		c := &cobra.Command{}
 		c.SetOut(&buf)
-		if err := renderStatsStatus(c, "json", "/x/MAIN", st); err != nil {
+		if err := renderStatsStatus(c, "json", "/FRL/x/MAIN", st); err != nil {
 			t.Fatalf("render: %v", err)
 		}
 		var got struct {

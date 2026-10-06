@@ -171,8 +171,8 @@ func newMetaCatalogRepairCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "repair",
 		Short: "Rebind schemas onto the latest template version (write)",
-		Example: `  frl meta catalog repair --database /tenants --all-schemas --yes
-  frl meta catalog repair --database /tenants --all-schemas --concurrency 8 --yes`,
+		Example: `  frl meta catalog repair --database /FRL/tenants --all-schemas --yes
+  frl meta catalog repair --database /FRL/tenants --all-schemas --concurrency 8 --yes`,
 		Long: "Rebinds every schema in --database onto the latest version of its " +
 			"schema template, the fleet-wide form of the catalog's RepairSchema.\n\n" +
 			"Saving a new template version does NOT move existing schemas: each " +

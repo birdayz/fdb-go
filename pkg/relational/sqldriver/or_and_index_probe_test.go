@@ -19,13 +19,13 @@ func TestFDB_OrAndIndexProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_oai")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_oai")
+	setup := openTestDB(t, "/FRL/testdb_oai")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_oai")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE oai "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_b ON t (b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_oai/s WITH TEMPLATE oai")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OAI?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_oai/s WITH TEMPLATE oai")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OAI?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

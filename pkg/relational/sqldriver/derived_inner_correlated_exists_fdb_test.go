@@ -38,7 +38,7 @@ func TestFDB_CorrelatedExistsDerivedInner(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_corr_exists_derived_inner"
+	dbPath := "/FRL/testdb_corr_exists_derived_inner"
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cedi_tmpl "+

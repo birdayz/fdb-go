@@ -17,13 +17,13 @@ func TestFDB_OrderByMixedDirProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_omd")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_omd")
+	setup := openTestDB(t, "/FRL/testdb_omd")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_omd")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE omd "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_ab ON t (a, b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_omd/s WITH TEMPLATE omd")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OMD?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_omd/s WITH TEMPLATE omd")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OMD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

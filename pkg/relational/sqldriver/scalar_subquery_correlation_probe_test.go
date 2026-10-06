@@ -28,14 +28,14 @@ func TestFDB_ScalarSubqueryCorrelationProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ssqcorr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ssqcorr")
+	setup := openTestDB(t, "/FRL/testdb_ssqcorr")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ssqcorr")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssqcorr "+
 		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX emp_dept ON emp (dept_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ssqcorr/s WITH TEMPLATE ssqcorr")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSQCORR?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ssqcorr/s WITH TEMPLATE ssqcorr")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSQCORR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

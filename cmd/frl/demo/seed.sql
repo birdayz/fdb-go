@@ -1,5 +1,5 @@
--- frl-demo/seed.sql — 1 000 rows into /demo/main.orders.
--- Run: frl sql --database /demo --schema main -f seed.sql
+-- frl-demo/seed.sql — 1 000 rows into /FRL/demo/main.orders.
+-- Run: frl sql --database /FRL/demo --schema main -f seed.sql
 -- Idempotent: DELETE at top clears prior content so you can rerun.
 
 DELETE FROM orders WHERE order_id >= 0;

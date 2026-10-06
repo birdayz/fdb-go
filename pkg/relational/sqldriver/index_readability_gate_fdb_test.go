@@ -70,14 +70,14 @@ func TestFDB_NonReadableIndexIsNotAMatchCandidate(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_idxread")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_idxread")
+	setup := openTestDB(t, "/FRL/testdb_idxread")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idxread")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE idxread "+
 			"CREATE TABLE t (pk BIGINT, c BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE INDEX t_by_c ON t(c)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_idxread/s WITH TEMPLATE idxread")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IDXREAD?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idxread/s WITH TEMPLATE idxread")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXREAD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -176,9 +176,9 @@ func TestFDB_NonReadableIndexIsNotAMatchCandidate(t *testing.T) {
 		{"readable-unique-pending", recordlayer.IndexStateReadableUniquePending},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			setIndexStateRaw(t, "/testdb_idxread", "s", "T_BY_C", tc.state)
+			setIndexStateRaw(t, "/FRL/testdb_idxread", "s", "T_BY_C", tc.state)
 			t.Cleanup(func() {
-				setIndexStateRaw(t, "/testdb_idxread", "s", "T_BY_C", recordlayer.IndexStateReadable)
+				setIndexStateRaw(t, "/FRL/testdb_idxread", "s", "T_BY_C", recordlayer.IndexStateReadable)
 			})
 
 			plan := planFor(t)
@@ -236,14 +236,14 @@ func TestFDB_NonReadableAggregateIndexFallsBackToStreamingAggregation(t *testing
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_idxreadagg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_idxreadagg")
+	setup := openTestDB(t, "/FRL/testdb_idxreadagg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idxreadagg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE idxreadagg "+
 			"CREATE TABLE t (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE INDEX t_cnt_g AS SELECT COUNT(*) FROM t GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_idxreadagg/s WITH TEMPLATE idxreadagg")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IDXREADAGG?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idxreadagg/s WITH TEMPLATE idxreadagg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXREADAGG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -290,9 +290,9 @@ func TestFDB_NonReadableAggregateIndexFallsBackToStreamingAggregation(t *testing
 		t.Fatalf("baseline rows: got %s, want %s", got, wantRows)
 	}
 
-	setIndexStateRaw(t, "/testdb_idxreadagg", "s", "T_CNT_G", recordlayer.IndexStateWriteOnly)
+	setIndexStateRaw(t, "/FRL/testdb_idxreadagg", "s", "T_CNT_G", recordlayer.IndexStateWriteOnly)
 	t.Cleanup(func() {
-		setIndexStateRaw(t, "/testdb_idxreadagg", "s", "T_CNT_G", recordlayer.IndexStateReadable)
+		setIndexStateRaw(t, "/FRL/testdb_idxreadagg", "s", "T_CNT_G", recordlayer.IndexStateReadable)
 	})
 
 	plan := planFor(t)

@@ -31,14 +31,14 @@ func TestFDB_ProjectedExistsRound12_OtherPositions(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_pexr12pos")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_pexr12pos")
+	setup := openTestDB(t, "/FRL/testdb_pexr12pos")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pexr12pos")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr12pos_tmpl "+
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_pexr12pos/s WITH TEMPLATE pexr12pos_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pexr12pos/s WITH TEMPLATE pexr12pos_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PEXR12POS?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PEXR12POS?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

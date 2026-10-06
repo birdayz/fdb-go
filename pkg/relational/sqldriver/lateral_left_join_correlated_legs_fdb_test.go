@@ -20,7 +20,7 @@ import (
 func TestFDB_LateralLeftJoinOfTwoCorrelatedLegs(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/lateral_left_join_correlated_legs"
+	dbPath := "/FRL/lateral_left_join_correlated_legs"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,

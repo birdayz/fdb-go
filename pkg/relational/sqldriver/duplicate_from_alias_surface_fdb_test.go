@@ -79,7 +79,7 @@ import (
 func dupAliasSurfaceDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/dupaliassurface_" + tag
+	dbPath := "/FRL/dupaliassurface_" + tag
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE dupaliassurface_tmpl_"+tag+

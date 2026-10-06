@@ -130,14 +130,14 @@ Cascades-based query planner ported from Java's `fdb-relational-core`.
 ```go
 import _ "fdb.dev/pkg/relational/sqldriver"
 
-db, _ := sql.Open("fdbsql", "fdbsql:///mydb?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
+db, _ := sql.Open("fdbsql", "fdbsql:///FRL/mydb?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
 
 // DDL
-db.Exec("CREATE DATABASE /mydb")
+db.Exec("CREATE DATABASE /FRL/mydb")
 db.Exec(`CREATE SCHEMA TEMPLATE app_tmpl
     CREATE TABLE Users (id BIGINT NOT NULL, name STRING, email STRING, PRIMARY KEY (id))
     CREATE INDEX idx_email ON Users (email)`)
-db.Exec("CREATE SCHEMA /mydb/main WITH TEMPLATE app_tmpl")
+db.Exec("CREATE SCHEMA /FRL/mydb/main WITH TEMPLATE app_tmpl")
 
 // DML
 db.Exec("INSERT INTO Users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')")
@@ -309,10 +309,10 @@ import (
 )
 
 func main() {
-    db, _ := sql.Open("fdbsql", "fdbsql:///myapp?cluster_file=/tmp/fdb.cluster&schema=main")
-    db.Exec("CREATE DATABASE /myapp")
+    db, _ := sql.Open("fdbsql", "fdbsql:///FRL/myapp?cluster_file=/tmp/fdb.cluster&schema=main")
+    db.Exec("CREATE DATABASE /FRL/myapp")
     db.Exec(`CREATE SCHEMA TEMPLATE app CREATE TABLE Users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))`)
-    db.Exec("CREATE SCHEMA /myapp/main WITH TEMPLATE app")
+    db.Exec("CREATE SCHEMA /FRL/myapp/main WITH TEMPLATE app")
 
     db.Exec("INSERT INTO Users VALUES (1, 'Alice'), (2, 'Bob')")
 

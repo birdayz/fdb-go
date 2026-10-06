@@ -18,7 +18,7 @@ import (
 func capHitDB(t *testing.T, tag string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/capacity_" + tag
+	dbPath := "/FRL/capacity_" + tag
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

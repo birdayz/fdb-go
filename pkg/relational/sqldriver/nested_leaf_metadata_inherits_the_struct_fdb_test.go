@@ -54,16 +54,16 @@ func TestFDB_NestedArrayLeafDoesNotInheritTheStructRootsMetadata(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nlmeta")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nlmeta")
+	setup := openTestDB(t, "/FRL/testdb_nlmeta")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nlmeta")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nlmeta "+
 			"CREATE TYPE AS STRUCT elt (q BIGINT, r STRING) "+
 			"CREATE TYPE AS STRUCT sarr (vals BIGINT ARRAY, label STRING, bin BYTES, structs elt ARRAY) "+
 			"CREATE TABLE t (id BIGINT, s sarr, top BIGINT ARRAY, topbin BYTES, "+
 			"topstructs elt ARRAY, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nlmeta/s WITH TEMPLATE nlmeta")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NLMETA?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nlmeta/s WITH TEMPLATE nlmeta")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NLMETA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

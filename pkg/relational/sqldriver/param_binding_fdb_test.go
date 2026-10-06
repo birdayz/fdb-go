@@ -19,14 +19,14 @@ import (
 func TestFDB_ParameterBinding(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_param_bind")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_param_bind")
+	setup := openTestDB(t, "/FRL/testdb_param_bind")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_param_bind")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE param_bind_tmpl "+
 		"CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE A (id BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id)) "+
 		"CREATE TABLE U (id BIGINT, u UUID, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_param_bind/s WITH TEMPLATE param_bind_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PARAM_BIND?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_param_bind/s WITH TEMPLATE param_bind_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAM_BIND?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -119,14 +119,14 @@ func TestFDB_ParameterBinding(t *testing.T) {
 func TestFDB_ParameterTypingOrder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_param_typing")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_param_typing")
+	setup := openTestDB(t, "/FRL/testdb_param_typing")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_param_typing")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE param_typing_tmpl "+
 		"CREATE TABLE B (id BIGINT, b BYTES, PRIMARY KEY (id)) "+
 		"CREATE TABLE A (id BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id)) "+
 		"CREATE TABLE U (id BIGINT, u UUID, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_param_typing/s WITH TEMPLATE param_typing_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PARAM_TYPING?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_param_typing/s WITH TEMPLATE param_typing_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAM_TYPING?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

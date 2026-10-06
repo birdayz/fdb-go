@@ -51,12 +51,12 @@ func TestFDB_AggregateIndexMin_NonNumericExtremaAreRejected(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_min_nonnum")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_min_nonnum")
+	setup := openTestDB(t, "/FRL/testdb_min_nonnum")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_min_nonnum")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE minnn "+
 		"CREATE TABLE t (id BIGINT, g BIGINT, s STRING, b BYTES, PRIMARY KEY (id)) ")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_min_nonnum/s WITH TEMPLATE minnn")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MIN_NONNUM?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_min_nonnum/s WITH TEMPLATE minnn")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MIN_NONNUM?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

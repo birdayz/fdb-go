@@ -32,7 +32,7 @@ func TestFDB_RecursiveCTERekeyGate(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	dbPath := "/rcte_rekey_gate"
+	dbPath := "/FRL/rcte_rekey_gate"
 	setup := openTestDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
@@ -126,7 +126,7 @@ func TestFDB_RecursiveCTEComputedColumn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	dbPath := "/rcte_computed_col"
+	dbPath := "/FRL/rcte_computed_col"
 	setup := openTestDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
@@ -179,7 +179,7 @@ func TestFDB_RecursiveCTEStarSeedAliases(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	dbPath := "/rcte_star_seed"
+	dbPath := "/FRL/rcte_star_seed"
 	setup := openTestDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,

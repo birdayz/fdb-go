@@ -36,7 +36,7 @@ func TestFDB_BuriedInnerJoinProjectedExists(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/s4bibx"
+	dbPath := "/FRL/s4bibx"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -108,7 +108,7 @@ func TestFDB_BuriedInnerJoinProjectedExists_Discriminating(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/s4bibxd"
+	dbPath := "/FRL/s4bibxd"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -192,7 +192,7 @@ func TestFDB_NWayWhereExists(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/s4nwe"
+	dbPath := "/FRL/s4nwe"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -259,7 +259,7 @@ func TestFDB_NWayExistsInnerJoin(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/s4nweij"
+	dbPath := "/FRL/s4nweij"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -344,7 +344,7 @@ func TestFDB_NWayNotExists(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/s4nwne"
+	dbPath := "/FRL/s4nwne"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -412,7 +412,7 @@ func TestFDB_FourLegJoinDiscriminating(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/s4fld"
+	dbPath := "/FRL/s4fld"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

@@ -64,7 +64,7 @@ func run(seeds, seedStart uint64, templates bool) int {
 	tmp.Close()
 	clusterFile := tmp.Name()
 
-	const dbPath = "/sqldiffstress"
+	const dbPath = "/FRL/sqldiffstress"
 	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFile))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: open: %v\n", err)

@@ -115,7 +115,7 @@ func run(oldDir, outDir, censusPath string) int {
 	}
 	tmp.Close()
 
-	const dbPath = "/factorymigrate"
+	const dbPath = "/FRL/factorymigrate"
 	setupDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), tmp.Name()))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: open: %v\n", err)

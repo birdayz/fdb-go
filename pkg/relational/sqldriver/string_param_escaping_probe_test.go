@@ -18,14 +18,14 @@ func TestFDB_StringParamEscapingProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_stresc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_stresc")
+	setup := openTestDB(t, "/FRL/testdb_stresc")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_stresc")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE stresc "+
 			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_s ON t (s)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_stresc/s WITH TEMPLATE stresc")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_STRESC?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_stresc/s WITH TEMPLATE stresc")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STRESC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

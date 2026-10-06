@@ -97,8 +97,8 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggvac")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggvac")
+	setup := openTestDB(t, "/FRL/testdb_aggvac")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggvac")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggvac "+
 			"CREATE TABLE ai (pk BIGINT, d DOUBLE, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
@@ -109,8 +109,8 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 			"CREATE INDEX ai_cntv_g AS SELECT COUNT(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_min_g AS SELECT MIN(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_max_g AS SELECT MAX(v) FROM ai GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggvac/s WITH TEMPLATE aggvac")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGVAC?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggvac/s WITH TEMPLATE aggvac")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGVAC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -164,8 +164,8 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 			"CREATE SCHEMA TEMPLATE aggvacu "+
 				"CREATE TABLE e (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 				"CREATE INDEX e_cnt AS SELECT COUNT(*) FROM e")
-		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggvac/su WITH TEMPLATE aggvacu")
-		udsn := fmt.Sprintf("fdbsql:///TESTDB_AGGVAC?cluster_file=%s&schema=SU", clusterFilePath)
+		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggvac/su WITH TEMPLATE aggvacu")
+		udsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGVAC?cluster_file=%s&schema=SU", clusterFilePath)
 		udb, err := sql.Open("fdbsql", udsn)
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
@@ -203,8 +203,8 @@ func TestFDB_AggregateIndexVacatedGroup_ZeroGroups(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggvacpin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggvacpin")
+	setup := openTestDB(t, "/FRL/testdb_aggvacpin")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggvacpin")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggvacpin "+
 			"CREATE TABLE ai (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
@@ -212,8 +212,8 @@ func TestFDB_AggregateIndexVacatedGroup_ZeroGroups(t *testing.T) {
 			"CREATE INDEX ai_sum_g AS SELECT SUM(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_cnt_g AS SELECT COUNT(*) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_cntv_g AS SELECT COUNT(v) FROM ai GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggvacpin/s WITH TEMPLATE aggvacpin")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGVACPIN?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggvacpin/s WITH TEMPLATE aggvacpin")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGVACPIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -250,8 +250,8 @@ func TestFDB_AggregateIndexVacatedGroup_UngroupedSumEmptyTable(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggvacsum")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggvacsum")
+	setup := openTestDB(t, "/FRL/testdb_aggvacsum")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggvacsum")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggvacsum "+
 			"CREATE TABLE ai (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
@@ -260,8 +260,8 @@ func TestFDB_AggregateIndexVacatedGroup_UngroupedSumEmptyTable(t *testing.T) {
 			"CREATE TABLE bo (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE INDEX ai_sum AS SELECT SUM(v) FROM ai "+
 			"CREATE INDEX bi_sum AS SELECT SUM(v) FROM bi")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggvacsum/s WITH TEMPLATE aggvacsum")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGVACSUM?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggvacsum/s WITH TEMPLATE aggvacsum")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGVACSUM?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

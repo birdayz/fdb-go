@@ -19,14 +19,14 @@ func TestFDB_MultiColIndexGapProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_mcgap")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mcgap")
+	setup := openTestDB(t, "/FRL/testdb_mcgap")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mcgap")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE mcgap "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_abc ON t (a, b, c)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mcgap/s WITH TEMPLATE mcgap")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MCGAP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mcgap/s WITH TEMPLATE mcgap")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MCGAP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -53,7 +53,7 @@ func TestFDB_NestedReferenceReachProbe(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	const dbPath = "/testdb_nested_reach_probe"
+	const dbPath = "/FRL/testdb_nested_reach_probe"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

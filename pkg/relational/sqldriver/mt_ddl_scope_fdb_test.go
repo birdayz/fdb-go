@@ -5,8 +5,8 @@ package sqldriver_test
 //
 // The default (option OFF) is the Java-parity contract and is pinned here just
 // as hard as the ON behaviour. Java's SemanticAnalyzer.parseSchemaURI splits a
-// qualified "/db/SCHEMA" identifier lexically and never compares it to the
-// connection's database, so `DROP SCHEMA /other/S` and `DROP DATABASE /other`
+// qualified "/FRL/db/SCHEMA" identifier lexically and never compares it to the
+// connection's database, so `DROP SCHEMA /FRL/other/S` and `DROP DATABASE /FRL/other`
 // are accepted from any connection; Java assumes authorization above the SQL
 // engine. Flipping that default would diverge from Java on the shared surface,
 // so if the OFF assertions below ever fail, the default changed and that is a
@@ -126,17 +126,17 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 		db := mtDDLOpen(t, home, true)
 
 		_, err := db.ExecContext(ctx, "DROP DATABASE "+foreign)
-		mtDDLAssert42501(t, "DROP DATABASE /foreign", err, home, foreign)
+		mtDDLAssert42501(t, "DROP DATABASE /FRL/foreign", err, home, foreign)
 
 		// Written lower case: the refusal names the path as DDL folds it.
-		_, err = db.ExecContext(ctx, "CREATE DATABASE /mt_ddl_intruder")
-		mtDDLAssert42501(t, "CREATE DATABASE /other", err, home, "/MT_DDL_INTRUDER")
+		_, err = db.ExecContext(ctx, "CREATE DATABASE /FRL/mt_ddl_intruder")
+		mtDDLAssert42501(t, "CREATE DATABASE /FRL/other", err, home, "/FRL/MT_DDL_INTRUDER")
 
 		_, err = db.ExecContext(ctx, "DROP SCHEMA "+foreign+"/victim")
-		mtDDLAssert42501(t, "DROP SCHEMA /foreign/victim", err, home, foreign)
+		mtDDLAssert42501(t, "DROP SCHEMA /FRL/foreign/victim", err, home, foreign)
 
 		_, err = db.ExecContext(ctx, "CREATE SCHEMA "+foreign+"/planted WITH TEMPLATE mt_ddl_tmpl")
-		mtDDLAssert42501(t, "CREATE SCHEMA /foreign/planted", err, home, foreign)
+		mtDDLAssert42501(t, "CREATE SCHEMA /FRL/foreign/planted", err, home, foreign)
 
 		// The rejections must be rejections, not slow successes: the foreign
 		// schema and database both survive, verified from the unrestricted

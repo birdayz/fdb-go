@@ -20,7 +20,7 @@ import (
 func TestFDB_ProjectedExistsCorrelatedToNonFirstLeg(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/w4l_pxnfl"
+	dbPath := "/FRL/w4l_pxnfl"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

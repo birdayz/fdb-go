@@ -17,7 +17,7 @@ import (
 func dmlCascadesDB(t *testing.T, tag string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/dmlc_" + tag
+	dbPath := "/FRL/dmlc_" + tag
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -256,7 +256,7 @@ func TestFDB_DMLCascades_Update(t *testing.T) {
 func TestFDB_DMLCascades_InsertSelect(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/dmlc_inssel"
+	dbPath := "/FRL/dmlc_inssel"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -344,7 +344,7 @@ func TestFDB_DMLCascades_InsertSelect(t *testing.T) {
 func TestFDB_DMLCascades_UniqueIndexViolation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/dmlc_uniq"
+	dbPath := "/FRL/dmlc_uniq"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

@@ -13,7 +13,7 @@ import (
 func TestFDB_MultiSourceExistsReadsUnnestElement(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	const dbPath = "/multi_source_exists_unnest"
+	const dbPath = "/FRL/multi_source_exists_unnest"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,

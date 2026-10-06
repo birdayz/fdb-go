@@ -23,8 +23,8 @@ func TestFDB_RowVersionPseudoField_BaseScan(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_rvpf")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rvpf")
+	setup := openTestDB(t, "/FRL/testdb_rvpf")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvpf")
 	// t3 mirrors pseudo-field-clash.yamsql's t3 (no real __ROW_VERSION
 	// column → the pseudo-field applies); t2 declares a REAL "__ROW_VERSION"
 	// string column (real-column-wins). No version index — this pins the
@@ -33,9 +33,9 @@ func TestFDB_RowVersionPseudoField_BaseScan(t *testing.T) {
 		CREATE TABLE t3(id BIGINT, col1 BIGINT, col2 STRING, PRIMARY KEY(id))
 		CREATE TABLE t2(id BIGINT, col1 BIGINT, "__ROW_VERSION" STRING, PRIMARY KEY(id))
 		WITH OPTIONS(store_row_versions=true)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rvpf/s1 WITH TEMPLATE rvpf_tpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvpf/s1 WITH TEMPLATE rvpf_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_RVPF?cluster_file=%s&schema=S1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RVPF?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -192,14 +192,14 @@ func TestFDB_RowVersionPseudoField_DisabledTemplate(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_rvpf_off")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rvpf_off")
+	setup := openTestDB(t, "/FRL/testdb_rvpf_off")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvpf_off")
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE rvpf_off_tpl
 		CREATE TABLE t3(id BIGINT, col1 BIGINT, PRIMARY KEY(id))
 		WITH OPTIONS(store_row_versions=false)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rvpf_off/s1 WITH TEMPLATE rvpf_off_tpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvpf_off/s1 WITH TEMPLATE rvpf_off_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_RVPF_OFF?cluster_file=%s&schema=S1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RVPF_OFF?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

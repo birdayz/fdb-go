@@ -42,16 +42,16 @@ func TestFDB_ProjectedExistsRound10(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_pexr10")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_pexr10")
+	setup := openTestDB(t, "/FRL/testdb_pexr10")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pexr10")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr10_tmpl "+
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t4 (id BIGINT, t3_id BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_pexr10/s WITH TEMPLATE pexr10_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pexr10/s WITH TEMPLATE pexr10_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PEXR10?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PEXR10?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

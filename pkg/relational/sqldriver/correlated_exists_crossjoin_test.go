@@ -20,16 +20,16 @@ func TestFDB_CorrelatedExistsCrossJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_correxcj")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_correxcj")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_correxcj")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_correxcj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE correxcj_tmpl "+
 			"CREATE TABLE emp (id BIGINT, fname STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE project (pid BIGINT, emp_id BIGINT, pname STRING, PRIMARY KEY (pid))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_correxcj/s WITH TEMPLATE correxcj_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_correxcj/s WITH TEMPLATE correxcj_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CORREXCJ?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORREXCJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -77,17 +77,17 @@ func TestFDB_NestedCorrelatedExists(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_nestexists")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_nestexists")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_nestexists")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_nestexists")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE nestexists_tmpl "+
 			"CREATE TABLE emp (id BIGINT, fname STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE project (pid BIGINT, emp_id BIGINT, pname STRING, PRIMARY KEY (pid)) "+
 			"CREATE TABLE empty_project (pid BIGINT, PRIMARY KEY (pid))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_nestexists/s WITH TEMPLATE nestexists_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_nestexists/s WITH TEMPLATE nestexists_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NESTEXISTS?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTEXISTS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

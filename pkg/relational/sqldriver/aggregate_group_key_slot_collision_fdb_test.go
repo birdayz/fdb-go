@@ -48,13 +48,13 @@ func TestFDB_AggregateGroupKeySlotCollision(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggslotcol")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggslotcol")
+	setup := openTestDB(t, "/FRL/testdb_aggslotcol")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggslotcol")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE aggslotcol "+
 		"CREATE TABLE t1 (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, x BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggslotcol/s WITH TEMPLATE aggslotcol")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGSLOTCOL?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggslotcol/s WITH TEMPLATE aggslotcol")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGSLOTCOL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -158,13 +158,13 @@ func TestFDB_AggregateResultSlotCollision(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggrescol")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggrescol")
+	setup := openTestDB(t, "/FRL/testdb_aggrescol")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggrescol")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE aggrescol "+
 		"CREATE TABLE t1 (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, x BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggrescol/s WITH TEMPLATE aggrescol")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGRESCOL?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggrescol/s WITH TEMPLATE aggrescol")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGRESCOL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

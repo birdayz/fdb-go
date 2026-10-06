@@ -22,7 +22,7 @@ func TestFDB_RecursiveCTERename(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	dbPath := "/rcte_rename"
+	dbPath := "/FRL/rcte_rename"
 	setup := openTestDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,

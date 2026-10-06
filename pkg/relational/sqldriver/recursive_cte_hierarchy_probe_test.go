@@ -18,14 +18,14 @@ func TestFDB_RecursiveCTEHierarchy(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_rctehier")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rctehier")
+	setup := openTestDB(t, "/FRL/testdb_rctehier")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rctehier")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rctehier "+
 			"CREATE TABLE emp (id BIGINT, mgr BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX emp_mgr ON emp (mgr)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rctehier/s WITH TEMPLATE rctehier")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_RCTEHIER?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rctehier/s WITH TEMPLATE rctehier")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RCTEHIER?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

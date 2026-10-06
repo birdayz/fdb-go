@@ -21,8 +21,8 @@ func TestFDB_RowVersionIndexPlans(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_rvip")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rvip")
+	setup := openTestDB(t, "/FRL/testdb_rvip")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvip")
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE rvip_tpl
 		CREATE TABLE t3(id BIGINT, col1 BIGINT, col2 STRING, PRIMARY KEY(id))
 		CREATE INDEX t3_version AS SELECT "__ROW_VERSION" FROM t3
@@ -31,9 +31,9 @@ func TestFDB_RowVersionIndexPlans(t *testing.T) {
 		CREATE INDEX t2_version AS SELECT "__ROW_VERSION" FROM t2
 		CREATE INDEX t2_col1_version AS SELECT col1, "__ROW_VERSION" FROM t2 ORDER BY col1, "__ROW_VERSION"
 		WITH OPTIONS(store_row_versions=true)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rvip/s1 WITH TEMPLATE rvip_tpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvip/s1 WITH TEMPLATE rvip_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_RVIP?cluster_file=%s&schema=S1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RVIP?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

@@ -19,14 +19,14 @@ func TestFDB_ConstantPredicateProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_constpred")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_constpred")
+	setup := openTestDB(t, "/FRL/testdb_constpred")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_constpred")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE constpred "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_constpred/s WITH TEMPLATE constpred")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CONSTPRED?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_constpred/s WITH TEMPLATE constpred")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONSTPRED?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

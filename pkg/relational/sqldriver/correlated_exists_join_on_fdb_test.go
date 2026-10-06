@@ -44,7 +44,7 @@ func TestFDB_CorrelatedExistsJoinOnEnforced(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_corr_exists_join_on"
+	dbPath := "/FRL/testdb_corr_exists_join_on"
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cejo_tmpl "+
@@ -243,7 +243,7 @@ func TestFDB_CorrelatedExistsInnerThenOuterJoinLevel(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_corr_exists_mixed_join"
+	dbPath := "/FRL/testdb_corr_exists_mixed_join"
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cemj_tmpl "+
@@ -336,7 +336,7 @@ func TestFDB_CorrelatedExistsOnCorrelationBeforeRightFull(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_corr_exists_on_before_rf"
+	dbPath := "/FRL/testdb_corr_exists_on_before_rf"
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cebrf_tmpl "+
@@ -436,7 +436,7 @@ func TestFDB_CorrelatedExistsNestedSubqueryInOnDeclines(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_corr_exists_nested_on"
+	dbPath := "/FRL/testdb_corr_exists_nested_on"
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cenon_tmpl "+
@@ -523,7 +523,7 @@ func TestFDB_CorrelatedExistsCteInnerNoWhereNoOn(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_corr_exists_cte_inner"
+	dbPath := "/FRL/testdb_corr_exists_cte_inner"
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cecte_tmpl "+
@@ -583,7 +583,7 @@ func TestFDB_CorrelatedExistsCteInnerWithPredicate(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_corr_exists_cte_pred"
+	dbPath := "/FRL/testdb_corr_exists_cte_pred"
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cectp_tmpl "+
@@ -686,7 +686,7 @@ func TestFDB_CorrelatedExistsOnReferencesLaterInnerAlias(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_corr_exists_later_alias"
+	dbPath := "/FRL/testdb_corr_exists_later_alias"
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cela_tmpl "+
@@ -741,7 +741,7 @@ func TestFDB_CorrelatedExistsOnErrorCodeConsistency(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_corr_exists_errcode"
+	dbPath := "/FRL/testdb_corr_exists_errcode"
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ceec_tmpl "+

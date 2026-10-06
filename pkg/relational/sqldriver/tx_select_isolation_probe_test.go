@@ -30,12 +30,12 @@ func TestFDB_TxSelectIsolationProbe(t *testing.T) {
 	// the DDL and the seed INSERT — all autocommit — never meet it, and the two
 	// single-statement subtests below never open a second read page.
 	key, clk := spikedClusterKey(t, 30*time.Second)
-	setup := openSpiked(t, key, "/testdb_txiso", "")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_txiso")
+	setup := openSpiked(t, key, "/FRL/testdb_txiso", "")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txiso")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE txiso CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_txiso/s WITH TEMPLATE txiso")
-	db := openSpiked(t, key, "/testdb_txiso", "s")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txiso/s WITH TEMPLATE txiso")
+	db := openSpiked(t, key, "/FRL/testdb_txiso", "s")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
 	t.Run("read_your_writes_in_explicit_tx", func(t *testing.T) {

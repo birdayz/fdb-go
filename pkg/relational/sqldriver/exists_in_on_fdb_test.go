@@ -21,8 +21,8 @@ func TestFDB_ExistsInOn(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_exists_on")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_exists_on")
+	setup := openTestDB(t, "/FRL/testdb_exists_on")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_on")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exists_on "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
@@ -31,8 +31,8 @@ func TestFDB_ExistsInOn(t *testing.T) {
 			"CREATE TABLE d (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exists_on/s WITH TEMPLATE exists_on")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXISTS_ON?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_on/s WITH TEMPLATE exists_on")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ON?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

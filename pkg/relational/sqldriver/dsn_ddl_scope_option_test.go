@@ -18,7 +18,7 @@ func TestDSNRestrictDDLOption(t *testing.T) {
 
 	t.Run("absent_leaves_option_unset", func(t *testing.T) {
 		t.Parallel()
-		dsn, err := ParseDSN("fdbsql:///db")
+		dsn, err := ParseDSN("fdbsql:///FRL/db")
 		if err != nil {
 			t.Fatalf("ParseDSN: %v", err)
 		}
@@ -41,7 +41,7 @@ func TestDSNRestrictDDLOption(t *testing.T) {
 	for _, raw := range truthy {
 		t.Run("true_"+raw, func(t *testing.T) {
 			t.Parallel()
-			dsn, err := ParseDSN("fdbsql:///db?restrict_ddl_to_session_database=" + raw)
+			dsn, err := ParseDSN("fdbsql:///FRL/db?restrict_ddl_to_session_database=" + raw)
 			if err != nil {
 				t.Fatalf("ParseDSN: %v", err)
 			}
@@ -59,7 +59,7 @@ func TestDSNRestrictDDLOption(t *testing.T) {
 	for _, raw := range falsy {
 		t.Run("false_"+raw, func(t *testing.T) {
 			t.Parallel()
-			dsn, err := ParseDSN("fdbsql:///db?restrict_ddl_to_session_database=" + raw)
+			dsn, err := ParseDSN("fdbsql:///FRL/db?restrict_ddl_to_session_database=" + raw)
 			if err != nil {
 				t.Fatalf("ParseDSN: %v", err)
 			}
@@ -75,7 +75,7 @@ func TestDSNRestrictDDLOption(t *testing.T) {
 
 	t.Run("malformed_value_errors", func(t *testing.T) {
 		t.Parallel()
-		dsn, err := ParseDSN("fdbsql:///db?restrict_ddl_to_session_database=ture")
+		dsn, err := ParseDSN("fdbsql:///FRL/db?restrict_ddl_to_session_database=ture")
 		if err != nil {
 			t.Fatalf("ParseDSN: %v", err)
 		}
@@ -106,7 +106,7 @@ func TestDSNRestrictDDLOption(t *testing.T) {
 func TestOpenConnectorValidatesOptionsBeforeFDB(t *testing.T) {
 	t.Parallel()
 
-	const dsn = "fdbsql:///db?cluster_file=/nonexistent/definitely-not-a-cluster" +
+	const dsn = "fdbsql:///FRL/db?cluster_file=/nonexistent/definitely-not-a-cluster" +
 		"&restrict_ddl_to_session_database=ture"
 
 	var d Driver

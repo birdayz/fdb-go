@@ -36,7 +36,7 @@ func TestFDB_QualifiedNestedAccessorShapeMatrix(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	const dbPath = "/testdb_qual_nested_matrix"
+	const dbPath = "/FRL/testdb_qual_nested_matrix"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

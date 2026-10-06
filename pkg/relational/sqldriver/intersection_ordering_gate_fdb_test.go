@@ -26,8 +26,8 @@ func TestFDB_IntersectionOrderingGate(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ixgate")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ixgate")
+	setup := openTestDB(t, "/FRL/testdb_ixgate")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ixgate")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ixgate "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
@@ -36,8 +36,8 @@ func TestFDB_IntersectionOrderingGate(t *testing.T) {
 			"CREATE TABLE t_desc (id BIGINT, a BIGINT, b BIGINT, sort_key BIGINT, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_desc_a_sort ON t_desc (a, sort_key) "+
 			"CREATE INDEX idx_desc_b_sort ON t_desc (b, sort_key)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ixgate/s WITH TEMPLATE ixgate")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IXGATE?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ixgate/s WITH TEMPLATE ixgate")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IXGATE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

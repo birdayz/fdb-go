@@ -11,13 +11,13 @@ import (
 func TestFDB_InListNaN(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_in_nan")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_in_nan")
+	setup := openTestDB(t, "/FRL/testdb_in_nan")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_nan")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE in_nan_tmpl "+
 		"CREATE TABLE F (id BIGINT, f DOUBLE, PRIMARY KEY (id)) CREATE INDEX F_F ON F (f) "+
 		"CREATE TABLE G (id BIGINT, f DOUBLE, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_in_nan/s WITH TEMPLATE in_nan_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_IN_NAN?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_nan/s WITH TEMPLATE in_nan_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_NAN?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

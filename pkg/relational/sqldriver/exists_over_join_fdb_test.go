@@ -19,7 +19,7 @@ import (
 func TestFDB_ExistsOverJoin(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/w4l_ex"
+	dbPath := "/FRL/w4l_ex"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

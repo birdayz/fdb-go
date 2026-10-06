@@ -20,15 +20,15 @@ func TestFDB_CorrelatedNullInequality(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_corrineq")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_corrineq")
+	setup := openTestDB(t, "/FRL/testdb_corrineq")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_corrineq")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE corrineq "+
 			"CREATE TABLE a (id BIGINT, k BIGINT, lo BIGINT, hi BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_k ON b (k)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_corrineq/s WITH TEMPLATE corrineq")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CORRINEQ?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_corrineq/s WITH TEMPLATE corrineq")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRINEQ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

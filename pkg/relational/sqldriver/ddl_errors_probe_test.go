@@ -22,8 +22,8 @@ func TestFDB_DDLErrorsProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := openTestDB(t, "/testdb_ddlerrp")
-	mwjoMustExec(t, db, ctx, "CREATE DATABASE /testdb_ddlerrp")
+	db := openTestDB(t, "/FRL/testdb_ddlerrp")
+	mwjoMustExec(t, db, ctx, "CREATE DATABASE /FRL/testdb_ddlerrp")
 
 	rejectsCode := func(name, q, code string) {
 		t.Run(name, func(t *testing.T) {
@@ -54,8 +54,8 @@ func TestFDB_DDLErrorsProbe(t *testing.T) {
 		})
 	}
 
-	rejectsCode("create_database_exists", "CREATE DATABASE /testdb_ddlerrp", "42F04")
-	rejectsCode("drop_nonexistent_database", "DROP DATABASE /testdb_nope_xyz_123", "42F63")
+	rejectsCode("create_database_exists", "CREATE DATABASE /FRL/testdb_ddlerrp", "42F04")
+	rejectsCode("drop_nonexistent_database", "DROP DATABASE /FRL/testdb_nope_xyz_123", "42F63")
 	rejectsCode("table_without_primary_key",
 		"CREATE SCHEMA TEMPLATE de_nopk CREATE TABLE t (id BIGINT, x BIGINT)", "42601")
 	// duplicate column → clean 42701 (validated in parseTableDefinition before the

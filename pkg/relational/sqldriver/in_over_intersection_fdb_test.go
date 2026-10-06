@@ -23,7 +23,7 @@ func TestFDB_InOverIntersection_ResidualApplied(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/testdb_inovix"
+	const dbPath = "/FRL/testdb_inovix"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,

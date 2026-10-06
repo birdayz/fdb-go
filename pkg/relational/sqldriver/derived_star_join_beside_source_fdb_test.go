@@ -22,7 +22,7 @@ import (
 func TestFDB_DerivedStarJoinBesideAnotherSource(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/derived_star_join_beside_source"
+	dbPath := "/FRL/derived_star_join_beside_source"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
@@ -126,7 +126,7 @@ func TestFDB_DerivedStarJoinBesideAnotherSource(t *testing.T) {
 func TestFDB_FilteredDerivedTableInsideAJoin(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/filtered_derived_table_inside_a_join"
+	dbPath := "/FRL/filtered_derived_table_inside_a_join"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
@@ -215,7 +215,7 @@ func TestFDB_FilteredDerivedTableInsideAJoin(t *testing.T) {
 func TestFDB_DerivedOuterJoinBesideAnotherSource(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/derived_outer_join_beside_source"
+	dbPath := "/FRL/derived_outer_join_beside_source"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,

@@ -13,7 +13,7 @@ import (
 func gbInsertDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/gbins_" + tag
+	dbPath := "/FRL/gbins_" + tag
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

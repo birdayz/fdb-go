@@ -20,13 +20,13 @@ func TestFDB_DateTimeFunctionsProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dtfns")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dtfns")
+	setup := openTestDB(t, "/FRL/testdb_dtfns")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dtfns")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dtfns "+
 			"CREATE TABLE t (id BIGINT, ts TIMESTAMP, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dtfns/s WITH TEMPLATE dtfns")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DTFNS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dtfns/s WITH TEMPLATE dtfns")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DTFNS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

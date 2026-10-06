@@ -39,7 +39,7 @@ import (
 // dbPath is fixed because the SQL layer bakes the database path into stored keys; a per-run path
 // would make the keyspace (and the determinism fingerprint) vary. Isolation comes from the unique
 // backend cache key instead.
-const dbPath = "/sqlpagedb"
+const dbPath = "/FRL/sqlpagedb"
 
 // keyCounter uniquifies each run's backend cache key so concurrent runs never share a SimFDB.
 var keyCounter atomic.Uint64

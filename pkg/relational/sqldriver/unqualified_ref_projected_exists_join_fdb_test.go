@@ -49,16 +49,16 @@ func TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_unqual_pe")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_unqual_pe")
+	setup := openTestDB(t, "/FRL/testdb_unqual_pe")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_unqual_pe")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE unqual_pe_tmpl "+
 		"CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t1(id BIGINT, n nst, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_unqual_pe/s WITH TEMPLATE unqual_pe_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_unqual_pe/s WITH TEMPLATE unqual_pe_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_UNQUAL_PE?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UNQUAL_PE?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

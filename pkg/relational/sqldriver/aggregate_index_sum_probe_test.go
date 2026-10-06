@@ -19,8 +19,8 @@ func TestFDB_AggregateIndexSumMinMax(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggidxp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggidxp")
+	setup := openTestDB(t, "/FRL/testdb_aggidxp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggidxp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggidxp "+
 			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
@@ -28,8 +28,8 @@ func TestFDB_AggregateIndexSumMinMax(t *testing.T) {
 			"CREATE INDEX sum_by_g_nn AS SELECT COUNT(v) FROM ga GROUP BY g "+
 			"CREATE INDEX min_by_g AS SELECT MIN(v) FROM ga GROUP BY g "+
 			"CREATE INDEX max_by_g AS SELECT MAX(v) FROM ga GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggidxp/s WITH TEMPLATE aggidxp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGIDXP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggidxp/s WITH TEMPLATE aggidxp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGIDXP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -35,16 +35,16 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_explainloud")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_explainloud")
+	setup := openTestDB(t, "/FRL/testdb_explainloud")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_explainloud")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE explainloud_tmpl "+
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, bv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, cv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, c_id BIGINT, dw BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_explainloud/s WITH TEMPLATE explainloud_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXPLAINLOUD?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_explainloud/s WITH TEMPLATE explainloud_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXPLAINLOUD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -182,13 +182,13 @@ func TestFDB_ExplainInformationSchemaStillRenders(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_explaininfo")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_explaininfo")
+	setup := openTestDB(t, "/FRL/testdb_explaininfo")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_explaininfo")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE explaininfo_tmpl "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_explaininfo/s WITH TEMPLATE explaininfo_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXPLAININFO?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_explaininfo/s WITH TEMPLATE explaininfo_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXPLAININFO?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

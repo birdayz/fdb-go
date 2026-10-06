@@ -25,12 +25,12 @@ func TestFDB_ArithPrecedenceProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_arithprec")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_arithprec")
+	setup := openTestDB(t, "/FRL/testdb_arithprec")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_arithprec")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE arithprec CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_arithprec/s WITH TEMPLATE arithprec")
-	dsn := "fdbsql:///TESTDB_ARITHPREC?cluster_file=" + clusterFilePath + "&schema=S"
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_arithprec/s WITH TEMPLATE arithprec")
+	dsn := "fdbsql:///FRL/TESTDB_ARITHPREC?cluster_file=" + clusterFilePath + "&schema=S"
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

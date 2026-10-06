@@ -139,8 +139,8 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_frrl")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_frrl")
+	setup := openTestDB(t, "/FRL/testdb_frrl")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_frrl")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE frrl "+
 		// fi: indexed on (a, e), so an equality on `a` binds the index and
 		// leaves `e` as the coordinate the range predicate compiles onto.
@@ -149,8 +149,8 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL(t *testing.T) {
 		// residual filter evaluated row by row and never becomes a key range.
 		"CREATE TABLE fo (id BIGINT, e DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX fi_ae ON fi (a, e)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_frrl/s WITH TEMPLATE frrl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FRRL?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_frrl/s WITH TEMPLATE frrl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FRRL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -243,14 +243,14 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL_Float32(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_frrl32")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_frrl32")
+	setup := openTestDB(t, "/FRL/testdb_frrl32")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_frrl32")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE frrl32 "+
 		"CREATE TABLE gi (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE go_ (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX gi_ag ON gi (a, g)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_frrl32/s WITH TEMPLATE frrl32")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FRRL32?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_frrl32/s WITH TEMPLATE frrl32")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FRRL32?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

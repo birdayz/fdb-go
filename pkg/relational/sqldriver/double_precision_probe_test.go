@@ -19,12 +19,12 @@ func TestFDB_DoublePrecisionProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dpp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dpp")
+	setup := openTestDB(t, "/FRL/testdb_dpp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dpp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dpp CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dpp/s WITH TEMPLATE dpp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DPP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dpp/s WITH TEMPLATE dpp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DPP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

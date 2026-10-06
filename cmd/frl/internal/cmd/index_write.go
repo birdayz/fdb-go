@@ -44,8 +44,8 @@ func newIndexBuildCmd() *cobra.Command {
 		Example: `  frl index build Order$price --yes
   frl index build Order$price --rps 5000 --limit 200 --yes
   frl index build IDX --time-limit 30s --yes   # partial pass; rerun resumes
-  frl index build --database /tenants --all-schemas --yes          # whole fleet
-  frl index build IDX --database /tenants --all-schemas --yes      # one index, whole fleet`,
+  frl index build --database /FRL/tenants --all-schemas --yes          # whole fleet
+  frl index build IDX --database /FRL/tenants --all-schemas --yes      # one index, whole fleet`,
 		ValidArgsFunction: indexNameCompletion,
 		Long: "Drives the online indexer over the store: scans records in " +
 			"batched transactions, writes index entries, tracks progress in " +

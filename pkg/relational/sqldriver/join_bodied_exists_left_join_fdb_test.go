@@ -21,16 +21,16 @@ func TestFDB_JoinBodiedExistsOverLeftJoin(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/jbexists")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /jbexists")
+	setup := openTestDB(t, "/FRL/jbexists")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/jbexists")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE jbexists "+
 			"CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid)) "+
 			"CREATE TABLE r (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE s (k BIGINT, PRIMARY KEY (k))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /jbexists/s WITH TEMPLATE jbexists")
-	dsn := fmt.Sprintf("fdbsql:///JBEXISTS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/jbexists/s WITH TEMPLATE jbexists")
+	dsn := fmt.Sprintf("fdbsql:///FRL/JBEXISTS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -192,15 +192,15 @@ func TestFDB_BuriedAliasShadowingIsRejectedUpstream(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/shadowreject")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /shadowreject")
+	setup := openTestDB(t, "/FRL/shadowreject")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/shadowreject")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE shadowreject "+
 			"CREATE TABLE t (id BIGINT, z BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE a (k BIGINT, id BIGINT, PRIMARY KEY (k)) "+
 			"CREATE TABLE b (k BIGINT, z BIGINT, PRIMARY KEY (k))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /shadowreject/s WITH TEMPLATE shadowreject")
-	dsn := fmt.Sprintf("fdbsql:///SHADOWREJECT?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/shadowreject/s WITH TEMPLATE shadowreject")
+	dsn := fmt.Sprintf("fdbsql:///FRL/SHADOWREJECT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

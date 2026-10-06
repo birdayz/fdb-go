@@ -30,14 +30,14 @@ func TestFDB_AggregateOverProjectingDerivedSource(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggproj_ord")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggproj_ord")
+	setup := openTestDB(t, "/FRL/testdb_aggproj_ord")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggproj_ord")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggproj_ord "+
 			"CREATE TABLE t1 (id BIGINT, y BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggproj_ord/s WITH TEMPLATE aggproj_ord")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGPROJ_ORD?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggproj_ord/s WITH TEMPLATE aggproj_ord")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGPROJ_ORD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

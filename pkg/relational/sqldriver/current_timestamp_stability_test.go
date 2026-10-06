@@ -211,18 +211,18 @@ func TestCurrentTimestampSeedRetriesExpiredTransaction(t *testing.T) {
 	backend.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	key := "sim://" + t.Name()
 	t.Cleanup(sqldriver.RegisterBackend(key, backend))
-	setup := openSpiked(t, key, "/timestamp_seed", "")
+	setup := openSpiked(t, key, "/FRL/timestamp_seed", "")
 	ctx := context.Background()
 	for _, ddl := range []string{
-		"CREATE DATABASE /timestamp_seed",
+		"CREATE DATABASE /FRL/timestamp_seed",
 		"CREATE SCHEMA TEMPLATE timestamp_seed_tmpl CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))",
-		"CREATE SCHEMA /timestamp_seed/s WITH TEMPLATE timestamp_seed_tmpl",
+		"CREATE SCHEMA /FRL/timestamp_seed/s WITH TEMPLATE timestamp_seed_tmpl",
 	} {
 		if _, err := setup.ExecContext(ctx, ddl); err != nil {
 			t.Fatal(err)
 		}
 	}
-	db := openSpiked(t, key, "/timestamp_seed", "s")
+	db := openSpiked(t, key, "/FRL/timestamp_seed", "s")
 	db.SetMaxOpenConns(1)
 	// Initialize the query connection before arming the DML fault. Catalog
 	// bootstrap has its own idempotent transaction and must not consume it.

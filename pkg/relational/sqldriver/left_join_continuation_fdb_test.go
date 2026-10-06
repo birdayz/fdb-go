@@ -85,7 +85,7 @@ const leftJoinNullSentinel int64 = -1
 func leftJoinContDB(t *testing.T, tag string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/leftjoin_cont_" + tag
+	dbPath := "/FRL/leftjoin_cont_" + tag
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

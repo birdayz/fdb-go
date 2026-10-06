@@ -312,7 +312,7 @@ func (r *goSQLRunner) withEphemeralSchema(ctx context.Context, schemaTemplate st
 	templateName := "PLAN_DIFF_T_" + suffix
 	// Go embedded engine requires a single-segment database path
 	// (`/name`); fdb-relational's parser rejects multi-segment forms.
-	dbPath := "/PLAN_DIFF_" + suffix
+	dbPath := "/FRL/PLAN_DIFF_" + suffix
 	schemaName := "S_" + suffix
 
 	// Use the __SYS database for DDL — same as Java's

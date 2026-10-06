@@ -5044,7 +5044,7 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/ajt_dml_nds"
+	dbPath := "/FRL/ajt_dml_nds"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -5324,7 +5324,7 @@ func TestFDB_ArrayUnnestDMLDuplicateAlias(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/ajt_dml_dupalias"
+	dbPath := "/FRL/ajt_dml_dupalias"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

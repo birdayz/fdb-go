@@ -96,15 +96,15 @@ func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_gpa")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_gpa")
+	setup := openTestDB(t, "/FRL/testdb_gpa")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gpa")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gpa_tmpl "+
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, bv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, b_id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gpa/s WITH TEMPLATE gpa_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GPA?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gpa/s WITH TEMPLATE gpa_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GPA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -217,16 +217,16 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_gpb")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_gpb")
+	setup := openTestDB(t, "/FRL/testdb_gpb")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gpb")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gpb_tmpl "+
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, bv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, cv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, c_id BIGINT, dw BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gpb/s WITH TEMPLATE gpb_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GPB?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gpb/s WITH TEMPLATE gpb_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GPB?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -328,14 +328,14 @@ func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_gbhj")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_gbhj")
+	setup := openTestDB(t, "/FRL/testdb_gbhj")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gbhj")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gbhj_tmpl "+
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, cw BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gbhj/s WITH TEMPLATE gbhj_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GBHJ?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gbhj/s WITH TEMPLATE gbhj_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GBHJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -435,14 +435,14 @@ func TestFDB_DupNameStarOverOrdinalJoin(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dupstar")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dupstar")
+	setup := openTestDB(t, "/FRL/testdb_dupstar")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dupstar")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dupstar_tmpl "+
 			"CREATE TABLE pdup (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE qdup (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dupstar/s WITH TEMPLATE dupstar_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUPSTAR?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dupstar/s WITH TEMPLATE dupstar_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUPSTAR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -512,15 +512,15 @@ func TestFDB_CoveringIndexLegOverOrdinalJoin(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_covleg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_covleg")
+	setup := openTestDB(t, "/FRL/testdb_covleg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_covleg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE covleg_tmpl "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_covleg/s WITH TEMPLATE covleg_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_COVLEG?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_covleg/s WITH TEMPLATE covleg_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COVLEG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -607,15 +607,15 @@ func TestFDB_PureCrossProduct(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_cross")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cross")
+	setup := openTestDB(t, "/FRL/testdb_cross")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cross")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE cross_tmpl "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cross/s WITH TEMPLATE cross_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CROSS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cross/s WITH TEMPLATE cross_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CROSS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -665,15 +665,15 @@ func TestFDB_FullJoinOverBuriedRef(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_fullburied")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_fullburied")
+	setup := openTestDB(t, "/FRL/testdb_fullburied")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fullburied")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE fullburied_tmpl "+
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fullburied/s WITH TEMPLATE fullburied_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FULLBURIED?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fullburied/s WITH TEMPLATE fullburied_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FULLBURIED?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -712,16 +712,16 @@ func TestFDB_SecondaryIndexThroughJoinMerge(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_idxmerge")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_idxmerge")
+	setup := openTestDB(t, "/FRL/testdb_idxmerge")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idxmerge")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE idxmerge_tmpl "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, y BIGINT, z BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, b_z BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_b_z ON c (b_z)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_idxmerge/s WITH TEMPLATE idxmerge_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IDXMERGE?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idxmerge/s WITH TEMPLATE idxmerge_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXMERGE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -780,8 +780,8 @@ func TestFDB_TopLevelLeftJoinOrdinalizes(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_w4left")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_w4left")
+	setup := openTestDB(t, "/FRL/testdb_w4left")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_w4left")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE w4left_tmpl "+
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
@@ -791,8 +791,8 @@ func TestFDB_TopLevelLeftJoinOrdinalizes(t *testing.T) {
 			// NLJ, so the ordinalized dissolved shape is the WINNER and is
 			// actually executed (not just a memo alternative).
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_w4left/s WITH TEMPLATE w4left_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_W4LEFT?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_w4left/s WITH TEMPLATE w4left_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_W4LEFT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

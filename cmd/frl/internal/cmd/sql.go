@@ -49,8 +49,8 @@ import (
 // invocation and the runner over it, from the flags as the user spelled them.
 //
 // The database path and the schema are SQL identifiers, read as DDL reads
-// them: unquoted folds to upper case, a path whole (CREATE DATABASE /myapp
-// creates /MYAPP, CREATE SCHEMA /myapp/main creates MAIN). The driver takes
+// them: unquoted folds to upper case, a path whole (CREATE DATABASE /FRL/myapp
+// creates /FRL/MYAPP, CREATE SCHEMA /FRL/myapp/main creates MAIN). The driver takes
 // the DSN's names as given, and so do the catalog lookups behind the
 // meta-commands (`\d`), so both are fed the one folded pair; deriving them
 // separately is how `\d` came to look up a path the connection never used.
@@ -103,10 +103,10 @@ func newSQLCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "sql",
 		Short: "Interactive SQL REPL against the relational layer (psql-style)",
-		Example: `  frl sql --database /myapp
-  frl sql --database /myapp --schema main
-  frl sql --database /myapp -c "SELECT count(*) FROM orders"
-  frl sql --database /myapp -f migrations/001.sql`,
+		Example: `  frl sql --database /FRL/myapp
+  frl sql --database /FRL/myapp --schema main
+  frl sql --database /FRL/myapp -c "SELECT count(*) FROM orders"
+  frl sql --database /FRL/myapp -f migrations/001.sql`,
 		Long: "Opens a psql-style REPL via the fdbsql driver " +
 			"(`database/sql`). Multi-line statements end at `;`; single-" +
 			"line `\\`-prefixed meta-commands run immediately.\n\n" +
@@ -127,7 +127,7 @@ func newSQLCmd() *cobra.Command {
 			"Requires the cluster to have a relational catalog " +
 			"(`__SYS/CATALOG` populated) — plain-core clusters return " +
 			"a clear error on the first query. --database is the " +
-			"database URI (e.g. /myapp); --schema sets the default " +
+			"database URI (e.g. /FRL/myapp); --schema sets the default " +
 			"search scope so queries don't need schema-qualified names.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -147,7 +147,7 @@ func newSQLCmd() *cobra.Command {
 				// Starts with a sentence word: fang capitalizes the first
 				// rune of error banners, which would garble a leading flag
 				// name into "--Database".
-				return fmt.Errorf("missing required flag --database (e.g. --database /myapp)")
+				return fmt.Errorf("missing required flag --database (e.g. --database /FRL/myapp)")
 			}
 			runner, db, err := openSQLRunner(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				cf, databaseURI, initSchema, outputFmt)
@@ -167,7 +167,7 @@ func newSQLCmd() *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&contextName, "context", "", "context name to use")
-	c.Flags().StringVar(&databaseURI, "database", "", "database URI (required, e.g. /myapp)")
+	c.Flags().StringVar(&databaseURI, "database", "", "database URI (required, e.g. /FRL/myapp)")
 	c.Flags().StringVar(&initSchema, "schema", "", "default schema for un-qualified references")
 	c.Flags().StringVarP(&cmdline, "command", "c", "", "run a single SQL statement non-interactively and exit")
 	c.Flags().StringVarP(&filePath, "file", "f", "", "execute SQL statements from a file and exit")

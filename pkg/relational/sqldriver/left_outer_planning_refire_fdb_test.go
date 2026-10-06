@@ -44,7 +44,7 @@ func TestFDB_EnclosedLeftOuter_PlanningRefire(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_elopr"
+	dbPath := "/FRL/testdb_elopr"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,

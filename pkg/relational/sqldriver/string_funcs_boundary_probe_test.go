@@ -20,12 +20,12 @@ func TestFDB_StringFuncsBoundaryProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_sfb")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sfb")
+	setup := openTestDB(t, "/FRL/testdb_sfb")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sfb")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sfb CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sfb/s WITH TEMPLATE sfb")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SFB?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sfb/s WITH TEMPLATE sfb")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SFB?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

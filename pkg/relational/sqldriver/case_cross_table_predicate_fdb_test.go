@@ -23,14 +23,14 @@ func TestFDB_CaseCrossTablePredicate(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_case_xtab")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_case_xtab")
+	setup := openTestDB(t, "/FRL/testdb_case_xtab")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_case_xtab")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE case_xtab "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, y BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_case_xtab/s WITH TEMPLATE case_xtab")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CASE_XTAB?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_case_xtab/s WITH TEMPLATE case_xtab")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_XTAB?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

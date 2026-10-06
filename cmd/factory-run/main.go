@@ -145,7 +145,7 @@ func run(cfg config) int {
 	tmp.Close()
 	clusterFile := tmp.Name()
 
-	const dbPath = "/factoryrun"
+	const dbPath = "/FRL/factoryrun"
 	setupDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFile))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: open: %v\n", err)

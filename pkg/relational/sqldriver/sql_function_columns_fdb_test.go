@@ -17,16 +17,16 @@ import (
 func TestFDB_QuantifierColumnNames(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_qcols")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_qcols")
+	setup := openTestDB(t, "/FRL/testdb_qcols")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_qcols")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE qcols_tpl "+
 		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE FUNCTION fd(IN x BIGINT) AS SELECT a.id, b.id FROM t a, t b WHERE a.id = x AND b.id = x "+
 		"CREATE FUNCTION fs(IN x BIGINT) AS SELECT * FROM t a, t b WHERE a.id = x AND b.id = x "+
 		"CREATE FUNCTION fe(IN x BIGINT) AS SELECT id + 1, id FROM t WHERE id = x "+
 		`CREATE FUNCTION "नमस्त"(IN x BIGINT) AS SELECT id FROM t WHERE id = x`)
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_qcols/s WITH TEMPLATE qcols_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_QCOLS?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_qcols/s WITH TEMPLATE qcols_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_QCOLS?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

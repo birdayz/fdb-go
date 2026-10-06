@@ -53,7 +53,7 @@ func TestFDB_UnionOrderByNamesAColumnNotAPosition(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_union_ob_names"
+	dbPath := "/FRL/testdb_union_ob_names"
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uobn_tmpl "+

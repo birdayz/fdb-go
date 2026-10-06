@@ -21,13 +21,13 @@ func TestFDB_ScalarSubqOverflowProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_sso")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sso")
+	setup := openTestDB(t, "/FRL/testdb_sso")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sso")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sso "+
 		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE o (id BIGINT, w BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sso/s WITH TEMPLATE sso")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSO?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sso/s WITH TEMPLATE sso")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSO?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

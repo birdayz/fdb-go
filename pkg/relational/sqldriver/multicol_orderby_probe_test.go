@@ -19,14 +19,14 @@ func TestFDB_MultiColOrderByProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_mcorder")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mcorder")
+	setup := openTestDB(t, "/FRL/testdb_mcorder")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mcorder")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE mcorder "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_ab ON t (a, b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mcorder/s WITH TEMPLATE mcorder")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MCORDER?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mcorder/s WITH TEMPLATE mcorder")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MCORDER?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -103,14 +103,14 @@ func TestFDB_OrderByNullPlacement(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nullorder")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nullorder")
+	setup := openTestDB(t, "/FRL/testdb_nullorder")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullorder")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nullorder "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nullorder/s WITH TEMPLATE nullorder")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NULLORDER?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullorder/s WITH TEMPLATE nullorder")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLORDER?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

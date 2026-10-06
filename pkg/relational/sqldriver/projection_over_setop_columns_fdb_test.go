@@ -32,7 +32,7 @@ func TestFDB_ProjectionOverSetOp_ColumnDerivation(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/testdb_projsetop"
+	const dbPath = "/FRL/testdb_projsetop"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,

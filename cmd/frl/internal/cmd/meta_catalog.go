@@ -109,7 +109,7 @@ func newMetaCatalogSchemasCmd() *cobra.Command {
 		Use:   "schemas",
 		Short: "List schemas in the relational catalog",
 		Example: `  frl meta catalog schemas
-  frl meta catalog schemas --database /myapp
+  frl meta catalog schemas --database /FRL/myapp
   frl meta catalog schemas -o json | jq '.[] | select(.template == "orders_v2")'`,
 		Long: "Scans the SCHEMAS table in `__SYS/CATALOG`. Each row carries " +
 			"the owning database, schema name, and the template (name + " +

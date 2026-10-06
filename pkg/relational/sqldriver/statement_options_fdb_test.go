@@ -205,7 +205,7 @@ func TestFDB_StatementOptions_SnapshotAdmitsOnlyReads(t *testing.T) {
 		{"EXPLAIN INSERT INTO Item VALUES (500, 'x', 1)", true},
 		{"SHOW DATABASES", true},
 		{"SHOW SCHEMA TEMPLATES", true},
-		{"CREATE DATABASE /SNAPSHOT_REFUSED_DB", false},
+		{"CREATE DATABASE /FRL/SNAPSHOT_REFUSED_DB", false},
 		{"DROP DATABASE IF EXISTS /SNAPSHOT_ABSENT_DB", false},
 	} {
 		q := c.sql

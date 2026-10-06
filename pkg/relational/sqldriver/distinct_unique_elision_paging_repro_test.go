@@ -46,8 +46,8 @@ func TestFDB_DistinctUniqueElisionPagingRepro(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_duepr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_duepr")
+	setup := openTestDB(t, "/FRL/testdb_duepr")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duepr")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE duepr "+
 			// Two structurally identical tables so the elided run and the control
@@ -58,9 +58,9 @@ func TestFDB_DistinctUniqueElisionPagingRepro(t *testing.T) {
 			"CREATE UNIQUE INDEX by_email2 ON t2 (email) "+
 			"CREATE TABLE t3 (id BIGINT, email STRING, email_plain STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email3 ON t3 (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duepr/s WITH TEMPLATE duepr")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duepr/s WITH TEMPLATE duepr")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUEPR?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUEPR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

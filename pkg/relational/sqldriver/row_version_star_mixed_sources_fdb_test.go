@@ -37,16 +37,16 @@ func TestFDB_RowVersionBareStar_MixedSourcesAndQuotedAliases(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_rvstar")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rvstar")
+	setup := openTestDB(t, "/FRL/testdb_rvstar")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvstar")
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE rvstar_tpl
 		CREATE TABLE t3(id BIGINT, a BIGINT, PRIMARY KEY(id))
 		CREATE TABLE t4(id BIGINT, b BIGINT, PRIMARY KEY(id))
 		CREATE TABLE t5(id BIGINT, arr BIGINT ARRAY, PRIMARY KEY(id))
 		WITH OPTIONS(store_row_versions=true)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rvstar/s1 WITH TEMPLATE rvstar_tpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvstar/s1 WITH TEMPLATE rvstar_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_RVSTAR?cluster_file=%s&schema=S1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RVSTAR?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

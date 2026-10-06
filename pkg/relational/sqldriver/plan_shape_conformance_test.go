@@ -46,7 +46,7 @@ func setupPlanShapeDB(t *testing.T, suffix, templateDDL string) *sql.DB {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/planshape_%s_%s", suffix, t.Name())
+	dbPath := fmt.Sprintf("/FRL/planshape_%s_%s", suffix, t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -714,7 +714,7 @@ func TestFDB_PlanShapeExistsFlatMap(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/ps_exists_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/ps_exists_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	_, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
 	if err != nil {

@@ -20,16 +20,16 @@ func TestFDB_DropSchemaIfExistsConformance(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := openTestDB(t, "/testdb_dsiec")
-	mwjoMustExec(t, db, ctx, "CREATE DATABASE /testdb_dsiec")
+	db := openTestDB(t, "/FRL/testdb_dsiec")
+	mwjoMustExec(t, db, ctx, "CREATE DATABASE /FRL/testdb_dsiec")
 	mwjoMustExec(t, db, ctx, "CREATE SCHEMA TEMPLATE dsiec CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, db, ctx, "CREATE SCHEMA /testdb_dsiec/real WITH TEMPLATE dsiec")
+	mwjoMustExec(t, db, ctx, "CREATE SCHEMA /FRL/testdb_dsiec/real WITH TEMPLATE dsiec")
 
 	errs := func(q string) error { _, err := db.ExecContext(ctx, q); return err }
 
 	t.Run("drop_schema_IF_EXISTS_nonexistent_still_errors_matches_java", func(t *testing.T) {
 		// IF EXISTS is IGNORED for DROP SCHEMA (Java parity) → errors on non-existent.
-		err := errs("DROP SCHEMA IF EXISTS /testdb_dsiec/ghost")
+		err := errs("DROP SCHEMA IF EXISTS /FRL/testdb_dsiec/ghost")
 		if err == nil || !strings.Contains(err.Error(), "does not exist") {
 			t.Errorf("DROP SCHEMA IF EXISTS <nonexistent> = %v; want a 'does not exist' error "+
 				"(Java ignores IF EXISTS here — DdlVisitor:472). If this now no-ops, Go has "+
@@ -37,7 +37,7 @@ func TestFDB_DropSchemaIfExistsConformance(t *testing.T) {
 		}
 	})
 	t.Run("drop_schema_bare_nonexistent_errors", func(t *testing.T) {
-		if err := errs("DROP SCHEMA /testdb_dsiec/ghost2"); err == nil {
+		if err := errs("DROP SCHEMA /FRL/testdb_dsiec/ghost2"); err == nil {
 			t.Errorf("DROP SCHEMA <nonexistent> should error")
 		}
 	})
@@ -54,7 +54,7 @@ func TestFDB_DropSchemaIfExistsConformance(t *testing.T) {
 		}
 	})
 	t.Run("drop_schema_IF_EXISTS_existing_succeeds", func(t *testing.T) {
-		if err := errs("DROP SCHEMA IF EXISTS /testdb_dsiec/real"); err != nil {
+		if err := errs("DROP SCHEMA IF EXISTS /FRL/testdb_dsiec/real"); err != nil {
 			t.Errorf("DROP SCHEMA IF EXISTS <existing> = %v, want success", err)
 		}
 	})

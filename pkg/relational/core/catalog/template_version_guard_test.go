@@ -55,14 +55,14 @@ func TestInMemory_VersionGuard_VersionZeroBindingBlocksFreshTemplate(t *testing.
 	if err := tc.CreateTemplate(tx, buildTemplateAtVersion(t, "z", 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "z", 0).GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "z", 0).GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	if err := tc.DeleteTemplate(tx, "z", true); err != nil {
 		t.Fatal(err)
 	}
 	wantAPIError(t, tc.CreateTemplate(tx, buildTemplateAtVersion(t, "z", 1)), api.ErrCodeInvalidSchemaTemplate,
-		"schema template z version 1 cannot be created: schemas are still bound to its dropped version 0 (/db/s)")
+		"schema template z version 1 cannot be created: schemas are still bound to its dropped version 0 (/FRL/db/s)")
 }
 
 func TestInMemory_VersionGuard_DanglingBindingAboveLatest(t *testing.T) {
@@ -75,10 +75,10 @@ func TestInMemory_VersionGuard_DanglingBindingAboveLatest(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "d", 1).GenerateSchema("/db", "low"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "d", 1).GenerateSchema("/FRL/db", "low"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "d", 3).GenerateSchema("/db", "high"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "d", 3).GenerateSchema("/FRL/db", "high"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	// The state a pre-guard DeleteTemplateVersion left: (d, 3) gone, bound.
@@ -86,18 +86,18 @@ func TestInMemory_VersionGuard_DanglingBindingAboveLatest(t *testing.T) {
 
 	for _, v := range []int{2, 4} {
 		wantAPIError(t, tc.CreateTemplate(tx, buildTemplateAtVersion(t, "d", v)), api.ErrCodeInvalidSchemaTemplate,
-			"schema template d version "+strconv.Itoa(v)+" cannot be created: schemas are still bound to its dropped version 3 (/db/high)")
+			"schema template d version "+strconv.Itoa(v)+" cannot be created: schemas are still bound to its dropped version 3 (/FRL/db/high)")
 	}
 	gone := "SchemaTemplate=d, version=3 is not in catalog"
-	_, err := c.LoadSchema(tx, "/db", "high")
+	_, err := c.LoadSchema(tx, "/FRL/db", "high")
 	wantAPIError(t, err, api.ErrCodeUnknownSchemaTemplate, gone)
-	wantAPIError(t, c.RepairSchema(tx, "/db", "high"), api.ErrCodeUnknownSchemaTemplate, gone)
-	wantAPIError(t, c.SaveSchema(tx, buildTemplateAtVersion(t, "d", 1).GenerateSchema("/db", "high"), false, api.SchemaExistsError),
+	wantAPIError(t, c.RepairSchema(tx, "/FRL/db", "high"), api.ErrCodeUnknownSchemaTemplate, gone)
+	wantAPIError(t, c.SaveSchema(tx, buildTemplateAtVersion(t, "d", 1).GenerateSchema("/FRL/db", "high"), false, api.SchemaExistsError),
 		api.ErrCodeUnknownSchemaTemplate, gone)
-	if s, err := c.LoadSchema(tx, "/db", "low"); err != nil || s.SchemaTemplate().Version() != 1 {
+	if s, err := c.LoadSchema(tx, "/FRL/db", "low"); err != nil || s.SchemaTemplate().Version() != 1 {
 		t.Fatalf("schema low: %v, %v", s, err)
 	}
-	if err := c.DeleteSchema(tx, "/db", "high"); err != nil {
+	if err := c.DeleteSchema(tx, "/FRL/db", "high"); err != nil {
 		t.Fatal(err)
 	}
 	if err := tc.CreateTemplate(tx, buildTemplateAtVersion(t, "d", 2)); err != nil {
@@ -115,18 +115,18 @@ func TestInMemory_VersionGuard_DeleteBoundVersionRefused(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "del", 2).GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "del", 2).GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	wantAPIError(t, tc.DeleteTemplateVersion(tx, "del", 2, true), api.ErrCodeInvalidSchemaTemplate,
-		"schema template del version 2 cannot be deleted: schemas are still bound to it (/db/s)")
+		"schema template del version 2 cannot be deleted: schemas are still bound to it (/FRL/db/s)")
 	if ok, _ := tc.DoesSchemaTemplateExistAtVersion(tx, "del", 2); !ok {
 		t.Fatal("refused delete removed version 2")
 	}
 	if err := tc.DeleteTemplateVersion(tx, "del", 1, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.DeleteSchema(tx, "/db", "s"); err != nil {
+	if err := c.DeleteSchema(tx, "/FRL/db", "s"); err != nil {
 		t.Fatal(err)
 	}
 	if err := tc.DeleteTemplateVersion(tx, "del", 2, true); err != nil {
@@ -169,7 +169,7 @@ func TestInMemory_VersionGuard_ConcurrentBindAndDelete(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := c.CreateDatabase(tx, "/db"); err != nil {
+	if err := c.CreateDatabase(tx, "/FRL/db"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -179,7 +179,7 @@ func TestInMemory_VersionGuard_ConcurrentBindAndDelete(t *testing.T) {
 		defer c.mu.Unlock()
 		c.templates.mu.Lock()
 		defer c.templates.mu.Unlock()
-		for name, s := range c.schemas["/db"] {
+		for name, s := range c.schemas["/FRL/db"] {
 			v := s.SchemaTemplate().Version()
 			if _, ok := c.templates.templates["r"][v]; !ok {
 				return name + " is bound to version " + strconv.Itoa(v) + ", which the catalog does not hold"
@@ -202,15 +202,15 @@ func TestInMemory_VersionGuard_ConcurrentBindAndDelete(t *testing.T) {
 				v := 1 + (i+w)%3
 				switch i % 4 {
 				case 0:
-					_ = c.SaveSchema(tx, tmpls[v].GenerateSchema("/db", schema), false, api.SchemaExistsUpgrade)
+					_ = c.SaveSchema(tx, tmpls[v].GenerateSchema("/FRL/db", schema), false, api.SchemaExistsUpgrade)
 				case 1:
 					_ = tc.DeleteTemplateVersion(tx, "r", v, false)
 				case 2:
-					_ = c.RepairSchema(tx, "/db", schema)
+					_ = c.RepairSchema(tx, "/FRL/db", schema)
 				case 3:
 					_ = tc.CreateTemplate(tx, tmpls[v])
 					if i%8 == 3 {
-						_ = c.DeleteSchema(tx, "/db", schema)
+						_ = c.DeleteSchema(tx, "/FRL/db", schema)
 					}
 				}
 				if msg := dangling(); msg != "" {
@@ -267,7 +267,7 @@ func TestInMemory_VersionGuard_BindAndDeleteSerialize(t *testing.T) {
 			if repair {
 				// The schema binds v1; the repair rebinds it to v2, the version
 				// the delete then targets.
-				if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+				if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 					t.Fatal(err)
 				}
 				if err := tc.CreateTemplate(tx, buildTemplateAtVersion(t, "h", 2)); err != nil {
@@ -283,9 +283,9 @@ func TestInMemory_VersionGuard_BindAndDeleteSerialize(t *testing.T) {
 			bindErr := make(chan error, 1)
 			go func() {
 				if repair {
-					bindErr <- c.RepairSchema(tx, "/db", "s")
+					bindErr <- c.RepairSchema(tx, "/FRL/db", "s")
 				} else {
-					bindErr <- c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/db", "s"), true, api.SchemaExistsError)
+					bindErr <- c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError)
 				}
 			}()
 			<-checked
@@ -302,8 +302,8 @@ func TestInMemory_VersionGuard_BindAndDeleteSerialize(t *testing.T) {
 			}
 			c.beforeBind = nil
 			wantAPIError(t, <-deleteErr, api.ErrCodeInvalidSchemaTemplate,
-				"schema template h version "+strconv.Itoa(bound)+" cannot be deleted: schemas are still bound to it (/db/s)")
-			s, err := c.LoadSchema(tx, "/db", "s")
+				"schema template h version "+strconv.Itoa(bound)+" cannot be deleted: schemas are still bound to it (/FRL/db/s)")
+			s, err := c.LoadSchema(tx, "/FRL/db", "s")
 			if err != nil {
 				t.Fatalf("the bound schema does not load: %v", err)
 			}
@@ -337,7 +337,7 @@ func TestInMemory_VersionGuard_FreshCreateAfterDropSerializesWithBind(t *testing
 	}
 	bindErr := make(chan error, 1)
 	go func() {
-		bindErr <- c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/db", "s"), true, api.SchemaExistsError)
+		bindErr <- c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError)
 	}()
 	<-checked
 	if err := tc.DeleteTemplate(tx, "h", true); err != nil {
@@ -356,7 +356,7 @@ func TestInMemory_VersionGuard_FreshCreateAfterDropSerializesWithBind(t *testing
 	}
 	c.beforeBind = nil
 	wantAPIError(t, <-createErr, api.ErrCodeInvalidSchemaTemplate,
-		"schema template h version 1 cannot be created: schemas are still bound to its dropped version 1 (/db/s)")
+		"schema template h version 1 cannot be created: schemas are still bound to its dropped version 1 (/FRL/db/s)")
 	if ok, err := tc.DoesSchemaTemplateExist(tx, "h"); err != nil || ok {
 		t.Fatalf("h exists after the refused create: %t %v", ok, err)
 	}

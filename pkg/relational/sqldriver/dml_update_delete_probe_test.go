@@ -20,14 +20,14 @@ func TestFDB_DMLUpdateDeleteProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dml")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dml")
+	setup := openTestDB(t, "/FRL/testdb_dml")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dml")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dml "+
 			"CREATE TABLE t (id BIGINT, grp BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_v ON t (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dml/s WITH TEMPLATE dml")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DML?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dml/s WITH TEMPLATE dml")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DML?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

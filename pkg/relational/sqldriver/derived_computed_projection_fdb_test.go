@@ -21,7 +21,7 @@ func TestFDB_DerivedComputedProjectionColumnNames(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/derivedcomputed"
+	dbPath := "/FRL/derivedcomputed"
 	setup := openTestDB(t, dbPath)
 	must := func(q string) {
 		if _, err := setup.ExecContext(ctx, q); err != nil {

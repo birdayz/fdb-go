@@ -19,16 +19,16 @@ func TestFDB_CaseContextsProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_case_ctx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_case_ctx")
+	setup := openTestDB(t, "/FRL/testdb_case_ctx")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_case_ctx")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE case_ctx "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, w BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_case_ctx/s WITH TEMPLATE case_ctx")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CASE_CTX?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_case_ctx/s WITH TEMPLATE case_ctx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_CTX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

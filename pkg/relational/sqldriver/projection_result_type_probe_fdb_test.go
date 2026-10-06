@@ -27,15 +27,15 @@ func TestFDB_ProjectionResultTypeProbe(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_projrestype")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_projrestype")
+	setup := openTestDB(t, "/FRL/testdb_projrestype")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projrestype")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projrestype_tmpl "+
 		"CREATE TABLE t1(id BIGINT, v BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_projrestype/s WITH TEMPLATE projrestype_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projrestype/s WITH TEMPLATE projrestype_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PROJRESTYPE?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJRESTYPE?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

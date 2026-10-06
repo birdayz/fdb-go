@@ -42,7 +42,7 @@ import (
 // an open connection to it.
 func aggWidthDB(t *testing.T, ctx context.Context, tag, tables string) *sql.DB {
 	t.Helper()
-	dbPath := fmt.Sprintf("/aggwidth_%s", tag)
+	dbPath := fmt.Sprintf("/FRL/aggwidth_%s", tag)
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

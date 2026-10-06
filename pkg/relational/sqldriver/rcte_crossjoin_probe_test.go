@@ -20,7 +20,7 @@ func TestFDB_RecursiveCTECrossJoin(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := "/rcte_crossjoin"
+	dbPath := "/FRL/rcte_crossjoin"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

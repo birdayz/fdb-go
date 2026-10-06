@@ -19,12 +19,12 @@ func TestFDB_StringLenPadProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_slpp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_slpp")
+	setup := openTestDB(t, "/FRL/testdb_slpp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_slpp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE slpp CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_slpp/s WITH TEMPLATE slpp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SLPP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_slpp/s WITH TEMPLATE slpp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SLPP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

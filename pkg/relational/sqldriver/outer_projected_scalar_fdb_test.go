@@ -25,13 +25,13 @@ func TestFDB_OuterProjectedScalarSubquery(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_opss")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_opss")
+	setup := openTestDB(t, "/FRL/testdb_opss")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_opss")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE opss CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 			" CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_opss/s WITH TEMPLATE opss")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OPSS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_opss/s WITH TEMPLATE opss")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OPSS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

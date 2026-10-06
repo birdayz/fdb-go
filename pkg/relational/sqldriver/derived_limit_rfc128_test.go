@@ -25,7 +25,7 @@ import (
 func rfc128DB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/rfc128_" + tag
+	dbPath := "/FRL/rfc128_" + tag
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

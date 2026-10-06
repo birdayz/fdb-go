@@ -20,12 +20,12 @@ func TestFDB_GroupByValidationProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_gv")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_gv")
+	setup := openTestDB(t, "/FRL/testdb_gv")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gv")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gv CREATE TABLE t (id BIGINT, a BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gv/s WITH TEMPLATE gv")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GV?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gv/s WITH TEMPLATE gv")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GV?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

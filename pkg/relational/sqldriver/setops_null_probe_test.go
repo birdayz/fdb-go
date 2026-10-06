@@ -20,14 +20,14 @@ func TestFDB_SetOpsNullProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_setopsnull")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_setopsnull")
+	setup := openTestDB(t, "/FRL/testdb_setopsnull")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_setopsnull")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE setopsnull "+
 			"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_setopsnull/s WITH TEMPLATE setopsnull")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SETOPSNULL?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_setopsnull/s WITH TEMPLATE setopsnull")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SETOPSNULL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

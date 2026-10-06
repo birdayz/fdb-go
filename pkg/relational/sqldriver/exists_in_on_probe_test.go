@@ -22,8 +22,8 @@ func TestFDB_ExistsInOn_Probe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_exists_on_probe")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_exists_on_probe")
+	setup := openTestDB(t, "/FRL/testdb_exists_on_probe")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_on_probe")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exists_on_probe "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
@@ -32,8 +32,8 @@ func TestFDB_ExistsInOn_Probe(t *testing.T) {
 			"CREATE TABLE e (id BIGINT, c_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id) "+
 			"CREATE INDEX e_c_id ON e (c_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exists_on_probe/s WITH TEMPLATE exists_on_probe")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXISTS_ON_PROBE?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_on_probe/s WITH TEMPLATE exists_on_probe")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ON_PROBE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -182,8 +182,8 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_exists_on_where")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_exists_on_where")
+	setup := openTestDB(t, "/FRL/testdb_exists_on_where")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_on_where")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exists_on_where "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
@@ -196,8 +196,8 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 			"CREATE INDEX e_c_id ON e (c_id) "+
 			"CREATE INDEX g_c_id ON g (c_id) "+
 			"CREATE INDEX h_g_id ON h (g_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exists_on_where/s WITH TEMPLATE exists_on_where")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXISTS_ON_WHERE?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_on_where/s WITH TEMPLATE exists_on_where")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ON_WHERE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -325,8 +325,8 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_exists_on_outer")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_exists_on_outer")
+	setup := openTestDB(t, "/FRL/testdb_exists_on_outer")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_on_outer")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exists_on_outer "+
 			"CREATE TYPE AS STRUCT Sub (k BIGINT, subs BIGINT ARRAY) "+
@@ -336,8 +336,8 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 			"CREATE TABLE e (id BIGINT, c_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id) "+
 			"CREATE INDEX e_c_id ON e (c_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exists_on_outer/s WITH TEMPLATE exists_on_outer")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXISTS_ON_OUTER?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_on_outer/s WITH TEMPLATE exists_on_outer")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ON_OUTER?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

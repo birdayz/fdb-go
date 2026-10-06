@@ -36,13 +36,13 @@ func TestFDB_TypedNumericLiterals(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_typedlit")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_typedlit")
+	setup := openTestDB(t, "/FRL/testdb_typedlit")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_typedlit")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE typedlit "+
 			"CREATE TABLE b (b1 INTEGER, b2 STRING, b3 BIGINT, PRIMARY KEY (b1))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_typedlit/s WITH TEMPLATE typedlit")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_TYPEDLIT?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_typedlit/s WITH TEMPLATE typedlit")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TYPEDLIT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

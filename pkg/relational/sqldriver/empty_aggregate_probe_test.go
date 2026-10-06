@@ -17,12 +17,12 @@ func TestFDB_EmptyAggregateProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_emptyagg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_emptyagg")
+	setup := openTestDB(t, "/FRL/testdb_emptyagg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_emptyagg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE emptyagg CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_emptyagg/s WITH TEMPLATE emptyagg")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_EMPTYAGG?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_emptyagg/s WITH TEMPLATE emptyagg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EMPTYAGG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

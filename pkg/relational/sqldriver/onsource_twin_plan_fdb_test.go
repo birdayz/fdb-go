@@ -20,19 +20,19 @@ func TestFDB_OnSourceIndexPlans_TwinOfAsSelect(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ostw")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ostw")
+	setup := openTestDB(t, "/FRL/testdb_ostw")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ostw")
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE ostw_on
 		CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))
 		CREATE INDEX x ON T(a) INCLUDE (b, c)`)
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE ostw_as
 		CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))
 		CREATE INDEX x AS SELECT a, b, c FROM T ORDER BY a`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ostw/s_on WITH TEMPLATE ostw_on")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ostw/s_as WITH TEMPLATE ostw_as")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ostw/s_on WITH TEMPLATE ostw_on")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ostw/s_as WITH TEMPLATE ostw_as")
 
 	open := func(schema string) *sql.DB {
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_OSTW?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_OSTW?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
 		if err != nil {
 			t.Fatalf("sql.Open(%s): %v", schema, err)
 		}

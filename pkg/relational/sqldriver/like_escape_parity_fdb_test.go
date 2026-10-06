@@ -73,16 +73,16 @@ func TestFDB_LikeJavaSemantics(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_like_java")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_like_java")
+	setup := openTestDB(t, "/FRL/testdb_like_java")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_like_java")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE like_java_tmpl "+
 		"CREATE TYPE AS ENUM color ('RED', 'GREEN') "+
 		"CREATE TABLE T (id BIGINT, s STRING, n BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE U (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE E (id BIGINT, c color, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_like_java/s WITH TEMPLATE like_java_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_like_java/s WITH TEMPLATE like_java_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_LIKE_JAVA?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_LIKE_JAVA?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -180,14 +180,14 @@ func TestFDB_LikeEscape_MapPath(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_like_esc_map")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_like_esc_map")
+	setup := openTestDB(t, "/FRL/testdb_like_esc_map")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_like_esc_map")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE like_esc_map_tmpl "+
 		"CREATE TABLE Z (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE ZQ (id BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_like_esc_map/s WITH TEMPLATE like_esc_map_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_like_esc_map/s WITH TEMPLATE like_esc_map_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_LIKE_ESC_MAP?cluster_file=%s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_LIKE_ESC_MAP?cluster_file=%s", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestFDB_LikeEscape_MapPath(t *testing.T) {
 	// this test's catalog so the row set is deterministic.
 	names := func(pred string) ([]string, error) {
 		rows, err := db.QueryContext(ctx, `SELECT TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES" `+
-			`WHERE TABLE_CATALOG = '/TESTDB_LIKE_ESC_MAP' AND `+pred+` ORDER BY TABLE_NAME`)
+			`WHERE TABLE_CATALOG = '/FRL/TESTDB_LIKE_ESC_MAP' AND `+pred+` ORDER BY TABLE_NAME`)
 		if err != nil {
 			return nil, err
 		}

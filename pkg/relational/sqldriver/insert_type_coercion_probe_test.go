@@ -22,14 +22,14 @@ func TestFDB_InsertTypeCoercionProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_inscoerce")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_inscoerce")
+	setup := openTestDB(t, "/FRL/testdb_inscoerce")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inscoerce")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inscoerce "+
 			"CREATE TABLE t (id BIGINT, d DOUBLE, n BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_d ON t (d) CREATE INDEX t_n ON t (n)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_inscoerce/s WITH TEMPLATE inscoerce")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INSCOERCE?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inscoerce/s WITH TEMPLATE inscoerce")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSCOERCE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

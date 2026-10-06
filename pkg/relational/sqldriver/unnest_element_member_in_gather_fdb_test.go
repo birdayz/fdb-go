@@ -44,7 +44,7 @@ func TestFDB_UnnestElementMemberInGather(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	const dbPath = "/testdb_unnest_elem_gather"
+	const dbPath = "/FRL/testdb_unnest_elem_gather"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

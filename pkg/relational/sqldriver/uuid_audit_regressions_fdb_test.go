@@ -31,15 +31,15 @@ func TestFDB_UUIDMultiAggregateIntersection(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_uuidmiagg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidmiagg")
+	setup := openTestDB(t, "/FRL/testdb_uuidmiagg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidmiagg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidmiagg "+
 			"CREATE TABLE t (id BIGINT, g UUID, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM t GROUP BY g "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(price) FROM t GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidmiagg/s WITH TEMPLATE uuidmiagg")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_UUIDMIAGG?cluster_file=%s&schema=S", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidmiagg/s WITH TEMPLATE uuidmiagg")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDMIAGG?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -69,14 +69,14 @@ func TestFDB_UUIDWritePathUpdateAndInsertSelect(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_uuidwrite")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidwrite")
+	setup := openTestDB(t, "/FRL/testdb_uuidwrite")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidwrite")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidwrite "+
 			"CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, v UUID, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidwrite/s WITH TEMPLATE uuidwrite")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_UUIDWRITE?cluster_file=%s&schema=S", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidwrite/s WITH TEMPLATE uuidwrite")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDWRITE?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -119,12 +119,12 @@ func TestFDB_UUIDScalarFunctionRender(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_uuidscalar")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidscalar")
+	setup := openTestDB(t, "/FRL/testdb_uuidscalar")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidscalar")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidscalar CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidscalar/s WITH TEMPLATE uuidscalar")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_UUIDSCALAR?cluster_file=%s&schema=S", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidscalar/s WITH TEMPLATE uuidscalar")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDSCALAR?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -150,12 +150,12 @@ func TestFDB_UUIDPaginatedSortAndGroupBy(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_uuidpage")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidpage")
+	setup := openTestDB(t, "/FRL/testdb_uuidpage")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidpage")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidpage CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidpage/s WITH TEMPLATE uuidpage")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_UUIDPAGE?cluster_file=%s&schema=S", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidpage/s WITH TEMPLATE uuidpage")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDPAGE?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

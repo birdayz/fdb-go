@@ -39,7 +39,7 @@ import (
 func setupOuterParityDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/testdb_ojp_" + suffix
+	dbPath := "/FRL/testdb_ojp_" + suffix
 	setup := openTestDB(t, dbPath)
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -722,7 +722,7 @@ func TestFDB_OuterParity_InsertSelectFromOuterJoinNotNull(t *testing.T) {
 func setupBoolDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/testdb_bool_" + suffix
+	dbPath := "/FRL/testdb_bool_" + suffix
 	setup := openTestDB(t, dbPath)
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath)
 	g.Expect(err).NotTo(gomega.HaveOccurred())

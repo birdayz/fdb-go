@@ -17,7 +17,7 @@ func TestKeyspaceResolve_PrintsHex(t *testing.T) {
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
-	c.SetArgs([]string{"/myapp/prod/orders"})
+	c.SetArgs([]string{"/FRL/myapp/prod/orders"})
 	if err := c.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestKeyspaceResolve_JSON(t *testing.T) {
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
-	c.SetArgs([]string{"/myapp/prod", "-o", "json"})
+	c.SetArgs([]string{"/FRL/myapp/prod", "-o", "json"})
 	if err := c.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -47,8 +47,8 @@ func TestKeyspaceResolve_JSON(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &obj); err != nil {
 		t.Fatalf("decode: %v\nraw:\n%s", err, out.String())
 	}
-	if obj["path"] != "/myapp/prod" {
-		t.Errorf("path = %v; want /myapp/prod", obj["path"])
+	if obj["path"] != "/FRL/myapp/prod" {
+		t.Errorf("path = %v; want /FRL/myapp/prod", obj["path"])
 	}
 	hex, _ := obj["prefix_hex"].(string)
 	if len(hex) == 0 || !strings.Contains(hex, "6d79617070") {

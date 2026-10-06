@@ -47,7 +47,7 @@ func newIndexStatePlanningFixture(t *testing.T) *indexStatePlanningFixture {
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	dbPath := "/idxstate_" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_"))
+	dbPath := "/FRL/idxstate_" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_"))
 	schemaName := "idxstate_" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_"))
 	db := setupErrorTestDB(t, dbPath, schemaName, indexStatePlanningDDL)
 

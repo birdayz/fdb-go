@@ -25,7 +25,7 @@ func TestFDB_LimitThroughProjection_KeepsAliases(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/testdb_limalias"
+	const dbPath = "/FRL/testdb_limalias"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,

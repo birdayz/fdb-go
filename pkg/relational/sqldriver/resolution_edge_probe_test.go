@@ -18,13 +18,13 @@ func TestFDB_ResolutionEdgeProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_resedgep")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_resedgep")
+	setup := openTestDB(t, "/FRL/testdb_resedgep")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_resedgep")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE resedgep "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_resedgep/s WITH TEMPLATE resedgep")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_RESEDGEP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_resedgep/s WITH TEMPLATE resedgep")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RESEDGEP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

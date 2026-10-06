@@ -23,7 +23,7 @@ func TestFDB_RecursiveCTEStarMetadata(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	dbPath := "/rcte_star_metadata"
+	dbPath := "/FRL/rcte_star_metadata"
 	setup := openTestDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,

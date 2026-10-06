@@ -17,7 +17,7 @@ import (
 func TestFDB_CorrelatedScalarOverClusteredOuter(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/w4b_co"
+	dbPath := "/FRL/w4b_co"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

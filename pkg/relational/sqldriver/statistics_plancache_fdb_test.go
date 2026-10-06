@@ -37,7 +37,7 @@ func TestFDB_StatisticsChangesInvalidateCachedPlans(t *testing.T) {
 
 	const pkRows, fkRows = 200, 10
 
-	dbPath := "/statscache"
+	dbPath := "/FRL/statscache"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,

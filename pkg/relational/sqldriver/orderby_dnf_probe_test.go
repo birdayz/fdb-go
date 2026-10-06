@@ -16,14 +16,14 @@ func TestFDB_OrderByDNFProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ob_dnf")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ob_dnf")
+	setup := openTestDB(t, "/FRL/testdb_ob_dnf")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ob_dnf")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ob_dnf "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_ab ON t (a, b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ob_dnf/s WITH TEMPLATE ob_dnf")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OB_DNF?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ob_dnf/s WITH TEMPLATE ob_dnf")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_DNF?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -19,12 +19,12 @@ func TestFDB_LikeEscapeProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_likeescp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_likeescp")
+	setup := openTestDB(t, "/FRL/testdb_likeescp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_likeescp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE likeescp CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_likeescp/s WITH TEMPLATE likeescp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_LIKEESCP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_likeescp/s WITH TEMPLATE likeescp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LIKEESCP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

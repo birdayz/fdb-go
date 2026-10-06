@@ -43,7 +43,7 @@ const siKeyDomain = int64(5)
 // siDBPath is FIXED across runs (only the cache key varies), so the persisted keyspace for a given
 // seed is byte-identical run-to-run and hunt.Fingerprint is a valid determinism probe. Each run
 // gets its own SimFDB backend under a unique cache key, so concurrent runs never collide.
-const siDBPath = "/sidb"
+const siDBPath = "/FRL/sidb"
 
 // siKeyCounter uniquifies the per-run cache key (concurrent workers + shrink re-runs of the same
 // seed). It is NOT persisted — the database path is fixed — so it does not perturb determinism.

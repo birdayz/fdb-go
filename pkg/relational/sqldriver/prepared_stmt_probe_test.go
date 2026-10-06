@@ -20,12 +20,12 @@ func TestFDB_PreparedStmtProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_psp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_psp")
+	setup := openTestDB(t, "/FRL/testdb_psp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_psp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE psp CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_psp/s WITH TEMPLATE psp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_PSP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_psp/s WITH TEMPLATE psp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PSP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -58,7 +58,7 @@ func TestFDB_UnnestElementMemberInExists(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	const dbPath = "/testdb_unnest_elem_exists"
+	const dbPath = "/FRL/testdb_unnest_elem_exists"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -281,17 +281,17 @@ func TestFDB_UnnestElementMemberInExistsConvertedSentinel(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_uelem")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_uelem")
+	setup := openTestDB(t, "/FRL/testdb_uelem")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uelem")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uelem_tmpl "+
 		"CREATE TYPE AS STRUCT deeper (dk BIGINT) "+
 		"CREATE TYPE AS STRUCT elem (ek BIGINT, d deeper) "+
 		"CREATE TABLE t (id BIGINT, sarr BIGINT ARRAY, arr elem ARRAY, PRIMARY KEY(id)) "+
 		"CREATE TABLE v (vid BIGINT, vk BIGINT, PRIMARY KEY(vid)) "+
 		"CREATE TABLE u (uk BIGINT, PRIMARY KEY(uk))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uelem/s WITH TEMPLATE uelem_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uelem/s WITH TEMPLATE uelem_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_UELEM?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UELEM?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -50,7 +50,7 @@ func TestFDB_SelectivityBlindSpotWithCollectedStatistics(t *testing.T) {
 	const rows = 2000
 	const loDistinct = 2
 
-	dbPath := "/selblind"
+	dbPath := "/FRL/selblind"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,

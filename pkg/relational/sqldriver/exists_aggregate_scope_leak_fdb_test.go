@@ -24,7 +24,7 @@ func TestFDB_ExistsAggregateScopeLeak(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_exists_agg_scope_leak"
+	dbPath := "/FRL/testdb_exists_agg_scope_leak"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

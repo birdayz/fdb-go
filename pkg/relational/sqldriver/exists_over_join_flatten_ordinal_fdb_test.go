@@ -25,7 +25,7 @@ import (
 func TestFDB_ExistsOverJoinFlattenOrdinalSeed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/i2c3_seed"
+	dbPath := "/FRL/i2c3_seed"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

@@ -27,7 +27,7 @@ func TestFDB_AggregateOverMixedNestingOuterJoin(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/i3agg"
+	dbPath := "/FRL/i3agg"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -158,7 +158,7 @@ func TestFDB_NullSupplyingLegMetadataNullable(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/i3meta"
+	dbPath := "/FRL/i3meta"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -220,7 +220,7 @@ func TestFDB_WhereConjunctOverBuriedSource(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/i3wcb"
+	dbPath := "/FRL/i3wcb"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -289,7 +289,7 @@ func TestFDB_AggregateOverClusteredNullSupplyingLeg(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/i3aggns"
+	dbPath := "/FRL/i3aggns"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

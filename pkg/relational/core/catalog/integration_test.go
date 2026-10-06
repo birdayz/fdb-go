@@ -26,7 +26,7 @@ func TestIntegration_ParseAndResolveTable(t *testing.T) {
 
 	// Build an in-memory catalog seeded with the demo template.
 	c, tx, tmpl := newSeededCatalog(t, "integration")
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "public"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "public"), true, api.SchemaExistsError); err != nil {
 		t.Fatalf("SaveSchema: %v", err)
 	}
 
@@ -43,7 +43,7 @@ func TestIntegration_ParseAndResolveTable(t *testing.T) {
 
 	// Resolve "Order" via the catalog's DatabaseMetaData.
 	md := NewCatalogDatabaseMetaData(CatalogDatabaseMetaDataOptions{StoreCatalog: c})
-	rs, err := md.Tables(context.Background(), "/db", "public", "Order", nil)
+	rs, err := md.Tables(context.Background(), "/FRL/db", "public", "Order", nil)
 	if err != nil {
 		t.Fatalf("Tables: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestIntegration_ParseAndResolveTable(t *testing.T) {
 func TestIntegration_ResolveColumnsForParsedQuery(t *testing.T) {
 	t.Parallel()
 	c, tx, tmpl := newSeededCatalog(t, "integration-cols")
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "public"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "public"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 
@@ -81,7 +81,7 @@ func TestIntegration_ResolveColumnsForParsedQuery(t *testing.T) {
 
 	md := NewCatalogDatabaseMetaData(CatalogDatabaseMetaDataOptions{StoreCatalog: c})
 	resolve := func(colName string) (jdbcType int64, found bool) {
-		rs, err := md.Columns(context.Background(), "/db", "public", "Order", colName)
+		rs, err := md.Columns(context.Background(), "/FRL/db", "public", "Order", colName)
 		if err != nil {
 			t.Fatalf("Columns(%s): %v", colName, err)
 		}
@@ -119,7 +119,7 @@ func TestIntegration_ResolveColumnsForParsedQuery(t *testing.T) {
 func TestIntegration_UnknownTableNotInCatalog(t *testing.T) {
 	t.Parallel()
 	c, tx, tmpl := newSeededCatalog(t, "integration-missing")
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "public"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "public"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 
@@ -128,7 +128,7 @@ func TestIntegration_UnknownTableNotInCatalog(t *testing.T) {
 	}
 
 	md := NewCatalogDatabaseMetaData(CatalogDatabaseMetaDataOptions{StoreCatalog: c})
-	rs, err := md.Tables(context.Background(), "/db", "public", "NotATable", nil)
+	rs, err := md.Tables(context.Background(), "/FRL/db", "public", "NotATable", nil)
 	if err != nil {
 		t.Fatalf("Tables: %v", err)
 	}
@@ -163,7 +163,7 @@ func newIntegrationCatalogWithIndexes(t *testing.T) (*InMemoryStoreCatalog, api.
 	if err := c.SchemaTemplateCatalog().CreateTemplate(tx, tmpl); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "public"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "public"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	return c, tx
@@ -178,7 +178,7 @@ func TestIntegration_IndexedTableMetadata(t *testing.T) {
 	md := NewCatalogDatabaseMetaData(CatalogDatabaseMetaDataOptions{StoreCatalog: c})
 
 	// unique=true should surface the unique index.
-	rs, err := md.IndexInfo(context.Background(), "/db", "public", "Order", true, false)
+	rs, err := md.IndexInfo(context.Background(), "/FRL/db", "public", "Order", true, false)
 	if err != nil {
 		t.Fatal(err)
 	}

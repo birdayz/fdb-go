@@ -39,7 +39,7 @@ func TestFDB_QualifiedNestedAccessorReadsTheLeafNotTheStructRoot(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	const dbPath = "/testdb_qual_nested_accessor"
+	const dbPath = "/FRL/testdb_qual_nested_accessor"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -152,7 +152,7 @@ func TestFDB_JoinFilterKeepsNestedDependency(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/testdb_join_nested_dependency"
+	const dbPath = "/FRL/testdb_join_nested_dependency"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE join_nested_dependency "+

@@ -19,13 +19,13 @@ func TestFDB_IsNullIndexedProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_inip")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_inip")
+	setup := openTestDB(t, "/FRL/testdb_inip")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inip")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inip CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_inip/s WITH TEMPLATE inip")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INIP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inip/s WITH TEMPLATE inip")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INIP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -21,14 +21,14 @@ func TestFDB_CrossTypeConstSarg(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_xtconstsarg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_xtconstsarg")
+	setup := openTestDB(t, "/FRL/testdb_xtconstsarg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_xtconstsarg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE xtconstsarg "+
 			"CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_d ON t (d)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_xtconstsarg/s WITH TEMPLATE xtconstsarg")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_XTCONSTSARG?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_xtconstsarg/s WITH TEMPLATE xtconstsarg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_XTCONSTSARG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

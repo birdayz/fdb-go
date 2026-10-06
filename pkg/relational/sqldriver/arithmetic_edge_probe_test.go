@@ -18,13 +18,13 @@ func TestFDB_ArithmeticEdgeProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_arith")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_arith")
+	setup := openTestDB(t, "/FRL/testdb_arith")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_arith")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE arith "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_arith/s WITH TEMPLATE arith")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ARITH?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_arith/s WITH TEMPLATE arith")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ARITH?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

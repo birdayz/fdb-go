@@ -34,16 +34,16 @@ go run ./cmd/frl tx read-version       # prints the current GRV
 ### 2. Bootstrap the schema
 
 ```sh
-go run ./cmd/frl sql --database /demo -f cmd/frl/demo/schema.sql
+go run ./cmd/frl sql --database /FRL/demo -f cmd/frl/demo/schema.sql
 ```
 
-Creates `/demo`, template `orders_tpl` with one table `orders (order_id BIGINT,
-customer STRING, price DOUBLE)`, and binds `/demo/main` to that template.
+Creates `/FRL/demo`, template `orders_tpl` with one table `orders (order_id BIGINT,
+customer STRING, price DOUBLE)`, and binds `/FRL/demo/main` to that template.
 
 ### 3. Load 1 000 rows
 
 ```sh
-go run ./cmd/frl sql --database /demo --schema main -f cmd/frl/demo/seed.sql
+go run ./cmd/frl sql --database /FRL/demo --schema main -f cmd/frl/demo/seed.sql
 ```
 
 Should print 10 × `OK (100 rows affected, …)` — the seed file is ten
@@ -60,15 +60,15 @@ go run ./cmd/frl meta catalog templates
 go run ./cmd/frl meta catalog get orders_tpl         # full MetaData proto
 
 # SQL one-shot
-go run ./cmd/frl sql --database /demo --schema main \
+go run ./cmd/frl sql --database /FRL/demo --schema main \
   -c 'SELECT count(*) FROM orders'
-go run ./cmd/frl sql --database /demo --schema main \
+go run ./cmd/frl sql --database /FRL/demo --schema main \
   -c 'SELECT order_id, customer, price FROM orders ORDER BY price DESC LIMIT 10'
-go run ./cmd/frl sql --database /demo --schema main \
+go run ./cmd/frl sql --database /FRL/demo --schema main \
   -c 'SELECT customer, count(*) AS n, sum(price) AS total FROM orders GROUP BY customer'
 
 # SQL interactive
-go run ./cmd/frl sql --database /demo --schema main
+go run ./cmd/frl sql --database /FRL/demo --schema main
 # > \?              — help
 # > \d              — list tables in current schema (via catalog)
 # > \dt             — list templates (via SHOW SCHEMA TEMPLATES)
@@ -80,10 +80,10 @@ go run ./cmd/frl sql --database /demo --schema main
 
 # Layered addressing — the record-layer x-ray on the SAME store the SQL
 # rows live in (keyspace + metadata resolved from the catalog):
-go run ./cmd/frl record scan  --database /demo --schema main --limit 3
-go run ./cmd/frl record get 1,1 --database /demo --schema main
-go run ./cmd/frl store info   --database /demo --schema main
-go run ./cmd/frl store dump   --database /demo --schema main --limit 20
+go run ./cmd/frl record scan  --database /FRL/demo --schema main --limit 3
+go run ./cmd/frl record get 1,1 --database /FRL/demo --schema main
+go run ./cmd/frl store info   --database /FRL/demo --schema main
+go run ./cmd/frl store dump   --database /FRL/demo --schema main --limit 20
 ```
 
 ## Tear down
@@ -110,8 +110,8 @@ blocks; dup them).
 
 ## Sanity-check expectations after step 3
 
-- `meta catalog databases` → shows `/__SYS` and `/demo`
-- `meta catalog schemas` → shows `/__SYS/CATALOG` and `/demo/main`
+- `meta catalog databases` → shows `/__SYS` and `/FRL/demo`
+- `meta catalog schemas` → shows `/__SYS/CATALOG` and `/FRL/demo/main`
 - `meta catalog templates` → shows `CATALOG_TEMPLATE` and `orders_tpl`
 - `SELECT count(*) FROM orders` → `1000`
 - `SELECT customer, count(*) FROM orders GROUP BY customer` → 10 rows,

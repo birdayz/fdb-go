@@ -18,7 +18,7 @@ func setupCascadesTestDB(t *testing.T) (*sql.DB, *sql.DB) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -179,7 +179,7 @@ func TestFDB_CascadesIndexScan(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_idx_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_idx_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -364,7 +364,7 @@ func TestFDB_CascadesJoin(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_join_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_join_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -424,7 +424,7 @@ func TestFDB_CascadesAggregateWithGroupBy(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_grpby_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_grpby_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -492,7 +492,7 @@ func TestFDB_CascadesDistinctWithFilter(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_distfilt_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_distfilt_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -587,7 +587,7 @@ func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_orderby_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_orderby_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -993,7 +993,7 @@ func TestFDB_CascadesCTEJoin(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_ctejoin_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_ctejoin_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -1106,7 +1106,7 @@ func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_joinon_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_joinon_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -1283,7 +1283,7 @@ func TestFDB_CascadesThreeWayJoin(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_3join_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_3join_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -1469,7 +1469,7 @@ func TestFDB_CascadesJoinOrderByNoIndex(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_joinob_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_joinob_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -1532,7 +1532,7 @@ func TestFDB_CascadesRecursiveCTE(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_reccte_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_reccte_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -1634,7 +1634,7 @@ func TestFDB_CascadesRecursiveCTEPostOrder(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := "/casc_reccte_postorder"
+	dbPath := "/FRL/casc_reccte_postorder"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -1704,7 +1704,7 @@ func TestFDB_CascadesScalarSubqueryInProjection(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_ssq_proj_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_ssq_proj_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -1760,7 +1760,7 @@ func TestFDB_CascadesScalarSubqueryInWhere(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_ssq_where_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_ssq_where_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -1896,7 +1896,7 @@ func TestFDB_CascadesMinMaxNonNumericEmptyRejected(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_mmempty_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_mmempty_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -1975,7 +1975,7 @@ func TestFDB_CascadesSumIntOverflow(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_sumovf_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_sumovf_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -2063,7 +2063,7 @@ func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_sorttie_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_sorttie_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -2200,7 +2200,7 @@ func TestFDB_CascadesSortEliminationViaIndex(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_sortelim_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_sortelim_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -2402,7 +2402,7 @@ func TestFDB_CascadesStreamingAggFromIndex(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_streamagg_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_streamagg_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -2580,7 +2580,7 @@ func TestFDB_PlanCacheCorrectness(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_plancache_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_plancache_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -2798,7 +2798,7 @@ func TestFDB_CascadesFlatMapCorrelatedJoin(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/casc_flatmap_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/casc_flatmap_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -2985,7 +2985,7 @@ func TestFDB_JoinAggregateNull(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/join_agg_null_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/join_agg_null_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -3141,7 +3141,7 @@ func TestFDB_NestedNotExists(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/nested_ne_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/nested_ne_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -3246,7 +3246,7 @@ func TestFDB_ExistsWithJoinInside(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/exists_join_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/exists_join_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -3314,7 +3314,7 @@ func TestFDB_NotExistsWithOR(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/ne_or_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/ne_or_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -3375,7 +3375,7 @@ func TestFDB_NotExistsNonPKWithWhere(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/ne_nonpk_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/ne_nonpk_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -3444,7 +3444,7 @@ func TestFDB_NotExistsWithAdditionalPredicate(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/notexists_pred_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/notexists_pred_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -3512,7 +3512,7 @@ func TestFDB_NestedAggregateRejection(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/nest_agg_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/nest_agg_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -3583,7 +3583,7 @@ func TestFDB_InListMultiValue(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dbPath := fmt.Sprintf("/in_dbg_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/in_dbg_%s", t.Name())
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

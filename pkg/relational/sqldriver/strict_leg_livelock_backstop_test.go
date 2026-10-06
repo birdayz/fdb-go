@@ -34,18 +34,18 @@ func TestSim_StrictLegTinyBudget_FailsLoudNeverHangs(t *testing.T) {
 	key, _ := injectTickingSimFDB(t, 9317, time.Millisecond)
 	ctx := context.Background()
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///STRICTP?cluster_file=%s", key))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/STRICTP?cluster_file=%s", key))
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
 	defer setup.Close()
-	mustExecSQL(t, setup, ctx, "CREATE DATABASE /strictp")
+	mustExecSQL(t, setup, ctx, "CREATE DATABASE /FRL/strictp")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA TEMPLATE strictp_tmpl "+
 		"CREATE TABLE t_rd (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE uniq (id BIGINT, k BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /strictp/s WITH TEMPLATE strictp_tmpl")
+	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /FRL/strictp/s WITH TEMPLATE strictp_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///STRICTP?cluster_file=%s&schema=S", key))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/STRICTP?cluster_file=%s&schema=S", key))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}

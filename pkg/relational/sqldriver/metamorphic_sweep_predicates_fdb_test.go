@@ -232,8 +232,8 @@ func TestFDB_MetamorphicIndexDifferential(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_mh")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mh")
+	setup := openTestDB(t, "/FRL/testdb_mh")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mh")
 	table := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) "
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh_idx "+table+
 		"CREATE INDEX t_a ON t (a) "+
@@ -243,11 +243,11 @@ func TestFDB_MetamorphicIndexDifferential(t *testing.T) {
 		"CREATE INDEX t_ba ON t (b, a) "+
 		"CREATE INDEX t_f ON t (f)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh_noidx "+table)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mh/si WITH TEMPLATE mh_idx")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mh/sn WITH TEMPLATE mh_noidx")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh/si WITH TEMPLATE mh_idx")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh/sn WITH TEMPLATE mh_noidx")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql:///TESTDB_MH?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
+		dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MH?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s: %v", schema, err)

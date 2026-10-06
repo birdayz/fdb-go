@@ -39,17 +39,17 @@ func TestFDB_DelimitedDottedAliasIsVerbatim(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dotalias")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_dotalias")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_dotalias")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dotalias")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dotalias_tmpl "+
 			"CREATE TABLE Users (uid BIGINT, name STRING, PRIMARY KEY (uid)) "+
 			"CREATE TABLE Orders (oid BIGINT, uid BIGINT, name STRING, PRIMARY KEY (oid))")).
 		Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_dotalias/s WITH TEMPLATE dotalias_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_dotalias/s WITH TEMPLATE dotalias_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DOTALIAS?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DOTALIAS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -152,17 +152,17 @@ func TestFDB_DuplicateBareLeafKeepsTwoColumns(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dupleaf")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_dupleaf")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_dupleaf")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dupleaf")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dupleaf_tmpl "+
 			"CREATE TABLE A (id BIGINT, k STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE B (id BIGINT, k STRING, PRIMARY KEY (id))")).
 		Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_dupleaf/s WITH TEMPLATE dupleaf_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_dupleaf/s WITH TEMPLATE dupleaf_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUPLEAF?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUPLEAF?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

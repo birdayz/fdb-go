@@ -102,12 +102,12 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_wraphidden")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_wraphidden")
+	setup := openTestDB(t, "/FRL/testdb_wraphidden")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_wraphidden")
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE wraphidden_tpl
 		CREATE TABLE t (id BIGINT, PRIMARY KEY (id))`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_wraphidden/s1 WITH TEMPLATE wraphidden_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_WRAPHIDDEN?cluster_file=%s&schema=S1", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_wraphidden/s1 WITH TEMPLATE wraphidden_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_WRAPHIDDEN?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

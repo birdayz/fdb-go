@@ -51,16 +51,16 @@ func TestFDB_NestedSortKeyThroughTheProjectedExistsFold(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_nsk_fold")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_nsk_fold")
+	setup := openTestDB(t, "/FRL/testdb_nsk_fold")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nsk_fold")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nsk_fold_tmpl "+
 		"CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t1(id BIGINT, n nst, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nsk_fold/s WITH TEMPLATE nsk_fold_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nsk_fold/s WITH TEMPLATE nsk_fold_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_NSK_FOLD?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NSK_FOLD?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -474,16 +474,16 @@ func TestFDB_NestedCorrelationThroughAJoinsMergedRow(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_nested_corr")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_nested_corr")
+	setup := openTestDB(t, "/FRL/testdb_nested_corr")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nested_corr")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nested_corr_tmpl "+
 		"CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t1(id BIGINT, n nst, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nested_corr/s WITH TEMPLATE nested_corr_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nested_corr/s WITH TEMPLATE nested_corr_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_NESTED_CORR?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTED_CORR?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

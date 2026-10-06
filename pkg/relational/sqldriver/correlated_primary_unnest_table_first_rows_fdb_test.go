@@ -35,14 +35,14 @@ func TestFDB_CorrelatedPrimaryUnnestTableFirstServesRows(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_cputf")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cputf")
+	setup := openTestDB(t, "/FRL/testdb_cputf")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cputf")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE cputf "+
 			"CREATE TABLE t (id BIGINT, tags BIGINT ARRAY, PRIMARY KEY (id)) "+
 			"CREATE TABLE tags (id BIGINT, e BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cputf/s WITH TEMPLATE cputf")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CPUTF?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cputf/s WITH TEMPLATE cputf")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CPUTF?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

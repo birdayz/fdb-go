@@ -35,8 +35,8 @@ func TestFDB_ProjectedExists_Round5(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_projexists_r5")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_projexists_r5")
+	setup := openTestDB(t, "/FRL/testdb_projexists_r5")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r5")
 	// Both t1 and t2 carry a COLLIDING column name `sk` (the sort key) with
 	// OPPOSITE orderings, so a wrong-leg resolution (stripping `t2.sk`→bare `SK`,
 	// which is last-leg-wins on the merged join row) produces a DIFFERENT order
@@ -46,9 +46,9 @@ func TestFDB_ProjectedExists_Round5(t *testing.T) {
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, sk BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, sk BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_projexists_r5/s WITH TEMPLATE projexists_r5_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r5/s WITH TEMPLATE projexists_r5_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PROJEXISTS_R5?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R5?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -17,15 +17,15 @@ func TestFDB_SetOpsDistinctProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_setops")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_setops")
+	setup := openTestDB(t, "/FRL/testdb_setops")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_setops")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE setops "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_setops/s WITH TEMPLATE setops")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SETOPS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_setops/s WITH TEMPLATE setops")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SETOPS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

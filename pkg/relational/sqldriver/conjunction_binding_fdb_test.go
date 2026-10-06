@@ -71,13 +71,13 @@ func TestFDB_ConjunctionBinding(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_conjbind")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_conjbind")
+	setup := openTestDB(t, "/FRL/testdb_conjbind")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_conjbind")
 	const table = "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, v BIGINT, PRIMARY KEY (id)) "
 	const indexes = "CREATE INDEX idx_a ON t (a) CREATE INDEX idx_ab ON t (a, b)"
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE conjbind "+table+indexes)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_conjbind/s WITH TEMPLATE conjbind")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CONJBIND?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_conjbind/s WITH TEMPLATE conjbind")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONJBIND?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

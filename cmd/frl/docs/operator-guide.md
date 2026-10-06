@@ -329,16 +329,16 @@ are on; the arrangement where it already guessed right does not move. See
 
 ```sh
 # One schema.
-frl stats collect --database /myapp --schema MAIN
+frl stats collect --database /FRL/myapp --schema MAIN
 
 # Every schema in the database — one scan each, per-schema failure isolation,
 # bounded concurrency. This is the fleet form, same machinery as
 # `index build --all-schemas`.
-frl stats collect --database /myapp --all-schemas
+frl stats collect --database /FRL/myapp --all-schemas
 
 # What is stored, and whether the planner will actually use it.
-frl stats show --database /myapp --schema MAIN
-frl stats show --database /myapp --schema MAIN -o json | jq '.per_type'
+frl stats show --database /FRL/myapp --schema MAIN
+frl stats show --database /FRL/myapp --schema MAIN -o json | jq '.per_type'
 ```
 
 Keys are the SQL identifiers you wrote, not the escaped storage names the record
@@ -394,14 +394,14 @@ the lookup is forgiving:
 
 ```sh
 
-frl stats clear --database /myapp --schema MAIN --yes
+frl stats clear --database /FRL/myapp --schema MAIN --yes
 ```
 
 **They are opt-in per connection.** Collecting changes nothing on its own; a
 connection asks for them:
 
 ```
-fdbsql:///MYAPP?schema=MAIN&planner_statistics=true
+fdbsql:///FRL/MYAPP?schema=MAIN&planner_statistics=true
 ```
 
 Two connections differing only in this flag do not share cached plans.

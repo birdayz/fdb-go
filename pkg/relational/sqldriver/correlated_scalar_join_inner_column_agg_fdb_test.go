@@ -17,7 +17,7 @@ import (
 func TestFDB_CorrelatedScalarJoinInnerColumnAgg(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/wsn3_hj"
+	dbPath := "/FRL/wsn3_hj"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

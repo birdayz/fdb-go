@@ -22,14 +22,14 @@ func TestFDB_LimitZero(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_limitzero")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_limitzero")
+	setup := openTestDB(t, "/FRL/testdb_limitzero")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_limitzero")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE limitzero "+
 			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_s ON t (s)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_limitzero/s WITH TEMPLATE limitzero")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_LIMITZERO?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_limitzero/s WITH TEMPLATE limitzero")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LIMITZERO?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -30,7 +30,7 @@ import (
 func TestFDB_PostAggregateOuterReference(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/post_aggregate_outer_reference"
+	dbPath := "/FRL/post_aggregate_outer_reference"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
@@ -137,7 +137,7 @@ func TestFDB_PostAggregateOuterReference(t *testing.T) {
 func TestFDB_PostAggregateOuterReferenceInOrderBy(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/post_aggregate_outer_reference_order_by"
+	dbPath := "/FRL/post_aggregate_outer_reference_order_by"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,

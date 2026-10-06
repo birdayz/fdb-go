@@ -19,8 +19,8 @@ import (
 func TestFDB_VectorIndexEnginePreference(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_vec_pref")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_vec_pref")
+	setup := openTestDB(t, "/FRL/testdb_vec_pref")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_vec_pref")
 	guardiannOpts := "options (metric = euclidean_metric, primary_cluster_min = 1, primary_cluster_max = 100, collapse_min_duplicates = 50)"
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE vec_pref_tpl "+
 		"create table documents(zone string, docId string, bookshelf string, embedding vector(3, half), primary key (zone, docId)) "+
@@ -30,8 +30,8 @@ func TestFDB_VectorIndexEnginePreference(t *testing.T) {
 		"create table hnswOnly(zone string, docId string, bookshelf string, embedding vector(3, half), primary key (zone, docId)) "+
 		"create view hnswOnlyView as select embedding, zone, bookshelf, docId from hnswOnly "+
 		"create vector index hnswOnlyIndex using hnsw on hnswOnlyView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric)")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_vec_pref/s WITH TEMPLATE vec_pref_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_VEC_PREF?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_vec_pref/s WITH TEMPLATE vec_pref_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_VEC_PREF?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

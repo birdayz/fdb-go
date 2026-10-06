@@ -47,15 +47,15 @@ func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_czs")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_czs")
+	setup := openTestDB(t, "/FRL/testdb_czs")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_czs")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czs "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w) "+
 		"CREATE TABLE t2 (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE o (id BIGINT, k DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_czs/s WITH TEMPLATE czs")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CZS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_czs/s WITH TEMPLATE czs")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CZS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -197,16 +197,16 @@ func TestFDB_CorrelatedZeroRangeSetShapes(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_czf")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_czf")
+	setup := openTestDB(t, "/FRL/testdb_czf")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_czf")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czf "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w) "+
 		"CREATE TABLE m (id BIGINT, a DOUBLE, b DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX m_abw ON m (a, b, w) "+
 		"CREATE TABLE o (id BIGINT, k DOUBLE, k2 DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_czf/s WITH TEMPLATE czf")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CZF?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_czf/s WITH TEMPLATE czf")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CZF?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

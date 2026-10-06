@@ -34,8 +34,8 @@ func TestFDB_StructOrderingGate(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/structordergate")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /structordergate"); err != nil {
+	setup := openTestDB(t, "/FRL/structordergate")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/structordergate"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -44,10 +44,10 @@ func TestFDB_StructOrderingGate(t *testing.T) {
 			"CREATE TABLE T_S (id BIGINT, home ADDR, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
-	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /structordergate/s WITH TEMPLATE sog_tmpl"); err != nil {
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/structordergate/s WITH TEMPLATE sog_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql:///STRUCTORDERGATE?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/STRUCTORDERGATE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

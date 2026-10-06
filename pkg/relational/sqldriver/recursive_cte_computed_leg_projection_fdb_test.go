@@ -13,7 +13,7 @@ import (
 func TestFDB_RecursiveCTEComputedLegProjection(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/rcte_comp"
+	dbPath := "/FRL/rcte_comp"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

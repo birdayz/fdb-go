@@ -37,17 +37,17 @@ func TestFDB_RecordConstructorInExpressionPosition(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_rcexpr")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_rcexpr")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_rcexpr")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_rcexpr")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcexpr_tmpl "+
 			"CREATE TYPE AS STRUCT S4 (a BIGINT, b DOUBLE, c STRING, d BOOLEAN) "+
 			"CREATE TABLE C (id BIGINT, s S4, PRIMARY KEY (id)) "+
 			"CREATE TABLE D (d1 BIGINT, d2 STRING, d3 BIGINT, PRIMARY KEY (d1))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_rcexpr/s WITH TEMPLATE rcexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_rcexpr/s WITH TEMPLATE rcexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_RCEXPR?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RCEXPR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

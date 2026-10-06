@@ -42,8 +42,8 @@ func TestFDB_RFC153_JoinedPreservedMatrix(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_rfc153mx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rfc153mx")
+	setup := openTestDB(t, "/FRL/testdb_rfc153mx")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rfc153mx")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rfc153mx "+
 			"CREATE TABLE a (id BIGINT, flag BIGINT, PRIMARY KEY (id)) "+
@@ -54,8 +54,8 @@ func TestFDB_RFC153_JoinedPreservedMatrix(t *testing.T) {
 			"CREATE INDEX d_b_id ON d (b_id) "+
 			"CREATE INDEX c_a_id ON c (a_id) "+
 			"CREATE INDEX c_bx_ref ON c (bx_ref)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rfc153mx/s WITH TEMPLATE rfc153mx")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_RFC153MX?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rfc153mx/s WITH TEMPLATE rfc153mx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC153MX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -171,8 +171,8 @@ func TestFDB_RFC153_AggregateInnerNullExtension(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_rfc153agg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rfc153agg")
+	setup := openTestDB(t, "/FRL/testdb_rfc153agg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rfc153agg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rfc153agg "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
@@ -180,8 +180,8 @@ func TestFDB_RFC153_AggregateInnerNullExtension(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rfc153agg/s WITH TEMPLATE rfc153agg")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_RFC153AGG?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rfc153agg/s WITH TEMPLATE rfc153agg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC153AGG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

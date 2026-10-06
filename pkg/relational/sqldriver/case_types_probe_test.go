@@ -21,12 +21,12 @@ func TestFDB_CaseTypesProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_casetp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_casetp")
+	setup := openTestDB(t, "/FRL/testdb_casetp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_casetp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE casetp CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_casetp/s WITH TEMPLATE casetp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CASETP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_casetp/s WITH TEMPLATE casetp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASETP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

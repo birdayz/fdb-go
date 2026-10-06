@@ -136,11 +136,11 @@ func TestCreateSchema_DatabaseNotExist(t *testing.T) {
 	tmpl := buildTemplate(t, "T1", 1)
 	g.Expect(f.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn)).To(gomega.Succeed())
 
-	err := f.CreateSchema("/nodb", "s1", "T1", api.Options{}).Execute(txn)
-	wantDDLError(g, err, api.ErrCodeUndefinedDatabase, "Database /nodb does not exist")
+	err := f.CreateSchema("/FRL/nodb", "s1", "T1", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeUndefinedDatabase, "Database /FRL/nodb does not exist")
 	// The database is checked before the template.
-	err = f.CreateSchema("/nodb", "s1", "ghost", api.Options{}).Execute(txn)
-	wantDDLError(g, err, api.ErrCodeUndefinedDatabase, "Database /nodb does not exist")
+	err = f.CreateSchema("/FRL/nodb", "s1", "ghost", api.Options{}).Execute(txn)
+	wantDDLError(g, err, api.ErrCodeUndefinedDatabase, "Database /FRL/nodb does not exist")
 }
 
 // wantDDLError asserts a DDL action's refusal is the target's: its SQLSTATE and
@@ -246,9 +246,9 @@ func TestCreateSchema_MissingTemplate(t *testing.T) {
 	g := gomega.NewWithT(t)
 	_, txn, f := newEnv(t)
 
-	g.Expect(f.CreateDatabase("/db", api.Options{}).Execute(txn)).To(gomega.Succeed())
+	g.Expect(f.CreateDatabase("/FRL/db", api.Options{}).Execute(txn)).To(gomega.Succeed())
 	// Template "ghost" was never saved — CreateSchema must fail.
-	err := f.CreateSchema("/db", "s1", "ghost", api.Options{}).Execute(txn)
+	err := f.CreateSchema("/FRL/db", "s1", "ghost", api.Options{}).Execute(txn)
 	wantDDLError(g, err, api.ErrCodeUnknownSchemaTemplate, "SchemaTemplate 'ghost' is not in catalog")
 }
 

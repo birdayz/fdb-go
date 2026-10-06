@@ -14,12 +14,12 @@ import (
 func TestFDB_ArrayAgg(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_array_agg")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_array_agg")
+	setup := openTestDB(t, "/FRL/testdb_array_agg")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_array_agg")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE array_agg_tmpl "+
 		"CREATE TABLE T (id BIGINT, g BIGINT, n BIGINT, s STRING, PRIMARY KEY (id)) CREATE INDEX T_G ON T (g)")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_array_agg/s WITH TEMPLATE array_agg_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_ARRAY_AGG?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_array_agg/s WITH TEMPLATE array_agg_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_ARRAY_AGG?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

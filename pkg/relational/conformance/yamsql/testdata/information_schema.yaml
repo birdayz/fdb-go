@@ -7,7 +7,7 @@
 # case-handling of the TABLE_NAME filter.
 #
 # The runner creates its scenario DB under an arbitrary path (see
-# runner_test.go: `/_conf_<name>`) so we filter by TABLE_NAME without
+# runner_test.go: `/FRL/_conf_<name>`) so we filter by TABLE_NAME without
 # a TABLE_CATALOG constraint. Multiple yamsql scenarios run in
 # parallel, each creates and drops its own DB, so TABLE_NAME alone
 # is not unique across scenarios — but within a single scenario it

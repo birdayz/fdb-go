@@ -67,7 +67,7 @@ func TestFDB_NestedSortKeyOrdersByTheMemberNotTheStructRoot(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	const dbPath = "/testdb_nested_sort_rows"
+	const dbPath = "/FRL/testdb_nested_sort_rows"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -291,7 +291,7 @@ func TestFDB_TwoNestedSortKeysOfTheSameStructRootDoNotCollapse(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	const dbPath = "/testdb_nested_sort_twokeys"
+	const dbPath = "/FRL/testdb_nested_sort_twokeys"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -460,7 +460,7 @@ func TestFDB_NestedSortKeyExplainRendersItsHiddenColumn(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	const dbPath = "/testdb_nested_sort_explain"
+	const dbPath = "/FRL/testdb_nested_sort_explain"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

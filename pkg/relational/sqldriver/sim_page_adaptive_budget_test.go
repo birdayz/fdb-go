@@ -60,15 +60,15 @@ func TestSimPageBudgetAdaptsToShortMVCCWindow(t *testing.T) {
 	key := "sim://" + t.Name()
 	fdbDBCache.Store(key, rdb)
 	t.Cleanup(func() { fdbDBCache.Delete(key) })
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///SIMDB?cluster_file=%s", key))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s", key))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer setup.Close()
-	for _, q := range []string{"CREATE DATABASE /simdb", "CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT, PRIMARY KEY (id))", "CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl"} {
+	for _, q := range []string{"CREATE DATABASE /FRL/simdb", "CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT, PRIMARY KEY (id))", "CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl"} {
 		mustExecSQL(t, setup, ctx, q)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///SIMDB?cluster_file=%s&schema=S", key))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s&schema=S", key))
 	if err != nil {
 		t.Fatal(err)
 	}

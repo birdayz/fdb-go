@@ -21,8 +21,8 @@ func TestFDB_ConstraintValidationProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_constrp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_constrp")
+	setup := openTestDB(t, "/FRL/testdb_constrp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_constrp")
 
 	// Scalar NOT NULL is rejected at CREATE time — RecordMetaData cannot
 	// represent scalar non-nullability, so the constraint would silently
@@ -43,8 +43,8 @@ func TestFDB_ConstraintValidationProbe(t *testing.T) {
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE constrp "+
 			"CREATE TABLE t (id BIGINT, req BIGINT, opt BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_constrp/s WITH TEMPLATE constrp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CONSTRP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_constrp/s WITH TEMPLATE constrp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONSTRP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

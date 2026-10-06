@@ -17,15 +17,15 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_gbderived")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_gbderived")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_gbderived")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gbderived")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE gbderived_tmpl "+
 			"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_gbderived/s WITH TEMPLATE gbderived_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_gbderived/s WITH TEMPLATE gbderived_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GBDERIVED?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GBDERIVED?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -157,15 +157,15 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 	t.Run("group_by_alias_derived_max_z", func(t *testing.T) {
 		// Use a separate DB/schema to match YAML test data:
 		// t1 rows: (1,10,100), (2,10,200), (3,20,300)
-		setupA := openTestDB(t, "/testdb_gbalias")
-		g.Expect(setupA.ExecContext(ctx, "CREATE DATABASE /testdb_gbalias")).Error().NotTo(gomega.HaveOccurred())
+		setupA := openTestDB(t, "/FRL/testdb_gbalias")
+		g.Expect(setupA.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gbalias")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setupA.ExecContext(ctx,
 			"CREATE SCHEMA TEMPLATE gbalias_tmpl "+
 				"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setupA.ExecContext(ctx,
-			"CREATE SCHEMA /testdb_gbalias/s WITH TEMPLATE gbalias_tmpl")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE SCHEMA /FRL/testdb_gbalias/s WITH TEMPLATE gbalias_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-		dsnA := fmt.Sprintf("fdbsql:///TESTDB_GBALIAS?cluster_file=%s&schema=S", clusterFilePath)
+		dsnA := fmt.Sprintf("fdbsql:///FRL/TESTDB_GBALIAS?cluster_file=%s&schema=S", clusterFilePath)
 		dbA, openErr := sql.Open("fdbsql", dsnA)
 		g.Expect(openErr).NotTo(gomega.HaveOccurred())
 		defer dbA.Close()
@@ -195,15 +195,15 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 
 	// group_by_proj_expr test 1: a+b in projection, both in GROUP BY
 	t.Run("a_plus_b_grouped", func(t *testing.T) {
-		setup2 := openTestDB(t, "/testdb_gbpe")
-		g.Expect(setup2.ExecContext(ctx, "CREATE DATABASE /testdb_gbpe")).Error().NotTo(gomega.HaveOccurred())
+		setup2 := openTestDB(t, "/FRL/testdb_gbpe")
+		g.Expect(setup2.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gbpe")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup2.ExecContext(ctx,
 			"CREATE SCHEMA TEMPLATE gbpe_tmpl "+
 				"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup2.ExecContext(ctx,
-			"CREATE SCHEMA /testdb_gbpe/s WITH TEMPLATE gbpe_tmpl")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE SCHEMA /FRL/testdb_gbpe/s WITH TEMPLATE gbpe_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-		dsn2 := fmt.Sprintf("fdbsql:///TESTDB_GBPE?cluster_file=%s&schema=S", clusterFilePath)
+		dsn2 := fmt.Sprintf("fdbsql:///FRL/TESTDB_GBPE?cluster_file=%s&schema=S", clusterFilePath)
 		db2, err := sql.Open("fdbsql", dsn2)
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 		defer db2.Close()
@@ -244,15 +244,15 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 	// executor stores the group key under ExplainValue (with outer parens). If
 	// the projection can't find the value, it returns NULL for every row.
 	t.Run("expr_group_by_with_having_order_by_agg", func(t *testing.T) {
-		setup4 := openTestDB(t, "/testdb_gbexpr")
-		g.Expect(setup4.ExecContext(ctx, "CREATE DATABASE /testdb_gbexpr")).Error().NotTo(gomega.HaveOccurred())
+		setup4 := openTestDB(t, "/FRL/testdb_gbexpr")
+		g.Expect(setup4.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gbexpr")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup4.ExecContext(ctx,
 			"CREATE SCHEMA TEMPLATE gbexpr_tmpl "+
 				"CREATE TABLE sales (id BIGINT, region STRING, category STRING, amt BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup4.ExecContext(ctx,
-			"CREATE SCHEMA /testdb_gbexpr/s WITH TEMPLATE gbexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE SCHEMA /FRL/testdb_gbexpr/s WITH TEMPLATE gbexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-		dsn4 := fmt.Sprintf("fdbsql:///TESTDB_GBEXPR?cluster_file=%s&schema=S", clusterFilePath)
+		dsn4 := fmt.Sprintf("fdbsql:///FRL/TESTDB_GBEXPR?cluster_file=%s&schema=S", clusterFilePath)
 		db4, err := sql.Open("fdbsql", dsn4)
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 		defer db4.Close()
@@ -283,15 +283,15 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 
 	// group_by_proj_expr test 2: no aggregates, just expression on group cols
 	t.Run("a_times_100_plus_b_no_agg", func(t *testing.T) {
-		setup3 := openTestDB(t, "/testdb_gbpe2")
-		g.Expect(setup3.ExecContext(ctx, "CREATE DATABASE /testdb_gbpe2")).Error().NotTo(gomega.HaveOccurred())
+		setup3 := openTestDB(t, "/FRL/testdb_gbpe2")
+		g.Expect(setup3.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gbpe2")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup3.ExecContext(ctx,
 			"CREATE SCHEMA TEMPLATE gbpe2_tmpl "+
 				"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setup3.ExecContext(ctx,
-			"CREATE SCHEMA /testdb_gbpe2/s WITH TEMPLATE gbpe2_tmpl")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE SCHEMA /FRL/testdb_gbpe2/s WITH TEMPLATE gbpe2_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-		dsn3 := fmt.Sprintf("fdbsql:///TESTDB_GBPE2?cluster_file=%s&schema=S", clusterFilePath)
+		dsn3 := fmt.Sprintf("fdbsql:///FRL/TESTDB_GBPE2?cluster_file=%s&schema=S", clusterFilePath)
 		db3, err := sql.Open("fdbsql", dsn3)
 		g.Expect(err).NotTo(gomega.HaveOccurred())
 		defer db3.Close()
@@ -324,15 +324,15 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 	// table's id, not the derived table's (which shares the same
 	// underlying record type).
 	t.Run("cross_join_derived_qualified_column", func(t *testing.T) {
-		setupCJ := openTestDB(t, "/testdb_cjderived")
-		g.Expect(setupCJ.ExecContext(ctx, "CREATE DATABASE /testdb_cjderived")).Error().NotTo(gomega.HaveOccurred())
+		setupCJ := openTestDB(t, "/FRL/testdb_cjderived")
+		g.Expect(setupCJ.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cjderived")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setupCJ.ExecContext(ctx,
 			"CREATE SCHEMA TEMPLATE cjderived_tmpl "+
 				"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 		g.Expect(setupCJ.ExecContext(ctx,
-			"CREATE SCHEMA /testdb_cjderived/s WITH TEMPLATE cjderived_tmpl")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE SCHEMA /FRL/testdb_cjderived/s WITH TEMPLATE cjderived_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-		dsnCJ := fmt.Sprintf("fdbsql:///TESTDB_CJDERIVED?cluster_file=%s&schema=S", clusterFilePath)
+		dsnCJ := fmt.Sprintf("fdbsql:///FRL/TESTDB_CJDERIVED?cluster_file=%s&schema=S", clusterFilePath)
 		dbCJ, openErr := sql.Open("fdbsql", dsnCJ)
 		g.Expect(openErr).NotTo(gomega.HaveOccurred())
 		defer dbCJ.Close()

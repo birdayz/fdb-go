@@ -106,8 +106,8 @@ func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nested_merge_leg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nested_merge_leg")
+	setup := openTestDB(t, "/FRL/testdb_nested_merge_leg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nested_merge_leg")
 	// Widths 3 / 2 / 4 — all DISTINCT — and K declared in BOTH ta and tc. See the
 	// header for why each is load-bearing.
 	//
@@ -123,8 +123,8 @@ func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 			"CREATE TABLE tb (bid BIGINT, bv BIGINT, PRIMARY KEY (bid)) "+
 			"CREATE TABLE tc (cid BIGINT, k BIGINT, cv BIGINT, cw BIGINT, PRIMARY KEY (cid)) "+
 			"CREATE TABLE tp (pid BIGINT, owner BIGINT, PRIMARY KEY (pid))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nested_merge_leg/s WITH TEMPLATE nested_merge_leg")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NESTED_MERGE_LEG?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nested_merge_leg/s WITH TEMPLATE nested_merge_leg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTED_MERGE_LEG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -260,8 +260,8 @@ func TestFDB_PredicateFreeCommaJoinProjectedExists(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nested_merge_nopred")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nested_merge_nopred")
+	setup := openTestDB(t, "/FRL/testdb_nested_merge_nopred")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nested_merge_nopred")
 	// The SAME shape as the probe above, so the only difference between the two
 	// tests is the presence of the join predicates.
 	mwjoMustExec(t, setup, ctx,
@@ -270,8 +270,8 @@ func TestFDB_PredicateFreeCommaJoinProjectedExists(t *testing.T) {
 			"CREATE TABLE tb (bid BIGINT, bv BIGINT, PRIMARY KEY (bid)) "+
 			"CREATE TABLE tc (cid BIGINT, k BIGINT, cv BIGINT, cw BIGINT, PRIMARY KEY (cid)) "+
 			"CREATE TABLE tp (pid BIGINT, owner BIGINT, PRIMARY KEY (pid))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nested_merge_nopred/s WITH TEMPLATE nested_merge_nopred")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NESTED_MERGE_NOPRED?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nested_merge_nopred/s WITH TEMPLATE nested_merge_nopred")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTED_MERGE_NOPRED?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

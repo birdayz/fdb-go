@@ -18,14 +18,14 @@ func TestFDB_NullOrderingProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nullord")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nullord")
+	setup := openTestDB(t, "/FRL/testdb_nullord")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullord")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nullord "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nullord/s WITH TEMPLATE nullord")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NULLORD?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullord/s WITH TEMPLATE nullord")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLORD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

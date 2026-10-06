@@ -38,7 +38,7 @@ func TestFDB_CorrelatedScalarSubqueryEnclosure(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_4051_cleanlift"
+	dbPath := "/FRL/testdb_4051_cleanlift"
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cl4051_tmpl "+

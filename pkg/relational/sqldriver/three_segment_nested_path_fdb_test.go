@@ -44,14 +44,14 @@ func TestFDB_ThreeSegmentNestedPathResolvesInEveryClause(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_3seg")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_3seg")
+	setup := openTestDB(t, "/FRL/testdb_3seg")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3seg")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE seg3_tmpl "+
 		"CREATE TYPE AS STRUCT gst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t(id BIGINT, n gst, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3seg/s WITH TEMPLATE seg3_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3seg/s WITH TEMPLATE seg3_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_3SEG?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3SEG?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -152,15 +152,15 @@ func TestFDB_ThreeSegmentPathsOfTwoSourcesDoNotCollapse(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_3seg_amb")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_3seg_amb")
+	setup := openTestDB(t, "/FRL/testdb_3seg_amb")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3seg_amb")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE seg3amb_tmpl "+
 		"CREATE TYPE AS STRUCT gst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t1(id BIGINT, n gst, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, n gst, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3seg_amb/s WITH TEMPLATE seg3amb_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3seg_amb/s WITH TEMPLATE seg3amb_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_3SEG_AMB?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3SEG_AMB?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -266,14 +266,14 @@ func TestFDB_ThreeSegmentNestedPathPlanShape(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_3seg_plan")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_3seg_plan")
+	setup := openTestDB(t, "/FRL/testdb_3seg_plan")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3seg_plan")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE seg3plan_tmpl "+
 		"CREATE TYPE AS STRUCT gst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t(id BIGINT, n gst, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3seg_plan/s WITH TEMPLATE seg3plan_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3seg_plan/s WITH TEMPLATE seg3plan_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_3SEG_PLAN?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3SEG_PLAN?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -334,14 +334,14 @@ func TestFDB_ThreeSegmentGroupKeyGroupsLikeItsTwoSegmentTwin(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_3seg_gb")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_3seg_gb")
+	setup := openTestDB(t, "/FRL/testdb_3seg_gb")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3seg_gb")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE seg3gb_tmpl "+
 		"CREATE TYPE AS STRUCT gst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t(id BIGINT, n gst, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3seg_gb/s WITH TEMPLATE seg3gb_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3seg_gb/s WITH TEMPLATE seg3gb_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_3SEG_GB?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3SEG_GB?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

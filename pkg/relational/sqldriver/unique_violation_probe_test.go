@@ -19,14 +19,14 @@ func TestFDB_UniqueViolationProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_uniqv")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uniqv")
+	setup := openTestDB(t, "/FRL/testdb_uniqv")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uniqv")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uniqv "+
 			"CREATE TABLE t (id BIGINT, email STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email ON t (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uniqv/s WITH TEMPLATE uniqv")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UNIQV?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uniqv/s WITH TEMPLATE uniqv")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNIQV?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

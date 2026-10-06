@@ -20,14 +20,14 @@ import (
 )
 
 // sqlFixtureOnce bootstraps the relational schema exactly once:
-// database /frlsql, template frlsql_tpl (one `items` table), schema
-// /frlsql/main, and two seeded rows. Later tests only read.
+// database /FRL/frlsql, template frlsql_tpl (one `items` table), schema
+// /FRL/frlsql/main, and two seeded rows. Later tests only read.
 var (
 	sqlFixtureOnce sync.Once
 	sqlFixtureErr  error
 )
 
-// setupSQLFixture creates the /frlsql database + schema + seed rows via
+// setupSQLFixture creates the /FRL/frlsql database + schema + seed rows via
 // the real `frl sql` command path (not the driver directly) — the DDL
 // and DML execution IS part of what these tests cover.
 func setupSQLFixture(t *testing.T) {
@@ -35,7 +35,7 @@ func setupSQLFixture(t *testing.T) {
 	bindConfig(t)
 	sqlFixtureOnce.Do(func() {
 		schema := `
-CREATE DATABASE /frlsql;
+CREATE DATABASE /FRL/frlsql;
 
 CREATE SCHEMA TEMPLATE frlsql_tpl
 CREATE TABLE items (
@@ -44,7 +44,7 @@ CREATE TABLE items (
   PRIMARY KEY (id)
 );
 
-CREATE SCHEMA /frlsql/main WITH TEMPLATE frlsql_tpl;
+CREATE SCHEMA /FRL/frlsql/main WITH TEMPLATE frlsql_tpl;
 
 INSERT INTO items VALUES (1, 'alpha'), (2, 'beta');
 `
@@ -54,7 +54,7 @@ INSERT INTO items VALUES (1, 'alpha'), (2, 'beta');
 			return
 		}
 		defer os.Remove(path)
-		out, err := runCmd(t, "sql", "--database", "/frlsql", "--schema", "main", "-f", path)
+		out, err := runCmd(t, "sql", "--database", "/FRL/frlsql", "--schema", "main", "-f", path)
 		if err != nil {
 			sqlFixtureErr = fmt.Errorf("bootstrap via sql -f: %w\noutput: %s", err, out)
 		}
@@ -66,7 +66,7 @@ INSERT INTO items VALUES (1, 'alpha'), (2, 'beta');
 
 func TestIntegration_SQL_SelectViaCommandFlag(t *testing.T) {
 	setupSQLFixture(t)
-	out, err := runCmd(t, "sql", "--database", "/frlsql", "--schema", "main",
+	out, err := runCmd(t, "sql", "--database", "/FRL/frlsql", "--schema", "main",
 		"-c", "SELECT id, name FROM items WHERE id = 1")
 	if err != nil {
 		t.Fatalf("sql -c: %v\noutput: %s", err, out)
@@ -99,10 +99,10 @@ func TestIntegration_SQL_TransactionScript(t *testing.T) {
 		"BEGIN;\nINSERT INTO items VALUES (3, 'gamma');\nCOMMIT;\n"), 0o600); err != nil {
 		t.Fatalf("write tx.sql: %v", err)
 	}
-	if out, err := runCmd(t, "sql", "--database", "/frlsql", "--schema", "main", "-f", script); err != nil {
+	if out, err := runCmd(t, "sql", "--database", "/FRL/frlsql", "--schema", "main", "-f", script); err != nil {
 		t.Fatalf("sql -f tx: %v\noutput: %s", err, out)
 	}
-	out, err := runCmd(t, "sql", "--database", "/frlsql", "--schema", "main",
+	out, err := runCmd(t, "sql", "--database", "/FRL/frlsql", "--schema", "main",
 		"-c", "SELECT count(*) AS n FROM items")
 	if err != nil {
 		t.Fatalf("sql -c count: %v\noutput: %s", err, out)
@@ -114,7 +114,7 @@ func TestIntegration_SQL_TransactionScript(t *testing.T) {
 
 func TestIntegration_SQL_SyntaxErrorFailsNonZero(t *testing.T) {
 	setupSQLFixture(t)
-	out, err := runCmd(t, "sql", "--database", "/frlsql", "--schema", "main",
+	out, err := runCmd(t, "sql", "--database", "/FRL/frlsql", "--schema", "main",
 		"-c", "SELEC broken")
 	if err == nil {
 		t.Fatalf("expected error for bad SQL, got success:\n%s", out)
@@ -131,12 +131,12 @@ func TestIntegration_MetaCatalog_DatabasesSchemasTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("meta catalog databases: %v\noutput: %s", err, out)
 	}
-	// CREATE DATABASE /frlsql stores the unquoted path folded whole.
-	if !strings.Contains(out, "/FRLSQL") {
-		t.Errorf("databases output missing /FRLSQL:\n%s", out)
+	// CREATE DATABASE /FRL/frlsql stores the unquoted path folded whole.
+	if !strings.Contains(out, "/FRL/FRLSQL") {
+		t.Errorf("databases output missing /FRL/FRLSQL:\n%s", out)
 	}
 
-	out, err = runCmd(t, "meta", "catalog", "schemas", "--database", "/frlsql")
+	out, err = runCmd(t, "meta", "catalog", "schemas", "--database", "/FRL/frlsql")
 	if err != nil {
 		t.Fatalf("meta catalog schemas: %v\noutput: %s", err, out)
 	}
@@ -211,7 +211,7 @@ func TestIntegration_LayeredAddressing_SQLToRecordScan(t *testing.T) {
 	setupSQLFixture(t)
 
 	// record scan sees the SQL-inserted rows with protojson payloads.
-	out, err := runCmd(t, "record", "scan", "--database", "/frlsql", "--schema", "main", "--limit", "0")
+	out, err := runCmd(t, "record", "scan", "--database", "/FRL/frlsql", "--schema", "main", "--limit", "0")
 	if err != nil {
 		t.Fatalf("record scan --database: %v\noutput: %s", err, out)
 	}
@@ -229,7 +229,7 @@ func TestIntegration_LayeredAddressing_SQLToRecordScan(t *testing.T) {
 	}
 
 	// record get by PK returns one row.
-	out, err = runCmd(t, "record", "get", "0,1", "--database", "/frlsql", "--schema", "main")
+	out, err = runCmd(t, "record", "get", "0,1", "--database", "/FRL/frlsql", "--schema", "main")
 	if err != nil {
 		t.Fatalf("record get --database: %v\noutput: %s", err, out)
 	}
@@ -238,17 +238,17 @@ func TestIntegration_LayeredAddressing_SQLToRecordScan(t *testing.T) {
 	}
 
 	// store info reads the relational store's header.
-	out, err = runCmd(t, "store", "info", "--database", "/frlsql", "--schema", "main")
+	out, err = runCmd(t, "store", "info", "--database", "/FRL/frlsql", "--schema", "main")
 	if err != nil {
 		t.Fatalf("store info --database: %v\noutput: %s", err, out)
 	}
-	if !strings.Contains(out, "Database/schema:   /FRLSQL/MAIN") ||
+	if !strings.Contains(out, "Database/schema:   /FRL/FRLSQL/MAIN") ||
 		!strings.Contains(out, "Format version:") {
 		t.Errorf("store info missing relational address or header fields:\n%s", out)
 	}
 
 	// store dump decodes the same store's raw bytes with subspace labels.
-	out, err = runCmd(t, "store", "dump", "--database", "/frlsql", "--schema", "main", "--limit", "0")
+	out, err = runCmd(t, "store", "dump", "--database", "/FRL/frlsql", "--schema", "main", "--limit", "0")
 	if err != nil {
 		t.Fatalf("store dump --database: %v\noutput: %s", err, out)
 	}
@@ -258,7 +258,7 @@ func TestIntegration_LayeredAddressing_SQLToRecordScan(t *testing.T) {
 
 	// index ls resolves catalog metadata (a PK-only table may list no
 	// secondary indexes — exit 0 and a well-formed render is the pin).
-	if out, err = runCmd(t, "index", "ls", "--database", "/frlsql", "--schema", "main"); err != nil {
+	if out, err = runCmd(t, "index", "ls", "--database", "/FRL/frlsql", "--schema", "main"); err != nil {
 		t.Fatalf("index ls --database: %v\noutput: %s", err, out)
 	}
 }
@@ -267,7 +267,7 @@ func TestIntegration_LayeredAddressing_SQLToRecordScan(t *testing.T) {
 // empty-store puzzle.
 func TestIntegration_LayeredAddressing_UnknownSchema(t *testing.T) {
 	setupSQLFixture(t)
-	_, err := runCmd(t, "record", "scan", "--database", "/frlsql", "--schema", "nope")
+	_, err := runCmd(t, "record", "scan", "--database", "/FRL/frlsql", "--schema", "nope")
 	if err == nil {
 		t.Fatal("expected error for unknown schema")
 	}
@@ -281,7 +281,7 @@ func TestIntegration_LayeredAddressing_UnknownSchema(t *testing.T) {
 func TestIntegration_LayeredAddressing_RecordGetWithType(t *testing.T) {
 	setupSQLFixture(t)
 	out, err := runCmd(t, "record", "get", "2", "--type", "ITEMS",
-		"--database", "/frlsql", "--schema", "main")
+		"--database", "/FRL/frlsql", "--schema", "main")
 	if err != nil {
 		t.Fatalf("record get --type: %v\noutput: %s", err, out)
 	}
@@ -295,7 +295,7 @@ func TestIntegration_LayeredAddressing_RecordGetWithType(t *testing.T) {
 func TestIntegration_SQL_OutputFormats(t *testing.T) {
 	setupSQLFixture(t)
 
-	out, err := runCmd(t, "sql", "--database", "/frlsql", "--schema", "main",
+	out, err := runCmd(t, "sql", "--database", "/FRL/frlsql", "--schema", "main",
 		"-o", "ndjson", "-c", "SELECT id, name FROM items WHERE id <= 2 ORDER BY id")
 	if err != nil {
 		t.Fatalf("sql -o ndjson: %v\noutput: %s", err, out)
@@ -317,7 +317,7 @@ func TestIntegration_SQL_OutputFormats(t *testing.T) {
 		t.Errorf("ndjson data lines = %d; want 2\n%s", dataLines, out)
 	}
 
-	out, err = runCmd(t, "sql", "--database", "/frlsql", "--schema", "main",
+	out, err = runCmd(t, "sql", "--database", "/FRL/frlsql", "--schema", "main",
 		"-o", "csv", "-c", "SELECT id, name FROM items WHERE id = 1")
 	if err != nil {
 		t.Fatalf("sql -o csv: %v\noutput: %s", err, out)
@@ -333,7 +333,7 @@ func TestIntegration_SQL_OutputFormats(t *testing.T) {
 func TestIntegration_SQL_DescribeAndExplain(t *testing.T) {
 	setupSQLFixture(t)
 	// The driver takes the DSN's names as given: the stored spellings.
-	db, err := sql.Open("fdbsql", buildFDBSQLDSN(fixture.clusterFilePath, "/FRLSQL", "MAIN"))
+	db, err := sql.Open("fdbsql", buildFDBSQLDSN(fixture.clusterFilePath, "/FRL/FRLSQL", "MAIN"))
 	if err != nil {
 		t.Fatalf("open fdbsql: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestIntegration_SQL_DescribeAndExplain(t *testing.T) {
 	r := &sqlRunner{
 		db: db, out: &out, errOut: &errOut, ctx: context.Background(),
 		clusterFile: fixture.clusterFilePath,
-		database:    "/FRLSQL", schema: "MAIN",
+		database:    "/FRL/FRLSQL", schema: "MAIN",
 		st: plainSQLStyles(), format: sqlFormatTable, timing: true,
 	}
 	defer r.close()
@@ -385,7 +385,7 @@ func TestIntegration_SQL_DescribeAndExplain(t *testing.T) {
 
 // TestIntegration_SQL_FlagSpellingsReachTheCatalogAndSchemaSwitch drives the
 // runner `frl sql` builds (openSQLRunner) from the flags as a user types them,
-// in lower case. CREATE DATABASE /frlswitch stores /FRLSWITCH, so the
+// in lower case. CREATE DATABASE /FRL/frlswitch stores /FRL/FRLSWITCH, so the
 // connection and the meta-commands' catalog lookups must both be handed the
 // folded path; `\d` looked up the path as typed when only the DSN folded it.
 // And `\c` switches the CONNECTION, not only the label the meta-commands read:
@@ -394,27 +394,27 @@ func TestIntegration_SQL_FlagSpellingsReachTheCatalogAndSchemaSwitch(t *testing.
 	bindConfig(t)
 	script := filepath.Join(t.TempDir(), "switch.sql")
 	if err := os.WriteFile(script, []byte(`
-CREATE DATABASE /frlswitch;
+CREATE DATABASE /FRL/frlswitch;
 CREATE SCHEMA TEMPLATE frlswitch_tpl CREATE TABLE t (id BIGINT, PRIMARY KEY (id));
-CREATE SCHEMA /frlswitch/main WITH TEMPLATE frlswitch_tpl;
-CREATE SCHEMA /frlswitch/other WITH TEMPLATE frlswitch_tpl;
+CREATE SCHEMA /FRL/frlswitch/main WITH TEMPLATE frlswitch_tpl;
+CREATE SCHEMA /FRL/frlswitch/other WITH TEMPLATE frlswitch_tpl;
 `), 0o600); err != nil {
 		t.Fatalf("write switch.sql: %v", err)
 	}
-	if out, err := runCmd(t, "sql", "--database", "/frlswitch", "-f", script); err != nil {
+	if out, err := runCmd(t, "sql", "--database", "/FRL/frlswitch", "-f", script); err != nil {
 		t.Fatalf("bootstrap: %v\noutput: %s", err, out)
 	}
 
 	var out, errOut bytes.Buffer
 	r, db, err := openSQLRunner(context.Background(), &out, &errOut,
-		fixture.clusterFilePath, "/frlswitch", "main", sqlFormatCSV)
+		fixture.clusterFilePath, "/FRL/frlswitch", "main", sqlFormatCSV)
 	if err != nil {
 		t.Fatalf("openSQLRunner: %v", err)
 	}
 	defer db.Close()
 	defer r.close()
-	if r.database != "/FRLSWITCH" || r.schema != "MAIN" {
-		t.Fatalf("runner target = (%q, %q), want the stored names (/FRLSWITCH, MAIN)", r.database, r.schema)
+	if r.database != "/FRL/FRLSWITCH" || r.schema != "MAIN" {
+		t.Fatalf("runner target = (%q, %q), want the stored names (/FRL/FRLSWITCH, MAIN)", r.database, r.schema)
 	}
 	if err := r.execute("INSERT INTO t VALUES (1)"); err != nil {
 		t.Fatalf("insert into MAIN: %v", err)
@@ -424,7 +424,7 @@ CREATE SCHEMA /frlswitch/other WITH TEMPLATE frlswitch_tpl;
 	errOut.Reset() // the INSERT's footer: CSV output sends it to errOut
 	r.runMeta(`\d t`)
 	if errOut.Len() > 0 || !strings.Contains(out.String(), "primary key: ID") {
-		t.Fatalf("\\d t through --database /frlswitch: out %q, err %q", out.String(), errOut.String())
+		t.Fatalf("\\d t through --database /FRL/frlswitch: out %q, err %q", out.String(), errOut.String())
 	}
 
 	count := func(when string) string {
@@ -454,7 +454,7 @@ CREATE SCHEMA /frlswitch/other WITH TEMPLATE frlswitch_tpl;
 	out.Reset()
 	errOut.Reset()
 	r.runMeta(`\c nope`)
-	if want := "Schema NOPE does not exist in /FRLSWITCH"; !strings.Contains(errOut.String(), want) {
+	if want := "Schema NOPE does not exist in /FRL/FRLSWITCH"; !strings.Contains(errOut.String(), want) {
 		t.Fatalf("\\c nope reported %q, want the connection's refusal %q", errOut.String(), want)
 	}
 	if r.schema != "OTHER" {

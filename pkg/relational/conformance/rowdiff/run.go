@@ -78,7 +78,7 @@ const maxPlanErrorSamples = 3
 // projection variant, and diffs each result against Oracle M.
 //
 // setupDB executes DDL (CREATE SCHEMA TEMPLATE / CREATE SCHEMA); dbPath is
-// the database path the caller created (e.g. "/testdb_rowdiff");
+// the database path the caller created (e.g. "/FRL/testdb_rowdiff");
 // clusterFile connects the per-schema query DB.
 func RunSeed(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, seed uint64) *SeedResult {
 	return RunCase(ctx, setupDB, dbPath, clusterFile, Generate(seed), fmt.Sprintf("rd%d", seed), 0)

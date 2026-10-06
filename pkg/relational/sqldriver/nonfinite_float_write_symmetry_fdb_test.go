@@ -121,8 +121,8 @@ func TestFDB_NonFiniteFloatWrite_IsSyntaxIndependent(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nffw")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nffw")
+	setup := openTestDB(t, "/FRL/testdb_nffw")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nffw")
 	// The DOUBLE and FLOAT targets are separate tables with exactly two columns
 	// each, because INSERT … SELECT with an explicit column list is rejected
 	// outright (0AF00) and would mask the value question behind a syntax one.
@@ -133,8 +133,8 @@ func TestFDB_NonFiniteFloatWrite_IsSyntaxIndependent(t *testing.T) {
 		// value read out of a column rather than a re-parsed literal.
 		"CREATE TABLE src (id BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE TABLE srcg (id BIGINT, g FLOAT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nffw/s WITH TEMPLATE nffw")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NFFW?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nffw/s WITH TEMPLATE nffw")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NFFW?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

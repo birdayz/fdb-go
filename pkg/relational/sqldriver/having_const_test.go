@@ -21,13 +21,13 @@ func TestFDB_HavingConstantScalarAggregate(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_havingconst")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_havingconst")
+	setup := openTestDB(t, "/FRL/testdb_havingconst")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_havingconst")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE havingconst "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_havingconst/s WITH TEMPLATE havingconst")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_HAVINGCONST?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_havingconst/s WITH TEMPLATE havingconst")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVINGCONST?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

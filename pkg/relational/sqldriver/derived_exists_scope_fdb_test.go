@@ -22,7 +22,7 @@ import (
 func TestFDB_DerivedAliasExistsCorrelation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/drv_ex"
+	dbPath := "/FRL/drv_ex"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

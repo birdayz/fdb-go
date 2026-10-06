@@ -31,12 +31,12 @@ fdbsql:///<database-path>?cluster_file=/etc/foundationdb/fdb.cluster&schema=<nam
 ```go
 import _ "fdb.dev/pkg/relational/sqldriver"
 
-db, err := sql.Open("fdbsql", "fdbsql:///MYAPP?cluster_file=/etc/foundationdb/fdb.cluster&schema=APP")
+db, err := sql.Open("fdbsql", "fdbsql:///FRL/MYAPP?cluster_file=/etc/foundationdb/fdb.cluster&schema=APP")
 ```
 
 The path and `schema` are taken exactly as written, as Java's JDBC URL takes them, while DDL folds an
-unquoted name to upper case, a database path whole: `CREATE DATABASE /myapp` stores `/MYAPP` and
-`CREATE SCHEMA /myapp/app` stores `APP`, so a DSN names them `fdbsql:///MYAPP?schema=APP`.
+unquoted name to upper case, a database path whole: `CREATE DATABASE /FRL/myapp` stores `/FRL/MYAPP` and
+`CREATE SCHEMA /FRL/myapp/app` stores `APP`, so a DSN names them `fdbsql:///FRL/MYAPP?schema=APP`.
 
 Cluster-file resolution order: the DSN `cluster_file` param → the `FDB_CLUSTER_FILE` environment
 variable → FDB's default file. The remote form `fdbsql://host:port/...` is **not implemented**

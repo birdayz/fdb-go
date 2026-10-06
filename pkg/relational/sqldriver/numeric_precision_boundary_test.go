@@ -35,15 +35,15 @@ func TestFDB_NumericPrecisionBoundary(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_npb")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_npb")
+	setup := openTestDB(t, "/FRL/testdb_npb")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_npb")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE npb "+
 		"CREATE TABLE d (id BIGINT, v DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE INDEX d_v ON d (v) "+
 		"CREATE TABLE b (id BIGINT, n BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX b_n ON b (n)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_npb/s WITH TEMPLATE npb")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NPB?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_npb/s WITH TEMPLATE npb")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NPB?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

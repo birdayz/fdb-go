@@ -52,8 +52,8 @@ func TestFDB_NonNullableArrayEmptyReadsBack(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nnarr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nnarr")
+	setup := openTestDB(t, "/FRL/testdb_nnarr")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nnarr")
 	// `arr` is NULLABLE (wrapper-encoded), `arr_nn` is NOT NULL (flat
 	// repeated). `tag` gives an indexed, non-array access path so the same
 	// column can be reached through an index scan rather than a full scan.
@@ -61,8 +61,8 @@ func TestFDB_NonNullableArrayEmptyReadsBack(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE nnarr "+
 			"CREATE TABLE t (pk BIGINT, tag BIGINT, arr INTEGER ARRAY, arr_nn INTEGER ARRAY NOT NULL, PRIMARY KEY (pk)) "+
 			"CREATE INDEX t_tag AS SELECT tag FROM t")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nnarr/s WITH TEMPLATE nnarr")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NNARR?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nnarr/s WITH TEMPLATE nnarr")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NNARR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

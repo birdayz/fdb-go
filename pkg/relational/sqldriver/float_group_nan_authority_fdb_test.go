@@ -150,14 +150,14 @@ func TestFDB_FloatGroupByNaNAuthority(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_fgna")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_fgna")
+	setup := openTestDB(t, "/FRL/testdb_fgna")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fgna")
 	// No index on d anywhere: this table exercises the STREAMING aggregation,
 	// which is the path Java decides with DynamicMessage.equals.
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgna "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fgna/s WITH TEMPLATE fgna")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FGNA?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fgna/s WITH TEMPLATE fgna")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FGNA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -262,13 +262,13 @@ func TestFDB_FloatAggregateIndexSplitsNaNPayloads(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_fgnaidx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_fgnaidx")
+	setup := openTestDB(t, "/FRL/testdb_fgnaidx")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fgnaidx")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgnaidx "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX cnt_by_d AS SELECT COUNT(*) FROM t GROUP BY d")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fgnaidx/s WITH TEMPLATE fgnaidx")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FGNAIDX?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fgnaidx/s WITH TEMPLATE fgnaidx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FGNAIDX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -327,12 +327,12 @@ func TestFDB_FloatGroupByNaNAuthority_Float32(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_fgna32")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_fgna32")
+	setup := openTestDB(t, "/FRL/testdb_fgna32")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fgna32")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgna32 "+
 		"CREATE TABLE t (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fgna32/s WITH TEMPLATE fgna32")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FGNA32?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fgna32/s WITH TEMPLATE fgna32")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FGNA32?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

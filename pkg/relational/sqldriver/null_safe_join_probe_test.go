@@ -19,15 +19,15 @@ func TestFDB_NullSafeJoinProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nsjoin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nsjoin")
+	setup := openTestDB(t, "/FRL/testdb_nsjoin")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nsjoin")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nsjoin "+
 			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX a_k ON a (k) CREATE INDEX b_k ON b (k)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nsjoin/s WITH TEMPLATE nsjoin")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NSJOIN?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nsjoin/s WITH TEMPLATE nsjoin")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NSJOIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

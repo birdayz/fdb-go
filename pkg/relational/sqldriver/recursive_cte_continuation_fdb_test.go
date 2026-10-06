@@ -15,7 +15,7 @@ import (
 func recursiveCteContDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	const dbPath = "/rec_cte_cont"
+	const dbPath = "/FRL/rec_cte_cont"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -132,7 +132,7 @@ func TestFDB_RecursiveDFS_Continuation_ResumeAcrossPages(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/rec_dfs_cont"
+	const dbPath = "/FRL/rec_dfs_cont"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -222,7 +222,7 @@ func TestFDB_RecursiveDFS_BelowFloorBudgetIsLoud(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/rec_dfs_floor"
+	const dbPath = "/FRL/rec_dfs_floor"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -289,7 +289,7 @@ func TestFDB_RecursiveDistinct_CycleTerminates(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/rec_dist_cont"
+	const dbPath = "/FRL/rec_dist_cont"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -362,7 +362,7 @@ func TestFDB_RecursiveCTE_CyclicPaged_HitsDepthCap(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/rec_cte_cyclic_paged"
+	const dbPath = "/FRL/rec_cte_cyclic_paged"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -455,7 +455,7 @@ func TestFDB_RecursiveDistinct_DeepChain(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/rec_dist_deep"
+	const dbPath = "/FRL/rec_dist_deep"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -520,7 +520,7 @@ func TestFDB_RecursiveDistinct_DeepChain_Unindexed(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/rec_dist_deep_noidx"
+	const dbPath = "/FRL/rec_dist_deep_noidx"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

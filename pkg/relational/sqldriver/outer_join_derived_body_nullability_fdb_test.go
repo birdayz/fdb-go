@@ -48,7 +48,7 @@ func TestFDB_OuterJoinDerivedBodyNullability(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/outer_derived_null"
+	dbPath := "/FRL/outer_derived_null"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -198,7 +198,7 @@ func TestFDB_DerivedJoinBodyRowAgreesWithThePlanner(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/derived_body_agree"
+	dbPath := "/FRL/derived_body_agree"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

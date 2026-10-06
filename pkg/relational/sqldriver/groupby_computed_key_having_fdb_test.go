@@ -132,8 +132,8 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/cgkh")
-	mustExec(t, setup, ctx, "CREATE DATABASE /cgkh")
+	setup := openTestDB(t, "/FRL/cgkh")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/cgkh")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cgkh_tmpl "+
 		"CREATE TYPE AS STRUCT st1(y BIGINT, z BIGINT) "+
 		"CREATE TYPE AS STRUCT st2(w BIGINT, x BIGINT) "+
@@ -141,9 +141,9 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 		"CREATE TYPE AS STRUCT st4(s BIGINT, t BIGINT) "+
 		"CREATE TABLE nested(id BIGINT, q st4, r st3, PRIMARY KEY(q.s, r.u.w)) "+
 		"CREATE TABLE flat(id BIGINT, c1 BIGINT, c2 BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /cgkh/s WITH TEMPLATE cgkh_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/cgkh/s WITH TEMPLATE cgkh_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///CGKH?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/CGKH?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

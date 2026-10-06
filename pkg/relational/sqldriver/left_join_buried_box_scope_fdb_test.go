@@ -18,7 +18,7 @@ func TestFDB_ProjectedExistsOverABuriedLeftJoinBox(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/f2lbb"
+	dbPath := "/FRL/f2lbb"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

@@ -341,7 +341,7 @@ func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 				return
 			}
 			defer setupDB.Close()
-			dbPath := fmt.Sprintf("/EQUIV_%d", w)
+			dbPath := fmt.Sprintf("/FRL/EQUIV_%d", w)
 			if _, err := setupDB.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 				t.Errorf("worker %d: create database: %v", w, err)
 				return

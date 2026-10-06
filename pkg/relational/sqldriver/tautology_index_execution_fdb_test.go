@@ -28,14 +28,14 @@ func TestFDB_TautologyIndexPredicateExecutes(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_taut_idx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_taut_idx")
+	setup := openTestDB(t, "/FRL/testdb_taut_idx")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_taut_idx")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE taut_idx "+
 			"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX i_true AS SELECT col1 FROM t1 WHERE TRUE")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_taut_idx/s WITH TEMPLATE taut_idx")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_TAUT_IDX?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_taut_idx/s WITH TEMPLATE taut_idx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TAUT_IDX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

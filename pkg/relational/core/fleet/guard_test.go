@@ -75,9 +75,9 @@ func TestGuardNotCatalogAllowsTenantSchemas(t *testing.T) {
 	t.Parallel()
 	ks := keyspace.New(subspace.Sub())
 	for _, target := range []Target{
-		{DatabaseID: "/tenants/acme", SchemaName: "PUBLIC"},
-		{DatabaseID: "/tenants/globex", SchemaName: "S1"},
-		{DatabaseID: "/tenants/initech", SchemaName: catalog.CatalogConstant},
+		{DatabaseID: "/FRL/tenants/acme", SchemaName: "PUBLIC"},
+		{DatabaseID: "/FRL/tenants/globex", SchemaName: "S1"},
+		{DatabaseID: "/FRL/tenants/initech", SchemaName: catalog.CatalogConstant},
 	} {
 		if err := GuardNotCatalog(ks, target); err != nil {
 			t.Errorf("GuardNotCatalog refused legitimate tenant %s: %v", target, err)
@@ -92,9 +92,9 @@ func TestGuardNotCatalogAllowsTenantSchemas(t *testing.T) {
 func TestFilterByTemplateIsCaseInsensitiveAndTotal(t *testing.T) {
 	t.Parallel()
 	targets := []Target{
-		{DatabaseID: "/db", SchemaName: "A", TemplateName: "TMPL"},
-		{DatabaseID: "/db", SchemaName: "B", TemplateName: "OTHER"},
-		{DatabaseID: "/db", SchemaName: "C", TemplateName: "tmpl"},
+		{DatabaseID: "/FRL/db", SchemaName: "A", TemplateName: "TMPL"},
+		{DatabaseID: "/FRL/db", SchemaName: "B", TemplateName: "OTHER"},
+		{DatabaseID: "/FRL/db", SchemaName: "C", TemplateName: "tmpl"},
 	}
 	if got := FilterByTemplate(targets, ""); len(got) != 3 {
 		t.Fatalf("empty template filter selected %d targets, want all 3", len(got))

@@ -42,16 +42,16 @@ func TestFDB_FusedNestedReferenceSurvivesNameKeyedConsumers(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_fnkc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_fnkc")
+	setup := openTestDB(t, "/FRL/testdb_fnkc")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fnkc")
 	// Every member collides with a top-level column of a DIFFERENT type. See the
 	// header before touching either side of a pair.
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE fnkc "+
 			"CREATE TYPE AS STRUCT nn (sk BIGINT, co STRING) "+
 			"CREATE TABLE t (id BIGINT, n nn, sk DOUBLE, co BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fnkc/s WITH TEMPLATE fnkc")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FNKC?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fnkc/s WITH TEMPLATE fnkc")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FNKC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -208,14 +208,14 @@ func TestFDB_NestedMemberSpelledLikeItsUnnestAliasIsRefused(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_fnua")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_fnua")
+	setup := openTestDB(t, "/FRL/testdb_fnua")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fnua")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE fnua "+
 			"CREATE TYPE AS STRUCT item (sku STRING, qty BIGINT) "+
 			"CREATE TABLE orders (order_id BIGINT, items item ARRAY, PRIMARY KEY (order_id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fnua/s WITH TEMPLATE fnua")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FNUA?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fnua/s WITH TEMPLATE fnua")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FNUA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

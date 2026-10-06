@@ -19,14 +19,14 @@ func TestFDB_ArithmeticIndex_IsMatched(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_arithmatch")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_arithmatch")
+	setup := openTestDB(t, "/FRL/testdb_arithmatch")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_arithmatch")
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE arithmatch_tpl
 		CREATE TABLE t(id BIGINT, a BIGINT, PRIMARY KEY(id))
 		CREATE INDEX i_a1 AS SELECT a + 1 FROM t`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_arithmatch/s1 WITH TEMPLATE arithmatch_tpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_arithmatch/s1 WITH TEMPLATE arithmatch_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_ARITHMATCH?cluster_file=%s&schema=S1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_ARITHMATCH?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

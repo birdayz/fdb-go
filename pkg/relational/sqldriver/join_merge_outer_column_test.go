@@ -32,8 +32,8 @@ func TestFDB_JoinMerge_OuterColumn_NotDropped(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_jm_outer")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_jm_outer")
+	setup := openTestDB(t, "/FRL/testdb_jm_outer")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_jm_outer")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE jm_outer_tmpl "+
 			// a <- b <- c chain. apay/cpay are OUTER-only payload columns (not join
@@ -44,9 +44,9 @@ func TestFDB_JoinMerge_OuterColumn_NotDropped(t *testing.T) {
 			"CREATE INDEX b_by_a ON b (b_aid) "+
 			"CREATE INDEX c_by_b ON c (c_bid) "+
 			"CREATE INDEX c_by_a ON c (c_aid)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_jm_outer/s WITH TEMPLATE jm_outer_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_jm_outer/s WITH TEMPLATE jm_outer_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_JM_OUTER?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JM_OUTER?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

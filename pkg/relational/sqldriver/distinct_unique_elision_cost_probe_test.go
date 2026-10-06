@@ -463,8 +463,8 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_duec")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_duec")
+	setup := openTestDB(t, "/FRL/testdb_duec")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duec")
 	// Three tables differing only in NULL density. EMAIL_PLAIN mirrors EMAIL
 	// value for value, NULL for NULL, and carries no index.
 	mwjoMustExec(t, setup, ctx,
@@ -483,8 +483,8 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 			"CREATE UNIQUE INDEX by_email1_s ON users1_s (email) "+
 			"CREATE TABLE users50_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email50_s ON users50_s (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duec/s WITH TEMPLATE duec")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUEC?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duec/s WITH TEMPLATE duec")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUEC?cluster_file=%s&schema=S", clusterFilePath)
 	db := duecOpenUncompressed(t, dsn)
 	db.SetMaxOpenConns(16)
 

@@ -20,14 +20,14 @@ func TestFDB_ProjectedExists_Round7(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_projexists_r7")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_projexists_r7")
+	setup := openTestDB(t, "/FRL/testdb_projexists_r7")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r7")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r7_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_projexists_r7/s WITH TEMPLATE projexists_r7_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r7/s WITH TEMPLATE projexists_r7_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PROJEXISTS_R7?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R7?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

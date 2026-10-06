@@ -39,15 +39,15 @@ func TestFDB_DMLPrimaryKeyDedupExecutes(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dmldedup")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dmldedup")
+	setup := openTestDB(t, "/FRL/testdb_dmldedup")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dmldedup")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dmldedup "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a) "+
 			"CREATE INDEX t_ab ON t (a, b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dmldedup/s WITH TEMPLATE dmldedup")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DMLDEDUP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dmldedup/s WITH TEMPLATE dmldedup")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DMLDEDUP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

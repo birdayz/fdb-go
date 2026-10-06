@@ -22,7 +22,7 @@ import (
 func TestFDB_ExistsOverLegsOfACrossProduct(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/exists_over_cross_product_legs"
+	dbPath := "/FRL/exists_over_cross_product_legs"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,

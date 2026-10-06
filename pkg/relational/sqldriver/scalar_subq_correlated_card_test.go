@@ -31,13 +31,13 @@ func TestFDB_ScalarSubqCorrelatedCardinality(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_sscc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sscc")
+	setup := openTestDB(t, "/FRL/testdb_sscc")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sscc")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sscc "+
 		"CREATE TABLE dept (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sscc/s WITH TEMPLATE sscc")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSCC?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sscc/s WITH TEMPLATE sscc")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSCC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -136,14 +136,14 @@ func TestFDB_ScalarSubqCorrelatedCardinality_SurvivesPushdown(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_sscp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sscp")
+	setup := openTestDB(t, "/FRL/testdb_sscp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sscp")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sscp "+
 		"CREATE TABLE dept (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX emp_dept ON emp (dept_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sscp/s WITH TEMPLATE sscp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSCP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sscp/s WITH TEMPLATE sscp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSCP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

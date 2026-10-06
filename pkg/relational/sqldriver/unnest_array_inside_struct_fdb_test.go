@@ -28,7 +28,7 @@ func TestFDB_UnnestArrayInsideStruct(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	const dbPath = "/testdb_unnest_arr_in_struct"
+	const dbPath = "/FRL/testdb_unnest_arr_in_struct"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

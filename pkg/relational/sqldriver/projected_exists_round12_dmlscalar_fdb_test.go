@@ -19,14 +19,14 @@ func TestFDB_ProjectedExistsRound12_DMLScalar(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_pexr12dmlsc")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_pexr12dmlsc")
+	setup := openTestDB(t, "/FRL/testdb_pexr12dmlsc")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pexr12dmlsc")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr12dmlsc_tmpl "+
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, fk BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t3 (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_pexr12dmlsc/s WITH TEMPLATE pexr12dmlsc_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PEXR12DMLSC?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pexr12dmlsc/s WITH TEMPLATE pexr12dmlsc_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PEXR12DMLSC?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

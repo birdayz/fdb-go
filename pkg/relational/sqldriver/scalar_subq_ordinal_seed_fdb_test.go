@@ -24,13 +24,13 @@ func TestFDB_ScalarSubqueryOrdinalSeed(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ssos")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ssos")
+	setup := openTestDB(t, "/FRL/testdb_ssos")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ssos")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssos "+
 		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ssos/s WITH TEMPLATE ssos")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSOS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ssos/s WITH TEMPLATE ssos")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSOS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -106,13 +106,13 @@ func TestFDB_ScalarSubqueryOrdinalSeed_ColumnType(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ssosct")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ssosct")
+	setup := openTestDB(t, "/FRL/testdb_ssosct")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ssosct")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssosct "+
 		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, ename STRING, dsal DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ssosct/s WITH TEMPLATE ssosct")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSOSCT?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ssosct/s WITH TEMPLATE ssosct")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSOSCT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -213,13 +213,13 @@ func TestFDB_ScalarInnerShapeProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ssisp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ssisp")
+	setup := openTestDB(t, "/FRL/testdb_ssisp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ssisp")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssisp "+
 		"CREATE TABLE dept (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, ename STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ssisp/s WITH TEMPLATE ssisp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSISP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ssisp/s WITH TEMPLATE ssisp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSISP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -12,12 +12,12 @@ import (
 func TestFDB_ConstantNullFolds(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_null_fold")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_null_fold")
+	setup := openTestDB(t, "/FRL/testdb_null_fold")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_null_fold")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE null_fold_tmpl "+
 		"CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id)) CREATE INDEX T_N ON T (n)")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_null_fold/s WITH TEMPLATE null_fold_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_NULL_FOLD?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_null_fold/s WITH TEMPLATE null_fold_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_FOLD?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

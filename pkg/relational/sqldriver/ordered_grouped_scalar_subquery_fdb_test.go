@@ -17,7 +17,7 @@ import (
 func ogsDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/ogs_" + tag
+	dbPath := "/FRL/ogs_" + tag
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

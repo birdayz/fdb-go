@@ -106,18 +106,18 @@ func TestFDB_DatabaseCRUD(t *testing.T) {
 	cat, run := newFDBCatalogInSubspace(t)
 
 	g.Expect(run(func(tx api.Transaction) error {
-		ok, err := cat.DoesDatabaseExist(tx, "/mydb")
+		ok, err := cat.DoesDatabaseExist(tx, "/FRL/mydb")
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		g.Expect(ok).To(gomega.BeFalse())
 		return nil
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
-		return cat.CreateDatabase(tx, "/mydb")
+		return cat.CreateDatabase(tx, "/FRL/mydb")
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
-		ok, err := cat.DoesDatabaseExist(tx, "/mydb")
+		ok, err := cat.DoesDatabaseExist(tx, "/FRL/mydb")
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		g.Expect(ok).To(gomega.BeTrue())
 		return nil
@@ -264,38 +264,38 @@ func TestFDB_SchemaCRUD(t *testing.T) {
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
-		ok, err := cat.DoesSchemaExist(tx, "/db", "pub")
+		ok, err := cat.DoesSchemaExist(tx, "/FRL/db", "pub")
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		g.Expect(ok).To(gomega.BeFalse())
 		return nil
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
-		return cat.SaveSchema(tx, tmpl.GenerateSchema("/db", "pub"), true, api.SchemaExistsError)
+		return cat.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "pub"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
-		ok, err := cat.DoesSchemaExist(tx, "/db", "pub")
+		ok, err := cat.DoesSchemaExist(tx, "/FRL/db", "pub")
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		g.Expect(ok).To(gomega.BeTrue())
 		return nil
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
-		s, err := cat.LoadSchema(tx, "/db", "pub")
+		s, err := cat.LoadSchema(tx, "/FRL/db", "pub")
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		g.Expect(s.MetadataName()).To(gomega.Equal("pub"))
-		g.Expect(s.DatabaseName()).To(gomega.Equal("/db"))
+		g.Expect(s.DatabaseName()).To(gomega.Equal("/FRL/db"))
 		g.Expect(s.SchemaTemplate().MetadataName()).To(gomega.Equal("schema-tmpl"))
 		return nil
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
-		return cat.DeleteSchema(tx, "/db", "pub")
+		return cat.DeleteSchema(tx, "/FRL/db", "pub")
 	})).To(gomega.Succeed())
 
 	err := run(func(tx api.Transaction) error {
-		_, err := cat.LoadSchema(tx, "/db", "pub")
+		_, err := cat.LoadSchema(tx, "/FRL/db", "pub")
 		return err
 	})
 	var apiErr *api.Error
@@ -333,7 +333,7 @@ func TestFDB_SaveSchemaWithUnknownTemplate(t *testing.T) {
 	tmpl := buildVersionedTemplate(t, "ghost-tmpl", 1)
 
 	err := run(func(tx api.Transaction) error {
-		return cat.SaveSchema(tx, tmpl.GenerateSchema("/db", "pub"), true, api.SchemaExistsError)
+		return cat.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "pub"), true, api.SchemaExistsError)
 	})
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
@@ -396,7 +396,7 @@ func TestFDB_RepairSchema(t *testing.T) {
 
 	g.Expect(run(func(tx api.Transaction) error {
 		g.Expect(tc.CreateTemplate(tx, tmpl1)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, tmpl1.GenerateSchema("/db", "pub"), true, api.SchemaExistsError)
+		return cat.SaveSchema(tx, tmpl1.GenerateSchema("/FRL/db", "pub"), true, api.SchemaExistsError)
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
@@ -404,11 +404,11 @@ func TestFDB_RepairSchema(t *testing.T) {
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
-		return cat.RepairSchema(tx, "/db", "pub")
+		return cat.RepairSchema(tx, "/FRL/db", "pub")
 	})).To(gomega.Succeed())
 
 	g.Expect(run(func(tx api.Transaction) error {
-		s, err := cat.LoadSchema(tx, "/db", "pub")
+		s, err := cat.LoadSchema(tx, "/FRL/db", "pub")
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		g.Expect(s.SchemaTemplate().Version()).To(gomega.Equal(2))
 		return nil
@@ -617,7 +617,7 @@ func TestFDB_DeleteSchemaNotFound(t *testing.T) {
 	cat, run := newFDBCatalogInSubspace(t)
 
 	err := run(func(tx api.Transaction) error {
-		return cat.DeleteSchema(tx, "/db", "ghost")
+		return cat.DeleteSchema(tx, "/FRL/db", "ghost")
 	})
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
@@ -632,7 +632,7 @@ func TestFDB_LoadSchemaNotFound(t *testing.T) {
 	cat, run := newFDBCatalogInSubspace(t)
 
 	err := run(func(tx api.Transaction) error {
-		_, err := cat.LoadSchema(tx, "/db", "ghost")
+		_, err := cat.LoadSchema(tx, "/FRL/db", "ghost")
 		return err
 	})
 	var apiErr *api.Error
@@ -717,7 +717,7 @@ func TestFDB_ClosedTransactionRejected(t *testing.T) {
 		cat, cerr := NewRecordLayerStoreCatalog(subspace.Sub([]byte("closed-tx-test")))
 		g.Expect(cerr).ToNot(gomega.HaveOccurred())
 
-		_, opErr := cat.DoesDatabaseExist(tx, "/db")
+		_, opErr := cat.DoesDatabaseExist(tx, "/FRL/db")
 		var apiErr *api.Error
 		g.Expect(errors.As(opErr, &apiErr)).To(gomega.BeTrue())
 		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeTransactionInactive))
@@ -746,7 +746,7 @@ func TestFDB_TemplateRoundTripPreservesSchema(t *testing.T) {
 
 		// Original template has 3 record types; round-tripped
 		// template's generated schema must have the same tables.
-		s := got.GenerateSchema("/db", "pub")
+		s := got.GenerateSchema("/FRL/db", "pub")
 		tables, err := s.Tables()
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		g.Expect(tables).To(gomega.HaveLen(3))

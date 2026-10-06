@@ -21,14 +21,14 @@ func TestFDB_DoubleOracleConsistency(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dbloracle")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dbloracle")
+	setup := openTestDB(t, "/FRL/testdb_dbloracle")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dbloracle")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dbloracle "+
 			"CREATE TABLE t (id BIGINT, k DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_k ON t (k)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dbloracle/s WITH TEMPLATE dbloracle")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DBLORACLE?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dbloracle/s WITH TEMPLATE dbloracle")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DBLORACLE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

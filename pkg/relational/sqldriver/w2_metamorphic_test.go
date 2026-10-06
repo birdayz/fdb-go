@@ -42,7 +42,7 @@ func w2DB(t *testing.T, seed int64) (*sql.DB, []w2Row) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := fmt.Sprintf("/w2_%d_%s", seed, t.Name())
+	dbPath := fmt.Sprintf("/FRL/w2_%d_%s", seed, t.Name())
 	db := openTestDB(t, dbPath)
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

@@ -19,13 +19,13 @@ func TestFDB_AggNullSemanticsProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggnull")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggnull")
+	setup := openTestDB(t, "/FRL/testdb_aggnull")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggnull")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggnull "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggnull/s WITH TEMPLATE aggnull")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGNULL?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggnull/s WITH TEMPLATE aggnull")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGNULL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

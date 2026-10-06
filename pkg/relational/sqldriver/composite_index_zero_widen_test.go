@@ -43,8 +43,8 @@ func TestFDB_CompositeIndexZeroWidening(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_czw")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_czw")
+	setup := openTestDB(t, "/FRL/testdb_czw")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_czw")
 	// s: single-column index only. c: composite only. u: no index at all.
 	// The same predicate must answer identically through all three.
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czw "+
@@ -53,8 +53,8 @@ func TestFDB_CompositeIndexZeroWidening(t *testing.T) {
 		"CREATE TABLE c (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX c_vw ON c (v, w) "+
 		"CREATE TABLE u (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_czw/s WITH TEMPLATE czw")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CZW?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_czw/s WITH TEMPLATE czw")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CZW?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

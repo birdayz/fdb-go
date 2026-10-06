@@ -24,7 +24,7 @@ import (
 func TestFDB_LeftBoxWhereExistsOrdinal(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/i2c4_lift"
+	dbPath := "/FRL/i2c4_lift"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

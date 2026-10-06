@@ -21,13 +21,13 @@ func TestFDB_InsertSelectGroupByProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_isg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_isg")
+	setup := openTestDB(t, "/FRL/testdb_isg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_isg")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE isg "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE dst (g BIGINT, total BIGINT, PRIMARY KEY (g))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_isg/s WITH TEMPLATE isg")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ISG?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_isg/s WITH TEMPLATE isg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ISG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -14,8 +14,8 @@ import (
 func TestFDB_Views(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_views")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_views")
+	setup := openTestDB(t, "/FRL/testdb_views")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_views")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE views_tmpl "+
 		"CREATE TABLE T (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE VIEW V1 AS SELECT id, v FROM T WHERE g > 0 "+
@@ -24,8 +24,8 @@ func TestFDB_Views(t *testing.T) {
 		`CREATE INDEX "q_idx" ON "q_view" ("k") `+
 		"CREATE VIEW AGG AS SELECT g, MAX_EVER(v) AS m FROM T GROUP BY g "+
 		"CREATE INDEX AGG_IDX ON AGG (m, g)")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_views/s WITH TEMPLATE views_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_VIEWS?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_views/s WITH TEMPLATE views_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_VIEWS?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

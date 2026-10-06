@@ -22,13 +22,13 @@ func TestFDB_UpdateConstraintEnforcementProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_uce")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uce")
+	setup := openTestDB(t, "/FRL/testdb_uce")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uce")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uce "+
 		"CREATE TABLE t (id BIGINT, email STRING, nn BIGINT, PRIMARY KEY (id)) "+
 		"CREATE UNIQUE INDEX t_email ON t (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uce/s WITH TEMPLATE uce")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UCE?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uce/s WITH TEMPLATE uce")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UCE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

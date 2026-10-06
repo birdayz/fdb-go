@@ -25,8 +25,8 @@ func TestFDB_AggregateInputOrdinal(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggin_ord")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggin_ord")
+	setup := openTestDB(t, "/FRL/testdb_aggin_ord")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggin_ord")
 	// idx_g is a covering index whose row layout ([g, id]) differs from the table's
 	// declaration order ([id, g, v, price, active]); a grouped scan over it exercises
 	// the covering-index dimension — the group key must resolve by NAME against the
@@ -36,8 +36,8 @@ func TestFDB_AggregateInputOrdinal(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE aggin_ord "+
 			"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, price BIGINT, active BOOLEAN, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_g ON t (g)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggin_ord/s WITH TEMPLATE aggin_ord")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGIN_ORD?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggin_ord/s WITH TEMPLATE aggin_ord")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGIN_ORD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

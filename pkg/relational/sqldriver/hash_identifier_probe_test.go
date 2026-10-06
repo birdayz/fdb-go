@@ -25,7 +25,7 @@ func TestFDB_QuotedHashIdentifier(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	dbPath := "/hash_ident_probe"
+	dbPath := "/FRL/hash_ident_probe"
 	setup := openTestDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,

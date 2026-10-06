@@ -24,14 +24,14 @@ func TestFDB_InJoin_PreserveRequestClaimsNoOrder(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_injoin_sorted")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_injoin_sorted")
+	setup := openTestDB(t, "/FRL/testdb_injoin_sorted")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_injoin_sorted")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE injoin_sorted_tmpl "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_injoin_sorted/s WITH TEMPLATE injoin_sorted_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INJOIN_SORTED?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_injoin_sorted/s WITH TEMPLATE injoin_sorted_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INJOIN_SORTED?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

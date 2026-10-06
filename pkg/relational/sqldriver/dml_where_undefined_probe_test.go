@@ -23,14 +23,14 @@ func TestFDB_DmlWhereUndefinedProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dwu")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dwu")
+	setup := openTestDB(t, "/FRL/testdb_dwu")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dwu")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dwu CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 
 	newDB := func(t *testing.T, schema string) *sql.DB {
-		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dwu/"+schema+" WITH TEMPLATE dwu")
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DWU?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
+		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dwu/"+schema+" WITH TEMPLATE dwu")
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DWU?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}

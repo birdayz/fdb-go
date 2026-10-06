@@ -12,7 +12,7 @@ func benchmarkCatalogWithSchemas(b *testing.B, numDatabases, schemasPerDB int) (
 	b.Helper()
 	c, tx, tmpl := newSeededCatalog(b, "demo")
 	for d := 0; d < numDatabases; d++ {
-		db := "/db-" + strconv.Itoa(d)
+		db := "/FRL/db-" + strconv.Itoa(d)
 		for s := 0; s < schemasPerDB; s++ {
 			if err := c.SaveSchema(tx, tmpl.GenerateSchema(db, "s-"+strconv.Itoa(s)), true, api.SchemaExistsError); err != nil {
 				b.Fatalf("seed SaveSchema: %v", err)
@@ -29,7 +29,7 @@ func BenchmarkLoadSchema(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := c.LoadSchema(tx, "/db-5", "s-5"); err != nil {
+		if _, err := c.LoadSchema(tx, "/FRL/db-5", "s-5"); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -42,7 +42,7 @@ func BenchmarkDoesSchemaExist(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := c.DoesSchemaExist(tx, "/db-5", "s-5"); err != nil {
+		if _, err := c.DoesSchemaExist(tx, "/FRL/db-5", "s-5"); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -55,7 +55,7 @@ func BenchmarkListSchemasInDatabase(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		rs, err := c.ListSchemasInDatabase(tx, "/db-0", nil)
+		rs, err := c.ListSchemasInDatabase(tx, "/FRL/db-0", nil)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -71,7 +71,7 @@ func BenchmarkListSchemasInDatabase(b *testing.B) {
 // no-op after the existence and template checks.
 func BenchmarkSaveSchemaUpsert(b *testing.B) {
 	c, tx, tmpl := benchmarkCatalogWithSchemas(b, 1, 1)
-	existing := tmpl.GenerateSchema("/db-0", "s-0")
+	existing := tmpl.GenerateSchema("/FRL/db-0", "s-0")
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

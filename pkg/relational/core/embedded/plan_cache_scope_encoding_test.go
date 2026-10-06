@@ -60,8 +60,8 @@ func TestPlanCacheScope_ArbitraryBytesInjective(t *testing.T) {
 		{"/tenant_b", "MAIN", 0, ""},
 		// A dbPath that could absorb the following component under a
 		// delimiter join, in both directions.
-		{"/db\x014", "MAIN", 0, ""},
-		{"/db", "\x014MAIN", 0, ""},
+		{"/FRL/db\x014", "MAIN", 0, ""},
+		{"/FRL/db", "\x014MAIN", 0, ""},
 		{"\x01", "", 0, ""},
 		// An EMPTY component must still be emitted, as a zero-length one.
 		// Dropping it on emptiness would make the component COUNT depend on
@@ -169,7 +169,7 @@ func TestPlanCacheScope_SizeEstimateExact(t *testing.T) {
 		opts    string
 	}{
 		{"", "SCHEMA_A", 17, ""},
-		{"/DB", "SCHEMA_A", 17, ""},
+		{"/FRL/DB", "SCHEMA_A", 17, ""},
 		{"", "", 0, ""},
 		{strings.Repeat("d", 40), strings.Repeat("x", 250), 1234, strings.Repeat("y", 12)},
 	} {
@@ -210,7 +210,7 @@ func FuzzPlanCacheScope_Injective(f *testing.F) {
 	f.Add("", "A\x011", 2, "")
 	f.Add("", "\x00\x01", 10, "rd\x01")
 	f.Add("/tenant_a", "MAIN", 0, "")
-	f.Add("/db\x014", "MAIN", 0, "")
+	f.Add("/FRL/db\x014", "MAIN", 0, "")
 
 	type tuple4 struct {
 		dbPath  string

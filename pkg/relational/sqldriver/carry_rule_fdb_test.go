@@ -198,7 +198,7 @@ func carryInsert(table string, n int, row func(i int) string) []string {
 func TestFDB_Carry_AddedTableKeepsTheStoredNumbering(t *testing.T) {
 	t.Parallel()
 	h := newFleetHarness(t)
-	dbPath := "/carry_table_" + t.Name()[len(t.Name())-8:]
+	dbPath := "/FRL/carry_table_" + t.Name()[len(t.Name())-8:]
 	v1 := "CREATE TABLE b(id BIGINT, x BIGINT, PRIMARY KEY(id))"
 	carrySetup(t, h, dbPath, "CARRY_TABLE", v1, []string{"S"}, func(string) []string {
 		return []string{"INSERT INTO b VALUES (1, 10), (2, 20)"}
@@ -263,7 +263,7 @@ func TestFDB_Carry_ChangedIndexIsRebuiltOnOpen(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			h := newFleetHarness(t)
-			dbPath := fmt.Sprintf("/carry_changed_%d", c.rows)
+			dbPath := fmt.Sprintf("/FRL/carry_changed_%d", c.rows)
 			body := func(cols string) string {
 				return "CREATE TABLE t(id BIGINT, c BIGINT, v BIGINT, PRIMARY KEY(id)) CREATE INDEX ix AS SELECT " + cols + " FROM t ORDER BY " + cols
 			}
@@ -333,7 +333,7 @@ func TestFDB_Carry_ChangedIndexIsRebuiltOnOpen(t *testing.T) {
 func TestFDB_Carry_DroppedIndexBecomesAFormerIndex(t *testing.T) {
 	t.Parallel()
 	h := newFleetHarness(t)
-	dbPath := "/carry_dropped"
+	dbPath := "/FRL/carry_dropped"
 	table := "CREATE TABLE t(id BIGINT, c BIGINT, PRIMARY KEY(id))"
 	carrySetup(t, h, dbPath, "CARRY_DROPPED", table+" CREATE INDEX ix AS SELECT c FROM t ORDER BY c", []string{"S"}, func(string) []string {
 		return carryInsert("t", 20, func(i int) string { return fmt.Sprintf("(%d, %d)", i, i) })
@@ -384,7 +384,7 @@ func carryIndexEntries(t *testing.T, h *fleetHarness, dbPath, schema, index stri
 func TestFDB_Carry_ATenantOnAnOlderVersionRebindsToTheLatest(t *testing.T) {
 	t.Parallel()
 	h := newFleetHarness(t)
-	dbPath := "/carry_older"
+	dbPath := "/FRL/carry_older"
 	table := "CREATE TABLE t(id BIGINT, c BIGINT, v BIGINT, PRIMARY KEY(id))"
 	carrySetup(t, h, dbPath, "CARRY_OLDER", table, []string{"A", "B"}, func(s string) []string {
 		return carryInsert("t", 10, func(i int) string { return fmt.Sprintf("(%d, %d, %d)", i, i%3, i) })
@@ -429,7 +429,7 @@ func fleetTargetsNamed(t *testing.T, h *fleetHarness, dbPath, schema string) []f
 func TestFDB_Carry_PredicateChangeIsAChangedIndex(t *testing.T) {
 	t.Parallel()
 	h := newFleetHarness(t)
-	dbPath := "/carry_predicate"
+	dbPath := "/FRL/carry_predicate"
 	body := func(bound int) string {
 		return fmt.Sprintf("CREATE TABLE t(id BIGINT, c BIGINT, PRIMARY KEY(id)) CREATE INDEX ix AS SELECT c FROM t WHERE c > %d ORDER BY c", bound)
 	}
@@ -478,7 +478,7 @@ func TestFDB_Carry_PredicateChangeIsAChangedIndex(t *testing.T) {
 func TestFDB_Carry_EquivalentIndexIsNotRebuilt(t *testing.T) {
 	t.Parallel()
 	h := newFleetHarness(t)
-	dbPath := "/carry_equivalent"
+	dbPath := "/FRL/carry_equivalent"
 	body := "CREATE TABLE t(id BIGINT, c BIGINT, PRIMARY KEY(id)) CREATE INDEX ix AS SELECT c FROM t ORDER BY c"
 	carrySetup(t, h, dbPath, "CARRY_EQUIVALENT", body, []string{"S"}, func(string) []string {
 		return carryInsert("t", 260, func(i int) string { return fmt.Sprintf("(%d, %d)", i, i%5) })
@@ -511,7 +511,7 @@ func TestFDB_Carry_EquivalentIndexIsNotRebuilt(t *testing.T) {
 func TestFDB_Carry_ReAddingADroppedNameIsRefused(t *testing.T) {
 	t.Parallel()
 	h := newFleetHarness(t)
-	dbPath := "/carry_readd"
+	dbPath := "/FRL/carry_readd"
 	table := "CREATE TABLE t(id BIGINT, c BIGINT, v BIGINT, PRIMARY KEY(id))"
 	carrySetup(t, h, dbPath, "CARRY_READD", table+" CREATE INDEX ix AS SELECT c FROM t ORDER BY c", []string{"S"}, func(string) []string { return nil })
 	stored2, err := carrySave(t, h, carryTemplate(t, "CARRY_READD", 2, table))
@@ -539,7 +539,7 @@ func TestFDB_Carry_OptionOnlyChangeIsRebuilt(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			h := newFleetHarness(t)
-			dbPath := fmt.Sprintf("/carry_option_%d", c.rows)
+			dbPath := fmt.Sprintf("/FRL/carry_option_%d", c.rows)
 			name := fmt.Sprintf("CARRY_OPTION_%d", c.rows)
 			body := func(unique string) string {
 				return "CREATE TABLE t(id BIGINT, c BIGINT, PRIMARY KEY(id)) CREATE " + unique + "INDEX ix AS SELECT c FROM t ORDER BY c"

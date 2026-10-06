@@ -60,7 +60,7 @@ func TestFDB_UnnestElementMemberRebaseGate(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	const dbPath = "/testdb_unnest_rebase_gate"
+	const dbPath = "/FRL/testdb_unnest_rebase_gate"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

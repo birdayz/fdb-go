@@ -206,8 +206,8 @@ func TestFDB_FloatOrderingClaim_Aggregate_Differential(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_focagg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_focagg")
+	setup := openTestDB(t, "/FRL/testdb_focagg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_focagg")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE focagg "+
 		// ai: an ORDINARY index over (d, a) — the streaming-aggregation shape.
 		"CREATE TABLE ai (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
@@ -218,8 +218,8 @@ func TestFDB_FloatOrderingClaim_Aggregate_Differential(t *testing.T) {
 		"CREATE TABLE ao (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX ai_da ON ai (d, a) "+
 		"CREATE INDEX sum_by_d AS SELECT SUM(a) FROM ag GROUP BY d")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_focagg/s WITH TEMPLATE focagg")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FOCAGG?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_focagg/s WITH TEMPLATE focagg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FOCAGG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

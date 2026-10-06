@@ -41,14 +41,14 @@ func TestFDB_UnnestMemberPredicateServesRows(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_umpr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_umpr")
+	setup := openTestDB(t, "/FRL/testdb_umpr")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_umpr")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE umpr "+
 			"CREATE TYPE AS STRUCT item (sku STRING, qty BIGINT) "+
 			"CREATE TABLE orders (order_id BIGINT, items item ARRAY, PRIMARY KEY (order_id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_umpr/s WITH TEMPLATE umpr")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UMPR?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_umpr/s WITH TEMPLATE umpr")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UMPR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

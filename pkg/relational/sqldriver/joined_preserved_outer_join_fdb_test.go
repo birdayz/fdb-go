@@ -23,8 +23,8 @@ func TestFDB_JoinedPreservedSide_LeftOuterRows(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_jps")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_jps")
+	setup := openTestDB(t, "/FRL/testdb_jps")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_jps")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE jps "+
 			"CREATE TABLE a (id BIGINT, flag BIGINT, PRIMARY KEY (id)) "+
@@ -32,8 +32,8 @@ func TestFDB_JoinedPreservedSide_LeftOuterRows(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_jps/s WITH TEMPLATE jps")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_JPS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_jps/s WITH TEMPLATE jps")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JPS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

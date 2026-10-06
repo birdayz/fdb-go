@@ -12,7 +12,7 @@ import (
 // unrestricted (RFC-257 WS-E 6.2).
 func TestConnectionOptions_UnknownParameterIsRefused(t *testing.T) {
 	t.Parallel()
-	dsn, err := ParseDSN("fdbsql:///db?cluster_file=/f&schema=S&dryrun=true&zz=1")
+	dsn, err := ParseDSN("fdbsql:///FRL/db?cluster_file=/f&schema=S&dryrun=true&zz=1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestConnectionOptions_AcceptedParameters(t *testing.T) {
 		"cluster_file=/f", "schema=S", "dry_run=true", "isolation_level_snapshot=true",
 		"planner_statistics=true", "restrict_ddl_to_session_database=true", "transaction_tags=a",
 	} {
-		dsn, err := ParseDSN("fdbsql:///db?" + query)
+		dsn, err := ParseDSN("fdbsql:///FRL/db?" + query)
 		if err != nil {
 			t.Fatalf("%s: parse: %v", query, err)
 		}
@@ -44,7 +44,7 @@ func TestConnectionOptions_AcceptedParameters(t *testing.T) {
 			t.Errorf("%s refused: %v", query, err)
 		}
 	}
-	dsn, err := ParseDSN("fdbsql:///db?dry_run=true&isolation_level_snapshot=false")
+	dsn, err := ParseDSN("fdbsql:///FRL/db?dry_run=true&isolation_level_snapshot=false")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestConnectionOptions_AcceptedParameters(t *testing.T) {
 	if opts.Get(api.OptDryRun) != true || opts.Get(api.OptIsolationLevelSnapshot) != false {
 		t.Fatalf("options %v; want DRY_RUN true, ISOLATION_LEVEL_SNAPSHOT false", opts.AllEntries())
 	}
-	bad, err := ParseDSN("fdbsql:///db?dry_run=maybe")
+	bad, err := ParseDSN("fdbsql:///FRL/db?dry_run=maybe")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestConnectionOptions_AcceptedParameters(t *testing.T) {
 // lower-cased option, converted and checked by the option's contract.
 func TestConnectionOptions_PlanCacheParameters(t *testing.T) {
 	t.Parallel()
-	dsn, err := ParseDSN("fdbsql:///db?plan_cache_tertiary_max_entries=4&plan_cache_secondary_time_to_live_millis=60000")
+	dsn, err := ParseDSN("fdbsql:///FRL/db?plan_cache_tertiary_max_entries=4&plan_cache_secondary_time_to_live_millis=60000")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestConnectionOptions_PlanCacheParameters(t *testing.T) {
 		t.Fatalf("options %v", opts.AllEntries())
 	}
 	for _, bad := range []string{"plan_cache_secondary_max_entries=0", "plan_cache_primary_time_to_live_millis=x"} {
-		d, err := ParseDSN("fdbsql:///db?" + bad)
+		d, err := ParseDSN("fdbsql:///FRL/db?" + bad)
 		if err != nil {
 			t.Fatal(err)
 		}

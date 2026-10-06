@@ -30,7 +30,7 @@ func TestFDB_CorrelatedIndexExistsStaysIndexed(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/corridxexists"
+	dbPath := "/FRL/corridxexists"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

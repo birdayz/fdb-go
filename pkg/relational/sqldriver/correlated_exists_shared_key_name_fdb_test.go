@@ -43,16 +43,16 @@ func TestFDB_CorrelatedExistsSharedKeyName(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_cexsharedkey")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_cexsharedkey")
+	setup := openTestDB(t, "/FRL/testdb_cexsharedkey")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cexsharedkey")
 	// products.ID and orders.ID are both the primary key, both named ID, both
 	// the first declared column. orders.product_id is the foreign key.
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cex_tmpl "+
 		"CREATE TABLE products (id BIGINT, category STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE orders (id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cexsharedkey/s WITH TEMPLATE cex_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cexsharedkey/s WITH TEMPLATE cex_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_CEXSHAREDKEY?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_CEXSHAREDKEY?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

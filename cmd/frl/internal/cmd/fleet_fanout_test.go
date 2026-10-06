@@ -24,7 +24,7 @@ func TestFleetFanoutFlagContract(t *testing.T) {
 	}{
 		{
 			name: "index build --all-schemas rejects a single-store --schema",
-			args: []string{"index", "build", "--all-schemas", "--database", "/tenants", "--schema", "S1"},
+			args: []string{"index", "build", "--all-schemas", "--database", "/FRL/tenants", "--schema", "S1"},
 			want: "drop --schema",
 		},
 		{
@@ -39,7 +39,7 @@ func TestFleetFanoutFlagContract(t *testing.T) {
 		},
 		{
 			name: "meta catalog repair has no single-schema form",
-			args: []string{"meta", "catalog", "repair", "--database", "/tenants"},
+			args: []string{"meta", "catalog", "repair", "--database", "/FRL/tenants"},
 			want: "--all-schemas",
 		},
 		{
@@ -71,8 +71,8 @@ func TestFleetFanoutFlagContract(t *testing.T) {
 func TestFleetIndexBuildAcceptsAnOptionalIndexName(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{
-		{"index", "build", "--all-schemas", "--database", "/tenants", "--yes", "--cluster-file", "/nonexistent-cluster-file"},
-		{"index", "build", "IDX", "--all-schemas", "--database", "/tenants", "--yes", "--cluster-file", "/nonexistent-cluster-file"},
+		{"index", "build", "--all-schemas", "--database", "/FRL/tenants", "--yes", "--cluster-file", "/nonexistent-cluster-file"},
+		{"index", "build", "IDX", "--all-schemas", "--database", "/FRL/tenants", "--yes", "--cluster-file", "/nonexistent-cluster-file"},
 	} {
 		_, err := runCmd(t, args...)
 		if err == nil {

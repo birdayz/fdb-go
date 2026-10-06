@@ -17,13 +17,13 @@ func TestFDB_NegativeDoubleIndexProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ndi")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ndi")
+	setup := openTestDB(t, "/FRL/testdb_ndi")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ndi")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ndi CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_d ON t (d)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ndi/s WITH TEMPLATE ndi")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NDI?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ndi/s WITH TEMPLATE ndi")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NDI?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

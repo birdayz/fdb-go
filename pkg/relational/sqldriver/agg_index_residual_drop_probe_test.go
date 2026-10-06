@@ -28,15 +28,15 @@ func TestFDB_AggIndexResidualDrop(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggresid")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggresid")
+	setup := openTestDB(t, "/FRL/testdb_aggresid")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggresid")
 	// f is a NON-group, NON-aggregate column. sum_by_g groups by g and sums v.
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggresid "+
 			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, f BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggresid/s WITH TEMPLATE aggresid")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGRESID?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggresid/s WITH TEMPLATE aggresid")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGRESID?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -139,14 +139,14 @@ func TestFDB_AggIndexResidualDrop_NonLeadingKey(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggresid2")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggresid2")
+	setup := openTestDB(t, "/FRL/testdb_aggresid2")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggresid2")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggresid2 "+
 			"CREATE TABLE ga2 (id BIGINT, g1 BIGINT, g2 STRING, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_g1g2 AS SELECT SUM(v) FROM ga2 GROUP BY g1, g2")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggresid2/s WITH TEMPLATE aggresid2")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGRESID2?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggresid2/s WITH TEMPLATE aggresid2")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGRESID2?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -186,14 +186,14 @@ func TestFDB_CountColumnNonZero(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_countcol")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_countcol")
+	setup := openTestDB(t, "/FRL/testdb_countcol")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_countcol")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE countcol "+
 			"CREATE TABLE orders (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_amount ON orders(amount)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_countcol/s WITH TEMPLATE countcol")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_COUNTCOL?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_countcol/s WITH TEMPLATE countcol")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COUNTCOL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

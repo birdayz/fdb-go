@@ -47,7 +47,7 @@ func runInBench(b *testing.B, ib inBench) {
 	ctx := context.Background()
 
 	seq := benchSeq.Add(1)
-	dbPath := fmt.Sprintf("/bench_inunion_%d", seq)
+	dbPath := fmt.Sprintf("/FRL/bench_inunion_%d", seq)
 	tmpl := fmt.Sprintf("bench_inunion_tmpl_%d", seq)
 
 	setup := openBenchDB(b, dbPath)

@@ -22,7 +22,7 @@ func qualityProbeDB(t *testing.T, suffix string) *sql.DB {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := fmt.Sprintf("/qp_%s_%s", suffix, t.Name())
+	dbPath := fmt.Sprintf("/FRL/qp_%s_%s", suffix, t.Name())
 	db := openTestDB(t, dbPath)
 
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
@@ -1422,7 +1422,7 @@ func TestFDB_QualityProbe_TypeCoercionEdge(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := fmt.Sprintf("/qp_tce_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/qp_tce_%s", t.Name())
 	db := openTestDB(t, dbPath)
 
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
@@ -1600,7 +1600,7 @@ func TestFDB_QualityProbe_InsertSelect(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := fmt.Sprintf("/qp_is_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/qp_is_%s", t.Name())
 	db := openTestDB(t, dbPath)
 
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
@@ -2273,7 +2273,7 @@ func TestFDB_QualityProbe_UpdateWithSubquery(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := fmt.Sprintf("/qp_uws_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/qp_uws_%s", t.Name())
 	db := openTestDB(t, dbPath)
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -2648,7 +2648,7 @@ func TestFDB_QualityProbe_MultiTableInsertDelete(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := fmt.Sprintf("/qp_mtid_%s", t.Name())
+	dbPath := fmt.Sprintf("/FRL/qp_mtid_%s", t.Name())
 	db := openTestDB(t, dbPath)
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

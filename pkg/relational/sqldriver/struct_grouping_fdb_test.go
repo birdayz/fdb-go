@@ -30,8 +30,8 @@ func TestFDB_StructGrouping(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/structgroup")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /structgroup"); err != nil {
+	setup := openTestDB(t, "/FRL/structgroup")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/structgroup"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -41,10 +41,10 @@ func TestFDB_StructGrouping(t *testing.T) {
 			"CREATE TABLE T_S (id BIGINT, home ADDR, cat STRING, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
-	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /structgroup/s WITH TEMPLATE sgr_tmpl"); err != nil {
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/structgroup/s WITH TEMPLATE sgr_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql:///STRUCTGROUP?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/STRUCTGROUP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

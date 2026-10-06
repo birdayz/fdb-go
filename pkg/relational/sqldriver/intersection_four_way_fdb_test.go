@@ -19,8 +19,8 @@ func TestFDB_FourWayIntersection(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ix4way")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ix4way")
+	setup := openTestDB(t, "/FRL/testdb_ix4way")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ix4way")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ix4way "+
 			"CREATE TABLE ix4 (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, payload STRING, PRIMARY KEY (id)) "+
@@ -28,9 +28,9 @@ func TestFDB_FourWayIntersection(t *testing.T) {
 			"CREATE INDEX idx_b ON ix4 (b) "+
 			"CREATE INDEX idx_c ON ix4 (c) "+
 			"CREATE INDEX idx_d ON ix4 (d)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ix4way/s WITH TEMPLATE ix4way")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ix4way/s WITH TEMPLATE ix4way")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IX4WAY?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IX4WAY?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

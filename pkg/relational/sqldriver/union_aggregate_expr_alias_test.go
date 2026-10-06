@@ -28,15 +28,15 @@ func TestFDB_UnionAggregateExprAlias(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_union_expralias")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_union_expralias")
+	setup := openTestDB(t, "/FRL/testdb_union_expralias")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_union_expralias")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE union_expralias_tmpl "+
 			"CREATE TABLE a (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, g BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_union_expralias/s WITH TEMPLATE union_expralias_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_union_expralias/s WITH TEMPLATE union_expralias_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UNION_EXPRALIAS?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_EXPRALIAS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

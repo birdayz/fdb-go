@@ -20,7 +20,7 @@ import (
 func TestFDB_CorrelatedScalarJoinInner(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/w4b_ji"
+	dbPath := "/FRL/w4b_ji"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

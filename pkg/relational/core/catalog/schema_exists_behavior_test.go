@@ -51,7 +51,7 @@ func TestSaveSchema_EveryBehaviorOverEveryStoredRow(t *testing.T) {
 	}
 	exists := func(msg string) want { return want{code: api.ErrCodeSchemaAlreadyExists, msg: msg} }
 	gone := want{code: api.ErrCodeUnknownSchemaTemplate, msg: "SchemaTemplate=g, version=1 is not in catalog"}
-	already := exists("Schema /db/s already exists.")
+	already := exists("Schema /FRL/db/s already exists.")
 	type state struct {
 		name     string
 		existing string // "t@2", "g@1 gone" or ""
@@ -72,9 +72,9 @@ func TestSaveSchema_EveryBehaviorOverEveryStoredRow(t *testing.T) {
 		api.SchemaExistsErrorIfDifferent: {
 			{bound: "t@2"},
 			{bound: "t@2"},
-			exists("Schema /db/s already exists with a different template (t@2 vs o@1)."),
-			exists("Schema /db/s already exists with a different template (t@2 vs t@1)."),
-			exists("Schema /db/s already exists with a different template (t@2 vs t@3)."),
+			exists("Schema /FRL/db/s already exists with a different template (t@2 vs o@1)."),
+			exists("Schema /FRL/db/s already exists with a different template (t@2 vs t@1)."),
+			exists("Schema /FRL/db/s already exists with a different template (t@2 vs t@3)."),
 			gone,
 		},
 		api.SchemaExistsDoNothing: {
@@ -83,8 +83,8 @@ func TestSaveSchema_EveryBehaviorOverEveryStoredRow(t *testing.T) {
 		api.SchemaExistsUpgrade: {
 			{bound: "t@2"},
 			{bound: "t@2"},
-			exists("Cannot upgrade schema /db/s: existing template t does not match new template o."),
-			exists("Cannot upgrade schema /db/s: new template version 1 is lower than existing version 2."),
+			exists("Cannot upgrade schema /FRL/db/s: existing template t does not match new template o."),
+			exists("Cannot upgrade schema /FRL/db/s: new template version 1 is lower than existing version 2."),
 			{bound: "t@3"},
 			gone,
 		},
@@ -108,7 +108,7 @@ func TestSaveSchema_EveryBehaviorOverEveryStoredRow(t *testing.T) {
 								return err
 							}
 						}
-						return pc.cat.CreateDatabase(tx, "/db")
+						return pc.cat.CreateDatabase(tx, "/FRL/db")
 					})
 					// A save binds the template as stored (CreateTemplate's carry
 					// sets its metadata version), as every caller does.
@@ -117,7 +117,7 @@ func TestSaveSchema_EveryBehaviorOverEveryStoredRow(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						return pc.cat.SaveSchema(tx, stored.GenerateSchema("/db", "s"), false, b)
+						return pc.cat.SaveSchema(tx, stored.GenerateSchema("/FRL/db", "s"), false, b)
 					}
 					switch st.existing {
 					case "t@2":
@@ -134,7 +134,7 @@ func TestSaveSchema_EveryBehaviorOverEveryStoredRow(t *testing.T) {
 					}
 					var bound string
 					lerr := pc.run(func(tx api.Transaction) error {
-						s, err := pc.cat.LoadSchema(tx, "/db", "s")
+						s, err := pc.cat.LoadSchema(tx, "/FRL/db", "s")
 						if err != nil {
 							return err
 						}
@@ -177,18 +177,18 @@ func TestSaveSchema_ANoOpKeepsTheDatabaseItCreated(t *testing.T) {
 				if err := tc.CreateTemplate(tx, g); err != nil {
 					return err
 				}
-				return pc.cat.SaveSchema(tx, g.GenerateSchema("/db", "s"), true, api.SchemaExistsError)
+				return pc.cat.SaveSchema(tx, g.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError)
 			})
 			mustRun(t, pc.run, func(tx api.Transaction) error {
 				switch c := pc.cat.(type) {
 				case *InMemoryStoreCatalog:
-					delete(c.databases, "/db")
+					delete(c.databases, "/FRL/db")
 				case *RecordLayerStoreCatalog:
 					store, err := c.openStore(tx)
 					if err != nil {
 						return err
 					}
-					if _, err := store.DeleteRecord(databaseKey("/db")); err != nil {
+					if _, err := store.DeleteRecord(databaseKey("/FRL/db")); err != nil {
 						return err
 					}
 				default:
@@ -197,13 +197,13 @@ func TestSaveSchema_ANoOpKeepsTheDatabaseItCreated(t *testing.T) {
 				return nil
 			})
 			mustRun(t, pc.run, func(tx api.Transaction) error {
-				if ok, err := pc.cat.DoesDatabaseExist(tx, "/db"); err != nil || ok {
+				if ok, err := pc.cat.DoesDatabaseExist(tx, "/FRL/db"); err != nil || ok {
 					t.Fatalf("the database row was not removed: exists %t, %v", ok, err)
 				}
-				return pc.cat.SaveSchema(tx, g.GenerateSchema("/db", "s"), true, api.SchemaExistsDoNothing)
+				return pc.cat.SaveSchema(tx, g.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsDoNothing)
 			})
 			mustRun(t, pc.run, func(tx api.Transaction) error {
-				ok, err := pc.cat.DoesDatabaseExist(tx, "/db")
+				ok, err := pc.cat.DoesDatabaseExist(tx, "/FRL/db")
 				if err != nil {
 					return err
 				}
@@ -232,27 +232,27 @@ func TestSaveSchema_RefusesInJavasOrder(t *testing.T) {
 				if err := tc.CreateTemplate(tx, g); err != nil {
 					return err
 				}
-				if err := pc.cat.CreateDatabase(tx, "/db"); err != nil {
+				if err := pc.cat.CreateDatabase(tx, "/FRL/db"); err != nil {
 					return err
 				}
-				return pc.cat.SaveSchema(tx, g.GenerateSchema("/db", "s"), false, api.SchemaExistsError)
+				return pc.cat.SaveSchema(tx, g.GenerateSchema("/FRL/db", "s"), false, api.SchemaExistsError)
 			})
 			mustRun(t, pc.run, func(tx api.Transaction) error { return tc.DeleteTemplate(tx, "g", true) })
 			missing := buildVersionedTemplate(t, "missing", 7)
 
 			// An empty name is refused before the missing database.
 			err := pc.run(func(tx api.Transaction) error {
-				return pc.cat.SaveSchema(tx, missing.GenerateSchema("/nodb", ""), false, api.SchemaExistsError)
+				return pc.cat.SaveSchema(tx, missing.GenerateSchema("/FRL/nodb", ""), false, api.SchemaExistsError)
 			})
 			wantAPIError(t, err, api.ErrCodeInvalidParameter, "Field schema_name in Schema must be set!")
 			// The missing database before the missing template.
 			err = pc.run(func(tx api.Transaction) error {
-				return pc.cat.SaveSchema(tx, missing.GenerateSchema("/nodb", "s"), false, api.SchemaExistsError)
+				return pc.cat.SaveSchema(tx, missing.GenerateSchema("/FRL/nodb", "s"), false, api.SchemaExistsError)
 			})
-			wantAPIError(t, err, api.ErrCodeUndefinedDatabase, "Cannot create schema s because database /nodb does not exist.")
+			wantAPIError(t, err, api.ErrCodeUndefinedDatabase, "Cannot create schema s because database /FRL/nodb does not exist.")
 			// The missing template before the stored row's gone version.
 			err = pc.run(func(tx api.Transaction) error {
-				return pc.cat.SaveSchema(tx, missing.GenerateSchema("/db", "s"), false, api.SchemaExistsDoNothing)
+				return pc.cat.SaveSchema(tx, missing.GenerateSchema("/FRL/db", "s"), false, api.SchemaExistsDoNothing)
 			})
 			wantAPIError(t, err, api.ErrCodeUnknownSchemaTemplate,
 				"Cannot create schema s because schema template missing version 7 does not exist.")
@@ -287,26 +287,26 @@ func TestRepairSchema_UpgradesThroughTheValidator(t *testing.T) {
 				if err := tc.CreateTemplate(tx, buildVersionedTemplate(t, "r", 1)); err != nil {
 					return err
 				}
-				return pc.cat.SaveSchema(tx, buildVersionedTemplate(t, "r", 1).GenerateSchema("/db", "s"), true, api.SchemaExistsError)
+				return pc.cat.SaveSchema(tx, buildVersionedTemplate(t, "r", 1).GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError)
 			})
 			// On the latest: a no-op.
-			mustRun(t, pc.run, func(tx api.Transaction) error { return pc.cat.RepairSchema(tx, "/db", "s") })
+			mustRun(t, pc.run, func(tx api.Transaction) error { return pc.cat.RepairSchema(tx, "/FRL/db", "s") })
 			// A new version: the repair rebinds to it.
 			mustRun(t, pc.run, func(tx api.Transaction) error {
 				return tc.CreateTemplate(tx, buildVersionedTemplate(t, "r", 2))
 			})
-			mustRun(t, pc.run, func(tx api.Transaction) error { return pc.cat.RepairSchema(tx, "/db", "s") })
+			mustRun(t, pc.run, func(tx api.Transaction) error { return pc.cat.RepairSchema(tx, "/FRL/db", "s") })
 			mustRun(t, pc.run, func(tx api.Transaction) error {
-				s, err := pc.cat.LoadSchema(tx, "/db", "s")
+				s, err := pc.cat.LoadSchema(tx, "/FRL/db", "s")
 				if err == nil && s.SchemaTemplate().Version() != 2 {
 					t.Fatalf("repaired onto version %d, want 2", s.SchemaTemplate().Version())
 				}
 				return err
 			})
-			err := pc.run(func(tx api.Transaction) error { return pc.cat.RepairSchema(tx, "/db", "ghost") })
-			wantAPIError(t, err, api.ErrCodeUndefinedSchema, "Schema </db/ghost> does not exist in the catalog!")
+			err := pc.run(func(tx api.Transaction) error { return pc.cat.RepairSchema(tx, "/FRL/db", "ghost") })
+			wantAPIError(t, err, api.ErrCodeUndefinedSchema, "Schema </FRL/db/ghost> does not exist in the catalog!")
 			mustRun(t, pc.run, func(tx api.Transaction) error { return tc.DeleteTemplate(tx, "r", true) })
-			err = pc.run(func(tx api.Transaction) error { return pc.cat.RepairSchema(tx, "/db", "s") })
+			err = pc.run(func(tx api.Transaction) error { return pc.cat.RepairSchema(tx, "/FRL/db", "s") })
 			wantAPIError(t, err, api.ErrCodeUnknownSchemaTemplate, "SchemaTemplate=r, version=2 is not in catalog")
 		})
 	}
@@ -345,15 +345,15 @@ func TestInMemory_RepairSchemaRunsTheRebindValidator(t *testing.T) {
 	if err := c.SchemaTemplateCatalog().CreateTemplate(tx, build(1, 1)); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SaveSchema(tx, build(1, 1).GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, build(1, 1).GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	c.templates.mu.Lock()
 	c.templates.templates["k"][2] = build(0, 2)
 	c.templates.mu.Unlock()
-	wantAPIError(t, c.RepairSchema(tx, "/db", "s"), api.ErrCodeInvalidSchemaTemplate,
-		"cannot rebind schema /db/s from template k@1 to k@2: metadata evolution rejected")
-	s, err := c.LoadSchema(tx, "/db", "s")
+	wantAPIError(t, c.RepairSchema(tx, "/FRL/db", "s"), api.ErrCodeInvalidSchemaTemplate,
+		"cannot rebind schema /FRL/db/s from template k@1 to k@2: metadata evolution rejected")
+	s, err := c.LoadSchema(tx, "/FRL/db", "s")
 	if err != nil || s.SchemaTemplate().Version() != 1 {
 		t.Fatalf("binding after the refused repair: %v, %v", s, err)
 	}

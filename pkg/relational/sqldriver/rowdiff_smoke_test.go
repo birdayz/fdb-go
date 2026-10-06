@@ -228,7 +228,7 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/testdb_rowdiff"
+	const dbPath = "/FRL/testdb_rowdiff"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 
@@ -362,7 +362,7 @@ func TestFDB_RowDiff_Paging(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/testdb_rowdiff_pg"
+	const dbPath = "/FRL/testdb_rowdiff_pg"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 

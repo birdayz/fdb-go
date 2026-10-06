@@ -122,7 +122,7 @@ func newStressHarness(t *testing.T, suffix string) *stressHarness {
 
 func newStressHarnessWithCluster(t *testing.T, suffix, clusterFile string) *stressHarness {
 	t.Helper()
-	dbPath := "/stress_" + suffix
+	dbPath := "/FRL/stress_" + suffix
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 

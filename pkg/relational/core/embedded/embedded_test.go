@@ -27,13 +27,13 @@ func TestParseSchemaIdentifier_AbsolutePath(t *testing.T) {
 		wantDB, wantName string
 		wantErr          bool
 	}{
-		{"/mydb/myschema", "", "/mydb", "myschema", false},
+		{"/FRL/mydb/myschema", "", "/FRL/mydb", "myschema", false},
 		{"/domain/db/schema", "", "/domain/db", "schema", false},
-		{"/db/s", "/other", "/db", "s", false},        // absolute overrides current
-		{"schema", "/mydb", "/mydb", "schema", false}, // relative uses current
-		{"schema", "", "", "schema", false},           // relative, no current (caller validates)
-		{"/trailingslash/", "", "", "", true},         // trailing slash is invalid
-		{"/onlysegment", "", "", "", true},            // no database prefix, only schema segment
+		{"/FRL/db/s", "/FRL/other", "/FRL/db", "s", false},    // absolute overrides current
+		{"schema", "/FRL/mydb", "/FRL/mydb", "schema", false}, // relative uses current
+		{"schema", "", "", "schema", false},                   // relative, no current (caller validates)
+		{"/trailingslash/", "", "", "", true},                 // trailing slash is invalid
+		{"/onlysegment", "", "", "", true},                    // no database prefix, only schema segment
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
@@ -58,7 +58,7 @@ func TestParseSchemaIdentifier_AbsolutePath(t *testing.T) {
 
 func TestValidateDatabasePath(t *testing.T) {
 	t.Parallel()
-	valid := []string{"/db", "/domain/db", "/a/b/c"}
+	valid := []string{"/FRL/db", "/domain/db", "/a/b/c"}
 	for _, p := range valid {
 		if err := validateDatabasePath(p); err != nil {
 			t.Errorf("validateDatabasePath(%q): unexpected error: %v", p, err)

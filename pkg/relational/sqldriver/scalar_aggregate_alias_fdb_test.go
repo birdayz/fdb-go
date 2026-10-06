@@ -36,7 +36,7 @@ func TestFDB_ScalarAggregate_KeepsAlias(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/testdb_aggalias"
+	const dbPath = "/FRL/testdb_aggalias"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,

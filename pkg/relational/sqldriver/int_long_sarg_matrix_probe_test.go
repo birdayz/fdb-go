@@ -46,16 +46,16 @@ func TestFDB_IntLongSargMatrix(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ilsarg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ilsarg")
+	setup := openTestDB(t, "/FRL/testdb_ilsarg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ilsarg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ilsarg "+
 			"CREATE TABLE ti (id BIGINT, v INTEGER, PRIMARY KEY (id)) "+
 			"CREATE TABLE tl (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE drv (id BIGINT, ki INTEGER, kl BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX ti_v ON ti (v) CREATE INDEX tl_v ON tl (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ilsarg/s WITH TEMPLATE ilsarg")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ILSARG?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ilsarg/s WITH TEMPLATE ilsarg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ILSARG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -59,12 +59,12 @@ func TestFDB_CrossWidthFloatSortKeys(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_cwfsort")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cwfsort")
+	setup := openTestDB(t, "/FRL/testdb_cwfsort")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cwfsort")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cwfsort "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cwfsort/s WITH TEMPLATE cwfsort")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CWFSORT?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cwfsort/s WITH TEMPLATE cwfsort")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CWFSORT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -144,15 +144,15 @@ func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_cwfsarg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cwfsarg")
+	setup := openTestDB(t, "/FRL/testdb_cwfsarg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cwfsarg")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cwfsarg "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, f FLOAT, PRIMARY KEY (id)) "+
 		"CREATE TABLE u (id BIGINT, uf FLOAT, ud DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_d ON t (d) "+
 		"CREATE INDEX t_f ON t (f)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cwfsarg/s WITH TEMPLATE cwfsarg")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CWFSARG?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cwfsarg/s WITH TEMPLATE cwfsarg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CWFSARG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

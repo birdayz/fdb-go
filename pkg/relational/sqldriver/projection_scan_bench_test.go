@@ -21,7 +21,7 @@ func benchProjectionScan(b *testing.B, query string) {
 	ctx := context.Background()
 
 	seq := benchSeq.Add(1)
-	dbPath := fmt.Sprintf("/BENCH_PROJSCAN_%d_%d", os.Getpid(), seq)
+	dbPath := fmt.Sprintf("/FRL/BENCH_PROJSCAN_%d_%d", os.Getpid(), seq)
 	tmpl := fmt.Sprintf("bench_projscan_tmpl_%d_%d", os.Getpid(), seq)
 
 	setup := openBenchDB(b, dbPath)

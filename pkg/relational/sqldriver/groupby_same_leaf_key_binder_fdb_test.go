@@ -81,14 +81,14 @@ func TestFDB_GroupBySameLeafKeys_HavingRereadBindsItsOwnSlot(t *testing.T) {
 	}
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_gb_same_leaf")
-	gslkMustExec(t, setup, ctx, "CREATE DATABASE /testdb_gb_same_leaf")
+	setup := openTestDB(t, "/FRL/testdb_gb_same_leaf")
+	gslkMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gb_same_leaf")
 	gslkMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gb_same_leaf "+
 			"CREATE TABLE outer_t (k BIGINT, PRIMARY KEY (k)) "+
 			"CREATE TABLE inner_t (k BIGINT, o_k BIGINT, PRIMARY KEY (k))")
-	gslkMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gb_same_leaf/s WITH TEMPLATE gb_same_leaf")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GB_SAME_LEAF?cluster_file=%s&schema=S", clusterFilePath)
+	gslkMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gb_same_leaf/s WITH TEMPLATE gb_same_leaf")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GB_SAME_LEAF?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

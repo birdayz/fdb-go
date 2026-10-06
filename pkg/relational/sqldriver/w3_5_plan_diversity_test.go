@@ -40,7 +40,7 @@ func pdDB(t *testing.T, withIndexes bool, seed int64) *sql.DB {
 	if withIndexes {
 		tag = "idx"
 	}
-	dbPath := fmt.Sprintf("/pd_%s_%d_%s", tag, seed, t.Name())
+	dbPath := fmt.Sprintf("/FRL/pd_%s_%d_%s", tag, seed, t.Name())
 	db := openTestDB(t, dbPath)
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)

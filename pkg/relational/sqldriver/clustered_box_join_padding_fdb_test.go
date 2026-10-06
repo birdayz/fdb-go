@@ -20,7 +20,7 @@ func TestFDB_ClusteredBoxJoinRows(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/clusterboxpad"
+	dbPath := "/FRL/clusterboxpad"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

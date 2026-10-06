@@ -19,14 +19,14 @@ func TestFDB_BytesColumnProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_bytescol")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_bytescol")
+	setup := openTestDB(t, "/FRL/testdb_bytescol")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_bytescol")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE bytescol "+
 			"CREATE TABLE t (id BIGINT, data BYTES, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_data ON t (data)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_bytescol/s WITH TEMPLATE bytescol")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_BYTESCOL?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_bytescol/s WITH TEMPLATE bytescol")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BYTESCOL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

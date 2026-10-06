@@ -21,15 +21,15 @@ func TestFDB_MaterializedNLJNullKey(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_matnull")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_matnull")
+	setup := openTestDB(t, "/FRL/testdb_matnull")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_matnull")
 	// NOTE: no index on k — forces a materialized NLJ (not an index probe).
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE matnull "+
 			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_matnull/s WITH TEMPLATE matnull")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MATNULL?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_matnull/s WITH TEMPLATE matnull")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MATNULL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

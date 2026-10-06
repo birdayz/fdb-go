@@ -104,7 +104,7 @@ func TestFDB_FleetBuildsAnEncryptedTenantThroughItsSerializer(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	h := newFleetHarness(t)
-	const dbPath = "/testdb_fleet_encrypted"
+	const dbPath = "/FRL/testdb_fleet_encrypted"
 	const tmplName = "FLEETENC"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

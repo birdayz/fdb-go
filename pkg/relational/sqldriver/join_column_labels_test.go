@@ -33,17 +33,17 @@ func TestFDB_JoinColumnLabelsUnqualified(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_joincols")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_joincols")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_joincols")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_joincols")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE joincols_tmpl "+
 			"CREATE TABLE Users (uid BIGINT, name STRING, PRIMARY KEY (uid)) "+
 			"CREATE TABLE Orders (oid BIGINT, uid BIGINT, total BIGINT, PRIMARY KEY (oid))")).
 		Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_joincols/s WITH TEMPLATE joincols_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_joincols/s WITH TEMPLATE joincols_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_JOINCOLS?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOINCOLS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

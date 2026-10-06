@@ -20,8 +20,8 @@ func TestFDB_IncludeClauseAcceptedProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := openTestDB(t, "/testdb_incr")
-	mwjoMustExec(t, db, ctx, "CREATE DATABASE /testdb_incr")
+	db := openTestDB(t, "/FRL/testdb_incr")
+	mwjoMustExec(t, db, ctx, "CREATE DATABASE /FRL/testdb_incr")
 
 	t.Run("create_index_include_builds_covering", func(t *testing.T) {
 		if _, err := db.ExecContext(ctx,

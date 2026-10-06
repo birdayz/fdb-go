@@ -29,11 +29,11 @@ func TestFDB_SortedInJoinDeliversTheOrder(t *testing.T) {
 		"CREATE INDEX i5 AS SELECT col1 FROM t5 ORDER BY col1 " +
 		"CREATE TABLE tbl (id BIGINT, k BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id, k)) " +
 		"CREATE INDEX ia ON tbl (a)"
-	setup := openTestDB(t, "/testdb_isj")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_isj")
+	setup := openTestDB(t, "/FRL/testdb_isj")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_isj")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE isj "+ddl)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_isj/s WITH TEMPLATE isj")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ISJ?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_isj/s WITH TEMPLATE isj")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ISJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

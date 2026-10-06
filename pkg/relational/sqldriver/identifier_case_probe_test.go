@@ -20,12 +20,12 @@ func TestFDB_IdentifierCaseProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_identcase")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_identcase")
+	setup := openTestDB(t, "/FRL/testdb_identcase")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_identcase")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE identcase CREATE TABLE MyTable (id BIGINT, MyCol BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_identcase/s WITH TEMPLATE identcase")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IDENTCASE?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_identcase/s WITH TEMPLATE identcase")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDENTCASE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

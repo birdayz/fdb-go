@@ -341,7 +341,7 @@ func huntSeed(t *testing.T, seed uint64, worker int) huntStats {
 	}
 
 	ctx := context.Background()
-	dbPath := fmt.Sprintf("/HUNT_%d_%d", worker, seed)
+	dbPath := fmt.Sprintf("/FRL/HUNT_%d_%d", worker, seed)
 	schema := fmt.Sprintf("hs_%d_%d", worker, seed)
 	tmpl := schema + "t"
 

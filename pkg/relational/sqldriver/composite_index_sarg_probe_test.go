@@ -19,13 +19,13 @@ func TestFDB_CompositeIndexSargProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_cis")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cis")
+	setup := openTestDB(t, "/FRL/testdb_cis")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cis")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE cis CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_ab ON t (a, b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cis/s WITH TEMPLATE cis")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CIS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cis/s WITH TEMPLATE cis")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CIS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -19,8 +19,8 @@ import (
 func TestFDB_MacroNamedArguments(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_named_call")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_named_call")
+	setup := openTestDB(t, "/FRL/testdb_named_call")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_named_call")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE named_call_tpl "+
 		"CREATE TYPE AS STRUCT st1(y BIGINT, z BIGINT) "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id)) "+
@@ -28,8 +28,8 @@ func TestFDB_MacroNamedArguments(t *testing.T) {
 		"CREATE FUNCTION st1_d(IN y BIGINT, IN z BIGINT DEFAULT 2L) RETURNS st1 RETURN (y, z) "+
 		"CREATE FUNCTION st1_z(IN s TYPE st1) RETURNS BIGINT RETURN s.z "+
 		"CREATE FUNCTION tf(IN lo BIGINT, IN hi BIGINT DEFAULT 10) AS SELECT id FROM t WHERE id BETWEEN lo AND hi")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_named_call/s WITH TEMPLATE named_call_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_NAMED_CALL?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_named_call/s WITH TEMPLATE named_call_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NAMED_CALL?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

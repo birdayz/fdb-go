@@ -28,8 +28,8 @@ func TestFDB_ProbeZeroKeyAllNullGroup(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_zkan")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_zkan")
+	setup := openTestDB(t, "/FRL/testdb_zkan")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_zkan")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE zkan "+
 			"CREATE TABLE ai (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
@@ -39,8 +39,8 @@ func TestFDB_ProbeZeroKeyAllNullGroup(t *testing.T) {
 			"CREATE INDEX ai_cntv_g AS SELECT COUNT(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_min_g AS SELECT MIN(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_max_g AS SELECT MAX(v) FROM ai GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_zkan/s WITH TEMPLATE zkan")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ZKAN?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_zkan/s WITH TEMPLATE zkan")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ZKAN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

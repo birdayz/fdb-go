@@ -23,7 +23,7 @@ import (
 func TestFDB_OuterJoinNestedFieldBinding(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/ojnfb"
+	dbPath := "/FRL/ojnfb"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

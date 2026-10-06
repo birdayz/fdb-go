@@ -29,7 +29,7 @@ func BenchmarkFDB_PlanCacheHit(b *testing.B) {
 	ctx := context.Background()
 
 	seq := benchSeq.Add(1)
-	dbPath := fmt.Sprintf("/bench_pc_hit_%d", seq)
+	dbPath := fmt.Sprintf("/FRL/bench_pc_hit_%d", seq)
 	tmpl := fmt.Sprintf("bph_tmpl_%d", seq)
 
 	setup := openBenchDB(b, dbPath)
@@ -90,7 +90,7 @@ func BenchmarkFDB_PlanCacheMiss(b *testing.B) {
 	ctx := context.Background()
 
 	seq := benchSeq.Add(1)
-	dbPath := fmt.Sprintf("/bench_pc_miss_%d", seq)
+	dbPath := fmt.Sprintf("/FRL/bench_pc_miss_%d", seq)
 	tmpl := fmt.Sprintf("bpm_tmpl_%d", seq)
 
 	setup := openBenchDB(b, dbPath)
@@ -162,7 +162,7 @@ func BenchmarkFDB_TimestampInsert(b *testing.B) {
 	ctx := context.Background()
 
 	seq := benchSeq.Add(1)
-	dbPath := fmt.Sprintf("/bench_ts_ins_%d", seq)
+	dbPath := fmt.Sprintf("/FRL/bench_ts_ins_%d", seq)
 	tmpl := fmt.Sprintf("bench_ts_insert_tmpl_%d", seq)
 
 	setup := openBenchDB(b, dbPath)
@@ -202,7 +202,7 @@ func BenchmarkFDB_TimestampRangeScan(b *testing.B) {
 	ctx := context.Background()
 
 	seq := benchSeq.Add(1)
-	dbPath := fmt.Sprintf("/bench_ts_range_%d", seq)
+	dbPath := fmt.Sprintf("/FRL/bench_ts_range_%d", seq)
 	tmpl := fmt.Sprintf("bench_ts_range_tmpl_%d", seq)
 
 	setup := openBenchDB(b, dbPath)
@@ -256,7 +256,7 @@ func BenchmarkFDB_JoinQuery(b *testing.B) {
 	ctx := context.Background()
 
 	seq := benchSeq.Add(1)
-	dbPath := fmt.Sprintf("/bench_join_%d", seq)
+	dbPath := fmt.Sprintf("/FRL/bench_join_%d", seq)
 	tmpl := fmt.Sprintf("bench_join_tmpl_%d", seq)
 
 	setup := openBenchDB(b, dbPath)
@@ -317,7 +317,7 @@ func BenchmarkFDB_AggregateGroupBy(b *testing.B) {
 	ctx := context.Background()
 
 	seq := benchSeq.Add(1)
-	dbPath := fmt.Sprintf("/bench_agg_%d", seq)
+	dbPath := fmt.Sprintf("/FRL/bench_agg_%d", seq)
 	tmpl := fmt.Sprintf("bench_agg_tmpl_%d", seq)
 
 	setup := openBenchDB(b, dbPath)
@@ -374,7 +374,7 @@ func BenchmarkFDB_IndexScanRange(b *testing.B) {
 	ctx := context.Background()
 
 	seq := benchSeq.Add(1)
-	dbPath := fmt.Sprintf("/bench_idxrange_%d", seq)
+	dbPath := fmt.Sprintf("/FRL/bench_idxrange_%d", seq)
 	tmpl := fmt.Sprintf("bench_idxrange_tmpl_%d", seq)
 
 	setup := openBenchDB(b, dbPath)

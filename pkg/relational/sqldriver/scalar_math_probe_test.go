@@ -19,13 +19,13 @@ func TestFDB_ScalarMathProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_smathp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_smathp")
+	setup := openTestDB(t, "/FRL/testdb_smathp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_smathp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE smathp "+
 			"CREATE TABLE t (id BIGINT, n BIGINT, d DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_smathp/s WITH TEMPLATE smathp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SMATHP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_smathp/s WITH TEMPLATE smathp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SMATHP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

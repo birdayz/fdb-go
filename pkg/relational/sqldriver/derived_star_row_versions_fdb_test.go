@@ -20,14 +20,14 @@ func TestFDB_DerivedStarRowVersionsWhere(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dsrv")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dsrv")
+	setup := openTestDB(t, "/FRL/testdb_dsrv")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dsrv")
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE dsrv_tpl
 		CREATE TABLE aa (id BIGINT, y BIGINT, PRIMARY KEY (id))
 		CREATE TABLE bb (id BIGINT, z BIGINT, PRIMARY KEY (id))
 		WITH OPTIONS(store_row_versions=true)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dsrv/s1 WITH TEMPLATE dsrv_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DSRV?cluster_file=%s&schema=S1", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dsrv/s1 WITH TEMPLATE dsrv_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DSRV?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -78,13 +78,13 @@ func TestFDB_DerivedStarRowVersionsUnnestCTE(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dsrvu")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dsrvu")
+	setup := openTestDB(t, "/FRL/testdb_dsrvu")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dsrvu")
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE dsrvu_tpl
 		CREATE TABLE things (id BIGINT, x BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
 		WITH OPTIONS(store_row_versions=true)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dsrvu/s1 WITH TEMPLATE dsrvu_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DSRVU?cluster_file=%s&schema=S1", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dsrvu/s1 WITH TEMPLATE dsrvu_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DSRVU?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

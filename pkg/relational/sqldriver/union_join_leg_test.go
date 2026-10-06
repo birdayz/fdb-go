@@ -27,16 +27,16 @@ func TestFDB_UnionJoinLeg(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_union_join")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_union_join")
+	setup := openTestDB(t, "/FRL/testdb_union_join")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_union_join")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE union_join_tmpl "+
 			"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_union_join/s WITH TEMPLATE union_join_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_union_join/s WITH TEMPLATE union_join_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UNION_JOIN?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_JOIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -210,7 +210,7 @@ type harness struct {
 // dbPath is FIXED across runs (only the cache key varies), so the persisted keyspace for a given
 // seed is identical run-to-run and the fingerprint is a valid determinism probe. Backend
 // isolation (a distinct SimFDB per unique key) keeps concurrent runs from colliding.
-const dbPath = "/huntdb"
+const dbPath = "/FRL/huntdb"
 
 func newHarness(seed uint64, faultProb float64) (*harness, error) {
 	env := dst.NewSim(seed)

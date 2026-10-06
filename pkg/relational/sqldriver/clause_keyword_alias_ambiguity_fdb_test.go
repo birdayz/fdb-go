@@ -44,13 +44,13 @@ import (
 func openClauseKeywordDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_clausekw")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_clausekw")
+	setup := openTestDB(t, "/FRL/testdb_clausekw")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_clausekw")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE clausekw_t "+
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_clausekw/s WITH TEMPLATE clausekw_t")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_clausekw/s WITH TEMPLATE clausekw_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///TESTDB_CLAUSEKW?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_CLAUSEKW?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

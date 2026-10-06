@@ -20,16 +20,16 @@ func TestFDB_AmbiguousColumnStar(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_ambcol_star")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ambcol_star")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_ambcol_star")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ambcol_star")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ambcol_star_tmpl "+
 			"CREATE TABLE a (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, name STRING, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_ambcol_star/s WITH TEMPLATE ambcol_star_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_ambcol_star/s WITH TEMPLATE ambcol_star_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AMBCOL_STAR?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AMBCOL_STAR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

@@ -20,12 +20,12 @@ func TestFDB_BoolPrecedenceProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_boolprec")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_boolprec")
+	setup := openTestDB(t, "/FRL/testdb_boolprec")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_boolprec")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE boolprec CREATE TABLE t (id BIGINT, a BOOLEAN, b BOOLEAN, c BOOLEAN, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_boolprec/s WITH TEMPLATE boolprec")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_BOOLPREC?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_boolprec/s WITH TEMPLATE boolprec")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BOOLPREC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

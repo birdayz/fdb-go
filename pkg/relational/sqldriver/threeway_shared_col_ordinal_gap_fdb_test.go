@@ -38,15 +38,15 @@ func TestFDB_ThreeWaySharedColOrdinal_Regression(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_3wc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_3wc")
+	setup := openTestDB(t, "/FRL/testdb_3wc")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3wc")
 	// The full column set matters — the error names the runtime row's columns
 	// [ID A B C S F]; a narrower table does not reproduce the malformed plan.
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE t3wc "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, PRIMARY KEY (id)) "+
 		"CREATE INDEX idx_c ON t (c) CREATE INDEX idx_a ON t (a) CREATE INDEX idx_s ON t (s)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3wc/s WITH TEMPLATE t3wc")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_3WC?cluster_file=%s&schema=S", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3wc/s WITH TEMPLATE t3wc")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3WC?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

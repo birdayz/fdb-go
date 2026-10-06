@@ -38,7 +38,7 @@ func TestFDB_NWayJoinCorrelatedExists(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_b1_nway_exists"
+	dbPath := "/FRL/testdb_b1_nway_exists"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

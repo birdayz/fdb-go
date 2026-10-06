@@ -37,7 +37,7 @@ func TestFDB_RecursiveCTEAliasedComputedColumn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	dbPath := "/rcte_alias_computed"
+	dbPath := "/FRL/rcte_alias_computed"
 	setup := openTestDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
@@ -99,7 +99,7 @@ func TestFDB_RecursiveCTEColumnListRenamesAliasedSeed(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	dbPath := "/rcte_alias_seed_rename"
+	dbPath := "/FRL/rcte_alias_seed_rename"
 	setup := openTestDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
@@ -143,7 +143,7 @@ func TestFDB_RecursiveCTEColumnListAndAliasedBranches(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	dbPath := "/rcte_alias_both"
+	dbPath := "/FRL/rcte_alias_both"
 	setup := openTestDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
@@ -193,7 +193,7 @@ func TestFDB_RecursiveCTEAliasedJoinBodyColumn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	dbPath := "/rcte_alias_join_body"
+	dbPath := "/FRL/rcte_alias_join_body"
 	setup := openTestDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
@@ -253,7 +253,7 @@ func TestFDB_RecursiveCTEDuplicateAliases(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	dbPath := "/rcte_dup_alias"
+	dbPath := "/FRL/rcte_dup_alias"
 	setup := openTestDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,

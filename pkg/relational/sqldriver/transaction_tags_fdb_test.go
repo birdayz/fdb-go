@@ -23,13 +23,13 @@ func TestFDB_TransactionTags_TaggedConnectionReadsAndWrites(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_txtags")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_txtags")
+	setup := openTestDB(t, "/FRL/testdb_txtags")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txtags")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE txtags CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_txtags/s WITH TEMPLATE txtags")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txtags/s WITH TEMPLATE txtags")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_TXTAGS?cluster_file=%s&schema=S&transaction_tags=tenant-a,bulk",
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TXTAGS?cluster_file=%s&schema=S&transaction_tags=tenant-a,bulk",
 		clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
@@ -75,13 +75,13 @@ func TestFDB_TransactionTags_TagsReachTheTransaction(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_txtags2")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_txtags2")
+	setup := openTestDB(t, "/FRL/testdb_txtags2")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txtags2")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE txtags2 CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_txtags2/s WITH TEMPLATE txtags2")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txtags2/s WITH TEMPLATE txtags2")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_TXTAGS2?cluster_file=%s&schema=S&transaction_tags=gamma,alpha",
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TXTAGS2?cluster_file=%s&schema=S&transaction_tags=gamma,alpha",
 		clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {

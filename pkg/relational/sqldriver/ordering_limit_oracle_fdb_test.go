@@ -164,8 +164,8 @@ func TestFDB_OrderingLimitOracle(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ordoracle")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ordoracle")
+	setup := openTestDB(t, "/FRL/testdb_ordoracle")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ordoracle")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ordoracle "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, v BIGINT, PRIMARY KEY (id)) "+
@@ -177,8 +177,8 @@ func TestFDB_OrderingLimitOracle(t *testing.T) {
 			"CREATE INDEX cnt_by_a AS SELECT COUNT(*) FROM t GROUP BY a "+
 			"CREATE INDEX sum_v_by_ab AS SELECT SUM(v) FROM t GROUP BY a, b "+
 			"CREATE INDEX max_v_by_a AS SELECT MAX(v) FROM t GROUP BY a")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ordoracle/s WITH TEMPLATE ordoracle")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ORDORACLE?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ordoracle/s WITH TEMPLATE ordoracle")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDORACLE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

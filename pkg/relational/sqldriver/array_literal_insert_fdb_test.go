@@ -25,7 +25,7 @@ import (
 func arrayInsertDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/arrins_" + tag
+	dbPath := "/FRL/arrins_" + tag
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -242,7 +242,7 @@ func TestFDB_ArrayLiteralInsertWireBytes(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	rlDB := recordlayer.NewFDBDatabase(rawDB)
-	ss := subspace.Sub().Sub(tuple.Tuple{"/ARRINS_WIRE", "MAIN"}) // CREATE DATABASE /arrins_wire stored it folded
+	ss := subspace.Sub().Sub(tuple.Tuple{"/FRL/ARRINS_WIRE", "MAIN"}) // CREATE DATABASE /FRL/arrins_wire stored it folded
 
 	var storedBytes []byte
 	_, err = rlDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

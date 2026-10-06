@@ -44,7 +44,7 @@ const nlValRange = int32(1000)
 
 // nlDBPath is FIXED across runs (only the cache key varies), so the persisted keyspace for a
 // given seed is byte-identical run-to-run and hunt.Fingerprint is a valid determinism probe.
-const nlDBPath = "/nulldb"
+const nlDBPath = "/FRL/nulldb"
 
 // nlKeyCounter uniquifies the per-run cache key so concurrent workers never collide on the
 // backend registry. It is NOT part of the persisted data (the database path is fixed), so it

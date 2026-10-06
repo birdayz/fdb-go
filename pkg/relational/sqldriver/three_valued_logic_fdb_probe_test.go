@@ -19,13 +19,13 @@ func TestFDB_ThreeValuedLogicNotAndNeq(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_3vlnn")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_3vlnn")
+	setup := openTestDB(t, "/FRL/testdb_3vlnn")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3vlnn")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE tvlnn "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_3vlnn/s WITH TEMPLATE tvlnn")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_3VLNN?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3vlnn/s WITH TEMPLATE tvlnn")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_3VLNN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

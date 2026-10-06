@@ -27,14 +27,14 @@ func TestFDB_AggregateOverJoinOrdinal(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggjoin_ord")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggjoin_ord")
+	setup := openTestDB(t, "/FRL/testdb_aggjoin_ord")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggjoin_ord")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggjoin_ord "+
 			"CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did)) "+
 			"CREATE TABLE emp (eid BIGINT, did BIGINT, salary BIGINT, PRIMARY KEY (eid))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggjoin_ord/s WITH TEMPLATE aggjoin_ord")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGJOIN_ORD?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggjoin_ord/s WITH TEMPLATE aggjoin_ord")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGJOIN_ORD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

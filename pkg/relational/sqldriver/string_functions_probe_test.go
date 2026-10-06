@@ -21,13 +21,13 @@ func TestFDB_StringFunctionsProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_strfns")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_strfns")
+	setup := openTestDB(t, "/FRL/testdb_strfns")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_strfns")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE strfns "+
 			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_strfns/s WITH TEMPLATE strfns")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_STRFNS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_strfns/s WITH TEMPLATE strfns")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STRFNS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

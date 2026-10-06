@@ -17,14 +17,14 @@ func TestFDB_NegativeCoveringIndexProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_negidx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_negidx")
+	setup := openTestDB(t, "/FRL/testdb_negidx")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_negidx")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE negidx "+
 			"CREATE TABLE t (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_k ON t (k)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_negidx/s WITH TEMPLATE negidx")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NEGIDX?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_negidx/s WITH TEMPLATE negidx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NEGIDX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

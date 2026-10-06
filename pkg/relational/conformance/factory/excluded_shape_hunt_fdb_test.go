@@ -270,7 +270,7 @@ func runShapeHuntGen(
 			// Namespaced by TAG as well as worker: the two entry points are
 			// both t.Parallel(), so a shared database path would have one
 			// hunt dropping the other's schemas mid-sweep.
-			dbPath := fmt.Sprintf("/%s_%d", tag, w)
+			dbPath := fmt.Sprintf("/FRL/%s_%d", tag, w)
 			if _, err := setupDB.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 				t.Errorf("worker %d: create database: %v", w, err)
 				return

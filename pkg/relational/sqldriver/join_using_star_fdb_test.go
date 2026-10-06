@@ -27,8 +27,8 @@ func TestFDB_JoinUsingStarHidesRightColumns(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_usingstar")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_usingstar")
+	setup := openTestDB(t, "/FRL/testdb_usingstar")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_usingstar")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE usingstar "+
 			"CREATE TABLE ja (c1 BIGINT, a2 STRING, PRIMARY KEY (c1)) "+
@@ -36,8 +36,8 @@ func TestFDB_JoinUsingStarHidesRightColumns(t *testing.T) {
 			"CREATE TABLE jd (c1 BIGINT, d2 STRING, PRIMARY KEY (c1)) "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE u (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_usingstar/s WITH TEMPLATE usingstar")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_USINGSTAR?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_usingstar/s WITH TEMPLATE usingstar")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_USINGSTAR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

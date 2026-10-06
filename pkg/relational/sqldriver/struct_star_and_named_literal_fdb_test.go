@@ -32,8 +32,8 @@ func TestFDB_StructStarAndNamedLiteral(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/structstar")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /structstar"); err != nil {
+	setup := openTestDB(t, "/FRL/structstar")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/structstar"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -43,10 +43,10 @@ func TestFDB_StructStarAndNamedLiteral(t *testing.T) {
 			"CREATE TABLE T (id BIGINT, home ADDR, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
-	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /structstar/s WITH TEMPLATE ss_tmpl"); err != nil {
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/structstar/s WITH TEMPLATE ss_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///STRUCTSTAR?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/STRUCTSTAR?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

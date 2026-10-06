@@ -779,9 +779,9 @@ strength of "the data is just a key range".
 
 ### Index builds fan out across a fleet — but not within one tenant
 
-**This gap is now partly closed.** `frl index build --all-schemas --database /tenants` builds every
+**This gap is now partly closed.** `frl index build --all-schemas --database /FRL/tenants` builds every
 pending index across every schema in a database in one invocation, and
-`frl meta catalog repair --all-schemas --database /tenants` is the migration equivalent (rebind
+`frl meta catalog repair --all-schemas --database /FRL/tenants` is the migration equivalent (rebind
 every tenant onto the latest template version). Passing an index name narrows the roll-out to that
 one index; omitting it builds whatever each tenant owes. The library primitive is
 `pkg/relational/core/fleet` if you want it in your own control plane rather than via the CLI.
@@ -1035,7 +1035,7 @@ Two narrowings worth knowing, both **refuting** the corresponding watch-list phr
 ### DDL surprises
 
 - **`DROP SCHEMA IF EXISTS` ignores `IF EXISTS`** and errors on a missing schema:
-  `42F51 schema /mydb/ghost does not exist`
+  `42F51 schema /FRL/mydb/ghost does not exist`
   (`pkg/relational/core/catalog/fdb_store_catalog.go:416-417`,
   `pkg/relational/api/errcode.go:117`). This is deliberate replication of Java's bug — its
   `DdlVisitor.visitDropSchemaStatement` never reads `ctx.ifExists()` — and the code comment forbids

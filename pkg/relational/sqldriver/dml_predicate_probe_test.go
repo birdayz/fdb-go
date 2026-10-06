@@ -18,13 +18,13 @@ func TestFDB_DMLPredicateProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dml_pred")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dml_pred")
+	setup := openTestDB(t, "/FRL/testdb_dml_pred")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dml_pred")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dml_pred "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, grp STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dml_pred/s WITH TEMPLATE dml_pred")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DML_PRED?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dml_pred/s WITH TEMPLATE dml_pred")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DML_PRED?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

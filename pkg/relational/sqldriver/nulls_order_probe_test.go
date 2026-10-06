@@ -17,14 +17,14 @@ func TestFDB_OrderByNullsLast(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nullsorder")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nullsorder")
+	setup := openTestDB(t, "/FRL/testdb_nullsorder")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullsorder")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nullsorder "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_ab ON t(a, b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nullsorder/s WITH TEMPLATE nullsorder")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NULLSORDER?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullsorder/s WITH TEMPLATE nullsorder")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLSORDER?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

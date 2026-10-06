@@ -32,8 +32,8 @@ func TestFDB_DmlDryRun(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dryrun")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dryrun")
+	setup := openTestDB(t, "/FRL/testdb_dryrun")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dryrun")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dryrun CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 
@@ -42,8 +42,8 @@ func TestFDB_DmlDryRun(t *testing.T) {
 	// creation runs sequentially (no catalog write-contention), letting the subtest body
 	// run in parallel against private state.
 	newDB := func(t *testing.T, schema string) *sql.DB {
-		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dryrun/"+schema+" WITH TEMPLATE dryrun")
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DRYRUN?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
+		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dryrun/"+schema+" WITH TEMPLATE dryrun")
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DRYRUN?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}
@@ -227,9 +227,9 @@ func TestFDB_DmlDryRun(t *testing.T) {
 
 	// DRY_RUN from the DSN is the connector's option: every borrow previews.
 	t.Run("dsn_dry_run_persists_across_borrows", func(t *testing.T) {
-		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dryrun/s_dsn WITH TEMPLATE dryrun")
+		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dryrun/s_dsn WITH TEMPLATE dryrun")
 		t.Parallel()
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DRYRUN?cluster_file=%s&schema=S_DSN&dry_run=true", clusterFilePath))
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DRYRUN?cluster_file=%s&schema=S_DSN&dry_run=true", clusterFilePath))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -373,16 +373,16 @@ func TestFDB_DmlDryRun_MatchesJavaLightweightValidation(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dryrun_lw")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dryrun_lw")
+	setup := openTestDB(t, "/FRL/testdb_dryrun_lw")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dryrun_lw")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dryrun_lw"+
 			" CREATE TABLE emp (id BIGINT, email STRING, PRIMARY KEY (id))"+
 			" CREATE UNIQUE INDEX by_email ON emp (email)")
 
 	newDB := func(t *testing.T, schema string) *sql.DB {
-		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dryrun_lw/"+schema+" WITH TEMPLATE dryrun_lw")
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DRYRUN_LW?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
+		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dryrun_lw/"+schema+" WITH TEMPLATE dryrun_lw")
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DRYRUN_LW?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}

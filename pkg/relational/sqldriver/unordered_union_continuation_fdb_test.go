@@ -64,7 +64,7 @@ func TestFDB_UnorderedUnion_Continuation_ResumeAcrossPages(t *testing.T) {
 func uuContDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	const dbPath = "/uu_cont"
+	const dbPath = "/FRL/uu_cont"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

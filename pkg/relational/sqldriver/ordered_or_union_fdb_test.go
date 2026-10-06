@@ -24,11 +24,11 @@ func TestFDB_OrderedOrUnionMergesLegs(t *testing.T) {
 	ctx := context.Background()
 	const ddl = "CREATE TABLE t (id BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (id)) " +
 		"CREATE INDEX t_v ON t (v) CREATE INDEX t_w ON t (w)"
-	setup := openTestDB(t, "/testdb_oou")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_oou")
+	setup := openTestDB(t, "/FRL/testdb_oou")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_oou")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE oou "+ddl)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_oou/s WITH TEMPLATE oou")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OOU?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_oou/s WITH TEMPLATE oou")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OOU?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

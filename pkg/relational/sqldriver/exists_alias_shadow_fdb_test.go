@@ -41,13 +41,13 @@ func TestFDB_ExistsAliasShadow(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_existsaliasshadow")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_existsaliasshadow")
+	setup := openTestDB(t, "/FRL/testdb_existsaliasshadow")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_existsaliasshadow")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE eas_tmpl "+
 		"CREATE TABLE t (id BIGINT, sk BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_existsaliasshadow/s WITH TEMPLATE eas_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_existsaliasshadow/s WITH TEMPLATE eas_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_EXISTSALIASSHADOW?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTSALIASSHADOW?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

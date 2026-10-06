@@ -118,7 +118,7 @@ func (c *EmbeddedConnection) execDropDatabase(ctx context.Context, s *antlrgen.D
 func (c *EmbeddedConnection) execCreateSchema(ctx context.Context, s *antlrgen.CreateSchemaStatementContext) (int64, error) {
 	// Java normalizes the whole uid, a path or a bare name, then splits it
 	// (visitUid, then SemanticAnalyzer.parseSchemaIdentifier): `create schema
-	// /db/test` creates TEST in /DB, and a quoted path keeps both segments.
+	// /FRL/db/test` creates TEST in /FRL/DB, and a quoted path keeps both segments.
 	schemaText := databasePathOf(s.SchemaId().GetText())
 	dbPath, schemaName, err := parseSchemaIdentifier(schemaText, c.sess.DBPath)
 	if err != nil {
@@ -142,7 +142,7 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 	// ifExists(); DROP SCHEMA does not. Do NOT "fix" this to honor IF EXISTS — that would
 	// DIVERGE from Java. Pinned by drop_schema_ifexists_conformance_probe_test.go.
 	// Same normalization as execCreateSchema (DdlVisitor.visitDropSchemaStatement
-	// reads visitUid(ctx.uid())): DROP SCHEMA /db/test drops TEST in /DB.
+	// reads visitUid(ctx.uid())): DROP SCHEMA /FRL/db/test drops TEST in /FRL/DB.
 	//
 	// Unlike CREATE SCHEMA, DROP SCHEMA takes a path: a bare uid names no
 	// database, and Java refuses it whatever database the connection is on
@@ -1268,7 +1268,7 @@ func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantA
 // This is the single chokepoint for the check, and it takes the ALREADY
 // RESOLVED database path — the value the ConstantAction will act on — rather
 // than the statement text. parseSchemaIdentifier is a lexical split on the last
-// "/", so `CREATE SCHEMA /other/S` and `DROP SCHEMA /other/S` reach the catalog
+// "/", so `CREATE SCHEMA /FRL/other/S` and `DROP SCHEMA /FRL/other/S` reach the catalog
 // with a database the connection never opened; DROP/CREATE DATABASE take theirs
 // straight off the parse tree. Checking the resolved path covers all four
 // without any string matching on SQL.

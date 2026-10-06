@@ -56,15 +56,15 @@ func TestFDB_ReadableIndexViewLatency(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_rivlat")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rivlat")
+	setup := openTestDB(t, "/FRL/testdb_rivlat")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rivlat")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rivlat_tmpl "+
 			"CREATE TABLE t (id BIGINT, c BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_by_c ON t (c)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rivlat/s WITH TEMPLATE rivlat_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rivlat/s WITH TEMPLATE rivlat_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_RIVLAT?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RIVLAT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

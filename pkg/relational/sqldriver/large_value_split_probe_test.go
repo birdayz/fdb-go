@@ -21,12 +21,12 @@ func TestFDB_LargeValueSplitProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_lvs")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_lvs")
+	setup := openTestDB(t, "/FRL/testdb_lvs")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_lvs")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE lvs CREATE TABLE t (id BIGINT, data STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_lvs/s WITH TEMPLATE lvs")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_LVS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_lvs/s WITH TEMPLATE lvs")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LVS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

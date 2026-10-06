@@ -17,14 +17,14 @@ import (
 func TestFDB_RecordConstructorFieldNames(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_record_names")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_record_names")
+	setup := openTestDB(t, "/FRL/testdb_record_names")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_record_names")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE record_names_tpl "+
 		"CREATE TYPE AS STRUCT S(a BIGINT, b BIGINT) "+
 		"CREATE TABLE t (id BIGINT, x BIGINT, y BIGINT, s S, PRIMARY KEY (id)) "+
 		"CREATE TABLE u (id BIGINT, s S, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_record_names/s WITH TEMPLATE record_names_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_RECORD_NAMES?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_record_names/s WITH TEMPLATE record_names_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RECORD_NAMES?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

@@ -31,11 +31,11 @@ func TestFDB_InUnionMergeKeyMustIdentifyRows(t *testing.T) {
 	ctx := context.Background()
 	const ddl = "CREATE TABLE t (pk1 BIGINT, pk2 BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (pk1, pk2)) " +
 		"CREATE INDEX t_asb ON t (a, s, b, pk1, pk2)"
-	setup := openTestDB(t, "/testdb_iupd")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_iupd")
+	setup := openTestDB(t, "/FRL/testdb_iupd")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_iupd")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE iupd "+ddl)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_iupd/s WITH TEMPLATE iupd")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IUPD?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_iupd/s WITH TEMPLATE iupd")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IUPD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

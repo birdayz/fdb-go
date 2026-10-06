@@ -63,7 +63,7 @@ import (
 func setupCrossLegNullBornDB(t *testing.T, g *gomega.WithT) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/testdb_xleg_nullborn"
+	dbPath := "/FRL/testdb_xleg_nullborn"
 	setup := openTestDB(t, dbPath)
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath)
 	g.Expect(err).NotTo(gomega.HaveOccurred())

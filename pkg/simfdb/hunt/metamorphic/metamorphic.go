@@ -27,7 +27,7 @@ import (
 
 var keyCounter atomic.Uint64
 
-const dbPath = "/mmdb"
+const dbPath = "/FRL/mmdb"
 
 // Scenario is a schema + seed data + equivalence groups. Field tags let the LLM generator emit it
 // as JSON.

@@ -32,7 +32,7 @@ import (
 func TestFDB_LateralSpineLinksAndCorrelatedLegs(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/lateral_spine_links"
+	dbPath := "/FRL/lateral_spine_links"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
@@ -144,7 +144,7 @@ func TestFDB_LateralSpineLinksAndCorrelatedLegs(t *testing.T) {
 func TestFDB_NestedExistsOverASpineIsOneProduct(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/nested_exists_spine_product"
+	dbPath := "/FRL/nested_exists_spine_product"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
@@ -206,7 +206,7 @@ func TestFDB_NestedExistsOverASpineIsOneProduct(t *testing.T) {
 func TestFDB_ExistsOverASpine(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/exists_over_a_spine"
+	dbPath := "/FRL/exists_over_a_spine"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
@@ -294,7 +294,7 @@ func TestFDB_ExistsOverASpine(t *testing.T) {
 func TestFDB_ExistsOverARecordElementUnnestReadsTheTable(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/exists_over_record_element_unnest"
+	dbPath := "/FRL/exists_over_record_element_unnest"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
@@ -362,7 +362,7 @@ func TestFDB_ExistsOverARecordElementUnnestReadsTheTable(t *testing.T) {
 func TestFDB_SpineWhereReadsADeeperLinksElement(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/spine_deeper_link_where"
+	dbPath := "/FRL/spine_deeper_link_where"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
@@ -440,7 +440,7 @@ func TestFDB_SpineWhereReadsADeeperLinksElement(t *testing.T) {
 func TestFDB_LateralLegReadsASpineLinksElement(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/lateral_leg_spine_element"
+	dbPath := "/FRL/lateral_leg_spine_element"
 	setup := openTestDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,

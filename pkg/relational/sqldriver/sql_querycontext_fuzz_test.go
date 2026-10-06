@@ -25,7 +25,7 @@ func FuzzSQL_QueryContext(f *testing.F) {
 		f.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/fuzz_qctx"
+	const dbPath = "/FRL/fuzz_qctx"
 
 	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {

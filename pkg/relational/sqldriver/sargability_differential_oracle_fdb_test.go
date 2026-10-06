@@ -519,7 +519,7 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	// by design because Java and Go do not share one signed-zero equality
 	// contract on that shape. Extend both
 	// deliberately, together, or neither.
-	const dbPath = "/testdb_sargoracle"
+	const dbPath = "/FRL/testdb_sargoracle"
 	setup := openTestDB(t, dbPath)
 	ctx := context.Background()
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)

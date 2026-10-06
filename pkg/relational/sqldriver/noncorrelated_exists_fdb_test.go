@@ -15,8 +15,8 @@ import (
 func TestFDB_NonCorrelatedExistsEmptySubquery(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/diag_nce")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /diag_nce"); err != nil {
+	setup := openTestDB(t, "/FRL/diag_nce")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/diag_nce"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE diag_nce_tmpl
@@ -24,10 +24,10 @@ func TestFDB_NonCorrelatedExistsEmptySubquery(t *testing.T) {
 		CREATE TABLE Flag (name STRING, PRIMARY KEY (name))`); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
-	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /diag_nce/main WITH TEMPLATE diag_nce_tmpl"); err != nil {
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/diag_nce/main WITH TEMPLATE diag_nce_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql:///DIAG_NCE?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql:///FRL/DIAG_NCE?cluster_file="+clusterFilePath+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -17,12 +17,12 @@ import (
 func TestFDB_VariadicFunctions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_variadic")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_variadic")
+	setup := openTestDB(t, "/FRL/testdb_variadic")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_variadic")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE variadic_tmpl "+
 		"CREATE TABLE T (id BIGINT, n BIGINT, b BYTES, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_variadic/s WITH TEMPLATE variadic_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_VARIADIC?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_variadic/s WITH TEMPLATE variadic_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_VARIADIC?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

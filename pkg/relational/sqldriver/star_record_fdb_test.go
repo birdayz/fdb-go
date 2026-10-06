@@ -16,13 +16,13 @@ import (
 func TestFDB_StarRecordConstructor(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_starrec")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_starrec")
+	setup := openTestDB(t, "/FRL/testdb_starrec")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_starrec")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE starrec_tpl "+
 		"CREATE TABLE foo (id BIGINT, val BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE bar (bid BIGINT, name STRING, PRIMARY KEY (bid))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_starrec/s WITH TEMPLATE starrec_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_STARREC?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_starrec/s WITH TEMPLATE starrec_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_STARREC?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

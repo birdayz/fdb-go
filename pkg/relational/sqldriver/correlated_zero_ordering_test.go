@@ -43,14 +43,14 @@ func TestFDB_CorrelatedZeroOrdering(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_czo")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_czo")
+	setup := openTestDB(t, "/FRL/testdb_czo")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_czo")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czo "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w) "+
 		"CREATE TABLE o (id BIGINT, k DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_czo/s WITH TEMPLATE czo")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CZO?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_czo/s WITH TEMPLATE czo")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CZO?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

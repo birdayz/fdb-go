@@ -32,13 +32,13 @@ func TestFDB_BitmapScalarFunctions_ArityIsExactlyOne(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_bmarity")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_bmarity")
+	setup := openTestDB(t, "/FRL/testdb_bmarity")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_bmarity")
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE bmarity_tpl
 		CREATE TABLE t(id BIGINT, g BIGINT, PRIMARY KEY(id))`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_bmarity/s1 WITH TEMPLATE bmarity_tpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_bmarity/s1 WITH TEMPLATE bmarity_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_BMARITY?cluster_file=%s&schema=S1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_BMARITY?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

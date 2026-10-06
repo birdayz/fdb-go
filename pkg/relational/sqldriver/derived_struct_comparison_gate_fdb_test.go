@@ -39,8 +39,8 @@ func TestFDB_DerivedStructComparisonGate(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/derivedstructgate")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /derivedstructgate"); err != nil {
+	setup := openTestDB(t, "/FRL/derivedstructgate")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/derivedstructgate"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -49,10 +49,10 @@ func TestFDB_DerivedStructComparisonGate(t *testing.T) {
 			"CREATE TABLE T_S (id BIGINT, home ADDR, other ADDR, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
-	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /derivedstructgate/s WITH TEMPLATE dsg_tmpl"); err != nil {
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/derivedstructgate/s WITH TEMPLATE dsg_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql:///DERIVEDSTRUCTGATE?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/DERIVEDSTRUCTGATE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

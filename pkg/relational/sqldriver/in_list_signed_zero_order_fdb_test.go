@@ -49,7 +49,7 @@ func TestFDB_InListSignedZeroKeepsPrimaryKeyOrder(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/testdb_inlist_signed_zero"
+	const dbPath = "/FRL/testdb_inlist_signed_zero"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mwjoMustExec(t, setup, ctx,

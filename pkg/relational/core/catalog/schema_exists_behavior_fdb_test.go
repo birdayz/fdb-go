@@ -34,7 +34,7 @@ func TestFDB_SaveSchema_ANoOpWritesNothing(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				return s.GenerateSchema("/db", "s")
+				return s.GenerateSchema("/FRL/db", "s")
 			}
 			mustRun(t, run, func(tx api.Transaction) error {
 				for v := 1; v <= 3; v++ {

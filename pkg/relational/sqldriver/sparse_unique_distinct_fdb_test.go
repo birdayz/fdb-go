@@ -50,8 +50,8 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 	// for the whole test: preflightTxBudget runs under `if r.tx != nil`, so the
 	// DDL and seed statements below — all autocommit — never meet it.
 	key, clk := spikedClusterKey(t, 30*time.Second)
-	setup := openSpiked(t, key, "/testdb_sparseu", "")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sparseu")
+	setup := openSpiked(t, key, "/FRL/testdb_sparseu", "")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sparseu")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sparseu "+
 			"CREATE TABLE sp (id BIGINT, email STRING, keep BIGINT, PRIMARY KEY (id)) "+
@@ -63,9 +63,9 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 			// nothing about clause 4.
 			"CREATE TABLE fu (id BIGINT, email STRING, keep BIGINT, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX full_u AS SELECT email FROM fu ORDER BY email")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sparseu/s WITH TEMPLATE sparseu")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sparseu/s WITH TEMPLATE sparseu")
 
-	db := openSpiked(t, key, "/testdb_sparseu", "s")
+	db := openSpiked(t, key, "/FRL/testdb_sparseu", "s")
 
 	mwjoMustExec(t, db, ctx, "INSERT INTO sp (id, email, keep) VALUES "+
 		"(1, 'a@x', 1), (2, 'b@x', 1), (3, 'a@x', 0), (4, 'a@x', 0), (5, 'c@x', 0)")

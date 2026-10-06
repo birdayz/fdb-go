@@ -211,7 +211,7 @@ func TestFDB_FleetMigrateRebindsEveryTenantWithPerSchemaVersionBump(t *testing.T
 		t.Skip("FDB not available (no Docker)")
 	}
 	h := newFleetHarness(t)
-	const dbPath = "/testdb_fleet_migrate"
+	const dbPath = "/FRL/testdb_fleet_migrate"
 	const tmplName = "FLEETMIGRATE"
 	schemas := []string{"S1", "S2", "S3"}
 	fleetSetup(t, h, dbPath, tmplName, schemas)
@@ -262,7 +262,7 @@ func TestFDB_FleetMigrateResumeSkipsAlreadyMigratedTenants(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	h := newFleetHarness(t)
-	const dbPath = "/testdb_fleet_resume"
+	const dbPath = "/FRL/testdb_fleet_resume"
 	const tmplName = "FLEETRESUME"
 	schemas := []string{"S1", "S2", "S3"}
 	fleetSetup(t, h, dbPath, tmplName, schemas)
@@ -312,7 +312,7 @@ func TestFDB_FleetMigrateTemplateIsResumableAsAWhole(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	h := newFleetHarness(t)
-	const dbPath = "/testdb_fleet_rerun"
+	const dbPath = "/FRL/testdb_fleet_rerun"
 	const tmplName = "FLEETRERUN"
 	schemas := []string{"S1", "S2", "S3"}
 	fleetSetup(t, h, dbPath, tmplName, schemas)
@@ -353,7 +353,7 @@ func TestFDB_FleetBuildIndexesAcrossEveryTenant(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	h := newFleetHarness(t)
-	const dbPath = "/testdb_fleet_build"
+	const dbPath = "/FRL/testdb_fleet_build"
 	const tmplName = "FLEETBUILD"
 	schemas := []string{"S1", "S2", "S3"}
 	fleetSetup(t, h, dbPath, tmplName, schemas)
@@ -455,7 +455,7 @@ func TestFDB_FleetBuildIsolatesAPoisonedTenant(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	h := newFleetHarness(t)
-	const dbPath = "/testdb_fleet_poison"
+	const dbPath = "/FRL/testdb_fleet_poison"
 	const tmplName = "FLEETPOISON"
 	schemas := []string{"S1", "S2", "S3"}
 	const poisoned = "S2"
@@ -533,7 +533,7 @@ func TestFDB_FleetRefusesTheCatalogItself(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	h := newFleetHarness(t)
-	const dbPath = "/testdb_fleet_guard"
+	const dbPath = "/FRL/testdb_fleet_guard"
 	const tmplName = "FLEETGUARD"
 	fleetSetup(t, h, dbPath, tmplName, []string{"S1"})
 
@@ -608,7 +608,7 @@ func TestFDB_FleetMigrateRefusesARebindThatDidNotAdvance(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	h := newFleetHarness(t)
-	const dbPath = "/testdb_fleet_noadvance"
+	const dbPath = "/FRL/testdb_fleet_noadvance"
 	const tmplName = "FLEETNOADVANCE"
 	schemas := []string{"S1", "S2", "S3"}
 	fleetSetup(t, h, dbPath, tmplName, schemas)
@@ -661,7 +661,7 @@ func TestFDB_FleetMigrateToLatestResolvesVersionPerTemplate(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	h := newFleetHarness(t)
-	const dbPath = "/testdb_fleet_mixed"
+	const dbPath = "/FRL/testdb_fleet_mixed"
 	const tmplAhead = "FLEETMIXEDAHEAD"   // reaches v2
 	const tmplBehind = "FLEETMIXEDBEHIND" // stays at v1
 

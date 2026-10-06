@@ -33,8 +33,8 @@ func TestFDB_EscapedIdentifierSQLSurface(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/escapedident")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /escapedident"); err != nil {
+	setup := openTestDB(t, "/FRL/escapedident")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/escapedident"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
 	// Both escape classes on both kinds of identifier: '$' and '.' in a table
@@ -46,10 +46,10 @@ func TestFDB_EscapedIdentifierSQLSurface(t *testing.T) {
 			`CREATE TABLE "dot.table" (id BIGINT, v BIGINT, PRIMARY KEY (id))`); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
-	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /escapedident/s WITH TEMPLATE esc_tmpl"); err != nil {
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/escapedident/s WITH TEMPLATE esc_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///ESCAPEDIDENT?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/ESCAPEDIDENT?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

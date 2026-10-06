@@ -21,7 +21,7 @@ Add a `WithTimeLimit(d time.Duration)` option to the Cascades generator (or expo
 const txPageTimeLimit = 4 * time.Second // production default
 
 // Test override:
-// fdbsql:///db?cluster_file=...&schema=main&tx_time_limit=100ms
+// fdbsql:///FRL/db?cluster_file=...&schema=main&tx_time_limit=100ms
 ```
 
 With `tx_time_limit=100ms`, even a 50-row JOIN will span multiple transactions, exercising every continuation code path.

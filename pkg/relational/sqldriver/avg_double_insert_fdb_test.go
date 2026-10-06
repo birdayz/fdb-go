@@ -14,7 +14,7 @@ import (
 func avgInsertDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/avgins_" + tag
+	dbPath := "/FRL/avgins_" + tag
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -189,7 +189,7 @@ func TestFDB_AvgRuntimeTypeAndNull(t *testing.T) {
 func TestFDB_AvgWithAggregateIndexPresent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/avgins_idx"
+	dbPath := "/FRL/avgins_idx"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

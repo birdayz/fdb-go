@@ -367,10 +367,8 @@ func (r *runner) executeSchemaTemplate(ctx context.Context, resource string, blk
 	r.counter++
 	id := generatedID(r.cfg.IDPrefix, r.counter)
 	tmpl := id + "_TEMPLATE"
-	// Java's DOMAIN is "/FRL", giving a two-segment database path. The Go SQL
-	// layer's DDL parser accepts only a single-segment path, so the domain is
-	// folded into the identifier. Nothing in the corpus observes the path.
-	dbPath := "/" + id + "_DB"
+	// SetupBlock's databasePath: DOMAIN ("/FRL") + "/" + identifier + "_DB".
+	dbPath := "/FRL/" + id + "_DB"
 	schema := id + "_SCHEMA"
 
 	cat, err := r.open(connTarget{Path: catalogPath})

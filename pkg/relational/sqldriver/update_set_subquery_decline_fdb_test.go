@@ -18,7 +18,7 @@ import (
 func TestFDB_UpdateSetSubqueryDecline(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/w4b_ub"
+	dbPath := "/FRL/w4b_ub"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

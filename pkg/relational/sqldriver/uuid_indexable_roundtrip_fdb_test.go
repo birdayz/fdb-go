@@ -37,14 +37,14 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_uuidrt")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidrt")
+	setup := openTestDB(t, "/FRL/testdb_uuidrt")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidrt")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidrt "+
 			"CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_v ON t (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidrt/s WITH TEMPLATE uuidrt")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UUIDRT?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidrt/s WITH TEMPLATE uuidrt")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDRT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -304,12 +304,12 @@ func TestFDB_UUIDNonIndexedSort(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_uuidsort")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidsort")
+	setup := openTestDB(t, "/FRL/testdb_uuidsort")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidsort")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidsort CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidsort/s WITH TEMPLATE uuidsort")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UUIDSORT?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidsort/s WITH TEMPLATE uuidsort")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDSORT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -375,13 +375,13 @@ func TestFDB_UUIDPrimaryKey(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_uuidpk")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidpk")
+	setup := openTestDB(t, "/FRL/testdb_uuidpk")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidpk")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidpk "+
 			"CREATE TABLE t (k UUID, n BIGINT, PRIMARY KEY (k))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidpk/s WITH TEMPLATE uuidpk")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UUIDPK?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidpk/s WITH TEMPLATE uuidpk")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDPK?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -422,15 +422,15 @@ func TestFDB_UUIDInlJoin(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_uuidjoin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuidjoin")
+	setup := openTestDB(t, "/FRL/testdb_uuidjoin")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidjoin")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidjoin "+
 			"CREATE TABLE a (id BIGINT, v UUID, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, v UUID, label STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_v ON b (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuidjoin/s WITH TEMPLATE uuidjoin")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UUIDJOIN?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidjoin/s WITH TEMPLATE uuidjoin")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDJOIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

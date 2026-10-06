@@ -20,8 +20,8 @@ func TestFDB_ExistentialPeelShapes(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_exist_peel")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_exist_peel")
+	setup := openTestDB(t, "/FRL/testdb_exist_peel")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exist_peel")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exist_peel "+
 			"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
@@ -29,8 +29,8 @@ func TestFDB_ExistentialPeelShapes(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exist_peel/s WITH TEMPLATE exist_peel")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXIST_PEEL?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exist_peel/s WITH TEMPLATE exist_peel")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXIST_PEEL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

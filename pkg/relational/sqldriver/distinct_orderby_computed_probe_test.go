@@ -17,13 +17,13 @@ func TestFDB_DistinctMultiColProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_distmc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_distmc")
+	setup := openTestDB(t, "/FRL/testdb_distmc")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_distmc")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE distmc "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_distmc/s WITH TEMPLATE distmc")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DISTMC?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_distmc/s WITH TEMPLATE distmc")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTMC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -52,13 +52,13 @@ func TestFDB_OrderByComputedProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_obcomp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_obcomp")
+	setup := openTestDB(t, "/FRL/testdb_obcomp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_obcomp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE obcomp "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, grp BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_obcomp/s WITH TEMPLATE obcomp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OBCOMP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_obcomp/s WITH TEMPLATE obcomp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OBCOMP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -143,13 +143,13 @@ func TestFDB_OrderBySignedZeroProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_sz")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sz")
+	setup := openTestDB(t, "/FRL/testdb_sz")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sz")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE szt "+
 			"CREATE TABLE t (id BIGINT, a DOUBLE, b DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sz/s WITH TEMPLATE szt")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SZ?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sz/s WITH TEMPLATE szt")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SZ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -19,7 +19,7 @@ import (
 func TestFDB_PaginationLimit_RFC127(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/pglim_rfc127"
+	dbPath := "/FRL/pglim_rfc127"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

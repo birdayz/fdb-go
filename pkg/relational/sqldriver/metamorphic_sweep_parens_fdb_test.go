@@ -56,14 +56,14 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_mhparen")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mhparen")
+	setup := openTestDB(t, "/FRL/testdb_mhparen")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mhparen")
 	table := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) "
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mhparen_idx "+table+
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) CREATE INDEX t_s ON t (s)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mhparen/si WITH TEMPLATE mhparen_idx")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mhparen/si WITH TEMPLATE mhparen_idx")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MHPAREN?cluster_file=%s&schema=SI", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MHPAREN?cluster_file=%s&schema=SI", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

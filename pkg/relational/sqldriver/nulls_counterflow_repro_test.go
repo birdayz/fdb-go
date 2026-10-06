@@ -25,14 +25,14 @@ func TestFDB_NullsCounterflowRepro(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_cflow")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cflow")
+	setup := openTestDB(t, "/FRL/testdb_cflow")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cflow")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE cflow "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cflow/s WITH TEMPLATE cflow")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CFLOW?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cflow/s WITH TEMPLATE cflow")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CFLOW?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

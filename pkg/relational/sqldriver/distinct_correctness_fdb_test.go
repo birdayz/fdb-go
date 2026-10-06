@@ -28,13 +28,13 @@ func TestFDB_DistinctOverComputedPKExpr(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_distinct_pkexpr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_distinct_pkexpr")
+	setup := openTestDB(t, "/FRL/testdb_distinct_pkexpr")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_distinct_pkexpr")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE distinct_pkexpr "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_distinct_pkexpr/s WITH TEMPLATE distinct_pkexpr")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DISTINCT_PKEXPR?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_distinct_pkexpr/s WITH TEMPLATE distinct_pkexpr")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTINCT_PKEXPR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -89,13 +89,13 @@ func TestFDB_DistinctDelimiterInjection(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_distinct_delim")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_distinct_delim")
+	setup := openTestDB(t, "/FRL/testdb_distinct_delim")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_distinct_delim")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE distinct_delim "+
 			"CREATE TABLE t (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_distinct_delim/s WITH TEMPLATE distinct_delim")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DISTINCT_DELIM?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_distinct_delim/s WITH TEMPLATE distinct_delim")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTINCT_DELIM?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

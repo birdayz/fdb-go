@@ -107,9 +107,9 @@ func TestPlanCacheKey_DBPathScoped(t *testing.T) {
 	// Database paths are case-sensitive for the same reason schema names are:
 	// the scope is verbatim and must never be folded.
 	if planCacheHitsSame(t,
-		planCacheScope("/db", "MAIN", 0, ""), sql,
-		planCacheScope("/DB", "MAIN", 0, ""), sql) {
-		t.Fatal("case-distinct database paths `/db` and `/DB` collided — scope was normalized")
+		planCacheScope("/FRL/db", "MAIN", 0, ""), sql,
+		planCacheScope("/FRL/DB", "MAIN", 0, ""), sql) {
+		t.Fatal("case-distinct database paths `/FRL/db` and `/FRL/DB` collided — scope was normalized")
 	}
 	// Equal in every component still SHARES: the added component must not
 	// over-partition the cache into a permanent 100% miss rate.
@@ -122,8 +122,8 @@ func TestPlanCacheKey_DBPathScoped(t *testing.T) {
 	// in the delimiter must not be able to spell a different (path, schema)
 	// split. This is the length-prefixing property, now over four components.
 	if planCacheHitsSame(t,
-		planCacheScope("/db"+planCacheScopeDelim+"4", "MAIN", 0, ""), sql,
-		planCacheScope("/db", planCacheScopeDelim+"4MAIN", 0, ""), sql) {
+		planCacheScope("/FRL/db"+planCacheScopeDelim+"4", "MAIN", 0, ""), sql,
+		planCacheScope("/FRL/db", planCacheScopeDelim+"4MAIN", 0, ""), sql) {
 		t.Fatal("database path bled into the schema component")
 	}
 }

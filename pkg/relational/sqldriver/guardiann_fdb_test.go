@@ -16,15 +16,15 @@ import (
 func TestFDB_GuardiannSemanticSearch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_guardiann")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_guardiann")
+	setup := openTestDB(t, "/FRL/testdb_guardiann")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_guardiann")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE guardiann_tpl "+
 		"create table documents(zone string, docId string, bookshelf string, title string, embedding vector(3, half), primary key (zone, docId)) "+
 		"create view documentsView as select embedding, zone, bookshelf, docId, title from documents "+
 		"create vector index documentsGuardiannIndex using guardiann on documentsView(embedding) partition by(zone, bookshelf) "+
 		"options (metric = euclidean_metric, primary_cluster_min = 1, primary_cluster_max = 100, collapse_min_duplicates = 50)")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_guardiann/s WITH TEMPLATE guardiann_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_GUARDIANN?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_guardiann/s WITH TEMPLATE guardiann_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_GUARDIANN?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

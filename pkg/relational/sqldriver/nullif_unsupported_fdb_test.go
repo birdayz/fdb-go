@@ -20,12 +20,12 @@ func TestFDB_Nullif_Unsupported(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nullif")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nullif")
+	setup := openTestDB(t, "/FRL/testdb_nullif")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullif")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nulliftpl "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nullif/s WITH TEMPLATE nulliftpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_NULLIF?cluster_file=%s&schema=S", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullif/s WITH TEMPLATE nulliftpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLIF?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

@@ -19,14 +19,14 @@ func TestFDB_InListLimitReturnsRows(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_inlimit")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_inlimit")
+	setup := openTestDB(t, "/FRL/testdb_inlimit")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inlimit")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inlimit "+
 			"CREATE TABLE orders (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_customer ON orders(customer_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_inlimit/s WITH TEMPLATE inlimit")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INLIMIT?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inlimit/s WITH TEMPLATE inlimit")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INLIMIT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

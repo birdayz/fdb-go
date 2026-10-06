@@ -73,15 +73,15 @@ func TestFDB_NegativeZeroDistinctMultiColumnPlanIndependence(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nzmulti")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nzmulti")
+	setup := openTestDB(t, "/FRL/testdb_nzmulti")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nzmulti")
 	// Index leads on the DOUBLE column so the ordered dedup is eligible: the
 	// inner ordering (D, A) prefix-matches the dedup columns (D, A).
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzmulti "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_da ON t (d, a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nzmulti/s WITH TEMPLATE nzmulti")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NZMULTI?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nzmulti/s WITH TEMPLATE nzmulti")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NZMULTI?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -133,13 +133,13 @@ func TestFDB_NegativeZeroDistinctDedupProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nzdedup")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nzdedup")
+	setup := openTestDB(t, "/FRL/testdb_nzdedup")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nzdedup")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzdedup "+
 		"CREATE TABLE d (id BIGINT, v DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE TABLE f (id BIGINT, v FLOAT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nzdedup/s WITH TEMPLATE nzdedup")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NZDEDUP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nzdedup/s WITH TEMPLATE nzdedup")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NZDEDUP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

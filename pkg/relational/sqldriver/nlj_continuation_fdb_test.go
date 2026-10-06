@@ -88,7 +88,7 @@ func TestFDB_NLJ_Continuation_ResumeAcrossPages(t *testing.T) {
 func nljContDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	const dbPath = "/nlj_cont"
+	const dbPath = "/FRL/nlj_cont"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

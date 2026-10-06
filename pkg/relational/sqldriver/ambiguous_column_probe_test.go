@@ -19,13 +19,13 @@ func TestFDB_AmbiguousColumnProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ambp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ambp")
+	setup := openTestDB(t, "/FRL/testdb_ambp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ambp")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ambp "+
 		"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE b (id BIGINT, y BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ambp/s WITH TEMPLATE ambp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AMBP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ambp/s WITH TEMPLATE ambp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AMBP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

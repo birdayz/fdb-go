@@ -56,8 +56,8 @@ func TestFDB_CreateTemplate_RefusesAReIssueBelowTheLatest(t *testing.T) {
 		v2, v3 := demoMetaData(t, 1, nil), demoMetaData(t, 1, nil)
 		e.writeRow(2, v2)
 		e.writeRow(3, v3)
-		e.bind("/db", "two", 2, v2)
-		e.bind("/db", "three", 3, v3)
+		e.bind("/FRL/db", "two", 2, v2)
+		e.bind("/FRL/db", "three", 3, v3)
 		e.dropTemplate()
 		if err := e.restore(3, v3, nil); err != nil {
 			t.Fatal(err)
@@ -66,7 +66,7 @@ func TestFDB_CreateTemplate_RefusesAReIssueBelowTheLatest(t *testing.T) {
 			return e.cat.SchemaTemplateCatalog().CreateTemplate(tx, buildVersionedTemplate(t, "redo", 2))
 		})
 		wantAPIError(t, err, api.ErrCodeInvalidSchemaTemplate, `template "redo": new version 2 must be greater than current version 3`)
-		e.readsBack("/db", "three")
+		e.readsBack("/FRL/db", "three")
 	})
 }
 

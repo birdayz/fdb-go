@@ -13,16 +13,16 @@ import (
 func TestFDB_VersionComparisonJoin(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_vcj")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_vcj")
+	setup := openTestDB(t, "/FRL/testdb_vcj")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_vcj")
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE vcj_tpl
 		CREATE TABLE t2(id BIGINT, col1 BIGINT, col2 STRING, PRIMARY KEY (id))
 		CREATE INDEX t2_col2 AS SELECT col2 FROM t2
 		CREATE TABLE t3(id BIGINT, col1 STRING, col2 BIGINT, PRIMARY KEY (id))
 		CREATE INDEX t3_version_with_col1 AS SELECT "__ROW_VERSION", col1 FROM t3 ORDER BY "__ROW_VERSION"
 		WITH OPTIONS(store_row_versions=true)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_vcj/s WITH TEMPLATE vcj_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_VCJ?cluster_file=%s&schema=S", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_vcj/s WITH TEMPLATE vcj_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_VCJ?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

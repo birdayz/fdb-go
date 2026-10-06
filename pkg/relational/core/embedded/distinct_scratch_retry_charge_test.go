@@ -69,12 +69,12 @@ func newChaosSimConnection(t *testing.T, seed uint64) (*EmbeddedConnection, *cha
 	}
 	factory := ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(cat, ks)
 
-	c := New("/SIMDB", fdbDB, cat, factory, ks)
+	c := New("/FRL/SIMDB", fdbDB, cat, factory, ks)
 	ctx := context.Background()
 	for _, stmt := range []string{
-		"CREATE DATABASE /simdb",
+		"CREATE DATABASE /FRL/simdb",
 		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
-		"CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl",
+		"CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl",
 	} {
 		if _, err := c.ExecContext(ctx, stmt, nil); err != nil {
 			t.Fatalf("%s: %v", stmt, err)

@@ -25,14 +25,14 @@ func TestFDB_TransactionProbe(t *testing.T) {
 	// multi_statement_atomic_rollback arms it, for its own transaction.
 	key, clk := spikedClusterKey(t, 30*time.Second)
 	clk.Disarm()
-	setup := openSpiked(t, key, "/testdb_txnprobe", "")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_txnprobe")
+	setup := openSpiked(t, key, "/FRL/testdb_txnprobe", "")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txnprobe")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE txnprobe "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_txnprobe/s WITH TEMPLATE txnprobe")
-	dsn := spikedDSN(key, "/testdb_txnprobe", "s")
-	db := openSpiked(t, key, "/testdb_txnprobe", "s")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txnprobe/s WITH TEMPLATE txnprobe")
+	dsn := spikedDSN(key, "/FRL/testdb_txnprobe", "s")
+	db := openSpiked(t, key, "/FRL/testdb_txnprobe", "s")
 	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 10)")
 
 	count := func() int64 {

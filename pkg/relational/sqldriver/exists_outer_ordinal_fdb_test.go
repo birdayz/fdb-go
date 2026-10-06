@@ -29,14 +29,14 @@ func TestFDB_ExistsOuterOrdinal(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_exists_ord")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_exists_ord")
+	setup := openTestDB(t, "/FRL/testdb_exists_ord")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_ord")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exists_ord "+
 			"CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did)) "+
 			"CREATE TABLE emp (eid BIGINT, did BIGINT, PRIMARY KEY (eid))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exists_ord/s WITH TEMPLATE exists_ord")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXISTS_ORD?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_ord/s WITH TEMPLATE exists_ord")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ORD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

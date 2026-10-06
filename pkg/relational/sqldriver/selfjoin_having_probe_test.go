@@ -18,15 +18,15 @@ func TestFDB_SelfJoinHavingProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_selfjoin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_selfjoin")
+	setup := openTestDB(t, "/FRL/testdb_selfjoin")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_selfjoin")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE selfjoin "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, grp BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id) CREATE INDEX a_x ON a (x)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_selfjoin/s WITH TEMPLATE selfjoin")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SELFJOIN?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_selfjoin/s WITH TEMPLATE selfjoin")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELFJOIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

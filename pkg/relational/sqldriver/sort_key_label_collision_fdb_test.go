@@ -26,12 +26,12 @@ func TestFDB_SortKeyLabelCollision_ImmediateStrip(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_sklc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_sklc")
+	setup := openTestDB(t, "/FRL/testdb_sklc")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sklc")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sklc CREATE TABLE scores (id BIGINT, player STRING, score BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_sklc/s WITH TEMPLATE sklc")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_SKLC?cluster_file=%s&schema=S", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sklc/s WITH TEMPLATE sklc")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_SKLC?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

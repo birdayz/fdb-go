@@ -13,14 +13,14 @@ import (
 func TestFDB_ArrayParameterElements(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_array_params")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_array_params")
+	setup := openTestDB(t, "/FRL/testdb_array_params")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_array_params")
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE array_params_tpl
 		CREATE TABLE a (pk BIGINT, bigint_array BIGINT ARRAY, integer_array INTEGER ARRAY,
 			double_array DOUBLE ARRAY, float_array FLOAT ARRAY, string_array STRING ARRAY,
 			boolean_array BOOLEAN ARRAY, bytes_array BYTES ARRAY, PRIMARY KEY (pk))`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_array_params/s WITH TEMPLATE array_params_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_ARRAY_PARAMS?cluster_file=%s&schema=S", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_array_params/s WITH TEMPLATE array_params_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_ARRAY_PARAMS?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

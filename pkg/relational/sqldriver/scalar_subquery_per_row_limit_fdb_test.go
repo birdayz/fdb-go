@@ -18,7 +18,7 @@ import (
 func TestFDB_ScalarSubqueryPerRowLimit(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/w4b_cl"
+	dbPath := "/FRL/w4b_cl"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

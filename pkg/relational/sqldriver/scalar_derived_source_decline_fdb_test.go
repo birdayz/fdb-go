@@ -21,7 +21,7 @@ func TestFDB_ScalarDerivedSources(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/testdb_scalar_derived_decline"
+	dbPath := "/FRL/testdb_scalar_derived_decline"
 	setup := openTestDB(t, dbPath)
 	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sdd_tmpl "+

@@ -17,12 +17,12 @@ func TestFDB_CaseOrderByProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_cobp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cobp")
+	setup := openTestDB(t, "/FRL/testdb_cobp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cobp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE cobp CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cobp/s WITH TEMPLATE cobp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_COBP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cobp/s WITH TEMPLATE cobp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COBP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -30,13 +30,13 @@ func TestFDB_ArithOverflowInPredicate_PlanStable(t *testing.T) {
 	}
 	const p62 = int64(1) << 62 // 2^62 + 2^62 = 2^63 overflows int64
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aovfp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aovfp")
+	setup := openTestDB(t, "/FRL/testdb_aovfp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aovfp")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE aovfp "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX idx_g ON t (g)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aovfp/s WITH TEMPLATE aovfp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AOVFP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aovfp/s WITH TEMPLATE aovfp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AOVFP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

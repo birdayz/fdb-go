@@ -47,13 +47,13 @@ func TestFDB_StarUnderGroupByExpandsBeforeItIsValidated(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_stargb")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_stargb")
+	setup := openTestDB(t, "/FRL/testdb_stargb")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_stargb")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE stargb_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_stargb/s WITH TEMPLATE stargb_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_stargb/s WITH TEMPLATE stargb_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_STARGB?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_STARGB?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

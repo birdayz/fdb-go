@@ -675,27 +675,27 @@ func openTestDB(t *testing.T, dbPath string) *sql.DB {
 
 func TestFDB_EmbeddedCreateDropDatabase(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_create_drop")
+	db := openTestDB(t, "/FRL/testdb_create_drop")
 	ctx := context.Background()
 
-	if _, err := db.ExecContext(ctx, "CREATE DATABASE /testdb_create_drop"); err != nil {
+	if _, err := db.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_create_drop"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, "DROP DATABASE /testdb_create_drop"); err != nil {
+	if _, err := db.ExecContext(ctx, "DROP DATABASE /FRL/testdb_create_drop"); err != nil {
 		t.Fatalf("DROP DATABASE: %v", err)
 	}
 }
 
 func TestFDB_EmbeddedCreateDatabaseIdempotencyFails(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_dup")
+	db := openTestDB(t, "/FRL/testdb_dup")
 	ctx := context.Background()
 
-	if _, err := db.ExecContext(ctx, "CREATE DATABASE /testdb_dup"); err != nil {
+	if _, err := db.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dup"); err != nil {
 		t.Fatalf("first CREATE DATABASE: %v", err)
 	}
 	// Second create must fail: database already exists.
-	_, err := db.ExecContext(ctx, "CREATE DATABASE /testdb_dup")
+	_, err := db.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dup")
 	if err == nil {
 		t.Fatal("expected error on duplicate CREATE DATABASE, got nil")
 	}
@@ -744,10 +744,10 @@ func TestFDB_EmbeddedCreateSchemaDuplicateTemplateFails(t *testing.T) {
 
 func TestFDB_EmbeddedCreateSchemaFullFlow(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_full_flow")
+	db := openTestDB(t, "/FRL/testdb_full_flow")
 	ctx := context.Background()
 
-	if _, err := db.ExecContext(ctx, "CREATE DATABASE /testdb_full_flow"); err != nil {
+	if _, err := db.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_full_flow"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,
@@ -756,16 +756,16 @@ func TestFDB_EmbeddedCreateSchemaFullFlow(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_full_flow/restaurant WITH TEMPLATE restaurant_tmpl"); err != nil {
+		"CREATE SCHEMA /FRL/testdb_full_flow/restaurant WITH TEMPLATE restaurant_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, "DROP SCHEMA /testdb_full_flow/restaurant"); err != nil {
+	if _, err := db.ExecContext(ctx, "DROP SCHEMA /FRL/testdb_full_flow/restaurant"); err != nil {
 		t.Fatalf("DROP SCHEMA: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, "DROP SCHEMA TEMPLATE restaurant_tmpl"); err != nil {
 		t.Fatalf("DROP SCHEMA TEMPLATE: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, "DROP DATABASE /testdb_full_flow"); err != nil {
+	if _, err := db.ExecContext(ctx, "DROP DATABASE /FRL/testdb_full_flow"); err != nil {
 		t.Fatalf("DROP DATABASE: %v", err)
 	}
 }
@@ -816,10 +816,10 @@ func TestFDB_EmbeddedSelectReturnsUnsupported(t *testing.T) {
 
 func TestFDB_EmbeddedShowDatabases(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/testdb_show_db")
+	db := openTestDB(t, "/FRL/testdb_show_db")
 	ctx := context.Background()
 
-	if _, err := db.ExecContext(ctx, "CREATE DATABASE /testdb_show_db"); err != nil {
+	if _, err := db.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_show_db"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 
@@ -835,7 +835,7 @@ func TestFDB_EmbeddedShowDatabases(t *testing.T) {
 		if err := rows.Scan(&dbID); err != nil {
 			t.Fatalf("Scan: %v", err)
 		}
-		if dbID == "/TESTDB_SHOW_DB" { // CREATE DATABASE /testdb_show_db stored it folded
+		if dbID == "/FRL/TESTDB_SHOW_DB" { // CREATE DATABASE /FRL/testdb_show_db stored it folded
 			found = true
 		}
 	}
@@ -843,7 +843,7 @@ func TestFDB_EmbeddedShowDatabases(t *testing.T) {
 		t.Fatalf("rows.Err: %v", err)
 	}
 	if !found {
-		t.Error("SHOW DATABASES: did not find /TESTDB_SHOW_DB")
+		t.Error("SHOW DATABASES: did not find /FRL/TESTDB_SHOW_DB")
 	}
 }
 
@@ -923,9 +923,9 @@ func TestFDB_EmbeddedInsert(t *testing.T) {
 	ctx := context.Background()
 
 	// Use a dedicated DB connection for setup DDL (no schema yet).
-	setup := openTestDB(t, "/testdb_insert")
+	setup := openTestDB(t, "/FRL/testdb_insert")
 
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert"); err != nil {
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_insert"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -934,12 +934,12 @@ func TestFDB_EmbeddedInsert(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_insert/emp WITH TEMPLATE insert_tmpl"); err != nil {
+		"CREATE SCHEMA /FRL/testdb_insert/emp WITH TEMPLATE insert_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
 	// Open a new connection with the schema set via DSN.
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INSERT?cluster_file=%s&schema=EMP", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSERT?cluster_file=%s&schema=EMP", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -967,8 +967,8 @@ func TestFDB_EmbeddedInsertMultiRow(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_insert_multi")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert_multi"); err != nil {
+	setup := openTestDB(t, "/FRL/testdb_insert_multi")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_insert_multi"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -977,11 +977,11 @@ func TestFDB_EmbeddedInsertMultiRow(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_insert_multi/items WITH TEMPLATE multi_tmpl"); err != nil {
+		"CREATE SCHEMA /FRL/testdb_insert_multi/items WITH TEMPLATE multi_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INSERT_MULTI?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSERT_MULTI?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1021,8 +1021,8 @@ func TestFDB_EmbeddedSelectAfterInsert(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_select_insert")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_select_insert"); err != nil {
+	setup := openTestDB(t, "/FRL/testdb_select_insert")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_select_insert"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -1031,11 +1031,11 @@ func TestFDB_EmbeddedSelectAfterInsert(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_select_insert/people WITH TEMPLATE sel_tmpl"); err != nil {
+		"CREATE SCHEMA /FRL/testdb_select_insert/people WITH TEMPLATE sel_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SELECT_INSERT?cluster_file=%s&schema=PEOPLE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELECT_INSERT?cluster_file=%s&schema=PEOPLE", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1091,18 +1091,18 @@ func TestFDB_EmbeddedDeleteByPK(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_delete_pk")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_delete_pk")
+	setup := openTestDB(t, "/FRL/testdb_delete_pk")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_delete_pk")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE del_tmpl "+
 			"CREATE TABLE Widget (widget_id BIGINT, label STRING, PRIMARY KEY (widget_id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_delete_pk/widgets WITH TEMPLATE del_tmpl")
+		"CREATE SCHEMA /FRL/testdb_delete_pk/widgets WITH TEMPLATE del_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DELETE_PK?cluster_file=%s&schema=WIDGETS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DELETE_PK?cluster_file=%s&schema=WIDGETS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1146,18 +1146,18 @@ func TestFDB_EmbeddedUpdateWhere(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_update_where")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_update_where")
+	setup := openTestDB(t, "/FRL/testdb_update_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_update_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE upd_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, name STRING, PRIMARY KEY (item_id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_update_where/items WITH TEMPLATE upd_tmpl")
+		"CREATE SCHEMA /FRL/testdb_update_where/items WITH TEMPLATE upd_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UPDATE_WHERE?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPDATE_WHERE?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1210,18 +1210,18 @@ func TestFDB_EmbeddedSelectWhere(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_select_where")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_select_where")
+	setup := openTestDB(t, "/FRL/testdb_select_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_select_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sw_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, name STRING, PRIMARY KEY (item_id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_select_where/items WITH TEMPLATE sw_tmpl")
+		"CREATE SCHEMA /FRL/testdb_select_where/items WITH TEMPLATE sw_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SELECT_WHERE?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELECT_WHERE?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1262,22 +1262,22 @@ func TestFDB_InfoSchema_Schemata(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_is_schemata")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_schemata")
+	setup := openTestDB(t, "/FRL/testdb_is_schemata")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_schemata")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE is_schemata_tmpl "+
 			"CREATE TABLE T (id BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_is_schemata/schema1 WITH TEMPLATE is_schemata_tmpl")
+		"CREATE SCHEMA /FRL/testdb_is_schemata/schema1 WITH TEMPLATE is_schemata_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_is_schemata/schema2 WITH TEMPLATE is_schemata_tmpl")
+		"CREATE SCHEMA /FRL/testdb_is_schemata/schema2 WITH TEMPLATE is_schemata_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	// System table queries do not require a schema in the DSN.
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IS_SCHEMATA?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_SCHEMATA?cluster_file=%s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1315,8 +1315,8 @@ func TestFDB_InfoSchema_Tables(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_is_tables")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_tables")
+	setup := openTestDB(t, "/FRL/testdb_is_tables")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_tables")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE is_tables_tmpl "+
@@ -1324,10 +1324,10 @@ func TestFDB_InfoSchema_Tables(t *testing.T) {
 			"CREATE TABLE T2 (id BIGINT, name STRING, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_is_tables/myschema WITH TEMPLATE is_tables_tmpl")
+		"CREATE SCHEMA /FRL/testdb_is_tables/myschema WITH TEMPLATE is_tables_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IS_TABLES?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_TABLES?cluster_file=%s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1368,18 +1368,18 @@ func TestFDB_InfoSchema_Columns(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_is_columns")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_columns")
+	setup := openTestDB(t, "/FRL/testdb_is_columns")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_columns")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE is_columns_tmpl "+
 			"CREATE TABLE Employee (emp_id BIGINT, name STRING, PRIMARY KEY (emp_id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_is_columns/hr WITH TEMPLATE is_columns_tmpl")
+		"CREATE SCHEMA /FRL/testdb_is_columns/hr WITH TEMPLATE is_columns_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IS_COLUMNS?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_COLUMNS?cluster_file=%s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1416,7 +1416,7 @@ func TestFDB_InfoSchema_Columns(t *testing.T) {
 		tbl, _ := vals[2].(string)
 		// Filter to this test's database only — other parallel tests may also
 		// have an "Employee" table in a different database.
-		if dbCatalog != "/TESTDB_IS_COLUMNS" || tbl != "EMPLOYEE" { // the stored, folded path
+		if dbCatalog != "/FRL/TESTDB_IS_COLUMNS" || tbl != "EMPLOYEE" { // the stored, folded path
 			continue
 		}
 		ordinal, _ := vals[4].(int64)
@@ -1455,18 +1455,18 @@ func TestFDB_ParameterizedQuery(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_paramquery")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_paramquery")
+	setup := openTestDB(t, "/FRL/testdb_paramquery")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_paramquery")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE pq_tmpl "+
 			"CREATE TABLE Widget (widget_id BIGINT, label STRING, PRIMARY KEY (widget_id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_paramquery/widgets WITH TEMPLATE pq_tmpl")
+		"CREATE SCHEMA /FRL/testdb_paramquery/widgets WITH TEMPLATE pq_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_PARAMQUERY?cluster_file=%s&schema=WIDGETS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAMQUERY?cluster_file=%s&schema=WIDGETS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1541,17 +1541,17 @@ func TestFDB_InfoSchema_Indexes(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_is_indexes")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_indexes")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_is_indexes")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_indexes")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE is_idx_tmpl "+
 			"CREATE TABLE Product (prod_id BIGINT, name STRING, PRIMARY KEY (prod_id)) "+
 			"CREATE INDEX by_name ON Product (name) "+
 			"CREATE UNIQUE INDEX by_id ON Product (prod_id)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_is_indexes/catalog WITH TEMPLATE is_idx_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_is_indexes/catalog WITH TEMPLATE is_idx_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IS_INDEXES?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_INDEXES?cluster_file=%s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1581,7 +1581,7 @@ func TestFDB_InfoSchema_Indexes(t *testing.T) {
 		}
 		g.Expect(rows.Scan(ptrs...)).To(gomega.Succeed())
 		dbCat, _ := vals[0].(string)
-		if dbCat != "/TESTDB_IS_INDEXES" { // the stored, folded path
+		if dbCat != "/FRL/TESTDB_IS_INDEXES" { // the stored, folded path
 			continue
 		}
 		idxRows = append(idxRows, idxRow{
@@ -1615,15 +1615,15 @@ func TestFDB_SelectColumnProjection(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_proj")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_proj")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_proj")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_proj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE proj_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, name STRING, price BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_proj/store WITH TEMPLATE proj_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_proj/store WITH TEMPLATE proj_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_PROJ?cluster_file=%s&schema=STORE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJ?cluster_file=%s&schema=STORE", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1675,15 +1675,15 @@ func TestFDB_ParameterizedQueryApostrophe(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_apostrophe")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_apostrophe")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_apostrophe")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_apostrophe")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE apos_tmpl "+
 			"CREATE TABLE Note (note_id BIGINT, body STRING, PRIMARY KEY (note_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_apostrophe/notes WITH TEMPLATE apos_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_apostrophe/notes WITH TEMPLATE apos_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_APOSTROPHE?cluster_file=%s&schema=NOTES", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_APOSTROPHE?cluster_file=%s&schema=NOTES", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1726,15 +1726,15 @@ func TestFDB_InsertMissingPK(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_missing_pk")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_missing_pk")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_missing_pk")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_missing_pk")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE mpk_tmpl "+
 			"CREATE TABLE Rec (rec_id BIGINT, val STRING, PRIMARY KEY (rec_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_missing_pk/recs WITH TEMPLATE mpk_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_missing_pk/recs WITH TEMPLATE mpk_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MISSING_PK?cluster_file=%s&schema=RECS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MISSING_PK?cluster_file=%s&schema=RECS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1762,15 +1762,15 @@ func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_type_mismatch")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_type_mismatch")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_type_mismatch")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_type_mismatch")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE tm_tmpl "+
 			"CREATE TABLE Obj (obj_id BIGINT, name STRING, PRIMARY KEY (obj_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_type_mismatch/objs WITH TEMPLATE tm_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_type_mismatch/objs WITH TEMPLATE tm_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_TYPE_MISMATCH?cluster_file=%s&schema=OBJS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TYPE_MISMATCH?cluster_file=%s&schema=OBJS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1801,8 +1801,8 @@ func TestFDB_SelectOrderBy(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_orderby")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_orderby")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_orderby")).Error().NotTo(gomega.HaveOccurred())
 	// INDEX on val so ORDER BY val can pick a scan that satisfies the
 	// requested ordering — matches Java's Cascades RemoveSortRule
 	// firing on an inner index scan whose Ordering property satisfies.
@@ -1811,9 +1811,9 @@ func TestFDB_SelectOrderBy(t *testing.T) {
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id)) "+
 			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_orderby/items WITH TEMPLATE ob_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_orderby/items WITH TEMPLATE ob_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ORDERBY?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1845,16 +1845,16 @@ func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_orderby_reject")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_reject")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_orderby_reject")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_orderby_reject")).Error().NotTo(gomega.HaveOccurred())
 	// NO index on val — Go extension: in-memory sort handles this.
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_reject_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_orderby_reject/items WITH TEMPLATE ob_reject_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_orderby_reject/items WITH TEMPLATE ob_reject_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ORDERBY_REJECT?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY_REJECT?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1886,15 +1886,15 @@ func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_orderby_reject_expr")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_reject_expr")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_orderby_reject_expr")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_orderby_reject_expr")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_reject_expr_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_orderby_reject_expr/items WITH TEMPLATE ob_reject_expr_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_orderby_reject_expr/items WITH TEMPLATE ob_reject_expr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ORDERBY_REJECT_EXPR?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY_REJECT_EXPR?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1924,16 +1924,16 @@ func TestFDB_SelectOrderByDesc(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_orderby_desc")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_desc")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_orderby_desc")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_orderby_desc")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE obdesc_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id)) "+
 			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_orderby_desc/items WITH TEMPLATE obdesc_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_orderby_desc/items WITH TEMPLATE obdesc_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ORDERBY_DESC?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY_DESC?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1959,16 +1959,16 @@ func TestFDB_SelectOrderByMultiColumn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_ob_multi")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_multi")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_ob_multi")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ob_multi")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_multi_tmpl "+
 			"CREATE TABLE T (id BIGINT, a STRING, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_ab ON T (a, b)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_ob_multi/main WITH TEMPLATE ob_multi_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_ob_multi/main WITH TEMPLATE ob_multi_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OB_MULTI?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_MULTI?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2025,16 +2025,16 @@ func TestFDB_SelectDistinctOrderBy(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dist_orderby")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_dist_orderby")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_dist_orderby")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dist_orderby")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dist_ob_tmpl "+
 			"CREATE TABLE T (id BIGINT, val BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_val ON T (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_dist_orderby/main WITH TEMPLATE dist_ob_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_dist_orderby/main WITH TEMPLATE dist_ob_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DIST_ORDERBY?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DIST_ORDERBY?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2060,15 +2060,15 @@ func TestFDB_SelectLimit(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_limit")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_limit")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_limit")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_limit")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE lim_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_limit/items WITH TEMPLATE lim_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_limit/items WITH TEMPLATE lim_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_LIMIT?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LIMIT?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2094,15 +2094,15 @@ func TestFDB_SelectWhereAnd(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_where_and")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_and")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_where_and")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_and")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wa_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_where_and/items WITH TEMPLATE wa_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_where_and/items WITH TEMPLATE wa_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_WHERE_AND?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_AND?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2129,15 +2129,15 @@ func TestFDB_SelectWhereOr(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_where_or")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_or")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_where_or")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_or")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wo_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_where_or/items WITH TEMPLATE wo_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_where_or/items WITH TEMPLATE wo_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_WHERE_OR?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_OR?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2164,16 +2164,16 @@ func TestFDB_SelectWhereRangeComparison(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_where_range")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_range")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_where_range")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_range")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wr_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id)) "+
 			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_where_range/items WITH TEMPLATE wr_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_where_range/items WITH TEMPLATE wr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_WHERE_RANGE?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_RANGE?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2200,15 +2200,15 @@ func TestFDB_DeleteWhereAnd(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_del_and")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_del_and")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_del_and")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_del_and")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE da_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_del_and/items WITH TEMPLATE da_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_del_and/items WITH TEMPLATE da_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DEL_AND?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DEL_AND?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2239,15 +2239,15 @@ func TestFDB_UpdateWhereRange(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_upd_range")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_range")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_upd_range")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_upd_range")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ur_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_upd_range/items WITH TEMPLATE ur_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_upd_range/items WITH TEMPLATE ur_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UPD_RANGE?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_RANGE?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2279,15 +2279,15 @@ func TestFDB_SelectCountStar(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_count_star")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_count_star")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_count_star")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_count_star")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE cs_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_count_star/items WITH TEMPLATE cs_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_count_star/items WITH TEMPLATE cs_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_COUNT_STAR?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COUNT_STAR?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2312,15 +2312,15 @@ func TestFDB_SelectWhereNot(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_where_not")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_not")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_where_not")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_not")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wn_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_where_not/items WITH TEMPLATE wn_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_where_not/items WITH TEMPLATE wn_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_WHERE_NOT?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_NOT?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2348,16 +2348,16 @@ func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_ob_noproj")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_noproj")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_ob_noproj")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ob_noproj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE onp_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id)) "+
 			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_ob_noproj/items WITH TEMPLATE onp_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_ob_noproj/items WITH TEMPLATE onp_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OB_NOPROJ?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_NOPROJ?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2384,15 +2384,15 @@ func TestFDB_SelectDistinct(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_distinct")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_distinct")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_distinct")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_distinct")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dist_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_distinct/items WITH TEMPLATE dist_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_distinct/items WITH TEMPLATE dist_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DISTINCT?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTINCT?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2421,15 +2421,15 @@ func TestFDB_SelectWhereIn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_where_in")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_in")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_where_in")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_in")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE in_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_where_in/items WITH TEMPLATE in_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_where_in/items WITH TEMPLATE in_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_WHERE_IN?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_IN?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2456,15 +2456,15 @@ func TestFDB_SelectWhereNotIn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_where_not_in")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_not_in")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_where_not_in")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_not_in")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE nin_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_where_not_in/items WITH TEMPLATE nin_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_where_not_in/items WITH TEMPLATE nin_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_WHERE_NOT_IN?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_NOT_IN?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2491,16 +2491,16 @@ func TestFDB_SelectWhereIsNull(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_where_is_null")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_is_null")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_where_is_null")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_is_null")).Error().NotTo(gomega.HaveOccurred())
 	// val is nullable (no NOT NULL constraint) so unset fields appear as NULL.
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE isnull_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_where_is_null/items WITH TEMPLATE isnull_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_where_is_null/items WITH TEMPLATE isnull_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_WHERE_IS_NULL?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_IS_NULL?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2571,15 +2571,15 @@ func TestFDB_SelectWhereLike(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_where_like")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_like")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_where_like")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_like")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE like_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, name STRING, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_where_like/items WITH TEMPLATE like_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_where_like/items WITH TEMPLATE like_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_WHERE_LIKE?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_LIKE?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2620,15 +2620,15 @@ func TestFDB_SelectWhereBetween(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_where_between")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_between")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_where_between")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_between")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE between_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_where_between/items WITH TEMPLATE between_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_where_between/items WITH TEMPLATE between_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_WHERE_BETWEEN?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_BETWEEN?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2669,15 +2669,15 @@ func TestFDB_SelectWhereLikeUnderscore(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_where_like_us")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_like_us")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_where_like_us")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_like_us")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE like_us_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, name STRING, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_where_like_us/items WITH TEMPLATE like_us_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_where_like_us/items WITH TEMPLATE like_us_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_WHERE_LIKE_US?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_LIKE_US?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2704,15 +2704,15 @@ func TestFDB_BeginCommit(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_begin_commit")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_begin_commit")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_begin_commit")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_begin_commit")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE bc_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_begin_commit/items WITH TEMPLATE bc_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_begin_commit/items WITH TEMPLATE bc_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_BEGIN_COMMIT?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BEGIN_COMMIT?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2744,15 +2744,15 @@ func TestFDB_BeginRollback(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_begin_rollback")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_begin_rollback")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_begin_rollback")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_begin_rollback")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE br_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_begin_rollback/items WITH TEMPLATE br_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_begin_rollback/items WITH TEMPLATE br_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_BEGIN_ROLLBACK?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BEGIN_ROLLBACK?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2778,15 +2778,15 @@ func TestFDB_TxMultiStatement(t *testing.T) {
 	ctx := context.Background()
 
 	key, clk := spikedClusterKey(t, 30*time.Second)
-	setup := openSpiked(t, key, "/testdb_tx_multi", "")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_tx_multi")).Error().NotTo(gomega.HaveOccurred())
+	setup := openSpiked(t, key, "/FRL/testdb_tx_multi", "")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_tx_multi")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE txm_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_tx_multi/items WITH TEMPLATE txm_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_tx_multi/items WITH TEMPLATE txm_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	db := openSpiked(t, key, "/testdb_tx_multi", "items")
+	db := openSpiked(t, key, "/FRL/testdb_tx_multi", "items")
 
 	// THREE statements plus a commit on one read version — the shape this whole
 	// class is about. Retried as a whole: the two INSERTs and the UPDATE are
@@ -2834,15 +2834,15 @@ func TestFDB_SelectWhereNullNotIn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_null_not_in")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_not_in")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_null_not_in")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_null_not_in")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE null_nin_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_null_not_in/items WITH TEMPLATE null_nin_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_null_not_in/items WITH TEMPLATE null_nin_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NULL_NOT_IN?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_NOT_IN?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2873,15 +2873,15 @@ func TestFDB_SelectWhereConstantLeftSide(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_const_lhs")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_const_lhs")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_const_lhs")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_const_lhs")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE const_lhs_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_const_lhs/items WITH TEMPLATE const_lhs_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_const_lhs/items WITH TEMPLATE const_lhs_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CONST_LHS?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONST_LHS?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2909,15 +2909,15 @@ func TestFDB_SelectColumnAlias(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_col_alias")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_col_alias")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_col_alias")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_col_alias")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE alias_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_col_alias/items WITH TEMPLATE alias_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_col_alias/items WITH TEMPLATE alias_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_COL_ALIAS?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COL_ALIAS?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2946,16 +2946,16 @@ func TestFDB_SelectOrderByNonProjectedColumn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_orderby_nonproj")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_orderby_nonproj")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_orderby_nonproj")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_orderby_nonproj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_nonproj_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, name STRING, PRIMARY KEY (item_id)) "+
 			"CREATE INDEX idx_val ON Item (val)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_orderby_nonproj/items WITH TEMPLATE ob_nonproj_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_orderby_nonproj/items WITH TEMPLATE ob_nonproj_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ORDERBY_NONPROJ?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY_NONPROJ?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2984,15 +2984,15 @@ func TestFDB_SQLCommitRollback(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_sql_txn")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_sql_txn")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_sql_txn")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sql_txn")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sql_txn_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_sql_txn/items WITH TEMPLATE sql_txn_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_sql_txn/items WITH TEMPLATE sql_txn_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SQL_TXN?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQL_TXN?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3042,15 +3042,15 @@ func TestFDB_InsertWithoutColumnList(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_ins_nocollist")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ins_nocollist")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_ins_nocollist")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ins_nocollist")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE nocollist_tmpl "+
 			"CREATE TABLE Item (item_id BIGINT, val BIGINT, PRIMARY KEY (item_id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_ins_nocollist/items WITH TEMPLATE nocollist_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_ins_nocollist/items WITH TEMPLATE nocollist_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INS_NOCOLLIST?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INS_NOCOLLIST?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3075,15 +3075,15 @@ func TestFDB_UpdateSetArithmetic(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_upd_arith")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_arith")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_upd_arith")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_upd_arith")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE upd_arith_tmpl "+
 			"CREATE TABLE Counter (id BIGINT, val BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_upd_arith/counters WITH TEMPLATE upd_arith_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_upd_arith/counters WITH TEMPLATE upd_arith_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UPD_ARITH?cluster_file=%s&schema=COUNTERS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_ARITH?cluster_file=%s&schema=COUNTERS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3113,15 +3113,15 @@ func TestFDB_UpdateInt32Overflow(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_upd_int32_ovf")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_int32_ovf")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_upd_int32_ovf")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_upd_int32_ovf")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE upd_int32_ovf_tmpl "+
 			"CREATE TABLE T32 (id BIGINT, val INTEGER, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_upd_int32_ovf/upd_int32_ovf WITH TEMPLATE upd_int32_ovf_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_upd_int32_ovf/upd_int32_ovf WITH TEMPLATE upd_int32_ovf_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UPD_INT32_OVF?cluster_file=%s&schema=UPD_INT32_OVF", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_INT32_OVF?cluster_file=%s&schema=UPD_INT32_OVF", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3163,15 +3163,15 @@ func TestFDB_GroupByCount(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_grpby")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_grpby")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_grpby")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_grpby")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE grpby_tmpl "+
 			"CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_grpby/sales WITH TEMPLATE grpby_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_grpby/sales WITH TEMPLATE grpby_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GRPBY?cluster_file=%s&schema=SALES", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GRPBY?cluster_file=%s&schema=SALES", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3215,15 +3215,15 @@ func TestFDB_GroupByHaving(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_having")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_having")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_having")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_having")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE having_tmpl "+
 			"CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_having/sales WITH TEMPLATE having_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_having/sales WITH TEMPLATE having_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_HAVING?cluster_file=%s&schema=SALES", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVING?cluster_file=%s&schema=SALES", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3263,15 +3263,15 @@ func TestFDB_GroupByOrderBy(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_grpord")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_grpord")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_grpord")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_grpord")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE grpord_tmpl "+
 			"CREATE TABLE Sale (id BIGINT, region STRING, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_grpord/sales WITH TEMPLATE grpord_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_grpord/sales WITH TEMPLATE grpord_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GRPORD?cluster_file=%s&schema=SALES", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GRPORD?cluster_file=%s&schema=SALES", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3319,15 +3319,15 @@ func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_aggno")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_aggno")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_aggno")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_aggno")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE aggno_tmpl "+
 			"CREATE TABLE Item (id BIGINT, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_aggno/items WITH TEMPLATE aggno_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_aggno/items WITH TEMPLATE aggno_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGNO?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGNO?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3364,15 +3364,15 @@ func TestFDB_SumIntegerDivision(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_sumdiv")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_sumdiv")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_sumdiv")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sumdiv")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sumdiv_tmpl "+
 			"CREATE TABLE T (id BIGINT, qty BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_sumdiv/items WITH TEMPLATE sumdiv_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_sumdiv/items WITH TEMPLATE sumdiv_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SUMDIV?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUMDIV?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3417,15 +3417,15 @@ func TestFDB_BareBoolProjection(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_barebool")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_barebool")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_barebool")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_barebool")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE barebool_tmpl "+
 			"CREATE TABLE T (id BIGINT, b BOOLEAN, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_barebool/items WITH TEMPLATE barebool_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_barebool/items WITH TEMPLATE barebool_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_BAREBOOL?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BAREBOOL?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3522,14 +3522,14 @@ func TestFDB_DoubleColumnComparison(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_double_cmp")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_double_cmp")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_double_cmp")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_double_cmp")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE double_cmp_tmpl "+
 			"CREATE TABLE D (id BIGINT, d DOUBLE, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
-	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /testdb_double_cmp/items WITH TEMPLATE double_cmp_tmpl")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_double_cmp/items WITH TEMPLATE double_cmp_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DOUBLE_CMP?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DOUBLE_CMP?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3572,14 +3572,14 @@ func TestFDB_DMLBareNonBooleanWhereRejected(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dml_nonbool")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_dml_nonbool")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_dml_nonbool")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dml_nonbool")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dml_nonbool_tmpl "+
 			"CREATE TABLE A (id BIGINT, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
-	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dml_nonbool/items WITH TEMPLATE dml_nonbool_tmpl")).Error().NotTo(gomega.HaveOccurred())
+	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dml_nonbool/items WITH TEMPLATE dml_nonbool_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DML_NONBOOL?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DML_NONBOOL?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3607,15 +3607,15 @@ func TestFDB_SelectScalarExpression(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_scalar_sel")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_scalar_sel")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_scalar_sel")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_scalar_sel")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE scalar_sel_tmpl "+
 			"CREATE TABLE Item (id BIGINT, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_scalar_sel/items WITH TEMPLATE scalar_sel_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_scalar_sel/items WITH TEMPLATE scalar_sel_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SCALAR_SEL?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SCALAR_SEL?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3639,15 +3639,15 @@ func TestFDB_SelectCoalesce(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_coalesce")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_coalesce")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_coalesce")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_coalesce")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE coalesce_tmpl "+
 			"CREATE TABLE Item (id BIGINT, val BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_coalesce/items WITH TEMPLATE coalesce_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_coalesce/items WITH TEMPLATE coalesce_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_COALESCE?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COALESCE?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3680,15 +3680,15 @@ func TestFDB_LimitOffset(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_limit_offset")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_limit_offset")
+	setup := openTestDB(t, "/FRL/testdb_limit_offset")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_limit_offset")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE loff_tmpl CREATE TABLE Item (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_limit_offset/items WITH TEMPLATE loff_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_limit_offset/items WITH TEMPLATE loff_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_LIMIT_OFFSET?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LIMIT_OFFSET?cluster_file=%s&schema=ITEMS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3718,15 +3718,15 @@ func TestFDB_CaseWhen(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_case_when")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_case_when")
+	setup := openTestDB(t, "/FRL/testdb_case_when")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_case_when")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cw_tmpl CREATE TABLE Sale (id BIGINT, amount BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_case_when/sales WITH TEMPLATE cw_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_case_when/sales WITH TEMPLATE cw_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CASE_WHEN?cluster_file=%s&schema=SALES", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_WHEN?cluster_file=%s&schema=SALES", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3766,15 +3766,15 @@ func TestFDB_StringFunctions(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_strfuncs")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_strfuncs")
+	setup := openTestDB(t, "/FRL/testdb_strfuncs")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_strfuncs")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE sf_tmpl CREATE TABLE Word (id BIGINT, label STRING, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_strfuncs/words WITH TEMPLATE sf_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_strfuncs/words WITH TEMPLATE sf_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_STRFUNCS?cluster_file=%s&schema=WORDS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STRFUNCS?cluster_file=%s&schema=WORDS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3814,15 +3814,15 @@ func TestFDB_ConcatAndNullIf(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_concat")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_concat")
+	setup := openTestDB(t, "/FRL/testdb_concat")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_concat")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cn_tmpl CREATE TABLE Person (id BIGINT, first STRING, last STRING, score BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_concat/people WITH TEMPLATE cn_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_concat/people WITH TEMPLATE cn_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CONCAT?cluster_file=%s&schema=PEOPLE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONCAT?cluster_file=%s&schema=PEOPLE", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3856,15 +3856,15 @@ func TestFDB_UnionAll(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_union_all")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_union_all")
+	setup := openTestDB(t, "/FRL/testdb_union_all")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_union_all")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ua_tmpl CREATE TABLE Item (id BIGINT, label STRING, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_union_all/store WITH TEMPLATE ua_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_union_all/store WITH TEMPLATE ua_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UNION_ALL?cluster_file=%s&schema=STORE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_ALL?cluster_file=%s&schema=STORE", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3897,17 +3897,17 @@ func TestFDB_UnionAllDifferentColumnNames(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_union_diffcol")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_union_diffcol")
+	setup := openTestDB(t, "/FRL/testdb_union_diffcol")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_union_diffcol")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE udcol_tmpl "+
 		"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_union_diffcol/s WITH TEMPLATE udcol_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_union_diffcol/s WITH TEMPLATE udcol_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UNION_DIFFCOL?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_DIFFCOL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3990,15 +3990,15 @@ func TestFDB_UnionDistinctRejected(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_union_distinct")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_union_distinct")
+	setup := openTestDB(t, "/FRL/testdb_union_distinct")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_union_distinct")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ud_tmpl CREATE TABLE Tag (id BIGINT, tag STRING, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_union_distinct/tags WITH TEMPLATE ud_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_union_distinct/tags WITH TEMPLATE ud_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UNION_DISTINCT?cluster_file=%s&schema=TAGS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_DISTINCT?cluster_file=%s&schema=TAGS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4019,17 +4019,17 @@ func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_is_schemata_where")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_schemata_where")
+	setup := openTestDB(t, "/FRL/testdb_is_schemata_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_schemata_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE iswt_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_schemata_where/alpha WITH TEMPLATE iswt_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_is_schemata_where/alpha WITH TEMPLATE iswt_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_schemata_where/beta WITH TEMPLATE iswt_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_is_schemata_where/beta WITH TEMPLATE iswt_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IS_SCHEMATA_WHERE?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_SCHEMATA_WHERE?cluster_file=%s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4041,7 +4041,7 @@ func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
 	// filter (the established parallel-safety convention for system-table
 	// tests; the SCHEMA_NAME-only form was a latent race independent of the
 	// WHERE-filter behaviour this test pins).
-	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '/TESTDB_IS_SCHEMATA_WHERE' AND SCHEMA_NAME = 'ALPHA'`)
+	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE CATALOG_NAME = '/FRL/TESTDB_IS_SCHEMATA_WHERE' AND SCHEMA_NAME = 'ALPHA'`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
@@ -4080,17 +4080,17 @@ func TestFDB_InfoSchema_SchemataWhere_QualifiedRef(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_is_schemata_qref")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_schemata_qref")
+	setup := openTestDB(t, "/FRL/testdb_is_schemata_qref")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_schemata_qref")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE isqr_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_schemata_qref/alpha WITH TEMPLATE isqr_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_is_schemata_qref/alpha WITH TEMPLATE isqr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_schemata_qref/beta WITH TEMPLATE isqr_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_is_schemata_qref/beta WITH TEMPLATE isqr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IS_SCHEMATA_QREF?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_SCHEMATA_QREF?cluster_file=%s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4098,7 +4098,7 @@ func TestFDB_InfoSchema_SchemataWhere_QualifiedRef(t *testing.T) {
 	// Qualified refs ("SCHEMATA".COL) — only resolvable via the kept bare
 	// fallback (the row map carries bare keys). Scoped to this db's catalog
 	// for parallel safety, as in TestFDB_InfoSchema_SchemataWhere.
-	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE "SCHEMATA".CATALOG_NAME = '/TESTDB_IS_SCHEMATA_QREF' AND "SCHEMATA".SCHEMA_NAME = 'ALPHA'`)
+	rows, err := db.QueryContext(ctx, `SELECT * FROM "INFORMATION_SCHEMA"."SCHEMATA" WHERE "SCHEMATA".CATALOG_NAME = '/FRL/TESTDB_IS_SCHEMATA_QREF' AND "SCHEMATA".SCHEMA_NAME = 'ALPHA'`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer rows.Close()
 
@@ -4126,15 +4126,15 @@ func TestFDB_InsertSelect(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_insert_select")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert_select")
+	setup := openTestDB(t, "/FRL/testdb_insert_select")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_insert_select")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE is_tmpl CREATE TABLE Src (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE Dst (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_insert_select/data WITH TEMPLATE is_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_insert_select/data WITH TEMPLATE is_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INSERT_SELECT?cluster_file=%s&schema=DATA", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSERT_SELECT?cluster_file=%s&schema=DATA", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4167,15 +4167,15 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_cast_substr")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cast_substr")
+	setup := openTestDB(t, "/FRL/testdb_cast_substr")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cast_substr")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cast_substr_tmpl CREATE TABLE Item (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cast_substr/shop WITH TEMPLATE cast_substr_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cast_substr/shop WITH TEMPLATE cast_substr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CAST_SUBSTR?cluster_file=%s&schema=SHOP", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CAST_SUBSTR?cluster_file=%s&schema=SHOP", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4298,15 +4298,15 @@ func TestFDB_MathFunctions(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_math_funcs")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_math_funcs")
+	setup := openTestDB(t, "/FRL/testdb_math_funcs")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_math_funcs")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE mf_tmpl CREATE TABLE Num (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_math_funcs/data WITH TEMPLATE mf_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_math_funcs/data WITH TEMPLATE mf_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MATH_FUNCS?cluster_file=%s&schema=DATA", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MATH_FUNCS?cluster_file=%s&schema=DATA", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4381,16 +4381,16 @@ func TestFDB_IsDistinctFrom(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_is_distinct")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_is_distinct")
+	setup := openTestDB(t, "/FRL/testdb_is_distinct")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_distinct")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE idf_tmpl
 		CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_is_distinct/main WITH TEMPLATE idf_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_is_distinct/main WITH TEMPLATE idf_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IS_DISTINCT?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_DISTINCT?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4434,15 +4434,15 @@ func TestFDB_HavingCompound(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_having_compound")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_having_compound")
+	setup := openTestDB(t, "/FRL/testdb_having_compound")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_having_compound")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE hc_tmpl CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_having_compound/sales WITH TEMPLATE hc_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_having_compound/sales WITH TEMPLATE hc_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_HAVING_COMPOUND?cluster_file=%s&schema=SALES", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVING_COMPOUND?cluster_file=%s&schema=SALES", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4474,15 +4474,15 @@ func TestFDB_WhereExprComparison(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_where_expr")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_where_expr")
+	setup := openTestDB(t, "/FRL/testdb_where_expr")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_expr")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE we_tmpl CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_where_expr/products WITH TEMPLATE we_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_where_expr/products WITH TEMPLATE we_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_WHERE_EXPR?cluster_file=%s&schema=PRODUCTS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_EXPR?cluster_file=%s&schema=PRODUCTS", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4514,17 +4514,17 @@ func TestFDB_InnerJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_inner_join")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_inner_join")
+	setup := openTestDB(t, "/FRL/testdb_inner_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_inner_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ij_tmpl
 		CREATE TABLE Order (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))
 		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_inner_join/main WITH TEMPLATE ij_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_inner_join/main WITH TEMPLATE ij_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INNER_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INNER_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4574,17 +4574,17 @@ func TestFDB_LeftJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_left_join")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_left_join")
+	setup := openTestDB(t, "/FRL/testdb_left_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_left_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE lj_tmpl
 		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE Ord (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_left_join/main WITH TEMPLATE lj_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_left_join/main WITH TEMPLATE lj_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_LEFT_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LEFT_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4633,17 +4633,17 @@ func TestFDB_JoinWhere(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_join_where")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_where")
+	setup := openTestDB(t, "/FRL/testdb_join_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_join_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE jw_tmpl
 		CREATE TABLE Category (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE Product (id BIGINT, cat_id BIGINT, price BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_where/main WITH TEMPLATE jw_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_join_where/main WITH TEMPLATE jw_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_JOIN_WHERE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_WHERE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4691,17 +4691,17 @@ func TestFDB_RightJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_right_join")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_right_join")
+	setup := openTestDB(t, "/FRL/testdb_right_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_right_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE rj_tmpl
 		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE Ord (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_right_join/main WITH TEMPLATE rj_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_right_join/main WITH TEMPLATE rj_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_RIGHT_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RIGHT_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4752,16 +4752,16 @@ func TestFDB_CountDistinct(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_count_distinct")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_count_distinct")
+	setup := openTestDB(t, "/FRL/testdb_count_distinct")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_count_distinct")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cd_tmpl
 		CREATE TABLE Sale (id BIGINT, customer_id BIGINT, region STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_count_distinct/main WITH TEMPLATE cd_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_count_distinct/main WITH TEMPLATE cd_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_COUNT_DISTINCT?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COUNT_DISTINCT?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4796,16 +4796,16 @@ func TestFDB_GreatestLeast(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_greatest_least")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_greatest_least")
+	setup := openTestDB(t, "/FRL/testdb_greatest_least")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_greatest_least")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gl_tmpl
 		CREATE TABLE Product (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_greatest_least/main WITH TEMPLATE gl_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_greatest_least/main WITH TEMPLATE gl_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GREATEST_LEAST?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GREATEST_LEAST?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4861,18 +4861,18 @@ func TestFDB_SubqueryINRejected(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_subquery_in")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_subquery_in")
+	setup := openTestDB(t, "/FRL/testdb_subquery_in")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_subquery_in")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE subq_tmpl
 		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE RestaurantOrder (order_id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (order_id))
 		CREATE INDEX idx_customer_name ON Customer (name)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_subquery_in/main WITH TEMPLATE subq_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_subquery_in/main WITH TEMPLATE subq_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SUBQUERY_IN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQUERY_IN?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4910,17 +4910,17 @@ func TestFDB_JoinGroupBy(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_join_groupby")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_groupby")
+	setup := openTestDB(t, "/FRL/testdb_join_groupby")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_join_groupby")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE jgb_tmpl
 		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE Order (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_groupby/main WITH TEMPLATE jgb_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_join_groupby/main WITH TEMPLATE jgb_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_JOIN_GROUPBY?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_GROUPBY?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4969,18 +4969,18 @@ func TestFDB_ExistsSubquery(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_exists_subquery")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_exists_subquery")
+	setup := openTestDB(t, "/FRL/testdb_exists_subquery")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_exists_subquery")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE exists_tmpl
 		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE Flag (id BIGINT, active BIGINT, PRIMARY KEY (id))
 		CREATE INDEX idx_customer_name ON Customer (name)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_exists_subquery/main WITH TEMPLATE exists_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_exists_subquery/main WITH TEMPLATE exists_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXISTS_SUBQUERY?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_SUBQUERY?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5016,18 +5016,18 @@ func TestFDB_CorrelatedExistsSelfJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_corr_exists_selfjoin")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_corr_exists_selfjoin")
+	setup := openTestDB(t, "/FRL/testdb_corr_exists_selfjoin")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_corr_exists_selfjoin")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cesj_tmpl
 		CREATE TABLE t (id BIGINT, status STRING, lbl STRING, v BIGINT, notes STRING, PRIMARY KEY (id))
 		CREATE INDEX idx_status ON t (status)
 		CREATE INDEX idx_v ON t (v)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_corr_exists_selfjoin/main WITH TEMPLATE cesj_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_corr_exists_selfjoin/main WITH TEMPLATE cesj_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CORR_EXISTS_SELFJOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORR_EXISTS_SELFJOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5058,17 +5058,17 @@ func TestFDB_CTE(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_cte")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte")
+	setup := openTestDB(t, "/FRL/testdb_cte")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE cte_tmpl "+
 			"CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte/store WITH TEMPLATE cte_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cte/store WITH TEMPLATE cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CTE?cluster_file=%s&schema=STORE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE?cluster_file=%s&schema=STORE", clusterFilePath)
 	db, openErr := sql.Open("fdbsql", dsn)
 	g.Expect(openErr).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5154,16 +5154,16 @@ func TestFDB_ConstantProjectionFolding(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_const_proj_fold")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_const_proj_fold")
+	setup := openTestDB(t, "/FRL/testdb_const_proj_fold")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_const_proj_fold")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cpf_tmpl
 		CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_const_proj_fold/main WITH TEMPLATE cpf_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_const_proj_fold/main WITH TEMPLATE cpf_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CONST_PROJ_FOLD?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONST_PROJ_FOLD?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5207,16 +5207,16 @@ func TestFDB_DerivedTable(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_derived_table")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_derived_table")
+	setup := openTestDB(t, "/FRL/testdb_derived_table")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_derived_table")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE dt_tmpl
 		CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_derived_table/main WITH TEMPLATE dt_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_derived_table/main WITH TEMPLATE dt_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DERIVED_TABLE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DERIVED_TABLE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5249,16 +5249,16 @@ func TestFDB_DerivedTableAggAlias(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dt_agg_alias")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dt_agg_alias")
+	setup := openTestDB(t, "/FRL/testdb_dt_agg_alias")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dt_agg_alias")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE dta_tmpl
 		CREATE TABLE t1 (id BIGINT, n BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dt_agg_alias/main WITH TEMPLATE dta_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dt_agg_alias/main WITH TEMPLATE dta_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DT_AGG_ALIAS?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_AGG_ALIAS?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5298,16 +5298,16 @@ func TestFDB_DerivedTableSortOnlyAgg(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dt_sortonly")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dt_sortonly")
+	setup := openTestDB(t, "/FRL/testdb_dt_sortonly")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dt_sortonly")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE dts_tmpl
 		CREATE TABLE t1 (id BIGINT, n BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dt_sortonly/main WITH TEMPLATE dts_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dt_sortonly/main WITH TEMPLATE dts_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DT_SORTONLY?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_SORTONLY?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5336,16 +5336,16 @@ func TestFDB_CTEChaining(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_cte_chaining")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_chaining")
+	setup := openTestDB(t, "/FRL/testdb_cte_chaining")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cte_chaining")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE chain_tmpl
 		CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_chaining/main WITH TEMPLATE chain_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cte_chaining/main WITH TEMPLATE chain_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CTE_CHAINING?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_CHAINING?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5377,17 +5377,17 @@ func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_upd_del_subq")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_del_subq")
+	setup := openTestDB(t, "/FRL/testdb_upd_del_subq")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_upd_del_subq")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE uds_tmpl
 		CREATE TABLE Category (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE Product (id BIGINT, category_id BIGINT, price BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_upd_del_subq/main WITH TEMPLATE uds_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_upd_del_subq/main WITH TEMPLATE uds_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UPD_DEL_SUBQ?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_DEL_SUBQ?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5445,17 +5445,17 @@ func TestFDB_FunctionsInMapEval(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_fn_map")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_fn_map")
+	setup := openTestDB(t, "/FRL/testdb_fn_map")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_fn_map")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE fn_map_tmpl
 		CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))
 		CREATE TABLE Category (id BIGINT, label STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_fn_map/main WITH TEMPLATE fn_map_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_fn_map/main WITH TEMPLATE fn_map_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FN_MAP?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FN_MAP?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5501,16 +5501,16 @@ func TestFDB_CaseInMapEval(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_case_map")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_case_map")
+	setup := openTestDB(t, "/FRL/testdb_case_map")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_case_map")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE case_map_tmpl
 		CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_case_map/main WITH TEMPLATE case_map_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_case_map/main WITH TEMPLATE case_map_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CASE_MAP?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_MAP?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5550,17 +5550,17 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_subq_case")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_subq_case")
+	setup := openTestDB(t, "/FRL/testdb_subq_case")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_subq_case")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE sqc_tmpl
 		CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))
 		CREATE TABLE Discount (product_id BIGINT, PRIMARY KEY (product_id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_subq_case/main WITH TEMPLATE sqc_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_subq_case/main WITH TEMPLATE sqc_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SUBQ_CASE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQ_CASE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5595,16 +5595,16 @@ func TestFDB_AggregateOnCTE(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_agg_cte")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_agg_cte")
+	setup := openTestDB(t, "/FRL/testdb_agg_cte")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_agg_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_cte_tmpl
 		CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_agg_cte/main WITH TEMPLATE agg_cte_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_agg_cte/main WITH TEMPLATE agg_cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGG_CTE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_CTE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5661,17 +5661,17 @@ func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_join_gb_ol")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_gb_ol")
+	setup := openTestDB(t, "/FRL/testdb_join_gb_ol")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_join_gb_ol")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_gb_tmpl
 		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_gb_ol/main WITH TEMPLATE join_gb_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_join_gb_ol/main WITH TEMPLATE join_gb_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_JOIN_GB_OL?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_GB_OL?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5720,16 +5720,16 @@ func TestFDB_CTEAggregateHaving(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_cte_agg_having")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_agg_having")
+	setup := openTestDB(t, "/FRL/testdb_cte_agg_having")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cte_agg_having")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_agg_h_tmpl
 		CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_agg_having/main WITH TEMPLATE cte_agg_h_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cte_agg_having/main WITH TEMPLATE cte_agg_h_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CTE_AGG_HAVING?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_AGG_HAVING?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5787,17 +5787,17 @@ func TestFDB_JoinOnCTE(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_join_cte")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_cte")
+	setup := openTestDB(t, "/FRL/testdb_join_cte")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_join_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_cte_tmpl
 		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_cte/main WITH TEMPLATE join_cte_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_join_cte/main WITH TEMPLATE join_cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_JOIN_CTE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_CTE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5839,17 +5839,17 @@ func TestFDB_MultiTableFrom(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_multi_from")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_multi_from")
+	setup := openTestDB(t, "/FRL/testdb_multi_from")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_multi_from")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE multi_from_tmpl
 		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_multi_from/main WITH TEMPLATE multi_from_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_multi_from/main WITH TEMPLATE multi_from_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MULTI_FROM?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MULTI_FROM?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5894,18 +5894,18 @@ func TestFDB_ThreeTableFrom(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_three_from")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_three_from")
+	setup := openTestDB(t, "/FRL/testdb_three_from")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_three_from")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE three_tmpl
 		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE Region (id BIGINT, label STRING, PRIMARY KEY (id))
 		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, region_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_three_from/main WITH TEMPLATE three_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_three_from/main WITH TEMPLATE three_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_THREE_FROM?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_THREE_FROM?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5942,16 +5942,16 @@ func TestFDB_UpdateSetWithFunction(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_upd_fn")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_upd_fn")
+	setup := openTestDB(t, "/FRL/testdb_upd_fn")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_upd_fn")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE upd_fn_tmpl
 		CREATE TABLE Product (id BIGINT, name STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_upd_fn/main WITH TEMPLATE upd_fn_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_upd_fn/main WITH TEMPLATE upd_fn_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UPD_FN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_FN?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5975,16 +5975,16 @@ func TestFDB_OrderByExpression(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_ob_expr")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_expr")
+	setup := openTestDB(t, "/FRL/testdb_ob_expr")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ob_expr")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ob_expr_tmpl
 		CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ob_expr/main WITH TEMPLATE ob_expr_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_ob_expr/main WITH TEMPLATE ob_expr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OB_EXPR?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_EXPR?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6036,17 +6036,17 @@ func TestFDB_OrderByExpressionInJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_ob_join")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_join")
+	setup := openTestDB(t, "/FRL/testdb_ob_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ob_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ob_join_tmpl
 		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ob_join/main WITH TEMPLATE ob_join_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_ob_join/main WITH TEMPLATE ob_join_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OB_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6094,16 +6094,16 @@ func TestFDB_LtrimRtrim(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_ltrim")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ltrim")
+	setup := openTestDB(t, "/FRL/testdb_ltrim")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ltrim")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ltrim_tmpl
 		CREATE TABLE T (id BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ltrim/main WITH TEMPLATE ltrim_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_ltrim/main WITH TEMPLATE ltrim_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_LTRIM?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LTRIM?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6131,17 +6131,17 @@ func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_cte_join_ob")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_join_ob")
+	setup := openTestDB(t, "/FRL/testdb_cte_join_ob")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cte_join_ob")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_join_ob_tmpl
 		CREATE TABLE Customer (id BIGINT, name STRING, PRIMARY KEY (id))
 		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_join_ob/main WITH TEMPLATE cte_join_ob_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cte_join_ob/main WITH TEMPLATE cte_join_ob_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CTE_JOIN_OB?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_JOIN_OB?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6191,17 +6191,17 @@ func TestFDB_UpdateDeleteWithExists(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_ud_exists")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ud_exists")
+	setup := openTestDB(t, "/FRL/testdb_ud_exists")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ud_exists")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ud_exists_tmpl
 		CREATE TABLE Flag (name STRING, PRIMARY KEY (name))
 		CREATE TABLE Product (id BIGINT, price BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ud_exists/main WITH TEMPLATE ud_exists_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_ud_exists/main WITH TEMPLATE ud_exists_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UD_EXISTS?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UD_EXISTS?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6253,16 +6253,16 @@ func TestFDB_NestedStringFunctions(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_nested_fn_case")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_nested_fn_case")
+	setup := openTestDB(t, "/FRL/testdb_nested_fn_case")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_nested_fn_case")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE nfc_tmpl
 		CREATE TABLE T (id BIGINT, name STRING, qty BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_nested_fn_case/main WITH TEMPLATE nfc_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_nested_fn_case/main WITH TEMPLATE nfc_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NESTED_FN_CASE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTED_FN_CASE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6305,16 +6305,16 @@ func TestFDB_FunctionWrappingCase(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_fn_wrap_case")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_fn_wrap_case")
+	setup := openTestDB(t, "/FRL/testdb_fn_wrap_case")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_fn_wrap_case")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE fn_wc_tmpl
 		CREATE TABLE T (id BIGINT, qty BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_fn_wrap_case/main WITH TEMPLATE fn_wc_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_fn_wrap_case/main WITH TEMPLATE fn_wc_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_FN_WRAP_CASE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FN_WRAP_CASE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6335,16 +6335,16 @@ func TestFDB_AggregateOrderByStrict(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_agg_ob_strict")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_agg_ob_strict")
+	setup := openTestDB(t, "/FRL/testdb_agg_ob_strict")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_agg_ob_strict")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_ob_strict_tmpl
 		CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_agg_ob_strict/main WITH TEMPLATE agg_ob_strict_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_agg_ob_strict/main WITH TEMPLATE agg_ob_strict_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGG_OB_STRICT?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_OB_STRICT?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6386,16 +6386,16 @@ func TestFDB_OrderByArithmeticOnAggregateErrors(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_ob_agg_err")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ob_agg_err")
+	setup := openTestDB(t, "/FRL/testdb_ob_agg_err")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ob_agg_err")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ob_agg_err_tmpl
 		CREATE TABLE S (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ob_agg_err/main WITH TEMPLATE ob_agg_err_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_ob_agg_err/main WITH TEMPLATE ob_agg_err_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OB_AGG_ERR?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_AGG_ERR?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6435,16 +6435,16 @@ func TestFDB_SelfJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_self_join")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_self_join")
+	setup := openTestDB(t, "/FRL/testdb_self_join")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_self_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE self_join_tmpl
 		CREATE TABLE Employee (id BIGINT, name STRING, manager_id BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_self_join/main WITH TEMPLATE self_join_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_self_join/main WITH TEMPLATE self_join_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SELF_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELF_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6482,16 +6482,16 @@ func TestFDB_CaseInWhere(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_case_where")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_case_where")
+	setup := openTestDB(t, "/FRL/testdb_case_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_case_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE case_where_tmpl
 		CREATE TABLE T (id BIGINT, status STRING, priority BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_case_where/main WITH TEMPLATE case_where_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_case_where/main WITH TEMPLATE case_where_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CASE_WHERE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_WHERE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6541,16 +6541,16 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_insert_multi_expr")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_insert_multi_expr")
+	setup := openTestDB(t, "/FRL/testdb_insert_multi_expr")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_insert_multi_expr")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ins_multi_expr_tmpl
 		CREATE TABLE T (id BIGINT, name STRING, doubled BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_insert_multi_expr/main WITH TEMPLATE ins_multi_expr_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_insert_multi_expr/main WITH TEMPLATE ins_multi_expr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INSERT_MULTI_EXPR?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSERT_MULTI_EXPR?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6602,16 +6602,16 @@ func TestFDB_EmptyResultEdgeCases(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_empty_edge")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_empty_edge")
+	setup := openTestDB(t, "/FRL/testdb_empty_edge")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_empty_edge")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE empty_edge_tmpl
 		CREATE TABLE T (id BIGINT, name STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_empty_edge/main WITH TEMPLATE empty_edge_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_empty_edge/main WITH TEMPLATE empty_edge_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_EMPTY_EDGE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EMPTY_EDGE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6661,17 +6661,17 @@ func TestFDB_InsertSelectFromCTE(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_ins_sel_cte")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_ins_sel_cte")
+	setup := openTestDB(t, "/FRL/testdb_ins_sel_cte")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ins_sel_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ins_sel_cte_tmpl
 		CREATE TABLE Src (id BIGINT, amount BIGINT, PRIMARY KEY (id))
 		CREATE TABLE Dst (id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_ins_sel_cte/main WITH TEMPLATE ins_sel_cte_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_ins_sel_cte/main WITH TEMPLATE ins_sel_cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INS_SEL_CTE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INS_SEL_CTE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6708,16 +6708,16 @@ func TestFDB_LeftRight(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_left_right")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_left_right")
+	setup := openTestDB(t, "/FRL/testdb_left_right")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_left_right")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE lr_tmpl
 		CREATE TABLE T (id BIGINT, name STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_left_right/main WITH TEMPLATE lr_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_left_right/main WITH TEMPLATE lr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_LEFT_RIGHT?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LEFT_RIGHT?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6748,16 +6748,16 @@ func TestFDB_ReversePosition(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_str_more")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_str_more")
+	setup := openTestDB(t, "/FRL/testdb_str_more")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_str_more")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE str_more_tmpl
 		CREATE TABLE T (id BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_str_more/main WITH TEMPLATE str_more_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_str_more/main WITH TEMPLATE str_more_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_STR_MORE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STR_MORE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6786,16 +6786,16 @@ func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_math_fn")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_math_fn")
+	setup := openTestDB(t, "/FRL/testdb_math_fn")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_math_fn")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE math_fn_tmpl
 		CREATE TABLE T (id BIGINT, x BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_math_fn/main WITH TEMPLATE math_fn_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_math_fn/main WITH TEMPLATE math_fn_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MATH_FN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MATH_FN?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6855,17 +6855,17 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_param_subq")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_param_subq")
+	setup := openTestDB(t, "/FRL/testdb_param_subq")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_param_subq")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE param_subq_tmpl
 		CREATE TABLE Customer (id BIGINT, tier STRING, PRIMARY KEY (id))
 		CREATE TABLE Sales (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_param_subq/main WITH TEMPLATE param_subq_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_param_subq/main WITH TEMPLATE param_subq_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_PARAM_SUBQ?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAM_SUBQ?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6895,18 +6895,18 @@ func TestFDB_PiFunctionWithoutFrom(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_pi")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_pi"); err != nil {
+	setup := openTestDB(t, "/FRL/testdb_pi")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_pi"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE pi_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))`); err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
-	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /testdb_pi/main WITH TEMPLATE pi_tmpl"); err != nil {
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_pi/main WITH TEMPLATE pi_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_PI?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PI?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -6925,16 +6925,16 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_case_where_cte")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_case_where_cte")
+	setup := openTestDB(t, "/FRL/testdb_case_where_cte")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_case_where_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE case_where_cte_tmpl
 		CREATE TABLE T (id BIGINT, status STRING, priority BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_case_where_cte/main WITH TEMPLATE case_where_cte_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_case_where_cte/main WITH TEMPLATE case_where_cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CASE_WHERE_CTE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_WHERE_CTE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6973,16 +6973,16 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_null_prop")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_prop")
+	setup := openTestDB(t, "/FRL/testdb_null_prop")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_null_prop")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_prop_tmpl
 		CREATE TABLE T (id BIGINT, name STRING, val BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_null_prop/main WITH TEMPLATE null_prop_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_null_prop/main WITH TEMPLATE null_prop_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NULL_PROP?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_PROP?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7028,16 +7028,16 @@ func TestFDB_NullCompareInCTEAndBetween(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_null_cte_bet")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_cte_bet")
+	setup := openTestDB(t, "/FRL/testdb_null_cte_bet")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_null_cte_bet")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_cte_bet_tmpl
 		CREATE TABLE T (id BIGINT, val BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_null_cte_bet/main WITH TEMPLATE null_cte_bet_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_null_cte_bet/main WITH TEMPLATE null_cte_bet_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NULL_CTE_BET?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_CTE_BET?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7064,16 +7064,16 @@ func TestFDB_SimpleCaseWorks(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_simple_case_works")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_simple_case_works")
+	setup := openTestDB(t, "/FRL/testdb_simple_case_works")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_simple_case_works")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE sc_scw_tmpl
 		CREATE TABLE T (id BIGINT, val BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_simple_case_works/main WITH TEMPLATE sc_scw_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_simple_case_works/main WITH TEMPLATE sc_scw_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SIMPLE_CASE_WORKS?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SIMPLE_CASE_WORKS?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7114,16 +7114,16 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_error_paths")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_error_paths")
+	setup := openTestDB(t, "/FRL/testdb_error_paths")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_error_paths")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE err_tmpl
 		CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_error_paths/main WITH TEMPLATE err_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_error_paths/main WITH TEMPLATE err_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ERROR_PATHS?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ERROR_PATHS?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7211,7 +7211,7 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 
 		{
 			name:     "duplicate database",
-			sql:      "CREATE DATABASE /testdb_error_paths",
+			sql:      "CREATE DATABASE /FRL/testdb_error_paths",
 			exec:     true,
 			wantCode: api.ErrCodeDatabaseAlreadyExists,
 		},
@@ -7221,19 +7221,19 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			// to a missing database is encountered (e.g., CREATE SCHEMA
 			// in a nonexistent database).
 			name:     "drop non-existent database",
-			sql:      "DROP DATABASE /testdb_nope_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+			sql:      "DROP DATABASE /FRL/testdb_nope_" + fmt.Sprintf("%d", time.Now().UnixNano()),
 			exec:     true,
 			wantCode: api.ErrCodeUnknownDatabase,
 		},
 		{
 			name:     "drop non-existent schema",
-			sql:      "DROP SCHEMA /testdb_error_paths/notaschema",
+			sql:      "DROP SCHEMA /FRL/testdb_error_paths/notaschema",
 			exec:     true,
 			wantCode: api.ErrCodeUndefinedSchema,
 		},
 		{
 			name:     "create schema with unknown template",
-			sql:      "CREATE SCHEMA /testdb_error_paths/x WITH TEMPLATE nosuchtemplate",
+			sql:      "CREATE SCHEMA /FRL/testdb_error_paths/x WITH TEMPLATE nosuchtemplate",
 			exec:     true,
 			wantCode: api.ErrCodeUnknownSchemaTemplate,
 		},
@@ -7284,16 +7284,16 @@ func TestFDB_GroupByCountStarOrdering(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_gb_cs_order")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_gb_cs_order")
+	setup := openTestDB(t, "/FRL/testdb_gb_cs_order")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gb_cs_order")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_cs_order_tmpl
 		CREATE TABLE T (id BIGINT, k STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_gb_cs_order/main WITH TEMPLATE gb_cs_order_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_gb_cs_order/main WITH TEMPLATE gb_cs_order_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GB_CS_ORDER?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GB_CS_ORDER?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7328,17 +7328,17 @@ func TestFDB_GroupByOrderByGroupKey(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_gb_orderkey")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_gb_orderkey")
+	setup := openTestDB(t, "/FRL/testdb_gb_orderkey")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gb_orderkey")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_orderkey_tmpl
 		CREATE TABLE T (id BIGINT, k STRING, PRIMARY KEY (id))
 		CREATE INDEX idx_k ON T (k)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_gb_orderkey/main WITH TEMPLATE gb_orderkey_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_gb_orderkey/main WITH TEMPLATE gb_orderkey_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GB_ORDERKEY?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GB_ORDERKEY?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7388,17 +7388,17 @@ func TestFDB_JoinWithNullKey(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_join_null")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_join_null")
+	setup := openTestDB(t, "/FRL/testdb_join_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_join_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_null_tmpl
 		CREATE TABLE A (id BIGINT, k BIGINT, v BIGINT, PRIMARY KEY (id))
 		CREATE TABLE B (id BIGINT, k BIGINT, w BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_join_null/main WITH TEMPLATE join_null_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_join_null/main WITH TEMPLATE join_null_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_JOIN_NULL?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_NULL?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7435,16 +7435,16 @@ func TestFDB_NullHandlingSanityPack(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_null_sanity")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_null_sanity")
+	setup := openTestDB(t, "/FRL/testdb_null_sanity")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_null_sanity")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_sanity_tmpl
 		CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_null_sanity/main WITH TEMPLATE null_sanity_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_null_sanity/main WITH TEMPLATE null_sanity_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NULL_SANITY?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_SANITY?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7505,16 +7505,16 @@ func TestFDB_DistinctAggregates(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_distinct_agg")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_distinct_agg")
+	setup := openTestDB(t, "/FRL/testdb_distinct_agg")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_distinct_agg")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE distinct_agg_tmpl
 		CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_distinct_agg/main WITH TEMPLATE distinct_agg_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_distinct_agg/main WITH TEMPLATE distinct_agg_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DISTINCT_AGG?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTINCT_AGG?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7562,17 +7562,17 @@ func TestFDB_SubqueryInNullRowRejected(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_subq_null")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_subq_null")
+	setup := openTestDB(t, "/FRL/testdb_subq_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_subq_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE subq_null_tmpl
 		CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id))
 		CREATE TABLE U (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_subq_null/main WITH TEMPLATE subq_null_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_subq_null/main WITH TEMPLATE subq_null_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SUBQ_NULL?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQ_NULL?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7611,16 +7611,16 @@ func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_cd_typetag")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cd_typetag")
+	setup := openTestDB(t, "/FRL/testdb_cd_typetag")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cd_typetag")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cd_typetag_tmpl
 		CREATE TABLE T (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cd_typetag/main WITH TEMPLATE cd_typetag_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cd_typetag/main WITH TEMPLATE cd_typetag_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CD_TYPETAG?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CD_TYPETAG?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7653,16 +7653,16 @@ func TestFDB_GroupByNullVsNilString(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_gb_nil")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_gb_nil")
+	setup := openTestDB(t, "/FRL/testdb_gb_nil")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gb_nil")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_nil_tmpl
 		CREATE TABLE T (id BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_gb_nil/main WITH TEMPLATE gb_nil_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_gb_nil/main WITH TEMPLATE gb_nil_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GB_NIL?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GB_NIL?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7709,17 +7709,17 @@ func TestFDB_OrderByNullOrdering(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_order_null")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_order_null")
+	setup := openTestDB(t, "/FRL/testdb_order_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_order_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE order_null_tmpl
 		CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id))
 		CREATE INDEX idx_n ON T (n)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_order_null/main WITH TEMPLATE order_null_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_order_null/main WITH TEMPLATE order_null_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ORDER_NULL?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDER_NULL?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7768,16 +7768,16 @@ func TestFDB_CTEScopeIsolation(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_cte_scope")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_scope")
+	setup := openTestDB(t, "/FRL/testdb_cte_scope")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cte_scope")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_scope_tmpl
 		CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_scope/main WITH TEMPLATE cte_scope_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cte_scope/main WITH TEMPLATE cte_scope_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CTE_SCOPE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_SCOPE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7807,16 +7807,16 @@ func TestFDB_MediumAuditFixes(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_medium_audit")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_medium_audit")
+	setup := openTestDB(t, "/FRL/testdb_medium_audit")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_medium_audit")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE medium_tmpl
 		CREATE TABLE T (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_medium_audit/main WITH TEMPLATE medium_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_medium_audit/main WITH TEMPLATE medium_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MEDIUM_AUDIT?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MEDIUM_AUDIT?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7887,16 +7887,16 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_not_unknown")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_not_unknown")
+	setup := openTestDB(t, "/FRL/testdb_not_unknown")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_not_unknown")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE not_unknown_tmpl
 		CREATE TABLE T (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_not_unknown/main WITH TEMPLATE not_unknown_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_not_unknown/main WITH TEMPLATE not_unknown_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NOT_UNKNOWN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NOT_UNKNOWN?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8011,16 +8011,16 @@ func TestFDB_AggregateNullSemantics(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_agg_null")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_agg_null")
+	setup := openTestDB(t, "/FRL/testdb_agg_null")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_agg_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_null_tmpl
 		CREATE TABLE T (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_agg_null/main WITH TEMPLATE agg_null_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_agg_null/main WITH TEMPLATE agg_null_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGG_NULL?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_NULL?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8104,16 +8104,16 @@ func TestFDB_ArithmeticUnifiedSemantics(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_arith_unified")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_arith_unified")
+	setup := openTestDB(t, "/FRL/testdb_arith_unified")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_arith_unified")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE arith_tmpl
 		CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_arith_unified/main WITH TEMPLATE arith_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_arith_unified/main WITH TEMPLATE arith_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ARITH_UNIFIED?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ARITH_UNIFIED?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8173,16 +8173,16 @@ func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_mixedtype_eq")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_mixedtype_eq")
+	setup := openTestDB(t, "/FRL/testdb_mixedtype_eq")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_mixedtype_eq")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE mixedtype_tmpl
 		CREATE TABLE T (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_mixedtype_eq/main WITH TEMPLATE mixedtype_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_mixedtype_eq/main WITH TEMPLATE mixedtype_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MIXEDTYPE_EQ?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MIXEDTYPE_EQ?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8226,16 +8226,16 @@ func TestFDB_IntegerRangeEnforcement(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_int_range")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_int_range")
+	setup := openTestDB(t, "/FRL/testdb_int_range")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_int_range")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE int_range_tmpl
 		CREATE TABLE T (id BIGINT, n INTEGER, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_int_range/main WITH TEMPLATE int_range_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_int_range/main WITH TEMPLATE int_range_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INT_RANGE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INT_RANGE?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8261,17 +8261,17 @@ func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_col_types")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_col_types")
+	setup := openTestDB(t, "/FRL/testdb_col_types")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_col_types")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE col_types_tmpl "+
 			"CREATE TABLE T (id BIGINT, name STRING, flag BOOLEAN, score DOUBLE, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_col_types/main WITH TEMPLATE col_types_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_col_types/main WITH TEMPLATE col_types_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_COL_TYPES?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COL_TYPES?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8345,17 +8345,17 @@ func TestFDB_DerivedAliasColumnTypeShadow(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_alias_shadow")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_alias_shadow")
+	setup := openTestDB(t, "/FRL/testdb_alias_shadow")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_alias_shadow")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE alias_shadow_tmpl "+
 			"CREATE TABLE B (id BIGINT, x DOUBLE, PRIMARY KEY (id))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_alias_shadow/main WITH TEMPLATE alias_shadow_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_alias_shadow/main WITH TEMPLATE alias_shadow_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ALIAS_SHADOW?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ALIAS_SHADOW?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8386,16 +8386,16 @@ func TestFDB_CTEChainedColumnAliases(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_cte_chain_alias")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_cte_chain_alias")
+	setup := openTestDB(t, "/FRL/testdb_cte_chain_alias")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cte_chain_alias")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE chain_alias_tmpl
 		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_cte_chain_alias/main WITH TEMPLATE chain_alias_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cte_chain_alias/main WITH TEMPLATE chain_alias_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CTE_CHAIN_ALIAS?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_CHAIN_ALIAS?cluster_file=%s&schema=MAIN", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8443,8 +8443,8 @@ func TestFDB_SchemaQualifiedSelect(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_sqtselect")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_sqtselect"); err != nil {
+	setup := openTestDB(t, "/FRL/testdb_sqtselect")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sqtselect"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -8453,11 +8453,11 @@ func TestFDB_SchemaQualifiedSelect(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_sqtselect/sqt WITH TEMPLATE sqt_tmpl"); err != nil {
+		"CREATE SCHEMA /FRL/testdb_sqtselect/sqt WITH TEMPLATE sqt_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SQTSELECT?cluster_file=%s&schema=SQT", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTSELECT?cluster_file=%s&schema=SQT", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8514,8 +8514,8 @@ func TestFDB_SchemaQualifiedInsert(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_sqtins")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_sqtins"); err != nil {
+	setup := openTestDB(t, "/FRL/testdb_sqtins")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sqtins"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -8524,11 +8524,11 @@ func TestFDB_SchemaQualifiedInsert(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_sqtins/s1 WITH TEMPLATE sqti_tmpl"); err != nil {
+		"CREATE SCHEMA /FRL/testdb_sqtins/s1 WITH TEMPLATE sqti_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SQTINS?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTINS?cluster_file=%s&schema=S1", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8567,8 +8567,8 @@ func TestFDB_SchemaQualifiedUpdate(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_sqtupd")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_sqtupd"); err != nil {
+	setup := openTestDB(t, "/FRL/testdb_sqtupd")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sqtupd"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -8577,11 +8577,11 @@ func TestFDB_SchemaQualifiedUpdate(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_sqtupd/s1 WITH TEMPLATE sqtu_tmpl"); err != nil {
+		"CREATE SCHEMA /FRL/testdb_sqtupd/s1 WITH TEMPLATE sqtu_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SQTUPD?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTUPD?cluster_file=%s&schema=S1", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8622,8 +8622,8 @@ func TestFDB_SchemaQualifiedDelete(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_sqtdel")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_sqtdel"); err != nil {
+	setup := openTestDB(t, "/FRL/testdb_sqtdel")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sqtdel"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -8632,11 +8632,11 @@ func TestFDB_SchemaQualifiedDelete(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_sqtdel/s1 WITH TEMPLATE sqtd_tmpl"); err != nil {
+		"CREATE SCHEMA /FRL/testdb_sqtdel/s1 WITH TEMPLATE sqtd_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SQTDEL?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTDEL?cluster_file=%s&schema=S1", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8679,8 +8679,8 @@ func TestFDB_SchemaQualifiedWrongSchema(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_sqtwrong")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_sqtwrong"); err != nil {
+	setup := openTestDB(t, "/FRL/testdb_sqtwrong")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sqtwrong"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -8689,11 +8689,11 @@ func TestFDB_SchemaQualifiedWrongSchema(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_sqtwrong/s1 WITH TEMPLATE sqtw_tmpl"); err != nil {
+		"CREATE SCHEMA /FRL/testdb_sqtwrong/s1 WITH TEMPLATE sqtw_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SQTWRONG?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTWRONG?cluster_file=%s&schema=S1", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8727,8 +8727,8 @@ func TestFDB_SchemaQualifiedCaseInsensitive(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_sqtcase")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_sqtcase"); err != nil {
+	setup := openTestDB(t, "/FRL/testdb_sqtcase")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sqtcase"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -8737,11 +8737,11 @@ func TestFDB_SchemaQualifiedCaseInsensitive(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_sqtcase/MySchema WITH TEMPLATE sqtc_tmpl"); err != nil {
+		"CREATE SCHEMA /FRL/testdb_sqtcase/MySchema WITH TEMPLATE sqtc_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SQTCASE?cluster_file=%s&schema=MYSCHEMA", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTCASE?cluster_file=%s&schema=MYSCHEMA", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8782,8 +8782,8 @@ func TestFDB_DateTimestampColumns(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_datetime")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_datetime")
+	setup := openTestDB(t, "/FRL/testdb_datetime")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_datetime")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -8793,12 +8793,12 @@ func TestFDB_DateTimestampColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_datetime/s1 WITH TEMPLATE datetime_events_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_datetime/s1 WITH TEMPLATE datetime_events_tmpl")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DATETIME?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DATETIME?cluster_file=%s&schema=S1", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8891,8 +8891,8 @@ func TestFDB_DateTimestampComparison(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dtcmp")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dtcmp")
+	setup := openTestDB(t, "/FRL/testdb_dtcmp")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dtcmp")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -8902,12 +8902,12 @@ func TestFDB_DateTimestampComparison(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dtcmp/s1 WITH TEMPLATE datetime_logs_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dtcmp/s1 WITH TEMPLATE datetime_logs_tmpl")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DTCMP?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DTCMP?cluster_file=%s&schema=S1", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8950,8 +8950,8 @@ func TestFDB_DateTimestampInsertWithLiteral(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dtinsert")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dtinsert")
+	setup := openTestDB(t, "/FRL/testdb_dtinsert")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dtinsert")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -8961,12 +8961,12 @@ func TestFDB_DateTimestampInsertWithLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dtinsert/s1 WITH TEMPLATE datetime_audit_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dtinsert/s1 WITH TEMPLATE datetime_audit_tmpl")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DTINSERT?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DTINSERT?cluster_file=%s&schema=S1", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9003,8 +9003,8 @@ func TestFDB_DateTimestampCast(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dtcast")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dtcast")
+	setup := openTestDB(t, "/FRL/testdb_dtcast")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dtcast")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -9014,12 +9014,12 @@ func TestFDB_DateTimestampCast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dtcast/s1 WITH TEMPLATE datetime_cast_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dtcast/s1 WITH TEMPLATE datetime_cast_tmpl")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DTCAST?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DTCAST?cluster_file=%s&schema=S1", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9059,8 +9059,8 @@ func TestFDB_DatePartFunctionsOnStoredColumns(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dateparts")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dateparts")
+	setup := openTestDB(t, "/FRL/testdb_dateparts")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dateparts")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -9070,12 +9070,12 @@ func TestFDB_DatePartFunctionsOnStoredColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dateparts/s1 WITH TEMPLATE dateparts_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dateparts/s1 WITH TEMPLATE dateparts_tmpl")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DATEPARTS?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DATEPARTS?cluster_file=%s&schema=S1", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9151,9 +9151,9 @@ func TestFDB_ArrayColumnDDL(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_array_col")
+	setup := openTestDB(t, "/FRL/testdb_array_col")
 
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_array_col"); err != nil {
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_array_col"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -9162,12 +9162,12 @@ func TestFDB_ArrayColumnDDL(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_array_col/store WITH TEMPLATE array_col_tmpl"); err != nil {
+		"CREATE SCHEMA /FRL/testdb_array_col/store WITH TEMPLATE array_col_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
 	// Open a new connection with the schema set via DSN.
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_ARRAY_COL?cluster_file=%s&schema=STORE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ARRAY_COL?cluster_file=%s&schema=STORE", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9204,8 +9204,8 @@ func TestFDB_DateTimestampEdgeCases(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dt_edge")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dt_edge")
+	setup := openTestDB(t, "/FRL/testdb_dt_edge")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dt_edge")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -9215,12 +9215,12 @@ func TestFDB_DateTimestampEdgeCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dt_edge/s1 WITH TEMPLATE dt_edge_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dt_edge/s1 WITH TEMPLATE dt_edge_tmpl")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DT_EDGE?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_EDGE?cluster_file=%s&schema=S1", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9390,8 +9390,8 @@ func TestFDB_DateTimestampParameterBinding(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dt_params")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dt_params")
+	setup := openTestDB(t, "/FRL/testdb_dt_params")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dt_params")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -9401,12 +9401,12 @@ func TestFDB_DateTimestampParameterBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dt_params/s1 WITH TEMPLATE dt_params_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dt_params/s1 WITH TEMPLATE dt_params_tmpl")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DT_PARAMS?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_PARAMS?cluster_file=%s&schema=S1", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9448,8 +9448,8 @@ func TestFDB_DateTimestampIndexScan(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dt_idx")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_dt_idx")
+	setup := openTestDB(t, "/FRL/testdb_dt_idx")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dt_idx")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -9460,12 +9460,12 @@ func TestFDB_DateTimestampIndexScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_dt_idx/s1 WITH TEMPLATE dt_idx_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dt_idx/s1 WITH TEMPLATE dt_idx_tmpl")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DT_IDX?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_IDX?cluster_file=%s&schema=S1", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9532,18 +9532,18 @@ func TestFDB_BytesINList(t *testing.T) {
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/testdb_bytes_in")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_bytes_in")
+	setup := openTestDB(t, "/FRL/testdb_bytes_in")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_bytes_in")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE bytes_in_tmpl "+
 			"CREATE TABLE lb (a BIGINT, b BYTES, PRIMARY KEY (a))")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_bytes_in/store WITH TEMPLATE bytes_in_tmpl")
+		"CREATE SCHEMA /FRL/testdb_bytes_in/store WITH TEMPLATE bytes_in_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_BYTES_IN?cluster_file=%s&schema=STORE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BYTES_IN?cluster_file=%s&schema=STORE", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -9621,8 +9621,8 @@ func TestFDB_RFC145_SeveredArms_InfoSchemaWhere(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_rfc145_is_where")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_rfc145_is_where")
+	setup := openTestDB(t, "/FRL/testdb_rfc145_is_where")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_rfc145_is_where")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -9630,12 +9630,12 @@ func TestFDB_RFC145_SeveredArms_InfoSchemaWhere(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_rfc145_is_where/alpha WITH TEMPLATE rfc145w_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_rfc145_is_where/alpha WITH TEMPLATE rfc145w_tmpl")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_RFC145_IS_WHERE?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC145_IS_WHERE?cluster_file=%s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9665,8 +9665,8 @@ func TestFDB_RFC145_SeveredArms_InsertValues(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_rfc145_insert")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_rfc145_insert")
+	setup := openTestDB(t, "/FRL/testdb_rfc145_insert")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_rfc145_insert")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -9675,12 +9675,12 @@ func TestFDB_RFC145_SeveredArms_InsertValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_rfc145_insert/data WITH TEMPLATE rfc145i_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_rfc145_insert/data WITH TEMPLATE rfc145i_tmpl")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_RFC145_INSERT?cluster_file=%s&schema=DATA", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC145_INSERT?cluster_file=%s&schema=DATA", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9723,8 +9723,8 @@ func TestFDB_RFC145_InfoSchemaUnsupportedShapes(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_rfc145_is_shapes")
-	_, err := setup.ExecContext(ctx, "CREATE DATABASE /testdb_rfc145_is_shapes")
+	setup := openTestDB(t, "/FRL/testdb_rfc145_is_shapes")
+	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_rfc145_is_shapes")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -9732,12 +9732,12 @@ func TestFDB_RFC145_InfoSchemaUnsupportedShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
 	}
-	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /testdb_rfc145_is_shapes/alpha WITH TEMPLATE rfc145s_tmpl")
+	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_rfc145_is_shapes/alpha WITH TEMPLATE rfc145s_tmpl")
 	if err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_RFC145_IS_SHAPES?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC145_IS_SHAPES?cluster_file=%s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

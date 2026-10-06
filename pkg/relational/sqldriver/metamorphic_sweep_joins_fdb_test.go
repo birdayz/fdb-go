@@ -22,8 +22,8 @@ func TestFDB_MetamorphicJoinsSubqueries(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_mh3")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mh3")
+	setup := openTestDB(t, "/FRL/testdb_mh3")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mh3")
 	tables := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id)) " +
 		"CREATE TABLE u (uid BIGINT, ua BIGINT, ub BIGINT, us STRING, PRIMARY KEY (uid)) "
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh3_idx "+tables+
@@ -34,11 +34,11 @@ func TestFDB_MetamorphicJoinsSubqueries(t *testing.T) {
 		"CREATE INDEX u_uba ON u (ub, ua) "+
 		"CREATE INDEX u_us ON u (us)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh3_noidx "+tables)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mh3/si WITH TEMPLATE mh3_idx")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mh3/sn WITH TEMPLATE mh3_noidx")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh3/si WITH TEMPLATE mh3_idx")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh3/sn WITH TEMPLATE mh3_noidx")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql:///TESTDB_MH3?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
+		dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MH3?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s: %v", schema, err)

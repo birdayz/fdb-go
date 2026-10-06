@@ -27,14 +27,14 @@ func TestFDB_QuotedMachineShapedAliases(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_qmsa")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_qmsa")
+	setup := openTestDB(t, "/FRL/testdb_qmsa")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_qmsa")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE qmsa CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 			" CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))"+
 			" CREATE TABLE sink (sid BIGINT, PRIMARY KEY (sid))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_qmsa/s WITH TEMPLATE qmsa")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_QMSA?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_qmsa/s WITH TEMPLATE qmsa")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_QMSA?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -189,8 +189,8 @@ func TestStoreCache_OwnDDLDropsTheStoreAndTheSnapshotHolds(t *testing.T) {
 	// it in its own transaction; invalidateSchemaCache is what must reach the
 	// store the transaction is still holding.
 	for _, stmt := range []string{
-		"DROP SCHEMA /simdb/s",
-		"CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl_indexed",
+		"DROP SCHEMA /FRL/simdb/s",
+		"CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl_indexed",
 	} {
 		if _, err := conn.ExecContext(ctx, stmt, nil); err != nil {
 			t.Fatalf("%s: %v", stmt, err)

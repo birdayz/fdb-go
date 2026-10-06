@@ -55,8 +55,8 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_mh2")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mh2")
+	setup := openTestDB(t, "/FRL/testdb_mh2")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mh2")
 	table := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) "
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh2_idx "+table+
 		"CREATE INDEX t_a ON t (a) "+
@@ -72,11 +72,11 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 		"CREATE INDEX t_min_b_a AS SELECT MIN(b) FROM t GROUP BY a "+
 		"CREATE INDEX t_max_b_a AS SELECT MAX(b) FROM t GROUP BY a")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh2_noidx "+table)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mh2/si WITH TEMPLATE mh2_idx")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mh2/sn WITH TEMPLATE mh2_noidx")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh2/si WITH TEMPLATE mh2_idx")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh2/sn WITH TEMPLATE mh2_noidx")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql:///TESTDB_MH2?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
+		dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MH2?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s: %v", schema, err)

@@ -38,13 +38,13 @@ func TestFDB_UniqueIndexSignedZero(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_uiz")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_uiz")
+	setup := openTestDB(t, "/FRL/testdb_uiz")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uiz")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uiz "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE UNIQUE INDEX t_v ON t (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uiz/s WITH TEMPLATE uiz")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_UIZ?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uiz/s WITH TEMPLATE uiz")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UIZ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

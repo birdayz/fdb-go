@@ -35,14 +35,14 @@ func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_projexists_ob")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_projexists_ob")
+	setup := openTestDB(t, "/FRL/testdb_projexists_ob")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_ob")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_ob_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_projexists_ob/s WITH TEMPLATE projexists_ob_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_ob/s WITH TEMPLATE projexists_ob_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PROJEXISTS_OB?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_OB?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -243,14 +243,14 @@ func TestFDB_ProjectedExists_ScalarSubquery(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_projexists_sc")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_projexists_sc")
+	setup := openTestDB(t, "/FRL/testdb_projexists_sc")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_sc")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_sc_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_projexists_sc/s WITH TEMPLATE projexists_sc_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_sc/s WITH TEMPLATE projexists_sc_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_PROJEXISTS_SC?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_SC?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

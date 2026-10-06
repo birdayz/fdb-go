@@ -105,8 +105,8 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_rszr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_rszr")
+	setup := openTestDB(t, "/FRL/testdb_rszr")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rszr")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE rszr "+
 		"CREATE TABLE d (id BIGINT, v DOUBLE, w BIGINT, payload STRING, PRIMARY KEY (id)) "+
 		"CREATE INDEX d_vw ON d (v, w) "+
@@ -120,8 +120,8 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 		"CREATE TABLE u (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE UNIQUE INDEX u_vw ON u (v, w) "+
 		"CREATE TABLE o (id BIGINT, kd DOUBLE, kf FLOAT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_rszr/s WITH TEMPLATE rszr")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_RSZR?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rszr/s WITH TEMPLATE rszr")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RSZR?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

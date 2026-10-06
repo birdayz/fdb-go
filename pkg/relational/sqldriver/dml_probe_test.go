@@ -18,7 +18,7 @@ import (
 func TestFDB_DMLCascades_ParamsIndexAndPK(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/dml_probe"
+	dbPath := "/FRL/dml_probe"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

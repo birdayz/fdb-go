@@ -45,7 +45,7 @@ func newStoreInfoCmd() *cobra.Command {
 		Short: "Print DataStoreInfo for the current context's store",
 		Example: `  frl store info
   frl store info --context prod
-  frl store info --database /myapp --schema main
+  frl store info --database /FRL/myapp --schema main
   frl store info -o json | jq '.formatVersion'`,
 		Long: "Reads the store header (format version, metadata version, " +
 			"user version, record count state, lock state, user fields) " +

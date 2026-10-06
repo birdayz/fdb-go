@@ -256,7 +256,7 @@ func TestFDB_SecondPlanOracleComparesRowsUnderBothPlans(t *testing.T) {
 
 func openFactorySchema(t *testing.T, ctx context.Context, name, ddl string) *sql.DB {
 	t.Helper()
-	dbPath := "/" + name
+	dbPath := "/FRL/" + name
 	setupDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFilePath))
 	if err != nil {
 		t.Fatalf("open setup db: %v", err)

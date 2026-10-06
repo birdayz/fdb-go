@@ -59,13 +59,13 @@ func openParenDB2(t *testing.T) *sql.DB { return openInJoinDB(t, "/testdb_in_par
 func openUUIDInDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_in_uuid")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_in_uuid")
+	setup := openTestDB(t, "/FRL/testdb_in_uuid")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_uuid")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE inuuid_t "+
 		"CREATE TABLE u (id BIGINT, uu UUID, us STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_in_uuid/s WITH TEMPLATE inuuid_t")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_uuid/s WITH TEMPLATE inuuid_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///TESTDB_IN_UUID?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_UUID?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

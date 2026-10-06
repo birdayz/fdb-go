@@ -20,13 +20,13 @@ func TestFDB_QuotedDotNestedMemberLabel(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_qdnl")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_qdnl")
+	setup := openTestDB(t, "/FRL/testdb_qdnl")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_qdnl")
 	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE qdnl_tpl
 		CREATE TYPE AS STRUCT qs ("a.b" BIGINT)
 		CREATE TABLE tq (id BIGINT, s qs, PRIMARY KEY (id))`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_qdnl/s1 WITH TEMPLATE qdnl_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_QDNL?cluster_file=%s&schema=S1", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_qdnl/s1 WITH TEMPLATE qdnl_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_QDNL?cluster_file=%s&schema=S1", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

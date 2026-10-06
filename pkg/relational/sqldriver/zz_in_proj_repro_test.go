@@ -28,15 +28,15 @@ func TestFDB_INProj_OuterProjectionOverInJoin(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_inproj")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_inproj")
+	setup := openTestDB(t, "/FRL/testdb_inproj")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inproj")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inproj_tmpl "+
 			"CREATE TABLE ti (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE tu (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_a ON ti (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_inproj/s WITH TEMPLATE inproj_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INPROJ?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inproj/s WITH TEMPLATE inproj_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INPROJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

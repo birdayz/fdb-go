@@ -40,19 +40,19 @@ func TestFDB_AggregateOperandDistinguishesLiteralCase(t *testing.T) {
 	}
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_agg_literal_case")
+	setup := openTestDB(t, "/FRL/testdb_agg_literal_case")
 	exec := func(db *sql.DB, stmt string) {
 		t.Helper()
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			t.Fatalf("exec %q: %v", stmt, err)
 		}
 	}
-	exec(setup, "CREATE DATABASE /testdb_agg_literal_case")
+	exec(setup, "CREATE DATABASE /FRL/testdb_agg_literal_case")
 	exec(setup, "CREATE SCHEMA TEMPLATE agg_literal_case "+
 		`CREATE TABLE sales (id BIGINT, "Region" STRING, "Amount" BIGINT, plain BIGINT, PRIMARY KEY (id))`)
-	exec(setup, "CREATE SCHEMA /testdb_agg_literal_case/s WITH TEMPLATE agg_literal_case")
+	exec(setup, "CREATE SCHEMA /FRL/testdb_agg_literal_case/s WITH TEMPLATE agg_literal_case")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///TESTDB_AGG_LITERAL_CASE?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_LITERAL_CASE?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -179,19 +179,19 @@ func TestFDB_AggregateOperandResolvesThroughADerivedTable(t *testing.T) {
 	}
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_agg_derived_strip")
+	setup := openTestDB(t, "/FRL/testdb_agg_derived_strip")
 	exec := func(db *sql.DB, stmt string) {
 		t.Helper()
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			t.Fatalf("exec %q: %v", stmt, err)
 		}
 	}
-	exec(setup, "CREATE DATABASE /testdb_agg_derived_strip")
+	exec(setup, "CREATE DATABASE /FRL/testdb_agg_derived_strip")
 	exec(setup, "CREATE SCHEMA TEMPLATE agg_derived_strip "+
 		`CREATE TABLE sales (id BIGINT, "Region" STRING, "Amount" BIGINT, plain BIGINT, PRIMARY KEY (id))`)
-	exec(setup, "CREATE SCHEMA /testdb_agg_derived_strip/s WITH TEMPLATE agg_derived_strip")
+	exec(setup, "CREATE SCHEMA /FRL/testdb_agg_derived_strip/s WITH TEMPLATE agg_derived_strip")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///TESTDB_AGG_DERIVED_STRIP?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_DERIVED_STRIP?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

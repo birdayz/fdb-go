@@ -48,7 +48,7 @@ func TestFDB_CollectedStatisticsDriveJoinOrder(t *testing.T) {
 	// returns the EXPLAIN of the join under the given statistics setting.
 	arrangement := func(t *testing.T, name string, aRows, bRows int, useStats bool) string {
 		t.Helper()
-		dbPath := "/statsjoin_" + name
+		dbPath := "/FRL/statsjoin_" + name
 		setup := openTestDB(t, dbPath)
 		mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 		mwjoMustExec(t, setup, ctx,

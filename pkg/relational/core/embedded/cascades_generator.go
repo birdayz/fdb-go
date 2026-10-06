@@ -5322,7 +5322,7 @@ func NewExplainOnlyGeneratorWithSchema(schemaDDL string) (query.Generator, error
 	if err != nil {
 		return nil, err
 	}
-	const dbPath = "/explain"
+	const dbPath = "/FRL/explain"
 	const schemaName = "s"
 	sess := &session.Session{
 		DBPath: dbPath,

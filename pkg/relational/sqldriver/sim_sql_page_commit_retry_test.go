@@ -243,16 +243,16 @@ func openRetryOnceSchema(t *testing.T, seed uint64, tableDDL string) (*sql.DB, *
 	t.Cleanup(func() { fdbDBCache.Delete(key) })
 
 	ctx := context.Background()
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///SIMDB?cluster_file=%s", key))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s", key))
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
 	defer setup.Close()
-	mustExecSQL(t, setup, ctx, "CREATE DATABASE /simdb")
+	mustExecSQL(t, setup, ctx, "CREATE DATABASE /FRL/simdb")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA TEMPLATE tmpl "+tableDDL)
-	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl")
+	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///SIMDB?cluster_file=%s&schema=S", key))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s&schema=S", key))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}
@@ -409,7 +409,7 @@ const staleFormatVersion = 13
 // out-of-band handle must ask for the same name the driver wrote.
 func pageRetrySchemaSubspace(t *testing.T) subspace.Subspace {
 	t.Helper()
-	ss, err := relkeyspace.New(subspace.Sub()).SchemaSubspace("/SIMDB", "S")
+	ss, err := relkeyspace.New(subspace.Sub()).SchemaSubspace("/FRL/SIMDB", "S")
 	if err != nil {
 		t.Fatalf("schema subspace: %v", err)
 	}

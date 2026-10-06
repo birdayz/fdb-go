@@ -24,15 +24,15 @@ func TestFDB_ScalarSubqueryCTE(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_ssq_cte")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_ssq_cte")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_ssq_cte")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ssq_cte")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ssq_cte_tmpl "+
 			"CREATE TABLE t (id BIGINT, g STRING, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_ssq_cte/s WITH TEMPLATE ssq_cte_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_ssq_cte/s WITH TEMPLATE ssq_cte_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_SSQ_CTE?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSQ_CTE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -96,16 +96,16 @@ func TestFDB_CorrelatedScalarSubqueryNoIndex(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_corrssq_noidx")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_corrssq_noidx")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_corrssq_noidx")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_corrssq_noidx")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE corrssq_noidx_tmpl "+
 			"CREATE TABLE emp (id BIGINT, fname STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE project (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_corrssq_noidx/s WITH TEMPLATE corrssq_noidx_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_corrssq_noidx/s WITH TEMPLATE corrssq_noidx_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CORRSSQ_NOIDX?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRSSQ_NOIDX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -155,17 +155,17 @@ func TestFDB_CorrelatedScalarSubqueryError(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_corrssq")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_corrssq")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_corrssq")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_corrssq")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE corrssq_tmpl "+
 			"CREATE TABLE emp (id BIGINT, fname STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE project (id BIGINT, emp_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_project_emp ON project (emp_id)")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_corrssq/s WITH TEMPLATE corrssq_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_corrssq/s WITH TEMPLATE corrssq_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CORRSSQ?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRSSQ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

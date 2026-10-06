@@ -15,12 +15,12 @@ import (
 func TestFDB_UUIDJavaStringForms(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_uuid_forms")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_uuid_forms")
+	setup := openTestDB(t, "/FRL/testdb_uuid_forms")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuid_forms")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uuid_forms_tmpl "+
 		"CREATE TABLE U (id BIGINT, u UUID, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_uuid_forms/s WITH TEMPLATE uuid_forms_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_UUID_FORMS?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuid_forms/s WITH TEMPLATE uuid_forms_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUID_FORMS?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

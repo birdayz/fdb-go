@@ -23,14 +23,14 @@ func TestFDB_GroupBySelectOrderProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_gso")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_gso")
+	setup := openTestDB(t, "/FRL/testdb_gso")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gso")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gso "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE m (id BIGINT, a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gso/s WITH TEMPLATE gso")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GSO?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gso/s WITH TEMPLATE gso")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GSO?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

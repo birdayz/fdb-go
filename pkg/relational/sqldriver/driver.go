@@ -9,7 +9,7 @@
 //	    _ "fdb.dev/pkg/relational/sqldriver"
 //	)
 //
-//	db, err := sql.Open("fdbsql", "fdbsql:///MYDB?cluster_file=/etc/foundationdb/fdb.cluster")
+//	db, err := sql.Open("fdbsql", "fdbsql:///FRL/MYDB?cluster_file=/etc/foundationdb/fdb.cluster")
 //
 // DSN shape mirrors Java's JDBC URI (minus the jdbc: prefix):
 //
@@ -73,7 +73,7 @@ const defaultClusterFilePath = "/etc/foundationdb/fdb.cluster"
 var fdbDBCache sync.Map // clusterFile string -> *recordlayer.FDBDatabase
 
 // RegisterBackend associates an already-built FDBDatabase with a cluster_file key, so a DSN of
-// the form "fdbsql:///DB?cluster_file=<key>" drives the full SQL engine (parser → Cascades →
+// the form "fdbsql:///FRL/DB?cluster_file=<key>" drives the full SQL engine (parser → Cascades →
 // executor → record layer) over that backend instead of opening a real cluster. It returns a
 // func that unregisters the key.
 //

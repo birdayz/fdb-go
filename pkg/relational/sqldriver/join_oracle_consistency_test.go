@@ -21,15 +21,15 @@ func TestFDB_JoinOracleConsistency(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_joinoracle")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_joinoracle")
+	setup := openTestDB(t, "/FRL/testdb_joinoracle")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_joinoracle")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE joinoracle "+
 			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX a_k ON a (k) CREATE INDEX b_k ON b (k)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_joinoracle/s WITH TEMPLATE joinoracle")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_JOINORACLE?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_joinoracle/s WITH TEMPLATE joinoracle")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOINORACLE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -221,9 +221,9 @@ func TestFDB_Restore_DroppedBoundVersion(t *testing.T) {
 	e := newRestoreEnv(t)
 	v1 := demoMetaData(t, 3, withPriceIndex(2, 3, recordlayer.Field("price"), nil))
 	e.writeRow(1, v1)
-	e.bind("/db", "s", 1, v1)
+	e.bind("/FRL/db", "s", 1, v1)
 	e.dropTemplate()
-	err := e.run(func(tx api.Transaction) error { _, err := e.cat.LoadSchema(tx, "/db", "s"); return err })
+	err := e.run(func(tx api.Transaction) error { _, err := e.cat.LoadSchema(tx, "/FRL/db", "s"); return err })
 	wantAPIError(t, err, api.ErrCodeUnknownSchemaTemplate, "SchemaTemplate=r, version=1 is not in catalog")
 
 	if err := e.restore(1, v1, nil); err != nil {
@@ -232,7 +232,7 @@ func TestFDB_Restore_DroppedBoundVersion(t *testing.T) {
 	if got := e.storedRow(1); string(got) != string(v1) {
 		t.Fatal("the restored row is not the backup's bytes")
 	}
-	e.readsBack("/db", "s")
+	e.readsBack("/FRL/db", "s")
 }
 
 // The restore lists the schemas bound to the version through
@@ -243,7 +243,7 @@ func TestFDB_Restore_FailsClosedOverAnUnreadableIndex(t *testing.T) {
 	e := newRestoreEnv(t)
 	v1 := demoMetaData(t, 3, withPriceIndex(2, 3, recordlayer.Field("price"), nil))
 	e.writeRow(1, v1)
-	e.bind("/db", "s", 1, v1)
+	e.bind("/FRL/db", "s", 1, v1)
 	e.dropTemplate()
 	mustRun(t, e.run, func(tx api.Transaction) error {
 		store, err := e.cat.openStore(tx)
@@ -267,11 +267,11 @@ func TestFDB_Restore_RefusesStoredOrUnboundVersion(t *testing.T) {
 	e := newRestoreEnv(t)
 	v1 := demoMetaData(t, 1, nil)
 	e.writeRow(1, v1)
-	e.bind("/db", "s", 1, v1)
+	e.bind("/FRL/db", "s", 1, v1)
 	wantRestoreRefused(t, e.restore(1, v1, nil), api.ErrCodeDuplicateSchemaTemplate,
 		"schema template r version 1 cannot be restored: it is stored")
 
-	mustRun(t, e.run, func(tx api.Transaction) error { return e.cat.DeleteSchema(tx, "/db", "s") })
+	mustRun(t, e.run, func(tx api.Transaction) error { return e.cat.DeleteSchema(tx, "/FRL/db", "s") })
 	e.dropTemplate()
 	wantRestoreRefused(t, e.restore(1, v1, nil), api.ErrCodeInvalidSchemaTemplate,
 		"schema template r version 1 cannot be restored: no schema binds it")
@@ -289,18 +289,18 @@ func TestFDB_Restore_ReadsEveryBoundHeader(t *testing.T) {
 	v1 := demoMetaData(t, 2, nil)
 	e.writeRow(1, v1)
 	above := demoMetaData(t, 5, nil)
-	e.bind("/db", "a", 1, v1)
-	e.bind("/db", "b", 1, nil) // no store
-	e.bind("/db", "c", 1, v1)
-	e.openStore("/db", "c", above, func(*recordlayer.FDBRecordStore) error { return nil })
+	e.bind("/FRL/db", "a", 1, v1)
+	e.bind("/FRL/db", "b", 1, nil) // no store
+	e.bind("/FRL/db", "c", 1, v1)
+	e.openStore("/FRL/db", "c", above, func(*recordlayer.FDBRecordStore) error { return nil })
 	e.dropTemplate()
 
 	one := &restoreOptions{batch: 1}
 	wantRestoreRefused(t, e.restore(1, v1, one), api.ErrCodeInvalidSchemaTemplate,
-		"schema template r version 1 cannot be restored: schema /db/b has no store header in the keyspace")
-	e.openStore("/db", "b", v1, func(*recordlayer.FDBRecordStore) error { return nil })
+		"schema template r version 1 cannot be restored: schema /FRL/db/b has no store header in the keyspace")
+	e.openStore("/FRL/db", "b", v1, func(*recordlayer.FDBRecordStore) error { return nil })
 	wantRestoreRefused(t, e.restore(1, v1, one), api.ErrCodeInvalidSchemaTemplate,
-		"schema template r version 1 cannot be restored: the store of schema /db/c records metadata version 5, above the restored metadata's 2")
+		"schema template r version 1 cannot be restored: the store of schema /FRL/db/c records metadata version 5, above the restored metadata's 2")
 	if one.attempts != 0 {
 		t.Fatalf("a header refusal ran %d restoring transactions", one.attempts)
 	}
@@ -311,14 +311,14 @@ func TestFDB_Restore_ReadsEveryBoundHeader(t *testing.T) {
 	below.name = "below"
 	b1, b2 := demoMetaData(t, 1, nil), demoMetaData(t, 3, withPriceIndex(3, 3, recordlayer.Field("price"), nil))
 	below.writeRow(1, b1)
-	below.bind("/db", "s", 1, b1)
+	below.bind("/FRL/db", "s", 1, b1)
 	below.writeRow(2, b2)
-	mustRun(t, below.run, func(tx api.Transaction) error { return below.cat.RepairSchema(tx, "/db", "s") })
+	mustRun(t, below.run, func(tx api.Transaction) error { return below.cat.RepairSchema(tx, "/FRL/db", "s") })
 	below.dropTemplate()
 	if err := below.restore(2, b2, nil); err != nil {
 		t.Fatal(err)
 	}
-	below.readsBack("/db", "s")
+	below.readsBack("/FRL/db", "s")
 }
 
 // The restored bytes must be one history with every stored version.
@@ -328,7 +328,7 @@ func TestFDB_Restore_OneHistory(t *testing.T) {
 		e := newRestoreEnv(t)
 		v3 := demoMetaData(t, 5, withPriceIndex(2, 5, recordlayer.Field("price"), priceAbove(1)))
 		e.writeRow(3, v3)
-		e.bind("/db", "s", 3, v3)
+		e.bind("/FRL/db", "s", 3, v3)
 		e.dropTemplate()
 		return e, v3
 	}
@@ -389,7 +389,7 @@ func TestFDB_Restore_OneHistory(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				e.readsBack("/db", "s")
+				e.readsBack("/FRL/db", "s")
 				return
 			}
 			var apiErr *api.Error
@@ -449,7 +449,7 @@ func TestFDB_Restore_ComparesAVectorColumnWhole(t *testing.T) {
 			e := newRestoreEnv(t)
 			v3 := demoMetaData(t, 5, withVector(32, 3))
 			e.writeRow(3, v3)
-			e.bind("/db", "s", 3, v3)
+			e.bind("/FRL/db", "s", 3, v3)
 			e.dropTemplate()
 			e.writeRow(1, demoMetaData(t, 5, withVector(c.precision, c.dimensions)))
 			err := e.restore(3, v3, nil)
@@ -457,7 +457,7 @@ func TestFDB_Restore_ComparesAVectorColumnWhole(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				e.readsBack("/db", "s")
+				e.readsBack("/FRL/db", "s")
 				return
 			}
 			var apiErr *api.Error
@@ -492,7 +492,7 @@ func TestFDB_Restore_RefusesALiteralCarrierChange(t *testing.T) {
 			e := newRestoreEnv(t)
 			v3 := demoMetaData(t, 5, withPriceIndex(2, 5, root(c.other), nil))
 			e.writeRow(3, v3)
-			e.bind("/db", "s", 3, v3)
+			e.bind("/FRL/db", "s", 3, v3)
 			e.dropTemplate()
 			e.writeRow(1, demoMetaData(t, 5, withPriceIndex(2, 5, root(c.stored), nil)))
 			err := e.restore(3, v3, nil)
@@ -524,14 +524,14 @@ func TestFDB_Restore_ConcurrentWrites(t *testing.T) {
 		v3 := demoMetaData(t, 1, nil)
 		e.writeRow(3, v3)
 		for _, s := range schemas {
-			e.bind("/db", s, 3, v3)
+			e.bind("/FRL/db", s, 3, v3)
 		}
 		e.dropTemplate()
 		return e, v3
 	}
 	drop := func(e *restoreEnv, schema string) func() {
 		return func() {
-			mustRun(e.t, e.run, func(tx api.Transaction) error { return e.cat.DeleteSchema(tx, "/db", schema) })
+			mustRun(e.t, e.run, func(tx api.Transaction) error { return e.cat.DeleteSchema(tx, "/FRL/db", schema) })
 		}
 	}
 	once := func(f func()) func() {
@@ -578,7 +578,7 @@ func TestFDB_Restore_ConcurrentWrites(t *testing.T) {
 		if opts.attempts != 2 {
 			t.Fatalf("%d restoring transactions, want 2 (the first conflicts)", opts.attempts)
 		}
-		e.readsBack("/db", "b")
+		e.readsBack("/FRL/db", "b")
 	})
 
 	t.Run("a later binding dropped before the commit", func(t *testing.T) {
@@ -657,7 +657,7 @@ func TestFDB_Restore_GuardSequences(t *testing.T) {
 			for _, v := range c.stored {
 				mds[v] = demoMetaData(t, 1, nil)
 				e.writeRow(v, mds[v])
-				e.bind("/db", fmt.Sprintf("s%d", v), v, mds[v])
+				e.bind("/FRL/db", fmt.Sprintf("s%d", v), v, mds[v])
 			}
 			e.dropTemplate()
 			create := func(v int) error {
@@ -669,7 +669,7 @@ func TestFDB_Restore_GuardSequences(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantAPIError(t, create(c.refused), api.ErrCodeInvalidSchemaTemplate,
-				fmt.Sprintf("schema template seq version %d cannot be created: schemas are still bound to its dropped version %d (/db/s%d)",
+				fmt.Sprintf("schema template seq version %d cannot be created: schemas are still bound to its dropped version %d (/FRL/db/s%d)",
 					c.refused, c.dangling, c.dangling))
 			if err := e.restore(c.second, mds[c.second], nil); err != nil {
 				t.Fatal(err)
@@ -678,7 +678,7 @@ func TestFDB_Restore_GuardSequences(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, v := range c.stored {
-				e.readsBack("/db", fmt.Sprintf("s%d", v))
+				e.readsBack("/FRL/db", fmt.Sprintf("s%d", v))
 			}
 		})
 	}
@@ -692,8 +692,8 @@ func TestFDB_Restore_GuardSequence(t *testing.T) {
 	v3 := demoMetaData(t, 1, nil)
 	e.writeRow(1, v1)
 	e.writeRow(3, v3)
-	e.bind("/db", "one", 1, v1)
-	e.bind("/db", "three", 3, v3)
+	e.bind("/FRL/db", "one", 1, v1)
+	e.bind("/FRL/db", "three", 3, v3)
 	e.dropTemplate()
 
 	if err := e.restore(1, v1, nil); err != nil {
@@ -703,15 +703,15 @@ func TestFDB_Restore_GuardSequence(t *testing.T) {
 		return e.cat.SchemaTemplateCatalog().CreateTemplate(tx, buildVersionedTemplate(t, "seq", 2))
 	})
 	wantAPIError(t, err, api.ErrCodeInvalidSchemaTemplate,
-		"schema template seq version 2 cannot be created: schemas are still bound to its dropped version 3 (/db/three)")
+		"schema template seq version 2 cannot be created: schemas are still bound to its dropped version 3 (/FRL/db/three)")
 	if err := e.restore(3, v3, nil); err != nil {
 		t.Fatal(err)
 	}
 	mustRun(t, e.run, func(tx api.Transaction) error {
 		return e.cat.SchemaTemplateCatalog().CreateTemplate(tx, buildVersionedTemplate(t, "seq", 4))
 	})
-	e.readsBack("/db", "one")
-	e.readsBack("/db", "three")
+	e.readsBack("/FRL/db", "one")
+	e.readsBack("/FRL/db", "three")
 }
 
 // renameMessage renames a record message in the records file, its union field's

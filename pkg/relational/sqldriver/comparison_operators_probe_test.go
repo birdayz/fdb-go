@@ -20,12 +20,12 @@ func TestFDB_ComparisonOperatorsProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_cmpops")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_cmpops")
+	setup := openTestDB(t, "/FRL/testdb_cmpops")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cmpops")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE cmpops CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_cmpops/s WITH TEMPLATE cmpops")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CMPOPS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cmpops/s WITH TEMPLATE cmpops")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CMPOPS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -24,15 +24,15 @@ func TestFDB_CorrelatedNullKeyJoin(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_corrnull")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_corrnull")
+	setup := openTestDB(t, "/FRL/testdb_corrnull")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_corrnull")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE corrnull "+
 			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX a_k ON a (k) CREATE INDEX b_k ON b (k)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_corrnull/s WITH TEMPLATE corrnull")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CORRNULL?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_corrnull/s WITH TEMPLATE corrnull")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRNULL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

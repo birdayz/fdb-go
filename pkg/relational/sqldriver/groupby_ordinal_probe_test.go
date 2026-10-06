@@ -22,12 +22,12 @@ func TestFDB_GroupByOrdinalProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_gbordp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_gbordp")
+	setup := openTestDB(t, "/FRL/testdb_gbordp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gbordp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gbordp CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_gbordp/s WITH TEMPLATE gbordp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GBORDP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gbordp/s WITH TEMPLATE gbordp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GBORDP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

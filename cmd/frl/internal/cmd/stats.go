@@ -58,14 +58,14 @@ func newStatsCmd() *cobra.Command {
 			"changes shape — statistics expire after ~24h and the planner " +
 			"silently falls back to its constant when they do.\n\n" +
 			"The planner only reads them when the connection opts in:\n" +
-			"  fdbsql:///MYAPP?schema=MAIN&planner_statistics=true\n\n" +
+			"  fdbsql:///FRL/MYAPP?schema=MAIN&planner_statistics=true\n\n" +
 			"Statistics are stored OUTSIDE every record store's subspace, so " +
 			"a Java client sharing this cluster neither sees nor is disturbed " +
 			"by them.",
-		Example: `  frl stats collect --database /myapp --schema MAIN
-  frl stats show --database /myapp --schema MAIN
-  frl stats show --database /myapp --schema MAIN -o json | jq '.per_type'
-  frl stats clear --database /myapp --schema MAIN --yes`,
+		Example: `  frl stats collect --database /FRL/myapp --schema MAIN
+  frl stats show --database /FRL/myapp --schema MAIN
+  frl stats show --database /FRL/myapp --schema MAIN -o json | jq '.per_type'
+  frl stats clear --database /FRL/myapp --schema MAIN --yes`,
 	}
 	c.AddCommand(newStatsCollectCmd())
 	c.AddCommand(newStatsShowCmd())
@@ -89,7 +89,7 @@ type statsAddressFlags struct {
 
 func (f *statsAddressFlags) register(c *cobra.Command) {
 	c.Flags().StringVar(&f.contextName, "context", "", "context name to use")
-	c.Flags().StringVar(&f.database, "database", "", "relational database URI (required, e.g. /myapp)")
+	c.Flags().StringVar(&f.database, "database", "", "relational database URI (required, e.g. /FRL/myapp)")
 	c.Flags().StringVar(&f.schema, "schema", "", "relational schema name (required)")
 	c.Flags().StringVar(&f.clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file — chains with `frl fdb up`")
 }
@@ -114,7 +114,7 @@ func (f *statsAddressFlags) withStatsConn(
 	if f.database == "" {
 		// Leading sentence word: fang capitalizes the first rune of an error
 		// banner, which would garble a leading flag name into "--Database".
-		return fmt.Errorf("missing required flag --database (e.g. --database /myapp)")
+		return fmt.Errorf("missing required flag --database (e.g. --database /FRL/myapp)")
 	}
 	if f.schema == "" {
 		return fmt.Errorf("missing required flag --schema (statistics are per-schema)")
@@ -128,7 +128,7 @@ func (f *statsAddressFlags) withStatsConn(
 	}
 	// The schema is an SQL identifier: unquoted folds to upper case (the same
 	// rule CREATE SCHEMA applies), so `--schema main` addresses the schema that
-	// `create schema /db/main` created.
+	// `create schema /FRL/db/main` created.
 	schema := functions.NormalizeIdentifier(f.schema)
 	dsn := buildFDBSQLDSN(target.clusterFile(), functions.NormalizeIdentifier(f.database), schema)
 	db, err := sql.Open("fdbsql", dsn)

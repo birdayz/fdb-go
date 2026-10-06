@@ -66,7 +66,7 @@ func validatePrivateFixture(file *javayamsql.File, prefix string) (*privateFixtu
 	// + "_TEMPLATE" (executeSchemaTemplate, the file's first block), and a
 	// table's qualifier is that TEMPLATE's name, not the schema's
 	// (functions.ResolveTargetTablePath).
-	fixture := &privateFixture{target: connTarget{Path: "/" + id + "_DB", Schema: id + "_SCHEMA"}, template: strings.ToUpper(id + "_TEMPLATE")}
+	fixture := &privateFixture{target: connTarget{Path: "/FRL/" + id + "_DB", Schema: id + "_SCHEMA"}, template: strings.ToUpper(id + "_TEMPLATE")}
 	stmt, err := parseFixtureStatement("CREATE SCHEMA TEMPLATE fixture " + template.Variants[0].Definition)
 	if err != nil {
 		return nil, err

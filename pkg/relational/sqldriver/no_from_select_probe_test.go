@@ -23,12 +23,12 @@ func TestFDB_NoFromSelectProbe(t *testing.T) {
 	// Setup ends before parallel subtests start; their operation deadlines
 	// must not include time spent waiting for the suite's parallel-test slots.
 	defer cancel()
-	setup := openTestDB(t, "/testdb_nofrom")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nofrom")
+	setup := openTestDB(t, "/FRL/testdb_nofrom")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nofrom")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nofrom CREATE TABLE t (id BIGINT, PRIMARY KEY (id)) CREATE TABLE wide_t (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE pair_t (id BIGINT, PRIMARY KEY (id)) CREATE TABLE pair_s (id STRING, PRIMARY KEY (id)) CREATE TABLE sort_t (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TYPE AS STRUCT item_type (sk BIGINT, co BIGINT) CREATE TABLE items_t (id BIGINT, items item_type ARRAY, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nofrom/s WITH TEMPLATE nofrom")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NOFROM?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nofrom/s WITH TEMPLATE nofrom")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NOFROM?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

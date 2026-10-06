@@ -44,8 +44,8 @@ func TestFDB_MultiwayJoinOrder_Nway(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_nway")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nway")
+	setup := openTestDB(t, "/FRL/testdb_nway")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nway")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nway_tmpl "+
 			// indexed chain t1(1) <- t2(20) <- t3(200) <- t4(2000)
@@ -61,9 +61,9 @@ func TestFDB_MultiwayJoinOrder_Nway(t *testing.T) {
 			"CREATE TABLE w (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE xx (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE yy (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nway/s WITH TEMPLATE nway_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nway/s WITH TEMPLATE nway_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NWAY?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NWAY?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

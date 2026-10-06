@@ -48,14 +48,14 @@ import (
 func openFullJoinDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_fulljoin_decomp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_fulljoin_decomp")
+	setup := openTestDB(t, "/FRL/testdb_fulljoin_decomp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fulljoin_decomp")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fjd_t "+
 		"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_fulljoin_decomp/s WITH TEMPLATE fjd_t")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fulljoin_decomp/s WITH TEMPLATE fjd_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///TESTDB_FULLJOIN_DECOMP?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_FULLJOIN_DECOMP?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

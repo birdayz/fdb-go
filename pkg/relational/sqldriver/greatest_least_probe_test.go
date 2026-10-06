@@ -17,12 +17,12 @@ func TestFDB_GreatestLeastProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_glp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_glp")
+	setup := openTestDB(t, "/FRL/testdb_glp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_glp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE glp CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_glp/s WITH TEMPLATE glp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_GLP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_glp/s WITH TEMPLATE glp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GLP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

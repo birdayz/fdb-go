@@ -149,9 +149,9 @@ const (
 	// not the session's are rejected with 42501 (insufficient privilege).
 	//
 	// Boolean, default FALSE — and the default is the Java-parity contract, not
-	// an oversight. Java's SemanticAnalyzer.parseSchemaURI splits "/db/SCHEMA"
+	// an oversight. Java's SemanticAnalyzer.parseSchemaURI splits "/FRL/db/SCHEMA"
 	// purely lexically and never compares the result to the connection's
-	// database, so `DROP SCHEMA /other/S` and `DROP DATABASE /other` are
+	// database, so `DROP SCHEMA /FRL/other/S` and `DROP DATABASE /FRL/other` are
 	// accepted from any connection; Java assumes an authorization layer outside
 	// the SQL engine. Turning this on by default would diverge from Java on the
 	// shared surface, so it stays opt-in.

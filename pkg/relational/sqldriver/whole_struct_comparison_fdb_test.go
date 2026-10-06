@@ -44,17 +44,17 @@ func TestFDB_WholeStructComparison(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_wholestruct")
-	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /testdb_wholestruct")).Error().NotTo(gomega.HaveOccurred())
+	setup := openTestDB(t, "/FRL/testdb_wholestruct")
+	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_wholestruct")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wholestruct_tmpl "+
 			"CREATE TYPE AS STRUCT ADDR (city STRING, zip BIGINT) "+
 			"CREATE TABLE T_S (id BIGINT, home ADDR, other ADDR, PRIMARY KEY (id))")).
 		Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
-		"CREATE SCHEMA /testdb_wholestruct/s WITH TEMPLATE wholestruct_tmpl")).Error().NotTo(gomega.HaveOccurred())
+		"CREATE SCHEMA /FRL/testdb_wholestruct/s WITH TEMPLATE wholestruct_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_WHOLESTRUCT?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHOLESTRUCT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

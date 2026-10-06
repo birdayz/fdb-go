@@ -80,13 +80,13 @@ func TestFDB_DuecMeasurementWindowLoss_IsSeenByDetectorA(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_duecwin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_duecwin")
+	setup := openTestDB(t, "/FRL/testdb_duecwin")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duecwin")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE duecwin "+
 			"CREATE TABLE rows1 (id BIGINT, v STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duecwin/s WITH TEMPLATE duecwin")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUECWIN?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duecwin/s WITH TEMPLATE duecwin")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUECWIN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -264,13 +264,13 @@ func TestFDB_DuecScannedRowsLimitDoesNotSilentlyTruncate(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_duecpage")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_duecpage")
+	setup := openTestDB(t, "/FRL/testdb_duecpage")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duecpage")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE duecpage "+
 			"CREATE TABLE rows2 (id BIGINT, v STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duecpage/s WITH TEMPLATE duecpage")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUECPAGE?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duecpage/s WITH TEMPLATE duecpage")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUECPAGE?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

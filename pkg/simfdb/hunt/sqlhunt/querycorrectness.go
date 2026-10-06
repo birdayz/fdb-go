@@ -49,7 +49,7 @@ var qcKeyCounter atomic.Uint64
 
 // qcDBPath is FIXED across runs (only the cache key varies), so the persisted keyspace for a given
 // seed is identical run-to-run and hunt.Fingerprint is a valid determinism probe.
-const qcDBPath = "/qcdb"
+const qcDBPath = "/FRL/qcdb"
 
 // qcRow is one row of the Go row-model.
 type qcRow struct {

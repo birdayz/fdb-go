@@ -17,13 +17,13 @@ import (
 func TestFDB_InListNullItems(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_in_null")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_in_null")
+	setup := openTestDB(t, "/FRL/testdb_in_null")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_null")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE in_null_tmpl "+
 		"CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE E (id BIGINT, x BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_in_null/s WITH TEMPLATE in_null_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_IN_NULL?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_null/s WITH TEMPLATE in_null_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_NULL?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

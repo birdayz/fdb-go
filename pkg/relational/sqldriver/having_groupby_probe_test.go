@@ -18,12 +18,12 @@ func TestFDB_HavingGroupByProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_havgb")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_havgb")
+	setup := openTestDB(t, "/FRL/testdb_havgb")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_havgb")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE havgb CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_havgb/s WITH TEMPLATE havgb")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_HAVGB?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_havgb/s WITH TEMPLATE havgb")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVGB?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

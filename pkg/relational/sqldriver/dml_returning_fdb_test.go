@@ -18,12 +18,12 @@ import (
 func TestFDB_DMLReturning(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_dml_returning")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_dml_returning")
+	setup := openTestDB(t, "/FRL/testdb_dml_returning")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dml_returning")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE dml_returning_tpl "+
 		"CREATE TABLE a (a1 BIGINT, a2 BIGINT, a3 BIGINT, PRIMARY KEY (a1))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dml_returning/s WITH TEMPLATE dml_returning_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_DML_RETURNING?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dml_returning/s WITH TEMPLATE dml_returning_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DML_RETURNING?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

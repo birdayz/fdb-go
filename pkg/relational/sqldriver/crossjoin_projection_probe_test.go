@@ -18,14 +18,14 @@ func TestFDB_CrossJoinProjectionProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_crossproj")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_crossproj")
+	setup := openTestDB(t, "/FRL/testdb_crossproj")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_crossproj")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE crossproj "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_crossproj/s WITH TEMPLATE crossproj")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CROSSPROJ?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_crossproj/s WITH TEMPLATE crossproj")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CROSSPROJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

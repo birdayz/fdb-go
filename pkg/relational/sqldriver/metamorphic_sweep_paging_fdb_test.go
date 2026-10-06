@@ -20,17 +20,17 @@ func TestFDB_MetamorphicPagingAtScale(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	setup := openTestDB(t, "/testdb_mhp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mhp")
+	setup := openTestDB(t, "/FRL/testdb_mhp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mhp")
 	table := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id)) "
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mhp_idx "+table+
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) CREATE INDEX t_s ON t (s)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mhp_noidx "+table)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mhp/si WITH TEMPLATE mhp_idx")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mhp/sn WITH TEMPLATE mhp_noidx")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mhp/si WITH TEMPLATE mhp_idx")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mhp/sn WITH TEMPLATE mhp_noidx")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql:///TESTDB_MHP?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
+		dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MHP?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s: %v", schema, err)

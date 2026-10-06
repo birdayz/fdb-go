@@ -19,15 +19,15 @@ func TestFDB_ExistsSemanticsProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_exists")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_exists")
+	setup := openTestDB(t, "/FRL/testdb_exists")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE existstpl "+
 			"CREATE TABLE parent (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE child (id BIGINT, pid BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX child_pid ON child (pid)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exists/s WITH TEMPLATE existstpl")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_EXISTS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists/s WITH TEMPLATE existstpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -33,8 +33,8 @@ func TestFDB_MultiwayJoinOrder_Probe(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_mwjo")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mwjo")
+	setup := openTestDB(t, "/FRL/testdb_mwjo")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mwjo")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE mwjo_tmpl "+
 			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
@@ -42,9 +42,9 @@ func TestFDB_MultiwayJoinOrder_Probe(t *testing.T) {
 			"CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_by_t1 ON t2 (t1_id) "+
 			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mwjo/s WITH TEMPLATE mwjo_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mwjo/s WITH TEMPLATE mwjo_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MWJO?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MWJO?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -145,8 +145,8 @@ func TestFDB_NestedJoinUnqualifiedProjection(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_nestproj")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nestproj")
+	setup := openTestDB(t, "/FRL/testdb_nestproj")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nestproj")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nestproj_tmpl "+
 			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
@@ -154,9 +154,9 @@ func TestFDB_NestedJoinUnqualifiedProjection(t *testing.T) {
 			"CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_by_t1 ON t2 (t1_id) "+
 			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nestproj/s WITH TEMPLATE nestproj_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nestproj/s WITH TEMPLATE nestproj_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NESTPROJ?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTPROJ?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

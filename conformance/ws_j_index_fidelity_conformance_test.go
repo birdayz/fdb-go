@@ -3205,7 +3205,7 @@ var _ = Describe("WS-J a table or struct named UnionDescriptor", func() {
 					return err
 				}
 				defer sysDB.Close()
-				dbPath := "/WSJUD_DB_" + suffix
+				dbPath := "/FRL/WSJUD_DB_" + suffix
 				goName := "WSJUD_GO_" + suffix
 				for _, stmt := range []string{
 					"CREATE DATABASE " + dbPath,
@@ -3399,7 +3399,7 @@ var _ = Describe("WS-J an unset field with a declared default reads as the targe
 		Expect(err).NotTo(HaveOccurred())
 		defer sysDB.Close()
 		goName := "WSJDEF_GO_" + suffix
-		dbPath := "/WSJDEF_DB_" + suffix
+		dbPath := "/FRL/WSJDEF_DB_" + suffix
 		defer func() {
 			_, _ = sysDB.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+dbPath)
 			_, _ = sysDB.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS "+goName)

@@ -102,18 +102,18 @@ import (
 
 func main() {
 	db, err := sql.Open("fdbsql",
-		"fdbsql:///MYAPP?cluster_file=/etc/foundationdb/fdb.cluster&schema=MAIN")
+		"fdbsql:///FRL/MYAPP?cluster_file=/etc/foundationdb/fdb.cluster&schema=MAIN")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
 	// Create the database, a schema template, and a schema.
-	db.Exec(`CREATE DATABASE /myapp`)
+	db.Exec(`CREATE DATABASE /FRL/myapp`)
 	db.Exec(`CREATE SCHEMA TEMPLATE app
 	    CREATE TABLE users (id BIGINT, name STRING, email STRING, PRIMARY KEY (id))
 	    CREATE INDEX by_email ON users (email)`)
-	db.Exec(`CREATE SCHEMA /myapp/main WITH TEMPLATE app`)
+	db.Exec(`CREATE SCHEMA /FRL/myapp/main WITH TEMPLATE app`)
 
 	// Write a row, then read it back.
 	db.Exec(`INSERT INTO users (id, name, email)
@@ -132,7 +132,7 @@ func main() {
 ### Or query the same data from the CLI
 
 ```text
-$ frl sql --database /myapp --schema main
+$ frl sql --database /FRL/myapp --schema main
 fdb> SELECT name, email FROM users WHERE email = 'alice@example.com';
 NAME  │ EMAIL
 ──────┼───────────────────

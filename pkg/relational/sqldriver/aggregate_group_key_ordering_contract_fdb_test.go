@@ -62,15 +62,15 @@ func TestFDB_AggregateGroupKeyOrderingIsProvidedNotResorted(t *testing.T) {
 	}
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_agg_ord_contract")
-	agkoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_agg_ord_contract")
+	setup := openTestDB(t, "/FRL/testdb_agg_ord_contract")
+	agkoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_agg_ord_contract")
 	agkoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE agg_ord_contract "+
 			"CREATE TABLE ot (k BIGINT, v BIGINT, PRIMARY KEY (k)) "+
 			"CREATE TABLE it (k BIGINT, o_k BIGINT, v BIGINT, PRIMARY KEY (k))")
-	agkoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_agg_ord_contract/s WITH TEMPLATE agg_ord_contract")
+	agkoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_agg_ord_contract/s WITH TEMPLATE agg_ord_contract")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///TESTDB_AGG_ORD_CONTRACT?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_ORD_CONTRACT?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

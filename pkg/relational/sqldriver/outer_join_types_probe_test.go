@@ -18,14 +18,14 @@ func TestFDB_OuterJoinTypesProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ojt")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ojt")
+	setup := openTestDB(t, "/FRL/testdb_ojt")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ojt")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ojt "+
 		"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX b_aid ON b (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ojt/s WITH TEMPLATE ojt")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OJT?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ojt/s WITH TEMPLATE ojt")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OJT?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

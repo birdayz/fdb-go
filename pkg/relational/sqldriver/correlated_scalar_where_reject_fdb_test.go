@@ -26,12 +26,12 @@ func TestFDB_CorrelatedScalarInPredicate_Boundary(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_corrscw")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_corrscw")
+	setup := openTestDB(t, "/FRL/testdb_corrscw")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_corrscw")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE corrscw "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_corrscw/s WITH TEMPLATE corrscw")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_CORRSCW?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_corrscw/s WITH TEMPLATE corrscw")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRSCW?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

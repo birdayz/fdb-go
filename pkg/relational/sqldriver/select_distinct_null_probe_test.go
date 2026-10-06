@@ -19,13 +19,13 @@ func TestFDB_SelectDistinctNullProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_distnullp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_distnullp")
+	setup := openTestDB(t, "/FRL/testdb_distnullp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_distnullp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE distnullp "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_distnullp/s WITH TEMPLATE distnullp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DISTNULLP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_distnullp/s WITH TEMPLATE distnullp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTNULLP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

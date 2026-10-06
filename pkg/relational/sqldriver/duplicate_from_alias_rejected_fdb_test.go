@@ -54,7 +54,7 @@ func TestFDB_DuplicateFromAliasRejected(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/dupalias"
+	dbPath := "/FRL/dupalias"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

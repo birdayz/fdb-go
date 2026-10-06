@@ -19,12 +19,12 @@ func TestFDB_LargeScanContinuationProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_lsc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_lsc")
+	setup := openTestDB(t, "/FRL/testdb_lsc")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_lsc")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE lsc CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_lsc/s WITH TEMPLATE lsc")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_LSC?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_lsc/s WITH TEMPLATE lsc")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LSC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

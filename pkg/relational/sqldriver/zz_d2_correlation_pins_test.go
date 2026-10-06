@@ -23,15 +23,15 @@ func TestFDB_ParamBoundScanInJoinLeg_NotMisseenAsCorrelated(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_paramleg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_paramleg")
+	setup := openTestDB(t, "/FRL/testdb_paramleg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_paramleg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE paramleg_tmpl "+
 			"CREATE TABLE o (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t (id BIGINT, fk BIGINT, k BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_paramleg/s WITH TEMPLATE paramleg_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_paramleg/s WITH TEMPLATE paramleg_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_PARAMLEG?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAMLEG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -80,16 +80,16 @@ func TestFDB_NestedFlatMapUnderJoin_NoCorrelationLeak(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_nestedfm")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_nestedfm")
+	setup := openTestDB(t, "/FRL/testdb_nestedfm")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nestedfm")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nestedfm_tmpl "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, fk BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_nestedfm/s WITH TEMPLATE nestedfm_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nestedfm/s WITH TEMPLATE nestedfm_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_NESTEDFM?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTEDFM?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -130,7 +130,7 @@ func TestFDB_CorrelatedExistsUnderJoin_NoCorrelationLeak(t *testing.T) {
 	// Unique db/schema per process so the pin is stable under --runs_per_test
 	// (separate processes sharing one FDB container).
 	u := time.Now().UnixNano()
-	dbp := fmt.Sprintf("/testdb_existsleak_%d", u)
+	dbp := fmt.Sprintf("/FRL/testdb_existsleak_%d", u)
 	tmpl := fmt.Sprintf("existsleak_tmpl_%d", u)
 	setup := openTestDB(t, dbp)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbp)

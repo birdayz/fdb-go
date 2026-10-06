@@ -17,7 +17,7 @@ import (
 func TestFDB_FieldValuedComputedScalar(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/w4b_fv"
+	dbPath := "/FRL/w4b_fv"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -186,7 +186,7 @@ func TestFDB_FieldValuedComputedScalar(t *testing.T) {
 func TestFDB_AggregateLocalOuterRef(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/w4b_ag"
+	dbPath := "/FRL/w4b_ag"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

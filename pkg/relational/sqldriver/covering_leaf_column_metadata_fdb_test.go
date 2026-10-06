@@ -49,7 +49,7 @@ func TestFDB_CoveringLeafKeepsColumnTypeMetadata(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const dbPath = "/testdb_covleafmeta"
+	const dbPath = "/FRL/testdb_covleafmeta"
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	// The schema is the SHARED definition. The planner-side pin

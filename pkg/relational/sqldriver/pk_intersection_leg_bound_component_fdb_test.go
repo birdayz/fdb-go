@@ -49,11 +49,11 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 		// D drives the OR-union arm: the correlated inner of a LEFT JOIN is the
 		// shape that reaches the union of index probes today.
 		"CREATE TABLE d (did BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (did))"
-	setup := openTestDB(t, "/testdb_pkilbc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_pkilbc")
+	setup := openTestDB(t, "/FRL/testdb_pkilbc")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pkilbc")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pkilbc "+ddl)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_pkilbc/s WITH TEMPLATE pkilbc")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_PKILBC?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pkilbc/s WITH TEMPLATE pkilbc")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PKILBC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -119,7 +119,7 @@ type arrangementPlan struct {
 // statistics collected and on.
 func joinOrderArrangement(t *testing.T, ctx context.Context, i, pkRows, fkRows int) (off, on arrangementPlan) {
 	t.Helper()
-	dbPath := fmt.Sprintf("/joinorder_%d", i)
+	dbPath := fmt.Sprintf("/FRL/joinorder_%d", i)
 	setup := openTestDB(t, dbPath)
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	tmpl := fmt.Sprintf("joinorder_%d", i)

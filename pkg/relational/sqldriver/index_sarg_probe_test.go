@@ -18,14 +18,14 @@ func TestFDB_IndexSargProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_idx_sarg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_idx_sarg")
+	setup := openTestDB(t, "/FRL/testdb_idx_sarg")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idx_sarg")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE idx_sarg "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) CREATE INDEX t_s ON t (s)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_idx_sarg/s WITH TEMPLATE idx_sarg")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IDX_SARG?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idx_sarg/s WITH TEMPLATE idx_sarg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDX_SARG?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -22,7 +22,7 @@ import (
 func TestFDB_MixedOuterJoinNesting(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/w4l_mixed"
+	dbPath := "/FRL/w4l_mixed"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

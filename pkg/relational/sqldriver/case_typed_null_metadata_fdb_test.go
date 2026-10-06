@@ -17,11 +17,11 @@ func TestFDB_CaseTypedNullBranchKeepsItsType(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ctnb")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ctnb")
+	setup := openTestDB(t, "/FRL/testdb_ctnb")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ctnb")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ctnb CREATE TABLE T_CTNB (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ctnb/s WITH TEMPLATE ctnb")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_CTNB?cluster_file=%s&schema=S", clusterFilePath))
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ctnb/s WITH TEMPLATE ctnb")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_CTNB?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatal(err)
 	}

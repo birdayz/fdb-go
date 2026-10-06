@@ -158,7 +158,7 @@ func TestDatabaseMetaData_SchemasFilteredPatterns(t *testing.T) {
 func TestDatabaseMetaData_Tables(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	rs, err := md.Tables(context.Background(), "", "", "", nil)
@@ -183,7 +183,7 @@ func TestDatabaseMetaData_Tables(t *testing.T) {
 func TestDatabaseMetaData_TablesFiltered(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	rs, err := md.Tables(context.Background(), "", "", "Or%", nil)
@@ -204,7 +204,7 @@ func TestDatabaseMetaData_TablesFiltered(t *testing.T) {
 func TestDatabaseMetaData_TablesTypeFilterExcludesNonTable(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	// Asking for only VIEW rows → empty.
@@ -221,10 +221,10 @@ func TestDatabaseMetaData_TablesTypeFilterExcludesNonTable(t *testing.T) {
 func TestDatabaseMetaData_PrimaryKeys(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
-	rs, err := md.PrimaryKeys(context.Background(), "/db", "s", "Order")
+	rs, err := md.PrimaryKeys(context.Background(), "/FRL/db", "s", "Order")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestDatabaseMetaData_PrimaryKeys(t *testing.T) {
 	keySeq, _ := rs.Long(5)
 	pkName, _ := rs.String(6)
 
-	if cat != "/db" || schema != "s" || tableName != "Order" {
+	if cat != "/FRL/db" || schema != "s" || tableName != "Order" {
 		t.Errorf("got (cat, schema, table) = (%q, %q, %q)", cat, schema, tableName)
 	}
 	if col == "" || keySeq != 1 || pkName == "" {
@@ -253,10 +253,10 @@ func TestDatabaseMetaData_PrimaryKeys(t *testing.T) {
 func TestDatabaseMetaData_PrimaryKeysMissingTable(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
-	_, err := md.PrimaryKeys(context.Background(), "/db", "s", "NotATable")
+	_, err := md.PrimaryKeys(context.Background(), "/FRL/db", "s", "NotATable")
 	if err == nil {
 		t.Fatal("PrimaryKeys(missing) should error")
 	}
@@ -269,7 +269,7 @@ func TestDatabaseMetaData_PrimaryKeysMissingTable(t *testing.T) {
 func TestDatabaseMetaData_Columns(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	rs, err := md.Columns(context.Background(), "", "", "Order", "")
@@ -339,7 +339,7 @@ func TestDatabaseMetaData_Columns(t *testing.T) {
 func TestDatabaseMetaData_ColumnsFilteredByColumnName(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	rs, err := md.Columns(context.Background(), "", "", "Order", "price")
@@ -360,11 +360,11 @@ func TestDatabaseMetaData_ColumnsFilteredByColumnName(t *testing.T) {
 func TestDatabaseMetaData_IndexInfoEmpty(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	// No indexes on the demo template → empty result.
-	rs, err := md.IndexInfo(context.Background(), "/db", "s", "Order", false, false)
+	rs, err := md.IndexInfo(context.Background(), "/FRL/db", "s", "Order", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestDatabaseMetaData_IndexInfoUniqueFilter(t *testing.T) {
 	if err := c.SchemaTemplateCatalog().CreateTemplate(tx, tmpl); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 
@@ -425,7 +425,7 @@ func TestDatabaseMetaData_IndexInfoUniqueFilter(t *testing.T) {
 	// unique=false returns both. JDBC ordering: NON_UNIQUE then
 	// INDEX_NAME, so the unique one (NON_UNIQUE=false) comes first
 	// regardless of alphabetical name order.
-	rs, err := dbMeta.IndexInfo(context.Background(), "/db", "s", "Order", false, false)
+	rs, err := dbMeta.IndexInfo(context.Background(), "/FRL/db", "s", "Order", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +442,7 @@ func TestDatabaseMetaData_IndexInfoUniqueFilter(t *testing.T) {
 	}
 
 	// unique=true returns only the unique one.
-	rs, err = dbMeta.IndexInfo(context.Background(), "/db", "s", "Order", true, false)
+	rs, err = dbMeta.IndexInfo(context.Background(), "/FRL/db", "s", "Order", true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,10 +456,10 @@ func TestDatabaseMetaData_IndexInfoUniqueFilter(t *testing.T) {
 func TestDatabaseMetaData_IndexInfoMissingTable(t *testing.T) {
 	t.Parallel()
 	md, c, tx, tmpl := newTestDatabaseMetaData(t)
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true, api.SchemaExistsError); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
-	_, err := md.IndexInfo(context.Background(), "/db", "s", "NotATable", false, false)
+	_, err := md.IndexInfo(context.Background(), "/FRL/db", "s", "NotATable", false, false)
 	if err == nil {
 		t.Fatal("IndexInfo(missing) should error")
 	}

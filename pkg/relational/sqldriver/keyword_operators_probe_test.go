@@ -18,12 +18,12 @@ func TestFDB_KeywordOperatorsProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_kwopp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_kwopp")
+	setup := openTestDB(t, "/FRL/testdb_kwopp")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_kwopp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE kwopp CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_kwopp/s WITH TEMPLATE kwopp")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_KWOPP?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_kwopp/s WITH TEMPLATE kwopp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_KWOPP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

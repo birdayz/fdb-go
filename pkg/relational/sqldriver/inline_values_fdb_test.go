@@ -14,7 +14,7 @@ import (
 func inlineValuesDB(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
-	const dbPath = "/testdb_inline_values"
+	const dbPath = "/FRL/testdb_inline_values"
 	setup := openTestDB(t, dbPath)
 	for _, statement := range []string{
 		"CREATE DATABASE " + dbPath,

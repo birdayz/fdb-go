@@ -41,7 +41,7 @@ const structInsertDDL = `CREATE TYPE AS STRUCT s1 (a BIGINT, b BIGINT)
 func structInsertDB(t *testing.T, tag string) (*sql.DB, context.Context, subspace.Subspace) {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/structins_" + tag
+	dbPath := "/FRL/structins_" + tag
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -524,7 +524,7 @@ func TestFDB_StructUpdateAndInsertSelect(t *testing.T) {
 func TestFDB_StructNotNullArrayFieldRejectsNull(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/structnn"
+	dbPath := "/FRL/structnn"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

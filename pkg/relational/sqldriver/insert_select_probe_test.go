@@ -23,16 +23,16 @@ func TestFDB_InsertSelectProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_inssel")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_inssel")
+	setup := openTestDB(t, "/FRL/testdb_inssel")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inssel")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inssel "+
 			"CREATE TABLE src (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE dst (id BIGINT, x DOUBLE, y BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX dst_x ON dst (x) "+
 			"CREATE TABLE lk (id BIGINT, label BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_inssel/s WITH TEMPLATE inssel")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_INSSEL?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inssel/s WITH TEMPLATE inssel")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSSEL?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

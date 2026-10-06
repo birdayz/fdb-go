@@ -18,12 +18,12 @@ func TestFDB_TxCommitRollbackProbe(t *testing.T) {
 	}
 	ctx := context.Background()
 	key, clk := spikedClusterKey(t, 30*time.Second)
-	setup := openSpiked(t, key, "/testdb_tcrp", "")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_tcrp")
+	setup := openSpiked(t, key, "/FRL/testdb_tcrp", "")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_tcrp")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE tcrp CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_tcrp/s WITH TEMPLATE tcrp")
-	db := openSpiked(t, key, "/testdb_tcrp", "s")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_tcrp/s WITH TEMPLATE tcrp")
+	db := openSpiked(t, key, "/FRL/testdb_tcrp", "s")
 	t.Cleanup(func() { db.Close() })
 	count := func() int {
 		var n int

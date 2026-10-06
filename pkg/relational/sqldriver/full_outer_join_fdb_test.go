@@ -29,7 +29,7 @@ import (
 func setupFullOuterDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	dbPath := "/testdb_foj_" + suffix
+	dbPath := "/FRL/testdb_foj_" + suffix
 	setup := openTestDB(t, dbPath)
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath)
 	g.Expect(err).NotTo(gomega.HaveOccurred())

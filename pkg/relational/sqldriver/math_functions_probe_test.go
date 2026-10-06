@@ -19,12 +19,12 @@ func TestFDB_MathFunctionsProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_mathfn")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mathfn")
+	setup := openTestDB(t, "/FRL/testdb_mathfn")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mathfn")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE mathfn CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mathfn/s WITH TEMPLATE mathfn")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MATHFN?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mathfn/s WITH TEMPLATE mathfn")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MATHFN?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

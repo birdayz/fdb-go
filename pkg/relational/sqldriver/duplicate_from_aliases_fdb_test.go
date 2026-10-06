@@ -22,7 +22,7 @@ import (
 func TestFDB_DuplicateFromAliases(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/w4l_dup"
+	dbPath := "/FRL/w4l_dup"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
@@ -310,7 +310,7 @@ func TestFDB_DuplicateFromAliases(t *testing.T) {
 func TestFDB_DupAliasOrderGroupCorrelated(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/w4l_dupsg"
+	dbPath := "/FRL/w4l_dupsg"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

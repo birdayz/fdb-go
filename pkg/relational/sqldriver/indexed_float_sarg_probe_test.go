@@ -40,8 +40,8 @@ func TestFDB_IndexedFloatSargProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_ifs")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_ifs")
+	setup := openTestDB(t, "/FRL/testdb_ifs")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ifs")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ifs "+
 		"CREATE TABLE noidx (id BIGINT, f FLOAT, PRIMARY KEY (id)) "+
 		"CREATE TABLE withidx (id BIGINT, f FLOAT, PRIMARY KEY (id)) "+
@@ -50,8 +50,8 @@ func TestFDB_IndexedFloatSargProbe(t *testing.T) {
 		"CREATE INDEX wi_f ON withidx (f) "+
 		"CREATE INDEX di_f ON dblidx (f) "+
 		"CREATE INDEX bnd_f ON bnd (f)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_ifs/s WITH TEMPLATE ifs")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_IFS?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ifs/s WITH TEMPLATE ifs")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IFS?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

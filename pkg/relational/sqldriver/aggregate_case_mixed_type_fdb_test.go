@@ -20,13 +20,13 @@ func TestFDB_AggregateMinMax_MixedTypeCaseOperand(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_aggmixed")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_aggmixed")
+	setup := openTestDB(t, "/FRL/testdb_aggmixed")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggmixed")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggmixed "+
 			"CREATE TABLE mixed (id BIGINT, g BIGINT, flag BIGINT, d DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_aggmixed/s WITH TEMPLATE aggmixed")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_AGGMIXED?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggmixed/s WITH TEMPLATE aggmixed")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGMIXED?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

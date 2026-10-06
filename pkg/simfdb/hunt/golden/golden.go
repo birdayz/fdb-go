@@ -29,7 +29,7 @@ import (
 // database path is FIXED, so the key (not persisted) never perturbs the captured bytes.
 var keyCounter atomic.Uint64
 
-const dbPath = "/goldendb"
+const dbPath = "/FRL/goldendb"
 
 // Scenario is one corpus entry: a schema (CREATE TABLE / CREATE INDEX bodies for a schema
 // template), deterministic seed data, and the queries to capture. Seed drives SimFDB's clock/

@@ -19,7 +19,7 @@ import (
 func TestFDB_ComputedCorrelatedScalarSubquery(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := "/w4b_cs"
+	dbPath := "/FRL/w4b_cs"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

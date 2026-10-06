@@ -22,12 +22,12 @@ func TestFDB_UpdateSetDefaultRejectedProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_usd")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_usd")
+	setup := openTestDB(t, "/FRL/testdb_usd")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_usd")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE usd CREATE TABLE t (id BIGINT, v BIGINT, s STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_usd/s WITH TEMPLATE usd")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_USD?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_usd/s WITH TEMPLATE usd")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_USD?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

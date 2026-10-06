@@ -929,7 +929,7 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 // option's NAME and not its value, and loadSchema looks the value up
 // verbatim (RecordLayerStorageCluster.java:76-124). A schema created
 // unquoted is stored folded, in both engines, so ?schema=test1 does not
-// reach the schema `create schema /db/test1` stored as TEST1 (measured
+// reach the schema `create schema /FRL/db/test1` stored as TEST1 (measured
 // against the JVM: conformance "the DSN's schema option reaches the schema
 // Java's does"). Go folded the value as an SQL identifier, which reached
 // schemas Java's connect refuses.

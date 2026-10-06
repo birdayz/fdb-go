@@ -22,7 +22,7 @@ func TestFDB_SPFreshRefusedConfigurationIsA42000(t *testing.T) {
 	t.Parallel()
 	h := newFleetHarness(t)
 	suffix := strings.ReplaceAll(t.Name(), "_", "")
-	dbPath := "/SPFREFUSED" + strings.ToUpper(suffix)
+	dbPath := "/FRL/SPFREFUSED" + strings.ToUpper(suffix)
 	name := "SPFREFUSED_T"
 	body := "CREATE TABLE DOCS(ID BIGINT, EMBEDDING VECTOR(3, HALF), PRIMARY KEY(ID)) " +
 		"CREATE VECTOR INDEX V USING SPFRESH ON DOCS(EMBEDDING) OPTIONS (RABITQ_NUM_EX_BITS = 0)"

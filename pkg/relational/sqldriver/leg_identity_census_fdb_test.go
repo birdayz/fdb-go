@@ -52,7 +52,7 @@ func TestFDB_LegIdentityCensus_NoFoldOnlyTraffic(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	dbPath := "/s4legid"
+	dbPath := "/FRL/s4legid"
 	setup := openTestDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)

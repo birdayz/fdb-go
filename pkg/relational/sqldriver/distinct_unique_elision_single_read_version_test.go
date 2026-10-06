@@ -39,17 +39,17 @@ func TestFDB_DistinctUniqueElisionFiresInExplicitTx(t *testing.T) {
 	// whole test: preflightTxBudget runs under `if r.tx != nil`, so the DDL and
 	// seed statements below — all autocommit — never meet it.
 	key, clk := spikedClusterKey(t, 30*time.Second)
-	setup := openSpiked(t, key, "/testdb_dusrv", "")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dusrv")
+	setup := openSpiked(t, key, "/FRL/testdb_dusrv", "")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dusrv")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dusrv "+
 			"CREATE TABLE t1 (id BIGINT, email STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email1 ON t1 (email) "+
 			"CREATE TABLE t3 (id BIGINT, email STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email3 ON t3 (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dusrv/s WITH TEMPLATE dusrv")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dusrv/s WITH TEMPLATE dusrv")
 
-	db := openSpiked(t, key, "/testdb_dusrv", "s")
+	db := openSpiked(t, key, "/FRL/testdb_dusrv", "s")
 
 	const nRows = 8
 	for _, tbl := range []string{"t1", "t3"} {
@@ -177,15 +177,15 @@ func TestFDB_DistinctUniqueElisionNotCachedAcrossReadVersionScope(t *testing.T) 
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_dusrvc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dusrvc")
+	setup := openTestDB(t, "/FRL/testdb_dusrvc")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dusrvc")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dusrvc "+
 			"CREATE TABLE t1 (id BIGINT, email STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email1 ON t1 (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dusrvc/s WITH TEMPLATE dusrvc")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dusrvc/s WITH TEMPLATE dusrvc")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_DUSRVC?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUSRVC?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

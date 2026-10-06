@@ -109,7 +109,7 @@ func TestPrivateFixtureValidation(t *testing.T) {
 				t.Fatalf("valid=%v, want %v: %v", err == nil, tc.want, err)
 			}
 			if err == nil {
-				if fixture.target != (connTarget{Path: "/YAML_PIN_1_DB", Schema: "YAML_PIN_1_SCHEMA"}) || len(fixture.tables) == 0 {
+				if fixture.target != (connTarget{Path: "/FRL/YAML_PIN_1_DB", Schema: "YAML_PIN_1_SCHEMA"}) || len(fixture.tables) == 0 {
 					t.Fatalf("invalid private target/table population: %+v", fixture)
 				}
 				if tc.name == "quoted_dotted" && (!reflect.DeepEqual(fixture.tables, []string{"a.b"}) || quoteFixtureIdentifier(fixture.tables[0]) != `"a.b"`) {

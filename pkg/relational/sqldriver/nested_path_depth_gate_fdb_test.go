@@ -43,8 +43,8 @@ func TestFDB_NestedPathDepthGate(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/nestdepth")
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /nestdepth"); err != nil {
+	setup := openTestDB(t, "/FRL/nestdepth")
+	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/nestdepth"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
 	if _, err := setup.ExecContext(ctx,
@@ -54,10 +54,10 @@ func TestFDB_NestedPathDepthGate(t *testing.T) {
 			"CREATE TABLE T (id BIGINT, home ADDR, PRIMARY KEY (id))"); err != nil {
 		t.Fatalf("tmpl: %v", err)
 	}
-	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /nestdepth/s WITH TEMPLATE nd_tmpl"); err != nil {
+	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/nestdepth/s WITH TEMPLATE nd_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///NESTDEPTH?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/NESTDEPTH?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

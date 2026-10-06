@@ -76,8 +76,8 @@ func TestFDB_MultiwayJoinIndexProbe(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_mwjip")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_mwjip")
+	setup := openTestDB(t, "/FRL/testdb_mwjip")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mwjip")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE mwjip_tmpl "+
 			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
@@ -85,9 +85,9 @@ func TestFDB_MultiwayJoinIndexProbe(t *testing.T) {
 			"CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_by_t1 ON t2 (t1_id) "+
 			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_mwjip/s WITH TEMPLATE mwjip_tmpl")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mwjip/s WITH TEMPLATE mwjip_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_MWJIP?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MWJIP?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

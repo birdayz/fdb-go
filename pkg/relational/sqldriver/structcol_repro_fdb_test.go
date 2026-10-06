@@ -40,16 +40,16 @@ func TestFDB_ProjectedStructColumnThroughAJoin(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/testdb_structcol_join")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_structcol_join")
+	setup := openTestDB(t, "/FRL/testdb_structcol_join")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_structcol_join")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE structcol_join_tmpl "+
 		"CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t1(id BIGINT, n nst, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_structcol_join/s WITH TEMPLATE structcol_join_tmpl")
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_structcol_join/s WITH TEMPLATE structcol_join_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_STRUCTCOL_JOIN?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_STRUCTCOL_JOIN?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

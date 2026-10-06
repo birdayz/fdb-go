@@ -41,7 +41,7 @@ func TestIntegration_SQL_DescribeUsesSQLIdentifiers(t *testing.T) {
 	const sqlCol, storageCol = "COL$X", "COL__1X"
 
 	schema := `
-CREATE DATABASE /frlnames;
+CREATE DATABASE /FRL/frlnames;
 
 CREATE SCHEMA TEMPLATE frlnames_tpl
 CREATE TABLE "MY$TABLE" (
@@ -50,13 +50,13 @@ CREATE TABLE "MY$TABLE" (
   PRIMARY KEY ("COL$X")
 );
 
-CREATE SCHEMA /frlnames/main WITH TEMPLATE frlnames_tpl;
+CREATE SCHEMA /FRL/frlnames/main WITH TEMPLATE frlnames_tpl;
 `
 	path := filepath.Join(t.TempDir(), "names.sql")
 	if err := os.WriteFile(path, []byte(schema), 0o600); err != nil {
 		t.Fatalf("write schema: %v", err)
 	}
-	if out, err := runCmd(t, "sql", "--database", "/frlnames", "--schema", "main", "-f", path); err != nil {
+	if out, err := runCmd(t, "sql", "--database", "/FRL/frlnames", "--schema", "main", "-f", path); err != nil {
 		t.Fatalf("bootstrap: %v\n%s", err, out)
 	}
 
@@ -66,14 +66,14 @@ CREATE SCHEMA /frlnames/main WITH TEMPLATE frlnames_tpl;
 		errOut:      &buf,
 		ctx:         context.Background(),
 		clusterFile: fixture.clusterFilePath,
-		database:    "/FRLNAMES", // CREATE DATABASE folds the unquoted path whole
-		schema:      "MAIN",      // the engine uppercases unquoted identifiers at DDL time
+		database:    "/FRL/FRLNAMES", // CREATE DATABASE folds the unquoted path whole
+		schema:      "MAIN",          // the engine uppercases unquoted identifiers at DDL time
 		st:          plainSQLStyles(),
 		format:      sqlFormatTable,
 	}
 
 	// \d — the table listing.
-	tables, err := r.loadSchemaTables("/FRLNAMES", "MAIN")
+	tables, err := r.loadSchemaTables("/FRL/FRLNAMES", "MAIN")
 	if err != nil {
 		t.Fatalf("loadSchemaTables: %v", err)
 	}

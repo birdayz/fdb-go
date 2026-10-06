@@ -23,15 +23,15 @@ func TestFDB_TwoTableOrderInvariantIndexJoin(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_2t")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_2t")
+	setup := openTestDB(t, "/FRL/testdb_2t")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_2t")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE t2t "+
 			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_by_t1 ON t2 (t1_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_2t/s WITH TEMPLATE t2t")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_2T?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_2t/s WITH TEMPLATE t2t")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_2T?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

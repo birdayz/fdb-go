@@ -17,14 +17,14 @@ func TestFDB_StringIndexRangeProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_stridx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_stridx")
+	setup := openTestDB(t, "/FRL/testdb_stridx")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_stridx")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE stridx "+
 			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_s ON t (s)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_stridx/s WITH TEMPLATE stridx")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_STRIDX?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_stridx/s WITH TEMPLATE stridx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STRIDX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

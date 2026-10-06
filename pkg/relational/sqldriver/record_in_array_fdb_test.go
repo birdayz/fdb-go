@@ -11,12 +11,12 @@ import (
 func TestFDB_RecordInStructArray(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_recin")
-	mustExec(t, setup, ctx, "CREATE DATABASE /testdb_recin")
+	setup := openTestDB(t, "/FRL/testdb_recin")
+	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_recin")
 	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE recin create type as struct fruit_type(name string, color string) "+
 		"create table array_table(id bigint, fruit_records fruit_type array, primary key(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /testdb_recin/s WITH TEMPLATE recin")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///TESTDB_RECIN?cluster_file=%s&schema=S", clusterFilePath))
+	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_recin/s WITH TEMPLATE recin")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RECIN?cluster_file=%s&schema=S", clusterFilePath))
 	if err != nil {
 		t.Fatal(err)
 	}

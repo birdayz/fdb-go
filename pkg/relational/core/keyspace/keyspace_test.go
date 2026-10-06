@@ -19,7 +19,7 @@ func TestSchemaSubspace_EmptyPath(t *testing.T) {
 func TestSchemaSubspace_EmptySchema(t *testing.T) {
 	t.Parallel()
 	ks := keyspace.New(subspace.Sub([]byte("test")))
-	_, err := ks.SchemaSubspace("/db", "")
+	_, err := ks.SchemaSubspace("/FRL/db", "")
 	if err == nil {
 		t.Fatal("expected error for empty schemaName, got nil")
 	}
@@ -28,7 +28,7 @@ func TestSchemaSubspace_EmptySchema(t *testing.T) {
 func TestSchemaSubspace_Valid(t *testing.T) {
 	t.Parallel()
 	ks := keyspace.New(subspace.Sub([]byte("test")))
-	ss, err := ks.SchemaSubspace("/mydb", "myschema")
+	ss, err := ks.SchemaSubspace("/FRL/mydb", "myschema")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestCatalogSubspace_Distinct(t *testing.T) {
 	root := subspace.Sub([]byte("root"))
 	ks := keyspace.New(root)
 	catSS := ks.CatalogSubspace()
-	schemaSS, _ := ks.SchemaSubspace("/db", "s1")
+	schemaSS, _ := ks.SchemaSubspace("/FRL/db", "s1")
 	if string(catSS.Bytes()) == string(schemaSS.Bytes()) {
 		t.Error("catalog and schema subspaces must be distinct")
 	}

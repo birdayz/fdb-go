@@ -20,12 +20,12 @@ func TestFDB_OrderBySubqueryExtension(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_obsubx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_obsubx")
+	setup := openTestDB(t, "/FRL/testdb_obsubx")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_obsubx")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE obsubx CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_obsubx/s WITH TEMPLATE obsubx")
-	dsn := fmt.Sprintf("fdbsql:///TESTDB_OBSUBX?cluster_file=%s&schema=S", clusterFilePath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_obsubx/s WITH TEMPLATE obsubx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OBSUBX?cluster_file=%s&schema=S", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
