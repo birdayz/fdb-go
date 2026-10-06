@@ -274,7 +274,15 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   and D3/D4 (conditional chains on progress) were already in place.
   Still open: D5's re-arm conversion (Go's group-wide `lastRearmTick` re-arm
   to Java's per-expression forced exploration), the `outerJoinCount` placement
-  review, and F-8. The large join is not cured by D2: a 6-table FK chain still
+  review, and F-8. D5 measured and reverted (2026-10-06): forcing only the
+  members past the last round's count, with a re-arm no longer re-queuing
+  every rule, moved no corpus plan but RAISED tasks (4-table chain 4500→4818,
+  5-table 20557→21836) and broke `TestUnorderedUnionFetchSchedulingRetainsFutureFetchLeg`
+  (the union's fetch lift is lost) and the member-invalidation pins of
+  `rule_error_propagation_test.go`. Go's re-arm also stands in for a CHILD's
+  membership change (a parent rule over a member whose child gained a
+  member must re-fire), which Java gets from bottom-up task order, not from
+  forcing. The conversion needs that ordering first. The large join is not cured by D2: a 6-table FK chain still
   hits the 150k task cap (5 tables: 20.5k tasks).
 - [ ] Reconcile query-block acceptance with the current translator: top-level
   Sort(Select), ORDER BY resolution against projected Values, DISTINCT ordering,
