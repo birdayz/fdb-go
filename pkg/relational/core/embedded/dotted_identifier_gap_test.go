@@ -40,9 +40,14 @@ func TestDottedIdentifierGapsArePinned(t *testing.T) {
 			"",
 			false,
 		},
+		// Was a GAP (42703): the GROUP BY check peeled the alias T off the
+		// rendered T.FOO.TABLEA.A2 and then asked only whether FOO is a field.
 		{
-			"GAP: the aliased form", dotted,
-			`SELECT t."foo.tableA.A2", SUM(t."foo.tableA.A1") FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2"`, nil, api.ErrCodeUndefinedColumn, false,
+			"the aliased form", dotted,
+			`SELECT t."foo.tableA.A2", SUM(t."foo.tableA.A1") FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2"`,
+			[]string{"StreamingAgg"},
+			"",
+			false,
 		},
 		{
 			"a HAVING over the dotted aggregate", dotted,

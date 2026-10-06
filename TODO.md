@@ -428,10 +428,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   The 25-value and 5 x 5 rows are declared `DIFF`, because Java's IN-union
   fails and Go's in-join answers. They leave `wsfOpenUntil` (full lane, not
   run).
-- [ ] RANK-index match-candidate gap and the aliased dotted GROUP BY gap
-  (`t."foo.tableA.A2"` is 42703, `embedded/dotted_identifier_gap_test.go`);
-  verify target reach first. The dotted primary-key ORDER BY gap is closed (the
-  escaped-column item below).
+- [ ] RANK-index match-candidate gap; verify target reach first. Both dotted
+  identifier gaps of `embedded/dotted_identifier_gap_test.go` are closed: the
+  primary-key ORDER BY (the escaped-column item below) and the aliased GROUP BY
+  (`t."foo.tableA.A2"` was 42703: the GROUP BY check peeled the alias and asked
+  only whether the root segment is a field; `dotted_column_group_by.yaml`).
 - [x] Escaped COLUMN names (`"c$1"`, stored `c__1`) plan as their unescaped
   twins. Key expressions carry stored names and the planner's row layouts
   decoded ones (`FieldNameForProtoField`), so names are decoded once where

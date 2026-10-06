@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=401 queries=3094 dml=179 non_query=129 plan_errors=324 unexpected_errors=4
+# files=402 queries=3098 dml=179 non_query=129 plan_errors=325 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -6490,6 +6490,31 @@ sql:   SELECT id, n FROM t ORDER BY id
 plan:  Map(Scan(T), {ID: _current.ID#0, N: _current.N#1})
 shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
+=== dotted_column_group_by.yaml#0
+sql:   SELECT t."foo.tableA.A2", SUM(t."foo.tableA.A1") FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2"
+plan:  Map(StreamingAgg(keys=[_current.foo.tableA.A2#1], InMemorySort([_current.foo.tableA.A2#1 ASC], Scan(foo.tableA))), {foo.tableA.A2: _current.foo.tableA.A2#0, _1: _current.SUM(foo.tableA.A1)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryScanPlan
+=== dotted_column_group_by.yaml#1
+sql:   SELECT t."foo.tableA.A2" AS k, MAX(t."foo.tableA.A3") FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2" HAVING MAX(t."foo.tableA.A3") > 150
+plan:  Map(PredicatesFilter(StreamingAgg(keys=[_current.foo.tableA.A2#1], InMemorySort([_current.foo.tableA.A2#1 ASC], Scan(foo.tableA))), [1 preds]), {K: _current.foo.tableA.A2#0, _1: _current.MAX(foo.tableA.A3)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryStreamingAggregationPlan
+shape:       RecordQueryInMemorySortPlan
+shape:         RecordQueryScanPlan
+=== dotted_column_group_by.yaml#2
+sql:   SELECT "foo.tableA.A2", COUNT(*) FROM "foo.tableA" GROUP BY "foo.tableA.A2"
+plan:  Map(StreamingAgg(keys=[_current.foo.tableA.A2#1], InMemorySort([_current.foo.tableA.A2#1 ASC], Scan(foo.tableA))), {foo.tableA.A2: _current.foo.tableA.A2#0, _1: _current.COUNT(*)#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryScanPlan
+=== dotted_column_group_by.yaml#3 expect-error=42803
+sql:   SELECT t."foo.tableA.A3" FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2"
+plan:  <PLAN-ERROR: 42803: column "T.foo.tableA.A3" must appear in the GROUP BY clause or be used in an aggregate function>
 === e2e_ecommerce.yaml#0
 sql:   SELECT c.name, o.total FROM customers c, orders o WHERE o.customer_id = c.id ORDER BY o.total
 plan:  InMemorySort([_current.TOTAL#1 ASC], FlatMap(outer=Scan(ORDERS), inner=Scan(CUSTOMERS, [=])))

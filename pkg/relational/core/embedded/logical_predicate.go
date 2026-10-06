@@ -5422,6 +5422,12 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 		// column R of source A, and only R is a name tableFields can answer.
 		if head, tail, dotted := strings.Cut(rest, "."); dotted && sourceNames[head] {
 			rest = tail
+			// The rest may be ONE column whose name holds dots: `t."foo.a"`
+			// renders T.FOO.A, and FOO.A is the field (a quoted dotted
+			// identifier), not a descent from FOO.
+			if tableFields[rest] {
+				return true
+			}
 		}
 		root, _, dotted := strings.Cut(rest, ".")
 		return dotted && tableFields[root]

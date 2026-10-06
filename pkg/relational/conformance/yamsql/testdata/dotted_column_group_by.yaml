@@ -1,0 +1,41 @@
+# dotted_column_group_by.yaml
+#
+# A COLUMN WHOSE QUOTED NAME HOLDS DOTS GROUPS UNDER A TABLE ALIAS, as Java's
+# valid-identifiers.yamsql does.
+#
+#   SELECT t."foo.tableA.A2", SUM(t."foo.tableA.A1") FROM "foo.tableA" AS t
+#   GROUP BY t."foo.tableA.A2"
+#
+# was 42703 `column "T.foo.tableA.A2" does not exist`: the GROUP BY check sees
+# the rendered T.FOO.TABLEA.A2, peels the source alias T, and then asked only
+# whether the ROOT segment FOO is a field -- the descent reading of `t.r.v`.
+# The remaining name is one column whose name holds dots; it is now checked
+# whole before the descent reading.
+name: dotted_column_group_by
+schema_template: |
+  CREATE TABLE "foo.tableA" ("foo.tableA.A1" BIGINT, "foo.tableA.A2" BIGINT, "foo.tableA.A3" BIGINT, PRIMARY KEY ("foo.tableA.A1"))
+setup:
+  - INSERT INTO "foo.tableA" VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300)
+tests:
+  - query: SELECT t."foo.tableA.A2", SUM(t."foo.tableA.A1") FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2"
+    unordered: true
+    rows:
+      - [10, 3]
+      - [20, 3]
+
+  - query: SELECT t."foo.tableA.A2" AS k, MAX(t."foo.tableA.A3") FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2" HAVING MAX(t."foo.tableA.A3") > 150
+    unordered: true
+    rows:
+      - [10, 200]
+      - [20, 300]
+
+  # The unaliased control, which planned before.
+  - query: SELECT "foo.tableA.A2", COUNT(*) FROM "foo.tableA" GROUP BY "foo.tableA.A2"
+    unordered: true
+    rows:
+      - [10, 2]
+      - [20, 1]
+
+  # A column that is not grouped is still refused under the alias.
+  - query: SELECT t."foo.tableA.A3" FROM "foo.tableA" AS t GROUP BY t."foo.tableA.A2"
+    error_code: "42803"
