@@ -736,8 +736,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   W = B under suite load) and the d = 768/2048 acceptance fixtures.
   Primary-preferred cleanup and underreplication deltas are done, declared (h)
   (DIVERGENCES "GuardiANN keeps primaries and underreplication counts exact",
-  `guardiann_counts_test.go`, mutation-checked). Open: declared (d) (no inline
-  task for a delete whose head task a Go consumer refuses).
+  `guardiann_counts_test.go`, mutation-checked). Declared (d) is done:
+  `consumerOutcome` (CONSUMED / RUNS / REFUSED / REFUSED_UNLESS_ALL_NK) over
+  each kind's prologue, and an inline delete skips a refused head task
+  (DIVERGENCES "GuardiANN inline deletes skip a head task Go would refuse",
+  `guardiann_consumer_outcome_test.go`, mutation-checked). Not ported from
+  the design's (d) fixture list: the JVM-row byte comparisons (bounce
+  follow-up ids, bits-9 quantizer refusal, which Go does not raise) and the
+  1020 race fixtures.
 - [ ] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
   covering/rank results, search-free continuation replay, operation-local caches,
   partition locks, cosine zero/clamp, sample-UUID closure, option catalog/identity.

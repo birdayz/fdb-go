@@ -425,8 +425,17 @@ func (g *guardiann) delete(tx fdb.WritableTransaction, pk tuple.Tuple, vector gV
 		return err
 	}
 	if maintainInTransaction {
-		if _, err := g.executeDeferredTasks(tx, 1, time.Time{}); err != nil {
+		// Declared (d): no inline task when a Go consumer would refuse the
+		// head task, decided at snapshot so the skip adds no read conflict; a
+		// delete that does not skip re-reads the head serializably, as Java's.
+		skip, err := g.headTaskRefused(tx)
+		if err != nil {
 			return err
+		}
+		if !skip {
+			if _, err := g.executeDeferredTasks(tx, 1, time.Time{}); err != nil {
+				return err
+			}
 		}
 	}
 	g, err = g.withAccessInfo(info)

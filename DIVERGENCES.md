@@ -2833,6 +2833,22 @@ In each case below Go matches the invariant, not Java's drift. RFC-257 WS-D decl
   with a later replica of the same vector, so a repartitioning can lose the primary. Go keeps the
   primary in either encounter order.
 
+## GuardiANN inline deletes skip a head task Go would refuse
+
+Java's inline delete runs the partition's head task first and fails whenever that task throws, so
+one bad task blocks every inline delete of the partition. Go decides first, at snapshot isolation,
+whether a Go consumer would refuse the head task (`consumerOutcome`, which walks the task kind's
+prologue in Java's statement order: the no-op exits, the false alarm, the neighbour fetch and its
+declared (c) refusals, forEach's parallelism, and for a bounce the dependency its own RNG picks). If
+so, the delete runs no task and succeeds. Otherwise it runs the task exactly as Java does.
+
+- The skipped task stays queued and counted; the next drain meets the refusal.
+- A task the KMeans knobs would refuse only if some candidate has at least k vectors is skipped
+  conservatively; the prologue cannot know the cleaned populations.
+- A skipping delete adds no read conflict on the queue head (Java's serializable head read does).
+
+RFC-257 WS-D declared (d); pinned by "GuardiANN inline delete and the head task's consumer outcome".
+
 ## GuardiANN refuses inserts no search can find
 
 With `guardiannInsertMaxCandidateClusters` below 1 Java writes an inserted vector's identity and no
