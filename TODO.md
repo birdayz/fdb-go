@@ -561,7 +561,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     in-memory-sort` (DIVERGENCES.md "an IN ordered by a key no probe
     provides"): Java's only plan for them is the ordered scan, because it has
     no in-memory sort. The 1M stress comparison the design requires with
-    F-7c has NOT run (stress lane; needs the owner's go-ahead).
+    F-7c ran on 2026-10-06 (section 2's last item): equal rows, no regression.
   - Follow-ups closed or re-diagnosed (2026-10-06):
     - `w8_no_predicate` was no rank question: a bare `SELECT * FROM T1`
       reached the planner as `Sort(Scan)`, with no Select for the data-access
@@ -696,8 +696,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   bijection by the aliases' result-value/predicate components (3.76M
   node-equal pairs, 3.73M negative; the cost is the pair count, ~10 us each,
   ~40% GC).
-- [ ] Re-measure planner/executor stress against the actual merge-base with
+- [x] Re-measure planner/executor stress against the actual merge-base with
   explicit SHAs and equal row populations; resolve regressions, not just timeouts.
+  2026-10-06, `c116de63b` against the recorded merge-base `e48f5b49` (2 samples
+  each, the baseline's command: `TestFDB_Stress_1M$`, `--nocache_test_results`).
+  Both samples pass (167.5 s, 167.9 s); every one of the 22 queries returns the
+  merge-base's row count; median ratio cur/base 0.25-1.29, the largest
+  increases 2-3 ms absolute on single-digit-ms lookups (needle, ORDER BY PK +
+  index filter), within run noise. Faster: GROUP BY customer HAVING 641 -> 209
+  ms, ORDER BY PK (full) 5.8 -> 4.3 s, full scan filter 831 -> 590 ms. Load
+  average 41.9 falling to 3.6 across the runs (the baseline's was 5.6-5.8).
 
 ## 3. WS-D — vector engines and maintenance
 
@@ -956,9 +964,9 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   matches), rowdiff shared planning (held by reference, released by the last
   holder, pinned by `sweep_helper_test.go`), private parser ATNs per prediction
   lease (removes ATN lock sharing; no measured speed gain).
-- [ ] Run `just test-full` once end to end. Not yet run: `fdb-diff-oracle_test`
-  needs the one-time FDB C++ build, and the manual targets
-  (`million_record_test`, `bench_test`, `stress_test`, `bindingtester_test`) have
-  never run under this recipe.
+- [x] Run `just test-full` once end to end. 2026-10-06 at `a15d1ec70`, 111
+  targets (manual ones included): 109 pass, 2 failed and were fixed in
+  `c116de63b` (a typed NULL CASE branch lost its type in result metadata;
+  stale CQ-74 oracle pins), both re-run green.
 - [ ] Split `sqldriver_test` (1748 tests, ~7.5 min, 77% of its time in ~40
   sweep/probe tests) so its cheap regression pins return to the fast lane.
