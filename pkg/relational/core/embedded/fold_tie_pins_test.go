@@ -119,6 +119,23 @@ func TestFoldTiePins_DecidingRung(t *testing.T) {
 			"SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NULL ORDER BY id",
 			filterT, "FALSE", "walk-time",
 		},
+		// The design's deduplicated variants of X = `COALESCE(1 / 0, 5) IS NULL`:
+		// beside a primary-key probe the annulled conjunction keeps only FALSE.
+		{
+			"dedup variant id = 5 AND X AND X",
+			"SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL AND COALESCE(1 / 0, 5) IS NULL",
+			filterT, "FALSE", "rewriting-conjuncts",
+		},
+		{
+			"dedup variant id = 5 AND TRUE AND X",
+			"SELECT id FROM T WHERE id = 5 AND TRUE AND COALESCE(1 / 0, 5) IS NULL",
+			filterT, "FALSE", "rewriting-conjuncts",
+		},
+		{
+			"dedup variant X AND X",
+			"SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NULL AND COALESCE(1 / 0, 5) IS NULL",
+			filterT, "FALSE", "rewriting-conjuncts",
+		},
 	}
 	for _, schema := range []struct{ name, ddl string }{{"v5", v5}, {"v4", v4}} {
 		for _, r := range rows {
@@ -128,10 +145,12 @@ func TestFoldTiePins_DecidingRung(t *testing.T) {
 					t.Fatalf("%s [%s] plan %d: %v", r.oracle, schema.name, i, err)
 				}
 				if got := plan.Explain(); got != r.plan {
-					t.Fatalf("%s [%s] plan %d (%s rung):\n got %s\nwant %s", r.oracle, schema.name, i, r.rung, got, r.plan)
+					t.Errorf("%s [%s] plan %d (%s rung):\n got %s\nwant %s", r.oracle, schema.name, i, r.rung, got, r.plan)
+					break
 				}
 				if got := survivingFilterPredicates(plan); got != r.kept {
-					t.Fatalf("%s [%s] plan %d (%s rung) kept %q, want %q", r.oracle, schema.name, i, r.rung, got, r.kept)
+					t.Errorf("%s [%s] plan %d (%s rung) kept %q, want %q", r.oracle, schema.name, i, r.rung, got, r.kept)
+					break
 				}
 			}
 		}

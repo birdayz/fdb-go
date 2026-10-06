@@ -224,6 +224,19 @@ Never mark a whole workstream complete because one of its subitems passed.
     DEFAULT-set simplify of result values at pull-up (Expression.java:
     243-245). The walk-time folds stay until that pull-up simplify is
     ported.
+  - (j) prune scenarios: `fold_prune_regime.yaml` (round 8: T with T_N) and
+    `fold_prune_unique_regime.yaml` (round 9: UNIQUE T_UN, the union leg)
+    carry every round-8/9 fold row at Java's measured answer: literal
+    annulments 22012 (`1 = 2` is no effective constant), the IN-list row
+    22012 as declared, reductions, type annulments, type reductions, the tie
+    folds and the deduplicated variants of `COALESCE(1 / 0, 5) IS NULL`
+    (Go keeps the duplicates; the fold wins on the count, added to the tie
+    pins). Plan-only difference: Java scans T_N `<,>` under `FILTER false`,
+    Go scans T.
+  - Still open in (j): the negative-control unit test (REWRITING keeps the
+    fold, PLANNING alone would prefer the unfolded probe); the simplifier
+    unit tests per head class and set; the EffectiveConstant shape table;
+    the NOT FALSE head fixpoint test; `rejectsNull` re-derivation.
   Done: LOG_QUERY (statement and connection) sets `PlanGenerationInfo.LogQuery`
   (`TestPlanLogging_LogQueryFlag`). Literal decoding and the decorated-literal
   refusals were already implemented and now have a fast-lane pin

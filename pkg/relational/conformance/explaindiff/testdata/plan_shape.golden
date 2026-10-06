@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=402 queries=3098 dml=179 non_query=129 plan_errors=325 unexpected_errors=4
+# files=404 queries=3119 dml=179 non_query=129 plan_errors=325 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -7689,6 +7689,134 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
+=== fold_prune_regime.yaml#0 expect-error=22012
+sql:   SELECT id FROM T WHERE id = 5 AND 1 / 0 = 1 AND 1 = 2
+plan:  Map(PredicatesFilter(Scan(T, [=]), [2 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#1 expect-error=22012
+sql:   SELECT id FROM T WHERE id IN (1, 2) AND 1 / 0 = 1 AND 1 = 2
+plan:  InJoin(Map(PredicatesFilter(Scan(T, [=]), [2 preds]), {ID: _current.ID#0}), binding)
+shape: RecordQueryInJoinPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== fold_prune_regime.yaml#2 expect-error=22012
+sql:   SELECT id FROM T WHERE n > 0 AND 1 / 0 = 1 AND 1 = 2
+plan:  Map(PredicatesFilter(IndexScan(T_N, [<>] COVERING), [2 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryCoveringIndexPlan
+=== fold_prune_regime.yaml#3 expect-error=22012
+sql:   SELECT id FROM T WHERE n = 5 AND 1 / 0 = 1 AND 1 = 2
+plan:  Map(PredicatesFilter(IndexScan(T_N, [=] COVERING), [2 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryCoveringIndexPlan
+=== fold_prune_regime.yaml#4 expect-error=22012
+sql:   SELECT id FROM T WHERE (1 / 0 = 1 OR 1 = 2) AND 1 = 2
+plan:  Map(PredicatesFilter(Scan(T), [2 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#5
+sql:   SELECT id FROM T WHERE id = 5 AND (1 = 1 OR 1 / 0 = 1)
+plan:  Map(PredicatesFilter(Scan(T, [=]), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#6
+sql:   SELECT id FROM T WHERE NOT (n > 3) ORDER BY id
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#7
+sql:   SELECT id FROM T WHERE n = 5 OR n = 5
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#8
+sql:   SELECT id FROM T WHERE id = 5 AND NOT (n > 3)
+plan:  Map(PredicatesFilter(Scan(T, [=]), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#9
+sql:   SELECT id FROM T WHERE n = 5 AND NOT (id > 3)
+plan:  Map(PredicatesFilter(IndexScan(T_N, [=] COVERING), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryCoveringIndexPlan
+=== fold_prune_regime.yaml#10
+sql:   SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#11
+sql:   SELECT id FROM T WHERE id IN (1, 2) AND COALESCE(1 / 0, 5) IS NULL
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#12
+sql:   SELECT id FROM T WHERE n > 0 AND COALESCE(1 / 0, 5) IS NULL
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#13
+sql:   SELECT id FROM T WHERE n = 5 AND COALESCE(1 / 0, 5) IS NULL
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#14
+sql:   SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL AND COALESCE(1 / 0, 5) IS NULL
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#15
+sql:   SELECT id FROM T WHERE id = 5 AND TRUE AND COALESCE(1 / 0, 5) IS NULL
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#16
+sql:   SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NULL AND COALESCE(1 / 0, 5) IS NULL
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_regime.yaml#17
+sql:   SELECT id FROM T WHERE id = 5 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL
+plan:  Map(Scan(T, [=]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryScanPlan
+=== fold_prune_regime.yaml#18
+sql:   SELECT id FROM T WHERE n = 5 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL
+plan:  Map(IndexScan(T_N, [=] COVERING), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryCoveringIndexPlan
+=== fold_prune_unique_regime.yaml#0
+sql:   SELECT id FROM T WHERE n = 5 AND COALESCE(1 / 0, 5) IS NULL
+plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
+shape: RecordQueryMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== fold_prune_unique_regime.yaml#1
+sql:   SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL UNION ALL SELECT id FROM T WHERE id = 1
+plan:  UnorderedUnion(Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0}), Map(Scan(T, [=]), {ID: _current.ID#0}))
+shape: RecordQueryUnorderedUnionPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:   RecordQueryMapPlan
+shape:     RecordQueryScanPlan
 === function_in_predicate.yaml#0
 sql:   SELECT id FROM t WHERE UPPER(name) = 'BOB'
 plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})

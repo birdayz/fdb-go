@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**402 scenarios · 3406 query/assertion cases** across 18 feature areas — 2991 supported, 106 unsupported-feature pins, 309 error-path pins.
+**404 scenarios · 3427 query/assertion cases** across 18 feature areas — 3007 supported, 106 unsupported-feature pins, 314 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 45 | 460 | 401 | 9 | 50 |
-| **Total** | **402** | **3406** | **2991** | **106** | **309** |
+| Other | 47 | 481 | 417 | 9 | 55 |
+| **Total** | **404** | **3427** | **3007** | **106** | **314** |
 
 ## Aggregates & GROUP BY
 
@@ -507,6 +507,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `empty_result_edge_cases_java` | 11 | 11 | 0 | 0 | Empty result handling in various |
 | `empty_table_operations` | 9 | 9 | 0 | 0 | Operations on empty tables |
 | `float_column` | 13 | 10 | 0 | 3 | FLOAT (32-bit) column type. |
+| `fold_prune_regime` | 19 | 14 | 0 | 5 | who decides a fold beside an access path (WS-E 5.4(c)/(j)) |
+| `fold_prune_unique_regime` | 2 | 2 | 0 | 0 | type annulments beside a UNIQUE index and in a union leg |
 | `in_over_primary_scan_sarg` | 17 | 17 | 0 | 0 | An IN over a PRIMARY-KEY prefix, ordered by that key: `WHERE pk IN (...) |
 | `in_plan_winner_stability` | 10 | 10 | 0 | 0 | Exercises the cost model's IN-plan rung (criterion #6) at the SQL level, on |
 | `information_schema` | 5 | 4 | 0 | 1 | INFORMATION_SCHEMA.* system-table queries. |
