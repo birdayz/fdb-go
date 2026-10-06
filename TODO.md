@@ -428,7 +428,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   The 25-value and 5 x 5 rows are declared `DIFF`, because Java's IN-union
   fails and Go's in-join answers. They leave `wsfOpenUntil` (full lane, not
   run).
-- [ ] RANK-index match-candidate gap; verify target reach first. Both dotted
+- [x] RANK-index match-candidate gap: verified, no reach. Java plans a RANK
+  index only for a record-layer `RecordQuery` with a rank comparison
+  (`QueryRecordFunctionWithComparison` builds the `RankValue` that
+  `WindowedIndexExpansionVisitor`'s candidate matches); fdb-relational SQL
+  can neither declare a RANK index nor build a `RankValue`, and Go has no
+  declarative RecordQuery API (its record layer exposes BY_RANK scans and the
+  `rank` record function directly). The candidate is ported with a RecordQuery
+  API, if one is ever ported: it then also needs Java's windowed expansion
+  (Go's expands the columns as a value index) and a BY_RANK scan type on
+  `RecordQueryIndexPlan`, which today always scans BY_VALUE. Both dotted
   identifier gaps of `embedded/dotted_identifier_gap_test.go` are closed: the
   primary-key ORDER BY (the escaped-column item below) and the aliased GROUP BY
   (`t."foo.tableA.A2"` was 42703: the GROUP BY check peeled the alias and asked
