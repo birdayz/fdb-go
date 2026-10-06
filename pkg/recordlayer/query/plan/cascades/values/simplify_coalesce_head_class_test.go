@@ -64,6 +64,21 @@ func TestSimplifyCoalesce_HeadClassesPerSet(t *testing.T) {
 	}
 }
 
+// TestPatternForLikeValue_NeverEvaluated pins WS-E design 5.4(i): no value set
+// evaluates a LIKE pattern, not even the sparse-index comparand evaluation, so a
+// bad escape is found only when a row evaluates it (as in Java, section 1.5).
+func TestPatternForLikeValue_NeverEvaluated(t *testing.T) {
+	t.Parallel()
+	pattern := NewPatternForLikeValue(LiteralValue("a%"), LiteralValue(nil))
+	for name, simplify := range map[string]func(Value) Value{
+		"default": SimplifyValue, "predicate": SimplifyPredicateValue, "comparand": EvaluateConstantComparand,
+	} {
+		if got := simplify(pattern); got != Value(pattern) {
+			t.Errorf("%s set rewrote the LIKE pattern to %s", name, ExplainValue(got))
+		}
+	}
+}
+
 // effectiveBool renders a BOOLEAN literal result ("true", "false", "null"), or
 // "" for anything else.
 func effectiveBool(v Value) string {

@@ -253,6 +253,18 @@ Never mark a whole workstream complete because one of its subitems passed.
   - (h): DIVERGENCES.md "Constant-fold defects and fold ties" records the
     target's VerifyException (COALESCE under AND/NOT, beside an IN list) and
     CASE-branch defects with Go's answers, and the schema-dependent hash ties.
+  - (i): no set evaluates a LIKE pattern (`TestPatternForLikeValue_NeverEvaluated`).
+  - (b) census: `//pkg/recordlayer/query/plan/constfoldcensus` parses every
+    non-test Go file under pkg/ (1113; the target follows MODULE.bazel's
+    runfiles symlink to the real tree and is tagged `external`, never
+    cached). It counts every reference to the simplification and
+    constant-evaluation entry points, plus every `Evaluate(nil)` /
+    `Eval(nil)`, keyed by file, function and callee. All 41 keys are
+    assigned a reason (simplify, comparand, analysis, IN, LIKE, coercion,
+    walk-time NULL, Go-only, harness), with a vacuity floor, a positive
+    control and a matcher arm test. Found by it: the CAST arm evaluated
+    `tryCastConstant` before checking the evaluate mode (result discarded);
+    it now checks first.
   Done: LOG_QUERY (statement and connection) sets `PlanGenerationInfo.LogQuery`
   (`TestPlanLogging_LogQueryFlag`). Literal decoding and the decorated-literal
   refusals were already implemented and now have a fast-lane pin

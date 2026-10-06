@@ -183,8 +183,8 @@ func simplifyChildrenWith(v Value, mode simplifyMode) Value {
 		return x.WithOperands(l, r)
 	case *CastValue:
 		c := simplifyValue(x.Child, mode)
-		if cv, ok := c.(*ConstantValue); ok {
-			if folded := tryCastConstant(cv, x.Target); folded != nil && mode.evaluate {
+		if cv, ok := c.(*ConstantValue); ok && mode.evaluate {
+			if folded := tryCastConstant(cv, x.Target); folded != nil {
 				return folded
 			}
 		}
