@@ -290,6 +290,11 @@ func (g *guardiann) reassign(tx fdb.WritableTransaction, t *guardiannTask, targe
 	random := newSplittableRandomForUUID(t.id)
 	numNeighboring := g.config.reassignNumNeighboringClusters
 	if len(t.nearest) == 0 {
+		// Java's phase-1 re-enqueue (ReassignTask.java:243-251, :322-327).
+		if err := g.neighbourFetchRefusal("reassign", 1+numNeighboring, IndexOptionGuardiannReassignNumNeighboringClusters,
+			numNeighboring, g.config.reassignConcurrency, IndexOptionGuardiannReassignConcurrency); err != nil {
+			return err
+		}
 		nearest, err := g.findNearestClustersMetadata(tx, target, t.centroid, 1+numNeighboring)
 		if err != nil {
 			return err
@@ -303,6 +308,11 @@ func (g *guardiann) reassign(tx fdb.WritableTransaction, t *guardiannTask, targe
 		next.nearest = clusterRefsOf(nearest)
 		g.writeTask(tx, &next)
 		return nil
+	}
+	// fetchClusterMetadataForReferences at reassignConcurrency
+	// (ReassignTask.java:254-257).
+	if g.config.reassignConcurrency < 1 {
+		return parallelismError(g.config.reassignConcurrency)
 	}
 	nearest, err := g.fetchClusterMetadataForRefs(tx, t.nearest)
 	if err != nil {
@@ -444,6 +454,11 @@ func clusterRefsOf(cs []guardiannClusterWithDistance) []guardiannClusterRef {
 
 func (g *guardiann) collapse(tx fdb.WritableTransaction, t *guardiannTask, target guardiannClusterMetadata) error {
 	random := newSplittableRandomForUUID(t.id)
+	// fetchCoreClusters at collapseConcurrency (CollapseTask.java:182), past
+	// the task's no-op exits.
+	if g.config.collapseConcurrency < 1 {
+		return parallelismError(g.config.collapseConcurrency)
+	}
 	cluster, err := g.fetchCluster(tx, target.id, t.centroid)
 	if err != nil {
 		return err
@@ -531,6 +546,11 @@ func (g *guardiann) collapse(tx fdb.WritableTransaction, t *guardiannTask, targe
 // ---- BounceTask ----
 
 func (g *guardiann) runBounce(tx fdb.WritableTransaction, t *guardiannTask) error {
+	// The dependents' fetch at bounceConcurrency is the task's first
+	// statement (BounceTask.java:130).
+	if g.config.bounceConcurrency < 1 {
+		return parallelismError(g.config.bounceConcurrency)
+	}
 	random := newSplittableRandomForUUID(t.id)
 	var outstanding []*guardiannTask
 	for _, id := range t.dependents {

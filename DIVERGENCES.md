@@ -2751,6 +2751,23 @@ later insert of that key is a no-op until the record is deleted. Go checks the c
 rows and the identity UUID is not drawn from the operation RNG, so every successful insert
 writes Java's bytes. Pinned by "GuardiANN deferred hard cap".
 
+## GuardiANN refuses a maintenance task that would loop forever
+
+A split, merge or reassign task without precomputed neighbours fetches them (width
+`guardiannSplitNumNearestClusters`, `guardiannMergeNumNearestClusters`, or 1 +
+`guardiannReassignNumNeighboringClusters`, pipelined at `guardiannSplitMergeConcurrency` /
+`guardiannReassignConcurrency`) and writes itself back, at high priority, carrying them. Java stores
+"not fetched" and "fetched none" as the same empty list, so a width or pipeline below 1 writes the
+same task back forever and starves the work behind it (measured: `splitNumNearestClusters 0` grows
+one cluster to 30 primaries; `mergeNumNearestClusters 0` leaves empty clusters with work pending).
+Go raises a typed `VectorCapabilityError` at the point Java writes that task; it poisons the
+transaction like any task error, so the task stays queued. The neighbour counts are immutable, so
+such an index's splits (or merges, or reassigns) fail until it is rebuilt; the concurrencies are
+mutable and evolving them repairs it. Where Java instead throws (a concurrency below 1 handed to
+`MoreAsyncUtil.forEach`: a task with precomputed neighbours, collapse, bounce, delete), Go throws the
+same `IllegalArgumentException` message at the same statement. RFC-257 WS-D declared (c); pinned by
+"GuardiANN knob consumers".
+
 ## GuardiANN refuses inserts no search can find
 
 With `guardiannInsertMaxCandidateClusters` below 1 Java writes an inserted vector's identity and no

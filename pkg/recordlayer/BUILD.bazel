@@ -289,6 +289,7 @@ go_test(
         "guardiann_insert_admission_test.go",
         "guardiann_insert_cap_fdb_test.go",
         "guardiann_kmeans_test.go",
+        "guardiann_knob_consumers_test.go",
         "guardiann_negative_count_test.go",
         "guardiann_poison_fdb_test.go",
         "guardiann_vectors_test.go",

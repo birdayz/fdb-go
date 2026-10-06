@@ -27,11 +27,16 @@ func (g *guardiann) runSplitMerge(tx fdb.WritableTransaction, t *guardiannTask) 
 	}
 	split := m.numPrimary() > g.config.primaryClusterMax
 	random := newSplittableRandomForUUID(t.id)
-	num := g.config.mergeNumNearestClusters
+	num, numOption, operation := g.config.mergeNumNearestClusters, IndexOptionGuardiannMergeNumNearestClusters, "merge"
 	if split {
-		num = g.config.splitNumNearestClusters
+		num, numOption, operation = g.config.splitNumNearestClusters, IndexOptionGuardiannSplitNumNearestClusters, "split"
 	}
 	if len(t.nearest) == 0 {
+		// Java's phase-1 re-enqueue (SplitMergeTask.java:232-236/:435-437).
+		if err := g.neighbourFetchRefusal(operation, num, numOption, num,
+			g.config.splitMergeConcurrency, IndexOptionGuardiannSplitMergeConcurrency); err != nil {
+			return err
+		}
 		nearest, err := g.findNearestClustersMetadata(tx, *m, t.centroid, num)
 		if err != nil {
 			return err
@@ -45,6 +50,11 @@ func (g *guardiann) runSplitMerge(tx fdb.WritableTransaction, t *guardiannTask) 
 		next.nearest = clusterRefsOf(nearest)
 		g.writeTask(tx, &next)
 		return nil
+	}
+	// fetchClusterMetadataForReferences at splitMergeConcurrency
+	// (SplitMergeTask.java:239-240/:442-443).
+	if g.config.splitMergeConcurrency < 1 {
+		return parallelismError(g.config.splitMergeConcurrency)
 	}
 	nearest, err := g.fetchClusterMetadataForRefs(tx, t.nearest)
 	if err != nil {

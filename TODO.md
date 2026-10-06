@@ -712,9 +712,15 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   (`guardiann_negative_count_test.go`). Zero-candidate admission is done:
   `insertMaxCandidateClusters < 1` refuses the insert (engine and queue
   enqueue) with a poisoning `VectorCapabilityError`, declared (b)
-  (`guardiann_insert_admission_test.go`). Open: n<k/peel/unsplittable split
-  fallbacks, empty-core repair, primary-preferred cleanup, underreplication
-  deltas, and the knob-consumer capability errors / declared (c) livelocks.
+  (`guardiann_insert_admission_test.go`). Knob consumers are done: the
+  declared (c) livelocks (split/merge/reassign neighbour fetch of width or
+  pipeline below 1) raise `VectorCapabilityError` where Java writes the
+  empty-list task back; split-merge/reassign/collapse/bounce/delete
+  concurrency below 1 fails with forEach's IllegalArgumentException at Java's
+  statement (`guardiann_knob_consumers_test.go`). The KMeans knobs had prior
+  fixes. Open: n<k/peel/unsplittable split fallbacks, empty-core repair,
+  primary-preferred cleanup, underreplication deltas, declared (d) (no inline
+  task for a delete whose head task a Go consumer refuses).
 - [ ] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
   covering/rank results, search-free continuation replay, operation-local caches,
   partition locks, cosine zero/clamp, sample-UUID closure, option catalog/identity.

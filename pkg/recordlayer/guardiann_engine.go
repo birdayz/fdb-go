@@ -196,6 +196,7 @@ func (m *vectorIndexMaintainer) guardiannFor(prefix tuple.Tuple, listener guardi
 	g := newGuardiann(m.getSubspaceForPrefix(prefix), m.guardiannConfig, m.store.Env(), listener)
 	g.poison = m.poisonTask
 	g.timer = m.timer()
+	g.indexName = m.index.Name
 	return g
 }
 

@@ -435,13 +435,20 @@ func (g *guardiann) delete(tx fdb.WritableTransaction, pk tuple.Tuple, vector gV
 		return err
 	}
 	clusters := make([]guardiannClusterWithDistance, len(entries))
-	refs := make([]*guardiannVectorRef, len(entries))
 	for i, e := range entries {
 		m, err := g.requireClusterMetadata(tx, e.clusterID)
 		if err != nil {
 			return err
 		}
 		clusters[i] = guardiannClusterWithDistance{meta: m, centroid: e.vector, distance: e.distance}
+	}
+	// The candidates' references are fetched at deleteConcurrency
+	// (Delete.java:170-176), once their metadata is in, whatever their number.
+	if g.config.deleteConcurrency < 1 {
+		return parallelismError(g.config.deleteConcurrency)
+	}
+	refs := make([]*guardiannVectorRef, len(entries))
+	for i, e := range entries {
 		if refs[i], err = g.fetchVectorRef(tx, e.clusterID, pk); err != nil {
 			return err
 		}

@@ -46,6 +46,43 @@ type guardiann struct {
 	// timer counts the vector references read (Java's OnRead.onVectorRead);
 	// nil outside a record store.
 	timer *StoreTimer
+	// indexName names the index in capability errors; empty outside a
+	// record store.
+	indexName string
+}
+
+// parallelismError is MoreAsyncUtil.forEach's refusal of a parallelism below
+// 1 (MoreAsyncUtil.java:1294-1296), which a GuardiANN consumer of a
+// concurrency knob raises where Java calls forEach with it.
+func parallelismError(parallelism int) error {
+	return &IllegalArgumentError{Message: fmt.Sprintf("parallelism must be at least 1, got %d", parallelism)}
+}
+
+// neighbourFetchRefusal is RFC-257 WS-D declared (c). Where a split, merge or
+// reassign task without precomputed neighbours fetches them, Java pipelines a
+// fetch of width (the neighbour count) at the concurrency knob; a width or a
+// concurrency below 1 fetches nothing, and Java writes the task back with the
+// same empty list, forever (a livelock that also starves the normal-priority
+// queue behind it). Go raises a typed error at the point Java writes that
+// task. widthValue is the option's own value (for reassign the width is 1 plus
+// it).
+func (g *guardiann) neighbourFetchRefusal(operation string, width int, widthOption string, widthValue int,
+	concurrency int, concurrencyOption string,
+) error {
+	const reason = "fetches no neighbouring clusters, so the task would be written back unchanged forever"
+	switch {
+	case width < 1:
+		return &VectorCapabilityError{
+			IndexName: g.indexName, Engine: "GUARDIANN", Operation: operation,
+			Option: widthOption, Value: widthValue, Reason: reason,
+		}
+	case concurrency < 1:
+		return &VectorCapabilityError{
+			IndexName: g.indexName, Engine: "GUARDIANN", Operation: operation,
+			Option: concurrencyOption, Value: concurrency, Reason: reason,
+		}
+	}
+	return nil
 }
 
 func newGuardiann(ss subspace.Subspace, config guardiannConfig, env *dst.Env, listener guardiannListener) *guardiann {
