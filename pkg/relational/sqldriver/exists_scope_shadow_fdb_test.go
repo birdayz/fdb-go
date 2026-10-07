@@ -312,14 +312,10 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 		[]string{"Q$3=10", "Q$3=20", "Q$3=4"},
 		"")
 
-	// MULTI-SOURCE colliding inner — the FORWARD SENTINEL for mint-per-leg.
-	// The inner {OI, ST} re-declares the outer leg ST and the predicate
-	// references it; an unminted multi-source inner keeps its SQL leg names,
-	// so the join-level reinterpretation would answer per-outer-row (1 row)
-	// where Java's inner-shadow semantics answer 3 (live-verified) — the
-	// scope-ambiguity decline converts that silent-wrong to a loud 0A000.
-	// When mint-per-leg lands, this pin flips to the Java rows and the
-	// conformance gap closes.
+	// MULTI-SOURCE colliding inner: the inner {OI, ST} re-declares the
+	// outer leg ST and the predicate references it. Each subquery leg has its
+	// own binding, so the reference reads the inner ST, Java's inner shadow:
+	// 3 rows, as Java answers (conformance "ExistsInnerShadowJavaProbe").
 	wantDecline := func(name, q, wantSub string) {
 		t.Helper()
 		_, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
@@ -330,32 +326,28 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 			t.Fatalf("%s: decline = %v, want substring %q\n  sql: %s", name, perr, wantSub, q)
 		}
 	}
-	wantDecline("multisource_colliding_declines",
+	want("multisource_colliding",
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE ST."C" < OT."K")`,
-		"scope-ambiguous")
+		[]string{"K=50", "K=50", "K=50"},
+		"")
 
-	// The NESTED-BYPASS sentinel: a nested constant-true EXISTS must not
-	// disable the decline (the Case-1 branch used to return before the
-	// check, carrying the ambiguous ref out as the join predicate — one
-	// outer-dependent row where Java answers 3, live-verified). The check
-	// now runs on the full walked predicate BEFORE the nested branches.
-	wantDecline("multisource_colliding_nested_bypass",
+	// With a nested constant-true EXISTS beside it: still Java's 3 rows.
+	want("multisource_colliding_nested_bypass",
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE ST."C" < OT."K" AND EXISTS (SELECT 1 FROM MA WHERE MA."C" > 0))`,
-		"scope-ambiguous")
+		[]string{"K=50", "K=50", "K=50"},
+		"")
 
-	// Polarity harvest: the q5 NOT-EXISTS twin was ALSO silent-wrong
-	// pre-decline ([50,50] where Java's complement of the positive 3 rows
-	// is 0 rows, live-verified). Declines at plan time, before polarity
-	// can matter.
-	wantDecline("multisource_colliding_notexists",
+	// The NOT-EXISTS twin: the complement of the positive 3 rows, none.
+	want("multisource_colliding_notexists",
 		`SELECT OT."K" FROM ST, OT WHERE NOT EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE ST."C" < OT."K")`,
-		"scope-ambiguous")
+		nil,
+		"")
 
-	// Leg-position harvest: the FIRST-leg-collides variant was silent-wrong
-	// pre-decline too ([50] where Java answers 3, live-verified).
-	wantDecline("multisource_colliding_first_leg",
+	// The colliding leg first: Java's 3 rows.
+	want("multisource_colliding_first_leg",
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM ST, OT AS "OI" WHERE ST."C" < OT."K")`,
-		"scope-ambiguous")
+		[]string{"K=50", "K=50", "K=50"},
+		"")
 
 	// Minted-middle rows control — HONEST SCOPE: this shape's innermost is
 	// NON-correlated (`"MID"."C" < 100` references only local names), so it
@@ -401,37 +393,33 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
 		"outer-only conjunct")
 
-	// The colliding variant with an INT head. COALESCE(1, MA.C) used to fold
-	// and erase the colliding MA, and the shape reached the guard. Java folds
-	// no INT head (RFC-257 WS-E 5.4(d)), and Go no longer does either, so the
-	// shape declines on the ambiguity arm. Java live: {11,12}, through the
-	// inner shadow, recorded for the mint-per-leg flip.
+	// The colliding variant with an INT head. The inner MA reads its own
+	// binding; the shape declines on the anti-join arm (an outer-only
+	// conjunct under NOT EXISTS beside a nested EXISTS), as its
+	// non-colliding twin above does. Java answers {11,12}.
 	wantDecline("case1_notexists_colliding_foldable",
 		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA WHERE COALESCE(1, MA."C") = 1 AND OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
-		"scope-ambiguous")
+		"positive predicate consumption")
 
-	// The fold seam, e2e (the unit twin is TestBoundScopeAmbiguous): in a
-	// correlated EXISTS, a colliding ref that FOLDS away never survives into
-	// the join predicate, and the shape answers (OI.K = OT.K holds for the
-	// one OT row, so ∃ is true → 3 rows). Only a NULL or BOOLEAN-literal
-	// COALESCE head folds…
+	// A colliding ref under a BOOLEAN COALESCE head: 3 rows (OI.K = OT.K
+	// holds for the one OT row). Java fails this shape with a
+	// VerifyException; Go answers.
 	want("foldable_colliding_answers",
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(TRUE, ST."C" = 1) AND OI."K" = OT."K")`,
 		[]string{"K=50", "K=50", "K=50"},
 		"")
 
-	// …so an INT head keeps the colliding ref and declines (Java answers 3
-	// rows through the inner shadow; that is the mint-per-leg flip).
-	wantDecline("int_head_colliding_declines",
+	// An INT head keeps the colliding ref: Java's 3 rows.
+	want("int_head_colliding",
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(1, ST."C") = 1 AND OI."K" = OT."K")`,
-		"scope-ambiguous")
+		[]string{"K=50", "K=50", "K=50"},
+		"")
 
-	// …while a GENUINELY-READ colliding ref still declines (Java live
-	// answers 3 rows via inner-shadow — recorded for the mint-per-leg
-	// flip; the decline is the interim correct-or-loud).
-	wantDecline("nonfoldable_colliding_declines",
+	// A genuinely read colliding ref: Java's 3 rows.
+	want("nonfoldable_colliding",
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(ST."C", 1) < OT."K")`,
-		"scope-ambiguous")
+		[]string{"K=50", "K=50", "K=50"},
+		"")
 
 	// The POSITIVE-polarity Case-1 twin — the no-regression control for the
 	// anti-join guard: outer-routing the middle's outer-only conjunct is a

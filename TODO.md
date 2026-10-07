@@ -140,18 +140,19 @@ Never mark a whole workstream complete because one of its subitems passed.
     planner's simplification rule folds the same constants.
     - The sparse-index DDL path now folds its stored predicate itself, which
       keeps the enum and UUID refusal messages.
-    - The EXISTS bound-query site keeps its fold. Without it
-      `foldable_colliding_answers` (`COALESCE(TRUE, ST."C" = 1)` over a
-      shadowing inner ST) would decline as scope-ambiguous where Java
-      answers. It goes with the mint-per-leg inner-shadow fix.
+    - The EXISTS bound-query fold is gone too (2026-10-07), with the
+      scope-ambiguity decline it fed: a subquery's legs already have their
+      own bindings, so an inner source reusing an outer name reads the inner
+      one, Java's inner shadow. The seven declined rows answer Java's rows
+      (`ExistsInnerShadowJavaProbe`, mutation-checked by restoring the
+      guard). `case1_notexists_colliding_foldable` still declines, on the
+      anti-join arm; Java answers {11,12}.
   - (d): Java's COALESCE rule. Only a NULL head (NullValue, a nil constant)
     or a BOOLEAN literal head folds; an INT/STRING literal head stays, so
     `COALESCE(1, 1/0) = 1` in a WHERE raises 22012 as in Java.
     `simplification_regime.yaml` holds the 30 Java-measured rows. With an INT
-    head a colliding EXISTS reference no longer folds away, so
-    `case1_notexists_colliding_foldable` and `int_head_colliding_declines`
-    (sqldriver, full lane, not run) now decline as scope-ambiguous until the
-    mint-per-leg fix.
+    head a colliding EXISTS reference no longer folds away; it reads the
+    inner source (see (a)).
     - Known gap, part of (e): `NOT CAST(NULL AS BOOLEAN)` inside a predicate
       value is not folded. Go keeps `NOT x` as a predicate value, which the
       simplifier does not enter (`coalesce_not_cast_null_head_where` is
@@ -309,7 +310,6 @@ Never mark a whole workstream complete because one of its subitems passed.
   (`variadic_promotion.yaml`).
   Simplification regime (design 5.4): (a)-(j) implemented and pinned (the
   sub-bullets above). Remaining, each owned elsewhere:
-  - the EXISTS bound-query fold stays until the mint-per-leg inner-shadow fix;
   - the dense predicate-level map is WS-F's (Finding 6-followup);
   - the walk-time typed-NULL arithmetic collapse and the IS NULL fold over a
     NOT NULL constant are KEPT as Go extensions (DIVERGENCES "Constant-fold

@@ -208,6 +208,10 @@ func TestBoundOnFailureDoesNotPublish(t *testing.T) {
 	}
 }
 
+// An ordinary inner source that reuses an outer source's name is admitted:
+// the subquery's legs have their own bindings, so the inner reference reads
+// the inner source (Java's inner shadow). The UNNEST-frame boundary still
+// refuses the same names.
 func TestBoundAdmissionQuotedLexicalNames(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -218,11 +222,11 @@ func TestBoundAdmissionQuotedLexicalNames(t *testing.T) {
 	}{
 		{"quoted_outer", `"a"`, "A", "A", false, false, false},
 		{"quoted_inner", "A", `"a"`, "A", false, false, false},
-		{"identical_quoted", `"a"`, `"a"`, "A", false, true, true},
-		{"identical_unquoted", "a", "A", "A", false, true, true},
-		{"equivalent_quoted_upper", "A", `"A"`, "A", false, true, true},
+		{"identical_quoted", `"a"`, `"a"`, "A", false, false, true},
+		{"identical_unquoted", "a", "A", "A", false, false, true},
+		{"equivalent_quoted_upper", "A", `"A"`, "A", false, false, true},
 		{"private_parent", "A", "A", "PRIVATE_A", false, false, true},
-		{"dotless_i_runtime_uppercase", `"ı"`, `"ı"`, "I", false, true, true},
+		{"dotless_i_runtime_uppercase", `"ı"`, `"ı"`, "I", false, false, true},
 		{"kelvin_is_not_runtime_k", `"K"`, `"K"`, "K", false, false, true},
 		{"different_parent_cannot_supply_binding", "A", "A", "PRIVATE_A", true, false, true},
 	} {
@@ -274,10 +278,7 @@ func TestBoundAdmissionQuotedLexicalNames(t *testing.T) {
 					}
 					return
 				}
-				want := "correlated EXISTS: inner FROM source " + semantic.New(test.inner, false).Name() + " reuses an outer FROM name referenced by the subquery predicate (scope-ambiguous)"
-				if shadowing {
-					want = "EXISTS with a multi-source inner reusing an outer UNNEST-frame source name is not supported"
-				}
+				want := "EXISTS with a multi-source inner reusing an outer UNNEST-frame source name is not supported"
 				var unsupported *CorrelatedExistsError
 				if !errors.As(err, &unsupported) || !unsupported.Unsupported || unsupported.Message != want {
 					t.Fatalf("same-name admission changed: got %v, want %q", err, want)

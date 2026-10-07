@@ -38,7 +38,6 @@ var assignmentTable = []assigned{
 	{"pkg/recordlayer/query/plan/cascades/rule_query_predicate_simplification.go", "QueryPredicateSimplificationRule.OnMatch", "cascades.Simplify", 1, "simplify: Java's QueryPredicateSimplificationRule"},
 	{"pkg/recordlayer/query/plan/cascades/rule_predicate_to_logical_union.go", "newPredicateUnionLegs", "cascades.Simplify", 1, "simplify: the default predicate rules normalize a union leg's factor"},
 	{"pkg/relational/core/query/cascades_translator.go", "cascadesTranslator.foldKnownExists", "cascades.Simplify", 1, "Go-only: the translator's decided-EXISTS fold (TranslatorConstantPredicateRules)"},
-	{"pkg/relational/core/embedded/bound_query.go", "lowerBoundExists", "predicates.SimplifyPredicateValues", 1, "Go-only: the EXISTS bound-query fold, until the mint-per-leg fix (TODO 5.4(a))"},
 
 	{"pkg/recordlayer/query/plan/cascades/predicates/simplifier_predicate_values.go", "EvaluatePredicateComparands", "values.EvaluateConstantComparand", 1, "comparand: the sparse-index predicate's leaves"},
 	{"pkg/relational/core/query/ddl/generator_predicate.go", "generatePredicate", "predicates.EvaluatePredicateComparands", 1, "comparand: the sparse-index predicate stored by DDL"},

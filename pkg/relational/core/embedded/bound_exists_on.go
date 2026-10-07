@@ -61,36 +61,6 @@ func parentBindingNames(parent []semantic.ScopeSource) map[string]struct{} {
 	return names
 }
 
-func boundScopeAmbiguous(pred predicates.QueryPredicate, from logical.LogicalOperator, parent []semantic.ScopeSource) string {
-	sources := boundSourceNames(from)
-	if len(sources) < 2 || pred == nil {
-		return ""
-	}
-	refs := predicates.GetCorrelatedToOfPredicate(pred)
-	for _, source := range sources {
-		if _, read := refs[values.NamedCorrelationIdentifier(source.binding)]; !read {
-			continue
-		}
-		lexicalBinding := strings.ToUpper(source.lexical)
-		for _, outer := range parent {
-			// Lexical names are already SQL-normalized; quoted case remains
-			// significant. The same parent must also supply the runtime-name
-			// collision, so private bindings keep their existing exemption.
-			if !outer.NamedBy(semantic.FromNormalized(source.lexical)) {
-				continue
-			}
-			binding := outer.CorrelationName
-			if binding == "" {
-				binding = outer.Alias.Name()
-			}
-			if strings.ToUpper(binding) == lexicalBinding {
-				return source.lexical
-			}
-		}
-	}
-	return ""
-}
-
 // lowerBoundOn preserves ON placement and the pre-fold provenance. Identities
 // decide dependence; lexical collision admission remains its separate existing
 // contract, so allocating an ID never silently widens accepted SQL.
