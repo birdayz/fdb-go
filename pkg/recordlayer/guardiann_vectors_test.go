@@ -23,10 +23,7 @@ func TestGuardiannVectorCoordinates(t *testing.T) {
 	} {
 		cfg := defaultGuardiannConfig(3)
 		cfg.useRaBitQ, cfg.metric = true, tc.metric
-		c, err := newGuardiannVectorCodec(cfg, &guardiannAccessInfoValue{rotatorSeed: 42, negatedCentroid: []float64{-0.25, 0.5, -0.75}})
-		if err != nil {
-			t.Fatal(err)
-		}
+		c := newGuardiannVectorCodec(cfg, &guardiannAccessInfoValue{rotatorSeed: 42, negatedCentroid: []float64{-0.25, 0.5, -0.75}})
 		plain := vectorcodec.SerializeHalf([]float64{1, 2, 3})
 		v, err := c.decode(plain)
 		if err != nil {
@@ -57,10 +54,7 @@ func TestGuardiannVectorCoordinates(t *testing.T) {
 				t.Errorf("metric %d distance %.17g want %.17g: %v", tc.metric, got, tc.distance, err)
 			}
 		}
-		untrained, err := newGuardiannVectorCodec(cfg, &guardiannAccessInfoValue{rotatorSeed: -1})
-		if err != nil {
-			t.Fatal(err)
-		}
+		untrained := newGuardiannVectorCodec(cfg, &guardiannAccessInfoValue{rotatorSeed: -1})
 		v, err = untrained.decode(plain)
 		if err != nil {
 			t.Fatal(err)

@@ -181,7 +181,6 @@ var _ = Describe("FDBDatabaseRunner", func() {
 				SetMaxDelay(1 * time.Second)
 
 			attempts := 0
-			start := time.Now()
 			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
 				attempts++
 				if attempts < 3 {
@@ -189,13 +188,11 @@ var _ = Describe("FDBDatabaseRunner", func() {
 				}
 				return "done", nil
 			})
-			elapsed := time.Since(start)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(attempts).To(Equal(3))
-			// Two delay periods: 10ms (attempt 2) + 20ms (attempt 3) = ~30ms nominal.
-			// Jitter multiplier is 0.5x-1.5x, so minimum is ~15ms. Use 10ms as safe lower
-			// bound to avoid flakiness under load (jitter + scheduling jitter).
-			Expect(elapsed).To(BeNumerically(">", 10*time.Millisecond))
+			// No elapsed-time bound: Java's ExponentialDelay draws each delay
+			// uniformly from [0, current), so two delays may total ~0 ms. The
+			// delays themselves are pinned by TestAttemptLoop_RecordsRetryDelay.
 		})
 
 		It("gives up after max attempts", func() {

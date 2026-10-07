@@ -54,7 +54,7 @@ var _ = Describe("GuardiANN reference counts", func() {
 			m := lone(g, tx)
 			ref, err := g.fetchVectorRef(tx, m.id, tuple.Tuple{int64(0)})
 			Expect(err).NotTo(HaveOccurred())
-			g.writeVectorRef(tx, m.id, ref.toPrimaryUnderreplicated())
+			Expect(g.writeVectorRef(tx, m.id, ref.toPrimaryUnderreplicated())).To(Succeed())
 			m.numUnderrep = 1
 			g.writeClusterMetadata(tx, m)
 			return nil
@@ -89,7 +89,7 @@ var _ = Describe("GuardiANN reference counts", func() {
 			m := lone(g, tx)
 			ref, err := g.fetchVectorRef(tx, m.id, pk)
 			Expect(err).NotTo(HaveOccurred())
-			g.writeVectorRef(tx, m.id, ref.toPrimaryUnderreplicated())
+			Expect(g.writeVectorRef(tx, m.id, ref.toPrimaryUnderreplicated())).To(Succeed())
 			m.numUnderrep = 1
 			g.writeClusterMetadata(tx, m)
 			return nil
@@ -100,7 +100,7 @@ var _ = Describe("GuardiANN reference counts", func() {
 			Expect(m.numUnderrep).To(Equal(1))
 			ref, err := g.fetchVectorRef(tx, m.id, pk)
 			Expect(err).NotTo(HaveOccurred())
-			g.writeVectorRef(tx, m.id, ref.toPrimary())
+			Expect(g.writeVectorRef(tx, m.id, ref.toPrimary())).To(Succeed())
 			_, err = g.updateAndEnqueueReassign(tx, newSplittableRandomForUUID(tuple.UUID{1}), m, vector(0), 0, -1, 0, m.stats, nil)
 			return err
 		})

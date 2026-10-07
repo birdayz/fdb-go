@@ -142,9 +142,8 @@ var _ = Describe("GuardiANN inline delete and the head task's consumer outcome",
 
 		collapse := &guardiannTask{kind: taskCollapse, id: tuple.UUID{2}, targets: []tuple.UUID{{9}}, centroid: vector(1)}
 		Expect(run(ss, cfg, func(g *guardiann, tx fdb.WritableTransaction) error {
-			g.writeTask(tx, collapse)
 			g.writeClusterMetadata(tx, guardiannClusterMetadata{id: tuple.UUID{9}, stats: runningStatsIdentity(), states: clusterStateCollapse})
-			return nil
+			return g.writeTask(tx, collapse)
 		})).To(Succeed())
 		bounce := &guardiannTask{kind: taskBounce, id: tuple.UUID{3}, targets: []tuple.UUID{{9}}, dependents: []tuple.UUID{collapse.id}, finalKind: taskSplitMerge}
 		noCollapse := cfg

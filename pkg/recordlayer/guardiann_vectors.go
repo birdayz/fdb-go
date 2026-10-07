@@ -12,13 +12,19 @@ import (
 type guardiannVectorCodec struct {
 	transform *hnswTransform
 	quantizer *rabitq.Quantizer
-	config    guardiannConfig
+	// quantizerErr is why a trained RaBitQ quantizer cannot be constructed.
+	// Java constructs it (Primitives.quantizer) only at an insert of a new
+	// key, a search, a task's write and a task body past its no-op exits, so
+	// the codec defers the refusal to those points (requireQuantizer); what
+	// never constructs it (a delete enqueuing nothing, an empty drain) runs.
+	quantizerErr error
+	config       guardiannConfig
 }
 
-func newGuardiannVectorCodec(config guardiannConfig, info *guardiannAccessInfoValue) (*guardiannVectorCodec, error) {
+func newGuardiannVectorCodec(config guardiannConfig, info *guardiannAccessInfoValue) *guardiannVectorCodec {
 	c := &guardiannVectorCodec{config: config}
 	if info == nil || info.negatedCentroid == nil {
-		return c, nil
+		return c
 	}
 	c.transform = &hnswTransform{
 		rotator:          newFhtKacRotator(info.rotatorSeed, config.numDimensions, 10),
@@ -27,12 +33,17 @@ func newGuardiannVectorCodec(config guardiannConfig, info *guardiannAccessInfoVa
 	}
 	if config.useRaBitQ {
 		if !rabitq.ValidNumExBits(config.raBitQNumExBits) {
-			return nil, &IllegalArgumentError{Message: "RaBitQ encodes 1 to 8 extra bits"}
+			c.quantizerErr = &IllegalArgumentError{Message: "RaBitQ encodes 1 to 8 extra bits"}
+			return c
 		}
 		c.quantizer = rabitq.NewQuantizer(rabitq.Metric(config.metric), config.raBitQNumExBits)
 	}
-	return c, nil
+	return c
 }
+
+// requireQuantizer is Java's Primitives.quantizer construction: it refuses
+// where RaBitQuantizer's constructor throws.
+func (c *guardiannVectorCodec) requireQuantizer() error { return c.quantizerErr }
 
 func (c *guardiannVectorCodec) toStoredCoordinates(v gVector) (gVector, error) {
 	if c.transform == nil || v.typ == rabitq.TypeByte {

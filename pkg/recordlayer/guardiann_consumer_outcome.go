@@ -53,6 +53,9 @@ func (g *guardiann) consumerOutcome(rtx fdb.ReadTransaction, t *guardiannTask) (
 		if m == nil || !m.has(clusterStateReassign) || m.has(clusterStateSplitMerge) || m.has(clusterStateCollapse) {
 			return consumerOutcome{kind: outcomeConsumed}, nil
 		}
+		if err := g.codec.requireQuantizer(); err != nil {
+			return refusedBy(err), nil
+		}
 		numNeighboring := g.config.reassignNumNeighboringClusters
 		if len(t.nearest) == 0 {
 			if err := g.neighbourFetchRefusal("reassign", 1+numNeighboring, IndexOptionGuardiannReassignNumNeighboringClusters,
@@ -72,6 +75,9 @@ func (g *guardiann) consumerOutcome(rtx fdb.ReadTransaction, t *guardiannTask) (
 		}
 		if m == nil || !m.has(clusterStateCollapse) {
 			return consumerOutcome{kind: outcomeConsumed}, nil
+		}
+		if err := g.codec.requireQuantizer(); err != nil {
+			return refusedBy(err), nil
 		}
 		if g.config.collapseConcurrency < 1 {
 			return refusedBy(parallelismError(g.config.collapseConcurrency)), nil
@@ -120,6 +126,9 @@ func (g *guardiann) splitMergeOutcome(rtx fdb.ReadTransaction, t *guardiannTask)
 		return consumerOutcome{kind: outcomeConsumed}, nil // the false-alarm clear
 	}
 	split := m.numPrimary() > g.config.primaryClusterMax
+	if err := g.codec.requireQuantizer(); err != nil {
+		return refusedBy(err), nil
+	}
 	num, numOption, operation := g.config.mergeNumNearestClusters, IndexOptionGuardiannMergeNumNearestClusters, "merge"
 	if split {
 		num, numOption, operation = g.config.splitNumNearestClusters, IndexOptionGuardiannSplitNumNearestClusters, "split"
@@ -166,10 +175,7 @@ func (g *guardiann) headTaskRefused(tx fdb.WritableTransaction) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	h, err := g.withAccessInfo(info)
-	if err != nil {
-		return false, err
-	}
+	h := g.withAccessInfo(info)
 	tasks, err := h.fetchSomeTasks(snap, 1)
 	if err != nil || len(tasks) == 0 {
 		return false, err

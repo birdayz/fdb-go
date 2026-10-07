@@ -54,7 +54,9 @@ func (g *guardiann) updateAndEnqueueReassign(tx fdb.WritableTransaction, random 
 		if err != nil {
 			return nil, err
 		}
-		g.writeTask(tx, &guardiannTask{kind: taskReassign, id: id, targets: []tuple.UUID{m.id}, centroid: centroid, causes: causes})
+		if err := g.writeTask(tx, &guardiannTask{kind: taskReassign, id: id, targets: []tuple.UUID{m.id}, centroid: centroid, causes: causes}); err != nil {
+			return nil, err
+		}
 		g.writeClusterMetadata(tx, m.withAdditionalVectorsAndStates(underrepAdded, replicatedAdded, stats, clusterStateReassign))
 		return &id, nil
 	}
@@ -74,7 +76,9 @@ func (g *guardiann) updateAndEnqueueSplitMerge(tx fdb.WritableTransaction, rando
 	if err != nil {
 		return id, err
 	}
-	g.writeTask(tx, &guardiannTask{kind: taskSplitMerge, id: id, targets: []tuple.UUID{m.id}, centroid: centroid})
+	if err := g.writeTask(tx, &guardiannTask{kind: taskSplitMerge, id: id, targets: []tuple.UUID{m.id}, centroid: centroid}); err != nil {
+		return id, err
+	}
 	g.writeClusterMetadata(tx, m.withAdditionalVectorsAndStates(underrepAdded, replicatedAdded, stats, clusterStateSplitMerge))
 	return id, nil
 }
@@ -238,10 +242,7 @@ func (g *guardiann) executeDeferredTasks(tx fdb.WritableTransaction, numTasks in
 	if err != nil {
 		return 0, err
 	}
-	g, err = g.withAccessInfo(info)
-	if err != nil {
-		return 0, err
-	}
+	g = g.withAccessInfo(info)
 	tasks, err := g.fetchSomeTasks(tx, numTasks)
 	if err != nil {
 		return 0, err
@@ -307,8 +308,9 @@ func (g *guardiann) insert(tx fdb.WritableTransaction, pk tuple.Tuple, vector gV
 	if existing != nil {
 		return nil
 	}
-	g, err = g.withAccessInfo(info)
-	if err != nil {
+	g = g.withAccessInfo(info)
+	// Insert.java:235 constructs the quantizer past the existing-key return.
+	if err := g.codec.requireQuantizer(); err != nil {
 		return err
 	}
 	clientVector := vector
@@ -372,7 +374,9 @@ func (g *guardiann) insertIntoClusters(tx fdb.WritableTransaction, random *split
 		isPrimary := m.id == primaryID
 		stats := m.stats
 		if isPrimary {
-			g.writeVectorRef(tx, m.id, guardiannVectorRef{id: md.id, vector: vector, primary: true})
+			if err := g.writeVectorRef(tx, m.id, guardiannVectorRef{id: md.id, vector: vector, primary: true}); err != nil {
+				return err
+			}
 			stats = stats.add(c.distance)
 		} else {
 			occluded, err := g.isOccluded(c, selected)
@@ -383,7 +387,9 @@ func (g *guardiann) insertIntoClusters(tx fdb.WritableTransaction, random *split
 				continue
 			}
 			priority := g.config.replicationPriority(c.distance, primaryDistance, m.numPrimary(), m.stats.meanOrNaN(), m.stats.populationStdDev())
-			g.writeVectorRef(tx, m.id, guardiannVectorRef{id: md.id, vector: vector, priority: priority})
+			if err := g.writeVectorRef(tx, m.id, guardiannVectorRef{id: md.id, vector: vector, priority: priority}); err != nil {
+				return err
+			}
 			selected = append(selected, c)
 		}
 		primaryAdded, replicatedAdded := 0, 1
@@ -446,10 +452,7 @@ func (g *guardiann) delete(tx fdb.WritableTransaction, pk tuple.Tuple, vector gV
 			}
 		}
 	}
-	g, err = g.withAccessInfo(info)
-	if err != nil {
-		return err
-	}
+	g = g.withAccessInfo(info)
 	clientVector := vector
 	vector, err = g.codec.toStoredCoordinates(vector)
 	if err != nil {
@@ -528,8 +531,8 @@ func (g *guardiann) search(tx fdb.ReadTransaction, k int, sc guardiannSearchConf
 	if err != nil || info == nil || k <= 0 {
 		return nil, err
 	}
-	g, err = g.withAccessInfo(info)
-	if err != nil {
+	g = g.withAccessInfo(info)
+	if err := g.codec.requireQuantizer(); err != nil {
 		return nil, err
 	}
 	codec := g.codec
@@ -762,11 +765,20 @@ func taskFromTuples(key, value tuple.Tuple, decode func([]byte) (gVector, error)
 	return nil, &RecordCoreError{Message: "unknown guardiann task kind"}
 }
 
-func (g *guardiann) writeTask(tx fdb.WritableTransaction, t *guardiannTask) {
+// writeTask writes t's valueTuple; every kind but a bounce constructs the
+// quantizer to encode its centroid (SplitMergeTask.java:135,
+// ReassignTask.java:158, CollapseTask.java:112).
+func (g *guardiann) writeTask(tx fdb.WritableTransaction, t *guardiannTask) error {
+	if t.kind != taskBounce {
+		if err := g.codec.requireQuantizer(); err != nil {
+			return err
+		}
+	}
 	tx.Set(fdb.Key(g.sub(gSubTasks).Pack(tuple.Tuple{t.id})), t.valueTuple(g.codec.encode).Pack())
 	if g.listener != nil {
 		g.listener.onTaskEnqueued()
 	}
+	return nil
 }
 
 func (g *guardiann) fetchSomeTasks(tx fdb.ReadTransaction, n int) ([]*guardiannTask, error) {

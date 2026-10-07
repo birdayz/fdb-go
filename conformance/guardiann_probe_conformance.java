@@ -280,13 +280,21 @@ class GuardiannProbeSteps extends ConformanceBase {
             }
             long id = ((Number) op.get(1)).longValue();
             double[] v = {((Number) op.get(2)).doubleValue(), ((Number) op.get(3)).doubleValue()};
-            if (kind.equals("insert")) {
-                insert(clusterFile, tenantName, guardiann, id, v);
-            } else {
-                delete(clusterFile, tenantName, guardiann, id, v);
+            String outcome = kind + " " + id;
+            try {
+                if (kind.equals("insert")) {
+                    insert(clusterFile, tenantName, guardiann, id, v);
+                } else {
+                    delete(clusterFile, tenantName, guardiann, id, v);
+                }
+            } catch (RuntimeException e) {
+                // A refused write (a trained quantizer the configuration
+                // cannot construct, say) is a step of its own; its
+                // transaction rolled back, so the bytes are unchanged.
+                outcome += " failed";
             }
             Map<String, Object> step = new LinkedHashMap<>();
-            step.put("op", kind + " " + id);
+            step.put("op", outcome);
             step.put("kvs", dumpSubspace(clusterFile, tenantName, subspace));
             step.put("trained", runInContext(clusterFile, tenantName, context ->
                     GuardiannConformanceAccess.trained(guardiann, context.ensureActive())));

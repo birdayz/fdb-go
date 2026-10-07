@@ -382,7 +382,9 @@ var _ = Describe("GuardiANN unsplittable clusters", func() {
 		// cap check, as inline inserts and neighbour re-homing do.
 		err := run(func(g *guardiann, tx fdb.WritableTransaction) error {
 			extra := guardiannVectorRef{id: guardiannVectorID{pk: tuple.Tuple{int64(99)}, uuid: tuple.UUID{9}}, vector: vectors[0], primary: true}
-			g.writeVectorRef(tx, target.id, extra)
+			if err := g.writeVectorRef(tx, target.id, extra); err != nil {
+				return err
+			}
 			g.writeVectorMetadata(tx, guardiannVectorMetadata{id: extra.id})
 			return g.reconcileUnsplittable(tx, newSplittableRandomForUUID(tuple.UUID{5}), target, centroid, UnsplittableNoUsablePartition)
 		})

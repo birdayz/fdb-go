@@ -66,10 +66,8 @@ func TestKMeansQuantizedMatchJava(t *testing.T) {
 	t.Parallel()
 	cfg := defaultGuardiannConfig(3)
 	cfg.useRaBitQ = true
-	codec, err := newGuardiannVectorCodec(cfg, &guardiannAccessInfoValue{rotatorSeed: 42, negatedCentroid: []float64{0, 0, 0}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	codec := newGuardiannVectorCodec(cfg, &guardiannAccessInfoValue{rotatorSeed: 42, negatedCentroid: []float64{0, 0, 0}})
+	var err error
 	var vectors []gVector
 	for i := 0; i < 8; i++ {
 		v := gVector{data: []float64{float64(i / 4 * 10), float64(i % 4), 1}, typ: 2}
@@ -104,10 +102,7 @@ func TestKMeansQuantizedErrors(t *testing.T) {
 	t.Parallel()
 	cfg := defaultGuardiannConfig(3)
 	cfg.useRaBitQ = true
-	codec, err := newGuardiannVectorCodec(cfg, &guardiannAccessInfoValue{rotatorSeed: 42, negatedCentroid: []float64{0, 0, 0}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	codec := newGuardiannVectorCodec(cfg, &guardiannAccessInfoValue{rotatorSeed: 42, negatedCentroid: []float64{0, 0, 0}})
 	// The decoded shape is valid, but its encoded distance-estimation payload is truncated.
 	bad := gVector{data: []float64{1, 2, 3}, typ: 3, encoded: []byte{3}}
 	plain := gVector{data: []float64{4, 5, 6}, typ: 2}
@@ -120,7 +115,7 @@ func TestKMeansQuantizedErrors(t *testing.T) {
 	}
 	params := defaultPartitionParameters(cfg.metric)
 	params.codec = codec
-	_, err = evaluatePartition([]gVector{bad}, partition{centroids: []gVector{plain}, assignments: []int{0}}, params)
+	_, err := evaluatePartition([]gVector{bad}, partition{centroids: []gVector{plain}, assignments: []int{0}}, params)
 	var invalid *IllegalArgumentError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("partition lost estimator error: %v", err)

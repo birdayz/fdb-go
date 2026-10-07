@@ -99,11 +99,10 @@ func newGuardiann(ss subspace.Subspace, config guardiannConfig, env *dst.Env, li
 
 func (g *guardiann) sub(prefix int64) subspace.Subspace { return g.ss.Sub(prefix) }
 
-func (g *guardiann) withAccessInfo(info *guardiannAccessInfoValue) (*guardiann, error) {
+func (g *guardiann) withAccessInfo(info *guardiannAccessInfoValue) *guardiann {
 	local := *g
-	var err error
-	local.codec, err = newGuardiannVectorCodec(g.config, info)
-	return &local, err
+	local.codec = newGuardiannVectorCodec(g.config, info)
+	return &local
 }
 
 func (g *guardiann) distance(a, b gVector) (float64, error) {
@@ -414,8 +413,14 @@ func (g *guardiann) fetchVectorRef(tx fdb.ReadTransaction, clusterID tuple.UUID,
 	return &ref, err
 }
 
-func (g *guardiann) writeVectorRef(tx fdb.WritableTransaction, clusterID tuple.UUID, ref guardiannVectorRef) {
+// writeVectorRef is Primitives.writeVectorReference, whose caller constructs
+// the quantizer.
+func (g *guardiann) writeVectorRef(tx fdb.WritableTransaction, clusterID tuple.UUID, ref guardiannVectorRef) error {
+	if err := g.codec.requireQuantizer(); err != nil {
+		return err
+	}
 	tx.Set(fdb.Key(g.sub(gSubVectorRefs).Pack(tuple.Tuple{clusterID, ref.id.pk})), vectorRefValue(ref, g.codec.encode))
+	return nil
 }
 
 func (g *guardiann) deleteVectorRef(tx fdb.WritableTransaction, clusterID tuple.UUID, pk tuple.Tuple) {

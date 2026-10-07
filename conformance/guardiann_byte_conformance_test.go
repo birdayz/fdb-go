@@ -509,7 +509,7 @@ type guardiannStep struct {
 // (the same deterministic configuration) and returns the first step whose
 // persisted bytes differ, as readable diffs, or nil when every step matches.
 func runGuardiannByteScript(primaryClusterMin int, ops []guardiannOp) []string {
-	diffs, _ := runGuardiannByteScriptWith(primaryClusterMin, nil, ops)
+	diffs, _, _ := runGuardiannByteScriptWith(primaryClusterMin, nil, ops)
 	return diffs
 }
 
@@ -525,8 +525,9 @@ var guardiannScriptOptions = map[string]string{
 
 // runGuardiannByteScriptWith is runGuardiannByteScript with extra Config
 // options (guardiannScriptOptions' names) applied to both engines. trained
-// reports whether Java's structure ended trained for RaBitQ.
-func runGuardiannByteScriptWith(primaryClusterMin int, options map[string]string, ops []guardiannOp) (diffs []string, trained bool) {
+// reports whether Java's structure reached RaBitQ training; steps are the
+// steps both engines took.
+func runGuardiannByteScriptWith(primaryClusterMin int, options map[string]string, ops []guardiannOp) (diffs []string, trained bool, steps []string) {
 	if options == nil {
 		options = map[string]string{}
 	}
@@ -606,13 +607,18 @@ func runGuardiannByteScriptWith(primaryClusterMin int, options map[string]string
 			continue
 		}
 		id, x, y := op[1].(int64), op[2].(float64), op[3].(float64)
-		Expect(run(func(tx fdb.WritableTransaction) error {
+		outcome := fmt.Sprintf("%s %d", op[0], id)
+		if err := run(func(tx fdb.WritableTransaction) error {
 			if op[0] == "insert" {
 				return engine.Insert(tx, tuple.Tuple{id}, []float64{x, y}, false)
 			}
 			return engine.Delete(tx, tuple.Tuple{id}, []float64{x, y}, false)
-		})).To(Succeed())
-		goSteps = append(goSteps, guardiannStep{Op: fmt.Sprintf("%s %d", op[0], id), KVs: dump()})
+		}); err != nil {
+			// A refused write is a step of its own, as in the Java probe.
+			fmt.Fprintf(GinkgoWriter, "GUARDIANN-SCRIPT %s refused: %v\n", outcome, err)
+			outcome += " failed"
+		}
+		goSteps = append(goSteps, guardiannStep{Op: outcome, KVs: dump()})
 	}
 
 	ops2 := func(steps []guardiannStep) []string {
@@ -622,9 +628,11 @@ func runGuardiannByteScriptWith(primaryClusterMin int, options map[string]string
 		}
 		return s
 	}
-	Expect(ops2(goSteps)).To(Equal(ops2(javaSteps)), "the steps each engine took")
-	if len(javaSteps) > 0 {
-		trained = javaSteps[len(javaSteps)-1].Trained
+	steps = ops2(javaSteps)
+	Expect(ops2(goSteps)).To(Equal(steps), "the steps each engine took")
+	for _, st := range javaSteps {
+		// A refused task's step carries no state; the structure stays trained.
+		trained = trained || st.Trained
 	}
 	for i := range goSteps {
 		var diffs []string
@@ -647,11 +655,11 @@ func runGuardiannByteScriptWith(primaryClusterMin int, options map[string]string
 			}
 		}
 		if len(diffs) > 0 {
-			return append([]string{fmt.Sprintf("first difference at step %d (%s)", i+1, goSteps[i].Op)}, diffs...), trained
+			return append([]string{fmt.Sprintf("first difference at step %d (%s)", i+1, goSteps[i].Op)}, diffs...), trained, steps
 		}
 	}
 	fmt.Fprintf(GinkgoWriter, "GUARDIANN-SCRIPT %d steps identical\n", len(goSteps))
-	return nil, trained
+	return nil, trained, steps
 }
 
 var _ = Describe("GuardiANN persisted bytes by scenario", func() {
@@ -707,9 +715,62 @@ var _ = Describe("GuardiANN persisted bytes by scenario", func() {
 			}
 		}
 		ops = append(ops, gDrain(), gDelete(4, float64(4%7)*0.37, float64(4%5)*0.23-float64(4%3)*0.41), gDrain())
-		diffs, trained := runGuardiannByteScriptWith(0, options, ops)
+		diffs, trained, _ := runGuardiannByteScriptWith(0, options, ops)
 		Expect(diffs).To(BeEmpty())
 		Expect(trained).To(BeTrue(), "the scenario must reach RaBitQ training, or it pins no encoded codec")
+	})
+
+	// A trained index whose extra-bit count RaBitQuantizer cannot construct (9;
+	// it accepts 1-8): both engines refuse at the quantizer's construction
+	// points — an insert of a new key, a task body past its no-op exits and a
+	// task write (a delete that enqueues a merge) — and keep running what does
+	// not construct it (a delete that enqueues nothing, an empty drain). An
+	// untrained split first makes two clusters (evens and odds), so the deletes
+	// shrink the odds cluster below its minimum. The steps, the refusals and
+	// every byte must agree (ws-d-design.md, encoding capability; the JVM row
+	// of the design's bits-9 fixtures).
+	It("RaBitQ with 9 extra bits: trained, inserts, task bodies and task writes are refused as in Java", func() {
+		options := map[string]string{
+			"useRaBitQ": "true", "raBitQNumExBits": "9",
+			"sampleVectorStatsProbability": "1.0", "maintainStatsProbability": "1.0", "statsThreshold": "12",
+		}
+		point := func(i int64) (float64, float64) {
+			x := float64(i%7)*0.37 + float64(i/7)*0.11
+			y := float64(i%5)*0.23 - float64(i%3)*0.41
+			if i%2 == 1 {
+				x, y = x+40, y-25
+			}
+			return x, y
+		}
+		script := func(splitBeforeTraining bool) []guardiannOp {
+			var ops []guardiannOp
+			for i := int64(0); i < 30; i++ {
+				if i == 11 && splitBeforeTraining {
+					ops = append(ops, gDrain())
+				}
+				x, y := point(i)
+				ops = append(ops, gInsert(i, x, y))
+			}
+			ops = append(ops, gDrain())
+			for i := int64(0); i < 6; i++ {
+				x, y := point(i)
+				ops = append(ops, gDelete(i, x, y))
+			}
+			return append(ops, gDrain())
+		}
+		// The split queued at insert 10 runs after training: its body is refused.
+		diffs, trained, steps := runGuardiannByteScriptWith(0, options, script(false))
+		Expect(diffs).To(BeEmpty())
+		Expect(trained).To(BeTrue(), "the scenario must reach training, or no refusal is exercised")
+		Expect(steps).To(ContainElements("insert 11", "insert 12 failed", "task failed", "delete 0"),
+			"the scenario must refuse an insert and a task body, and run a delete")
+		// The split runs untrained (evens and odds); deleting odds below the
+		// minimum enqueues a merge, whose write is refused.
+		diffs, trained, steps = runGuardiannByteScriptWith(5, options, script(true))
+		Expect(diffs).To(BeEmpty())
+		Expect(trained).To(BeTrue(), "the scenario must reach training, or no refusal is exercised")
+		Expect(steps).To(ContainElements("task", "insert 12 failed", "delete 0", "delete 2 failed"),
+			"the scenario must refuse a task write, and run a delete that writes no task")
 	})
 
 	It("split and reassign: a growing cluster splits beside a neighbour", func() {

@@ -30,6 +30,10 @@ func (g *guardiann) runSplitMerge(tx fdb.WritableTransaction, t *guardiannTask) 
 		return nil
 	}
 	split := m.numPrimary() > g.config.primaryClusterMax
+	// split()/merge() construct the quantizer on entry (SplitMergeTask.java:227, :430).
+	if err := g.codec.requireQuantizer(); err != nil {
+		return err
+	}
 	random := newSplittableRandomForUUID(t.id)
 	num, numOption, operation := g.config.mergeNumNearestClusters, IndexOptionGuardiannMergeNumNearestClusters, "merge"
 	if split {
@@ -52,8 +56,7 @@ func (g *guardiann) runSplitMerge(tx fdb.WritableTransaction, t *guardiannTask) 
 		next := *t
 		next.id = id
 		next.nearest = clusterRefsOf(nearest)
-		g.writeTask(tx, &next)
-		return nil
+		return g.writeTask(tx, &next)
 	}
 	// fetchClusterMetadataForReferences at splitMergeConcurrency
 	// (SplitMergeTask.java:239-240/:442-443).
@@ -406,7 +409,13 @@ func (g *guardiann) applyRepartitioning(tx fdb.WritableTransaction, random *spli
 		g.deleteClusterMetadata(tx, c.meta.id)
 	}
 	counts := countAssignments(assignment)
-	assignment.each(func(k tuple.UUID, v guardiannVectorRef) { g.writeVectorRef(tx, k, v) })
+	for _, k := range assignment.keys {
+		for _, v := range assignment.values[k] {
+			if err := g.writeVectorRef(tx, k, v); err != nil {
+				return err
+			}
+		}
+	}
 	var dependents []tuple.UUID
 	for _, k := range clusters.keys {
 		c := clusters.values[k]
@@ -426,7 +435,7 @@ func (g *guardiann) applyRepartitioning(tx fdb.WritableTransaction, random *spli
 		if err != nil {
 			return err
 		}
-		g.writeTask(tx, &guardiannTask{kind: taskBounce, id: id, targets: surviving, dependents: dependents, finalKind: taskReassign})
+		return g.writeTask(tx, &guardiannTask{kind: taskBounce, id: id, targets: surviving, dependents: dependents, finalKind: taskReassign})
 	}
 	return nil
 }

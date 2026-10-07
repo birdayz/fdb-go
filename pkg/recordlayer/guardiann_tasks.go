@@ -187,13 +187,16 @@ func computeTargetClusterDelta(target guardiannCluster, assigned []guardiannVect
 	return toWrite, toDelete
 }
 
-func (g *guardiann) persistTargetClusterDelta(tx fdb.WritableTransaction, target tuple.UUID, toWrite []guardiannVectorRef, toDelete []tuple.Tuple) {
+func (g *guardiann) persistTargetClusterDelta(tx fdb.WritableTransaction, target tuple.UUID, toWrite []guardiannVectorRef, toDelete []tuple.Tuple) error {
 	for _, pk := range toDelete {
 		g.deleteVectorRef(tx, target, pk)
 	}
 	for _, r := range toWrite {
-		g.writeVectorRef(tx, target, r)
+		if err := g.writeVectorRef(tx, target, r); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // enqueueCollapseIfNecessary is AbstractDeferredTask.enqueueCollapseIfNecessary.
@@ -218,11 +221,15 @@ func (g *guardiann) enqueueCollapseIfNecessary(tx fdb.WritableTransaction, rando
 	if err != nil {
 		return false, err
 	}
-	g.writeTask(tx, &guardiannTask{kind: taskCollapse, id: collapseID, targets: []tuple.UUID{target}, centroid: centroid})
-	g.writeTask(tx, &guardiannTask{
+	if err := g.writeTask(tx, &guardiannTask{kind: taskCollapse, id: collapseID, targets: []tuple.UUID{target}, centroid: centroid}); err != nil {
+		return false, err
+	}
+	if err := g.writeTask(tx, &guardiannTask{
 		kind: taskBounce, id: bounceID, targets: []tuple.UUID{target},
 		dependents: []tuple.UUID{collapseID}, finalKind: taskSplitMerge,
-	})
+	}); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
@@ -287,6 +294,10 @@ func countAssignments(a *orderedAssignments) assignmentCounts {
 // ---- ReassignTask ----
 
 func (g *guardiann) reassign(tx fdb.WritableTransaction, t *guardiannTask, target guardiannClusterMetadata) error {
+	// ReassignTask.java:241 constructs the quantizer on entry.
+	if err := g.codec.requireQuantizer(); err != nil {
+		return err
+	}
 	random := newSplittableRandomForUUID(t.id)
 	numNeighboring := g.config.reassignNumNeighboringClusters
 	if len(t.nearest) == 0 {
@@ -306,8 +317,7 @@ func (g *guardiann) reassign(tx fdb.WritableTransaction, t *guardiannTask, targe
 		next := *t
 		next.id = id
 		next.nearest = clusterRefsOf(nearest)
-		g.writeTask(tx, &next)
-		return nil
+		return g.writeTask(tx, &next)
 	}
 	// fetchClusterMetadataForReferences at reassignConcurrency
 	// (ReassignTask.java:254-257).
@@ -405,12 +415,19 @@ func (g *guardiann) reassign(tx fdb.WritableTransaction, t *guardiannTask, targe
 	assignment.put(target.id, kept...)
 	toWrite, toDelete := computeTargetClusterDelta(inner[0], assignment.values[target.id])
 	counts := countAssignments(assignment)
-	assignment.each(func(k tuple.UUID, v guardiannVectorRef) {
-		if k != target.id {
-			g.writeVectorRef(tx, k, v)
+	for _, k := range assignment.keys {
+		if k == target.id {
+			continue
 		}
-	})
-	g.persistTargetClusterDelta(tx, target.id, toWrite, toDelete)
+		for _, v := range assignment.values[k] {
+			if err := g.writeVectorRef(tx, k, v); err != nil {
+				return err
+			}
+		}
+	}
+	if err := g.persistTargetClusterDelta(tx, target.id, toWrite, toDelete); err != nil {
+		return err
+	}
 	var newTarget *guardiannClusterMetadata
 	for _, k := range clusters.keys {
 		c := clusters.values[k]
@@ -453,6 +470,10 @@ func clusterRefsOf(cs []guardiannClusterWithDistance) []guardiannClusterRef {
 // ---- CollapseTask ----
 
 func (g *guardiann) collapse(tx fdb.WritableTransaction, t *guardiannTask, target guardiannClusterMetadata) error {
+	// CollapseTask.java:171 constructs the quantizer on entry.
+	if err := g.codec.requireQuantizer(); err != nil {
+		return err
+	}
 	random := newSplittableRandomForUUID(t.id)
 	// fetchCoreClusters at collapseConcurrency (CollapseTask.java:182), past
 	// the task's no-op exits.
@@ -533,7 +554,9 @@ func (g *guardiann) collapse(tx fdb.WritableTransaction, t *guardiannTask, targe
 			repl++
 		}
 	}
-	g.persistTargetClusterDelta(tx, target.id, toWrite, toDelete)
+	if err := g.persistTargetClusterDelta(tx, target.id, toWrite, toDelete); err != nil {
+		return err
+	}
 	for _, sig := range collapsedKeys {
 		for _, id := range collapsedIDs[sig] {
 			g.writeCollapsedID(tx, sig, id)
@@ -580,8 +603,7 @@ func (g *guardiann) runBounce(tx fdb.WritableTransaction, t *guardiannTask) erro
 		if err != nil {
 			return err
 		}
-		g.writeTask(tx, &guardiannTask{kind: taskBounce, id: id, targets: t.targets, dependents: rest, finalKind: t.finalKind})
-		return nil
+		return g.writeTask(tx, &guardiannTask{kind: taskBounce, id: id, targets: t.targets, dependents: rest, finalKind: t.finalKind})
 	}
 	return g.enqueueFollowUpTasks(tx, t, random)
 }
@@ -615,7 +637,9 @@ func (g *guardiann) enqueueFollowUpTasks(tx fdb.WritableTransaction, t *guardian
 			return &RecordCoreError{Message: "unsupported kind for final task"}
 		}
 		g.writeClusterMetadata(tx, m.withStates(state))
-		g.writeTask(tx, final)
+		if err := g.writeTask(tx, final); err != nil {
+			return err
+		}
 	}
 	return nil
 }

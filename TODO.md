@@ -817,9 +817,17 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   each kind's prologue, and an inline delete skips a refused head task
   (DIVERGENCES "GuardiANN inline deletes skip a head task Go would refuse",
   `guardiann_consumer_outcome_test.go`, mutation-checked). Not ported from
-  the design's (d) fixture list: the JVM-row byte comparisons (bounce
-  follow-up ids, bits-9 quantizer refusal, which Go does not raise) and the
-  1020 race fixtures.
+  the design's (d) fixture list: the bounce follow-up ids JVM-row byte
+  comparison and the 1020 race fixtures. Bits-9 quantizer refusal done
+  (2026-10-07): the codec defers the RaBitQ construction error
+  (`requireQuantizer`) to Java's construction points (an insert of a new key,
+  a search, a task write but a bounce's, a split/merge/reassign/collapse body
+  past its no-op exits, every vector-reference write), so a delete that
+  enqueues nothing and an empty drain run, as in Java. The JVM-row fixture
+  ("RaBitQ with 9 extra bits", `rfc257_guardiann_test`) compares steps and
+  bytes over a refused task body and a refused merge write; mutation-checked
+  (an unchecked task write fails it). The search refusal has no fixture (the
+  script probe has no search op).
 - [x] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
   covering/rank results, search-free continuation replay, operation-local caches,
   partition locks, cosine zero/clamp, sample-UUID closure, option catalog/identity.
@@ -1087,6 +1095,38 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   for them; that is not a fresh completeness proof. Include recursive promotion,
   RaBitQ/HNSW legacy compatibility, storage lifecycle, pending writes/format 15,
   catalog version/rebind/carry rules and index-definition fidelity.
+  Audit (2026-10-07, against the designs at 13d5a3d1e). PINNED: WS-A ~14,
+  WS-B ~20, WS-C ~40, WS-J ~60. Open, each to be closed:
+  - DIVERGENCES.md lost entries since 13d5a3d1e (3723 -> 3059 lines): restore,
+    updated for later decisions: WS-B "DeleteStore cancels pending replacement
+    retirement" (+ re-book its upstream report); WS-J §9 (c) rebind validator,
+    (d), (j) version guard, (l), (o) FormerIndex re-add, (q), (s)
+    DeleteTemplateVersion refusal, (t), (u), (v), (w), (x) restore refusals,
+    (aa)-(ad), the F10 half of (f). 23 Go files cite "ws-j-design.md §N",
+    which is no longer in the tree: point them at DIVERGENCES/the commit.
+  - Lost bookings: select-list-vs-WHERE fault precedence (§9(t), Java
+    QueryVisitor.java:272-274 vs :283-322); planner items v31-v35 (NLJ
+    orientation tie-break, USING over an unnest leg, a lateral chain's last
+    element, EXISTS over derived legs, table qualifier = template name).
+  - WS-A: higher-layer HNSW entry replacement after the transform exists
+    (hnsw.go:556-565, Java Insert.java:220-227) has no access-info byte pin.
+  - WS-B: rank entry too short (rank_scan.go entryWithRank) unpinned; sliding
+    window replay has no tied ordering values.
+  - WS-C: DELETE_WHERE duplicate / last-known-wins envelope rows; overflow
+    commit check across two stores with one index name; DeleteStore of the
+    heartbeat:/merge: checks and delete-then-recreate with pending chunks;
+    rebuild to WRITE_ONLY_WITH_QUEUE and its format-14 refusal
+    (store_builder.go:440); state-4 consumers (unique, rank, bitmap,
+    GetWriteOnlyIndexes); markReadable continuing past a failed target;
+    publication before a state-4 writer; drain defaults (4 s quota, 10,000
+    deletes/s, commitWhenDone); `SetStoreState` to WRITE_ONLY_WITH_QUEUE.
+    MISSING: Lucene pending-queue consumption (keep visible; L); vector merge
+    heartbeat callback (book under WS-D's GuardiANN adapter).
+  - WS-J: restore one-history swapped-key / key-reuse rows
+    (MetaDataEvolutionValidator.java:354-377); concurrent second
+    RestoreTemplateVersion; "Could not delete unknown schema template"
+    asserted; an unnest / derived-source index through the SQL DDL path;
+    negative grouped_count refusal (key_expression_proto.go:342).
 - [x] WS-G implementation: Java aggregate continuation state, legacy reads,
   grouping-output simplification/ARRAY_AGG cap/resume and plan-schema tags have
   committed pins. Whole-upgrade acceptance remains open.
