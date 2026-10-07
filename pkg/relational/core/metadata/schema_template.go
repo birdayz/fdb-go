@@ -3,6 +3,9 @@ package metadata
 import (
 	"sort"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 )
@@ -52,6 +55,9 @@ func NewRecordLayerSchemaTemplateWithVersion(name string, md *recordlayer.Record
 	if md == nil {
 		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate, "record metadata is nil")
 	}
+	if err := checkTableGenerations(md); err != nil {
+		return nil, err
+	}
 	tmpl := &RecordLayerSchemaTemplate{
 		name:       name,
 		version:    version,
@@ -98,6 +104,39 @@ func NewRecordLayerSchemaTemplateWithVersion(name string, md *recordlayer.Record
 	sort.Strings(tmpl.indexNames)
 
 	return tmpl, nil
+}
+
+// checkTableGenerations is the check Java's RecordMetadataDeserializer makes
+// while it turns the union's fields into table generations
+// (RecordLayerTable.Builder.addGeneration): each message field of the union is
+// a generation of the table its message names, and two generations of one
+// table may share neither a field number nor their FieldOptions. Equal options
+// are TABLE_ALREADY_EXISTS "Duplicated options for different generations of
+// Table <name>". The options compare as protobuf messages do in Java, so an
+// extension (or an unknown field) is what tells two generations apart.
+func checkTableGenerations(md *recordlayer.RecordMetaData) error {
+	union := md.GetUnionDescriptor()
+	if union == nil {
+		return nil
+	}
+	options := map[string][]proto.Message{}
+	fields := union.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		if f.Kind() != protoreflect.MessageKind {
+			continue
+		}
+		table := recordlayer.ToUserIdentifier(string(f.Message().Name()))
+		opts := f.Options()
+		for _, seen := range options[table] {
+			if proto.Equal(seen, opts) {
+				return api.NewErrorf(api.ErrCodeTableAlreadyExists,
+					"Duplicated options for different generations of Table %s", table)
+			}
+		}
+		options[table] = append(options[table], opts)
+	}
+	return nil
 }
 
 // MetadataName returns the template name provided at construction.

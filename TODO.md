@@ -1003,15 +1003,22 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   name). `unsupported:result-metadata-nested` emptied (190 inner, 6 file
   skips): the check-result-metadata positives pass and the six struct/array
   negatives fail on their metadata mismatch.
-- [ ] JSON descriptor FieldOptions import (#4540). Harness-only in Java
+- [x] JSON descriptor FieldOptions import (#4540). Harness-only in Java
   (`CommandUtil.loadRecordMetaDataFromJson` for the yaml `load schema
-  template` command); Go has no JSON metadata import and its runner books
-  every `load schema template` / `set schema state` file as
-  `unsupported:schema-command` (9 files). Porting it needs that command pair
-  in the runner, the yaml-tests protos as Go descriptors (Bazel
-  `go_proto_library`), and relational table generations
-  (`RecordLayerTable.addGeneration`, the check #4540's file exercises), which
-  Go's schema template does not model.
+  template` command). Done: the javacorpus runner runs `load schema
+  template` and `set schema state` (schemacommand.go) through
+  `EmbeddedConnection.ApplyMetadataOperation`; the yaml-tests protos and
+  metadata JSON are vendored verbatim and the protos built by Bazel into
+  descriptor sets under Java's file names; the JSON loader ports
+  `restoreFieldOptionExtensions`; `ddl.SetStoreStateConstantAction` ports
+  RecordLayerSetStoreStateConstantAction; the schema template refuses
+  duplicated generation options as Java's `addGeneration` does; an unnamed
+  records file builds. Corpus 130 → 137 passing; the 9
+  `unsupported:schema-command` files now run (7 pass, `disabled-index-tests`
+  reaches plan assertions, `deprecated-fields-tests-proto` is Java-@Disabled
+  and fails as Java does, booked `conformance:java-disabled`).
+  Mutation-checked: without the extension recovery, field-options-extension
+  fails with Java's "Duplicated options for different generations".
 - [x] Relational queued-state plumbing; SQL vector-option and preference-cache pins.
   Relational planning reads only READABLE indexes and the fleet build treats
   WRITE_ONLY_WITH_QUEUE as write-only; `TestFDB_QueuedVectorIndexIsWriteOnlyToSQL`

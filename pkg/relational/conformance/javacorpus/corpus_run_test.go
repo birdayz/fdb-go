@@ -92,6 +92,30 @@ func javaWorkingDir(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The metadata JSON files `load schema template` names by a path relative
+	// to the module, copied from the vendored tree at the same paths.
+	for _, rel := range []string{
+		"src/main/resources/standard_tests_metadata.json",
+		"src/test/resources/field-options-extension-metadata.json",
+		"src/test/resources/valid_identifiers_metadata.json",
+		"src/test/resources/import-schema-template/with_included_dependencies_metadata.json",
+	} {
+		src, err := javacorpus.FindAbove("third_party/apple/fdb-record-layer/yaml-tests/" + rel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dst := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dst, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return dir
 }
 

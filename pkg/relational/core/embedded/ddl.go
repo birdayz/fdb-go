@@ -1259,6 +1259,21 @@ func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantA
 	return err
 }
 
+// ApplyMetadataOperation runs op in one transaction against this connection's
+// backing catalog and its metadata-operations factory, then commits: Java's
+// yaml-tests Command.applyMetadataOperationEmbedded, which the `load schema
+// template` and `set schema state` commands use to reach the catalog without
+// SQL. The catalog is bootstrapped first, as any DDL on the connection is.
+func (c *EmbeddedConnection) ApplyMetadataOperation(ctx context.Context, op func(factory apiddl.MetadataOperationsFactory, txn api.Transaction) error) error {
+	if err := c.ensureCatalogInit(ctx); err != nil {
+		return err
+	}
+	_, err := c.sess.DB.RunWithMaxAttempts(ctx, 1, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		return nil, op(c.sess.Factory, catalog.NewFDBTransaction(rctx))
+	})
+	return err
+}
+
 // checkDDLDatabaseScope rejects a DDL statement whose resolved database path
 // lies outside the connection's own database, when the connection has
 // RESTRICT_DDL_TO_SESSION_DATABASE set. With the option unset (the default) it

@@ -13,24 +13,37 @@ go_library(
         "resultmetadata.go",
         "runner.go",
         "runparsed.go",
+        "schemacommand.go",
         "testblock.go",
     ],
     importpath = "fdb.dev/pkg/relational/conformance/javacorpus",
     visibility = ["//visibility:public"],
     deps = [
+        "//gen",
         "//pkg/fdbgo/fdb",
+        "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/vectorcodec",
         "//pkg/relational/api",
+        "//pkg/relational/api/ddl",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/ddl",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/functions",
         "//pkg/relational/core/keyspace",
+        "//pkg/relational/core/metadata",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
         "@com_github_antlr4_go_antlr_v4//:antlr",
         "@com_github_google_uuid//:uuid",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//reflect/protoregistry",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
     ],
 )
 
@@ -59,7 +72,14 @@ go_test(
     # keep: the run walks the vendored .yamsql tree, so it must be in runfiles.
     # Without this the ledger gate does not fail under `bazel test` — it cannot
     # find the corpus at all, which is a far worse outcome than a drifted count.
-    data = ["//third_party/apple/fdb-record-layer:yamsql_corpus"],
+    # keep: so are the yaml-tests descriptor sets and metadata JSON that
+    # `load schema template` reads.
+    data = [
+        "//third_party/apple/fdb-record-layer:yamltests_main_proto",
+        "//third_party/apple/fdb-record-layer:yamltests_metadata_json",
+        "//third_party/apple/fdb-record-layer:yamltests_test_proto",
+        "//third_party/apple/fdb-record-layer:yamsql_corpus",
+    ],
     embed = [":javacorpus"],
     tags = ["resources:memory:400"],
     deps = [

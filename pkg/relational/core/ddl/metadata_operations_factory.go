@@ -53,6 +53,13 @@ func (f *RecordLayerMetadataOperationsFactory) DropDatabase(dbPath string, throw
 	return NewDropDatabaseConstantAction(dbPath, throwIfDoesNotExist, f.catalog, f, options)
 }
 
+// SetStoreState forces a schema store's index states, Java's
+// getSetStoreStateConstantAction (with the config Java's factory carries passed
+// here instead).
+func (f *RecordLayerMetadataOperationsFactory) SetStoreState(dbPath, schemaName string, config RecordLayerConfig) apiddl.ConstantAction {
+	return NewSetStoreStateConstantAction(dbPath, schemaName, config, f.catalog, f.ks)
+}
+
 func (f *RecordLayerMetadataOperationsFactory) DropSchema(dbPath, schemaName string, _ api.Options) apiddl.ConstantAction {
 	return NewDropSchemaConstantAction(dbPath, schemaName, f.catalog, f.ks)
 }

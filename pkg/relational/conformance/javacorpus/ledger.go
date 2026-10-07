@@ -90,10 +90,6 @@ const (
 	// SkipCopyBlock is a `copy_block`, which moves data between two clusters.
 	SkipCopyBlock SkipClass = "unsupported:copy-block"
 
-	// SkipSchemaCommand is a `load schema template` / `set schema state`
-	// command: metadata surgery with no Go equivalent.
-	SkipSchemaCommand SkipClass = "unsupported:schema-command"
-
 	// SkipDebugger is a `debugger:` config selecting a Java planner debugger.
 	SkipDebugger SkipClass = "unsupported:debugger"
 
@@ -209,6 +205,10 @@ const (
 	// DDL then stores unquoted names as written, Go folds them, and the file's
 	// verbatim connect URI names a schema only Java stored.
 	SkipGapCaseSensitiveIdentifiers SkipClass = "engine-gap:case-sensitive-identifiers"
+	// SkipConformanceJavaDisabled is a file Java's test class @Disabled
+	// because Java fails it, failing here for the same reason. Nothing is
+	// missing on the Go side relative to Java; the booking names Java's TODO.
+	SkipConformanceJavaDisabled SkipClass = "conformance:java-disabled"
 )
 
 // AllSkipClasses is every declared reason class.
@@ -229,7 +229,6 @@ func AllSkipClasses() []SkipClass {
 		SkipContinuation,
 		SkipResultMetadataNested,
 		SkipCopyBlock,
-		SkipSchemaCommand,
 		SkipDebugger,
 		SkipDDLStruct,
 		SkipDDLStructIndex,
@@ -247,6 +246,7 @@ func AllSkipClasses() []SkipClass {
 		SkipConformanceJavaPlannerBug,
 		SkipGapStarGroupBy,
 		SkipGapCaseSensitiveIdentifiers,
+		SkipConformanceJavaDisabled,
 		SkipCheckCache,
 		SkipRandomInjection,
 		SkipNoChecks,

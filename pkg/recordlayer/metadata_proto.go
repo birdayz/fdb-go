@@ -1494,13 +1494,22 @@ func rebuildFileDescriptor(
 		}
 	}
 
-	// Build the main file
+	// Build the main file. protobuf-java builds a FileDescriptor with no name
+	// (a metadata JSON's records file typically has none); protodesc requires
+	// a path, so an unnamed records file is built under a placeholder. The
+	// retained source proto, which ToProto emits, keeps the empty name.
+	if recordsProto != nil && recordsProto.GetName() == "" {
+		recordsProto.Name = proto.String(unnamedRecordsFile)
+	}
 	fd, err := protodesc.NewFile(recordsProto, resolver)
 	if err != nil {
 		return nil, fmt.Errorf("records: %w", err)
 	}
 	return fd, nil
 }
+
+// unnamedRecordsFile is the path an unnamed records file is built under.
+const unnamedRecordsFile = "__unnamed_records__.proto"
 
 // descriptorResolver implements protodesc.Resolver for rebuilding FileDescriptors.
 type descriptorResolver struct {

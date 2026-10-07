@@ -206,7 +206,9 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 	at := fmt.Sprintf("%s line %d", where, cmd.Line)
 
 	if cmd.Kind != javayamsql.CommandQuery {
-		r.skip(SkipSchemaCommand, at, string(cmd.Kind))
+		if err := r.runSchemaCommand(ctx, conn, cmd); err != nil {
+			return fmt.Errorf("%s: %s: %w", at, cmd.Kind, err)
+		}
 		return nil
 	}
 

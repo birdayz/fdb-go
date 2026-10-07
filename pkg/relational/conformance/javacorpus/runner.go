@@ -249,7 +249,7 @@ func (c SkipClass) SuppressesAssertion() bool {
 	// wrongly passed — crediting a driver gap as a finding.
 	case SkipPlanAssertion, SkipResultMetadataNested, SkipContinuation,
 		SkipRandomInjection, SkipVersionGate,
-		SkipSchemaCommand, SkipNoChecks:
+		SkipNoChecks:
 		return true
 	default:
 		return false
@@ -683,8 +683,10 @@ func (r *runner) executeSetup(ctx context.Context, resource string, blk *javayam
 	}
 	for _, step := range blk.Setup.Steps {
 		if step.Kind != javayamsql.CommandQuery {
-			r.skip(SkipSchemaCommand, resource, string(step.Kind))
-			return &skipFileError{SkipSchemaCommand, string(step.Kind)}
+			if err := r.runSchemaCommand(ctx, conn, step); err != nil {
+				return &setupError{line: step.Line, query: string(step.Kind) + ": " + truncate(step.Payload), err: err}
+			}
+			continue
 		}
 		if len(step.Segments) > 0 {
 			// A setup step is parsed with a nil Random in Java, which asserts

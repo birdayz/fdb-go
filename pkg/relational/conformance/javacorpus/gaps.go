@@ -46,6 +46,12 @@ var engineGaps = []EngineGap{
 	// materializes as [] where the type forbids NULL — Java's
 	// MessageHelpers.getFieldOnMessage isRepeated()-first branch. The file
 	// passes outright.
+	// Java runs this file nowhere: YamlIntegrationTests.deprecatedFieldsTestsWithProto
+	// is @Disabled ("[Wave 1] Relational returns deprecated fields for SELECT *").
+	// Both engines expose a proto's deprecated fields as columns, so the
+	// file's two-value INSERT into its five-field T1 is refused by Java's
+	// implicit-column arity check, which Go ports.
+	{"deprecated-fields-tests-proto.yamsql", SkipConformanceJavaDisabled, "provided record cannot be assigned as its type is incompatible with the target type", "Java @Disabled TODO [Wave 1]"},
 	// A JOIN mixed into a comma-separated FROM list.
 	{"right-deep-plan-tests.yamsql", SkipGapCommaJoinFrom, "JOIN clauses on comma-separated FROM sources are not supported", "CQ-72"},
 
