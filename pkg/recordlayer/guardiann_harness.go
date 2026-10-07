@@ -52,6 +52,21 @@ func (e *GuardiannEngine) Delete(tx fdb.WritableTransaction, pk tuple.Tuple, vec
 	return e.g.delete(tx, pk, gVector{data: vector, typ: 2}, maintainInTransaction)
 }
 
+// Search is Guardiann.kNearestNeighborsSearch(transaction, k, the default
+// SearchConfig, false, DoubleRealVector): the primary keys found, nearest
+// first.
+func (e *GuardiannEngine) Search(tx fdb.ReadTransaction, k int, vector []float64) ([]tuple.Tuple, error) {
+	results, err := e.g.search(tx, k, defaultGuardiannSearchConfig(), gVector{data: vector, typ: 2})
+	if err != nil {
+		return nil, err
+	}
+	pks := make([]tuple.Tuple, len(results))
+	for i, r := range results {
+		pks[i] = r.primaryKey
+	}
+	return pks, nil
+}
+
 // ExecuteDeferredTasks is Guardiann.executeDeferredTasks(transaction,
 // numTasks, Long.MAX_VALUE).
 func (e *GuardiannEngine) ExecuteDeferredTasks(tx fdb.WritableTransaction, numTasks int) (int, error) {

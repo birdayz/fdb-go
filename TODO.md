@@ -775,7 +775,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## 3. WS-D — vector engines and maintenance
 
-- [ ] GuardiANN safety: zero-candidate admission; n<k/peel/unsplittable split
+- [x] GuardiANN safety: zero-candidate admission; n<k/peel/unsplittable split
   fallbacks; empty-core repair; primary-preferred cleanup; underreplication
   deltas; committed negative-count disable. Checked decoding, task poisoning,
   KMeans preconditions and merge/drain target checks have prior fixes.
@@ -836,8 +836,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   enqueues nothing and an empty drain run, as in Java. The JVM-row fixture
   ("RaBitQ with 9 extra bits", `rfc257_guardiann_test`) compares steps and
   bytes over a refused task body and a refused merge write; mutation-checked
-  (an unchecked task write fails it). The search refusal has no fixture (the
-  script probe has no search op).
+  (an unchecked task write fails it). The search refusal is pinned too: the
+  script probe has a search op, and the bits-9 script searches once
+  untrained (both engines answer the same keys) and once trained (both
+  refuse); an unchecked search fails it.
 - [x] HNSW/engine: general fetch/cardinality/layer scans, ordered retrieval,
   covering/rank results, search-free continuation replay, operation-local caches,
   partition locks, cosine zero/clamp, sample-UUID closure, option catalog/identity.

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -499,6 +500,9 @@ func gInsert(id int64, x, y float64) guardiannOp { return guardiannOp{"insert", 
 func gDelete(id int64, x, y float64) guardiannOp { return guardiannOp{"delete", id, x, y} }
 func gDrain() guardiannOp                        { return guardiannOp{"drain"} }
 
+// gSearch is a k-nearest search at (x, y): a step naming the keys found.
+func gSearch(k int64, x, y float64) guardiannOp { return guardiannOp{"search", k, x, y} }
+
 type guardiannStep struct {
 	Op      string     `json:"op"`
 	KVs     [][]string `json:"kvs"`
@@ -608,6 +612,25 @@ func runGuardiannByteScriptWith(primaryClusterMin int, options map[string]string
 		}
 		id, x, y := op[1].(int64), op[2].(float64), op[3].(float64)
 		outcome := fmt.Sprintf("%s %d", op[0], id)
+		if op[0] == "search" {
+			// ["search", k, x, y]: the keys found, rendered as Java's List.toString.
+			var found []string
+			if err := run(func(tx fdb.WritableTransaction) error {
+				pks, err := engine.Search(tx, int(id), []float64{x, y})
+				found = found[:0]
+				for _, pk := range pks {
+					found = append(found, fmt.Sprint(pk[0]))
+				}
+				return err
+			}); err != nil {
+				fmt.Fprintf(GinkgoWriter, "GUARDIANN-SCRIPT %s refused: %v\n", outcome, err)
+				outcome += " failed"
+			} else {
+				outcome += " [" + strings.Join(found, ", ") + "]"
+			}
+			goSteps = append(goSteps, guardiannStep{Op: outcome, KVs: dump()})
+			continue
+		}
 		if err := run(func(tx fdb.WritableTransaction) error {
 			if op[0] == "insert" {
 				return engine.Insert(tx, tuple.Tuple{id}, []float64{x, y}, false)
@@ -748,10 +771,13 @@ var _ = Describe("GuardiANN persisted bytes by scenario", func() {
 				if i == 11 && splitBeforeTraining {
 					ops = append(ops, gDrain())
 				}
+				if i == 8 {
+					ops = append(ops, gSearch(3, 0.2, 0.1)) // untrained: answers
+				}
 				x, y := point(i)
 				ops = append(ops, gInsert(i, x, y))
 			}
-			ops = append(ops, gDrain())
+			ops = append(ops, gDrain(), gSearch(3, 0.2, 0.1)) // trained: refused
 			for i := int64(0); i < 6; i++ {
 				x, y := point(i)
 				ops = append(ops, gDelete(i, x, y))
@@ -762,8 +788,9 @@ var _ = Describe("GuardiANN persisted bytes by scenario", func() {
 		diffs, trained, steps := runGuardiannByteScriptWith(0, options, script(false))
 		Expect(diffs).To(BeEmpty())
 		Expect(trained).To(BeTrue(), "the scenario must reach training, or no refusal is exercised")
-		Expect(steps).To(ContainElements("insert 11", "insert 12 failed", "task failed", "delete 0"),
-			"the scenario must refuse an insert and a task body, and run a delete")
+		Expect(steps).To(ContainElements("insert 11", "insert 12 failed", "task failed", "delete 0", "search 3 failed"),
+			"the scenario must refuse an insert, a task body and a search, and run a delete")
+		Expect(steps).To(ContainElement(HavePrefix("search 3 [")), "the untrained search answers")
 		// The split runs untrained (evens and odds); deleting odds below the
 		// minimum enqueues a merge, whose write is refused.
 		diffs, trained, steps = runGuardiannByteScriptWith(5, options, script(true))

@@ -281,6 +281,31 @@ class GuardiannProbeSteps extends ConformanceBase {
             long id = ((Number) op.get(1)).longValue();
             double[] v = {((Number) op.get(2)).doubleValue(), ((Number) op.get(3)).doubleValue()};
             String outcome = kind + " " + id;
+            if (kind.equals("search")) {
+                // ["search", k, x, y]: the primary keys found, nearest first,
+                // or "failed" when the search is refused.
+                try {
+                    List<Object> found = runInContext(clusterFile, tenantName, context -> {
+                        List<Object> pks = new ArrayList<>();
+                        for (var entry : guardiann.kNearestNeighborsSearch(context.ensureActive(), (int) id,
+                                new com.apple.foundationdb.async.guardiann.SearchConfig.SearchConfigBuilder().build(),
+                                false, new DoubleRealVector(v)).join()) {
+                            pks.add(entry.primaryKey().getLong(0));
+                        }
+                        return pks;
+                    });
+                    outcome += " " + found;
+                } catch (RuntimeException e) {
+                    outcome += " failed";
+                }
+                Map<String, Object> step = new LinkedHashMap<>();
+                step.put("op", outcome);
+                step.put("kvs", dumpSubspace(clusterFile, tenantName, subspace));
+                step.put("trained", runInContext(clusterFile, tenantName, context ->
+                        GuardiannConformanceAccess.trained(guardiann, context.ensureActive())));
+                steps.add(step);
+                continue;
+            }
             try {
                 if (kind.equals("insert")) {
                     insert(clusterFile, tenantName, guardiann, id, v);
