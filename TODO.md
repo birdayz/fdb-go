@@ -394,8 +394,18 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   tasks fall 4-24% (chains 3/4/5: 564→546, 2367→2219, 13968→12985; star
   2559→2379; right-deep hub+6 9308→7071), pins re-baselined. D1 (progress)
   and D3/D4 (conditional chains on progress) were already in place.
-  Still open: D5's re-arm conversion (Go's group-wide `lastRearmTick` re-arm
-  to Java's per-expression forced exploration). The `outerJoinCount` review
+  D5's re-arm conversion is done (2026-10-07): the group-wide
+  `lastRearmTick` is gone. A member that arrives after its group's
+  exploration began (a merge's folded members and finals, an out-of-band
+  `InsertReExploring`) is marked on the Reference and its next exploration
+  runs every rule (Java's ExploreExpression with forceExploration); the
+  group's other members re-run only rules whose declared constraints
+  changed (ReExploreExpression). No corpus plan or task-count pin moved;
+  sqldriver, conformance corpora and yamsql pass. Pins re-stated:
+  `TestReExplorationSkipsConstraintIndependentMatching`,
+  `TestConstraintIndependentExplorationRules`, and the `pending_child` mode
+  of `TestUnorderedUnionFetchSchedulingRetainsFutureFetchLeg`
+  (mutation-checked: no forced exploration fails them). The `outerJoinCount` review
   is closed (2026-10-06): the design kept it omitted with a PLANNING
   re-derivation of `RewriteOuterJoinRule`, and WS-J's v36 fold superseded
   that. `outerJoinCount` is the REWRITING comparator's first criterion, as

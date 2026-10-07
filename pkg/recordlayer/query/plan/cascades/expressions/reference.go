@@ -58,6 +58,12 @@ type ReferencePlanProperties interface {
 type Reference struct {
 	members      []RelationalExpression
 	finalMembers []RelationalExpression
+	// forced holds the members that arrived after the group's exploration
+	// began (a merge's folded members, an out-of-band insert). The next
+	// round explores each with every rule, Java's forceExploration for a
+	// newly memoized expression; the others re-run only rules whose
+	// declared constraints changed.
+	forced map[RelationalExpression]struct{}
 	// pinnedFinal marks a deliberately disentangled physical selection. Unlike
 	// an ordinary one-member plan group, a pinned reference must not be grown by
 	// physical rewrites: its parent was constructed over this exact member.
@@ -431,10 +437,14 @@ func (r *Reference) IsForwarded() bool { return r.forwardedTo != nil }
 func (r *Reference) Absorb(loser *Reference) {
 	before := len(r.members)
 	for _, m := range loser.members {
-		r.Insert(m)
+		if r.Insert(m) {
+			r.MarkForcedExploration(m)
+		}
 	}
 	for _, m := range loser.finalMembers {
-		r.InsertFinal(m)
+		if r.InsertFinal(m) {
+			r.MarkForcedExploration(m)
+		}
 	}
 	if len(r.members) > before {
 		// New members arrived: re-arm exploration so the survivor
@@ -720,6 +730,26 @@ func (r *Reference) HasWinnersOrMatches() bool {
 // scan node info. Cross-Reference merging (RFC-037) generalises this
 // further: when an equivalent member already lives in a *different*
 // Reference, Memo.merge collapses the two groups.
+// MarkForcedExploration records that e's next exploration runs every rule.
+func (r *Reference) MarkForcedExploration(e RelationalExpression) {
+	r = r.Canonical()
+	if r.forced == nil {
+		r.forced = make(map[RelationalExpression]struct{})
+	}
+	r.forced[e] = struct{}{}
+}
+
+// TakeForcedExploration reports whether e's exploration is forced, and
+// clears the mark: one forced exploration per arrival.
+func (r *Reference) TakeForcedExploration(e RelationalExpression) bool {
+	r = r.Canonical()
+	if _, ok := r.forced[e]; !ok {
+		return false
+	}
+	delete(r.forced, e)
+	return true
+}
+
 func (r *Reference) Insert(e RelationalExpression) bool {
 	r = r.Canonical()
 	if e == nil {

@@ -189,7 +189,7 @@ func (t *ExploreGroupTask) Run(ctx context.Context, p *Planner) {
 		if t.Phase == PhasePlanning && !isPhysical(expr) {
 			continue
 		}
-		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr, ReExplore: true})
+		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr, ReExplore: !t.Ref.TakeForcedExploration(expr)})
 	}
 
 	// Explore ALL members each round (Java ExploreGroup): rounds are
@@ -224,7 +224,7 @@ func (t *ExploreGroupTask) Run(ctx context.Context, p *Planner) {
 			(t.Phase == PhasePlanning && isPhysical(expr)) {
 			p.push(&OptimizeInputsTask{Phase: t.Phase, Ref: t.Ref, Expr: expr})
 		}
-		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr, ReExplore: true})
+		p.push(&ExploreExprTask{Phase: t.Phase, Ref: t.Ref, Expr: expr, ReExplore: !t.Ref.TakeForcedExploration(expr)})
 	}
 
 	t.Ref.StartExploration()
@@ -649,7 +649,8 @@ func (t *ExploreExprTask) shouldPushRule(rule matcherHaver) bool {
 	// Java's AbstractCascadesRule defaults to no constraint dependencies, so a
 	// re-exploration re-queues a rule only when it declares a constraint pushed
 	// since the group's last committed exploration (CascadesPlanner.java:956-970);
-	// a re-arm (lastRearmTick) still re-queues every rule. Each rule that reads a
+	// a member that arrived after exploration began is forced instead
+	// (Reference.TakeForcedExploration, Java's ExploreExpression). Each rule that reads a
 	// planner constraint declares it (ConstraintDependencies, RFC-257 WS-F D2).
 	var deps []any
 	if dependent, ok := rule.(interface{ ConstraintDependencies() []any }); ok {

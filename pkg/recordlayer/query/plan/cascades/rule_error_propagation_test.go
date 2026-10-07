@@ -48,10 +48,19 @@ func TestReExplorationSkipsConstraintIndependentMatching(t *testing.T) {
 	if got := run(); got != 0 {
 		t.Fatalf("matching tasks after unrelated constraint = %d, want 0", got)
 	}
+	// A re-arm alone re-runs only constraint-dependent rules (Java's
+	// ReExploreExpression); a member that arrived after exploration began
+	// is forced and runs every rule (Java's ExploreExpression).
 	ref.ConstraintsMap().SetExplored()
 	ref.ConstraintsMap().ReArm()
+	if got := run(); got != 0 {
+		t.Fatalf("matching tasks after a re-arm alone = %d, want 0", got)
+	}
+	ref.ConstraintsMap().SetExplored()
+	ref.MarkForcedExploration(expr)
+	ref.ConstraintsMap().ReArm()
 	if got := run(); got != 1 {
-		t.Fatalf("matching tasks after member invalidation = %d, want 1", got)
+		t.Fatalf("matching tasks for a forced member = %d, want 1", got)
 	}
 }
 
@@ -108,8 +117,12 @@ func TestConstraintIndependentExplorationRules(t *testing.T) {
 				t.Fatal("unrelated constraint restarted a constraint-independent rule")
 			}
 			ref.ConstraintsMap().ReArm()
-			if !task.shouldPushRule(rule) {
-				t.Fatal("member invalidation must restart the rule")
+			if task.shouldPushRule(rule) {
+				t.Fatal("a re-arm alone restarted a constraint-independent rule")
+			}
+			forced := &ExploreExprTask{Ref: ref, Expr: expr}
+			if !forced.shouldPushRule(rule) {
+				t.Fatal("a forced exploration must run the rule")
 			}
 		})
 	}

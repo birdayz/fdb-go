@@ -17,7 +17,6 @@ package expressions
 // package cannot see the typed constraint lattice (Java dispatches
 // through PlannerConstraint.combine the same way).
 type ConstraintsMap struct {
-	lastRearmTick          int64
 	currentTick            int64
 	watermarkGoalTick      int64
 	watermarkCommittedTick int64
@@ -114,7 +113,7 @@ func (m *ConstraintsMap) IsFullyExploring() bool {
 // IsExploredForAttributes: explored at least once, and none of the given
 // keys has been pushed past the committed watermark.
 func (m *ConstraintsMap) IsExploredForAttributes(keys []any) bool {
-	if m.HasNeverBeenExplored() || m.lastRearmTick > m.watermarkCommittedTick {
+	if m.HasNeverBeenExplored() {
 		return false
 	}
 	for _, k := range keys {
@@ -171,7 +170,6 @@ func (m *ConstraintsMap) InheritFromOther(other *ConstraintsMap) {
 	if other == nil {
 		return
 	}
-	m.lastRearmTick = other.lastRearmTick
 	m.currentTick = other.currentTick
 	m.watermarkGoalTick = other.watermarkGoalTick
 	m.watermarkCommittedTick = other.watermarkCommittedTick
@@ -229,7 +227,9 @@ func combineFor(key any) func(existing, pushed any) (any, bool) {
 // expression of the Absorb member-fold re-arm: members folded from a
 // merged-away Reference were explored under the LOSER's identity
 // (rule bindings and partial matches are (group, expression)-scoped),
-// so the survivor must re-explore them under its own.
+// so the survivor must re-explore them under its own. Which members run
+// every rule is the Reference's forced set; the rest keep the
+// constraint-dependency filter (Java's ReExploreExpression).
 func (m *ConstraintsMap) ReArm() {
-	m.lastRearmTick = m.bumpTick()
+	m.bumpTick()
 }

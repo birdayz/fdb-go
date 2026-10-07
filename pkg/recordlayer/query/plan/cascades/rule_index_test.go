@@ -970,7 +970,8 @@ func TestUnorderedUnionFetchSchedulingRetainsFutureFetchLeg(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			left := expressions.FinalOf(pushFetchFetch(pushFetchIndex("left"), nil))
-			right := expressions.FinalOf(pushFetchScan())
+			scan := pushFetchScan()
+			right := expressions.FinalOf(scan)
 			left.ConstraintsMap().SetExplored()
 			if mode != "child_rule" {
 				right.ConstraintsMap().SetExplored()
@@ -996,6 +997,7 @@ func TestUnorderedUnionFetchSchedulingRetainsFutureFetchLeg(t *testing.T) {
 				})
 			}
 			if mode == "pending_child" {
+				right.MarkForcedExploration(scan)
 				right.ConstraintsMap().ReArm()
 				p.push(&ExploreGroupTask{Phase: PhasePlanning, Ref: right})
 			}

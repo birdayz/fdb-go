@@ -462,6 +462,7 @@ func (m *Memo) InsertReExploring(ref *expressions.Reference, expr expressions.Re
 	if !ref.Insert(expr) {
 		return false
 	}
+	ref.MarkForcedExploration(expr)
 	m.AddExpression(ref, expr)
 	m.scheduleReExplore(ref)
 	return true
