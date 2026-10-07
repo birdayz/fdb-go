@@ -280,27 +280,58 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 		})
 	}
 
-	// A PROJECTED EXISTS beside a WHERE-EXISTS is a separate, pre-existing gap
-	// (TODO.md "A projected EXISTS beside a WHERE-EXISTS fails opaquely"): it
-	// fails on a single table too, so it is not about the ON clause or the
-	// join. Pinned as a refusal — never wrong rows — on the single-table form
-	// and on the ON-EXISTS form the builder's fold turns into it; when the
-	// capability lands these arms flip to row assertions.
+	// A PROJECTED EXISTS beside a WHERE-EXISTS (or an ON-EXISTS the builder
+	// folds into one) answers as Java (Java corpus exists-in-select.yamsql);
+	// Go refused it until 2026-10-07.
 	for _, tc := range []struct {
 		name string
 		sql  string
+		want []string
 	}{
 		{
-			"projected_exists_beside_where_exists_single_table_refused",
+			"projected_exists_beside_where_exists_single_table",
 			"SELECT a.id, EXISTS (SELECT 1 FROM c WHERE c.a_id = a.id) FROM a WHERE EXISTS (SELECT 1 FROM d WHERE d.id = a.id)",
+			[]string{"2|true"},
 		},
 		{
-			"projected_exists_beside_on_exists_threeway_refused",
+			"projected_exists_beside_on_exists_threeway",
 			"SELECT a.id, c.id, g.id, EXISTS (SELECT 1 FROM h WHERE h.g_id = g.id) FROM a JOIN c ON c.a_id = a.id JOIN g ON g.c_id = c.id" + existsD,
+			[]string{"2|51|901|true", "2|53|902|false"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assertUnsupported(t, db, ctx, tc.sql)
+			rows, err := db.QueryContext(ctx, tc.sql)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			cols, err := rows.Columns()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for rows.Next() {
+				vals := make([]any, len(cols))
+				ptrs := make([]any, len(cols))
+				for i := range vals {
+					ptrs[i] = &vals[i]
+				}
+				if err := rows.Scan(ptrs...); err != nil {
+					t.Fatal(err)
+				}
+				parts := make([]string, len(vals))
+				for i, v := range vals {
+					parts[i] = fmt.Sprint(v)
+				}
+				got = append(got, strings.Join(parts, "|"))
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			sortStrings(got)
+			if !eqStrSlices(got, tc.want) {
+				t.Errorf("rows = %v, want %v\n  sql: %s", got, tc.want, tc.sql)
+			}
 		})
 	}
 }

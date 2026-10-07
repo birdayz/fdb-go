@@ -152,32 +152,9 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 	// predicates are residualised before they become filters, as Java does, and a
 	// filter carrying a structural predicate is now rejected at construction —
 	// so the bail has nothing left to protect against (RFC-235).
-	existentialCount := 0
-	for _, q := range quantifiers {
-		if q.Kind() == expressions.QuantifierExistential {
-			existentialCount++
-		}
-	}
-
-	// A single projected existential can flow its nullable witness through a
-	// positional lower row. Multiple projected existentials retain this guard.
-	if existentialCount >= 2 {
-		// PROJECTED multi-EXISTS (`SELECT id, EXISTS(…) AS a, EXISTS(…) AS b`) is a
-		// SEPARATE, harder case: the result value references the existential
-		// quantifiers (booleans in the SELECT list), and peeling them into sibling
-		// FlatMaps would strand the reference to the buried one. Only WHERE-EXISTS
-		// existentials — semi-join FILTERS the result value does NOT reference —
-		// partition here; a projected one keeps today's clean decline.
-		resultCorr := values.GetCorrelatedToOfValue(sel.GetResultValue())
-		for _, q := range quantifiers {
-			if q.Kind() != expressions.QuantifierExistential {
-				continue
-			}
-			if _, referenced := resultCorr[q.GetAlias()]; referenced {
-				return
-			}
-		}
-	}
+	// Projected existentials partition too, as in Java: each one's nullable
+	// witness flows through its own FlatMap (several projected EXISTS beside
+	// WHERE-EXISTS filters included; Java corpus exists-in-select.yamsql).
 
 	plannerCfg := call.Context.GetPlannerConfiguration()
 

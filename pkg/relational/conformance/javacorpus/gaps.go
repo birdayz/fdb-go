@@ -310,9 +310,8 @@ var engineGaps = []EngineGap{
 	{"case-sensitivity.yamsql", SkipGapCaseSensitiveIdentifiers, "42F59: table with name 'TABLE1' already exists", "TODO.md, Go ignores CASE_SENSITIVE_IDENTIFIERS"},
 	{"keyword-case-insensitivity.yamsql", SkipGapCaseSensitiveIdentifiers, `column names "COLUMN" and "column" collide case-insensitively`, "TODO.md, Go folds quoted identifiers in the positional row layout"},
 	{"setup-with-connection-options.yamsql", SkipGapCaseSensitiveIdentifiers, "42F51: Schema </FRL/CASE_SENSITIVE_TEMPLATE/test1> does not exist in the catalog!", "TODO.md, Go ignores CASE_SENSITIVE_IDENTIFIERS"},
-	// A correlated EXISTS in the SELECT projection combined with a WHERE
-	// EXISTS — Cascades declines the double-EXISTS shape.
-	{"exists-in-select.yamsql", SkipGapPlannerDeclines, "Cascades planner could not plan query", "CQ-72"},
+	// exists-in-select.yamsql passes (2026-10-07): PartitionSelectRule
+	// partitions a select holding several existentials, projected ones too.
 	// Go's in-memory sort extension plans this grouped empty-input shape where
 	// Java's Cascades planner declines it.
 	{"aggregate-empty-table.yamsql", SkipConformanceGoAccepts, "expecting statement to throw an error 0AF00, however it succeeded", "RFC-256"},

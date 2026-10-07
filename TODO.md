@@ -173,7 +173,11 @@ Never mark a whole workstream complete because one of its subitems passed.
       ALL body is answered too (each branch keeps its correlation; five
       probe rows). A parenthesised statement is the query it encloses, so the
       Java corpus files `union-empty-tables.yamsql` and `union.yamsql` pass
-      (corpus 139 files, 8478 queries).
+      (corpus 139 files, 8478 queries). Several projected EXISTS, or one
+      beside a WHERE/ON EXISTS, plan: PartitionSelectRule no longer bails on
+      a select holding more than one existential when one is projected, as
+      Java partitions every subset; `exists-in-select.yamsql` passes (140
+      files, 8486 queries; mutation-checked).
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays

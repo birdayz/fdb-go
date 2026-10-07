@@ -164,8 +164,6 @@ const (
 
 	// SkipGapNestedRecursiveWith is a WITH nested inside a recursive CTE body.
 	SkipGapNestedRecursiveWith SkipClass = "engine-gap:nested-recursive-with"
-	// SkipGapPlannerDeclines is a query Cascades declines to plan.
-	SkipGapPlannerDeclines SkipClass = "engine-gap:planner-declines"
 	// SkipGapErrorClass is an error that reaches the client without a SQLSTATE,
 	// so the corpus's error-class assertion has nothing to compare against.
 	SkipGapErrorClass SkipClass = "engine-gap:error-class"
@@ -237,7 +235,6 @@ func AllSkipClasses() []SkipClass {
 		SkipGapCatalogTables,
 
 		SkipGapNestedRecursiveWith,
-		SkipGapPlannerDeclines,
 		SkipGapErrorClass,
 		SkipConformanceGoAccepts,
 		SkipConformanceJavaPlannerBug,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -334,33 +335,37 @@ func TestFDB_ProjectedExists_Round3(t *testing.T) {
 		}
 	})
 
-	// ── Safety guard: multiple projected EXISTS rejects cleanly ─────────────
+	// ── Multiple projected EXISTS in one SELECT ──────────────────────────────
 	//
-	// Multiple projected EXISTS in one SELECT is the documented multi-existential
-	// boundary (needs nested FlatMaps with intermediate record-bundling — never
-	// supported in the Go port). It must reject cleanly, never return wrong rows.
-	t.Run("guard_rejects_multi_existential_cleanly", func(t *testing.T) {
+	// Each existential's witness flows through its own FlatMap, as in Java
+	// (Java corpus exists-in-select.yamsql, "multiple exists in projection").
+	// Go refused this shape until 2026-10-07.
+	t.Run("multi_existential_projected", func(t *testing.T) {
 		q := "SELECT id, " +
 			"EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2, " +
 			"EXISTS (SELECT 1 FROM t3 WHERE t3.t1_id = t1.id) AS has_t3 " +
 			"FROM t1"
 		rows, err := db.QueryContext(ctx, q)
-		if err == nil {
-			// The query must NOT silently return rows; if it did, drain + fail.
-			cols, _ := rows.Columns()
-			var n int
-			for rows.Next() {
-				n++
-			}
-			rows.Close()
-			t.Fatalf("multi-existential projected EXISTS returned %d rows (cols=%v) instead of a clean error — "+
-				"the guard let an unfolded ExistsValue through", n, cols)
+		if err != nil {
+			t.Fatal(err)
 		}
-		// Must be a clean "not supported" error, not a panic or a wrong-rows pass.
-		msg := strings.ToLower(err.Error())
-		if !strings.Contains(msg, "not yet supported") && !strings.Contains(msg, "unsupported") &&
-			!strings.Contains(msg, "could not plan") {
-			t.Fatalf("expected a clean unsupported-query error, got: %v", err)
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var id int64
+			var a, b bool
+			if err := rows.Scan(&id, &a, &b); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, fmt.Sprintf("%d %v %v", id, a, b))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		sort.Strings(got)
+		want := "[1 true false 2 false true 3 true true 4 false false 5 true false]"
+		if fmt.Sprint(got) != want {
+			t.Fatalf("rows = %v, want %s", got, want)
 		}
 	})
 }
