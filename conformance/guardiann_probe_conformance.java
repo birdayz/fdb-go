@@ -216,6 +216,55 @@ class GuardiannProbeSteps extends ConformanceBase {
         return result;
     }
 
+    /**
+     * Scripted byte differential: replays ops on a deterministic-randomness
+     * GuardiANN (primaryClusterMin as given, max 10, hard max 40, collapse at 5
+     * duplicates) and dumps the subspace after every step. An op is
+     * ["insert"|"delete", id, x, y] or ["drain"]; a drain runs one task per
+     * transaction until none remains, each task its own step.
+     */
+    @ConformanceStep("guardiannByteScriptProbe")
+    public List<Map<String, Object>> guardiannByteScriptProbe(String clusterFile, String tenantName, byte[] subspace,
+                                                              int primaryClusterMin, List<List<Object>> ops) {
+        Guardiann guardiann = smallGuardiann(subspace, primaryClusterMin);
+        List<Map<String, Object>> steps = new ArrayList<>();
+        for (List<Object> op : ops) {
+            String kind = (String) op.get(0);
+            if (kind.equals("drain")) {
+                for (int round = 0; round < 40; round++) {
+                    Map<String, Object> step = new LinkedHashMap<>();
+                    step.put("op", "task");
+                    try {
+                        int executed = runInContext(clusterFile, tenantName, context ->
+                                guardiann.executeDeferredTasks(context.ensureActive(), 1, Long.MAX_VALUE).join());
+                        if (executed == 0) {
+                            break;
+                        }
+                    } catch (RuntimeException e) {
+                        step.put("op", "task failed");
+                        steps.add(step);
+                        break;
+                    }
+                    step.put("kvs", dumpSubspace(clusterFile, tenantName, subspace));
+                    steps.add(step);
+                }
+                continue;
+            }
+            long id = ((Number) op.get(1)).longValue();
+            double[] v = {((Number) op.get(2)).doubleValue(), ((Number) op.get(3)).doubleValue()};
+            if (kind.equals("insert")) {
+                insert(clusterFile, tenantName, guardiann, id, v);
+            } else {
+                delete(clusterFile, tenantName, guardiann, id, v);
+            }
+            Map<String, Object> step = new LinkedHashMap<>();
+            step.put("op", kind + " " + id);
+            step.put("kvs", dumpSubspace(clusterFile, tenantName, subspace));
+            steps.add(step);
+        }
+        return steps;
+    }
+
     /** Every key (printable and hex, relative to the subspace) and value (hex) under subspace. */
     private static List<List<String>> dumpSubspace(String clusterFile, String tenantName, byte[] subspace) {
         return runInContext(clusterFile, tenantName, context -> {

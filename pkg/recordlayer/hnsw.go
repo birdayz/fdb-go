@@ -1470,19 +1470,18 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 // falls back to simple distance-based selection.
 // Matches Java's Primitives.selectCandidates().
 func (g *hnswGraph) selectNeighbors(candidates []hnswCandidate, maxConn int) []hnswCandidate {
-	if len(candidates) <= maxConn {
-		return candidates
-	}
-
-	// Sort candidates by distance (ascending).
+	// Java polls the candidates from a queue ordered by
+	// NodeReferenceWithDistance.comparator (distance, then primary key) and
+	// runs the heuristic even when they all fit: a candidate closer to an
+	// already selected neighbour than to the query is dropped.
 	sort.Slice(candidates, func(i, j int) bool {
-		return hnswDistLess(candidates[i].dist, candidates[j].dist)
+		return hnswCandidateLess(candidates[i].dist, candidates[i].pkSpan, candidates[j].dist, candidates[j].pkSpan)
 	})
 
 	// Only apply the heuristic for metrics satisfying triangle inequality.
 	// Matches Java: if (metric.satisfiesTriangleInequality()) { ... }
 	if !g.config.Metric.satisfiesTriangleInequality() {
-		return candidates[:maxConn]
+		return candidates[:min(maxConn, len(candidates))]
 	}
 
 	var result []hnswCandidate
@@ -2949,7 +2948,7 @@ type distItem struct {
 }
 
 func (h distHeap) Len() int           { return len(h) }
-func (h distHeap) Less(i, j int) bool { return hnswDistLess(h[i].dist, h[j].dist) }
+func (h distHeap) Less(i, j int) bool { return h[i].less(h[j]) }
 func (h distHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 func (h *distHeap) Push(x any)        { *h = append(*h, x.(distItem)) }
 func (h *distHeap) Pop() any          { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
@@ -2959,3 +2958,15 @@ func (h *distHeap) Pop() any          { old := *h; n := len(old); x := old[n-1];
 // distance, which a cosine over non-finite components yields, is the farthest,
 // and -0.0 precedes 0.0.
 func hnswDistLess(a, b float64) bool { return compareFloat64Java(a, b) < 0 }
+
+func (d distItem) less(o distItem) bool { return hnswCandidateLess(d.dist, d.pkSpan, o.dist, o.pkSpan) }
+
+// hnswCandidateLess is NodeReferenceWithDistance.comparator in full: distance
+// by Double.compare, then primary key (a nested-encoded span sorts as its
+// tuple does).
+func hnswCandidateLess(aDist float64, aPK []byte, bDist float64, bPK []byte) bool {
+	if c := compareFloat64Java(aDist, bDist); c != 0 {
+		return c < 0
+	}
+	return bytes.Compare(aPK, bPK) < 0
+}

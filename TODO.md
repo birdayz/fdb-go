@@ -825,8 +825,15 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   capacity compute leaves, head-of-bin insertion), pinned against a real
   compute-filled HashMap at sizes either side of the resize points. Covers
   identities, cluster metadata and statistics, references, the centroid
-  HNSW and the task queue for split; still to add: merge, collapse, bounce,
-  reassignment and RaBitQ-trained codecs.
+  HNSW and the task queue for split. Scripted scenarios added (same
+  differential, step by step): merge, collapse, and split-with-reassign; the
+  last found a second divergence, in HNSW neighbour selection: Go skipped
+  the diversity heuristic when every candidate fit under M (Java's
+  selectCandidates always runs it) and broke distance ties arbitrarily (Java:
+  then primary key). Fixed for every HNSW graph
+  (`TestSelectNeighbors_IsJavasSelectCandidates`, mutation-checked; the
+  removed early return also hid an out-of-range slice in the no-triangle
+  branch). Still to add: bounce and RaBitQ-trained codecs.
 - [ ] Runner: unified bounded attempts, per-owner retries, commit ownership and
   deactivation, client proxy wait/body-chain causes, SPFresh stall bound and
   instrumentation. Apply the SPFresh paper review to affected algorithms.
