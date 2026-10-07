@@ -375,6 +375,14 @@ func (v *PlanVisitor) VisitQueryBody(body antlrgen.IQueryExpressionBodyContext) 
 	}
 	switch b := body.(type) {
 	case *antlrgen.QueryTermDefaultContext:
+		// A parenthesised query, `(SELECT …)` or `((…) UNION ALL …)`, is
+		// the query it encloses, as in Java's visitParenthesisQuery.
+		if paren, ok := b.QueryTerm().(*antlrgen.ParenthesisQueryContext); ok {
+			if inner := paren.Query(); inner != nil {
+				return v.buildCTEBodyQuery(inner)
+			}
+			return nil, nil
+		}
 		return v.VisitSimpleTable(b)
 	case *antlrgen.SetQueryContext:
 		return v.visitUnion(b)

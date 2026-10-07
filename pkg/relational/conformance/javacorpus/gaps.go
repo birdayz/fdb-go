@@ -80,9 +80,10 @@ var engineGaps = []EngineGap{
 	// rejects explicitly. Pin the statement because the file contains several
 	// later range() queries and only this first blocker is measured here.
 
-	// union-empty-tables.yamsql's correlated EXISTS over a UNION ALL body is
-	// CLOSED (each branch keeps its correlation); the file now stops at the
-	// parenthesised-star union union.yamsql stops at, booked below.
+	// union-empty-tables.yamsql and union.yamsql pass: the correlated EXISTS
+	// over a UNION ALL body keeps each branch's correlation, and a
+	// parenthesised statement (`((SELECT …) UNION ALL …)`) is the query it
+	// encloses.
 
 	// A WITH nested inside a recursive CTE's body.
 	{"documentation-queries/with-documentation-queries.yamsql", SkipGapNestedRecursiveWith, "nested WITH inside a recursive CTE body", "CQ-72"},
@@ -289,7 +290,8 @@ var engineGaps = []EngineGap{
 	//
 	//   - null-extraction-tests.yamsql now passes OUTRIGHT — its entry is gone
 	//     and it is counted in `pass`.
-	//   - union.yamsql reaches a bare `select * from t1` as a UNION ALL branch.
+	//   - union.yamsql reached a parenthesised statement; it passes now
+	//     (2026-10-07) and its entry is gone.
 	//   - join-tests.yamsql reached a comma join whose right side is a table and
 	//     whose left is a derived table the predicate references by alias. That
 	//     one is CLOSED — a join-bodied derived table's output row is now
@@ -299,10 +301,6 @@ var engineGaps = []EngineGap{
 	//     under exact-ordinal resolution; the file's live signature is now the
 	//     parenthesised star, booked at its own entry below.
 	//
-	// Both remaining signatures pin the exact statement, so a DIFFERENT failure
-	// in either file stays a hard failure rather than hiding under the entry.
-	{"union.yamsql", SkipGapPlannerDeclines, "select id as W, col1 as X, col2 as Y from t1 union all (select * from t1)", "CQ-72"},
-	{"union-empty-tables.yamsql", SkipGapPlannerDeclines, "(select id as W, col1 as X, col2 as Y from t1) union all select * from t1", "CQ-72"},
 	// The file's setup runs under CASE_SENSITIVE_IDENTIFIERS, so Java's DDL
 	// stores the schema `test1` as written and the verbatim connect URI
 	// (`?schema=test1`) reaches it; Go ignores the option, stores TEST1, and

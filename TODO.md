@@ -171,8 +171,9 @@ Never mark a whole workstream complete because one of its subitems passed.
       probe rows, mutation-checked by lifting it). Still refused: a nested
       EXISTS inside such an ON (DIVERGENCES.md, pinned). A correlated UNION
       ALL body is answered too (each branch keeps its correlation; five
-      probe rows), and the Java corpus file `union-empty-tables.yamsql` now
-      stops at the parenthesised-star union `union.yamsql` stops at.
+      probe rows). A parenthesised statement is the query it encloses, so the
+      Java corpus files `union-empty-tables.yamsql` and `union.yamsql` pass
+      (corpus 139 files, 8478 queries).
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays
