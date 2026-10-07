@@ -157,9 +157,6 @@ const (
 // without a name cannot be sized, prioritised or noticed when it closes.
 const (
 
-	// SkipGapRecursiveReferenceInSubquery is a recursive CTE's reference read
-	// inside a subquery of its own recursive leg.
-	SkipGapRecursiveReferenceInSubquery SkipClass = "engine-gap:recursive-reference-in-subquery"
 	// SkipConformanceGoAccepts is a query Go executes that Java rejects — a
 	// widening of the shared surface, tracked because the conformance
 	// principle governs that surface in both directions.
@@ -220,7 +217,6 @@ func AllSkipClasses() []SkipClass {
 		SkipDDLOther,
 		SkipGapStructDML,
 
-		SkipGapRecursiveReferenceInSubquery,
 		SkipConformanceGoAccepts,
 		SkipConformanceJavaPlannerBug,
 		SkipGapStarGroupBy,

@@ -243,6 +243,9 @@ func (v *PlanVisitor) declareCTEs(ctesCtx antlrgen.ICtesContext) ([]*logical.CTE
 				v.preparedQueryBodies = map[antlrgen.IQueryExpressionBodyContext]logical.LogicalOperator{seedContext: seed}
 				source := v.cteScopes[upper]
 				source.CTE = registry.Lookup(name, fullIDSegments(nq.GetName())...)
+				if source.CTE != nil {
+					source.CTE.SetBuildingSeed(seed)
+				}
 				v.cteScopes[upper] = source
 			}
 			defer func() {

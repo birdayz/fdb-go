@@ -56,6 +56,18 @@ func (t *cascadesTranslator) existsInputRef(esq logical.ExistsSubquery) *express
 		return nil
 	}
 	input := esq.Input
+	if input.Reference() == nil {
+		// Deferred: lowered here, inside the recursive translation that
+		// binds its self-reference.
+		plan := esq.Plan
+		if esq.JoinPredicate != nil {
+			plan = &logical.LogicalFilter{Input: plan, Predicate: esq.JoinPredicate}
+		}
+		for _, scalar := range input.Scalars() {
+			t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{Alias: scalar.Alias, Plan: scalar.Plan})
+		}
+		return t.translateSubqueryRef(plan)
+	}
 	if esq.JoinPredicate != nil {
 		// A subquery WHERE belongs below FirstOrDefault. Retain its owned FROM
 		// producer while attaching the correlation inside the existential input.
@@ -82,6 +94,9 @@ func (t *cascadesTranslator) existsInputRef(esq logical.ExistsSubquery) *express
 func rebaseExistsInputPredicates(esq logical.ExistsSubquery, rebase func(predicates.QueryPredicate) (predicates.QueryPredicate, bool)) (logical.ExistsSubquery, bool) {
 	if esq.Input == nil {
 		return esq, true
+	}
+	if esq.Input.Reference() == nil {
+		return esq, false
 	}
 	ref, ok := rebaseBoundFilterChain(esq.Input.Reference(), rebase)
 	if !ok {

@@ -8052,6 +8052,29 @@ func (p *subqueryClause) BuildExists(q antlrgen.IQueryContext) (values.Correlati
 	if lowered.join != nil {
 		lowered.plan = &logical.LogicalFilter{Input: lowered.plan, Predicate: lowered.join}
 	}
+	// A subquery reading the recursive declaration being built (its
+	// self-reference, `NOT EXISTS (SELECT … FROM c …)` in the recursive leg)
+	// is lowered by the translator inside the recursive translation, where
+	// the self-reference is the temporary table scan; here it is only typed,
+	// by the seed.
+	if logical.ReadsBuildingCTE(lowered.plan) {
+		row, err := query.ExactLogicalResultType(lowered.plan, p.md)
+		if err != nil {
+			return values.CorrelationIdentifier{}, nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"EXISTS over a recursive reference has no exact row: %v", err)
+		}
+		input, err := logical.NewDeferredExistsInput(row, nil)
+		if err != nil {
+			return values.CorrelationIdentifier{}, nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "%v", err)
+		}
+		alias := p.mintSubqueryAlias()
+		p.subqueries = append(p.subqueries, logical.ExistsSubquery{
+			Alias: alias, Plan: lowered.plan, Input: input, FlowedType: input.ResultType(),
+			KnownTruth: lowered.truth, Constraint: lowered.constraint,
+		})
+		p.scalarSubqueries = append(p.scalarSubqueries, lowered.scalars...)
+		return alias, values.WithNullability(input.ResultType(), true), nil
+	}
 	input, err := query.LowerExistsInput(lowered.plan, p.md, lowered.retained...)
 	if err != nil {
 		return values.CorrelationIdentifier{}, nil, err

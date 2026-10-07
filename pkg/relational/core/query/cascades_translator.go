@@ -1575,7 +1575,7 @@ func underlyingGroupBy(expr expressions.RelationalExpression) *expressions.Group
 }
 
 func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressions.Reference {
-	if input := t.ownedInputs[op]; input != nil {
+	if input := t.ownedInputs[op]; input != nil && input.Reference() != nil {
 		for _, scalar := range input.Scalars() {
 			t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{Alias: scalar.Alias, Plan: scalar.Plan})
 		}

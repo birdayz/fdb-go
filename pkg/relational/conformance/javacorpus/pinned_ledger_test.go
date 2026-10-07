@@ -9,7 +9,7 @@ package javacorpus_test
 // specification gap with a size. A phase that closes a gap moves counts between
 // classes and updates this line in the same commit; a count moving for any
 // other reason is exactly the drift this pin exists to catch.
-const pinnedLedger = "pass=148 fail=0 skip=107 queries=9205 file_skips{conformance:go-accepts-what-java-rejects=15,conformance:java-disabled=1,conformance:java-planner-bug=4,engine-gap:recursive-reference-in-subquery=1,engine-gap:star-group-by-expansion=1,fragment=2,plan-assertion=4,polarity:fixed-version-meta=11,polarity:negative-execution=37,polarity:negative-parse=25,unsupported:continuation=3,unsupported:multi-cluster=2,vacuous:all-assertions-skipped=1} inner_skips{conformance:go-accepts-what-java-rejects=15,conformance:java-disabled=1,conformance:java-planner-bug=4,engine-gap:recursive-reference-in-subquery=1,engine-gap:star-group-by-expansion=1,no-checks=8,plan-assertion=4985,polarity:negative-execution=37,unsupported:continuation=152,unsupported:debugger=3,unsupported:multi-cluster=2,unsupported:random-injection=30}"
+const pinnedLedger = "pass=149 fail=0 skip=106 queries=9206 file_skips{conformance:go-accepts-what-java-rejects=15,conformance:java-disabled=1,conformance:java-planner-bug=4,engine-gap:star-group-by-expansion=1,fragment=2,plan-assertion=4,polarity:fixed-version-meta=11,polarity:negative-execution=37,polarity:negative-parse=25,unsupported:continuation=3,unsupported:multi-cluster=2,vacuous:all-assertions-skipped=1} inner_skips{conformance:go-accepts-what-java-rejects=15,conformance:java-disabled=1,conformance:java-planner-bug=4,engine-gap:star-group-by-expansion=1,no-checks=8,plan-assertion=4985,polarity:negative-execution=37,unsupported:continuation=152,unsupported:debugger=3,unsupported:multi-cluster=2,unsupported:random-injection=30}"
 
 // pinnedFileTotal closes the ledger: every corpus file lands in exactly one of
 // pass / fail / skip. Asserting the sum separately means a file that vanished
@@ -17,4 +17,4 @@ const pinnedLedger = "pass=148 fail=0 skip=107 queries=9205 file_skips{conforman
 const pinnedFileTotal = 255
 
 // pinnedAssignmentDigest is sha256 over the sorted `path status class` lines.
-const pinnedAssignmentDigest = "c3f0112abb23cbebc1c718fb4b7c235ea5ec55d5bad21585a8c380f78bbe83d6"
+const pinnedAssignmentDigest = "6f24a3ebc8b6c6880c5c640bff646d437d846fd2fd2c6adf5b7c46ff144986a3"

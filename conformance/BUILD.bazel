@@ -447,6 +447,7 @@ go_test(
         "projected_exists_left_join_java_probe_test.go",
         "quoted_identifier_case_java_probe_test.go",
         "record_constructor_java_probe_test.go",
+        "recursive_reference_subquery_java_probe_test.go",
         "select_where_precedence_java_probe_test.go",
         "star_scope_java_probe_test.go",
         "sum_overflow_join_leg_java_probe_test.go",

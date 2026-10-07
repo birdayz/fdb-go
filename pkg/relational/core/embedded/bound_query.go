@@ -162,7 +162,10 @@ func boundDependencies(op logical.LogicalOperator, ctes map[*logical.CTEProducer
 	var children []logical.LogicalOperator
 	switch node := op.(type) {
 	case *logical.LogicalScan:
-		if producer := node.Source.Producer(); producer != nil {
+		// A recursive CTE's reference to itself, met while its body is still
+		// being built, has no body yet; its free bindings are that body's,
+		// which the enclosing walk already counts.
+		if producer := node.Source.Producer(); producer != nil && producer.Body() != nil {
 			if _, found := ctes[producer]; !found {
 				ctes[producer] = make(bindingSet)
 				body, err := boundDependencies(producer.Body(), ctes)

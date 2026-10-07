@@ -33,6 +33,19 @@ func NewExistsInput(reference *expressions.Reference, scalars []ScalarSubquery) 
 	return &ExistsInput{reference: reference, row: row, scalars: slices.Clone(scalars)}, nil
 }
 
+// NewDeferredExistsInput is the input of an EXISTS over a recursive
+// declaration still being built: typed now, by the declaration's seed, and
+// lowered by the translator inside the recursive translation, where the
+// self-reference is the temporary table scan. Its Reference is nil.
+func NewDeferredExistsInput(row values.Type, scalars []ScalarSubquery) (*ExistsInput, error) {
+	snapshot, err := values.SnapshotExactType(row)
+	if err != nil {
+		return nil, fmt.Errorf("EXISTS input has no exact result type: %w", err)
+	}
+	return &ExistsInput{row: snapshot, scalars: slices.Clone(scalars)}, nil
+}
+
+// Reference is the lowered producer, nil for a deferred input.
 func (i *ExistsInput) Reference() *expressions.Reference { return i.reference }
 
 func (i *ExistsInput) ResultType() values.Type { return i.row.Type() }

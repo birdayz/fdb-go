@@ -93,8 +93,9 @@ var engineGaps = []EngineGap{
 	// reads a FROM alias of the recursive reference as a table inside an
 	// EXISTS (`NOT EXISTS (SELECT name FROM c …)`); an enclosing alias read as
 	// a table re-reads its source since 2026-10-07, which here is the
-	// recursive reference itself, inside a subquery of its own recursive leg.
-	{"documentation-queries/with-documentation-queries.yamsql", SkipGapRecursiveReferenceInSubquery, "no bound dependency property for <nil>", "CQ-72"},
+	// recursive reference itself; that EXISTS is typed by the seed and
+	// lowered inside the recursive translation, so the file passes
+	// (RecursiveReferenceInSubqueryJavaProbe).
 
 	// joins-documentation-queries.yamsql used to stop at a JOIN-bodied derived
 	// table whose ON clause could not be resolved back to its sources. CLOSED:

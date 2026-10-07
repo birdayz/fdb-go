@@ -826,6 +826,16 @@ func deriveCTEProducerType(producer *logical.CTEProducer, md *recordlayer.Record
 	env.registry = env.registry.BodyScope(producer)
 	env.types[producer] = nil
 	defer delete(env.types, producer)
+	if seed := producer.BuildingSeed(); seed != nil {
+		row, err := deriveLogicalResultType(seed, md, env, unionType)
+		if err != nil {
+			return nil, err
+		}
+		if row, err = quantifierNamedRow(seed, row, md, env); err != nil {
+			return nil, err
+		}
+		return cteBoundRowType(row, producer)
+	}
 	if producer.Recursive() {
 		if union, ok := producer.Body().(*logical.LogicalUnion); ok {
 			for _, branch := range union.Inputs {
