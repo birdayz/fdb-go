@@ -141,6 +141,35 @@ func (m *StoreModel) Save(msg proto.Message) {
 	}
 }
 
+// Clone returns an independent copy of the model. Stored messages are shared:
+// the model never mutates a message after Save.
+func (m *StoreModel) Clone() *StoreModel {
+	c := &StoreModel{
+		Records:            make(map[string]*ModelRecord, len(m.Records)),
+		metadata:           m.metadata,
+		CountUpdates:       make(map[string]int64, len(m.CountUpdates)),
+		MaxEver:            make(map[string]int64, len(m.MaxEver)),
+		MinEver:            make(map[string]int64, len(m.MinEver)),
+		minEverInitialized: make(map[string]bool, len(m.minEverInitialized)),
+	}
+	for k, v := range m.Records {
+		c.Records[k] = v
+	}
+	for k, v := range m.CountUpdates {
+		c.CountUpdates[k] = v
+	}
+	for k, v := range m.MaxEver {
+		c.MaxEver[k] = v
+	}
+	for k, v := range m.MinEver {
+		c.MinEver[k] = v
+	}
+	for k, v := range m.minEverInitialized {
+		c.minEverInitialized[k] = v
+	}
+	return c
+}
+
 // Delete removes a record from the model. No-op if not found.
 func (m *StoreModel) Delete(pk tuple.Tuple) {
 	delete(m.Records, string(pk.Pack()))

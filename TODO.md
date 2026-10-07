@@ -864,9 +864,20 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   ExponentialDelay (uniform [0, current), doubling, 2 ms floor);
   runner.go's own code list (with 1235/1242) is gone
   (`TestRetryPredicates_AnyCauseAndFirstCause`, mutation-checked).
-  Open: moving Run and its variants onto a bounded attempt loop
-  (maxAttempts 10, retry limit 0 on the backend), the body error-chain
-  recorder, per-owner policies, the SPFresh split-window and stall bound.
+  Attempt loop done: `attemptLoop` (attempt_loop.go) carries Run,
+  RunWithWeakReads (weak reads on the first execution only),
+  RunWithVersionstamp, RunRead, RunWithRetry and the heartbeat cleanup;
+  maxAttempts 10 (`FDBDatabase.SetMaxAttempts`/`SetRetryDelays`), backend
+  retry limit 0 per attempt, the body error recorder (reset per execution),
+  `AttemptCall`/`AttemptTransactor`, an attempt observer,
+  `SPFreshSplitWindowError` retried uncounted and `SPFreshStalledSealError`
+  after 100 under simulation; SPFresh lifecycles stay on `runClientLoop`;
+  the record hunt reconciles exhausted operations against the predicted
+  side (`exhaustion_test.go`). DIVERGENCES entry added.
+  Open: per-owner policies (DDL one attempt with the catalog bootstrap made
+  check-then-create, OnlineIndexer `SetMaxAttempts`), the chaos transactor
+  keyed on `AttemptCall`, the chaos model's exhaustion reconcile, the SQL
+  harnesses' error classes, SPFresh takeover/stall SimFDB fixtures.
   Pure-Go wrapper done: `TransactCtx`, `ReadTransactCtx` and the tenant
   forms keep the last execution's body error when OnError re-raises its
   code (the Apple binding's `retryable`), panics included

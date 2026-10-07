@@ -92,6 +92,16 @@ type FDBDatabase struct {
 	// atomic.Pointer because SetTimer may be called on a database other goroutines are
 	// already opening contexts against.
 	timer atomic.Pointer[StoreTimer]
+
+	// The attempt policy of Run and its variants (attempt_loop.go): Java's
+	// FDBDatabaseFactory maxAttempts / initialDelayMillis / maxDelayMillis.
+	// Zero means the default.
+	maxAttempts  atomic.Int64
+	initialDelay atomic.Int64
+	maxDelay     atomic.Int64
+	delaysSet    atomic.Bool
+
+	attemptObserver atomic.Pointer[AttemptObserver]
 }
 
 // SetTimer installs the StoreTimer that every context this database opens will record
@@ -283,62 +293,128 @@ func (d *FDBDatabase) applyReadSystemKeys(o fdb.TransactionOptions) {
 	}
 }
 
-// Run executes a function within a transaction with automatic retry handling.
-// Before committing, flushes any queued versionstamp mutations.
-// Matches Java's FDBRecordContext.commitAsync() behavior.
+// Run executes fn in a transaction and commits it, retrying as Java's
+// FDBDatabaseRunner does (FDBDatabaseRunnerImpl.RunRetriable): at most
+// MaxAttempts attempts (default 10), each a fresh transaction, retried while
+// some cause of the error is retriable, with Java's ExponentialDelay between
+// attempts (attemptLoop). Before committing it runs the commit checks and
+// flushes queued versionstamp mutations, as FDBRecordContext.commitAsync does;
+// the post-commit hooks run once, after the attempt that committed.
 func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
-	var lastCtx *FDBRecordContext
-	var commitStart time.Time
-	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
-		d.applyReadSystemKeys(tx.Options())
-		recordCtx := &FDBRecordContext{
-			transactionID: nextTransactionID.Add(1),
-			tx:            tx,
-			ctx:           ctx,
-			env:           d.env,
-			database:      d,
-			routeOwned:    true,
-		}
-		recordCtx.SetTimer(d.Timer())
-		lastCtx = recordCtx
+	result, _, err := d.runContexts(ctx, d.policy("run"), RouteAttempt, nil, false, fn)
+	return result, err
+}
 
-		result, err := fn(recordCtx)
-		if err != nil {
-			return nil, err
-		}
+// runClientLoop runs fn through the transactor's own retry loop, which is
+// unbounded on the pure-Go client and libfdb_c and capped at 100 retries on
+// SimFDB. Only SPFresh's background lifecycles use it (spfreshRun): RFC-094
+// keeps them on the client loop, and nothing else may.
+func (d *FDBDatabase) runClientLoop(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
+	result, _, err := d.runContexts(ctx, attemptPolicy{owner: "spfresh.lifecycle", maxAttempts: 1}, RouteClientLoop, nil, false, fn)
+	return result, err
+}
 
-		// EventCommit spans the pre-commit checks plus the commit itself, which is
-		// the interval Java measures: startTimeNanos is taken at the first line of
-		// commitAsync, before runCommitChecks, and the event is recorded when the
-		// commit future completes (FDBRecordContext.java:478, :513-533; the
-		// FDBStoreTimer javadoc at :81-86 says so explicitly). Post-commit hooks
-		// are outside the span in Java and are outside it here.
-		//
-		// It has to be recorded out here rather than in FDBRecordContext.Commit
-		// because on this path the commit belongs to the transactor's retry loop —
-		// nothing ever calls Commit, which is why the whole autocommit SQL path
-		// reported zero commits while committing on every statement.
-		commitStart = time.Now()
+// runContexts is Run and its variants. Each attempt is one transactor call
+// whose body opens a route-owned record context; on RouteAttempt the backend's
+// own retry limit is 0, so the backend makes exactly one attempt and the loop
+// counts it. weak applies to the first execution only, as Java's
+// TransactionalRunner clears weak-read semantics on a retry
+// (TransactionalRunner.java:181-192), so a retry never reuses an old read
+// version. versionstamp asks for the committed versionstamp.
+func (d *FDBDatabase) runContexts(ctx context.Context, policy attemptPolicy, route AttemptRoute, weak *WeakReadSemantics, versionstamp bool, fn func(rtx *FDBRecordContext) (any, error)) (any, []byte, error) {
+	var (
+		lastCtx     *FDBRecordContext
+		commitStart time.Time
+		vsFuture    fdb.FutureKey
+		body        bodyErrorRecorder
+	)
+	execute := func(call AttemptCall) (any, error) {
+		result, err := d.transactAttempt(ctx, call, func(tx fdb.WritableTransaction) (any, error) {
+			// Each execution starts clean: a previous execution's context,
+			// commit timing and versionstamp future are stale.
+			body.start()
+			lastCtx, commitStart, vsFuture = nil, time.Time{}, nil
+			if route == RouteAttempt {
+				if err := tx.Options().SetRetryLimit(0); err != nil {
+					return nil, body.record(err)
+				}
+			}
+			d.applyReadSystemKeys(tx.Options())
+			if weak != nil && weak.IsCausalReadRisky && call.Execution == 0 {
+				tx.Options().SetCausalReadRisky()
+			}
+			recordCtx := &FDBRecordContext{
+				transactionID: nextTransactionID.Add(1),
+				tx:            tx,
+				ctx:           ctx,
+				env:           d.env,
+				database:      d,
+				routeOwned:    true,
+			}
+			recordCtx.SetTimer(d.Timer())
+			lastCtx = recordCtx
 
-		// Run pre-commit checks before flushing
-		if err := recordCtx.runCommitChecks(); err != nil {
-			return nil, err
-		}
+			result, err := fn(recordCtx)
+			if err != nil {
+				return nil, body.record(err)
+			}
+			result, err = d.precommit(recordCtx, result, &commitStart)
+			if err != nil {
+				return nil, body.record(err)
+			}
+			if versionstamp && recordCtx.HasVersionMutations() {
+				vsFuture = tx.GetVersionstamp()
+			}
+			return result, nil
+		})
+		return result, body.resolve(err)
+	}
 
-		// Flush queued version mutations before FDB's Transact commits.
-		recordCtx.flushVersionMutations()
-
-		return result, nil
-	})
+	var result any
+	var err error
+	if route == RouteClientLoop {
+		result, err = execute(AttemptCall{Route: route, Owner: policy.owner, CallID: nextAttemptCallID.Add(1)})
+	} else {
+		result, err = attemptLoop(ctx, d.env, d.observer(), policy, route, execute)
+	}
 	if err != nil {
-		return result, err
+		return nil, nil, err
 	}
 	recordCommitSince(lastCtx, commitStart)
-
-	// Run post-commit callbacks after successful commit
+	// Post-commit callbacks run once, after the attempt that committed.
 	if lastCtx != nil {
 		lastCtx.runPostCommits()
 	}
+	if vsFuture != nil {
+		vs, err := vsFuture.Get()
+		if err != nil {
+			return result, nil, fmt.Errorf("failed to get versionstamp: %w", err)
+		}
+		return result, []byte(vs), nil
+	}
+	return result, nil, nil
+}
+
+// precommit is the part of FDBRecordContext.commitAsync that runs before the
+// transactor commits: the commit checks and the versionstamp flush.
+func (d *FDBDatabase) precommit(recordCtx *FDBRecordContext, result any, commitStart *time.Time) (any, error) {
+	// EventCommit spans the pre-commit checks plus the commit itself, which is
+	// the interval Java measures: startTimeNanos is taken at the first line of
+	// commitAsync, before runCommitChecks, and the event is recorded when the
+	// commit future completes (FDBRecordContext.java:478, :513-533; the
+	// FDBStoreTimer javadoc at :81-86 says so explicitly). Post-commit hooks
+	// are outside the span in Java and are outside it here.
+	//
+	// It has to be recorded out here rather than in FDBRecordContext.Commit
+	// because on this path the commit belongs to the transactor's retry loop —
+	// nothing ever calls Commit, which is why the whole autocommit SQL path
+	// reported zero commits while committing on every statement.
+	*commitStart = time.Now()
+	if err := recordCtx.runCommitChecks(); err != nil {
+		return nil, err
+	}
+	// Flush queued version mutations before the transactor commits.
+	recordCtx.flushVersionMutations()
 	return result, nil
 }
 
@@ -392,12 +468,21 @@ func runReadTransactCtx(t fdb.ReadTransactor, ctx context.Context, fn func(fdb.R
 // ctx bounds the read-retry loop + backoff when the transactor supports it
 // (fdb.CtxReadTransactor); the entry check also returns early if already cancelled.
 func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransaction) (any, error)) (any, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return runReadTransactCtx(d.transactor, ctx, func(rtx fdb.ReadTransaction) (any, error) {
-		d.applyReadSystemKeys(rtx.Options())
-		return fn(rtx)
+	var body bodyErrorRecorder
+	return attemptLoop(ctx, d.env, d.observer(), d.policy("run.read"), RouteAttempt, func(call AttemptCall) (any, error) {
+		result, err := d.readTransactAttempt(ctx, call, func(rtx fdb.ReadTransaction) (any, error) {
+			body.start()
+			if err := rtx.Options().SetRetryLimit(0); err != nil {
+				return nil, body.record(err)
+			}
+			d.applyReadSystemKeys(rtx.Options())
+			result, err := fn(rtx)
+			if err != nil {
+				return nil, body.record(err)
+			}
+			return result, nil
+		})
+		return result, body.resolve(err)
 	})
 }
 
@@ -405,112 +490,15 @@ func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransacti
 // If IsCausalReadRisky is set, the transaction reads from any replica.
 // Matches Java's FDBDatabase.openContext(config, timer, weakReadSemantics, ...).
 func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemantics, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
-	var lastCtx *FDBRecordContext
-	var commitStart time.Time
-	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
-		d.applyReadSystemKeys(tx.Options())
-		if weak.IsCausalReadRisky {
-			tx.Options().SetCausalReadRisky()
-		}
-		recordCtx := &FDBRecordContext{
-			transactionID: nextTransactionID.Add(1),
-			tx:            tx,
-			ctx:           ctx,
-			env:           d.env,
-			database:      d,
-			routeOwned:    true,
-		}
-		recordCtx.SetTimer(d.Timer())
-		lastCtx = recordCtx
-
-		result, err := fn(recordCtx)
-		if err != nil {
-			return nil, err
-		}
-
-		commitStart = time.Now()
-		if err := recordCtx.runCommitChecks(); err != nil {
-			return nil, err
-		}
-		recordCtx.flushVersionMutations()
-		return result, nil
-	})
-	if err != nil {
-		return result, err
-	}
-	recordCommitSince(lastCtx, commitStart)
-	if lastCtx != nil {
-		lastCtx.runPostCommits()
-	}
-	return result, nil
+	result, _, err := d.runContexts(ctx, d.policy("run.weak"), RouteAttempt, &weak, false, fn)
+	return result, err
 }
 
 // RunWithVersionstamp is like Run but also returns the committed versionstamp.
 // Use this when you need the versionstamp after commit (e.g. for record versioning).
 // Returns (result, versionstamp, error). Versionstamp is nil for read-only transactions.
 func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, []byte, error) {
-	var vsFuture fdb.FutureKey
-	var hasVersionMutations bool
-	var lastCtx *FDBRecordContext
-	var commitStart time.Time
-
-	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
-		// Reset on retry — previous attempt's future is stale
-		vsFuture = nil
-		hasVersionMutations = false
-
-		d.applyReadSystemKeys(tx.Options())
-		recordCtx := &FDBRecordContext{
-			transactionID: nextTransactionID.Add(1),
-			tx:            tx,
-			ctx:           ctx,
-			env:           d.env,
-			database:      d,
-			routeOwned:    true,
-		}
-		recordCtx.SetTimer(d.Timer())
-		lastCtx = recordCtx
-
-		result, err := fn(recordCtx)
-		if err != nil {
-			return nil, err
-		}
-
-		commitStart = time.Now()
-
-		// Run pre-commit checks
-		if err := recordCtx.runCommitChecks(); err != nil {
-			return nil, err
-		}
-
-		recordCtx.flushVersionMutations()
-
-		hasVersionMutations = recordCtx.HasVersionMutations()
-		if hasVersionMutations {
-			vsFuture = tx.GetVersionstamp()
-		}
-
-		return result, nil
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	recordCommitSince(lastCtx, commitStart)
-
-	// Run post-commit callbacks after successful commit
-	if lastCtx != nil {
-		lastCtx.runPostCommits()
-	}
-
-	if hasVersionMutations && vsFuture != nil {
-		vs, err := vsFuture.Get()
-		if err != nil {
-			return result, nil, fmt.Errorf("failed to get versionstamp: %w", err)
-		}
-		return result, []byte(vs), nil
-	}
-
-	return result, nil, nil
+	return d.runContexts(ctx, d.policy("run.versionstamp"), RouteAttempt, nil, true, fn)
 }
 
 // BackendCapabilityError is returned when an operation is not supported on the

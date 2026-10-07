@@ -244,35 +244,10 @@ func (r *FDBDatabaseRunner) contextTimer() *StoreTimer {
 // Non-retryable errors are returned immediately.
 // Matches Java's FDBDatabaseRunnerImpl.run().
 func (r *FDBDatabaseRunner) RunWithRetry(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
-	var lastErr error
-	// FDBDatabaseRunnerImpl.RunRetriable: one ExponentialDelay per run, and a
-	// retry while some cause is retriable (isRetriableAnyCause).
-	backoff := newExponentialDelay(r.InitialDelay, r.MaxDelay, r.db.Env())
-
-	for attempt := 0; attempt < r.MaxAttempts; attempt++ {
-		if attempt > 0 {
-			delay := backoff.delay()
-			timer := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return nil, ctx.Err()
-			case <-timer.C:
-			}
-		}
-
-		result, err := r.runOnce(ctx, fn)
-		if err == nil {
-			return result, nil
-		}
-
-		lastErr = err
-		if !isRetriableAnyCause(err) {
-			return nil, err
-		}
-	}
-
-	return nil, lastErr
+	policy := attemptPolicy{owner: "runner", maxAttempts: r.MaxAttempts, initialDelay: r.InitialDelay, maxDelay: r.MaxDelay}
+	return attemptLoop(ctx, r.db.Env(), r.db.observer(), policy, RouteOwnTransaction, func(AttemptCall) (any, error) {
+		return r.runOnce(ctx, fn)
+	})
 }
 
 // runOnce executes fn in a single transaction, applying context config.

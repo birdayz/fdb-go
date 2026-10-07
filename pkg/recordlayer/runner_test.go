@@ -58,17 +58,18 @@ var _ = Describe("FDBDatabaseRunner", func() {
 			Expect(attempts).To(Equal(1))
 		})
 
-		It("succeeds on first attempt even with pre-cancelled context", func() {
+		It("returns the context's error without an attempt when the context has already ended", func() {
 			cancelCtx, cancel := context.WithCancel(ctx)
-			cancel() // Cancel immediately — but first attempt still runs
+			cancel()
 
 			runner := NewFDBDatabaseRunner(sharedDB)
+			attempts := 0
 			_, err := runner.RunWithRetry(cancelCtx, func(rtx *FDBRecordContext) (any, error) {
+				attempts++
 				return nil, nil
 			})
-			// Cancellation is only checked before retry delays, not before the first attempt.
-			// If the function succeeds on the first try, no retry (and no cancel check) needed.
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).To(MatchError(context.Canceled))
+			Expect(attempts).To(Equal(0))
 		})
 
 		It("applies context config", func() {

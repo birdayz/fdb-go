@@ -317,27 +317,10 @@ func (oi *OnlineIndexer) cleanupPendingQueueHeartbeat(heartbeat *IndexingHeartbe
 // Repeating own-key clears after an unknown commit is safe. Expiry is the
 // fallback after a terminal failure or exhaustion of the cleanup deadline.
 func (oi *OnlineIndexer) cleanupHeartbeatWithin(ctx context.Context, heartbeat *IndexingHeartbeat) error {
-	runner := NewFDBDatabaseRunner(oi.db)
-	backoff := newExponentialDelay(runner.InitialDelay, runner.MaxDelay, oi.db.Env())
-	var err error
-	for attempt := 0; attempt < runner.MaxAttempts; attempt++ {
-		if cause := ctx.Err(); cause != nil {
-			return cause
-		}
-		if attempt > 0 {
-			timer := time.NewTimer(backoff.delay())
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return ctx.Err()
-			case <-timer.C:
-			}
-		}
-		err = oi.cleanupHeartbeatAttempt(ctx, heartbeat)
-		if err == nil || !isRetriableAnyCause(err) {
-			return err
-		}
-	}
+	policy := oi.db.policy("heartbeat.cleanup")
+	_, err := attemptLoop(ctx, oi.db.Env(), oi.db.observer(), policy, RouteOwnTransaction, func(AttemptCall) (any, error) {
+		return nil, oi.cleanupHeartbeatAttempt(ctx, heartbeat)
+	})
 	return err
 }
 

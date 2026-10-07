@@ -2900,6 +2900,33 @@ five-second limit before the application's own time limit continues where it sto
 of failing. The transaction runner's rule (`isRetriableAnyCause`, any cause in the chain) does
 not retry 1031, as the target's does not.
 
+## Run's bounded attempts: the Go-only parts
+
+`FDBDatabase.Run`, its variants, `RunRead` and `FDBDatabaseRunner.RunWithRetry` retry as Java's
+runner does (`FDBDatabaseRunnerImpl.RunRetriable`: at most `MaxAttempts`, default 10, while any
+cause is retriable, with `ExponentialDelay` between attempts; each attempt a fresh transaction
+whose backend retry limit is 0). What Go adds or leaves out:
+
+- An SPFresh foreground write that meets only SEALED postings raises `SPFreshSplitWindowError`
+  (it wraps not_committed, 1020), and the loop retries it without counting an attempt, bounded by
+  the caller's context: RFC-094's foreground contract that a write re-runs until the split
+  publishes. It still takes the delay. The target has no SPFresh.
+- Under a simulated environment (`dst.NewSim`) the delay is drawn, so the seeded stream matches a
+  real run's, and not waited: the simulation does not model the retry delay's time, and nothing
+  persisted reads it. Since that would make a stalled seal a hot loop, a simulated run fails the
+  call with `SPFreshStalledSealError` after 100 consecutive retries that met the same sealed
+  postings (SimFDB's former retry backstop). A real environment has no such bound.
+- SPFresh's background lifecycles (`spfreshRun`) keep the transactor's own retry loop
+  (`runClientLoop`), unbounded on the pure-Go client and libfdb_c and capped at 100 retries on
+  SimFDB.
+- A transactor passed to `NewFDBDatabaseWithTransactor` that does not implement
+  `AttemptTransactor` is called once per attempt and sees every attempt, but not the call's
+  identity (`AttemptCall`).
+- A context that ends between attempts returns an error wrapping both the context's error and the
+  last attempt's; Java has no context.
+
+Pinned by `attempt_loop_test.go` and the hunt's exhaustion fixtures (`exhaustion_test.go`).
+
 ## A vector search holds its partition lock for the search, not the cursor
 
 Both engines read-lock `LockIdentifier(partitionSubspace)` for a vector scan, the key a write to
