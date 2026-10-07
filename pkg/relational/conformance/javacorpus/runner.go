@@ -35,11 +35,16 @@ type Config struct {
 // runs the whole schema_template lifecycle there.
 const catalogPath = "/__SYS"
 
+// catalogTarget is Java's connection 0, `jdbc:embed:/__SYS?schema=CATALOG`:
+// SQL over it reads the catalog's tables (SCHEMAS, DATABASES, TEMPLATES).
+var catalogTarget = connTarget{Path: catalogPath, Schema: "CATALOG"}
+
 // connTarget is a resolved `connect:` destination.
 type connTarget struct {
 	// Path is the database path, e.g. "/YAML_X_DB" or catalogPath.
 	Path string
-	// Schema is the default schema, empty for the catalog connection.
+	// Schema is the default schema; CATALOG for the catalog connection, as
+	// Java's `jdbc:embed:/__SYS?schema=CATALOG`.
 	Schema string
 }
 
@@ -372,7 +377,7 @@ func (r *runner) executeSchemaTemplate(ctx context.Context, resource string, blk
 	dbPath := "/FRL/" + id + "_DB"
 	schema := id + "_SCHEMA"
 
-	cat, err := r.open(connTarget{Path: catalogPath})
+	cat, err := r.open(catalogTarget)
 	if err != nil {
 		return err
 	}
@@ -592,9 +597,8 @@ func parseJDBCURI(s string) (connTarget, error) {
 		}
 	}
 	if path == catalogPath {
-		// The catalog connection carries no schema in the Go DSN: its schema
-		// is implied, exactly as `connect: 0` builds it.
-		return connTarget{Path: catalogPath}, nil
+		// Every catalog connection is Java's connection 0, schema CATALOG.
+		return catalogTarget, nil
 	}
 	return connTarget{Path: path, Schema: schema}, nil
 }
@@ -609,7 +613,7 @@ func parseIndex(s string) (int64, error) {
 
 func pick(list []connTarget, idx int64) (connTarget, error) {
 	if idx == 0 {
-		return connTarget{Path: catalogPath}, nil
+		return catalogTarget, nil
 	}
 	if idx < 1 || idx > int64(len(list)) {
 		return connTarget{}, fmt.Errorf("requested connection URI at index %d, but only have %d available connection URIs", idx, len(list))

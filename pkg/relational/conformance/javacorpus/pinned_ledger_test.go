@@ -9,7 +9,7 @@ package javacorpus_test
 // specification gap with a size. A phase that closes a gap moves counts between
 // classes and updates this line in the same commit; a count moving for any
 // other reason is exactly the drift this pin exists to catch.
-const pinnedLedger = "pass=142 fail=0 skip=113 queries=8899 file_skips{conformance:go-accepts-what-java-rejects=14,conformance:java-disabled=1,conformance:java-planner-bug=3,engine-gap:case-sensitive-identifiers=3,engine-gap:catalog-system-tables=3,engine-gap:error-class=2,engine-gap:exists-from-alias=1,engine-gap:star-group-by-expansion=1,fragment=2,plan-assertion=4,polarity:fixed-version-meta=11,polarity:negative-execution=37,polarity:negative-parse=25,unsupported:continuation=3,unsupported:multi-cluster=2,vacuous:all-assertions-skipped=1} inner_skips{conformance:go-accepts-what-java-rejects=14,conformance:java-disabled=1,conformance:java-planner-bug=3,engine-gap:case-sensitive-identifiers=3,engine-gap:catalog-system-tables=3,engine-gap:error-class=2,engine-gap:exists-from-alias=1,engine-gap:star-group-by-expansion=1,no-checks=8,plan-assertion=4749,polarity:negative-execution=37,unsupported:continuation=140,unsupported:debugger=3,unsupported:multi-cluster=2,unsupported:random-injection=30}"
+const pinnedLedger = "pass=144 fail=0 skip=111 queries=8958 file_skips{conformance:go-accepts-what-java-rejects=14,conformance:java-disabled=1,conformance:java-planner-bug=3,engine-gap:case-sensitive-identifiers=3,engine-gap:error-class=2,engine-gap:exists-from-alias=1,engine-gap:proto-template-dotted-table=1,engine-gap:star-group-by-expansion=1,fragment=2,plan-assertion=4,polarity:fixed-version-meta=11,polarity:negative-execution=37,polarity:negative-parse=25,unsupported:continuation=3,unsupported:multi-cluster=2,vacuous:all-assertions-skipped=1} inner_skips{conformance:go-accepts-what-java-rejects=14,conformance:java-disabled=1,conformance:java-planner-bug=3,engine-gap:case-sensitive-identifiers=3,engine-gap:error-class=2,engine-gap:exists-from-alias=1,engine-gap:proto-template-dotted-table=1,engine-gap:star-group-by-expansion=1,no-checks=8,plan-assertion=4811,polarity:negative-execution=37,unsupported:continuation=140,unsupported:debugger=3,unsupported:multi-cluster=2,unsupported:random-injection=30}"
 
 // pinnedFileTotal closes the ledger: every corpus file lands in exactly one of
 // pass / fail / skip. Asserting the sum separately means a file that vanished
@@ -17,4 +17,4 @@ const pinnedLedger = "pass=142 fail=0 skip=113 queries=8899 file_skips{conforman
 const pinnedFileTotal = 255
 
 // pinnedAssignmentDigest is sha256 over the sorted `path status class` lines.
-const pinnedAssignmentDigest = "6a4bdac465534c107f78c4b9f827d90573e0a54c4209d134958d782779962d5e"
+const pinnedAssignmentDigest = "ba96fb9b254b0261ebcce9e4980849d6a4af28c652ef1ce86d1f4048850a4bbb"

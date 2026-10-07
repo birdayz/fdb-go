@@ -519,10 +519,10 @@ var _ = Describe("RFC-142 R5: an explicit JOIN's correlated array source", func(
 		//    "quantifier does not flow records"); Go reads an outer join's source
 		//    as a table, which the path is not (42703).
 		//  - An unnest leg BEFORE an outer join: the target answers; Go refuses
-		//    the JOIN spelling at translation (0AF00, the lateral unnest enclosed
-		//    by an outer-join box does not ordinalize) and the comma spelling at
-		//    parse (0A000, a JOIN after comma sources, CQ-72). TODO.md "An unnest
-		//    leg before an outer join".
+		//    both spellings at translation (0AF00, the lateral unnest enclosed
+		//    by an outer-join box does not ordinalize; a comma source's JOINs
+		//    follow it since 2026-10-07, so the comma spelling reaches the same
+		//    refusal). TODO.md "An unnest leg before an outer join".
 		//  - A derived table reading a prior FROM source, beside a later source:
 		//    the target crashes (XXXXX, "is not an element of this graph"); Go
 		//    answers the empty correlated result the statement defines.
@@ -573,8 +573,8 @@ var _ = Describe("RFC-142 R5: an explicit JOIN's correlated array source", func(
 			`SELECT r.id, (SELECT MAX(x.k) FROM r.items AS x) FROM r`:                                                                                                                                                                             {"ERROR 42601", "[[1 6]]"},
 			`SELECT d.x FROM w, (SELECT w.f AS x FROM h WHERE h.f = w.f) AS d, h`:                                                                                                                                                                 {"ERROR XXXXX", "[]"},
 			`SELECT v, h.f FROM w JOIN w.arr AS v ON v > 10 LEFT JOIN h ON h.id = w.id`:                                                                                                                                                           {"[[11 10] [20 <nil>]]", "ERROR 0AF00"},
-			`SELECT v, h.f FROM w, w.arr AS v LEFT JOIN h ON h.id = w.id WHERE v > 10`:                                                                                                                                                            {"[[11 10] [20 <nil>]]", "ERROR 0A000"},
-			`SELECT v, h.f FROM w, w.arr AS v LEFT JOIN h ON h.id = w.id`:                                                                                                                                                                         {"[[10 10] [11 10] [20 <nil>]]", "ERROR 0A000"},
+			`SELECT v, h.f FROM w, w.arr AS v LEFT JOIN h ON h.id = w.id WHERE v > 10`:                                                                                                                                                            {"[[11 10] [20 <nil>]]", "ERROR 0AF00"},
+			`SELECT v, h.f FROM w, w.arr AS v LEFT JOIN h ON h.id = w.id`:                                                                                                                                                                         {"[[10 10] [11 10] [20 <nil>]]", "ERROR 0AF00"},
 			`SELECT v FROM w CROSS JOIN w.arr AS v`:                                                                                                                                                                                               {"ERROR XXXXX", "[[10] [11] [20]]"},
 			`SELECT v FROM w JOIN w.arr AS v`:                                                                                                                                                                                                     {"ERROR XXXXX", "[[10] [11] [20]]"},
 			`SELECT v FROM w LEFT JOIN w.arr AS v ON v = 1`:                                                                                                                                                                                       {"ERROR XXXXX", "ERROR 42703"},

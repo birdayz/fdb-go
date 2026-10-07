@@ -194,6 +194,13 @@ Never mark a whole workstream complete because one of its subitems passed.
       `recursive-cte.yamsql` passes (142 files, 8899 queries). The
       documentation file's nested example stops at a subquery reading a
       FROM alias as a table (`engine-gap:exists-from-alias`).
+      The catalog schema is queryable: its template is built from table
+      definitions as Java's (SCHEMAS/DATABASES/TEMPLATES, RecordTypeUnion);
+      the CRUD metadata's wire layout is the same (version 4, keys 0/1/2, the
+      three indexes at added versions 2-4). `catalog.yamsql` and
+      `create-drop.yamsql` pass; `valid-identifiers.yamsql` runs 385 queries
+      and stops at a proto-loaded template's dotted table name (144 files,
+      8958 queries).
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays

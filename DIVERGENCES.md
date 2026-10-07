@@ -949,7 +949,7 @@ local star beside other items under GROUP BY, answer as Java (`StarScopeJavaProb
 `SELECT … FROM t1, t1.arr AS r LEFT JOIN t2 ON r = t2.id`: Java answers; Go fails with 0AF00
 "lateral unnest did not ordinalize". The unnest's ordinal seed cannot sit on the preserved side
 of an outer join. An INNER join after the unnest, and a LEFT JOIN before it, answer as Java
-(`CommaJoinJavaProbe`).
+(`CommaJoinJavaProbe`). TODO.md "An unnest leg before an outer join".
 
 ## Go-Only Extensions (features Java 4.12.11 rejects)
 

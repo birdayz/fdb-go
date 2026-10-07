@@ -247,6 +247,21 @@ func (b *Builder) AddTablePrimaryKeyPaths(name string, columns []ColumnSpec, pri
 		b.errs = append(b.errs, err)
 		return b
 	}
+	// Java gives a table and its columns their protobuf storage names when
+	// the table is defined (RecordLayerTable.Builder.build), so a name no
+	// escape makes an identifier is refused before the template resolves its
+	// types: `CREATE TABLE "$yay" (c s2 ARRAY …)` is 42602, not "could not
+	// find type 'S2'" (Java corpus valid-identifiers.yamsql).
+	if _, err := recordlayer.ToProtoBufCompliantName(name); err != nil {
+		b.errs = append(b.errs, err)
+		return b
+	}
+	for _, c := range columns {
+		if _, err := recordlayer.ToProtoBufCompliantName(c.name); err != nil {
+			b.errs = append(b.errs, err)
+			return b
+		}
+	}
 	b.tables = append(b.tables, tableSpec{name: name, columns: columns, primaryKey: primaryKey})
 	return b
 }

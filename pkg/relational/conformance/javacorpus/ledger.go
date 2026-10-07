@@ -156,8 +156,9 @@ const (
 // booked. They are separate classes rather than one bucket because a gap
 // without a name cannot be sized, prioritised or noticed when it closes.
 const (
-	// SkipGapCatalogTables is a query against the catalog's own system tables.
-	SkipGapCatalogTables SkipClass = "engine-gap:catalog-system-tables"
+	// SkipGapProtoTemplateDottedTable is a DML target naming a table of a
+	// template loaded from Java's metadata whose decoded name holds a dot.
+	SkipGapProtoTemplateDottedTable SkipClass = "engine-gap:proto-template-dotted-table"
 
 	// SkipGapExistsFromAlias is a subquery whose FROM names an enclosing
 	// query's FROM alias as a table (`… FROM ct AS c … EXISTS (SELECT … FROM c)`).
@@ -229,7 +230,7 @@ func AllSkipClasses() []SkipClass {
 		SkipDDLFunction,
 		SkipDDLOther,
 		SkipGapStructDML,
-		SkipGapCatalogTables,
+		SkipGapProtoTemplateDottedTable,
 
 		SkipGapExistsFromAlias,
 		SkipGapErrorClass,

@@ -1084,6 +1084,15 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext, b *metadata.Build
 	seen := make(map[string]bool, len(cols))
 	for _, c := range cols {
 		seen[c.Name()] = true
+		// Java names a column's storage field when it builds the table, before
+		// it looks at the primary key: an invalid column name is 42602 first.
+		if _, err := recordlayer.ToProtoBufCompliantName(c.Name()); err != nil {
+			var invalid *recordlayer.InvalidNameError
+			if errors.As(err, &invalid) {
+				return nil, nil, api.WrapError(api.ErrCodeInvalidName, invalid.Message, err)
+			}
+			return nil, nil, err
+		}
 	}
 
 	var pkCols [][]string

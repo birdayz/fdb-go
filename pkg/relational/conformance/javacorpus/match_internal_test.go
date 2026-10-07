@@ -396,7 +396,7 @@ func TestParseJDBCURI(t *testing.T) {
 	t.Parallel()
 
 	got, err := parseJDBCURI("jdbc:embed:/__SYS?schema=CATALOG")
-	if err != nil || got.Path != catalogPath || got.Schema != "" {
+	if err != nil || got != catalogTarget {
 		t.Errorf("catalog URI = %+v, %v", got, err)
 	}
 	got, err = parseJDBCURI("jdbc:embed:/FRL/X_DB?schema=S1")

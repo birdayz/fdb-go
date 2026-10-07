@@ -147,12 +147,40 @@ func (c *RecordLayerStoreCatalog) Initialize(txn api.Transaction) error {
 // describes the catalog itself (the three system tables). Mirrors Java's
 // in-constructor assembly of SCHEMAS + DATABASES + TEMPLATES table
 // definitions via SystemTableRegistry.
+//
+// The template is built from table definitions, as Java's SystemTable.
+// addDefinition calls are, so its record metadata (the tables SCHEMAS,
+// DATABASES and TEMPLATES, the RecordTypeUnion) is the one Java generates and
+// stores, and SQL over /__SYS/CATALOG names Java's tables. The catalog's own
+// reads and writes use BuildCatalogMetaData, whose wire layout (record type
+// keys, union field numbers, column field numbers and indexes) is the same.
 func buildCatalogTemplate() (api.SchemaTemplate, error) {
-	md, err := BuildCatalogMetaData()
-	if err != nil {
-		return nil, err
-	}
-	return metadata.NewRecordLayerSchemaTemplateWithVersion(CatalogTemplateName, md, CatalogTemplateVersion)
+	str, i32, bts := api.NewStringType(false), api.NewIntegerType(false), api.NewBytesType(false)
+	b := metadata.NewSchemaTemplateBuilder().SetName(CatalogTemplateName).SetVersion(CatalogTemplateVersion)
+	b.AddTable(SchemasTableName, []metadata.ColumnSpec{
+		metadata.NewColumnSpec(ColDatabaseID, str, 1),
+		metadata.NewColumnSpec(ColSchemaName, str, 2),
+		metadata.NewColumnSpec(ColTemplateName, str, 3),
+		metadata.NewColumnSpec(ColTemplateVersion, i32, 4),
+	}, []string{ColDatabaseID, ColSchemaName})
+	b.AddGeneratedIndex(SchemasTableName, IdxTemplatesCount,
+		recordlayer.GroupAll(recordlayer.Concat(recordlayer.Field(ColTemplateName), recordlayer.Field(ColTemplateVersion))),
+		recordlayer.IndexTypeCount, false, nil, nil)
+	b.AddGeneratedIndex(SchemasTableName, IdxTemplatesValue,
+		recordlayer.Concat(recordlayer.Field(ColTemplateName), recordlayer.Field(ColTemplateVersion),
+			recordlayer.Field(ColDatabaseID), recordlayer.Field(ColSchemaName)),
+		"", false, nil, nil)
+	b.AddTable(DatabaseTableName, []metadata.ColumnSpec{
+		metadata.NewColumnSpec(ColDatabaseID, str, 1),
+	}, []string{ColDatabaseID})
+	b.AddGeneratedIndex(DatabaseTableName, IdxDatabasesCount,
+		recordlayer.GroupAll(recordlayer.EmptyKey()), recordlayer.IndexTypeCount, false, nil, nil)
+	b.AddTable(SchemaTemplateTableName, []metadata.ColumnSpec{
+		metadata.NewColumnSpec(ColTemplateName, str, 1),
+		metadata.NewColumnSpec(ColTemplateVersion, i32, 2),
+		metadata.NewColumnSpec(ColMetaData, bts, 3),
+	}, []string{ColTemplateName, ColTemplateVersion})
+	return b.Build()
 }
 
 // SchemaTemplateCatalog returns the template catalog sibling.
