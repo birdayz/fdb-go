@@ -1,4 +1,5 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 go_library(
     name = "sqldriver",
@@ -821,6 +822,78 @@ go_test(
         "@org_golang_google_protobuf//types/descriptorpb",
         "@org_golang_google_protobuf//types/dynamicpb",
     ],
+)
+
+# The heavy sweeps, probes and differentials of sqldriver_test: each took
+# 10 s or more in a full run (2026-10-07), together ~45% of its CPU time.
+# sqldriver_fast_test skips them so the rest of the package runs in the fast
+# lane; sqldriver_test (test-full) still runs everything, which is where the
+# whole-corpus census floors are asserted.
+SQLDRIVER_HEAVY_TESTS = [
+    "TestFDB_CTEBoxUnnestOnResolutionProbe2",
+    "TestFDB_CurrentTimestamp_CrossPage_Stable",
+    "TestFDB_CurrentTimestamp_StatementStable_Select",
+    "TestFDB_CurrentTimestamp_StatementStable_Where",
+    "TestFDB_DistinctUniqueElisionCostProbe",
+    "TestFDB_DistinctUniqueElisionRetention",
+    "TestFDB_DmlDryRun",
+    "TestFDB_DmlWhereUndefinedProbe",
+    "TestFDB_DuecMeasurementWindowLoss_IsSeenByDetectorA",
+    "TestFDB_DuecScannedRowsLimitDoesNotSilentlyTruncate",
+    "TestFDB_GroupByDerivedTableComputedExpr",
+    "TestFDB_GroupByInsertSelect_Determinism",
+    "TestFDB_GroupByInsertSelect_Variants",
+    "TestFDB_InListRepeatedValueDML",
+    "TestFDB_InListRepeatedValueSelect",
+    "TestFDB_InListWithNonConstantItems",
+    "TestFDB_JoinOrderStatisticsCorrectionRate",
+    "TestFDB_JoinSelPred_Repro",
+    "TestFDB_MetamorphicCompositePrimaryKey",
+    "TestFDB_MetamorphicCompositePrimaryKeyDML",
+    "TestFDB_MetamorphicExpressionEquivalenceSweep",
+    "TestFDB_MetamorphicIndexDifferential",
+    "TestFDB_MetamorphicJoinsSubqueries",
+    "TestFDB_MetamorphicMinMaxNullSweep",
+    "TestFDB_MetamorphicNoRecPredicateSweep",
+    "TestFDB_MetamorphicOperandCommutation",
+    "TestFDB_MetamorphicOrderDirection",
+    "TestFDB_MetamorphicOrderingAggregatesDML",
+    "TestFDB_MetamorphicPagingAtScale",
+    "TestFDB_MetamorphicParenthesization",
+    "TestFDB_MetamorphicRewriteEquivalenceSweep",
+    "TestFDB_MetamorphicShapeEquivalenceSweep",
+    "TestFDB_MultiwayJoinOrder_Nway",
+    "TestFDB_OrderingLimitOracle",
+    "TestFDB_OrUnionPrimaryKeyDedup_ScaleAndMaintenance",
+    "TestFDB_PlannerCapHit_SelectPathSQLSTATE",
+    "TestFDB_PlannerOptions_PlanRightDeep",
+    "TestFDB_RowDiff_Paging",
+    "TestFDB_SargabilityDifferentialOracle",
+    "TestFDB_SelectivityBlindSpotWithCollectedStatistics",
+    "TestFDB_SparseIndexNotUsedWhereItWouldDropRows",
+    "TestFDB_SparseIndexUnderMutation",
+    "TestFDB_W3_5_PlanDiversity_IndexedVsFullScan",
+    "TestFDB_W3_5_PlanDiversity_PlansActuallyDiffer",
+    "TestPageRetry_RecursionLevelIsPagePositional",
+]
+
+# sqldriver_test's binary without the heavy tests, in the fast lane. It runs the
+# same compiled tests (no second srcs/deps list to keep in step with gazelle).
+# Its census gates run over the narrowed corpus (-test.skip); their population
+# floors hold there too today. A floor that only the heavy tests reach would
+# fail here first: narrow that gate's floor on -test.skip as the gates already
+# do on -test.run, rather than moving the test back.
+sh_test(
+    name = "sqldriver_fast_test",
+    size = "large",
+    timeout = "long",
+    srcs = ["fast_lane_test.sh"],
+    args = [
+        "$(rootpath :sqldriver_test)",
+        "-test.skip=^(" + "|".join(SQLDRIVER_HEAVY_TESTS) + ")$$",
+    ],
+    data = [":sqldriver_test"],
+    tags = ["resources:memory:700"],
 )
 
 # DSN unit tests: no FDB, so they run in the fast lane (`just test`), unlike
