@@ -8121,47 +8121,6 @@ func splitConjunctsByOuterRef(pred predicates.QueryPredicate, outerAliases, inne
 	return andOf(outer), andOf(inner)
 }
 
-// hasNonInnerConjunct reports whether any top-level conjunct of pred fails
-// to reference an inner FROM source — the class the existential rule routes
-// to the OUTER input: correlated outer-only conjuncts AND reference-free
-// ones (constants, parameters). Used for the Case-1 polarity flag;
-// splitOuterOnlyConjuncts alone under-covers it because that split
-// deliberately keeps reference-free conjuncts in rest.
-func hasNonInnerConjunct(pred predicates.QueryPredicate, innerAliases map[string]struct{}) bool {
-	if pred == nil {
-		return false
-	}
-	if and, ok := pred.(*predicates.AndPredicate); ok {
-		for _, sub := range and.SubPredicates {
-			if hasNonInnerConjunct(sub, innerAliases) {
-				return true
-			}
-		}
-		return false
-	}
-	for c := range predicates.GetCorrelatedToOfPredicate(pred) {
-		if _, isInner := innerAliases[strings.ToUpper(c.Name())]; isInner {
-			return false
-		}
-	}
-	// A non-inner leaf is hazardous only if it can actually FILTER: a
-	// statically-TRUE conjunct (`1 = 1`) outer-routes as a no-op, so
-	// flagging it would over-decline semantics-neutral tautologies that
-	// planned correctly before the guard. A statically-FALSE or
-	// non-static leaf stays flagged — a routed FALSE drops every outer
-	// row, the exact hazard. Static means BOTH comparison sides are
-	// row-context-independent (IsConstantValue), so Eval with a nil
-	// context is safe and deterministic.
-	if cp, ok := pred.(*predicates.ComparisonPredicate); ok &&
-		cp.Operand != nil && values.IsConstantValue(cp.Operand) &&
-		(cp.Comparison.Operand == nil || values.IsConstantValue(cp.Comparison.Operand)) {
-		if tv, err := cp.Eval(nil); err == nil && tv == predicates.TriTrue {
-			return false
-		}
-	}
-	return true
-}
-
 // resolverScope preserves the actual lexical parent rather than flattening its
 // sources into a new root; identical aliases at different levels stay distinct.
 func resolverScope(resolver *expr.Resolver) *semantic.Scope {

@@ -145,8 +145,12 @@ Never mark a whole workstream complete because one of its subitems passed.
       own bindings, so an inner source reusing an outer name reads the inner
       one, Java's inner shadow. The seven declined rows answer Java's rows
       (`ExistsInnerShadowJavaProbe`, mutation-checked by restoring the
-      guard). `case1_notexists_colliding_foldable` still declines, on the
-      anti-join arm; Java answers {11,12}.
+      guard). The positive-only constraint on a middle subquery with an
+      outer-only conjunct beside a nested EXISTS is gone as well: the
+      conjunct stays inside the existential, so NOT EXISTS and projected
+      EXISTS over it answer Java's rows. The JVM probe checks seven such
+      shapes over data where the conjunct holds for one outer row and not
+      another; mutation-checked by restoring the constraint.
   - (d): Java's COALESCE rule. Only a NULL head (NullValue, a nil constant)
     or a BOOLEAN literal head folds; an INT/STRING literal head stays, so
     `COALESCE(1, 1/0) = 1` in a WHERE raises 22012 as in Java.

@@ -58,7 +58,6 @@ var assignmentTable = []assigned{
 	{"pkg/recordlayer/query/plan/plans/cost.go", "vectorScanCardinality", "Evaluate(nil)", 1, "analysis: a vector scan's literal K, for its cost"},
 	{"pkg/recordlayer/query/plan/cascades/rule_sink_limit_into_vector_scan.go", "vectorScanAdjustedLimit", "Evaluate(nil)", 1, "analysis: a vector scan's literal K, folding the limit into the scan"},
 	{"pkg/relational/core/embedded/logical_qualify.go", "globalRankVectorLimit", "Evaluate(nil)", 1, "analysis: a distance-rank QUALIFY's literal K (a K that does not evaluate is the runtime cap)"},
-	{"pkg/relational/core/embedded/logical_predicate.go", "hasNonInnerConjunct", "Eval(nil)", 1, "analysis: the EXISTS guard's hazard test (a statically TRUE comparison is not a filter)"},
 	{"pkg/recordlayer/query/plan/cascades/rule_match_intermediate.go", "narrowPromotedFloatScanBound", "values.EvaluateConstant", 1, "analysis: a FLOAT index scan bound; the residual keeps the promoted predicate"},
 
 	{"pkg/relational/core/query/expr/expr.go", "Resolver.ResolveIn", "Evaluate(nil)", 1, "IN (4.1(a)): ResolveIn's constant fork"},

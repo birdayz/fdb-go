@@ -316,16 +316,6 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 	// outer leg ST and the predicate references it. Each subquery leg has its
 	// own binding, so the reference reads the inner ST, Java's inner shadow:
 	// 3 rows, as Java answers (conformance "ExistsInnerShadowJavaProbe").
-	wantDecline := func(name, q, wantSub string) {
-		t.Helper()
-		_, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
-		if perr == nil {
-			t.Fatalf("%s: must decline loud (want %q), planned OK instead\n  sql: %s", name, wantSub, q)
-		}
-		if !strings.Contains(perr.Error(), wantSub) {
-			t.Fatalf("%s: decline = %v, want substring %q\n  sql: %s", name, perr, wantSub, q)
-		}
-	}
 	want("multisource_colliding",
 		`SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE ST."C" < OT."K")`,
 		[]string{"K=50", "K=50", "K=50"},
@@ -380,26 +370,20 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 		nil,
 		"")
 
-	// Case-1 POLARITY pins: a multi-source middle with an outer-only
-	// conjunct AND a nested EXISTS, under NOT EXISTS. Case 1 used to route
-	// the outer-only conjunct through lastJoinPredicate, whose semi-join
-	// outer-side pre-filter computes P ∧ ¬∃(Q) where ¬∃(P∧Q) is due —
-	// silently dropping every ¬P outer row (a PRE-EXISTING placement bug,
-	// reachable through any non-colliding multi-source middle). The
-	// outer-only split now keeps it under the ∃. Java live: OT.K<0 is
-	// false → the middle ∃ is empty → NOT EXISTS keeps both MA rows →
-	// {11,12}. Buggy placement returns 0 rows.
-	wantDecline("case1_notexists_noncolliding",
+	// A multi-source middle with an outer-only conjunct and a nested EXISTS,
+	// under NOT EXISTS: the conjunct stays inside the existential. OT.K < 0
+	// is false, the middle is empty, NOT EXISTS keeps both MA rows, as Java.
+	want("case1_notexists_noncolliding",
 		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
-		"outer-only conjunct")
+		[]string{"ID=11", "ID=12"},
+		"")
 
-	// The colliding variant with an INT head. The inner MA reads its own
-	// binding; the shape declines on the anti-join arm (an outer-only
-	// conjunct under NOT EXISTS beside a nested EXISTS), as its
-	// non-colliding twin above does. Java answers {11,12}.
-	wantDecline("case1_notexists_colliding_foldable",
+	// The colliding variant with an INT head; the inner MA reads its own
+	// binding. Java: {11,12}.
+	want("case1_notexists_colliding_foldable",
 		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA WHERE COALESCE(1, MA."C") = 1 AND OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
-		"positive predicate consumption")
+		[]string{"ID=11", "ID=12"},
+		"")
 
 	// A colliding ref under a BOOLEAN COALESCE head: 3 rows (OI.K = OT.K
 	// holds for the one OT row). Java fails this shape with a
@@ -431,21 +415,17 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 		[]string{"ID=11", "ID=12"},
 		"")
 
-	// A REFERENCE-FREE conjunct (1 = 0) carries the identical polarity
-	// hazard — splitOuterOnlyConjuncts deliberately keeps constants in
-	// rest, yet they outer-route all the same, so the flag test is the
-	// broader non-inner-conjunct detector. Java live: 1=0 empties the ∃ →
-	// NOT EXISTS keeps both MA rows ({11,12} recorded for the flip).
-	wantDecline("case1_notexists_reffree",
+	// A reference-free conjunct (1 = 0) empties the existential: {11,12}.
+	want("case1_notexists_reffree",
 		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE "M2"."C" < OT."K" AND 1 = 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
-		"outer-only conjunct")
+		[]string{"ID=11", "ID=12"},
+		"")
 
-	// The MIXED conjunct (inner ref AND outer-only) — the flag fires even
-	// when the non-inner part is one conjunct among inner ones. Java live:
-	// OT.K<0 false → empty ∃ → {11,12} recorded for the flip.
-	wantDecline("case1_notexists_mixed",
+	// An inner conjunct beside an outer-only one: {11,12}, as Java.
+	want("case1_notexists_mixed",
 		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE "M2"."C" > 0 AND OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0))`,
-		"outer-only conjunct")
+		[]string{"ID=11", "ID=12"},
+		"")
 
 	// The TAUTOLOGY no-over-decline control: a statically-TRUE conjunct
 	// (`1 = 1`) outer-routes as a no-op, so the flag must not fire —
@@ -457,37 +437,23 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 		nil,
 		"")
 
-	// The CASE-2 HOIST carries the flag through: the middle has ONLY a
-	// nested EXISTS, whose multi-source inner holds the outer-only
-	// conjunct — the hoist replaces the middle wholesale and the flag must
-	// ride with the hoisted join predicate. Java live: innermost false →
-	// middle empty → NOT keeps {11,12} (recorded for the flip). This shape
-	// was silent-wrong pre-guard.
-	wantDecline("case2_hoist_notexists",
+	// The outer-only conjunct two levels down: {11,12}, as Java.
+	want("case2_hoist_notexists",
 		`SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE EXISTS (SELECT 1 FROM OT AS "OX", ST AS "S2" WHERE OT."K" < 0 AND EXISTS (SELECT 1 FROM MA AS "M3" WHERE "M3"."C" > 0)))`,
-		"outer-only conjunct")
+		[]string{"ID=11", "ID=12"},
+		"")
 
-	// PROJECTED polarity: a projected NOT EXISTS carries its negation as a
-	// NotValue inside the RESULT VALUE (the synthesized filter's predicate
-	// is nil) — the value-side guard must catch the flagged esq there.
-	// Java live: emits (11,true),(12,true) — recorded for the flip.
-	wantDecline("projected_notexists_flagged",
+	// A projected NOT EXISTS over the same middle: (11,true), (12,true).
+	want("projected_notexists",
 		`SELECT MA."ID", NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0)) FROM MA, OT`,
-		"outer-only conjunct")
+		[]string{"ID=11|_1=true", "ID=12|_1=true"},
+		"")
 
-	// The projected POSITIVE sentinel. This control was first written
-	// expecting rows — and it CAUGHT the third pre-existing silent-wrong
-	// instead: outer-routing the flagged conjunct FILTERS THE ROW STREAM,
-	// returning 0 rows where Java emits (11,false),(12,false) — a
-	// projected boolean must never filter rows. The value-side guard
-	// therefore declines flagged esqs in BOTH polarities (the P∧∃
-	// equivalence licenses outer-routing only for WHERE consumption under
-	// positive polarity — consumption mode is part of the validity
-	// domain). Java rows recorded for the flip when the composition
-	// planning gap closes.
-	wantDecline("projected_exists_flagged",
+	// A projected EXISTS never filters the rows: (11,false), (12,false).
+	want("projected_exists",
 		`SELECT MA."ID", EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0)) AS "E" FROM MA, OT`,
-		"outer-only conjunct")
+		[]string{"ID=11|E=false", "ID=12|E=false"},
+		"")
 
 	// The no-over-fire control: a NON-colliding multi-source inner (leg
 	// names {ST, MI} disjoint from the outer {MA, OT}), CORRELATED on an

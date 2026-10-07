@@ -460,10 +460,12 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 					return &logical.LogicalJoin{Left: filter.Input, Right: edge.Plan, Kind: logical.JoinInner}, nil
 				}
 			}
+			// The non-EXISTS conjuncts, outer-only ones included, stay in the
+			// attachment predicate, inside the existential, so every
+			// consumer (NOT EXISTS, a projected EXISTS) reads them as Java
+			// does (conformance "ExistsInnerShadowJavaProbe", the case1 and
+			// projected rows).
 			out.join = nonExists
-			if hasNonInnerConjunct(nonExists, inner) {
-				out.constraint = logical.ExistsPositivePredicateOnly
-			}
 			copy := *filter
 			copy.Predicate = stripNonExistsPredicates(pred)
 			copy.ScalarSubqueries = nil
