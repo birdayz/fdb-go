@@ -1145,7 +1145,7 @@ func whereFaultFirst(resolver *expr.Resolver, sq *selectQuery, err error) error 
 	if errors.As(err, &buildErr) && buildErr.Code == api.ErrCodeUndefinedColumn && whereErr.Code == api.ErrCodeUndefinedColumn {
 		var missing *semantic.ColumnNotFoundError
 		if errors.As(walkErr, &missing) && strings.HasSuffix(strings.ToUpper(buildErr.Message),
-			strings.ToUpper(fmt.Sprintf(`.%s" does not exist`, missing.Id.Name()))) {
+			strings.ToUpper("."+missing.Id.Name())) {
 			return err
 		}
 	}
@@ -1176,7 +1176,7 @@ func mapPredicateWalkError(walkErr error) *api.Error {
 	}
 	var colNotFound *semantic.ColumnNotFoundError
 	if errors.As(walkErr, &colNotFound) {
-		return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", colNotFound.Id.Name())
+		return api.NewErrorf(api.ErrCodeUndefinedColumn, "Attempting to query non existing column %s", colNotFound.Id.Name())
 	}
 	var shadowErr *semantic.CorrelatedShadowError
 	if errors.As(walkErr, &shadowErr) {
@@ -2701,7 +2701,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 							continue
 						}
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-							"column %q does not exist", ob.colName)
+							"Attempting to query non existing column %s", ob.colName)
 					}
 				}
 			}
@@ -3603,7 +3603,7 @@ func mapColumnResolveError(err error, display string) error {
 		var notFoundErr *semantic.ColumnNotFoundError
 		if errors.As(err, &notFoundErr) {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
-				"column %q does not exist", display)
+				"Attempting to query non existing column %s", display)
 		}
 		var srcNotFound *semantic.SourceNotFoundError
 		if errors.As(err, &srcNotFound) {
@@ -5480,7 +5480,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 		bare := parseColRef(upper).bare()
 		if !existsAsField(upper) {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
-				"column %q does not exist", col)
+				"Attempting to query non existing column %s", col)
 		}
 		if !groupBySet[bare] && !groupBySet[upper] {
 			return api.NewErrorf(api.ErrCodeGroupingError,

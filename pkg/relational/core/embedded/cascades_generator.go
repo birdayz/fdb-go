@@ -5051,7 +5051,7 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 					// resolution path itself handles the quoted name fine).
 					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil &&
 						rt.Descriptor.Fields().ByName(protoreflect.Name(parseColRef(col).bare())) == nil {
-						return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", col)
+						return api.NewErrorf(api.ErrCodeUndefinedColumn, "Attempting to query non existing column %s", col)
 					}
 				}
 			}

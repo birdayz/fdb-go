@@ -924,7 +924,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 							continue
 						}
 						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-							"column %q does not exist", ob.colName)
+							"Attempting to query non existing column %s", ob.colName)
 					}
 				}
 			}

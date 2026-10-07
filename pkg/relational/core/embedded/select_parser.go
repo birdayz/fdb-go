@@ -3755,7 +3755,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 						"Unknown reference %s", col)
 				case n == 0:
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
-						"column %q does not exist", col)
+						"Attempting to query non existing column %s", col)
 				case n > 1:
 					return api.NewErrorf(api.ErrCodeAmbiguousColumn,
 						"Ambiguous reference %s", col)

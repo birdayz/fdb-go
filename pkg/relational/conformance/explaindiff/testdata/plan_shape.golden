@@ -4060,7 +4060,7 @@ shape:     RecordQueryMapPlan
 shape:       RecordQueryScanPlan
 === cte.yaml#5 expect-error=42703
 sql:   WITH s AS (SELECT id, v FROM t) SELECT id FROM s ORDER BY no_such_col
-plan:  <PLAN-ERROR: 42703: column "NO_SUCH_COL" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column NO_SUCH_COL>
 === cte.yaml#6
 sql:   WITH ignored AS (SELECT id FROM t WHERE id > 100) SELECT id FROM t ORDER BY id
 plan:  Map(Scan(T), {ID: _current.ID#0})
@@ -4116,10 +4116,10 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === cte.yaml#16 expect-error=42703
 sql:   WITH c1(w, z) AS (SELECT id, v FROM t) SELECT v FROM c1
-plan:  <PLAN-ERROR: 42703: column "V" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column V>
 === cte.yaml#17 expect-error=42703
 sql:   WITH c1(w, z) AS (SELECT id, v FROM t) SELECT id FROM c1
-plan:  <PLAN-ERROR: 42703: column "ID" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column ID>
 === cte.yaml#18
 sql:   WITH c1(w, z) AS (SELECT id, v FROM t WHERE id <= 2) SELECT * FROM c1 ORDER BY w
 plan:  Map(Scan(T, [<>]), {W: _current.ID#0, Z: _current.V#1})
@@ -4127,7 +4127,7 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === cte.yaml#19 expect-error=42703
 sql:   WITH c1(w, z) AS (SELECT id, v FROM t), c2(a, b) AS ( WITH c3(aa, bb) AS (SELECT id, v FROM c1 WHERE id <= 2) SELECT * FROM c3 ) SELECT * FROM c1, c2
-plan:  <PLAN-ERROR: 42703: column "ID" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column ID>
 === cte.yaml#20
 sql:   WITH sums AS (SELECT id, SUM(v) AS total FROM t GROUP BY id) SELECT t.id, s.total FROM t, sums s WHERE t.id = s.id AND s.total >= 30 ORDER BY t.id
 plan:  InMemorySort([_current.ID#0 ASC], FlatMap(outer=PredicatesFilter(StreamingAgg(keys=[_current.ID#0], Scan(T)), [1 preds]), inner=Scan(T, [=])))
@@ -4491,10 +4491,10 @@ sql:   WITH c1(w, z) AS (SELECT id, col1 FROM t1), c1(a, b) AS (SELECT id, col1 
 plan:  <PLAN-ERROR: 42712: found 'C1' more than once>
 === cte_error_codes.yaml#2 expect-error=42703
 sql:   WITH c1(w, z) AS (SELECT id, col1 FROM t1) SELECT col1 FROM c1
-plan:  <PLAN-ERROR: 42703: column "COL1" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column COL1>
 === cte_error_codes.yaml#3 expect-error=42703
 sql:   WITH c1(w, z) AS (SELECT id, col1 FROM t1) SELECT col2 FROM c1
-plan:  <PLAN-ERROR: 42703: column "COL2" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column COL2>
 === cte_error_codes.yaml#4
 sql:   WITH c1(w, z) AS (SELECT id, col1 FROM t1) SELECT w, z FROM c1 ORDER BY w
 plan:  Map(Scan(T1), {W: _current.ID#0, Z: _current.COL1#1})
@@ -5784,7 +5784,7 @@ shape:         RecordQueryMapPlan
 shape:           RecordQueryScanPlan
 === derived_table_group_by.yaml#1 expect-error=42703
 sql:   SELECT MAX(x.col2) FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1
-plan:  <PLAN-ERROR: 42703: column "X.COL2" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column X.COL2>
 === derived_table_group_by.yaml#2
 sql:   SELECT MAX(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY 1
 plan:  InMemorySort([_current._0#0 ASC], Map(StreamingAgg(keys=[_current.COL1#0], InMemorySort([_current.COL1#0 ASC], Map(Scan(T1), {COL1: _current.COL1#1, COL2: _current.COL2#2}))), {_0: _current.MAX(COL2)#1}))
@@ -6290,7 +6290,7 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === dml_returning_probes.yaml#2 expect-error=42703
 sql:   UPDATE t SET n = 99 WHERE id = 2 RETURNING id, n
-plan:  <PLAN-ERROR: 42703: column "ID" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column ID>
 === dml_returning_probes.yaml#3
 sql:   UPDATE t SET n = 99 WHERE id = 2 RETURNING "old".n, "new".n
 plan:  Map(Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(T, [=]))), {N: _current.old#0.N#1, N_2: _current.new#1.N#1})
@@ -6881,10 +6881,10 @@ sql:   SELECT * FROM nonexistent
 plan:  <PLAN-ERROR: 42F01: Unknown table NONEXISTENT: table not found: NONEXISTENT>
 === error_code_regression.yaml#1 expect-error=42703
 sql:   SELECT nonexistent FROM t
-plan:  <PLAN-ERROR: 42703: column "NONEXISTENT" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column NONEXISTENT>
 === error_code_regression.yaml#2 expect-error=42703
 sql:   SELECT id FROM t WHERE nonexistent = 1
-plan:  <PLAN-ERROR: 42703: column "NONEXISTENT" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column NONEXISTENT>
 === error_code_regression.yaml#3 expect-error=42703
 sql:   SELECT x.id FROM t
 plan:  <PLAN-ERROR: 42703: column reference with qualifier "X" cannot be resolved>
@@ -6937,10 +6937,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === error_codes_java.yaml#0 expect-error=42703
 sql:   SELECT nonexistent FROM t
-plan:  <PLAN-ERROR: 42703: column "NONEXISTENT" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column NONEXISTENT>
 === error_codes_java.yaml#1 expect-error=42703
 sql:   SELECT id FROM t WHERE fake_col = 1
-plan:  <PLAN-ERROR: 42703: column "FAKE_COL" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column FAKE_COL>
 === error_codes_java.yaml#2 expect-error=42803
 sql:   SELECT name, SUM(val) FROM t GROUP BY id
 plan:  <PLAN-ERROR: 42803: column "NAME" must appear in the GROUP BY clause or be used in an aggregate function>
@@ -8154,7 +8154,7 @@ sql:   SELECT region, product, SUM(amount) FROM sales GROUP BY region
 plan:  <PLAN-ERROR: 42803: column "PRODUCT" must appear in the GROUP BY clause or be used in an aggregate function>
 === group_by_having_java.yaml#8 expect-error=42703
 sql:   SELECT nonexistent FROM sales GROUP BY region
-plan:  <PLAN-ERROR: 42703: column "NONEXISTENT" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column NONEXISTENT>
 === group_by_multi.yaml#0
 sql:   SELECT region, category, COUNT(*), SUM(amt) FROM sales GROUP BY region, category ORDER BY region, category
 plan:  Map(StreamingAgg(keys=[_current.REGION#1, _current.CATEGORY#2], InMemorySort([_current.REGION#1 ASC, _current.CATEGORY#2 ASC], Scan(SALES))), {REGION: _current.REGION#0, CATEGORY: _current.CATEGORY#1, _2: _current.COUNT(*)#2, _3: _current.SUM(AMT)#3})
@@ -8333,7 +8333,7 @@ sql:   SELECT col1, col2 FROM t1 GROUP BY col1 ORDER BY col1
 plan:  <PLAN-ERROR: 42803: column "COL2" must appear in the GROUP BY clause or be used in an aggregate function>
 === group_by_validation.yaml#3 expect-error=42703
 sql:   SELECT bla FROM t1 GROUP BY col1
-plan:  <PLAN-ERROR: 42703: column "BLA" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column BLA>
 === group_by_validation.yaml#4
 sql:   SELECT col1 FROM t1 GROUP BY col1 ORDER BY col1
 plan:  Map(StreamingAgg(keys=[_current.COL1#1], InMemorySort([_current.COL1#1 ASC], Scan(T1))), {COL1: _current.COL1#0})
@@ -8633,7 +8633,7 @@ shape:           RecordQueryInMemorySortPlan
 shape:             RecordQueryScanPlan
 === having.yaml#15 expect-error=42703
 sql:   SELECT grp, COUNT(*) FROM t GROUP BY grp ORDER BY no_such_col
-plan:  <PLAN-ERROR: 42703: column "NO_SUCH_COL" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column NO_SUCH_COL>
 === having.yaml#16
 sql:   SELECT COUNT(*) FROM t HAVING COUNT(*) > 1
 plan:  Map(PredicatesFilter(StreamingAgg(keys=[], Scan(T)), [1 preds]), {_0: COALESCE(_current.COUNT(*)#0, 0)})
@@ -11228,7 +11228,7 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === join_using_shapes.yaml#5 expect-error=42703
 sql:   SELECT a.id FROM a JOIN b USING (id) JOIN c USING (nosuchcol)
-plan:  <PLAN-ERROR: 42703: column "NOSUCHCOL" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column NOSUCHCOL>
 === join_using_shapes.yaml#6
 sql:   SELECT a.id, b.k FROM a LEFT JOIN b USING (id, k) ORDER BY a.id
 plan:  FlatMap(outer=Scan(A), inner=DefaultOnEmpty(PredicatesFilter(Scan(B, [=]), [1 preds])))
@@ -11260,10 +11260,10 @@ sql:   SELECT a.id FROM a JOIN (SELECT id, k FROM c) b USING (id) JOIN c USING (
 plan:  <PLAN-ERROR: 42702: Ambiguous reference K>
 === join_using_shapes.yaml#11 expect-error=42703
 sql:   SELECT a.id FROM a JOIN b USING (j) JOIN c USING (id)
-plan:  <PLAN-ERROR: 42703: column "J" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column J>
 === join_using_shapes.yaml#12 expect-error=42703
 sql:   SELECT a.id FROM a JOIN b USING (j)
-plan:  <PLAN-ERROR: 42703: column "J" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column J>
 === join_using_shapes.yaml#13
 sql:   SELECT b.id FROM (SELECT id FROM a) b JOIN c USING (id) JOIN a USING (k) ORDER BY b.id
 plan:  FlatMap(outer=Scan(A), inner=FlatMap(outer=Scan(C, [=]), inner=PredicatesFilter(Scan(A), [1 preds])))
@@ -12737,10 +12737,10 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === nested_derived_table.yaml#5 expect-error=42703
 sql:   SELECT "COUNT(*)" FROM (SELECT COUNT(*) FROM t1 WHERE n IS NOT NULL) AS sub
-plan:  <PLAN-ERROR: 42703: column "COUNT(*)" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column COUNT(*)>
 === nested_derived_table.yaml#6 expect-error=42703
 sql:   SELECT "_0" FROM (SELECT COUNT(*) FROM t1 WHERE n IS NOT NULL) AS sub
-plan:  <PLAN-ERROR: 42703: column "_0" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column _0>
 === nested_derived_table.yaml#7 expect-error=42601
 sql:   SELECT _0 FROM (SELECT COUNT(*) FROM t1 WHERE n IS NOT NULL) AS sub
 plan:  <PLAN-ERROR: parse SQL: 42601: syntax error: SELECT _0 FROM (SELECT COUNT(*) FROM t1 WHERE n IS NOT NULL) AS sub ^>
@@ -15713,10 +15713,10 @@ shape:   RecordQueryScanPlan
 shape:   RecordQueryScanPlan
 === qualified_star.yaml#5 expect-error=42703
 sql:   SELECT wrong.* FROM a
-plan:  <PLAN-ERROR: 42703: column "WRONG" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column WRONG>
 === qualified_star.yaml#6 expect-error=42703
 sql:   SELECT nope.* FROM a, b
-plan:  <PLAN-ERROR: 42703: column "NOPE" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column NOPE>
 === qualified_star.yaml#7
 sql:   SELECT a.*, b.label FROM a, b ORDER BY a.id, b.label
 plan:  InMemorySort([_current.ID#0 ASC, _current.LABEL#2 ASC], NestedLoopJoin(INNER, Scan(A), Scan(B)))
@@ -15747,7 +15747,7 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryScanPlan
 === qualified_star.yaml#11 expect-error=42703
 sql:   SELECT c.*, b.label FROM a, b
-plan:  <PLAN-ERROR: 42703: column "C" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column C>
 === qualified_star.yaml#12
 sql:   SELECT a.*, b.label FROM a INNER JOIN b ON a.id * 10 = b.id ORDER BY a.id
 plan:  FlatMap(outer=Scan(A), inner=Scan(B, [=]))
@@ -15900,7 +15900,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === quoted_identifier_columns.yaml#4 expect-error=42703
 sql:   SELECT d."ka" FROM (SELECT "k" AS "kA", "id" AS "Ka" FROM q2) d
-plan:  <PLAN-ERROR: 42703: column "D.ka" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column D.ka>
 === quoted_identifier_columns.yaml#5
 sql:   SELECT d."kA" FROM (SELECT "k" AS "kA", "id" AS "Ka" FROM q2) d ORDER BY d."kA"
 plan:  InMemorySort([_current.kA#0 ASC], Map(Scan(Q2), {kA: _current.k#1}))
@@ -16185,7 +16185,7 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan
 === quoted_identifier_labels.yaml#35 expect-error=42703
 sql:   WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.cc + 1, d.dd FROM d WHERE d.cc < 3) SELECT d.cc FROM d ORDER BY d.cc
-plan:  <PLAN-ERROR: 42703: column "D.CC" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column D.CC>
 === quoted_identifier_labels.yaml#36
 sql:   SELECT s.id, (SELECT x."TOTAL" FROM xprobe x WHERE x.id = s.id) FROM sprobe s
 plan:  Map(FlatMap(outer=Scan(SPROBE), inner=StrictFirstOrDefault(Map(Scan(XPROBE, [=]), {TOTAL: _current.TOTAL#1}))), {ID: _current.ID#0, TOTAL: _current.TOTAL#1})
@@ -16504,10 +16504,10 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryTempTableScanPlan
 === recursive_cte.yaml#26 expect-error=42703
 sql:   WITH RECURSIVE ancestors(node, up) AS ( SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.up ) SELECT node FROM ancestors
-plan:  <PLAN-ERROR: 42703: column "UP" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column UP>
 === recursive_cte.yaml#27 expect-error=42703
 sql:   WITH RECURSIVE ancestors(node, up) AS ( SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent ) SELECT parent FROM ancestors
-plan:  <PLAN-ERROR: 42703: column "PARENT" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column PARENT>
 === recursive_cte.yaml#28
 sql:   WITH RECURSIVE ancestors(parent, id) AS ( SELECT id, parent FROM t WHERE id = 250 UNION ALL SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent ) SELECT parent, id FROM ancestors ORDER BY parent DESC
 plan:  InMemorySort([_current.PARENT#0 DESC], Map(RecursiveDfsJoin(PREORDER, Map(Scan(T, [=]), {ID: _current.ID#0, PARENT: _current.PARENT#1}), FlatMap(outer=TempTableScan(ANCESTORSforScan), inner=Scan(T, [=]))), {PARENT: _current.ID#0, ID: _current.PARENT#1}))
@@ -17914,7 +17914,7 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === self_join.yaml#5 expect-error=42703
 sql:   SELECT c.id FROM t AS c JOIN t AS p ON c.parent = p.id ORDER BY no_such_col
-plan:  <PLAN-ERROR: 42703: column "NO_SUCH_COL" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column NO_SUCH_COL>
 === self_join_advanced.yaml#0
 sql:   SELECT m.name, e.name FROM emp e, emp m WHERE e.manager_id = m.id ORDER BY m.name, e.name
 plan:  InMemorySort([_current.M.NAME#0 ASC, _current.E.NAME#1 ASC], FlatMap(outer=Scan(EMP), inner=Scan(EMP, [=])))
@@ -19694,13 +19694,13 @@ sql:   UPDATE customer SET name = nosuchcol WHERE id = 1
 plan:  <PLAN-ERROR: 42F01: Unknown table CUSTOMER>
 === unquoted_dml_against_a_quoted_table.yaml#6 expect-error=42703
 sql:   DELETE FROM customer WHERE nosuchcol = 1
-plan:  <PLAN-ERROR: 42703: column "NOSUCHCOL" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column NOSUCHCOL>
 === unquoted_dml_against_a_quoted_table.yaml#7 expect-error=42703
 sql:   SELECT nosuchcol FROM customer
-plan:  <PLAN-ERROR: 42703: column "NOSUCHCOL" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column NOSUCHCOL>
 === unquoted_dml_against_a_quoted_table.yaml#8 expect-error=42703
 sql:   UPDATE customer SET name = 'z' WHERE nosuchcol = 1
-plan:  <PLAN-ERROR: 42703: column "NOSUCHCOL" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column NOSUCHCOL>
 === unquoted_dml_against_a_quoted_table.yaml#9 expect-error=42703
 sql:   UPDATE "Customer" SET nosuchcol = 'z' WHERE id = 1
 plan:  <PLAN-ERROR: 42703: column "NOSUCHCOL" not found in table "Customer">
@@ -20478,7 +20478,7 @@ sql:   SELECT a.id, c.label FROM a, b WHERE a.id = b.id
 plan:  <PLAN-ERROR: 42703: column reference with qualifier "C" cannot be resolved>
 === wrong_qualifier.yaml#2 expect-error=42703
 sql:   SELECT c.* FROM a, b
-plan:  <PLAN-ERROR: 42703: column "C" does not exist>
+plan:  <PLAN-ERROR: 42703: Attempting to query non existing column C>
 === wrong_qualifier.yaml#3 expect-error=42703
 sql:   SELECT a.id, c.label FROM a INNER JOIN b ON a.id = b.id
 plan:  <PLAN-ERROR: 42703: column reference with qualifier "C" cannot be resolved>

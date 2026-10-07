@@ -1134,11 +1134,13 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
       mutation-checked. Not covered: a block with a join ON keeps the build's
       own order, and so do the select-list function checks that run before
       the scope exists (`unknownScalarFunction`).
-    - [ ] 42703 message text: Java says "Attempting to query non existing
-      column <identifier>" (SemanticAnalyzer.java:446); Go says
-      `column "<name>" does not exist` at 14 sites, and qualifies the name
-      differently by path. Align the text and the identifier rendering; the
-      explaindiff golden and several tests assert Go's text;
+    - [x] 42703 message text (2026-10-07): every Go unknown-column site
+      says Java's "Attempting to query non existing column <identifier>"
+      (SemanticAnalyzer.java:446). The fromless JVM probe's `unknown` and
+      `quoted_hidden_bool` rows are now identical to Java's. Open: the
+      identifier rendering on some paths (a WHERE's qualified reference
+      renders bare), and the qualified star, where Java says "Unknown
+      reference T";
     - [ ] a nested-loop join's orientation over a derived aggregate follows
       the plan-hash tie-break: check that Go's tie-break hashes equal Java's
       on the two re-blessed explaindiff shapes.

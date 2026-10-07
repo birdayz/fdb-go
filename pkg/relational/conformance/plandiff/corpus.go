@@ -18219,7 +18219,7 @@ func SeedRunCorpus() []RunQuery {
 			Divergence: &Divergence{
 				Reason:          "Both engines reject the generated aggregate spelling as a non-existing column. RFC-256 makes an unaliased aggregate output anonymous in Go as it is in Java; only diagnostic wording differs.",
 				Direction:       DivergenceBothErrorMessagesDrift,
-				GoErrorContains: "column \"A.COUNT(*)\" does not exist",
+				GoErrorContains: "Attempting to query non existing column A.COUNT(*)",
 			},
 		},
 		{

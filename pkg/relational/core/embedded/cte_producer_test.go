@@ -212,7 +212,7 @@ func TestRetainedCTEComputedColumnErrorPrecedesLaterProjection(t *testing.T) {
 	) SELECT d.cc FROM d ORDER BY d.cc`
 	_, err := PlanPhysicalForTest(sql, ddl, nil)
 	var typed *api.Error
-	if !errors.As(err, &typed) || typed.Code != api.ErrCodeUndefinedColumn || typed.Message != `column "D.CC" does not exist` {
+	if !errors.As(err, &typed) || typed.Code != api.ErrCodeUndefinedColumn || typed.Message != `Attempting to query non existing column D.CC` {
 		t.Fatalf("recursive body lost its first computed-column error: %v; want 42703 D.CC", err)
 	}
 }
@@ -220,8 +220,8 @@ func TestRetainedCTEComputedColumnErrorPrecedesLaterProjection(t *testing.T) {
 func TestComputedProjectionMissingColumnIsNotDeclined(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct{ sql, want string }{
-		{`SELECT u.missing + 1, u.second FROM t u`, `column "U.MISSING" does not exist`},
-		{`SELECT u."missing.name" + 1, u.second FROM t u`, `column "U.missing.name" does not exist`},
+		{`SELECT u.missing + 1, u.second FROM t u`, `Attempting to query non existing column U.MISSING`},
+		{`SELECT u."missing.name" + 1, u.second FROM t u`, `Attempting to query non existing column U.missing.name`},
 	} {
 		t.Run(test.sql, func(t *testing.T) {
 			t.Parallel()
