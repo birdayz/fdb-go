@@ -637,6 +637,106 @@ var _ = Describe("Queued store dispatch", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	}
+	// Java registers the overflow check under DISABLE_INDEX_COMMIT_HOOK + the
+	// index name alone (IndexingPendingWriteQueue.java:213), so of two stores
+	// in one transaction whose same-named indexes both overflow only the first
+	// is disabled; the second keeps an overflowed queue it can never accept.
+	// Go keys the check by store subspace too and disables both (DIVERGENCES
+	// "Pending-queue overflow disables every overflowing store's index").
+	It("disables an overflowing index of each of two stores in one transaction", func() {
+		md, index := makeMetadata()
+		roots := []subspace.Subspace{specSubspace().Sub("a"), specSubspace().Sub("b")}
+		for _, root := range roots {
+			seed(md, index, root)
+		}
+		timer := NewStoreTimer()
+		_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			rc.SetTimer(timer)
+			rc.SetPendingWriteQueueOptions(PendingWriteQueueOptions{MaximumSize: 1, DisableIndexOnOverflow: true})
+			for _, root := range roots {
+				store := open(rc, md, root)
+				for id := int64(1); id <= 2; id++ {
+					if _, err := store.SaveRecord(order(id, 7)); err != nil {
+						return nil, err
+					}
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(timer.GetCount(CountPendingWritesQueueOverflowDisabledIndex)).To(Equal(int64(2)))
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			for _, root := range roots {
+				Expect(open(rc, md, root).GetIndexState(index.Name)).To(Equal(IndexStateDisabled), "%x", root.Bytes())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// DeleteStore cancels every pending-write callback family of the deleted
+	// store (overflow:, heartbeat:, merge:) and no other store's, and a store
+	// recreated in the same transaction queues afresh: the deleted store's
+	// buffered entries never land.
+	It("cancels the deleted store's heartbeat and merge checks, keeps a sibling's, and recreates cleanly", func() {
+		md, index := makeMetadata()
+		root, sibling := specSubspace().Sub("deleted"), specSubspace().Sub("deletedx")
+		seed(md, index, root)
+		seed(md, index, sibling)
+		ran := map[string]bool{}
+		_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			for _, ss := range []subspace.Subspace{root, sibling} {
+				for _, family := range []string{"heartbeat:", "merge:"} {
+					name := pendingWriteCommitCheckPrefix(ss) + family + index.Name
+					rc.getOrCreateCommitCheck(name, func(string) CommitCheckFunc {
+						return func() error { ran[name] = true; return nil }
+					})
+				}
+			}
+			store := open(rc, md, root)
+			for id := int64(1); id <= 3; id++ {
+				if _, err := store.SaveRecord(order(id, 7)); err != nil {
+					return nil, err
+				}
+			}
+			Expect(rc.HasVersionMutations()).To(BeTrue())
+			Expect(DeleteStore(rc, root)).To(Succeed())
+			Expect(rc.HasVersionMutations()).To(BeFalse(), "the deleted store's buffered entries are cancelled")
+			for _, family := range []string{"heartbeat:", "merge:"} {
+				Expect(rc.getCommitCheck(pendingWriteCommitCheckPrefix(root)+family+index.Name)).To(BeNil(), family)
+				Expect(rc.getCommitCheck(pendingWriteCommitCheckPrefix(sibling)+family+index.Name)).NotTo(BeNil(), family)
+			}
+			// Recreate and queue one write in the same transaction.
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).SetFormatVersion(15).Create()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := store.MarkIndexWriteOnlyWithQueue(index.Name); err != nil {
+				return nil, err
+			}
+			_, err = store.SaveRecord(order(9, 7))
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+		for name := range ran {
+			Expect(name).To(HavePrefix(pendingWriteCommitCheckPrefix(sibling)), "only the sibling's checks ran")
+		}
+		Expect(ran).To(HaveLen(2))
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store := open(rc, md, root)
+			entries, err := AsList(ctx, store.indexingPendingWriteQueue(index, 100).GetQueueCursor(rc, ForwardScan(), nil))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(1), "only the recreated store's write is queued")
+			for _, id := range []int64{1, 2, 3} {
+				record, err := store.LoadRecord(tuple.Tuple{int64(7), id})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(record).To(BeNil())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("cancels buffered entries on DeleteAllRecords and overflow callbacks on DeleteStore", func() {
 		md, index := makeMetadata()
 		root := specSubspace()

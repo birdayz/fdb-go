@@ -1140,10 +1140,18 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     (`rank_scan_test.go`, "validates dispatch and state"). Sliding-window
     replay with tied ordering values done: the replay matrix has a `tied` axis
     (64 rows); comparing only the window value reddens 16 tied rows.
-  - WS-C: DELETE_WHERE duplicate / last-known-wins envelope rows; overflow
-    commit check across two stores with one index name; DeleteStore of the
-    heartbeat:/merge: checks and delete-then-recreate with pending chunks;
-    Done (2026-10-07), each mutation-checked:
+  - [x] WS-C. Done (2026-10-07):
+    - DELETE_WHERE duplicate / last-known-wins envelope rows
+      (`TestPendingQueueOperationLastKnownWins`);
+    - overflow commit check across two stores with one index name. Go
+      disables both; Java keys the check by index name only. New DIVERGENCES
+      entry "Pending-queue overflow disables every overflowing store's index";
+      mutation-checked;
+    - DeleteStore cancelling the deleted store's heartbeat:/merge: checks but
+      not a sibling store's, then delete-then-recreate in one transaction
+      (`index_queued_dispatch_test.go`; mutation-checked). Chunked entries
+      are not exercised: the queued vector payloads fit in one chunk.
+    Also done (2026-10-07), each mutation-checked:
     - state-4 consumers (`state4_consumers_test.go`): write-only, not
       scannable, not readable, refused rank scan; a save into a queued unique
       or rank index fails in serializePendingWriteQueue as in Java; a queued

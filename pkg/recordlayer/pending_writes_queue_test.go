@@ -380,3 +380,44 @@ func FuzzPendingQueuePayload(f *testing.F) {
 		}
 	})
 }
+
+// TestPendingQueueOperationLastKnownWins pins the closed proto2 operation
+// field as protobuf-java parses it: the last KNOWN occurrence wins, an unknown
+// value (99) is kept as an unknown field and never wins, and no known value is
+// a missing required field. DELETE_WHERE rows, with duplicates.
+func TestPendingQueueOperationLastKnownWins(t *testing.T) {
+	t.Parallel()
+	const update, deleteWhere = gen.PendingWritesQueueEntry_UPDATE, gen.PendingWritesQueueEntry_DELETE_WHERE
+	for _, tc := range []struct {
+		wire        []byte
+		want        gen.PendingWritesQueueEntry_Operation
+		keepUnknown bool
+		fails       bool
+	}{
+		{wire: []byte{8, 2}, want: deleteWhere},
+		{wire: []byte{8, 2, 8, 2}, want: deleteWhere},
+		{wire: []byte{8, 1, 8, 2}, want: deleteWhere},
+		{wire: []byte{8, 2, 8, 1}, want: update},
+		{wire: []byte{8, 2, 8, 99}, want: deleteWhere, keepUnknown: true},
+		{wire: []byte{8, 99, 8, 2}, want: deleteWhere, keepUnknown: true},
+		{wire: []byte{8, 99, 8, 2, 8, 99, 8, 2}, want: deleteWhere, keepUnknown: true},
+		{wire: []byte{8, 99}, fails: true},
+		{wire: []byte{}, fails: true},
+	} {
+		message := &gen.PendingWritesQueueEntry{}
+		err := UnmarshalAsJava(tc.wire, message)
+		if tc.fails {
+			if err == nil {
+				t.Errorf("%x: decoded %v, want the missing-required refusal", tc.wire, message)
+			}
+			continue
+		}
+		if err != nil || message.GetOperation() != tc.want {
+			t.Errorf("%x: operation %v, %v; want %v", tc.wire, message.GetOperation(), err, tc.want)
+			continue
+		}
+		if unknown := len(message.ProtoReflect().GetUnknown()) > 0; unknown != tc.keepUnknown {
+			t.Errorf("%x: unknown fields kept = %v, want %v", tc.wire, unknown, tc.keepUnknown)
+		}
+	}
+}

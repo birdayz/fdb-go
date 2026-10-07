@@ -3071,3 +3071,13 @@ such an index stays queued forever. Go refuses the request instead: `MarkIndexWr
 support queued writes") for an index that cannot be queued. Nothing is written. Pinned by
 `rebuild_write_only_with_queue_test.go`: the format-15 rebuild clears and queues the index, and the
 format-14 open is refused and leaves the store at its old metadata.
+
+## Pending-queue overflow disables every overflowing store's index
+
+Java registers its disable-on-overflow commit check as `DISABLE_INDEX_COMMIT_HOOK + index name`
+(`IndexingPendingWriteQueue.registerDisableOnOverflowCommitCheck`, :213), with no store in the key.
+A transaction whose two stores have same-named queued indexes that both overflow therefore gets one
+check: the first store's index is disabled, and the second store keeps a full queue that refuses every
+later write until something drains it. Go keys the check by store subspace and index name, so each
+overflowing store's index is disabled. Pinned by `index_queued_dispatch_test.go`, "disables an
+overflowing index of each of two stores in one transaction" (keying by name alone reddens it).
