@@ -758,8 +758,18 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   the n<k INVALID rule, the admitted outlier peel with its geometric floor and
   admission bound, the terminal reconcile with `ClusterUnsplittableError`
   above the hard cap, the zero-primary new-child drop, and the empty merge
-  core. Not done: the design's performance-criterion timing runs (peel at
-  W = B under suite load) and the d = 768/2048 acceptance fixtures.
+  core. Timing and acceptance fixtures done (2026-10-07):
+  `guardiann_peel_timing_test` (full lane) times the whole peel and its
+  worst case (all refits) at W = B, n = 1001 d = 2175 and the fixture shapes,
+  two runs with load logged: max 0.63 s against the 2.5 s margin (refit rate
+  ~2.9e-8 s per n·d, under the JVM median). `guardiann_peel_fixtures_test`
+  (full lane, real FDB, HALF, no RaBitQ) splits the d = 768 n = 2000 cluster
+  by a deferred drain and by an inline insert and the d = 2048 n = 1001
+  cluster by a drain, every transaction in one attempt (attempt observer),
+  and refuses the peel at I = 16 (cluster reconciled whole). Mutation-checked:
+  admission off fails the three splits; dropping the knob factor fails I = 16.
+  Not built: the d = 4096 reconcile fixtures (16 MB of references per read),
+  covered by the admission unit table.
   Primary-preferred cleanup and underreplication deltas are done, declared (h)
   (DIVERGENCES "GuardiANN keeps primaries and underreplication counts exact",
   `guardiann_counts_test.go`, mutation-checked). Declared (d) is done:
