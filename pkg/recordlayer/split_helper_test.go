@@ -378,8 +378,7 @@ var _ = Describe("SplitHelper", func() {
 				si := &sizeInfo{}
 				err := saveWithSplit(nil, tx, rs, pk, data, false, false, nil, si)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("exceeds limit"))
-				Expect(err.Error()).To(ContainSubstring("splitLongRecords is not enabled"))
+				Expect(err.Error()).To(ContainSubstring("Record is too long to be stored in a single value; consider split_long_records"))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

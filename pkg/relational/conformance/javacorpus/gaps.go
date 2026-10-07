@@ -102,11 +102,11 @@ var engineGaps = []EngineGap{
 	// alias-tests.yamsql's EXISTS-over-a-view decline is masked now: the
 	// template's CREATE VIEW fails closed (unsupported-DDL:other) instead of
 	// being silently dropped, so the file never reaches the planner. The
-	// planner-declines class stays witnessed by exists-in-select.yamsql.
+	// (The planner-declines class is retired: exists-in-select.yamsql passes.)
 
-	// An oversized record surfaces a raw executor error rather than a mapped
-	// SQLSTATE, so the corpus's error-class assertion has nothing to compare.
-	{"large-record-fails.yamsql", SkipGapErrorClass, "non-SQLSTATE error", "CQ-72"},
+	// large-record-fails.yamsql passes (2026-10-07): an oversized record
+	// without split_long_records is Java's RecordCoreException ("Record is too
+	// long to be stored in a single value"), reported as UNKNOWN.
 
 	// `select * from ta limit 5` succeeds in Go where Java raises 0AF00. This
 	// is the one entry that is NOT a Go deficiency: Go accepts a query Java

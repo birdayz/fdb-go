@@ -79,7 +79,9 @@ func saveWithSplit(
 
 	if dataLen > splitRecordSize {
 		if !splitLongRecords {
-			return fmt.Errorf("record size %d exceeds limit %d and splitLongRecords is not enabled", dataLen, splitRecordSize)
+			// Java's SplitHelper.saveWithSplit: a RecordCoreException, which
+			// the relational layer reports as UNKNOWN (XXXXX).
+			return &RecordCoreError{Message: "Record is too long to be stored in a single value; consider split_long_records"}
 		}
 
 		// Clear previous record data
