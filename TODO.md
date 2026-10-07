@@ -395,7 +395,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   (AggregateDataAccess, ImplementLimit, PushRequestedOrderingThroughFilter).
   An undeclared rule now has Java's empty set, so a re-exploration re-queues
   only rules whose declared key changed since the group's last committed
-  exploration (`shouldPushRule`); Go's group-wide re-arm still re-queues all.
+  exploration (`shouldPushRule`).
   `TestRuleConstraintDependencies_DeclareWhatTheyRead` fails any rule method
   that reads a constraint its type does not declare. No corpus plan moved;
   tasks fall 4-24% (chains 3/4/5: 564→546, 2367→2219, 13968→12985; star
@@ -436,7 +436,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   makes. Per-inner-member yields were measured and reverted: 3 golden and 15
   factory plans moved, several to a fetch before the residual; per outer
   member too, the fixed-factor harness hits the task cap.
-  D5 measured and reverted (2026-10-06): forcing only the
+  D5 measured and reverted (2026-10-06; superseded by the forced-set
+  conversion above, 2026-10-07, which marks members at their arrival
+  rather than by a member count: FK-chain rule calls are unchanged, 3/4/5
+  tables 411/1971/11782 before and after): forcing only the
   members past the last round's count, with a re-arm no longer re-queuing
   every rule, moved no corpus plan but RAISED tasks (4-table chain 4500→4818,
   5-table 20557→21836) and broke `TestUnorderedUnionFetchSchedulingRetainsFutureFetchLeg`
