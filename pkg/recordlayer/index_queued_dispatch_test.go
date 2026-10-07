@@ -241,6 +241,48 @@ var _ = Describe("Queued store dispatch", func() {
 			})
 		}
 	}
+	// The reverse order: checked publication commits its state first, so a
+	// writer after it reads READABLE and maintains the index directly; nothing
+	// is buffered for the queue.
+	for _, mode := range []string{"single", "batch", "delete-where"} {
+		for _, twoHandles := range []bool{false, true} {
+			It(fmt.Sprintf("sends a writer after checked publication through ordinary maintenance mode=%s twoHandles=%t", mode, twoHandles), func() {
+				md, index := makeMetadata()
+				root := specSubspace()
+				seed(md, index, root)
+				_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+					setter := open(rc, md, root)
+					writer := setter
+					if twoHandles {
+						writer = open(rc, md, root)
+					}
+					changed, err := setter.MarkIndexReadable(index.Name)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(changed).To(BeTrue())
+					switch mode {
+					case "single":
+						_, err = writer.SaveRecord(order(1, 7))
+					case "batch":
+						_, err = writer.SaveRecordBatch([]proto.Message{order(1, 7)})
+					case "delete-where":
+						err = writer.DeleteRecordsWhere(tuple.Tuple{int64(7)})
+					}
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rc.HasVersionMutations()).To(BeFalse(), "nothing is buffered for the queue")
+					Expect(writer.GetIndexState(index.Name)).To(Equal(IndexStateReadable))
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+					store := open(rc, md, root)
+					entries, err := AsList(ctx, store.indexingPendingWriteQueue(index, 100).GetQueueCursor(rc, ForwardScan(), nil))
+					Expect(entries).To(BeEmpty())
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		}
+	}
 	for _, tc := range []struct {
 		name            string
 		format          int32

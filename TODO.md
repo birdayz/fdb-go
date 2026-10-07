@@ -1143,9 +1143,17 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   - WS-C: DELETE_WHERE duplicate / last-known-wins envelope rows; overflow
     commit check across two stores with one index name; DeleteStore of the
     heartbeat:/merge: checks and delete-then-recreate with pending chunks;
-    state-4 consumers (unique, rank, bitmap, GetWriteOnlyIndexes);
-    markReadable continuing past a failed target; publication before a
-    state-4 writer. Done (2026-10-07):
+    Done (2026-10-07), each mutation-checked:
+    - state-4 consumers (`state4_consumers_test.go`): write-only, not
+      scannable, not readable, refused rank scan; a save into a queued unique
+      or rank index fails in serializePendingWriteQueue as in Java; a queued
+      vector index enqueues. Bitmap has no row, since it uses the same
+      unsupported serializer;
+    - markReadable continuing past a failed target
+      (`online_indexer_test.go`, "publishes the other targets");
+    - publication before a state-4 writer (`index_queued_dispatch_test.go`,
+      the 6-row "writer after checked publication" matrix).
+    Also done (2026-10-07):
     - rebuild to WRITE_ONLY_WITH_QUEUE and its format-14 refusal
       (`rebuild_write_only_with_queue_test.go`), with a new DIVERGENCES entry
       "Queued index states require format 15 and a queue-capable index";

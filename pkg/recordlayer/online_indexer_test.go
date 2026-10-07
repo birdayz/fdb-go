@@ -3936,6 +3936,49 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(o.orphan[qtyIndex.Name]).To(BeTrue())
 		})
 
+		// IndexingBase.markIndexReadable marks each target in its own
+		// transaction: "If one target fails to become readable, it should not
+		// affect the others", and the failure is rethrown after all of them.
+		It("publishes the other targets when one target fails to become readable", func() {
+			ks := specSubspace()
+			// Targets are sorted by name: the failing one is first.
+			uniqueIdx := NewIndex("Order$a_unique_price", Field("price"))
+			uniqueIdx.SetUnique()
+			qtyIdx := NewIndex("Order$b_qty_closeout", Field("quantity"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", uniqueIdx)
+			builder.AddIndex("Order", qtyIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, noIndex := baseMetaData()
+			mdNoIndex, err := noIndex.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 3; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100), Quantity: proto.Int32(int32(i))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			oi, err := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(md).SetSubspace(ks).
+				SetTargetIndexes([]*Index{uniqueIdx, qtyIdx}).Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = oi.BuildIndex(ctx)
+			var violation *RecordIndexUniquenessViolationError
+			Expect(errors.As(err, &violation)).To(BeTrue(), "error: %v", err)
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.GetIndexState(qtyIdx.Name)).To(Equal(IndexStateReadable))
+				Expect(store.GetIndexState(uniqueIdx.Name)).To(Equal(IndexStateWriteOnly))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("publishes a READABLE_UNIQUE_PENDING index without building it", func() {
 			ks := specSubspace()
 			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
