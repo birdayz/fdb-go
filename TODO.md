@@ -92,9 +92,13 @@ Never mark a whole workstream complete because one of its subitems passed.
   `dsn_test` (new fast-lane target). FDB pins in `dml_dry_run_fdb_test.go`
   (Raw DRY_RUN lasts one borrow, DSN dry_run persists, DDL ignores DRY_RUN) —
   full lane, not run.
-- [ ] IN semantics: rewrite/partition/cost behavior, covering unions, multi-binding
+- [x] IN semantics: rewrite/partition/cost behavior, covering unions, multi-binding
   product limit, and constant-IN evaluation timing; coordinate shared machinery
   with WS-F without losing either acceptance obligation.
+  Closed (2026-10-07): evaluation timing, the product limit, comparand
+  sources and covering in-unions (`Fetch(InUnion(COVERING))`, below under
+  WS-F) are done; the one-value collapse is declared. What remains is WS-F's
+  item 10 (the two-source in-union), tracked in the IN-union item below.
   In-union comparand sources done (2026-10-07): a row-independent source
   planning cannot evaluate is carried as `ArrayDistinctValue(comparand)`
   (`RecordQueryInUnionPlan.WithInComparands`, folded into the plan's
