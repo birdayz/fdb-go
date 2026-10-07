@@ -72,6 +72,7 @@ var _ = Describe("ExistsInnerShadowJavaProbe", func() {
 			{"unnest_frame_multisource", `SELECT X FROM ST, ST."ARR" AS X WHERE EXISTS (SELECT 1 FROM ST, MA WHERE ST."C" < X)`},
 			{"unnest_frame_multisource_outer_ref", `SELECT X FROM ST, ST."ARR" AS X WHERE EXISTS (SELECT 1 FROM ST AS "S2", MA WHERE MA."C" < X AND ST."C" > 10)`},
 			{"unnest_frame_same_name_inner", `SELECT X FROM ST, ST."ARR" AS X WHERE EXISTS (SELECT 1 FROM MA, ST WHERE ST."ID" = 2 AND MA."C" < X)`},
+			{"on_before_later_same_name", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT 1 FROM ST AS "A" JOIN MA AS "B" ON "B"."C" = "O"."C" JOIN ST AS "O" ON "O"."ID" = "A"."ID")`},
 			{"int_head_colliding", `SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(1, ST."C") = 1 AND OI."K" = OT."K")`},
 			{"nonfoldable_colliding", `SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(ST."C", 1) < OT."K")`},
 		} {

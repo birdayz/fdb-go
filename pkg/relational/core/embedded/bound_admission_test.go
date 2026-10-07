@@ -99,10 +99,8 @@ func TestBoundOnLaterShadowUsesOriginalParentIdentity(t *testing.T) {
 			if _, present := refs[values.NamedCorrelationIdentifier("PRIVATE_O")]; !present {
 				t.Fatalf("early ON rebound to later source: %v", refs)
 			}
-			_, err = lowerBoundExists(bound)
-			var unsupported *CorrelatedExistsError
-			if !errors.As(err, &unsupported) || !unsupported.Unsupported || unsupported.Message != "correlated EXISTS: a JOIN ON references an alias reused as a later inner join source (outer/inner alias collision) is not supported" {
-				t.Fatalf("later-shadow admission was lost: %v", err)
+			if _, err = lowerBoundExists(bound); err != nil {
+				t.Fatalf("later same-name source was refused: %v", err)
 			}
 		})
 	}
@@ -269,13 +267,12 @@ func TestBoundOnQuotedLaterAlias(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name, outer, later string
-		reject             bool
 	}{
-		{"quoted_outer", `"a"`, "A", false},
-		{"quoted_later", "A", `"a"`, false},
-		{"identical_quoted", `"a"`, `"a"`, true},
-		{"identical_unquoted", "a", "A", true},
-		{"equivalent_quoted_upper", "A", `"A"`, true},
+		{"quoted_outer", `"a"`, "A"},
+		{"quoted_later", "A", `"a"`},
+		{"identical_quoted", `"a"`, `"a"`},
+		{"identical_unquoted", "a", "A"},
+		{"equivalent_quoted_upper", "A", `"A"`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -299,57 +296,14 @@ func TestBoundOnQuotedLaterAlias(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Java resolves the early ON against the bindings visible at it, so
+			// a later same-name inner source never captures the reference.
 			lowered, err := lowerBoundExists(bound)
-			if !test.reject {
-				if err != nil {
-					t.Fatalf("distinct later alias was rejected: %v", err)
-				}
-				if _, found := predicates.GetCorrelatedToOfPredicate(lowered.join)[values.NamedCorrelationIdentifier("PRIVATE_A")]; !found {
-					t.Fatal("early ON lost its actual outer binding")
-				}
-				return
+			if err != nil {
+				t.Fatalf("later alias was rejected: %v", err)
 			}
-			var unsupported *CorrelatedExistsError
-			if !errors.As(err, &unsupported) || !unsupported.Unsupported || unsupported.Message != "correlated EXISTS: a JOIN ON references an alias reused as a later inner join source (outer/inner alias collision) is not supported" {
-				t.Fatalf("later-shadow admission changed: %v", err)
-			}
-		})
-	}
-}
-
-func TestBoundSourceNamesKeepLexicalCase(t *testing.T) {
-	t.Parallel()
-	cte := logical.NewCTE("a", logical.NewScan("T", "BODY"), logical.NewScan("T", "MAIN"), false)
-	aliasedCTE := logical.NewCTE("PRIVATE_CTE", logical.NewScan("T", "BODY"), logical.NewScan("T", "MAIN"), false)
-	aliasedCTE.Alias, aliasedCTE.Binding = "a", "private_a"
-	envelope := logical.NewCTE("envelope", logical.NewScan("T", "BODY"), logical.NewScan("T", "a"), false)
-	envelope.PreserveMainSource = true
-	for _, test := range []struct {
-		name string
-		op   logical.LogicalOperator
-		want []boundSourceName
-	}{
-		{"scan", logical.NewScan("T", "a"), []boundSourceName{{"a", "A"}}},
-		{"scan_implicit_alias", logical.NewScan("a", ""), []boundSourceName{{"a", "A"}}},
-		{"scan_private_binding", &logical.LogicalScan{Table: "T", Alias: "a", Binding: "private_a"}, []boundSourceName{{"a", "PRIVATE_A"}}},
-		{"cte", cte, []boundSourceName{{"a", "A"}}},
-		{"cte_private_binding", aliasedCTE, []boundSourceName{{"a", "PRIVATE_A"}}},
-		{"cte_envelope", envelope, []boundSourceName{{"a", "A"}}},
-		{"unnest", &logical.LogicalUnnest{Alias: "a", Binding: "private_a"}, []boundSourceName{{"a", "PRIVATE_A"}}},
-		{"inline_values", &logical.LogicalInlineValues{Alias: "a", Binding: "private_a"}, []boundSourceName{{"a", "PRIVATE_A"}}},
-		{"projection", &logical.LogicalProject{Input: logical.NewScan("T", "a")}, []boundSourceName{{"a", "A"}}},
-		{"join", logical.NewJoin(logical.NewScan("T", "a"), logical.NewScan("T", "B"), logical.JoinInner, ""), []boundSourceName{{"a", "A"}, {"B", "B"}}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			got := boundSourceNames(test.op)
-			if len(got) != len(test.want) {
-				t.Fatalf("source names = %v, want %v", got, test.want)
-			}
-			for i, want := range test.want {
-				if got[i] != want {
-					t.Fatalf("source %d = %v, want %v (lexical case must not alter runtime canonicalization)", i, got[i], want)
-				}
+			if _, found := predicates.GetCorrelatedToOfPredicate(lowered.join)[values.NamedCorrelationIdentifier("PRIVATE_A")]; !found {
+				t.Fatal("early ON lost its actual outer binding")
 			}
 		})
 	}

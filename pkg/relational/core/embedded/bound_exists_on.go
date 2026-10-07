@@ -4,42 +4,9 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
 )
-
-type boundSourceName struct{ lexical, binding string }
-
-func boundSourceNames(op logical.LogicalOperator) []boundSourceName {
-	switch node := op.(type) {
-	case *logical.LogicalJoin:
-		return append(boundSourceNames(node.Left), boundSourceNames(node.Right)...)
-	case *logical.LogicalScan:
-		name := node.Alias
-		if name == "" {
-			name = node.Table
-		}
-		return []boundSourceName{{name, strings.ToUpper(sourceBindingName(node))}}
-	case *logical.LogicalCTE:
-		if node.PreserveMainSource {
-			return boundSourceNames(node.Main)
-		}
-		name := node.Alias
-		if name == "" {
-			name = node.Name()
-		}
-		return []boundSourceName{{name, strings.ToUpper(sourceBindingName(node))}}
-	case *logical.LogicalUnnest:
-		return []boundSourceName{{node.Alias, strings.ToUpper(sourceBindingName(node))}}
-	case *logical.LogicalInlineValues:
-		return []boundSourceName{{node.Alias, strings.ToUpper(sourceBindingName(node))}}
-	}
-	if children := op.Children(); len(children) == 1 {
-		return boundSourceNames(children[0])
-	}
-	return nil
-}
 
 func parentLexicalNames(parent []semantic.ScopeSource) map[string]struct{} {
 	names := make(map[string]struct{}, len(parent))
@@ -62,19 +29,9 @@ func parentBindingNames(parent []semantic.ScopeSource) map[string]struct{} {
 }
 
 // lowerBoundOn preserves ON placement and the pre-fold provenance. Identities
-// decide dependence; lexical collision admission remains its separate existing
-// contract, so allocating an ID never silently widens accepted SQL.
+// decide dependence.
 func lowerBoundOn(from logical.LogicalOperator, parent []semantic.ScopeSource) (logical.LogicalOperator, []predicates.QueryPredicate, error) {
 	outer := parentBindingNames(parent)
-	parentNames := make(map[values.CorrelationIdentifier]string, len(parent))
-	for _, source := range parent {
-		binding := source.CorrelationName
-		if binding == "" {
-			binding = source.Alias.Name()
-		}
-		parentNames[values.NamedCorrelationIdentifier(binding)] = source.Alias.Name()
-	}
-	allSources := boundSourceNames(from)
 	var lifted []predicates.QueryPredicate
 	var walk func(logical.LogicalOperator, bool) (logical.LogicalOperator, error)
 	walk = func(op logical.LogicalOperator, laterNullExtension bool) (logical.LogicalOperator, error) {
@@ -113,20 +70,9 @@ func lowerBoundOn(from logical.LogicalOperator, parent []semantic.ScopeSource) (
 		if laterNullExtension {
 			return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a correlated ON before a later RIGHT/FULL join is not supported", Unsupported: true}
 		}
-		for id := range predicates.GetCorrelatedToOfPredicate(correlation) {
-			lexical, inherited := parentNames[id]
-			if !inherited {
-				continue
-			}
-			for _, source := range allSources {
-				if source.lexical != lexical {
-					continue
-				}
-				if _, present := visible[source.binding]; !present {
-					return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a JOIN ON references an alias reused as a later inner join source (outer/inner alias collision) is not supported", Unsupported: true}
-				}
-			}
-		}
+		// A later inner source that reuses an outer name does not capture
+		// this ON's reference: the ON resolved left-to-current against the
+		// bindings visible at it (BoundOn), Java's order.
 		copy.OnPredicate = inner
 		lifted = append(lifted, correlation)
 		return &copy, nil

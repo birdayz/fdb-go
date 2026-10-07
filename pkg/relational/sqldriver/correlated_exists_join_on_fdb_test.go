@@ -665,21 +665,17 @@ func TestFDB_CorrelatedExistsCteInnerWithPredicate(t *testing.T) {
 	})
 }
 
-// TestFDB_CorrelatedExistsOnReferencesLaterInnerAlias pins the round-10 ON-scoping
-// fix: a JOIN ON is walked against SQL LEFT-TO-CURRENT visibility ({primary +
-// legs[0..i]}), NOT the full inner set. When an earlier ON references an alias
-// that is REUSED as a LATER inner join source, per-join scope correctly binds it
-// to the OUTER source (the later leg isn't in scope yet) — but the lifted
-// correlation's QOV(name) then collides with the same-named inner leg at runtime
-// (ambiguous). That outer/inner alias collision is DECLINED cleanly (0A000)
-// rather than mis-answered.
+// TestFDB_CorrelatedExistsOnReferencesLaterInnerAlias pins the ON scoping: a
+// JOIN ON is resolved against SQL LEFT-TO-CURRENT visibility ({primary +
+// legs[0..i]}), not the full inner set. An earlier ON that references an alias
+// reused as a LATER inner join source binds to the OUTER source (the later leg
+// is not in scope yet), and the later same-name inner leg does not capture it.
+// Java answers this shape (conformance probe ExistsInnerShadowJavaProbe row
+// on_before_later_same_name); Go once declined it with 0A000.
 //
-// Before the fix the FULL-scope resolver bound the earlier ON's `p` to the later
-// inner `JOIN base AS p`, misclassified the correlation as inner, and returned
-// wrong rows (EXISTS true for outer rows that must be false) — silent-wrong.
-//
-// The SELECT o.oid (outer o, no inner o) forces the correlated fallback; the
-// earlier ON `p.pk = e.eid` references `p`, reused as the later `JOIN base AS p`.
+// Before the left-to-current fix the full-scope resolver bound the earlier
+// ON's `p` to the later inner `JOIN base AS p`, misclassified the correlation
+// as inner, and returned EXISTS true for every outer row.
 func TestFDB_CorrelatedExistsOnReferencesLaterInnerAlias(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -707,24 +703,30 @@ func TestFDB_CorrelatedExistsOnReferencesLaterInnerAlias(t *testing.T) {
 	mustExec(t, db, ctx, "INSERT INTO e VALUES (1)")
 	mustExec(t, db, ctx, "INSERT INTO f VALUES (1)")
 
-	requireDecline := func(t *testing.T, sqlText string) {
-		t.Helper()
-		rows, qerr := db.QueryContext(ctx, sqlText)
-		if qerr == nil {
-			for rows.Next() {
-			}
-			qerr = rows.Err()
-			rows.Close()
-		}
-		if qerr == nil {
-			t.Fatalf("expected a clean decline (0A000), got no error for %q", sqlText)
-		}
-		requireSQLSTATE(t, qerr, api.ErrCodeUnsupportedOperation)
-	}
-
-	t.Run("decline_on_references_later_inner_alias", func(t *testing.T) {
-		requireDecline(t, "SELECT p.pk, EXISTS (SELECT o.oid FROM e JOIN f ON p.pk = e.eid "+
+	// e = {1}: the ON p.pk = e.eid holds only for outer p.pk = 1. A capture by
+	// the later inner p (pk 1 and 2) would answer true for both rows.
+	t.Run("on_references_later_inner_alias", func(t *testing.T) {
+		rows, qerr := db.QueryContext(ctx, "SELECT p.pk, EXISTS (SELECT o.oid FROM e JOIN f ON p.pk = e.eid "+
 			"JOIN base AS p ON 1 = 1) FROM base AS p, other AS o")
+		if qerr != nil {
+			t.Fatalf("query: %v", qerr)
+		}
+		defer rows.Close()
+		got := map[int64]bool{}
+		for rows.Next() {
+			var pk int64
+			var exists bool
+			if serr := rows.Scan(&pk, &exists); serr != nil {
+				t.Fatalf("scan: %v", serr)
+			}
+			got[pk] = exists
+		}
+		if rerr := rows.Err(); rerr != nil {
+			t.Fatalf("rows: %v", rerr)
+		}
+		if len(got) != 2 || !got[1] || got[2] {
+			t.Fatalf("rows = %v, want map[1:true 2:false]", got)
+		}
 	})
 }
 
