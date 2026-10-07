@@ -911,8 +911,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 					}
 					var srcNotFound *semantic.SourceNotFoundError
 					if errors.As(walkErr, &srcNotFound) {
-						return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-							"column reference with qualifier %q cannot be resolved", srcNotFound.Alias.Name())
+						return nil, unknownSourceError(srcNotFound)
 					}
 					var notFoundErr *semantic.ColumnNotFoundError
 					if errors.As(walkErr, &notFoundErr) {

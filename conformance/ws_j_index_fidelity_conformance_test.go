@@ -2973,15 +2973,12 @@ var _ = Describe("WS-J bit and bitmap index keys over an operand with no lane", 
 		// into Value construction. A lane-less operator in the index's WHERE,
 		// which the key generator never sees, is now refused as the target
 		// refuses it. A lane-less key against a fault in the index query's
-		// WHERE is not: the target resolves the WHERE before the select list
-		// (its 42703 wins), Go the select list first (its lane refusal wins).
-		// That is the general precedence TODO.md books ("A query faulting in
-		// both its select list and its WHERE reports the select list's"),
-		// pinned here with both answers.
+		// WHERE: both resolve the WHERE before the select list, so the 42703
+		// wins (Go since whereFaultFirst).
 		{"bitand_double_in_where", `create table t(id bigint, v double, primary key(id)) create index ix as select id from t where v & 1 = 1 order by id`, encapsulate, ""},
 		{
 			"bitand_double_key_then_where_fault", `create table t(id bigint, v double, primary key(id)) create index ix as select v & 1 from t where nosuchcol = 1 order by v & 1`,
-			`ERROR 42703 RelationalException "Attempting to query non existing column NOSUCHCOL"`, `ERROR XX000 "unable to encapsulate arithmetic operation due to type mismatch(es)"`,
+			`ERROR 42703 RelationalException "Attempting to query non existing column NOSUCHCOL"`, "",
 		},
 	} {
 		It("the target refuses the DDL: "+c.name, func() {

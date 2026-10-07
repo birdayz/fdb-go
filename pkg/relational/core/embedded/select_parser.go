@@ -3708,11 +3708,15 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 					return err
 				}
 				if owner == "" {
-					// No descriptor field owns it — a pseudo-column such as
-					// `__ROW_VERSION`, or a name that does not exist. This layer
-					// cannot tell those apart, so it declines and lets the
-					// parse-time predicate stand; ordinary column resolution
-					// reports the second case downstream.
+					// No left source owns an ordinary name: Java resolves the
+					// left copy with resolveIdentifier over the left operators,
+					// whose miss is "Unknown reference ZZ" (measured). The
+					// row-version pseudo-column may live outside the
+					// descriptors, so it declines and lets the parse-time
+					// predicate stand; ordinary resolution reports it downstream.
+					if !strings.EqualFold(col, values.PseudoFieldRowVersion) {
+						return api.NewErrorf(api.ErrCodeUndefinedColumn, "Unknown reference %s", functions.NormalizeIdentifier(colText))
+					}
 					owners = nil
 					break
 				}
@@ -3747,15 +3751,12 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// with nothing to adjudicate against. The two-pass shape above
 				// exists only where owners are counted across sources.
 				switch n := rightLeg.owns(colText, usingRelaxedPass); {
-				case n == 0 && rightLeg.unnest:
-					// Java resolves the right copy on the unnest's own
-					// operator (resolveJoinUsingClause), whose refusal is
-					// resolveIdentifier's.
-					return api.NewErrorf(api.ErrCodeUndefinedColumn,
-						"Unknown reference %s", col)
 				case n == 0:
+					// Java resolves the right copy on the right operator alone
+					// (resolveJoinUsingClause), whose refusal is
+					// resolveIdentifier's, the identifier as written.
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
-						"Attempting to query non existing column %s", col)
+						"Unknown reference %s", functions.NormalizeIdentifier(colText))
 				case n > 1:
 					return api.NewErrorf(api.ErrCodeAmbiguousColumn,
 						"Ambiguous reference %s", col)

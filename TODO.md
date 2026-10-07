@@ -1147,10 +1147,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     - [x] 42703 message text (2026-10-07): every Go unknown-column site
       says Java's "Attempting to query non existing column <identifier>"
       (SemanticAnalyzer.java:446). The fromless JVM probe's `unknown` and
-      `quoted_hidden_bool` rows are now identical to Java's. Open: the
-      identifier rendering on some paths (a WHERE's qualified reference
-      renders bare), and the qualified star, where Java says "Unknown
-      reference T";
+      `quoted_hidden_bool` rows are now identical to Java's. The reference
+      renders as written (qualified, unknown qualifier, UPDATE SET), and a
+      qualified star or a JOIN USING miss says "Unknown reference X":
+      `unknown_reference_text_java_probe_test.go` compares 31 shapes, all
+      identical to Java;
     - [x] a nested-loop join's orientation over a derived aggregate
       (2026-10-07, `nlj_orientation_java_probe_test.go`). Where Java can
       plan the query, both engines drive from the aggregate and probe the

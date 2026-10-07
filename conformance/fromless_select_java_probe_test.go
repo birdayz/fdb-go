@@ -211,7 +211,7 @@ var _ = Describe("FromlessSelectJavaProbe", func() {
 			"group":                           `{"columns":[{"name":"A","type":"INTEGER"},{"name":"N","type":"BIGINT"}],"rows":[[1,1]]}`,
 			"group_constant":                  `{"columns":[{"name":"A","type":"INTEGER"},{"name":"N","type":"BIGINT"}],"rows":[[1,1]]}`,
 			"distinct_order":                  `{"columns":[{"name":"N","type":"INTEGER"}],"rows":[[1]]}`,
-			"qualified_star":                  `ERROR 42703 "Attempting to query non existing column T"`,
+			"qualified_star":                  `ERROR 42703 "Unknown reference T"`,
 			"unknown":                         `ERROR 42703 "Attempting to query non existing column MISSING"`,
 			"hidden_bool":                     `ERROR 42601 "syntax error:\nSELECT _0\n       ^"`,
 			"quoted_hidden_bool":              `ERROR 42703 "Attempting to query non existing column _0"`,

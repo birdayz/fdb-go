@@ -1172,11 +1172,11 @@ func mapPredicateWalkError(walkErr error) *api.Error {
 	}
 	var srcNotFound *semantic.SourceNotFoundError
 	if errors.As(walkErr, &srcNotFound) {
-		return api.NewErrorf(api.ErrCodeUndefinedColumn, "no FROM source aliased as %s", srcNotFound.Alias.Name())
+		return unknownSourceError(srcNotFound)
 	}
 	var colNotFound *semantic.ColumnNotFoundError
 	if errors.As(walkErr, &colNotFound) {
-		return api.NewErrorf(api.ErrCodeUndefinedColumn, "Attempting to query non existing column %s", colNotFound.Id.Name())
+		return api.NewErrorf(api.ErrCodeUndefinedColumn, "Attempting to query non existing column %s", colNotFound.Reference())
 	}
 	var shadowErr *semantic.CorrelatedShadowError
 	if errors.As(walkErr, &shadowErr) {
@@ -3587,6 +3587,17 @@ func resolveColumnName(resolver *expr.Resolver, col string) error {
 	return mapColumnResolveError(err, col)
 }
 
+// unknownSourceError is Java's 42703 for a qualifier that names no source:
+// a column reference reports the reference as written ("Attempting to query
+// non existing column Q.ID"), a qualified star the qualifier alone ("Unknown
+// reference Q", SemanticAnalyzer.expandStar).
+func unknownSourceError(e *semantic.SourceNotFoundError) *api.Error {
+	if len(e.Path) == 0 {
+		return api.NewErrorf(api.ErrCodeUndefinedColumn, "Unknown reference %s", e.Alias.Name())
+	}
+	return api.NewErrorf(api.ErrCodeUndefinedColumn, "Attempting to query non existing column %s", e.Reference())
+}
+
 // mapColumnResolveError classifies a ResolveIdentifier failure into its
 // SQLSTATE (42702 ambiguous / 42703 undefined), shared by the
 // structural and rendered-string arms.
@@ -3607,8 +3618,7 @@ func mapColumnResolveError(err error, display string) error {
 		}
 		var srcNotFound *semantic.SourceNotFoundError
 		if errors.As(err, &srcNotFound) {
-			return api.NewErrorf(api.ErrCodeUndefinedColumn,
-				"column reference with qualifier %q cannot be resolved", srcNotFound.Alias.Name())
+			return unknownSourceError(srcNotFound)
 		}
 	}
 	return nil
@@ -5983,7 +5993,7 @@ func buildLogicalPlanForUpdateWithCatalog(
 			switch {
 			case hits == 0:
 				return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"column %q not found in table %q", set.Column, bare)
+					"Attempting to query non existing column %s", set.Column)
 			case hits > 1:
 				return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 					"Ambiguous reference %s", set.Column)
@@ -7554,6 +7564,13 @@ func starColumnsFromScopeChecked(resolver *expr.Resolver, qualifier string) ([]p
 			// a dot inside a quoted identifier remains part of that identifier.
 			value, err := resolver.ResolveIdentifierPath([]semantic.Identifier{semantic.FromNormalized(qualifier)})
 			if err != nil {
+				// Java's expandStar falls back to resolveIdentifier over the
+				// operators, whose miss is "Unknown reference Q".
+				var noColumn *semantic.ColumnNotFoundError
+				var noSource *semantic.SourceNotFoundError
+				if errors.As(err, &noColumn) || errors.As(err, &noSource) {
+					return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "Unknown reference %s", qualifier)
+				}
 				if mapped := mapColumnResolveError(err, qualifier); mapped != nil {
 					return nil, mapped
 				}

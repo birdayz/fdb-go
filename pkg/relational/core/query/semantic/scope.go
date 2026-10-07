@@ -755,7 +755,7 @@ func (s *Scope) ResolvePathNested(segs []Identifier) (Column, ScopeSource, []Nes
 		avail = append(avail, src.Alias)
 	}
 	return Column{}, ScopeSource{}, nil, &SourceNotFoundError{
-		Alias: qualifier, Available: avail,
+		Alias: qualifier, Available: avail, Path: append([]Identifier(nil), segs...),
 	}
 }
 
@@ -1036,7 +1036,7 @@ func (s *Scope) ResolveSourceQualifiedPath(segs []Identifier) (Column, ScopeSour
 	for _, src := range all {
 		available = append(available, src.Alias)
 	}
-	return Column{}, ScopeSource{}, nil, &SourceNotFoundError{Alias: qualifier, Available: available}
+	return Column{}, ScopeSource{}, nil, &SourceNotFoundError{Alias: qualifier, Available: available, Path: append([]Identifier(nil), segs...)}
 }
 
 // AmbiguousColumnError is returned when a column reference matches
@@ -1122,6 +1122,22 @@ func joinStrings(parts []string, sep string) string {
 type SourceNotFoundError struct {
 	Alias     Identifier
 	Available []Identifier
+	// Path is the column reference as written (`Q.ID`) when a column
+	// lookup, not a star expansion, missed the qualifier.
+	Path []Identifier
+}
+
+// Reference renders the reference as written: the column path when a column
+// lookup missed its qualifier, else the qualifier alone.
+func (e *SourceNotFoundError) Reference() string {
+	if len(e.Path) == 0 {
+		return e.Alias.Name()
+	}
+	parts := make([]string, len(e.Path))
+	for i, part := range e.Path {
+		parts[i] = part.Name()
+	}
+	return joinStrings(parts, ".")
 }
 
 func (e *SourceNotFoundError) Error() string {

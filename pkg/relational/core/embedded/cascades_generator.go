@@ -5027,7 +5027,7 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 						}
 						if qual != scanName {
 							return api.NewErrorf(api.ErrCodeUndefinedColumn,
-								"column reference with qualifier %q cannot be resolved", qual)
+								"Attempting to query non existing column %s", col)
 						}
 						upper = ref.bare()
 					}
