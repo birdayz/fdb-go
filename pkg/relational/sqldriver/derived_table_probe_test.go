@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_DerivedTableProbe(t *testing.T) {
@@ -95,8 +97,9 @@ func TestFDB_DerivedTableProbe(t *testing.T) {
 		if err == nil {
 			t.Fatal("undefined column ZZZ over a derived table must error, got nil")
 		}
-		if !strings.Contains(strings.ToLower(err.Error()), "does not exist") {
-			t.Errorf("want a 42703 column-does-not-exist error, got: %v", err)
+		requireSQLSTATE(t, err, api.ErrCodeUndefinedColumn)
+		if !strings.Contains(err.Error(), "Attempting to query non existing column") {
+			t.Errorf("want Java's 42703 text, got: %v", err)
 		}
 	})
 	t.Run("derived_join_base", func(t *testing.T) {
