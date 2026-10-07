@@ -305,6 +305,19 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 	return result, err
 }
 
+// RunWithMaxAttempts is Run with its own attempt bound in place of the
+// database's, as an FDBDatabaseRunner with setMaxAttempts runs. One attempt is
+// how the relational layer runs a DDL statement: a conflict surfaces instead of
+// re-executing the statement.
+func (d *FDBDatabase) RunWithMaxAttempts(ctx context.Context, maxAttempts int, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
+	policy := d.policy("run")
+	if maxAttempts > 0 {
+		policy.maxAttempts = maxAttempts
+	}
+	result, _, err := d.runContexts(ctx, policy, RouteAttempt, nil, false, fn)
+	return result, err
+}
+
 // runClientLoop runs fn through the transactor's own retry loop, which is
 // unbounded on the pure-Go client and libfdb_c and capped at 100 retries on
 // SimFDB. Only SPFresh's background lifecycles use it (spfreshRun): RFC-094

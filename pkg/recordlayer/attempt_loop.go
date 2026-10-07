@@ -183,6 +183,16 @@ func (d *FDBDatabase) policy(owner string) attemptPolicy {
 	}
 }
 
+// run runs fn as Run does, with the indexer's attempt bound (SetMaxAttempts).
+func (oi *OnlineIndexer) run(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
+	policy := oi.db.policy("online.indexer")
+	if oi.maxAttempts > 0 {
+		policy.maxAttempts = oi.maxAttempts
+	}
+	result, _, err := oi.db.runContexts(ctx, policy, RouteAttempt, nil, false, fn)
+	return result, err
+}
+
 // SetMaxAttempts sets how many attempts Run and its variants make, Java's
 // FDBDatabaseFactory.setMaxAttempts. Values below 1 are rejected as Java's are.
 func (d *FDBDatabase) SetMaxAttempts(n int) error {

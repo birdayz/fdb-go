@@ -176,7 +176,7 @@ func CheckAnyOngoingOnlineIndexBuildsForStore(store *FDBRecordStore, index *Inde
 // transaction. Matches Java's OnlineIndexer.getIndexingHeartbeats(maxCount)
 // (IndexingBase.java:1235-1238).
 func (oi *OnlineIndexer) GetIndexingHeartbeats(ctx context.Context, maxCount int) (map[uuid.UUID]*gen.IndexBuildHeartbeat, error) {
-	result, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	result, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err
@@ -194,7 +194,7 @@ func (oi *OnlineIndexer) GetIndexingHeartbeats(ctx context.Context, maxCount int
 // returns how many it cleared. Matches Java's OnlineIndexer.clearIndexingHeartbeats
 // (IndexingBase.java:1240-1243).
 func (oi *OnlineIndexer) ClearIndexingHeartbeats(ctx context.Context, minAgeMs int64, maxIteration int) (int, error) {
-	result, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	result, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err
@@ -213,7 +213,7 @@ func (oi *OnlineIndexer) ClearIndexingHeartbeats(ctx context.Context, minAgeMs i
 // OnlineIndexer.checkAnyOngoingOnlineIndexBuilds() (OnlineIndexer.java:426-438), with
 // the documented-contract divergence described on the package-level function.
 func (oi *OnlineIndexer) CheckAnyOngoingOnlineIndexBuilds(ctx context.Context) (bool, error) {
-	result, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	result, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err

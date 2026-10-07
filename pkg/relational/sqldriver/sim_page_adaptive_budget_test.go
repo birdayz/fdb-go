@@ -38,7 +38,7 @@ func (b *shortWindowBackend) Transact(fn func(fdb.WritableTransaction) (any, err
 		if err != nil {
 			return result, err
 		}
-		if b.instant().Sub(start) > 1500*time.Millisecond {
+		if b.instant().Sub(start) > shortMVCCWindow {
 			b.failures.Add(1)
 			return nil, fdb.Error{Code: 1007}
 		}
@@ -46,6 +46,12 @@ func (b *shortWindowBackend) Transact(fn func(fdb.WritableTransaction) (any, err
 		return result, nil
 	})
 }
+
+// shortMVCCWindow is the simulated MVCC window. A page's time budget starts at
+// four seconds and shrinks by a tenth per failed attempt, so this window takes
+// seven reductions: the adaptation has to converge inside one page call's ten
+// attempts (Run's bound), which a 1.5 s window, needing ten, does not.
+const shortMVCCWindow = 2000 * time.Millisecond
 
 func TestSimPageBudgetAdaptsToShortMVCCWindow(t *testing.T) {
 	t.Parallel()
@@ -107,8 +113,8 @@ func TestSimPageBudgetAdaptsToShortMVCCWindow(t *testing.T) {
 	if got != count {
 		t.Fatalf("got %d rows, want %d", got, count)
 	}
-	if failures := backend.failures.Load(); failures < 2 || failures > 20 {
-		t.Fatalf("got %d retries; want repeated failure followed by convergence", failures)
+	if failures := backend.failures.Load(); failures < 2 || failures >= int64(rdb.MaxAttempts()) {
+		t.Fatalf("got %d retries; want repeated failure followed by convergence within one call's %d attempts", failures, rdb.MaxAttempts())
 	}
 	if pages := backend.successes.Load() - before; pages < 3 {
 		t.Fatalf("only %d successful transactions: multi-page resume not exercised", pages)

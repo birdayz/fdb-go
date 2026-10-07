@@ -24,7 +24,7 @@ func (m *indexingMerger) merge(ctx context.Context, oi *OnlineIndexer) error {
 			return err
 		}
 		var control *IndexDeferredMaintenanceControl
-		_, err := oi.db.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+		_, err := oi.run(ctx, func(rc *FDBRecordContext) (any, error) {
 			control = nil
 			store, err := oi.openStore(rc)
 			if err != nil {

@@ -243,3 +243,26 @@ func TestRun_RecordedErrorIsTheLastExecutions(t *testing.T) {
 		t.Fatalf("Run returned %v (%T), want a bare 1020 counted against the one attempt", err, err)
 	}
 }
+
+// TestOnlineIndexer_MaxAttemptsBoundsItsTransactions pins the indexer's
+// attempt bound (OnlineIndexOperationBaseBuilder.setMaxAttempts sets the
+// runner's): its transactions make SetMaxAttempts attempts, and the database's
+// default (10) when unset.
+func TestOnlineIndexer_MaxAttemptsBoundsItsTransactions(t *testing.T) {
+	t.Parallel()
+	env := dst.NewSim(7)
+	env.Buggify = dst.DisabledBuggifier()
+	db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	for _, tc := range []struct{ set, want int }{{3, 3}, {0, DefaultMaxAttempts}} {
+		b := &OnlineIndexerBuilder{}
+		b.SetDatabase(db).SetMaxAttempts(tc.set)
+		runs := 0
+		_, err := b.indexer.run(context.Background(), func(*FDBRecordContext) (any, error) {
+			runs++
+			return nil, fdb.Error{Code: 1020}
+		})
+		if runs != tc.want || err == nil {
+			t.Fatalf("SetMaxAttempts(%d): %d attempts, err %v; want %d", tc.set, runs, err, tc.want)
+		}
+	}
+}

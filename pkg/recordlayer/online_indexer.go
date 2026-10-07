@@ -364,7 +364,11 @@ type OnlineIndexer struct {
 	subspace             subspace.Subspace
 	limit                int
 	maxRetries           int // max retries per range on transient failures (0 = no retries)
-	recordsPerSecond     int // inter-transaction rate limit (0 = unlimited, default 10000)
+	// maxAttempts bounds each transaction the indexer runs (Java's runner
+	// maxAttempts, OnlineIndexOperationBaseBuilder.setMaxAttempts); 0 means the
+	// database's (default 10). maxRetries' lessen-work retries run over it.
+	maxAttempts      int
+	recordsPerSecond int // inter-transaction rate limit (0 = unlimited, default 10000)
 	// enforcedPostTransactionDelay, if > 0, is a fixed per-transaction delay (ms) applied
 	// INSTEAD of recordsPerSecond. Java OnlineIndexOperationConfig.enforcedPostTransactionDelay.
 	enforcedPostTransactionDelay int
@@ -798,6 +802,15 @@ func (b *OnlineIndexerBuilder) SetSourceIndex(index *Index) *OnlineIndexerBuilde
 	return b
 }
 
+// SetMaxAttempts sets how many attempts each of the indexer's transactions
+// makes, as Java's OnlineIndexOperationBaseBuilder.setMaxAttempts sets its
+// runner's (default: the database's, 10). The lessen-work retries of
+// SetMaxRetries run over each attempt-bounded transaction.
+func (b *OnlineIndexerBuilder) SetMaxAttempts(maxAttempts int) *OnlineIndexerBuilder {
+	b.indexer.maxAttempts = maxAttempts
+	return b
+}
+
 // SetMaxRetries sets the maximum number of retries per range on transient FDB errors.
 // When a range build fails with a transient error, the indexer retries with a halved limit.
 // Default is 0 (no retries — errors propagate immediately).
@@ -1132,7 +1145,7 @@ func (oi *OnlineIndexer) maybePresetRecordsRange(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
-	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	_, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err
@@ -1715,7 +1728,7 @@ func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) (indexingSessionStar
 	oi.admittedHeartbeat = nil
 	oi.retiredBuildTargets = nil
 	var start indexingSessionStart
-	result, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	result, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStoreWithPreflight(rtx, oi.checkOpenHeartbeats)
 		if err != nil {
 			return nil, err
@@ -1897,7 +1910,7 @@ func (oi *OnlineIndexer) markReadable(ctx context.Context) error {
 				err = oi.mergeRequestedIndexes(ctx)
 			}
 			if err == nil {
-				_, err = oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				_, err = oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 					store, err := oi.openStore(rtx)
 					if err != nil {
 						return nil, err
@@ -1964,7 +1977,7 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 	var hasMore bool
 	var mergeRequests []*Index
 
-	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	_, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		// Reset on retry — previous attempt's values are stale.
 		recordsProcessed = 0
 		mergeRequests = nil
@@ -2185,7 +2198,7 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 	var hasMore bool
 	var mergeRequests []*Index
 
-	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	_, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		// Reset on retry — previous attempt's values are stale.
 		recordsProcessed = 0
 		mergeRequests = nil
@@ -2462,7 +2475,7 @@ func (oi *OnlineIndexer) openStoreWithPreflight(rtx *FDBRecordContext, preflight
 // ttl is the time-to-live for the block; zero means permanent.
 // Matches Java's IndexingBase.performIndexingStampOperation(BLOCK, ...).
 func (oi *OnlineIndexer) BlockIndex(ctx context.Context, blockID string, ttl time.Duration) error {
-	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	_, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err
@@ -2502,7 +2515,7 @@ func (oi *OnlineIndexer) BlockIndex(ctx context.Context, blockID string, ttl tim
 // If blockID is non-empty, only unblocks stamps with a matching blockID.
 // Matches Java's IndexingBase.performIndexingStampOperation(UNBLOCK, ...).
 func (oi *OnlineIndexer) UnblockIndex(ctx context.Context, blockID string) error {
-	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	_, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err
@@ -2534,7 +2547,7 @@ func (oi *OnlineIndexer) UnblockIndex(ctx context.Context, blockID string) error
 // Matches Java's IndexingBase.markReadableIfBuilt().
 func (oi *OnlineIndexer) MarkReadableIfBuilt(ctx context.Context) (bool, error) {
 	allReadable := true
-	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	_, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		// Reset on retry — previous attempt's result is stale.
 		allReadable = true
 		store, err := oi.openStore(rtx)
@@ -2576,7 +2589,7 @@ func (oi *OnlineIndexer) MarkReadableIfBuilt(ctx context.Context) (bool, error) 
 // Matches Java's IndexingBase.performIndexingStampOperation(QUERY, ...).
 func (oi *OnlineIndexer) QueryIndexingStamps(ctx context.Context) (map[string]*gen.IndexBuildIndexingStamp, error) {
 	stamps := make(map[string]*gen.IndexBuildIndexingStamp, len(oi.targetIndexes))
-	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	_, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err

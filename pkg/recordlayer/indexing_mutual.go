@@ -234,7 +234,7 @@ func (m *mutualIndexBuilder) buildMutual(ctx context.Context) (int64, bool, erro
 
 	next := *m
 	var mergeRequests []*Index
-	_, err := m.indexer.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	_, err := m.indexer.run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		attempt := *m
 		m := &attempt
 		defer func() { next = *m }()

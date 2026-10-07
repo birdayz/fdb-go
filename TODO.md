@@ -874,10 +874,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   after 100 under simulation; SPFresh lifecycles stay on `runClientLoop`;
   the record hunt reconciles exhausted operations against the predicted
   side (`exhaustion_test.go`). DIVERGENCES entry added.
-  Open: per-owner policies (DDL one attempt with the catalog bootstrap made
-  check-then-create, OnlineIndexer `SetMaxAttempts`), the chaos transactor
-  keyed on `AttemptCall`, the chaos model's exhaustion reconcile, the SQL
-  harnesses' error classes, SPFresh takeover/stall SimFDB fixtures.
+  Owner policies done: OnlineIndexer `SetMaxAttempts` (its 14 Run sites and
+  the heartbeat cleanup), DDL statements one attempt (`RunWithMaxAttempts`);
+  the concurrent chaos harness counts exhausted operations under a 5%
+  ceiling; the page-retry harness keys faults on `AttemptCall`.
+  Open: the catalog bootstrap's schema-row write made check-then-create
+  (with the one-attempt DDL, a concurrent first `Ping` can now fail a DDL),
+  the chaos transactor keyed on `AttemptCall`, the chaos scenario model's
+  exhaustion reconcile, SPFresh takeover/stall SimFDB fixtures.
   Pure-Go wrapper done: `TransactCtx`, `ReadTransactCtx` and the tenant
   forms keep the last execution's body error when OnError re-raises its
   code (the Apple binding's `retryable`), panics included

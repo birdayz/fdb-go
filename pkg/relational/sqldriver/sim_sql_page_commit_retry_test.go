@@ -133,6 +133,8 @@ type retryOnceBackend struct {
 	everyOnce atomic.Bool
 	mu        sync.Mutex
 	failedOrd map[int64]bool
+	// callOrd maps an attempt-loop call to its ordinal (TransactAttempt).
+	callOrd map[uint64]int64
 }
 
 func newRetryOnceBackend(sim *simfdb.SimDB) *retryOnceBackend {
@@ -203,7 +205,32 @@ func (b *retryOnceBackend) takeEveryOnce(ordinal int64) bool {
 }
 
 func (b *retryOnceBackend) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
-	ordinal := b.seen.Add(1) - 1
+	return b.transactOrdinal(b.seen.Add(1)-1, fn)
+}
+
+// TransactAttempt is recordlayer.AttemptTransactor: Run's attempt loop makes a
+// fresh Transact call per attempt, so the ORDINAL is per call (CallID), not per
+// attempt. A "fail once" fault then fails the call's first attempt and lets its
+// retry through, and a permanent one fails every attempt of the call.
+func (b *retryOnceBackend) TransactAttempt(_ context.Context, call recordlayer.AttemptCall, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	b.mu.Lock()
+	if b.callOrd == nil {
+		b.callOrd = map[uint64]int64{}
+	}
+	ordinal, ok := b.callOrd[call.CallID]
+	if !ok {
+		ordinal = b.seen.Add(1) - 1
+		b.callOrd[call.CallID] = ordinal
+	}
+	b.mu.Unlock()
+	return b.transactOrdinal(ordinal, fn)
+}
+
+func (b *retryOnceBackend) ReadTransactAttempt(_ context.Context, _ recordlayer.AttemptCall, fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	return b.SimDB.ReadTransact(fn)
+}
+
+func (b *retryOnceBackend) transactOrdinal(ordinal int64, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	if target := b.simInjectAt.Load(); target >= 0 && target == ordinal {
 		b.simInjectAt.Store(-1)
 		b.fired.Store(true)

@@ -318,6 +318,9 @@ func (oi *OnlineIndexer) cleanupPendingQueueHeartbeat(heartbeat *IndexingHeartbe
 // fallback after a terminal failure or exhaustion of the cleanup deadline.
 func (oi *OnlineIndexer) cleanupHeartbeatWithin(ctx context.Context, heartbeat *IndexingHeartbeat) error {
 	policy := oi.db.policy("heartbeat.cleanup")
+	if oi.maxAttempts > 0 {
+		policy.maxAttempts = oi.maxAttempts
+	}
 	_, err := attemptLoop(ctx, oi.db.Env(), oi.db.observer(), policy, RouteOwnTransaction, func(AttemptCall) (any, error) {
 		return nil, oi.cleanupHeartbeatAttempt(ctx, heartbeat)
 	})

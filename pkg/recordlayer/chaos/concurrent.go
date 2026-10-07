@@ -2,6 +2,7 @@ package chaos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"sync"
@@ -84,6 +85,22 @@ func RunConcurrent(t testing.TB, realDB fdb.Database, metadata *recordlayer.Reco
 
 	// Track total operations and violations.
 	var totalOps atomic.Int64
+	// Run makes at most ten attempts, as Java's runner does, so a hot key's
+	// conflicts can outlast them. Such an operation applied wholly or not at
+	// all, which the snapshot invariants hold either way, so it is counted
+	// rather than failed; any other error is a bug.
+	var exhaustedOps atomic.Int64
+	exhausted := func(err error) bool {
+		if err == nil {
+			return true
+		}
+		var fe fdb.Error
+		if errors.As(err, &fe) && fdb.IsRetryable(fe.Code) {
+			exhaustedOps.Add(1)
+			return true
+		}
+		return false
+	}
 	var violationsMu sync.Mutex
 	var allViolations []Violation
 
@@ -118,8 +135,7 @@ func RunConcurrent(t testing.TB, realDB fdb.Database, metadata *recordlayer.Reco
 							Quantity: proto.Int32(qty),
 						})
 					})
-					if err != nil {
-						// Conflict errors are retried by Run(); other errors are unexpected.
+					if !exhausted(err) {
 						t.Errorf("concurrent: worker %d save error: %v", workerID, err)
 					}
 
@@ -132,7 +148,7 @@ func RunConcurrent(t testing.TB, realDB fdb.Database, metadata *recordlayer.Reco
 						}
 						return store.DeleteRecord(tuple.Tuple{pk})
 					})
-					if err != nil {
+					if !exhausted(err) {
 						t.Errorf("concurrent: worker %d delete error: %v", workerID, err)
 					}
 
@@ -145,7 +161,7 @@ func RunConcurrent(t testing.TB, realDB fdb.Database, metadata *recordlayer.Reco
 						}
 						return nil, store.DeleteAllRecords()
 					})
-					if err != nil {
+					if !exhausted(err) {
 						t.Errorf("concurrent: worker %d delete-all error: %v", workerID, err)
 					}
 				}
@@ -201,8 +217,12 @@ func RunConcurrent(t testing.TB, realDB fdb.Database, metadata *recordlayer.Reco
 		t.Fatal(msg)
 	}
 
-	t.Logf("concurrent: completed %d ops across %d workers (seed=%d, duration=%s)",
-		totalOps.Load(), cfg.Workers, cfg.Seed, cfg.Duration)
+	// The ceiling: exhaustion is a contention outcome, not the common case.
+	if n, ops := exhaustedOps.Load(), totalOps.Load(); n*20 > ops {
+		t.Fatalf("concurrent: %d of %d operations exhausted their attempts, above the 5%% ceiling", n, ops)
+	}
+	t.Logf("concurrent: completed %d ops across %d workers (seed=%d, duration=%s, exhausted=%d)",
+		totalOps.Load(), cfg.Workers, cfg.Seed, cfg.Duration, exhaustedOps.Load())
 }
 
 // validateSnapshot takes a snapshot-consistent read and verifies derived state.
