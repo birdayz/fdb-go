@@ -81,15 +81,6 @@ var _ = Describe("StarScopeJavaProbe", func() {
 			j := render(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
 			g := render(goRunner.RunWithSetup(ctx, schema, setup, c.sql))
 			GinkgoWriter.Printf("STARSCOPE %s\n  java %s\n  go   %s\n", c.name, j, g)
-			// A HAVING that reads an enclosing column inside EXISTS is a Go
-			// limit of its own, star or no star (DIVERGENCES.md "A correlated
-			// HAVING inside EXISTS"); the row reddens when it changes.
-			if c.name == "exists_outer_star_group_having" {
-				if g != "ERR 0AF00" || j == g {
-					mismatches = append(mismatches, fmt.Sprintf("%s: java %s, go %s", c.name, j, g))
-				}
-				continue
-			}
 			if j != g {
 				mismatches = append(mismatches, fmt.Sprintf("%s: java %s, go %s", c.name, j, g))
 			}

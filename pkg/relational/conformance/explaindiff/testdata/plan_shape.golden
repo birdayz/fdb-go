@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=404 queries=3119 dml=179 non_query=129 plan_errors=325 unexpected_errors=4
+# files=404 queries=3119 dml=179 non_query=129 plan_errors=324 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -7215,9 +7215,18 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryFirstOrDefaultPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
-=== exists_with_aggregate.yaml#0 expect-error=0AF00
+=== exists_with_aggregate.yaml#0
 sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT 1 FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(o.amount) > 150 )
-plan:  <PLAN-ERROR: 0AF00: correlated EXISTS over a GROUP BY / HAVING subquery is not supported>
+plan:  FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(StreamingAgg(keys=[_current.CUSTOMER_ID#1], InMemorySort([_current.CUSTOMER_ID#1 ASC], PredicatesFilter(Scan(ORDERS), [1 preds]))), [1 preds])), [1 preds]))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryFirstOrDefaultPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryStreamingAggregationPlan
+shape:           RecordQueryInMemorySortPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryScanPlan
 === exists_with_aggregate.yaml#1 expect-error=0AF00
 sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id QUALIFY 1 = 0 )
 plan:  <PLAN-ERROR: 0AF00: correlated EXISTS over a GROUP BY / HAVING subquery is not supported>

@@ -363,7 +363,10 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 			return input, nil
 		case *logical.LogicalAggregate:
 			if node.HasHaving {
-				return nil, api.NewError(api.ErrCodeUnsupportedQuery, "correlated EXISTS over a GROUP BY / HAVING subquery is not supported")
+				// HAVING filters groups, so the aggregate cannot be dropped:
+				// the body is kept whole, its correlations read from the
+				// outer binding where they are, as a set-operation body is.
+				return node, nil
 			}
 			if len(node.GroupKeys) == 0 {
 				out.truth = predicates.TriTrue

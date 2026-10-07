@@ -249,9 +249,11 @@ func TestBoundExistsTruthAfterPagination(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "having_can_remove_the_global_group",
-			wantErr: true,
-			sql:     "SELECT COUNT(*) FROM t i WHERE i.id = o.id HAVING COUNT(*) > 0",
+			// HAVING can remove the global group, so existence is not known:
+			// the grouped body is kept whole and evaluated
+			// (CorrelatedHavingExistsJavaProbe having_ungrouped).
+			name: "having_can_remove_the_global_group",
+			sql:  "SELECT COUNT(*) FROM t i WHERE i.id = o.id HAVING COUNT(*) > 0",
 		},
 		{
 			name:    "qualify_can_remove_the_global_group",

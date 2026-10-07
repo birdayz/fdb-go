@@ -183,8 +183,8 @@ Never mark a whole workstream complete because one of its subitems passed.
       a correlated star in a grouped list reads its columns as the outer
       references written by name (`StarScopeJavaProbe`
       exists_outer_star_group*); `select-a-star.yamsql` passes (150 files,
-      9344 queries). A correlated HAVING inside EXISTS is still refused
-      (DIVERGENCES.md).
+      9344 queries). A correlated HAVING inside EXISTS keeps its grouped
+      body whole (`CorrelatedHavingExistsJavaProbe`, 6 rows).
       IN-list typing follows Java's order (literal array identical types,
       then __internal_array promotion, then the IN's probe promotion,
       22000); a comparison is an IN item. `InComparandSourceJavaProbe` has

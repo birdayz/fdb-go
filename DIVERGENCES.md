@@ -934,13 +934,6 @@ ON, or in an inner ON before a later RIGHT join, is answered as Java does: it st
 ON. Pinned by `ExistsInnerShadowJavaProbe` (`on_nested_exists` asserts the refusal and
 Java's [2]) and `TestFDB_CorrelatedExistsNestedSubqueryInOnDeclines`.
 
-### A correlated HAVING inside EXISTS (Go refuses)
-
-`SELECT B1 FROM B WHERE EXISTS (SELECT A1 FROM A GROUP BY A1 HAVING A1 > B.B1)`: Java answers;
-Go refuses with 0AF00 "correlated EXISTS over a GROUP BY / HAVING subquery is not supported".
-A grouped EXISTS body whose select list or WHERE reads the enclosing row answers as Java,
-stars included (`StarScopeJavaProbe` exists_outer_star_group*).
-
 ### A LEFT JOIN over a lateral unnest (Go refuses)
 
 `SELECT … FROM t1, t1.arr AS r LEFT JOIN t2 ON r = t2.id`: Java answers; Go fails with 0AF00
