@@ -2,7 +2,6 @@ package cascades
 
 import (
 	"bytes"
-	"errors"
 	"math"
 	"reflect"
 
@@ -480,14 +479,11 @@ func explodableIn(p predicates.QueryPredicate) (inExplosion, bool) {
 	if !values.IsConstantValue(inPred.Comparison.Operand) {
 		return inExplosion{}, false
 	}
-	// Plan-time IN-list extraction: an erroring or non-list comparand
-	// declines to transform rather than failing planning.
+	// Plan-time IN-list extraction. A comparand that fails to evaluate (a
+	// NULL element, `1 / 0`) is exploded as it is, Java's
+	// arrayDistinct(comparand): the explode raises when the plan opens.
 	rhs, err := inPred.Comparison.Operand.Evaluate(nil)
-	var nullElement *values.NullArrayElementError
-	runtimeArray := (err != nil && errors.As(err, &nullElement)) || values.IsRecord(inPred.Operand.Type())
-	if err != nil && !errors.As(err, &nullElement) {
-		return inExplosion{}, false
-	}
+	runtimeArray := err != nil || values.IsRecord(inPred.Operand.Type())
 	list, ok := rhs.([]any)
 	if !runtimeArray && (!ok || len(list) == 0) {
 		return inExplosion{}, false
@@ -530,10 +526,11 @@ func (in inExplosion) explodeExpression() (*expressions.ExplodeExpression, bool,
 		Value: in.list,
 		Typ:   values.NewArrayType(false, elementType),
 	}
-	// A row-independent array holding a NULL element is exploded as it is,
-	// as Java's rule explodes arrayDistinct(comparand) with no constancy
-	// check: the explode evaluates it when the plan opens and fails with
-	// 0A000 there, even over an empty table.
+	// A row-independent array that fails to evaluate (a NULL element: 0A000;
+	// `1 / 0`: 22012) is exploded as it is, as Java's rule explodes
+	// arrayDistinct(comparand) with no constancy check: the explode
+	// evaluates it when the plan opens and fails there, even over an empty
+	// table.
 	if in.runtimeArray {
 		explodeValue = values.NewArrayDistinctValue(in.pred.Comparison.Operand)
 	}

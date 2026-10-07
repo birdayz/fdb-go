@@ -2155,12 +2155,16 @@ func allInListItemsConstant(rhs []values.Value) bool {
 
 // anyInListItemFoldsToNull reports whether a constant IN-list item folds to
 // NULL at plan time.
+//
+// An item that does not fold at all (`1 / 0`) is reported too: it is not a
+// literal, so Java sends the list through __internal_array and the item
+// raises when the list is evaluated, not at planning.
 func anyInListItemFoldsToNull(rhs []values.Value) bool {
 	for _, v := range rhs {
 		if v == nil {
 			continue
 		}
-		if lit, ok := values.EvaluateConstant(v); ok && lit == nil {
+		if lit, ok := values.EvaluateConstant(v); !ok || lit == nil {
 			return true
 		}
 	}

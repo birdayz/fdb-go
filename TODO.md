@@ -102,10 +102,17 @@ Never mark a whole workstream complete because one of its subitems passed.
   check and the one-combination fast path, which now read the evaluated
   sizes; it used to be dropped at planning and fail at execution with "no
   planning-time values" (`TestExecuteInUnion_ComparandSourceEvaluatedAtOpen`,
-  `TestInUnionPlan_ComparandIdentity`, mutation-checked). Not done: carrying
-  EVERY comparand source unevaluated (the design's full conversion; today a
-  comparand that does evaluate at planning is still extracted there, as the
-  in-join does).
+  `TestInUnionPlan_ComparandIdentity`, mutation-checked). A list item that
+  fails to evaluate (`1 / 0`) no longer fails translation (0AF00): it takes
+  Java's `__internal_array` path and the explode carries
+  `arrayDistinct(comparand)` for any evaluation failure, so it raises when
+  the plan opens, even over an empty table, as Java does
+  (`InComparandSourceJavaProbe`, 18 shapes; mutation-checked). Not done:
+  carrying EVERY comparand source unevaluated (the design's full conversion;
+  today a comparand that does evaluate at planning is still extracted there,
+  as the in-join does). Measured with the same probe: literal, duplicated,
+  computed and CAST items under in-union and in-join, ordered both ways,
+  answer Java's rows, so the remaining conversion is not observable in rows.
   The product limit is done (F-7b item 5, after item 2 removed its blocker).
   The executor checks first (Java RecordQueryInUnionPlan.java:151-153, with a
   saturating product declared in DIVERGENCES.md), the relational maximum is
