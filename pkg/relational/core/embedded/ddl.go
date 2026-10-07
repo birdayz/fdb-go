@@ -1225,10 +1225,8 @@ func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
 	}
 	_, err := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
-		if initErr := c.sess.Catalog.Initialize(txn); initErr != nil {
-			return nil, initErr
-		}
-		return nil, txn.Commit()
+		// Run commits; a commit in its body is refused (RecordContextNotActiveError).
+		return nil, c.sess.Catalog.Initialize(txn)
 	})
 	if err != nil {
 		return err
@@ -1252,11 +1250,8 @@ func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantA
 	}
 	_, err := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
-		execErr := action.Execute(txn)
-		if execErr != nil {
-			return nil, execErr
-		}
-		return nil, txn.Commit()
+		// Run commits; a commit in its body is refused (RecordContextNotActiveError).
+		return nil, action.Execute(txn)
 	})
 	return err
 }

@@ -291,6 +291,8 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 		ctx:      ctx,
 		env:      r.db.env,
 		database: r.db,
+		// RunWithRetry commits each attempt itself.
+		routeOwned: true,
 	}
 	recordCtx.SetTimer(r.contextTimer())
 

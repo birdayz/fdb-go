@@ -639,6 +639,28 @@ func (e *RecordCoreStorageError) Error() string {
 
 func (*RecordCoreStorageError) JavaRecordCoreException() {}
 
+// RecordContextNotActiveError is Java's RecordContextNotActiveException, a
+// RecordCoreStorageException: the context's transaction is no longer active.
+// A context is deactivated by its commit whatever the outcome, and a context a
+// transaction route (FDBDatabase.Run and its variants, the runner) hands its
+// body is the route's to commit, so a commit there is refused before anything
+// commits. errors.As finds it as itself and as a *RecordCoreStorageError.
+type RecordContextNotActiveError struct{ Message string }
+
+func (e *RecordContextNotActiveError) Error() string { return e.Message }
+
+func (*RecordContextNotActiveError) JavaRecordCoreException() {}
+
+// Unwrap exposes the RecordCoreStorageException superclass.
+func (e *RecordContextNotActiveError) Unwrap() error {
+	return &RecordCoreStorageError{Message: e.Message}
+}
+
+// errTransactionNotActive is FDBRecordContext.ensureActive's refusal.
+func errTransactionNotActive() error {
+	return &RecordContextNotActiveError{Message: "Transaction is no longer active."}
+}
+
 // FoundSplitOutOfOrderError is raised when a split record's segments are present
 // but not in sequence — segment N+1 was expected and something else was found.
 //

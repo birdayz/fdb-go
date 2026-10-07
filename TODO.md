@@ -848,6 +848,18 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] Runner: unified bounded attempts, per-owner retries, commit ownership and
   deactivation, client proxy wait/body-chain causes, SPFresh stall bound and
   instrumentation. Apply the SPFresh paper review to affected algorithms.
+  Scope is ws-d-design.md section 5, "Attempt bounds of the transaction
+  owners" (phase D-0). Commit ownership and deactivation done (2026-10-06):
+  `RecordContextNotActiveError` (Java's RecordContextNotActiveException, a
+  RecordCoreStorageError); a context is deactivated by its first commit
+  whatever the outcome; a route's context (Run, RunWithWeakReads,
+  RunWithVersionstamp, RunWithRetry) refuses its body's commit before
+  anything commits; the two self-committing bodies (`runDDL`,
+  `ensureCatalogInit`) no longer commit inside Run
+  (`record_context_active_fdb_test.go`, mutation-checked; DIVERGENCES).
+  Open: the bounded attempt loop (maxAttempts 10, any-cause retry rule,
+  ExponentialDelay) for Run, per-owner policies, body error-chain
+  preservation through the client, the SPFresh stall bound.
 
 ## 4. WS-H — stored-query runtime
 

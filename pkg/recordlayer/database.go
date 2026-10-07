@@ -297,6 +297,7 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 			ctx:           ctx,
 			env:           d.env,
 			database:      d,
+			routeOwned:    true,
 		}
 		recordCtx.SetTimer(d.Timer())
 		lastCtx = recordCtx
@@ -417,6 +418,7 @@ func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemanti
 			ctx:           ctx,
 			env:           d.env,
 			database:      d,
+			routeOwned:    true,
 		}
 		recordCtx.SetTimer(d.Timer())
 		lastCtx = recordCtx
@@ -464,6 +466,7 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 			ctx:           ctx,
 			env:           d.env,
 			database:      d,
+			routeOwned:    true,
 		}
 		recordCtx.SetTimer(d.Timer())
 		lastCtx = recordCtx
@@ -647,6 +650,15 @@ type FDBRecordContext struct {
 	tx            fdb.WritableTransaction
 	ctx           context.Context
 	transactionID int64 // unique ID for logging/tracing
+
+	// routeOwned marks a context a transaction route (Run and its variants,
+	// the runner's RunWithRetry) handed its body: the route commits it, and
+	// the body's own commit is refused before anything commits.
+	routeOwned bool
+	// deactivated is set by the first commit, whatever its outcome (Java's
+	// closeTransaction(false) on both arms of commitAsync); a later commit is
+	// refused as Java's ensureActive refuses it.
+	deactivated atomic.Bool
 
 	// database is the FDBDatabase that opened this context (Java's
 	// FDBRecordContext.getDatabase); nil for a context over an external
@@ -1350,6 +1362,11 @@ func (rc *FDBRecordContext) GetMetaDataVersionStamp() ([]byte, error) {
 // Runs post-commit hooks after successful commit.
 // Matches Java's FDBRecordContext.commitAsync() which always runs checks and hooks.
 func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
+	// Java's ensureActive, the first statement of commitAsync: a committed
+	// context, and one its route owns, commits nothing.
+	if rc.routeOwned || !rc.deactivated.CompareAndSwap(false, true) {
+		return nil, errTransactionNotActive()
+	}
 	// Include pre-commit checks in the commit span, but not post-commit hooks.
 	commitStart := time.Now()
 	if err := rc.runCommitChecks(); err != nil {

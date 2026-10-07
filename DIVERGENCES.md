@@ -2879,6 +2879,17 @@ window option `EF_SEARCH = 2147483646` fails with `OutOfMemoryError` and `214748
 Every value either engine accepts searches the same beam; both answers are pinned in
 `conformance/window_options_conformance_test.go`.
 
+## A commit inside a transaction route's body is refused before it lands
+
+A context that `FDBDatabase.Run`, its variants or `FDBDatabaseRunner.RunWithRetry` hands its body
+belongs to that route, which commits it. If the body commits it itself, Go refuses that commit
+with Java's `RecordContextNotActiveException` class and message ("Transaction is no longer
+active.") before the commit checks, so nothing lands. Java lands the body's commit and then fails
+the runner's own commit in `ensureActive` with the same class (FDBRecordContext.java:479-481,
+531, 548-551), reporting a durable commit as a failure. As in Java, any context is deactivated by
+its first commit whatever the outcome, and a second commit is refused with that class. Pinned by
+`record_context_active_fdb_test.go`.
+
 ## A vector search holds its partition lock for the search, not the cursor
 
 Both engines read-lock `LockIdentifier(partitionSubspace)` for a vector scan, the key a write to
