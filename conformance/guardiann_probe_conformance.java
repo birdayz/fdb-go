@@ -225,8 +225,34 @@ class GuardiannProbeSteps extends ConformanceBase {
      */
     @ConformanceStep("guardiannByteScriptProbe")
     public List<Map<String, Object>> guardiannByteScriptProbe(String clusterFile, String tenantName, byte[] subspace,
-                                                              int primaryClusterMin, List<List<Object>> ops) {
-        Guardiann guardiann = smallGuardiann(subspace, primaryClusterMin);
+                                                              int primaryClusterMin, Map<String, String> options,
+                                                              List<List<Object>> ops) {
+        Config.ConfigBuilder builder = Guardiann.newConfigBuilder()
+                .setMetric(Metric.EUCLIDEAN_METRIC)
+                .setPrimaryClusterMin(primaryClusterMin)
+                .setPrimaryClusterMax(10)
+                .setPrimaryClusterHardMax(40)
+                .setCollapseMinDuplicates(5)
+                .setDeterministicRandomness(true);
+        for (Map.Entry<String, String> option : options.entrySet()) {
+            String key = option.getKey();
+            String value = option.getValue();
+            if (key.equals("useRaBitQ")) {
+                builder.setUseRaBitQ(Boolean.parseBoolean(value));
+            } else if (key.equals("raBitQNumExBits")) {
+                builder.setRaBitQNumExBits(Integer.parseInt(value));
+            } else if (key.equals("sampleVectorStatsProbability")) {
+                builder.setSampleVectorStatsProbability(Double.parseDouble(value));
+            } else if (key.equals("maintainStatsProbability")) {
+                builder.setMaintainStatsProbability(Double.parseDouble(value));
+            } else if (key.equals("statsThreshold")) {
+                builder.setStatsThreshold(Integer.parseInt(value));
+            } else {
+                throw new IllegalArgumentException("unknown option " + key);
+            }
+        }
+        Guardiann guardiann = new Guardiann(new Subspace(subspace), ForkJoinPool.commonPool(), builder.build(2),
+                OnWriteListener.NOOP, OnReadListener.NOOP);
         List<Map<String, Object>> steps = new ArrayList<>();
         for (List<Object> op : ops) {
             String kind = (String) op.get(0);
@@ -246,6 +272,8 @@ class GuardiannProbeSteps extends ConformanceBase {
                         break;
                     }
                     step.put("kvs", dumpSubspace(clusterFile, tenantName, subspace));
+                    step.put("trained", runInContext(clusterFile, tenantName, context ->
+                            GuardiannConformanceAccess.trained(guardiann, context.ensureActive())));
                     steps.add(step);
                 }
                 continue;
@@ -260,6 +288,8 @@ class GuardiannProbeSteps extends ConformanceBase {
             Map<String, Object> step = new LinkedHashMap<>();
             step.put("op", kind + " " + id);
             step.put("kvs", dumpSubspace(clusterFile, tenantName, subspace));
+            step.put("trained", runInContext(clusterFile, tenantName, context ->
+                    GuardiannConformanceAccess.trained(guardiann, context.ensureActive())));
             steps.add(step);
         }
         return steps;

@@ -833,7 +833,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   then primary key). Fixed for every HNSW graph
   (`TestSelectNeighbors_IsJavasSelectCandidates`, mutation-checked; the
   removed early return also hid an out-of-range slice in the no-triangle
-  branch). Still to add: bounce and RaBitQ-trained codecs.
+  branch). Bounce is covered by the collapse scenario (every collapse
+  enqueues a bounce), and a RaBitQ scenario (sampling, statistics, training,
+  encoded references; asserted to end trained) is byte-identical. Still to
+  add, at the record-layer level the engine differential does not reach: the
+  vector task counts and merge lock in the index's secondary subspace.
 - [ ] Runner: unified bounded attempts, per-owner retries, commit ownership and
   deactivation, client proxy wait/body-chain causes, SPFresh stall bound and
   instrumentation. Apply the SPFresh paper review to affected algorithms.

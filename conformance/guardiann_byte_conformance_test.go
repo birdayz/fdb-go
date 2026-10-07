@@ -237,14 +237,36 @@ func gDelete(id int64, x, y float64) guardiannOp { return guardiannOp{"delete", 
 func gDrain() guardiannOp                        { return guardiannOp{"drain"} }
 
 type guardiannStep struct {
-	Op  string     `json:"op"`
-	KVs [][]string `json:"kvs"`
+	Op      string     `json:"op"`
+	KVs     [][]string `json:"kvs"`
+	Trained bool       `json:"trained"` // Java only: AccessInfo.canUseRaBitQ after the step
 }
 
 // runGuardiannByteScript replays ops through Java's Guardiann and Go's engine
 // (the same deterministic configuration) and returns the first step whose
 // persisted bytes differ, as readable diffs, or nil when every step matches.
 func runGuardiannByteScript(primaryClusterMin int, ops []guardiannOp) []string {
+	diffs, _ := runGuardiannByteScriptWith(primaryClusterMin, nil, ops)
+	return diffs
+}
+
+// guardiannScriptOptions maps the script probe's option names to the GuardiANN
+// index options that set the same Config fields.
+var guardiannScriptOptions = map[string]string{
+	"useRaBitQ":                    recordlayer.IndexOptionHNSWUseRaBitQ,
+	"raBitQNumExBits":              recordlayer.IndexOptionHNSWRaBitQNumExBits,
+	"sampleVectorStatsProbability": recordlayer.IndexOptionHNSWSampleVectorStatsProbability,
+	"maintainStatsProbability":     recordlayer.IndexOptionHNSWMaintainStatsProbability,
+	"statsThreshold":               recordlayer.IndexOptionHNSWStatsThreshold,
+}
+
+// runGuardiannByteScriptWith is runGuardiannByteScript with extra Config
+// options (guardiannScriptOptions' names) applied to both engines. trained
+// reports whether Java's structure ended trained for RaBitQ.
+func runGuardiannByteScriptWith(primaryClusterMin int, options map[string]string, ops []guardiannOp) (diffs []string, trained bool) {
+	if options == nil {
+		options = map[string]string{}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	env, err := SetupTenantEnvironment(ctx, sharedContainer, "guardiann_script_"+uuid.New().String())
@@ -255,10 +277,11 @@ func runGuardiannByteScript(primaryClusterMin int, ops []guardiannOp) []string {
 	var javaSteps []guardiannStep
 	Expect(NewJavaInvoker().InvokeAs(ctx, "guardiannByteScriptProbe", map[string]any{
 		"clusterFile": env.ClusterFile, "tenantName": env.TenantName,
-		"subspace": BytesToIntArray(javaSS.Bytes()), "primaryClusterMin": primaryClusterMin, "ops": ops,
+		"subspace": BytesToIntArray(javaSS.Bytes()), "primaryClusterMin": primaryClusterMin,
+		"options": options, "ops": ops,
 	}, &javaSteps)).To(Succeed())
 
-	engine, err := recordlayer.NewGuardiannEngine(goSS, map[string]string{
+	indexOptions := map[string]string{
 		recordlayer.IndexOptionVectorEngine:                     "GUARDIANN",
 		recordlayer.IndexOptionVectorNumDimensions:              "2",
 		recordlayer.IndexOptionVectorMetric:                     "EUCLIDEAN_METRIC",
@@ -267,7 +290,13 @@ func runGuardiannByteScript(primaryClusterMin int, ops []guardiannOp) []string {
 		recordlayer.IndexOptionGuardiannPrimaryClusterHardMax:   "40",
 		recordlayer.IndexOptionGuardiannCollapseMinDuplicates:   "5",
 		recordlayer.IndexOptionGuardiannDeterministicRandomness: "true",
-	})
+	}
+	for k, v := range options {
+		name, ok := guardiannScriptOptions[k]
+		Expect(ok).To(BeTrue(), "unknown script option %s", k)
+		indexOptions[name] = v
+	}
+	engine, err := recordlayer.NewGuardiannEngine(goSS, indexOptions)
 	Expect(err).NotTo(HaveOccurred())
 	run := func(fn func(tx fdb.WritableTransaction) error) error {
 		_, err := env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
@@ -331,6 +360,9 @@ func runGuardiannByteScript(primaryClusterMin int, ops []guardiannOp) []string {
 		return s
 	}
 	Expect(ops2(goSteps)).To(Equal(ops2(javaSteps)), "the steps each engine took")
+	if len(javaSteps) > 0 {
+		trained = javaSteps[len(javaSteps)-1].Trained
+	}
 	for i := range goSteps {
 		var diffs []string
 		javaByKey := map[string]string{}
@@ -352,11 +384,11 @@ func runGuardiannByteScript(primaryClusterMin int, ops []guardiannOp) []string {
 			}
 		}
 		if len(diffs) > 0 {
-			return append([]string{fmt.Sprintf("first difference at step %d (%s)", i+1, goSteps[i].Op)}, diffs...)
+			return append([]string{fmt.Sprintf("first difference at step %d (%s)", i+1, goSteps[i].Op)}, diffs...), trained
 		}
 	}
 	fmt.Fprintf(GinkgoWriter, "GUARDIANN-SCRIPT %d steps identical\n", len(goSteps))
-	return nil
+	return nil, trained
 }
 
 var _ = Describe("GuardiANN persisted bytes by scenario", func() {
@@ -390,6 +422,31 @@ var _ = Describe("GuardiANN persisted bytes by scenario", func() {
 		ops = append(ops, gDelete(3, 0.5, 0.5), gDelete(7, 0.5, 0.5))
 		ops = append(ops, gDrain())
 		Expect(runGuardiannByteScript(0, ops)).To(BeEmpty())
+	})
+
+	It("RaBitQ: sampling trains the quantizer and later references are encoded", func() {
+		options := map[string]string{
+			"useRaBitQ": "true", "raBitQNumExBits": "4",
+			"sampleVectorStatsProbability": "1.0", "maintainStatsProbability": "1.0", "statsThreshold": "8",
+		}
+		var ops []guardiannOp
+		for i := int64(0); i < 30; i++ {
+			// A deterministic spread over two lobes, so splits and training both
+			// see varied geometry.
+			x := float64(i%7)*0.37 + float64(i/7)*0.11
+			y := float64(i%5)*0.23 - float64(i%3)*0.41
+			if i%2 == 1 {
+				x, y = x+40, y-25
+			}
+			ops = append(ops, gInsert(i, x, y))
+			if i%8 == 7 {
+				ops = append(ops, gDrain())
+			}
+		}
+		ops = append(ops, gDrain(), gDelete(4, float64(4%7)*0.37, float64(4%5)*0.23-float64(4%3)*0.41), gDrain())
+		diffs, trained := runGuardiannByteScriptWith(0, options, ops)
+		Expect(diffs).To(BeEmpty())
+		Expect(trained).To(BeTrue(), "the scenario must reach RaBitQ training, or it pins no encoded codec")
 	})
 
 	It("split and reassign: a growing cluster splits beside a neighbour", func() {
