@@ -878,10 +878,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   the heartbeat cleanup), DDL statements one attempt (`RunWithMaxAttempts`);
   the concurrent chaos harness counts exhausted operations under a 5%
   ceiling; the page-retry harness keys faults on `AttemptCall`.
-  Open: the catalog bootstrap's schema-row write made check-then-create
-  (with the one-attempt DDL, a concurrent first `Ping` can now fail a DDL),
-  the chaos transactor keyed on `AttemptCall`, the chaos scenario model's
-  exhaustion reconcile, SPFresh takeover/stall SimFDB fixtures.
+  The catalog bootstrap already writes nothing over an initialized catalog
+  (every step checks first; SaveSchema ERROR_IF_DIFFERENT over the same row
+  is a no-op), so a one-attempt DDL racing another session's first `Ping`
+  commits (`TestFDB_Initialize_OverAnInitializedCatalogDoesNotConflictWithADDL`,
+  with an uninitialized control that conflicts). The chaos transactor's
+  faults commit and re-run inside one call and never surface an error to
+  the loop, so its scenario model cannot see an exhausted call and needs no
+  reconcile; keying its arms on `AttemptCall` is left until an arm needs it.
+  Open: SPFresh takeover/stall fixtures over a real split on SimFDB (the
+  loop's stall bound itself is unit-pinned).
   Pure-Go wrapper done: `TransactCtx`, `ReadTransactCtx` and the tenant
   forms keep the last execution's body error when OnError re-raises its
   code (the Apple binding's `retryable`), panics included

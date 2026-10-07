@@ -166,3 +166,38 @@ func TestFDB_Initialize_RefusesACatalogRowOfAnotherTemplate(t *testing.T) {
 	wantAPIError(t, run(cat.Initialize), api.ErrCodeSchemaAlreadyExists,
 		"Schema /__SYS/CATALOG already exists with a different template (other@1 vs CATALOG_TEMPLATE@1).")
 }
+
+// A bootstrap over an initialized catalog writes nothing, so a DDL that read the
+// catalog before it still commits on its one attempt (DDL statements run one
+// attempt, as the target's relational layer runs a statement; Go bootstraps
+// lazily from every session's first Ping, so a bootstrap that wrote would fail
+// any DDL racing another session's first use). The control is a bootstrap of
+// an UNinitialized catalog, which writes and so conflicts with the same DDL.
+func TestFDB_Initialize_OverAnInitializedCatalogDoesNotConflictWithADDL(t *testing.T) {
+	t.Parallel()
+	for _, initialized := range []bool{true, false} {
+		t.Run(map[bool]string{true: "initialized", false: "control: uninitialized"}[initialized], func(t *testing.T) {
+			t.Parallel()
+			cat, run := newFDBCatalogInSubspace(t)
+			if initialized {
+				mustRun(t, run, cat.Initialize)
+			}
+			ddl, ddlCommit := openRaced(t)
+			if err := cat.CreateDatabase(ddl, "/FRL/raced"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cat.DoesDatabaseExist(ddl, "/FRL/other"); err != nil {
+				t.Fatal(err)
+			}
+			mustRun(t, run, cat.Initialize)
+			err := ddlCommit()
+			if !initialized {
+				wantNotCommitted(t, err)
+				return
+			}
+			if err != nil {
+				t.Fatalf("a DDL racing a bootstrap over an initialized catalog: %v", err)
+			}
+		})
+	}
+}
