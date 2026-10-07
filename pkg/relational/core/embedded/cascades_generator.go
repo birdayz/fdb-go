@@ -103,6 +103,9 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	if err := contextCancellationError(ctx); err != nil {
 		return nil, err
 	}
+	if cs, _ := g.c.Options().Get(api.OptCaseSensitiveIdentifiers).(bool); cs {
+		sql = caseSensitiveIdentifiers(sql)
+	}
 	root, err := parser.Parse(sql)
 	if err != nil {
 		return nil, err

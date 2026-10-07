@@ -2338,6 +2338,11 @@ Java resolves `foo` against a column called `Foo`; `CASE_SENSITIVE_IDENTIFIERS`
 only selects which branch of `normalizeString` runs and makes Java *more*
 case-sensitive, never less.
 
+Go honours `CASE_SENSITIVE_IDENTIFIERS` (2026-10-07) by quoting every unquoted
+`uid` of a statement as written before it is planned, which is exactly the
+branch Java's `normalizeString` takes; the relaxed second pass below is
+unchanged by it.
+
 **Go's rule.** Presentation matches Java exactly (RFC-237). Lookup adds a
 SECOND PASS at each scope level: exact first, then an unambiguous
 case-insensitive match, then the parent. It counts candidates, so a folded

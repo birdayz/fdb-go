@@ -314,15 +314,13 @@ var engineGaps = []EngineGap{
 	//     under exact-ordinal resolution; the file's live signature is now the
 	//     parenthesised star, booked at its own entry below.
 	//
-	// The file's setup runs under CASE_SENSITIVE_IDENTIFIERS, so Java's DDL
-	// stores the schema `test1` as written and the verbatim connect URI
-	// (`?schema=test1`) reaches it; Go ignores the option, stores TEST1, and
-	// the connect names a schema Go never stored. The runner upper-cased
-	// Java's URIs until the fold was confined to the names it generates, which
-	// is what hid this gap.
-	{"case-sensitivity.yamsql", SkipGapCaseSensitiveIdentifiers, "42F59: table with name 'TABLE1' already exists", "TODO.md, Go ignores CASE_SENSITIVE_IDENTIFIERS"},
+	// CASE_SENSITIVE_IDENTIFIERS is honoured (2026-10-07): an unquoted
+	// identifier keeps its case, as if quoted, so setup-with-connection-options
+	// .yamsql passes. What both remaining files need is tables or columns whose
+	// names differ only in case (`Table1` beside `TaBlE1`, "COLUMN" beside
+	// "column"), which Go's planner and positional row layout still fold.
+	{"case-sensitivity.yamsql", SkipGapCaseSensitiveIdentifiers, "projection result has 2 labels but 0 resolved values", "TODO.md, Go folds case-colliding identifiers"},
 	{"keyword-case-insensitivity.yamsql", SkipGapCaseSensitiveIdentifiers, `column names "COLUMN" and "column" collide case-insensitively`, "TODO.md, Go folds quoted identifiers in the positional row layout"},
-	{"setup-with-connection-options.yamsql", SkipGapCaseSensitiveIdentifiers, "42F51: Schema </FRL/CASE_SENSITIVE_TEMPLATE/test1> does not exist in the catalog!", "TODO.md, Go ignores CASE_SENSITIVE_IDENTIFIERS"},
 	// exists-in-select.yamsql passes (2026-10-07): PartitionSelectRule
 	// partitions a select holding several existentials, projected ones too.
 	// Go's in-memory sort extension plans this grouped empty-input shape where

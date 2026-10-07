@@ -28,6 +28,8 @@ func Wrap(md *recordlayer.RecordMetaData) semantic.Catalog {
 	if md != nil {
 		c.storeRowVersions = md.IsStoreRecordVersions()
 		c.byFoldedName = make(map[string]*recordlayer.RecordType, len(md.RecordTypes()))
+		c.byUserName = make(map[string]*recordlayer.RecordType, len(md.RecordTypes()))
+		c.foldedAmbiguous = map[string]bool{}
 		for rtName, rt := range md.RecordTypes() {
 			// The SQL surface speaks USER identifiers; the descriptor
 			// (and every wire address derived from it) speaks STORAGE
@@ -41,7 +43,16 @@ func Wrap(md *recordlayer.RecordMetaData) semantic.Catalog {
 			// is what lets `SELECT … FROM "foo$table"` find the record
 			// type stored as FOO__1TABLE; without it the table exists on
 			// the wire and is unreachable from SQL (42F01).
-			c.byFoldedName[semantic.NewUnquoted(recordlayer.ToUserIdentifier(rtName)).Name()] = rt
+			user := recordlayer.ToUserIdentifier(rtName)
+			c.byUserName[user] = rt
+			folded := semantic.NewUnquoted(user).Name()
+			if prior, taken := c.byFoldedName[folded]; taken && prior != rt {
+				// Two tables whose names differ only in case (`Table1` and
+				// `TaBlE1`, legal with quoted or case-sensitive names): the
+				// folded key names neither.
+				c.foldedAmbiguous[folded] = true
+			}
+			c.byFoldedName[folded] = rt
 		}
 	}
 	return c
@@ -60,6 +71,11 @@ type wrappedCatalog struct {
 	// byFoldedName indexes RecordTypes by case-folded key for O(1)
 	// LookupTable — computed once at Wrap time.
 	byFoldedName map[string]*recordlayer.RecordType
+	// byUserName indexes RecordTypes by their exact user name, which a
+	// lookup tries first; foldedAmbiguous marks folded keys several types
+	// share, which then resolve only exactly.
+	byUserName      map[string]*recordlayer.RecordType
+	foldedAmbiguous map[string]bool
 	// storeRowVersions mirrors md.IsStoreRecordVersions(): when set, every
 	// table exposes the trailing __ROW_VERSION pseudo-column (Java:
 	// RecordMetaData.getPlannerType appends Type.Record.addPseudoFields,
@@ -77,9 +93,15 @@ func (w *wrappedCatalog) LookupTable(name semantic.QualifiedName) (semantic.Tabl
 	if name.IsQualified() {
 		return nil, false
 	}
-	rt, ok := w.byFoldedName[name.Name()]
+	rt, ok := w.byUserName[name.Name()]
 	if !ok {
-		return nil, false
+		folded := name.Name()
+		if w.foldedAmbiguous[folded] {
+			return nil, false
+		}
+		if rt, ok = w.byFoldedName[folded]; !ok {
+			return nil, false
+		}
 	}
 	return &recordTypeTable{rt: rt, name: name, storeRowVersions: w.storeRowVersions}, true
 }

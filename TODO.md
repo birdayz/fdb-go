@@ -205,6 +205,13 @@ Never mark a whole workstream complete because one of its subitems passed.
       (`StarScopeJavaProbe` from_outer_alias_*, mutation-checked). The
       documentation file stops at the recursive reference read inside a
       subquery of its own recursive leg (engine-gap:recursive-reference-in-subquery).
+      CASE_SENSITIVE_IDENTIFIERS is honoured (unquoted uids are quoted as
+      written before planning, Java's normalizeString branch;
+      `TestCaseSensitiveIdentifiers`); `setup-with-connection-options.yamsql`
+      passes (147 files, 9139 queries). Open: names differing only in case
+      (`Table1` beside `TaBlE1`, "COLUMN" beside "column"), which the planner
+      and the positional row layout still fold (case-sensitivity.yamsql,
+      keyword-case-insensitivity.yamsql).
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays
