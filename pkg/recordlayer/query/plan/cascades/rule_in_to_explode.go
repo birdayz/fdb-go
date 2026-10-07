@@ -471,11 +471,10 @@ func explodableIn(p predicates.QueryPredicate) (inExplosion, bool) {
 	// quantifier — not plan-time constancy. IsConstantValue answers false for
 	// ParameterValue, ConstantObjectValue and ParameterObjectValue, all of which
 	// are row-independent and would explode safely; Java has a dedicated
-	// parameter arm for exactly them. So `x IN (?, 999)` is correct here but
-	// planned as a residual filter, and for THAT shape an index probe genuinely
-	// is lost. For the column case — the one this guard was added for — there
-	// was no probe to lose, since ComparisonIn is not scan-range compatible.
-	// Widening the predicate to row-independence is tracked in TODO.md.
+	// parameter arm for exactly them. Go's driver binds statement parameters
+	// before planning, so `x IN (?, 999)` and `x IN ?` reach this rule as
+	// literal lists and explode (measured, 2026-10-07: InJoin over the index);
+	// no SQL reaches it with an unbound parameter.
 	if !values.IsConstantValue(inPred.Comparison.Operand) {
 		return inExplosion{}, false
 	}
