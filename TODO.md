@@ -95,6 +95,17 @@ Never mark a whole workstream complete because one of its subitems passed.
 - [ ] IN semantics: rewrite/partition/cost behavior, covering unions, multi-binding
   product limit, and constant-IN evaluation timing; coordinate shared machinery
   with WS-F without losing either acceptance obligation.
+  In-union comparand sources done (2026-10-07): a row-independent source
+  planning cannot evaluate is carried as `ArrayDistinctValue(comparand)`
+  (`RecordQueryInUnionPlan.WithInComparands`, folded into the plan's
+  identity as a Value) and evaluated when the plan opens, before the size
+  check and the one-combination fast path, which now read the evaluated
+  sizes; it used to be dropped at planning and fail at execution with "no
+  planning-time values" (`TestExecuteInUnion_ComparandSourceEvaluatedAtOpen`,
+  `TestInUnionPlan_ComparandIdentity`, mutation-checked). Not done: carrying
+  EVERY comparand source unevaluated (the design's full conversion; today a
+  comparand that does evaluate at planning is still extracted there, as the
+  in-join does).
   The product limit is done (F-7b item 5, after item 2 removed its blocker).
   The executor checks first (Java RecordQueryInUnionPlan.java:151-153, with a
   saturating product declared in DIVERGENCES.md), the relational maximum is

@@ -36,6 +36,13 @@ type RecordQueryInUnionPlan struct {
 	// be served. Add it to structuralKey in the same change that makes it vary.
 	maxSize   int
 	inSources [][]any
+	// inComparands parallels inSources: entry i is the row-independent
+	// collection value of source i when planning could not evaluate it (its
+	// inSources entry is then nil). The executor evaluates it when the plan
+	// opens, as Java's InComparandSource.getValues does, so a runtime item (a
+	// CAST that fails, say) raises its own error instead of the source being
+	// dropped. Nil when every source was extracted at planning.
+	inComparands []values.Value
 }
 
 // UnboundedInUnionSize is the size of an in-union whose child executions are
@@ -205,6 +212,22 @@ func (p *RecordQueryInUnionPlan) GetMaxSize() int                   { return p.m
 // loop.
 func (p *RecordQueryInUnionPlan) GetInSources() [][]any { return p.inSources }
 
+// GetInComparands returns the per-source runtime comparands (see the field).
+func (p *RecordQueryInUnionPlan) GetInComparands() []values.Value { return p.inComparands }
+
+// WithInComparands returns a copy carrying the per-source runtime comparands.
+func (p *RecordQueryInUnionPlan) WithInComparands(comparands []values.Value) *RecordQueryInUnionPlan {
+	cp := *p
+	cp.inComparands = nil
+	for _, c := range comparands {
+		if c != nil {
+			cp.inComparands = append([]values.Value(nil), comparands...)
+			break
+		}
+	}
+	return &cp
+}
+
 // WithInSources returns a COPY carrying the materialized IN sources, because a plan
 // method must never write through its receiver.
 //
@@ -326,14 +349,24 @@ func (p *RecordQueryInUnionPlan) structuralKey() *structuralKey {
 	for _, d := range p.inSources {
 		dims = binary.BigEndian.AppendUint64(dims, uint64(len(d)))
 	}
-	return newStructuralKey().
+	k := newStructuralKey().
 		Bool(p.reverse).
 		Int(len(p.bindingAliases)).
 		Values(p.comparisonKeys).
 		Equatable(p.inSources, func(other any) bool {
 			o, ok := other.([][]any)
 			return ok && reflect.DeepEqual(p.inSources, o)
-		}, dims)
+		}, dims).
+		Int(len(p.inComparands))
+	// The comparands fold as Values, so two plans over the same comparand
+	// hash alike whatever it will evaluate to.
+	for _, c := range p.inComparands {
+		k = k.Bool(c != nil)
+		if c != nil {
+			k = k.Value(c)
+		}
+	}
+	return k
 }
 
 func (p *RecordQueryInUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {

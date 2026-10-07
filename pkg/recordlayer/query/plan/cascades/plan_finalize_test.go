@@ -456,10 +456,12 @@ var specimens = map[string]specimen{
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
 			key := sentinel()
+			comparand := sentinel()
 			p := mustFinalizeConstruct(plans.NewRecordQueryInUnionPlan(
-				child, []string{"b"}, []values.Value{key}, false, plans.UnboundedInUnionSize))
+				child, []string{"b"}, []values.Value{key}, false, plans.UnboundedInUnionSize)).
+				WithInSources([][]any{nil}).WithInComparands([]values.Value{comparand})
 			return p, map[string]*values.RecordConstructorValue{
-				"innerQ": cs, "comparisonKeys": key,
+				"innerQ": cs, "comparisonKeys": key, "inComparands": comparand,
 			}
 		},
 	},

@@ -1843,6 +1843,29 @@ func executeInUnion(
 	if len(inSources) == 0 {
 		return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	}
+	// A source planning could not evaluate is evaluated now, under the
+	// plan's evaluation context: Java's InComparandSource.getValues (the
+	// comparand is the planner's ArrayDistinctValue, so it deduplicates). A
+	// resume re-evaluates it, as Java's does.
+	if comparands := p.GetInComparands(); len(comparands) > 0 {
+		evaluated := make([][]any, len(inSources))
+		copy(evaluated, inSources)
+		for i, c := range comparands {
+			if c == nil || i >= len(evaluated) || evaluated[i] != nil {
+				continue
+			}
+			v, err := c.Evaluate(evalCtx)
+			if err != nil {
+				return nil, err
+			}
+			list, _ := v.([]any)
+			if list == nil {
+				list = []any{}
+			}
+			evaluated[i] = list
+		}
+		inSources = evaluated
+	}
 	if len(bindingAliases) == 0 || len(inSources) != len(bindingAliases) {
 		return nil, fmt.Errorf(
 			"executeInUnion: binding/source dimension mismatch (%d bindings, %d sources)",
@@ -1870,7 +1893,7 @@ func executeInUnion(
 			return recordlayer.Empty[QueryResult](), nil
 		}
 	}
-	if fanout, known := p.LiteralFanout(); known && fanout == 1 {
+	if fanout, known := inUnionValuesSize(inSources); known && fanout == 1 {
 		// Java binds the complete Cartesian context before its size==1
 		// fast path. This matters for multiple singleton dimensions: there is
 		// one child execution, but every binding must be present.

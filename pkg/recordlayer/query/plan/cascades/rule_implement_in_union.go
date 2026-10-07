@@ -222,6 +222,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 
 	bindingAliases := make([]values.CorrelationIdentifier, len(explodeQuantifiers))
 	inSources := make([][]any, len(explodeQuantifiers))
+	inComparands := make([]values.Value, len(explodeQuantifiers))
 	for i, eq := range explodeQuantifiers {
 		bindingAliases[i] = eq.GetAlias()
 		if ref := eq.GetRangesOver(); ref != nil {
@@ -229,13 +230,23 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				if expl, ok := member.(*expressions.ExplodeExpression); ok {
 					cv := expl.GetCollectionValue()
 					if cv != nil {
-						// Plan-time IN-list extraction: an erroring value
-						// declines (leaves the source nil) rather than
-						// failing planning.
+						// Plan-time IN-list extraction. A row-independent
+						// source planning cannot evaluate (a runtime CAST
+						// item, say) is carried as a comparand and evaluated
+						// when the plan opens, Java's InComparandSource; it
+						// is never dropped.
 						if ev, err := cv.Evaluate(nil); err == nil {
 							if arr, ok := ev.([]any); ok {
 								inSources[i] = arr
 							}
+						} else if values.IsConstantValue(cv) {
+							// Deduplicated at evaluation, as Java's
+							// ValueComparison arm explodes
+							// ArrayDistinctValue(comparand).
+							if _, distinct := cv.(*values.ArrayDistinctValue); !distinct {
+								cv = &values.ArrayDistinctValue{Child: cv, Typ: cv.Type()}
+							}
+							inComparands[i] = cv
 						}
 					}
 					break
@@ -383,7 +394,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 					call.Fail(err)
 					return
 				}
-				inUnionPlan = inUnionPlan.WithInSources(inSources)
+				inUnionPlan = inUnionPlan.WithInSources(inSources).WithInComparands(inComparands)
 				call.YieldFinalExpression(inUnionPlan)
 			}
 		}

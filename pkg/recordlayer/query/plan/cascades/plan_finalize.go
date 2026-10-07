@@ -212,6 +212,11 @@ func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) 
 		forEachValue(p.GetComparisonKeys(), emit)
 	case *plans.RecordQueryInUnionPlan:
 		forEachValue(p.GetComparisonKeys(), emit)
+		for _, c := range p.GetInComparands() {
+			if c != nil {
+				emit(c)
+			}
+		}
 	case *plans.RecordQueryInJoinPlan:
 		if c := p.GetInComparand(); c != nil {
 			emit(c)
