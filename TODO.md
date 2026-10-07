@@ -334,14 +334,17 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   `ConditionalCascadesRule` turns every conditional chain off, as Java's
   isRuleEnabled does for the wrapper (Go ignored the name)
   (`TestRuleCallObserver_SelectMergeAndPushDownChain`, mutation-checked).
-  FINDING, open: a WHERE over a UNION ALL derived table is not pushed into
-  the legs. Go's translator emits a LogicalFilterExpression there
-  (cascades_translator.go `exactFilter`), which PredicatePushDownRule never
-  matches, and no rule pushes a filter through a union; Java builds a
-  SelectExpression and pushes in one firing. Plan today:
-  `PredicatesFilter(UnorderedUnion(...))`. Needs the translator to emit
-  Java's Select for a WHERE (a plan-wide change) or a filter-through-union
-  push; §2.7's UNION ALL plan_contains pin waits on it.
+  Measured with the observer: a WHERE over a UNION ALL derived table is a
+  LogicalFilterExpression in Go (cascades_translator.go `exactFilter`), so
+  PredicatePushDownRule never fires on it, where Java's pushdown yields the
+  pushed form. The PLAN is the same in both engines: Java's REWRITING model
+  counts normalized conjuncts over a LOGICAL union as an AND of its legs
+  (NormalizedResidualPredicateProperty ORs only the physical
+  RecordQueryUnionOnValuesPlan), so the pushed form (one conjunct per leg)
+  loses to the unpushed one, which is Go's plan
+  (`PredicatesFilter(UnorderedUnion(...))`). A Go filter-through-union push
+  was tried and loses the same way. So §2.7's "pushdown pushes in one
+  firing over UNION ALL" is a rule-call difference only, not a plan one.
   The physical REWRITING prune (F-5) is done.
   - Measured on the whole plan corpus before the change: every group crossed into
     PLANNING with exactly one final, and every child the REWRITING comparator
