@@ -135,7 +135,7 @@ Never mark a whole workstream complete because one of its subitems passed.
   declared (DIVERGENCES.md "a one-value IN is an equality"), and the WS-F
   row `w8_rl_default_in1_order_by_price` is `DIFF-PATH single-element-in`
   (the oracle's acceptance now reads DIFF-PATH for record-layer rows).
-- [ ] Semantics/pins: scalar variadic promoted-child types, Value nullability
+- [x] Semantics/pins: scalar variadic promoted-child types, Value nullability
   census, target simplification regime, adjacent/decorated literals and lexer
   boundaries, FROM-less metadata, LOG_QUERY. Decimal normalization and structured
   variadic promotion have prior implementations; check current coverage first.
@@ -322,8 +322,8 @@ Never mark a whole workstream complete because one of its subitems passed.
   nullable.
   FROM-less metadata: `TestFromlessSelect_ResultMetadata` (fast lane) pins
   result types and nullability to the oracle's measured Java values for the
-  same expressions. `FromlessSelectJavaProbe` (full lane, not run) now compares
-  nullability between the engines.
+  same expressions. `FromlessSelectJavaProbe` compares nullability between
+  the engines (ran green 2026-10-07).
   Variadic promoted-child types: COALESCE/GREATEST/LEAST promote every argument
   to the common type with its own nullability, scalars included
   (`variadic_promotion.yaml`).
@@ -336,6 +336,8 @@ Never mark a whole workstream complete because one of its subitems passed.
     the hash, as Java's does per schema. Removing them would also need the
     pull-up DEFAULT-set result simplify (Expression.java:243-245), which Go
     lacks.
+  Closed (2026-10-07): nothing of this item remains that is not owned by
+  WS-F or kept as a declared Go extension.
 
 **Done:** every remaining WS-E design obligation is reconciled to implementation
 and an executable pin; temporal compatibility/repair documentation is shipped;
