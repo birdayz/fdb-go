@@ -422,9 +422,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   and a sparse IS NOT NULL index serves only a non-NULL literal. EXPLAIN shows
   the bound as `≡`. Pins: `null_safe_equality_scan.yaml`, which includes the
   #4598 keyset shape with bound parameters. The seven w9 oracle rows' Go pins
-  are predicted and moved out of `wsfOpenUntil` (full lane, not run). Still
-  open in W9 is item 4, the range builder's `isCompileTime` port, which is
-  latent because it has no consumer. The table-function form of the keyset
+  are predicted and moved out of `wsfOpenUntil` (full lane, not run). W9 item 4,
+  the range builder's `isCompileTime`, is done: `comparisonIsCompileTime` /
+  `rangeMatchableValue` port RangeConstraints.isCompileTime and
+  IndexComparison.isSupported, pinned over every comparison type and
+  comparand kind (`TestComparisonIsCompileTime_JavaTable`, mutation-checked). The table-function form of the keyset
   query needs WS-E's simplification regime.
   Zero-based EXPLODE ordinality and distinctness (W12, F-2) are done. Both
   Explode classes take Java's zero-based flag through checked constructors and

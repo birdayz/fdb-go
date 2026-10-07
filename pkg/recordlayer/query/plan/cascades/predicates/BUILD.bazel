@@ -61,6 +61,7 @@ go_test(
         "predicates_equivalence_test.go",
         "predicates_test.go",
         "predrow_test.go",
+        "range_compile_time_test.go",
         "range_constraints_rebuild_test.go",
         "range_enclosure_test.go",
         "range_semantic_equality_test.go",
