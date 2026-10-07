@@ -181,6 +181,11 @@ Never mark a whole workstream complete because one of its subitems passed.
       enclosing source expands to correlated columns, and a mixed star
       under GROUP BY is expanded in place (`StarScopeJavaProbe`, 7 rows);
       a correlated star in a grouped list is still refused (DIVERGENCES.md).
+      IN-list typing follows Java's order (literal array identical types,
+      then __internal_array promotion, then the IN's probe promotion,
+      22000); a comparison is an IN item. `InComparandSourceJavaProbe` has
+      42 rows, all equal; `in-predicate.yamsql` now runs 324 queries and stops
+      at its run-once block (Java's cache-dependent XX000, issue #3583).
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays

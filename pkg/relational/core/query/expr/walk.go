@@ -2447,7 +2447,9 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		}
 		list := make([]values.Value, 0, len(ec.AllExpression()))
 		for _, e := range ec.AllExpression() {
-			v, err := r.WalkExpression(e)
+			// An item is a function argument (operand position), so a
+			// comparison is a boolean value: `d IN (3 < 4)`.
+			v, err := r.walkExpressionInner(e, posOperand)
 			if err != nil {
 				return nil, err
 			}
@@ -2471,7 +2473,7 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			}
 			list = append(list, v)
 		}
-		inPred, err := r.ResolveIn(lhsVal, list)
+		inPred, err := r.resolveInList(lhsVal, list, inListIsLiteral(ec))
 		if err != nil {
 			return nil, err
 		}
@@ -3486,4 +3488,20 @@ func unwrapParenExpression(atom antlrgen.IExpressionAtomContext) antlrgen.IExpre
 		return nil
 	}
 	return ewon.Expression()
+}
+
+// inListIsLiteral is Java's ParseHelpers.isConstant over an IN list: every
+// item is a bare literal token (no operator, cast, parameter or comparison),
+// the list Java parses as an array literal.
+func inListIsLiteral(ec *antlrgen.ExpressionsContext) bool {
+	for _, e := range ec.AllExpression() {
+		pe, ok := e.(*antlrgen.PredicatedExpressionContext)
+		if !ok || pe.Predicate() != nil {
+			return false
+		}
+		if _, ok := pe.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext); !ok {
+			return false
+		}
+	}
+	return true
 }

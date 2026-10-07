@@ -6906,9 +6906,9 @@ plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compati
 === error_code_regression.yaml#9 expect-error=42804
 sql:   SELECT id FROM t WHERE n BETWEEN 1 AND 'text'
 plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compatible.>
-=== error_code_regression.yaml#10 expect-error=42804
+=== error_code_regression.yaml#10 expect-error=22000
 sql:   SELECT id FROM t WHERE n IN ('text', 'other')
-plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compatible.>
+plan:  <PLAN-ERROR: 22000: A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.>
 === error_code_regression.yaml#13
 sql:   DELETE FROM t WHERE id = 3
 plan:  Delete(T, Scan(T, [=]))
@@ -8811,7 +8811,7 @@ sql:   SELECT a FROM ta WHERE b IN ()
 plan:  <PLAN-ERROR: parse SQL: 42601: syntax error: SELECT a FROM ta WHERE b IN () ^^>
 === in_list_advanced.yaml#9 expect-error=42804
 sql:   SELECT a FROM ta WHERE b IN ('foo', 3)
-plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compatible.>
+plan:  <PLAN-ERROR: 42804: Elements of array literal are not of identical type!>
 === in_list_comprehensive.yaml#0
 sql:   SELECT name FROM emp WHERE id IN (1, 3) ORDER BY name
 plan:  InMemorySort([_current.NAME#0 ASC], InJoin(Map(Scan(EMP, [=]), {NAME: _current.NAME#1}), binding))
@@ -9003,7 +9003,7 @@ sql:   SELECT id FROM t WHERE id IN (NULL)
 plan:  <PLAN-ERROR: 42809: NULL values are not allowed in the IN list>
 === in_list_pushdown.yaml#16 expect-error=42804
 sql:   SELECT id FROM t WHERE id IN (1, 'two', 3)
-plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compatible.>
+plan:  <PLAN-ERROR: 42804: Elements of array literal are not of identical type!>
 === in_list_pushdown.yaml#17
 sql:   SELECT k FROM ts WHERE k IN ('alpha', 'gamma') ORDER BY k
 plan:  InJoin(Map(Scan(TS, [=]), {K: _current.K#0}), binding ASC)
@@ -12098,9 +12098,9 @@ shape:       RecordQueryScanPlan
 === mixed_type_equality.yaml#0 expect-error=42804
 sql:   SELECT id FROM t WHERE n = '5'
 plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compatible.>
-=== mixed_type_equality.yaml#1 expect-error=42804
+=== mixed_type_equality.yaml#1 expect-error=22000
 sql:   SELECT id FROM t WHERE n IN ('5', 'ten')
-plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compatible.>
+plan:  <PLAN-ERROR: 22000: A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.>
 === mixed_type_equality.yaml#2
 sql:   SELECT id FROM t WHERE n = 5
 plan:  Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0})
@@ -19036,9 +19036,9 @@ plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compati
 === type_mismatch_alignment.yaml#1 expect-error=42804
 sql:   SELECT id FROM t WHERE s = 5
 plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compatible.>
-=== type_mismatch_alignment.yaml#2 expect-error=42804
+=== type_mismatch_alignment.yaml#2 expect-error=22000
 sql:   SELECT id FROM t WHERE n IN ('text', 'other')
-plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compatible.>
+plan:  <PLAN-ERROR: 22000: A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.>
 === type_mismatch_alignment.yaml#3 expect-error=42804
 sql:   SELECT id FROM t WHERE n BETWEEN 1 AND 'text'
 plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compatible.>

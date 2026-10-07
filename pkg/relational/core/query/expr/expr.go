@@ -1826,6 +1826,13 @@ func (r *Resolver) ResolveStartsWith(lhs values.Value, prefix values.Value) (pre
 //
 // The RHS Operand is a []any of evaluated literals.
 func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.QueryPredicate, error) {
+	return r.resolveInList(left, rhs, false)
+}
+
+// resolveInList is ResolveIn for a parsed list; literal reports whether every
+// item is a literal token (ParseHelpers.isConstant), the list Java parses as
+// an array literal.
+func (r *Resolver) resolveInList(left values.Value, rhs []values.Value, literal bool) (predicates.QueryPredicate, error) {
 	if left == nil {
 		return nil, fmt.Errorf("expr.ResolveIn: LHS is nil")
 	}
@@ -1898,23 +1905,42 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 		}
 		return fmt.Sprintf("%T", lit)
 	}
-	// PLAN-TIME LHS-vs-element promotion gate, matching the equality
-	// gate in ResolveComparison: `s IN (1, 2)` must reject 42804 like
-	// Java, not silently match nothing. Unknown-typed sides keep the
-	// runtime path.
-	if lt := left.Type(); lt != nil && lt.Code() != values.TypeCodeUnknown {
+	// Java's order (ExpressionVisitor.visitInList, then the IN function):
+	//
+	//  1. A list of literal tokens is an array literal, whose elements must
+	//     have one identical type (Literals.finishArrayLiteral): `(1, 2.5)`
+	//     and `(1, 3000000000)` are 42804 "Elements of array literal are not
+	//     of identical type!".
+	//  2. Any other list is __internal_array, whose elements promote to a
+	//     common type; one that cannot is 22000 (INCOMPATIBLE_TYPE).
+	//  3. The IN function promotes the probe to the element type; a probe
+	//     that cannot is 22000 too (`s IN (1, 2)` over a STRING `s`),
+	//     unlike `=`, which is 42804.
+	//
+	// Unknown-typed sides keep the runtime path. Measured against the JVM
+	// (conformance InComparandSourceJavaProbe).
+	if !values.IsRecord(left.Type()) {
+		var elem values.Type
 		for _, v := range rhs {
-			if v == nil {
+			if v == nil || v.Type() == nil || v.Type().Code() == values.TypeCodeUnknown {
 				continue
 			}
 			et := v.Type()
-			if et == nil || et.Code() == values.TypeCodeUnknown {
-				continue
+			switch {
+			case elem == nil:
+				elem = et
+			case literal:
+				if et.Code() != elem.Code() {
+					return nil, api.NewError(api.ErrCodeDatatypeMismatch, "Elements of array literal are not of identical type!")
+				}
+			default:
+				if elem = values.MaximumType(elem, et); elem == nil {
+					return nil, api.NewError(api.ErrCodeCannotConvertType, inListPromotionMessage)
+				}
 			}
-			if !values.IsRecord(lt) && values.MaximumType(lt, et) == nil {
-				return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
-					"The operands of a comparison operator are not compatible.")
-			}
+		}
+		if lt := left.Type(); elem != nil && lt != nil && lt.Code() != values.TypeCodeUnknown && values.MaximumType(lt, elem) == nil {
+			return nil, api.NewError(api.ErrCodeCannotConvertType, inListPromotionMessage)
 		}
 	}
 	// A NON-CONSTANT element — a column, or arithmetic over one — makes this a
@@ -1964,7 +1990,9 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 		if !ok {
 			return nil, fmt.Errorf("expr.ResolveIn: element %d is not constant (%T)", i, v)
 		}
-		if lit != nil {
+		// Java's constant-array type check applies to a literal list only; a
+		// computed one (`(2 + 1, 2.5)`) promotes, as __internal_array does.
+		if lit != nil && literal {
 			if c := inElemClass(lit); seenClass == "" {
 				seenClass = c
 			} else if c != seenClass {
@@ -2141,6 +2169,10 @@ func promoteInListItemsToDeclaredType(left values.Value, rhs []values.Value) []v
 // reaching here, so a nil that survives is a resolver bug rather than a runtime
 // list, and routing it to the constant fork keeps it failing where it already
 // fails instead of silently changing shape.
+// inListPromotionMessage is Java's SemanticException text for a value that
+// cannot be promoted (INCOMPATIBLE_TYPE, reported as 22000).
+const inListPromotionMessage = "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
+
 func allInListItemsConstant(rhs []values.Value) bool {
 	for _, v := range rhs {
 		if v == nil {

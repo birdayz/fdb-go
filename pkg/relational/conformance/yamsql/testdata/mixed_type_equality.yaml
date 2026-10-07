@@ -16,9 +16,10 @@ tests:
   # '5' (string literal) vs 5 (int column) — 42804 (datatype mismatch).
   - query: SELECT id FROM t WHERE n = '5'
     error_code: "42804"
-  # IN-list with any incompatible element errors.
+  # IN-list with any incompatible element errors: 22000, the IN's promotion of
+  # its probe (Java INCOMPATIBLE_TYPE; `=` stays 42804).
   - query: SELECT id FROM t WHERE n IN ('5', 'ten')
-    error_code: "42804"
+    error_code: "22000"
   # Same-type still works.
   - query: SELECT id FROM t WHERE n = 5
     unordered: true

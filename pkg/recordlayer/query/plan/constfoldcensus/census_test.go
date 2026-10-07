@@ -60,8 +60,8 @@ var assignmentTable = []assigned{
 	{"pkg/relational/core/embedded/logical_qualify.go", "globalRankVectorLimit", "Evaluate(nil)", 1, "analysis: a distance-rank QUALIFY's literal K (a K that does not evaluate is the runtime cap)"},
 	{"pkg/recordlayer/query/plan/cascades/rule_match_intermediate.go", "narrowPromotedFloatScanBound", "values.EvaluateConstant", 1, "analysis: a FLOAT index scan bound; the residual keeps the promoted predicate"},
 
-	{"pkg/relational/core/query/expr/expr.go", "Resolver.ResolveIn", "Evaluate(nil)", 1, "IN (4.1(a)): ResolveIn's constant fork"},
-	{"pkg/relational/core/query/expr/expr.go", "Resolver.ResolveIn", "values.EvaluateConstant", 1, "IN (4.1(a)): ENUM promotion of a literal item"},
+	{"pkg/relational/core/query/expr/expr.go", "Resolver.resolveInList", "Evaluate(nil)", 1, "IN (4.1(a)): ResolveIn's constant fork"},
+	{"pkg/relational/core/query/expr/expr.go", "Resolver.resolveInList", "values.EvaluateConstant", 1, "IN (4.1(a)): ENUM promotion of a literal item"},
 	{"pkg/relational/core/query/expr/expr.go", "anyInListItemFoldsToNull", "values.EvaluateConstant", 1, "IN (4.1, 5.4(e)): a NULL-typed IN item refused at plan time"},
 	{"pkg/recordlayer/query/plan/cascades/rule_implement_in_join.go", "extractInValues", "Evaluate(nil)", 1, "IN (4.1): the literal values source"},
 	{"pkg/recordlayer/query/plan/cascades/rule_implement_in_union.go", "ImplementInUnionRule.OnMatch", "Evaluate(nil)", 1, "IN (4.1): the IN-union's plan-time sources"},

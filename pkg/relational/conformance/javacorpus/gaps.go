@@ -183,7 +183,12 @@ var engineGaps = []EngineGap{
 	{"orderby.yamsql", SkipConformanceGoAccepts, `"select b from t1 where exists (select * from t1 order by b limit 1)": expecting statement to throw an error 0AF00, however it succeeded`, "RFC-128; TestCorpusReadSideExtensions"},
 	// Java cannot satisfy both join-leg orderings from indexes; Go sorts the joined rows.
 	{"join-with-order-by-tests.yamsql", SkipConformanceGoAccepts, `"select (t1.*), (t2.*) from t1, t2 where t1.a1 = 1 and t2.b1 = 1 order by t1.a2, t2.b3": expecting statement to throw an error 0AF00, however it succeeded`, "sanctioned in-memory sort; TestCorpusReadSideExtensions"},
-	{"in-predicate.yamsql", SkipGapErrorClass, `"select a, e from ta where e in ('foo' , 35 + 4)": expecting '22000' error code, got '42804' instead`, "CQ-72"},
+	// The IN-list type checks follow Java's order now (literal array, then
+	// __internal_array, then the IN's promotion; InComparandSourceJavaProbe).
+	// The file stops at its run-once block, whose first-execution error is
+	// XX000 while a warm connection answers 42804 "Elements of array literal
+	// are not of identical type!", which Go answers (upstream issue #3583).
+	{"in-predicate.yamsql", SkipConformanceJavaPlannerBug, `"select a, b from ta where b in (1, 3.0, 5, 7.0)": expecting 'XX000' error code, got '42804'`, "Issue #3583"},
 	{"valid-identifiers.yamsql", SkipGapCatalogTables, `"select count(*) from \"TEMPLATES\" where template_name = 'टेम्पलेट'": 0AF00: no schema metadata available`, "CQ-72"},
 	// RE-BOOKED, not closed-by-relabel: the duplicate qualified star this file
 	// was booked for is FIXED. Java's expandStar has no uniqueness rule, so

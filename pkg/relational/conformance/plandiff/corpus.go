@@ -14425,9 +14425,9 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_MT_02 WHERE n IN ('5', 'ten')",
 			Divergence: &Divergence{
-				Reason:          "Both engines reject mixed-type IN list (string vs BIGINT). Go uses 42804 (DATATYPE_MISMATCH) matching Java's SemanticException translation. Error messages may differ.",
+				Reason:          "Both engines reject a STRING IN list against a BIGINT probe with 22000, the IN's promotion of its probe (Java INCOMPATIBLE_TYPE).",
 				Direction:       DivergenceBothErrorMessagesDrift,
-				GoErrorContains: "The operands of a comparison operator are not compatible",
+				GoErrorContains: "cannot be promoted to the type of the variable",
 			},
 		},
 		// --- Self-join shapes -----------------------------------------

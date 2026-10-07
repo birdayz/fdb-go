@@ -327,9 +327,11 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 		// fork.
 		w.WantRejected("NULL beside a column item",
 			"SELECT id FROM t WHERE b IN (a, NULL) ORDER BY id", "42809")
-		// An item whose type cannot unify with the LHS is a type error on both
-		// forks; the gate is type-based and runs before the fork.
+		// An item whose type cannot unify with the others is a type error on
+		// both forks; the gate is type-based and runs before the fork. Java's
+		// __internal_array reports it as 22000 (INCOMPATIBLE_TYPE;
+		// conformance InComparandSourceJavaProbe column_item_beside_string).
 		w.WantRejected("incompatible item type beside a column item",
-			"SELECT id FROM t WHERE b IN (a, 'x') ORDER BY id", "42804")
+			"SELECT id FROM t WHERE b IN (a, 'x') ORDER BY id", "22000")
 	})
 }

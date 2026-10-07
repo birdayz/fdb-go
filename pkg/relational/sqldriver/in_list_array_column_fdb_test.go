@@ -274,16 +274,12 @@ func TestFDB_InListIsAnArrayColumn(t *testing.T) {
 				"membership test. Accepting it means the two spellings have converged and one " +
 				"of them is now answering a question nobody asked")
 		}
-		// MEASURED: the refusal is 42804 "The operands of a comparison operator
-		// are not compatible", from the LHS-versus-element type gate — which
-		// fires before the composite-comparand check this arm was first written
-		// expecting. That is the better of the two refusals and the reason is
-		// worth stating: with brackets the item IS the array, so the engine is
-		// being asked to compare a BIGINT with a BIGINT ARRAY, and naming the
-		// type incompatibility says more than "complex type" would.
-		if !strings.Contains(err.Error(), "42804") {
+		// MEASURED: the refusal is 22000, the IN's promotion of its BIGINT
+		// probe to the BIGINT ARRAY element, as Java answers (conformance
+		// InComparandSourceJavaProbe bracketed_array_item).
+		if !strings.Contains(err.Error(), "22000") {
 			t.Errorf("`b IN (xs)` was refused for an unexpected reason: %v\n"+
-				"  (expected the 42804 type-incompatibility gate — a BIGINT compared against a "+
+				"  (expected the 22000 type-incompatibility gate — a BIGINT compared against a "+
 				"BIGINT ARRAY. A different refusal means the bracketed form is now taking some "+
 				"other path, and whether that path is a membership test needs checking)", err)
 		}

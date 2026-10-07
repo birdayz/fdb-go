@@ -69,7 +69,7 @@ var rfc082Divergences = map[string]Divergence{
 	// scalar-NOT-NULL DDL parity port); the scenario stays annotated only
 	// because context wrapping still differs between the engines.
 	"error_not_null_violation":                       {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject the CREATE (scalar NOT NULL is unexpressible — DdlVisitor parity); only context wrapping differs", GoErrorContains: "NOT NULL is only allowed for ARRAY column type"},
-	"error_type_mismatch_in_list":                    {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "The operands of a comparison operator are not compatible."},
+	"error_type_mismatch_in_list":                    {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "cannot be promoted to the type of the variable"},
 	"error_undefined_column_where":                   {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "Attempting to query non existing column NONEXISTENT"},
 	"error_undefined_table_from":                     {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "table \"NOSUCHTABLE\" does not exist"},
 	"error_unknown_qualifier_select":                 {Direction: DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "Attempting to query non existing column X.ID"},
