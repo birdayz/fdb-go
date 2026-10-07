@@ -254,6 +254,24 @@ func (g *hnswGraph) vectorDistance(query []float64, vector hnswVector) float64 {
 	return vectorDistance(query, vec, g.config.Metric)
 }
 
+// pairDistance is the operation's DistanceEstimator between two stored or
+// candidate vectors (RaBitDistanceEstimator.distance): when exactly one is
+// RaBitQ-encoded the other is the query of an estimate; otherwise the metric
+// runs on the decoded vectors (an encoded pair on their reconstructions).
+// a and b are av and bv decoded.
+func (g *hnswGraph) pairDistance(a []float64, av hnswVector, b []float64, bv hnswVector) float64 {
+	encoded := func(v hnswVector) bool {
+		return g.config.Quantizer != nil && len(v.data) > 0 && v.data[0] == g.config.Quantizer.GetTypeByte()
+	}
+	switch aEnc, bEnc := encoded(av), encoded(bv); {
+	case !aEnc && bEnc:
+		return g.vectorDistance(a, bv)
+	case aEnc && !bEnc:
+		return g.vectorDistance(b, av)
+	}
+	return vectorDistance(a, b, g.config.Metric)
+}
+
 // decodeStoredVector extracts an approximate []float64 from stored vector bytes.
 // For raw vectors (DOUBLE/FLOAT/HALF), this is exact deserialization.
 // For quantized vectors, delegates to the configured quantizer's Decode method
@@ -512,15 +530,16 @@ func (g *hnswGraph) insertTyped(tx fdb.WritableTransaction, primaryKey tuple.Tup
 			}
 			nbNeighbors = append(nbNeighbors, primaryKey)
 
-			// Prune if over limit.
-			if len(nbNeighbors) > maxConn {
+			// Prune at the limit (Primitives.pruneNeighborsIfNecessary skips
+			// only below mMax: a full list is re-selected too).
+			if len(nbNeighbors) >= maxConn {
 				// Resolve vector bytes (at inlining layers, own vector is at layer 0).
 				resolvedVec := g.storage.resolveVectorBytes(layer, nbPK, nbVecBytes)
 				nbVec, decErr := g.decodeStoredVector(resolvedVec)
 				if decErr != nil {
 					return fmt.Errorf("hnsw insert: decode neighbor %v vector at layer %d for pruning: %w", nbPK, layer, decErr)
 				}
-				nbNeighbors, err = g.pruneNeighbors(tx, nbVec, nbNeighbors, maxConn, layer)
+				nbNeighbors, err = g.pruneNeighbors(tx, nbVec, hnswVector{data: resolvedVec}, nbNeighbors, maxConn, layer)
 				if err != nil {
 					return err
 				}
@@ -975,18 +994,35 @@ func (g *hnswGraph) findDeletionRepairCandidates(tx fdb.ReadTransaction, layer i
 	// (Primitives.findNeighborReferences seeds the set with the initial node, then the
 	// predicate filters it out) — so a stale self-reference never re-enters the candidate
 	// set and gets re-saved. We exclude it directly when forming the primary set.
-	primarySet := make(map[string]bool, len(deletedNeighbors))
-	var primarySpans [][]byte
+	listed := make(map[string]bool, len(deletedNeighbors))
+	var listedSpans [][]byte
 	for _, s := range deletedNeighbors {
-		if bytes.Equal(s, deletedSpan) || primarySet[string(s)] {
+		if bytes.Equal(s, deletedSpan) || listed[string(s)] {
 			continue
 		}
-		primarySet[string(s)] = true
-		primarySpans = append(primarySpans, s)
+		listed[string(s)] = true
+		listedSpans = append(listedSpans, s)
 	}
 
 	// PRIMARY nodes loaded so we can walk their neighbors for the secondary set.
-	primaryBatch := g.storage.loadNodeLayerBatchDispatch(tx, layer, primarySpans)
+	// Only the existing ones are initial nodes of the second neighbors() pass
+	// (the first pass's filterExisting): a stale reference is not primary.
+	var primaryBatch []nodeResult
+	for _, r := range g.storage.loadNodeLayerBatchDispatch(tx, layer, listedSpans) {
+		if r.err != nil {
+			if e := hnswFatal(r.err); e != nil {
+				return nil, e
+			}
+			continue
+		}
+		primaryBatch = append(primaryBatch, r)
+	}
+	primarySet := make(map[string]bool, len(primaryBatch))
+	primarySpans := make([][]byte, 0, len(primaryBatch))
+	for _, r := range primaryBatch {
+		primarySet[string(r.span)] = true
+		primarySpans = append(primarySpans, r.span)
+	}
 
 	// Ordered ref set (LinkedHashSet): primary first, then distinct non-primary
 	// neighbors-of-primary (excluding the deleted node).
@@ -996,16 +1032,13 @@ func (g *hnswGraph) findDeletionRepairCandidates(tx fdb.ReadTransaction, layer i
 		refs = append(refs, s)
 		refsSeen[string(s)] = true
 	}
+	// The deleted node, a neighbour of the primaries, is in the set too: it
+	// counts toward numberOfCandidates and is then rejected without a draw
+	// (shouldUseSecondaryCandidateForRepair).
 	for _, r := range primaryBatch {
-		if r.err != nil {
-			if e := hnswFatal(r.err); e != nil {
-				return nil, e
-			}
-			continue // primary neighbor absent — skip its sub-neighbors
-		}
 		for _, nb := range r.neighbors {
 			key := string(nb)
-			if primarySet[key] || refsSeen[key] || bytes.Equal(nb, deletedSpan) {
+			if primarySet[key] || refsSeen[key] {
 				continue
 			}
 			refs = append(refs, nb)
@@ -1116,7 +1149,7 @@ func (g *hnswGraph) deleteFromLayerRepair(tx fdb.WritableTransaction, layer int,
 			if bytes.Equal(c.span, pSpan) {
 				continue // not P itself
 			}
-			cands = append(cands, hnswCandidate{pkSpan: c.span, vector: hnswVector{data: c.vecBytes}, vec: c.vec, dist: vectorDistance(p.vec, c.vec, g.config.Metric)})
+			cands = append(cands, hnswCandidate{pkSpan: c.span, vector: hnswVector{data: c.vecBytes}, vec: c.vec, dist: g.pairDistance(c.vec, hnswVector{data: c.vecBytes}, p.vec, hnswVector{data: p.vecBytes})})
 		}
 		selected := g.selectNeighbors(cands, g.config.M)
 		for _, sc := range selected {
@@ -1140,8 +1173,10 @@ func (g *hnswGraph) deleteFromLayerRepair(tx fdb.WritableTransaction, layer int,
 	if layer == 0 {
 		maxConn = g.config.MMax0
 	}
+	// Java prunes every candidate's change set, changed or not, once it holds
+	// mMax or more neighbours; a prune that drops one rewrites the node.
 	for _, key := range order {
-		if !changed[key] || len(changeSet[key]) <= maxConn {
+		if len(changeSet[key]) < maxConn {
 			continue
 		}
 		c := candByKey[key]
@@ -1153,13 +1188,16 @@ func (g *hnswGraph) deleteFromLayerRepair(tx fdb.WritableTransaction, layer int,
 			}
 			pkList = append(pkList, pk)
 		}
-		prunedPKs, perr := g.pruneNeighbors(tx, c.vec, pkList, maxConn, layer)
+		prunedPKs, perr := g.pruneNeighbors(tx, c.vec, hnswVector{data: c.vecBytes}, pkList, maxConn, layer)
 		if perr != nil {
 			return nil, nil, perr
 		}
 		pruned := make([][]byte, len(prunedPKs))
 		for i, pk := range prunedPKs {
 			pruned[i] = nestPK(pk)
+		}
+		if len(pruned) != len(changeSet[key]) {
+			changed[key] = true
 		}
 		changeSet[key] = pruned
 	}
@@ -1287,9 +1325,33 @@ func (g *hnswGraph) searchWithVectors(tx fdb.ReadTransaction, query []float64, k
 	return results, nil
 }
 
+// refetchEntryVector is Search.beamSearchLayer's refetch of its starting
+// references: at a compact layer the entry's vector is read from the node
+// stored there, so its distance is the one every other visit computes (the
+// access info's or a higher layer's vector may be encoded differently). An
+// inlining layer's greedy search starts from the reference as given
+// (greedySearchInliningLayer); a missing node keeps it too.
+func (g *hnswGraph) refetchEntryVector(tx fdb.ReadTransaction, epPK tuple.Tuple, epVector hnswVector, layer int) (hnswVector, error) {
+	if epPK == nil || g.storage.isInliningLayer(layer) {
+		return epVector, nil
+	}
+	vecBytes, _, err := g.storage.loadNodeLayerDispatch(tx, layer, epPK)
+	if err != nil {
+		if e := hnswFatal(err); e != nil {
+			return hnswVector{}, e
+		}
+		return epVector, nil
+	}
+	return hnswVector{data: vecBytes}, nil
+}
+
 // searchLayerGreedy finds the single nearest neighbor at a given layer (greedy descent).
 // Returns the best PK, its stored vector bytes, and error.
 func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, epPK tuple.Tuple, epVector hnswVector, layer int) (tuple.Tuple, hnswVector, error) {
+	epVector, err := g.refetchEntryVector(tx, epPK, epVector, layer)
+	if err != nil {
+		return nil, hnswVector{}, err
+	}
 	bestPK := epPK
 	bestVector := epVector
 	bestDist := g.vectorDistance(query, epVector)
@@ -1357,6 +1419,10 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 		return nil, nil
 	}
 
+	epVector, err := g.refetchEntryVector(tx, epPK, epVector, layer)
+	if err != nil {
+		return nil, err
+	}
 	epDist := g.vectorDistance(query, epVector)
 	// Entry point in span form (nested-encoded PK) so it dedups consistently with
 	// neighbor spans pulled from node values.
@@ -1508,7 +1574,7 @@ func (g *hnswGraph) selectNeighbors(candidates []hnswCandidate, maxConn int) []h
 					continue
 				}
 			}
-			distToSelected := vectorDistance(candidates[i].vec, result[j].vec, g.config.Metric)
+			distToSelected := g.pairDistance(candidates[i].vec, candidates[i].vector, result[j].vec, result[j].vector)
 			if distToSelected < candidates[i].dist {
 				shouldSelect = false
 				break
@@ -1589,9 +1655,9 @@ func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []flo
 	return g.selectNeighbors(working, maxConn), nil
 }
 
-// pruneNeighbors re-selects the best maxConn neighbors for a node by computing distances.
-// Uses the same heuristic as selectNeighbors (with optional extendCandidates).
-func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, neighborPKs []tuple.Tuple, maxConn, layer int) ([]tuple.Tuple, error) {
+// pruneNeighbors re-selects the best maxConn neighbors for a node by computing distances,
+// with selectNeighbors' heuristic over the list (Primitives.pruneNeighborsIfNecessary).
+func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, nodeVector hnswVector, neighborPKs []tuple.Tuple, maxConn, layer int) ([]tuple.Tuple, error) {
 	// Bring the (bounded) neighbor PKs into span form for the batch dispatch.
 	spans := make([][]byte, len(neighborPKs))
 	for i, pk := range neighborPKs {
@@ -1606,28 +1672,32 @@ func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, ne
 			}
 			continue
 		}
-		dist := g.computeDistance(nodeVec, r.vecBytes)
-		candidates = append(candidates, hnswCandidate{pkSpan: r.span, vector: hnswVector{data: r.vecBytes}, dist: dist})
-	}
-
-	var selected []hnswCandidate
-	if g.config.ExtendCandidates {
-		var err error
-		selected, err = g.selectNeighborsHeuristic(tx, nodeVec, candidates, maxConn, layer)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		selected = g.selectNeighbors(candidates, maxConn)
-	}
-
-	result := make([]tuple.Tuple, len(selected))
-	for i, s := range selected {
-		pk, derr := decodeNestedPK(s.pkSpan)
+		neighbor := hnswVector{data: r.vecBytes}
+		nbVec, derr := g.decodeVector(neighbor)
 		if derr != nil {
 			return nil, derr
 		}
-		result[i] = pk
+		dist := g.pairDistance(nbVec, neighbor, nodeVec, nodeVector)
+		candidates = append(candidates, hnswCandidate{pkSpan: r.span, vector: neighbor, vec: nbVec, dist: dist})
+	}
+
+	// Never extended: Java's pruneNeighborsIfNecessary selects among the list
+	// alone (extendCandidatesIfNecessary runs only for a new node's own
+	// neighbours, Insert.java:510).
+	selected := g.selectNeighbors(candidates, maxConn)
+
+	// The kept neighbours stay in their list order: Java resolves the
+	// selection as a change set over the list (resolveChangeSetFromNewNeighbors),
+	// deleting the dropped ones; the selection order is not stored.
+	keep := make(map[string]bool, len(selected))
+	for _, s := range selected {
+		keep[string(s.pkSpan)] = true
+	}
+	result := make([]tuple.Tuple, 0, len(selected))
+	for i, pk := range neighborPKs {
+		if keep[string(spans[i])] {
+			result = append(result, pk)
+		}
 	}
 	return result, nil
 }

@@ -1185,6 +1185,174 @@ var _ = Describe("RaBitQ VECTOR Index Conformance", func() {
 			Expect(results).To(HaveLen(5))
 		})
 	})
+
+	// The same writes through each engine into its own tenant leave the same
+	// index bytes, checked after the inserts and after every delete. Under
+	// COSINE with RaBitQ the transform exists from the first insert, so a later
+	// insert above the entry's layer replaces the access info's entry with its
+	// transformed vector (Insert.java:220-227), and deleting that entry
+	// replaces it again. The small-M EUCLIDEAN rows prune full neighbour lists
+	// with the diversity heuristic, at insert and at delete repair.
+	Describe("Same writes, same index bytes", func() {
+		type row struct {
+			name    string
+			options map[string]string
+			dims    int
+		}
+		rows := []row{
+			{"cosine RaBitQ", map[string]string{
+				"hnswNumDimensions": "8", "hnswMetric": "COSINE_METRIC",
+				"hnswUseRaBitQ": "true", "hnswRaBitQNumExBits": "4",
+			}, 8},
+			{"euclidean small M", map[string]string{
+				"hnswNumDimensions": "4", "hnswMetric": "EUCLIDEAN_METRIC",
+				"hnswM": "4", "hnswMMax": "4", "hnswMMax0": "6", "hnswEfConstruction": "100", "hnswEfRepair": "10",
+			}, 4},
+			{"euclidean small M, extended candidates, pruned kept", map[string]string{
+				"hnswNumDimensions": "4", "hnswMetric": "EUCLIDEAN_METRIC",
+				"hnswM": "4", "hnswMMax": "4", "hnswMMax0": "6", "hnswEfConstruction": "100", "hnswEfRepair": "10",
+				"hnswExtendCandidates": "true", "hnswKeepPrunedConnections": "true",
+			}, 4},
+			{"euclidean RaBitQ trained", map[string]string{
+				"hnswNumDimensions": "4", "hnswMetric": "EUCLIDEAN_METRIC",
+				"hnswM": "4", "hnswMMax": "4", "hnswMMax0": "6",
+				"hnswUseRaBitQ": "true", "hnswRaBitQNumExBits": "3",
+				"hnswSampleVectorStatsProbability": "1.0", "hnswMaintainStatsProbability": "1.0", "hnswStatsThreshold": "11",
+			}, 4},
+		}
+		for _, r := range rows {
+			It("Go and Java write byte-equal graphs: "+r.name, func() {
+				goEnv, err := SetupTenantEnvironment(ctx, sharedContainer, fmt.Sprintf("hbgo_%s", uuid.New().String()))
+				Expect(err).NotTo(HaveOccurred())
+				DeferCleanup(func() { _ = goEnv.Cleanup(context.Background()) })
+
+				idx := recordlayer.NewVectorIndex("order_vector_opts", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), r.dims)
+				for k, v := range r.options {
+					idx.Options[k] = v
+				}
+				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+				builder.AddIndex("Order", idx)
+				md, err := builder.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Tenant keyspaces are empty (a store at the tenant's root).
+				ks := subspace.Sub(tuple.Tuple{})
+				writeJava := func(id int64, vec []float64) {
+					params := map[string]any{
+						"clusterFile": env.ClusterFile, "tenantName": env.TenantName,
+						"subspace": BytesToIntArray(ks.Bytes()), "orderId": id, "options": r.options,
+						"vectorJson": nil,
+					}
+					if vec != nil {
+						j, _ := json.Marshal(vec)
+						params["vectorJson"] = string(j)
+					}
+					Expect(NewJavaInvoker().InvokeAs(ctx, "writeOrderWithVectorOptions", params, nil)).To(Succeed())
+				}
+				writeGo := func(id int64, vec []float64) {
+					_, err := goEnv.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+						store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+						if err != nil {
+							return nil, err
+						}
+						if vec == nil {
+							_, err = store.DeleteRecord(tuple.Tuple{id})
+							return nil, err
+						}
+						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), VectorData: conformanceSerializeVector(vec)})
+						return nil, err
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				indexSS := ks.Sub(recordlayer.IndexKey, idx.SubspaceTupleKey())
+				dump := func(db *recordlayer.FDBDatabase) map[string]string {
+					out := map[string]string{}
+					_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+						rng, err := fdb.PrefixRange(indexSS.Bytes())
+						if err != nil {
+							return nil, err
+						}
+						kvs, err := rtx.Transaction().GetRange(rng, fdb.RangeOptions{}).GetSliceWithError()
+						samples := indexSS.Sub(int64(2))
+						for _, kv := range kvs {
+							if samples.Contains(kv.Key) {
+								// A sampled vector's key ends in UUID.randomUUID()
+								// (HNSW samples with deterministicRandomness false,
+								// Insert.java:335): compare (count, vector) only.
+								t, uerr := samples.Unpack(kv.Key)
+								if uerr != nil || len(t) != 2 {
+									return nil, fmt.Errorf("sample key %x: %v", kv.Key, uerr)
+								}
+								out[fmt.Sprintf("sample %v %x", t[0], kv.Value)] += "+"
+								continue
+							}
+							out[hex.EncodeToString(kv.Key)] = hex.EncodeToString(kv.Value)
+						}
+						return nil, err
+					})
+					Expect(err).NotTo(HaveOccurred())
+					return out
+				}
+				compare := func(phase string) map[string]string {
+					javaKVs, goKVs := dump(env.RecordDB), dump(goEnv.RecordDB)
+					Expect(javaKVs).NotTo(BeEmpty())
+					var diffs []string
+					for k, jv := range javaKVs {
+						if gv, ok := goKVs[k]; !ok {
+							diffs = append(diffs, "only Java: "+k)
+						} else if gv != jv {
+							diffs = append(diffs, "value "+k+"\n  java "+jv+"\n  go   "+gv)
+						}
+					}
+					for k := range goKVs {
+						if _, ok := javaKVs[k]; !ok {
+							diffs = append(diffs, "only Go: "+k)
+						}
+					}
+					Expect(diffs).To(BeEmpty(), phase)
+					return javaKVs
+				}
+
+				vec := func(i int64) []float64 {
+					v := make([]float64, r.dims)
+					for d := range v {
+						v[d] = math.Sin(float64(i*7+int64(d)*3)) + float64((i+int64(d))%5)*0.1
+					}
+					return v
+				}
+				for i := int64(1); i <= 60; i++ {
+					writeJava(i, vec(i))
+					writeGo(i, vec(i))
+					compare(fmt.Sprintf("after inserting %d", i))
+				}
+				javaKVs := compare("after the inserts")
+
+				// The access info (key 1) names an entry above layer 0 that is
+				// not the first insert: a replacement.
+				accessKey := hex.EncodeToString(indexSS.Sub(int64(1)).Pack(tuple.Tuple{}))
+				raw, err := hex.DecodeString(javaKVs[accessKey])
+				Expect(err).NotTo(HaveOccurred())
+				entry, err := tuple.Unpack(raw)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entry[0]).To(BeNumerically(">", 0))
+				Expect(entry[1]).NotTo(Equal(tuple.Tuple{int64(1)}))
+
+				// Deletes repair the neighbourhoods and delete the entry itself.
+				deletes := []int64{entry[1].(tuple.Tuple)[0].(int64)}
+				for i := int64(3); i <= 60; i += 4 {
+					deletes = append(deletes, i)
+				}
+				for _, id := range deletes {
+					writeJava(id, nil)
+					writeGo(id, nil)
+					compare(fmt.Sprintf("after deleting %d", id))
+				}
+			})
+		}
+	})
 })
 
 // --- RaBitQ conformance store wrapper ---

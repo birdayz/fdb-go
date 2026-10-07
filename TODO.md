@@ -1118,10 +1118,28 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     QueryVisitor.java:272-274 vs :283-322); planner items v31-v35 (NLJ
     orientation tie-break, USING over an unnest leg, a lateral chain's last
     element, EXISTS over derived legs, table qualifier = template name).
-  - WS-A: higher-layer HNSW entry replacement after the transform exists
-    (hnsw.go:556-565, Java Insert.java:220-227) has no access-info byte pin.
-  - WS-B: rank entry too short (rank_scan.go entryWithRank) unpinned; sliding
-    window replay has no tied ordering values.
+  - [x] WS-A: higher-layer HNSW entry replacement after the transform exists.
+    Done (2026-10-07): "Same writes, same index bytes"
+    (`conformance_test`) has both engines write 60 vectors and then 16 deletes
+    (the entry first), each into its own tenant, and compares every index key
+    after each write. It runs four configurations: cosine RaBitQ;
+    euclidean with small M; small M with extended candidates and kept pruned
+    connections; and trained euclidean RaBitQ. The access-info entry
+    replacement is asserted. The comparison found six HNSW divergences, all
+    fixed and each mutation-checked:
+    - a prune keeps the surviving neighbours in list order
+      (resolveChangeSetFromNewNeighbors);
+    - a list at exactly mMax is pruned too;
+    - a prune never extends candidates;
+    - a delete repair prunes every candidate and counts the deleted node and
+      only existing primaries in its sampling rate;
+    - a layer search refetches its entry's stored vector (beamSearchLayer);
+    - pairwise distances use the estimator when exactly one vector is
+      encoded.
+  - [x] WS-B: rank entry too short was already pinned
+    (`rank_scan_test.go`, "validates dispatch and state"). Sliding-window
+    replay with tied ordering values done: the replay matrix has a `tied` axis
+    (64 rows); comparing only the window value reddens 16 tied rows.
   - WS-C: DELETE_WHERE duplicate / last-known-wins envelope rows; overflow
     commit check across two stores with one index name; DeleteStore of the
     heartbeat:/merge: checks and delete-then-recreate with pending chunks;

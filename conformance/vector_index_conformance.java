@@ -365,6 +365,43 @@ class VectorIndexSteps extends ConformanceBase {
         });
     }
 
+    /**
+     * Saves (vectorJson non-null) or deletes an Order in a store whose one
+     * VECTOR index "order_vector_opts" over vector_data has exactly the given
+     * index options, so a test can drive both engines over any HNSW
+     * configuration.
+     */
+    @ConformanceStep("writeOrderWithVectorOptions")
+    public void writeOrderWithVectorOptions(String clusterFile, byte[] subspace, long orderId,
+            String vectorJson, Map<String, String> options, String tenantName) {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order").setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer").setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord").setPrimaryKey(Key.Expressions.field("id"));
+        metaDataBuilder.addIndex("Order", new Index("order_vector_opts",
+            new KeyWithValueExpression(Key.Expressions.field("vector_data"), 0),
+            IndexTypes.VECTOR, options));
+        RecordMetaData metaData = metaDataBuilder.build();
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metaData)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+            if (vectorJson == null) {
+                store.deleteRecord(Tuple.from(orderId));
+            } else {
+                store.saveRecord(Order.newBuilder()
+                    .setOrderId(orderId)
+                    .setVectorData(ByteString.copyFrom(serializeVector(parseVector(vectorJson))))
+                    .build());
+            }
+            return null;
+        });
+    }
+
     @ConformanceStep("loadOrderWithRaBitQIndex")
     public Map<String, Object> loadOrderWithRaBitQIndex(String clusterFile, byte[] subspace,
             long orderId, String tenantName) {

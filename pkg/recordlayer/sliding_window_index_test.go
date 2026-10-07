@@ -1236,101 +1236,109 @@ var _ = Describe("SlidingWindowIndex", func() {
 		for _, writeOnly := range []bool{false, true} {
 			for _, size := range []int32{1, 2, 3, 4} {
 				for _, partitioned := range []bool{false, true} {
-					It(fmt.Sprintf("replays tracked inserts without bookkeeping direction=%s writeOnly=%v size=%d partitioned=%v", direction, writeOnly, size, partitioned), func() {
-						ks := specSubspace()
-						var fields []string
-						var partition tuple.Tuple
-						if partitioned {
-							fields = []string{"quantity"}
-							partition = tuple.Tuple{int64(7)}
-						}
-						idx := newWindowedVectorIndex("sw_replay", size, direction, fields...)
-						builder := baseMetaData()
-						builder.AddIndex("Order", idx)
-						md, err := builder.Build()
-						Expect(err).NotTo(HaveOccurred())
-						_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-							timer := NewStoreTimer()
-							rtx.SetTimer(timer)
-							store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+					for _, tied := range []bool{false, true} {
+						// tied: every record has the same window value, so the
+						// window's order and boundary fall to the primary key.
+						It(fmt.Sprintf("replays tracked inserts without bookkeeping direction=%s writeOnly=%v size=%d partitioned=%v tied=%v", direction, writeOnly, size, partitioned, tied), func() {
+							ks := specSubspace()
+							var fields []string
+							var partition tuple.Tuple
+							if partitioned {
+								fields = []string{"quantity"}
+								partition = tuple.Tuple{int64(7)}
+							}
+							idx := newWindowedVectorIndex("sw_replay", size, direction, fields...)
+							builder := baseMetaData()
+							builder.AddIndex("Order", idx)
+							md, err := builder.Build()
 							Expect(err).NotTo(HaveOccurred())
-							var saved []*FDBStoredRecord[proto.Message]
-							for id := int64(1); id <= 3; id++ {
-								record, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id * 10)), Quantity: proto.Int32(7), CoordX: proto.Int64(id), CoordY: proto.Int64(0)})
+							_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+								timer := NewStoreTimer()
+								rtx.SetTimer(timer)
+								store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 								Expect(err).NotTo(HaveOccurred())
-								saved = append(saved, record)
-							}
-							maintainer, err := store.getIndexMaintainer(idx)
-							Expect(err).NotTo(HaveOccurred())
-							sw := slidingWindowSubspaceFor(store.subspace, idx)
-							count, boundary := readSlidingWindowMeta(rtx.Transaction(), sw, partition)
-							wantCount := int64(size)
-							if wantCount > 3 {
-								wantCount = 3
-							}
-							Expect(count).To(Equal(wantCount))
-							keys, vals := readSlidingWindowEntries(rtx.Transaction(), sw, partition)
-							pks := searchPKs(store, idx, nil)
-							for _, record := range saved {
-								// A changed payload makes the delegate's handling observable
-								// while the tracked entry key and membership stay identical:
-								// the window calls the delegate's insert for an entry in the
-								// window (SW_DELEGATE_INSERT), and the graph, holding the
-								// node already, leaves it at its stored vector, as Java's
-								// HNSW Insert does (Insert.java:195-197).
-								stored := record.Record.(*gen.Order)
-								storedX, storedY := stored.GetCoordX(), stored.GetCoordY()
-								refreshed := *record
-								refreshed.Record = proto.Clone(record.Record)
-								order := refreshed.Record.(*gen.Order)
-								order.CoordX = proto.Int64(100 + order.GetOrderId())
-								order.CoordY = proto.Int64(99)
-								record = &refreshed
-								timer.Reset()
-								if writeOnly {
-									Expect(maintainer.UpdateWhileWriteOnly(nil, record)).To(Succeed())
-								} else {
-									Expect(maintainer.Update(nil, record)).To(Succeed())
-								}
-								gotCount, gotBoundary := readSlidingWindowMeta(rtx.Transaction(), sw, partition)
-								gotKeys, gotVals := readSlidingWindowEntries(rtx.Transaction(), sw, partition)
-								Expect(gotCount).To(Equal(count))
-								Expect(gotBoundary).To(Equal(boundary))
-								Expect(gotKeys).To(Equal(keys))
-								Expect(gotVals).To(Equal(vals))
-								Expect(searchPKs(store, idx, nil)).To(Equal(pks))
-								Expect(timer.GetCount(CountSWReinsertAlreadyTracked)).To(Equal(int64(1)))
-								inWindow := false
-								for _, pk := range pks {
-									if pk == record.Record.(*gen.Order).GetOrderId() {
-										inWindow = true
+								var saved []*FDBStoredRecord[proto.Message]
+								for id := int64(1); id <= 3; id++ {
+									price := int32(id * 10)
+									if tied {
+										price = 10
 									}
-								}
-								inserts := int64(0)
-								if inWindow {
-									inserts = 1
-									vm, ok := unwrapVectorMaintainer(maintainer)
-									Expect(ok).To(BeTrue())
-									results, err := vm.SearchKNN(nil, []float64{float64(storedX), float64(storedY)}, 10, 100)
+									record, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(price), Quantity: proto.Int32(7), CoordX: proto.Int64(id), CoordY: proto.Int64(0)})
 									Expect(err).NotTo(HaveOccurred())
-									found := false
-									for _, result := range results {
-										if tuplesEqual(result.PrimaryKey, record.PrimaryKey) {
-											found = true
-											Expect(result.Distance).To(BeNumerically("~", 0, 1e-9))
+									saved = append(saved, record)
+								}
+								maintainer, err := store.getIndexMaintainer(idx)
+								Expect(err).NotTo(HaveOccurred())
+								sw := slidingWindowSubspaceFor(store.subspace, idx)
+								count, boundary := readSlidingWindowMeta(rtx.Transaction(), sw, partition)
+								wantCount := int64(size)
+								if wantCount > 3 {
+									wantCount = 3
+								}
+								Expect(count).To(Equal(wantCount))
+								keys, vals := readSlidingWindowEntries(rtx.Transaction(), sw, partition)
+								pks := searchPKs(store, idx, nil)
+								for _, record := range saved {
+									// A changed payload makes the delegate's handling observable
+									// while the tracked entry key and membership stay identical:
+									// the window calls the delegate's insert for an entry in the
+									// window (SW_DELEGATE_INSERT), and the graph, holding the
+									// node already, leaves it at its stored vector, as Java's
+									// HNSW Insert does (Insert.java:195-197).
+									stored := record.Record.(*gen.Order)
+									storedX, storedY := stored.GetCoordX(), stored.GetCoordY()
+									refreshed := *record
+									refreshed.Record = proto.Clone(record.Record)
+									order := refreshed.Record.(*gen.Order)
+									order.CoordX = proto.Int64(100 + order.GetOrderId())
+									order.CoordY = proto.Int64(99)
+									record = &refreshed
+									timer.Reset()
+									if writeOnly {
+										Expect(maintainer.UpdateWhileWriteOnly(nil, record)).To(Succeed())
+									} else {
+										Expect(maintainer.Update(nil, record)).To(Succeed())
+									}
+									gotCount, gotBoundary := readSlidingWindowMeta(rtx.Transaction(), sw, partition)
+									gotKeys, gotVals := readSlidingWindowEntries(rtx.Transaction(), sw, partition)
+									Expect(gotCount).To(Equal(count))
+									Expect(gotBoundary).To(Equal(boundary))
+									Expect(gotKeys).To(Equal(keys))
+									Expect(gotVals).To(Equal(vals))
+									Expect(searchPKs(store, idx, nil)).To(Equal(pks))
+									Expect(timer.GetCount(CountSWReinsertAlreadyTracked)).To(Equal(int64(1)))
+									inWindow := false
+									for _, pk := range pks {
+										if pk == record.Record.(*gen.Order).GetOrderId() {
+											inWindow = true
 										}
 									}
-									Expect(found).To(BeTrue())
+									inserts := int64(0)
+									if inWindow {
+										inserts = 1
+										vm, ok := unwrapVectorMaintainer(maintainer)
+										Expect(ok).To(BeTrue())
+										results, err := vm.SearchKNN(nil, []float64{float64(storedX), float64(storedY)}, 10, 100)
+										Expect(err).NotTo(HaveOccurred())
+										found := false
+										for _, result := range results {
+											if tuplesEqual(result.PrimaryKey, record.PrimaryKey) {
+												found = true
+												Expect(result.Distance).To(BeNumerically("~", 0, 1e-9))
+											}
+										}
+										Expect(found).To(BeTrue())
+									}
+									Expect(timer.GetCount(EventSWDelegateInsert)).To(Equal(inserts))
+									for _, event := range []Event{EventSWDelegateDelete, EventSWEvictAndReplace, CountSWItemPromotedFromOverflow, CountSWWindowShrunkNoOverflow, CountSWItemAddedToWindowFilling} {
+										Expect(timer.GetCount(event)).To(BeZero(), event.Name)
+									}
 								}
-								Expect(timer.GetCount(EventSWDelegateInsert)).To(Equal(inserts))
-								for _, event := range []Event{EventSWDelegateDelete, EventSWEvictAndReplace, CountSWItemPromotedFromOverflow, CountSWWindowShrunkNoOverflow, CountSWItemAddedToWindowFilling} {
-									Expect(timer.GetCount(event)).To(BeZero(), event.Name)
-								}
-							}
-							return nil, nil
+								return nil, nil
+							})
+							Expect(err).NotTo(HaveOccurred())
 						})
-						Expect(err).NotTo(HaveOccurred())
-					})
+					}
 				}
 			}
 		}

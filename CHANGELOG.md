@@ -97,6 +97,17 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - **Breaking (behaviour):** a body that commits the context `Run` (or a variant, or `RunWithRetry`) handed it is refused before anything commits, with `RecordContextNotActiveError` ("Transaction is no longer active.", a `RecordCoreStorageError`); `Run` commits. A context refuses a second commit the same way.
 - Pure-Go client: a commit made while no commit proxy is known waits for the proxy set to change (bounded by its context) and then fails with `commit_unknown_result` (1021), as libfdb_c does. The Go-only error 1200 (`ErrAllProxiesUnreachable`) is gone, and code 1200 now has its canonical FDB name, `recruitment_failed`.
 - `fdb.Database.TransactCtx` / `ReadTransactCtx` and the tenant forms return the error the transaction body returned (or panicked with), chain intact, when the retry loop gives up on that error's code, as the Apple binding does; they returned a bare `fdb.Error{Code}`.
+- HNSW graphs are written byte-for-byte as Java writes them, for the same inserts and deletes:
+  - a pruned neighbour list keeps its survivors in list order;
+  - a list at exactly mMax is pruned;
+  - a prune never extends candidates;
+  - a delete repair prunes every candidate and samples at Java's rate;
+  - a re-inserted neighbour moves to the end of its list;
+  - a layer search starts from its entry's stored vector;
+  - a pairwise distance between an encoded and a plain vector is a RaBitQ estimate.
+
+  Graphs written by earlier Go builds stay readable but differ in neighbour lists.
+- GuardiANN on a trained index with an extra-bit count RaBitQ cannot use refuses only where Java constructs the quantizer (an insert of a new key, a search, a task write or task body); a delete that queues nothing still runs.
 - HNSW and GuardiANN cosine distance is Java's: a zero vector is at +Inf and a non-finite input is NaN, with no clamping, and distances order as Java's `Double.compare`. HNSW node caches live for one operation, a vector search read-locks its partition while it searches, and HNSW sample keys carry a tuple UUID as Java's do (older entries are still read). SPFresh keeps its clamped cosine.
 - The plan cache is shared by every database and schema of one schema template, as Java's `RelationalPlanCache` is, and stored queries are planned into it when a connector starts.
 - Planner: disabling the rule name `ConditionalCascadesRule` (`DISABLED_PLANNER_RULES`) turns off every conditional rule chain, as in Java; it was ignored.
