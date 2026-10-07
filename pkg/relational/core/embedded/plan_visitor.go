@@ -513,7 +513,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// expand" signal; branches outside these shapes do not consult it.
 	var expandStar starExpander
 	if simpleTable.GroupByClause() != nil || hasPositionalOrderBy(simpleTable) || hasMixedSelectStar(simpleTable) {
-		expandStar = starExpanderFor(fs, v.md, v.templateName, v.cteScopes)
+		expandStar = starExpanderFor(fs, v.md, v.templateName, v.cteScopes, v.enclosingScope)
 	}
 	unknownFn := unknownScalarFunction(simpleTable.SelectElements(), v.md)
 	cls, err := classifySelectElements(simpleTable, expandStar)

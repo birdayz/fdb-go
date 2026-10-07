@@ -934,6 +934,16 @@ ON, or in an inner ON before a later RIGHT join, is answered as Java does: it st
 ON. Pinned by `ExistsInnerShadowJavaProbe` (`on_nested_exists` asserts the refusal and
 Java's [2]) and `TestFDB_CorrelatedExistsNestedSubqueryInOnDeclines`.
 
+### A correlated star in a grouped select list (Go refuses)
+
+`SELECT B.* FROM B WHERE EXISTS (SELECT A.*, B.* FROM A GROUP BY A1, A2, A3)`: Java answers
+(the outer columns are fixed per group); Go refuses with 0A000 "a correlated star in a grouped
+select list is not supported". A grouped select list has no slot for a bound outer value above
+the aggregate (an outer column written by name is rewritten to a computed expression; a star's
+expansion has no expression to rewrite). A star over an enclosing source without GROUP BY, and a
+local star beside other items under GROUP BY, answer as Java (`StarScopeJavaProbe`). Java corpus:
+`select-a-star.yamsql` stops here.
+
 ## Go-Only Extensions (features Java 4.12.11 rejects)
 
 Go supports these SQL features that Java rejects. Removing them would be a user-visible regression; they stay as Go extensions.

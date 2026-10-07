@@ -5372,6 +5372,7 @@ func findProjection(op logical.LogicalOperator) *logical.LogicalProject {
 
 func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, resolver *expr.Resolver) error {
 	isOuter := outerColumnRefFilter(sq, resolver)
+	outerSegs := outerColumnSegsFilter(sq, resolver)
 	// RFC-141 §8 safety guard: GROUP BY on an EXISTS expression (e.g. `GROUP BY
 	// id, EXISTS(...)` where the EXISTS column is the grouping key) cannot be
 	// folded — the aggregate path has no SubqueryPlanner, so the existential
@@ -5638,6 +5639,13 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 			}
 			if groupByExprSet[strings.ToUpper(col)] {
 				continue
+			}
+			// An enclosing query's column from a star (`SELECT a.*, outer.*
+			// … GROUP BY …`) is fixed per group and Java answers it; Go has no
+			// post-aggregate slot for a bound outer value yet (DIVERGENCES.md
+			// "A correlated star in a grouped select list").
+			if outerSegs != nil && ac.groupColValue != nil && len(ac.groupColSegs) > 1 && outerSegs(ac.groupColSegs) {
+				return api.NewError(api.ErrCodeUnsupportedOperation, "a correlated star in a grouped select list is not supported")
 			}
 			if err := checkColumn(col); err != nil {
 				return err
@@ -6332,7 +6340,7 @@ func (v *PlanVisitor) buildUnionRightBranchStrippingOrderBy(body antlrgen.IQuery
 	}
 	var expandStar starExpander
 	if simpleTable.GroupByClause() != nil || hasPositionalOrderBy(simpleTable) || hasMixedSelectStar(simpleTable) {
-		expandStar = starExpanderFor(fs, v.md, v.templateName, v.cteScopes)
+		expandStar = starExpanderFor(fs, v.md, v.templateName, v.cteScopes, v.enclosingScope)
 	}
 	cls, err := classifySelectElements(simpleTable, expandStar)
 	if err != nil {
@@ -7575,6 +7583,32 @@ func starColumnsFromScopeChecked(resolver *expr.Resolver, qualifier string) ([]p
 			}
 		}
 		if len(selected) == 0 {
+			// An enclosing query's source: its columns are correlated
+			// references, fixed per row of the subquery, so they read as
+			// `qualifier.column` does (`SELECT a.*, outer.* … GROUP BY …`).
+			for parent := resolver.Scope().Parent(); parent != nil; parent = parent.Parent() {
+				for _, source := range parent.Sources() {
+					if !source.NamedBy(semantic.FromNormalized(qualifier)) || source.Table == nil {
+						continue
+					}
+					var columns []projCol
+					for _, column := range source.Table.Columns() {
+						name := column.Id.Name()
+						if column.Ephemeral {
+							continue
+						}
+						if _, hidden := source.HiddenColumns[strings.ToUpper(name)]; hidden {
+							continue
+						}
+						bound, err := resolver.ResolveIdentifierPath([]semantic.Identifier{source.Alias, column.Id})
+						if err != nil {
+							return nil, err
+						}
+						columns = append(columns, projCol{bound: bound, sqlUnqualified: source.UnqualifiedOutput || column.UnqualifiedOutput, sqlAuthored: column.SQLAuthored, name: source.Alias.Name() + "." + name, bare: name, qualifier: source.Alias.Name(), qualified: true, segs: []string{source.Alias.Name(), name}})
+					}
+					return columns, nil
+				}
+			}
 			// No operator alias matched. The grammar supplies one identifier;
 			// a dot inside a quoted identifier remains part of that identifier.
 			value, err := resolver.ResolveIdentifierPath([]semantic.Identifier{semantic.FromNormalized(qualifier)})
@@ -7657,7 +7691,7 @@ func starColumnsFromScopeChecked(resolver *expr.Resolver, qualifier string) ([]p
 // built is a determination, not a retry. starColumnsFromScope answers
 // (nil, false) for it, which is the same "cannot expand" the classifier needs.
 // This closure is called from one goroutine per plan build; it is not shared.
-func starExpanderFor(fs *fromSource, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) starExpander {
+func starExpanderFor(fs *fromSource, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource, enclosing *semantic.Scope) starExpander {
 	if fs == nil || md == nil {
 		return nil
 	}
@@ -7668,7 +7702,7 @@ func starExpanderFor(fs *fromSource, md *recordlayer.RecordMetaData, templateNam
 	return func(qualifier string) ([]projCol, bool) {
 		if !built {
 			built = true
-			resolver = buildFromOnlySelectScope(fs, md, templateName, cteScopes)
+			resolver = buildFromOnlySelectScope(fs, md, templateName, cteScopes, enclosing)
 		}
 		return starColumnsFromScope(resolver, qualifier)
 	}
@@ -7684,11 +7718,15 @@ func starExpanderFor(fs *fromSource, md *recordlayer.RecordMetaData, templateNam
 // partial build that later grows. Java has the same ordering: the select-where
 // operator is generated (QueryVisitor.java:275) before visitSelectElements
 // expands the star against it (QueryVisitor.java:286).
-func buildFromOnlySelectScope(fs *fromSource, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) *expr.Resolver {
+func buildFromOnlySelectScope(fs *fromSource, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource, enclosing *semantic.Scope) *expr.Resolver {
 	if fs == nil || md == nil {
 		return nil
 	}
-	return buildSelectScope(selectQueryFromClassification(&selectClassification{}, fs), md, templateName, cteScopes)
+	sq := selectQueryFromClassification(&selectClassification{}, fs)
+	// The enclosing query's sources are visible to a correlated star
+	// (`SELECT a.*, outer.* … GROUP BY …`), as in Java's resolveIdentifier.
+	sq.enclosingScope = enclosing
+	return buildSelectScope(sq, md, templateName, cteScopes)
 }
 
 // normalizeSoleQualifiedStar routes SELECT alias.* through the same expansion

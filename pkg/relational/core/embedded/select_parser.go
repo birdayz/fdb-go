@@ -1711,14 +1711,54 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 	// columns, outExpr for expressions) so the aggregate pipeline
 	// activates and emits one row per distinct group.
 	if len(cls.groupBy) > 0 && len(cls.aggCols) == 0 && len(projCols) > 0 {
+		// A star beside other items (`SELECT a.*, b.* … GROUP BY …`) is
+		// expanded in place against the scope, as the whole-list star above
+		// is, and each expanded column is then validated like any other
+		// (Java's expandStar before the grouping check): an outer source's
+		// columns are fixed per group, a column of a grouped source that is
+		// not a key is 42803.
+		hasStar := false
 		for _, col := range projCols {
-			if col.star {
-				// Java errors 42803 (grouping error) for `SELECT a.* ...
-				// GROUP BY a1` because the star expands to cols not in
-				// GROUP BY; Go matches (42803, not 0A000).
-				return nil, api.NewError(api.ErrCodeGroupingError,
-					"SELECT qualifier.* expands to columns not in GROUP BY")
+			hasStar = hasStar || col.star
+		}
+		if hasStar {
+			var cols []projCol
+			var aliases []string
+			var exprs []antlrgen.IExpressionContext
+			var quals []string
+			for i, col := range projCols {
+				if !col.star {
+					cols = append(cols, col)
+					aliases = append(aliases, sliceAt(projAliases, i))
+					var e antlrgen.IExpressionContext
+					if i < len(projExprs) {
+						e = projExprs[i]
+					}
+					exprs = append(exprs, e)
+					quals = append(quals, sliceAt(projStarQualifiers, i))
+					continue
+				}
+				var expanded []projCol
+				ok := false
+				if expandStar != nil {
+					expanded, ok = expandStar(sliceAt(projStarQualifiers, i))
+				}
+				if !ok {
+					return nil, api.NewErrorf(api.ErrCodeGroupingError,
+						"DBG expand %q nil=%v SELECT qualifier.* expands to columns not in GROUP BY", sliceAt(projStarQualifiers, i), expandStar == nil)
+				}
+				for _, e := range expanded {
+					cols = append(cols, e)
+					aliases = append(aliases, "")
+					exprs = append(exprs, nil)
+					quals = append(quals, "")
+				}
 			}
+			for i := range cols {
+				cols[i].selectOrdinal = i + 1
+			}
+			projCols, projAliases, projExprs, projStarQualifiers = cols, aliases, exprs, quals
+			cls.projCols, cls.projAliases, cls.projExprs, cls.projStarQualifiers = cols, aliases, exprs, quals
 		}
 		// Java 42803 validation per column: defer to runtime so that
 		// undefined columns surface as 42703 first (Java's order). The
@@ -3899,4 +3939,11 @@ func columnCounts(cols semantic.Table) map[string]int {
 // layer uses.
 func usingColumnKey(colText string) semantic.Identifier {
 	return semantic.FromNormalized(strings.ToUpper(functions.NormalizeIdentifier(colText)))
+}
+
+func sliceAt(xs []string, i int) string {
+	if i < len(xs) {
+		return xs[i]
+	}
+	return ""
 }

@@ -177,7 +177,10 @@ Never mark a whole workstream complete because one of its subitems passed.
       beside a WHERE/ON EXISTS, plan: PartitionSelectRule no longer bails on
       a select holding more than one existential when one is projected, as
       Java partitions every subset; `exists-in-select.yamsql` passes (140
-      files, 8486 queries; mutation-checked).
+      files, 8486 queries; mutation-checked). Stars: a star over an
+      enclosing source expands to correlated columns, and a mixed star
+      under GROUP BY is expanded in place (`StarScopeJavaProbe`, 7 rows);
+      a correlated star in a grouped list is still refused (DIVERGENCES.md).
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays
