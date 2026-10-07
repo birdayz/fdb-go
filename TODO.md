@@ -1141,9 +1141,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
       identifier rendering on some paths (a WHERE's qualified reference
       renders bare), and the qualified star, where Java says "Unknown
       reference T";
-    - [ ] a nested-loop join's orientation over a derived aggregate follows
-      the plan-hash tie-break: check that Go's tie-break hashes equal Java's
-      on the two re-blessed explaindiff shapes.
+    - [x] a nested-loop join's orientation over a derived aggregate
+      (2026-10-07, `nlj_orientation_java_probe_test.go`). Where Java can
+      plan the query, both engines drive from the aggregate and probe the
+      index under either conjunct order. The tied, conjunct-order-dependent
+      shape (a materialized join under an in-memory sort) is one Java cannot
+      plan at all, so there is no Java orientation to match.
   - [x] WS-A: higher-layer HNSW entry replacement after the transform exists.
     Done (2026-10-07): "Same writes, same index bytes"
     (`conformance_test`) has both engines write 60 vectors and then 16 deletes
