@@ -867,8 +867,13 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   Open: moving Run and its variants onto a bounded attempt loop
   (maxAttempts 10, retry limit 0 on the backend), the body error-chain
   recorder, per-owner policies, the SPFresh split-window and stall bound;
-  the client prerequisites (proxy wait instead of 1200, the pure-Go
-  wrapper keeping the body's chain) go through the client review gate.
+  the pure-Go wrapper keeping the body's error chain.
+  Proxy wait done: a commit with no known commit proxy now waits for a
+  proxy change or its context, then reports 1021 through the
+  maybe-delivered fence (C++ LoadBalance over the empty set raced against
+  onProxiesChanged); the Go-internal 1200 is gone from the client, both
+  onError sets and the wire name map
+  (`TestCommit_NoProxies_WaitsForContext`/`_WakesOnProxyChange`).
 
 ## 4. WS-H — stored-query runtime
 

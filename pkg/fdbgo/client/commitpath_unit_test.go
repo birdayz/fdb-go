@@ -439,7 +439,7 @@ func TestOnErrorRetryable_RetryableSet(t *testing.T) {
 		ErrNotCommitted, ErrDatabaseLocked, ErrProcessBehind,
 		ErrBatchTransactionThrottled, ErrTagThrottled, ErrProxyTagThrottled,
 		ErrThrottledHotShard, ErrRangeLocked, ErrBlobGranuleRequestFailed,
-		ErrAllProxiesUnreachable, ErrCommitUnknownResult, ErrClusterVersionChanged,
+		ErrCommitUnknownResult, ErrClusterVersionChanged,
 		ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit,
 	}
 	for _, code := range retryable {

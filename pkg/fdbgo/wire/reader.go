@@ -548,12 +548,7 @@ func (e *FDBError) Error() string {
 // Wire can't import fdb (would create a cycle), so the descriptions
 // are duplicated here for the codes the wire layer actually surfaces.
 //
-// Two non-canonical entries:
-//   - 1006 all_alternatives_failed (canonical FDB) is in the map.
-//   - 1200 is intentionally remapped to "all_proxies_unreachable"
-//     (Go-internal — the Go client uses code 1200 as
-//     ErrAllProxiesUnreachable, distinct from C++'s 1200=recruitment_failed
-//     which never surfaces over the wire to a Go client).
+// 1006 all_alternatives_failed (canonical FDB) is in the map.
 var fdbErrorDescriptions = map[int]string{
 	1001: "wrong_shard_server",
 	1006: "all_alternatives_failed",
@@ -571,9 +566,7 @@ var fdbErrorDescriptions = map[int]string{
 	1051: "batch_transaction_throttled",
 	1062: "change_feed_cancelled",
 	1078: "grv_proxy_memory_limit_exceeded",
-	// 1200 is the Go-internal ErrAllProxiesUnreachable (NOT C++'s
-	// 1200=recruitment_failed; see pkg/fdbgo/client/transaction.go).
-	1200: "all_proxies_unreachable",
+	1200: "recruitment_failed",
 	1213: "tag_throttled",
 	1223: "proxy_tag_throttled",
 	1235: "transaction_throttled_hot_shard",

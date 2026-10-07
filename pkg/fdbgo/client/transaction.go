@@ -52,7 +52,6 @@ const (
 	ErrAllAlternativesFailed     = 1006 // all_alternatives_failed (Layer 2 only)
 	ErrRequestMaybeDelivered     = 1030 // request_maybe_delivered — an in-flight RPC's connection died (transport teardown); reads retry another alternative, commit maps it to 1021
 	ErrBrokenPromise             = 1100 // broken_promise — the peer dropped the reply promise; same maybeDelivered class as 1030 (LoadBalance.actor.h:344)
-	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2 (NOT C++ 1200=recruitment_failed)
 	ErrInvertedRange             = 2005 // inverted_range (begin > end)
 	ErrRangeLimitsInvalid        = 2012 // range_limits_invalid (e.g. a row limit < -1)
 	ErrInvalidMutationType       = 2018 // invalid_mutation_type (a non-atomic op passed to Atomic())

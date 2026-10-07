@@ -42,7 +42,6 @@ var onErrorRetryableSet = map[int]bool{
 	ErrFutureVersion:     true, // 1009
 	// Go extensions (documented in onErrorRetryable):
 	ErrClusterVersionChanged: true, // 1039 — C++ retries in MVC layer (MultiVersionTransaction.actor.cpp:1740)
-	ErrAllProxiesUnreachable: true, // 1200 — Go-internal Layer-2
 	ErrThrottledHotShard:     true, // 1235 — FDB 7.4+
 	ErrRangeLocked:           true, // 1242 — FDB 7.4+
 }
@@ -52,8 +51,8 @@ var onErrorRetryableSet = map[int]bool{
 // the retry loop AND commitDummyTransaction (both route through this function).
 func TestOnErrorRetryable_PinsOnErrorSet(t *testing.T) {
 	t.Parallel()
-	if len(onErrorRetryableSet) != 16 {
-		t.Fatalf("expected set has %d codes, want 16", len(onErrorRetryableSet))
+	if len(onErrorRetryableSet) != 15 {
+		t.Fatalf("expected set has %d codes, want 15", len(onErrorRetryableSet))
 	}
 	for _, code := range allKnownRetryCodes {
 		if got := onErrorRetryable(code); got != onErrorRetryableSet[code] {

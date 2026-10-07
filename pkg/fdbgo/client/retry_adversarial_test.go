@@ -212,7 +212,6 @@ func TestOnError_AllRetryableErrors(t *testing.T) {
 		ErrThrottledHotShard,
 		ErrRangeLocked,
 		ErrBlobGranuleRequestFailed,
-		ErrAllProxiesUnreachable,
 		ErrProxyMemoryLimitExceeded,
 		ErrGrvProxyMemoryLimit,
 	}
@@ -257,8 +256,6 @@ func codeToString(code int) string {
 		return "range_locked"
 	case ErrBlobGranuleRequestFailed:
 		return "blob_granule_request_failed"
-	case ErrAllProxiesUnreachable:
-		return "all_proxies_unreachable"
 	case ErrProxyMemoryLimitExceeded:
 		return "proxy_memory_limit_exceeded"
 	case ErrGrvProxyMemoryLimit:
