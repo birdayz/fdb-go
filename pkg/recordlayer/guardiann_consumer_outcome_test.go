@@ -159,4 +159,77 @@ var _ = Describe("GuardiANN inline delete and the head task's consumer outcome",
 			return err
 		})).To(Succeed())
 	})
+
+	// The race fixtures (ws-d-design.md, declared (d)): A runs in a
+	// transaction left open while B commits; A's commit is then decided by
+	// what A read serializably.
+	begin := func() fdb.Transaction {
+		tx, err := sharedDB.CreateTransaction()
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(tx.Cancel)
+		return tx
+	}
+	isNotCommitted := func(err error) bool {
+		var fe fdb.Error
+		return errors.As(err, &fe) && fe.Code == 1020
+	}
+
+	It("a skipping delete reads the head task at snapshot: a concurrent drain of it does not conflict", func() {
+		ss := specSubspace().Sub("race-skip")
+		cfg := base()
+		queueSplit(ss, cfg)
+		zero := cfg
+		zero.splitNumNearestClusters = 0
+		txA := begin()
+		Expect(newGuardiann(ss, zero, nil, nil).delete(txA, tuple.Tuple{int64(1)}, vector(1), true)).To(Succeed())
+		// B consumes the head task A skipped (phase 1 under the healthy config).
+		Expect(run(ss, cfg, drainOne)).To(Succeed())
+		Expect(txA.Commit().Get()).To(Succeed(), "the skip added no read conflict on the task B consumed")
+	})
+
+	It("a false-alarm clear read the cluster serializably: a concurrent insert into it fails the clear with 1020", func() {
+		ss := specSubspace().Sub("race-clear")
+		cfg := base()
+		queueSplit(ss, cfg)
+		Expect(run(ss, cfg, func(g *guardiann, tx fdb.WritableTransaction) error {
+			for i := int64(2); i <= 4; i++ {
+				if err := g.delete(tx, tuple.Tuple{i}, vector(i), false); err != nil {
+					return err
+				}
+			}
+			return nil
+		})).To(Succeed())
+		out, _ := head(ss, cfg)
+		Expect(out.kind).To(Equal(outcomeConsumed), "the queued split is a false alarm")
+		txA := begin()
+		Expect(drainOne(newGuardiann(ss, cfg, nil, nil), txA)).To(Succeed())
+		// B inserts into the SPLIT_MERGE cluster without re-arming it.
+		Expect(run(ss, cfg, func(g *guardiann, tx fdb.WritableTransaction) error {
+			return g.insert(tx, tuple.Tuple{int64(20)}, vector(20), nil, false)
+		})).To(Succeed())
+		_, queued := head(ss, cfg)
+		Expect(queued).To(Equal(1), "B enqueued nothing")
+		err := txA.Commit().Get()
+		Expect(isNotCommitted(err)).To(BeTrue(), "the clear must fail with not_committed: %v", err)
+	})
+
+	It("a non-skipping delete read the queue head serializably: a higher-priority enqueue fails it with 1020", func() {
+		ss := specSubspace().Sub("race-enqueue")
+		cfg := base()
+		queueSplit(ss, cfg)
+		out, _ := head(ss, cfg)
+		Expect(out.kind).To(Equal(outcomeRuns))
+		txA := begin()
+		Expect(newGuardiann(ss, cfg, nil, nil).delete(txA, tuple.Tuple{int64(1)}, vector(1), true)).To(Succeed())
+		// B enqueues a task ahead of the head A ran.
+		Expect(run(ss, cfg, func(g *guardiann, tx fdb.WritableTransaction) error {
+			id, err := g.highPriorityTaskID(newSplittableRandomForUUID(tuple.UUID{7}))
+			if err != nil {
+				return err
+			}
+			return g.writeTask(tx, &guardiannTask{kind: taskBounce, id: id, targets: []tuple.UUID{{9}}, finalKind: taskSplitMerge})
+		})).To(Succeed())
+		err := txA.Commit().Get()
+		Expect(isNotCommitted(err)).To(BeTrue(), "the inline delete must fail with not_committed: %v", err)
+	})
 })

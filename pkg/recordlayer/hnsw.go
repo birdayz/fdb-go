@@ -1120,11 +1120,18 @@ func (g *hnswGraph) deleteFromLayerRepair(tx fdb.WritableTransaction, layer int,
 		}
 		selected := g.selectNeighbors(cands, g.config.M)
 		for _, sc := range selected {
+			// InsertNeighborsChangeSet.merge is concat(filter(parent, not
+			// inserted), inserted): a P already in the list moves to its end,
+			// and the node is rewritten (hasChanges is true).
 			scKey := string(sc.pkSpan)
-			if !containsSpan(changeSet[scKey], pSpan) {
-				changeSet[scKey] = append(changeSet[scKey], pSpan)
-				changed[scKey] = true
+			kept := changeSet[scKey][:0:0]
+			for _, nb := range changeSet[scKey] {
+				if !bytes.Equal(nb, pSpan) {
+					kept = append(kept, nb)
+				}
 			}
+			changeSet[scKey] = append(kept, pSpan)
+			changed[scKey] = true
 		}
 	}
 
@@ -1194,16 +1201,6 @@ func (g *hnswGraph) deleteFromLayerRepair(tx fdb.WritableTransaction, layer int,
 		return first.pk, data, err
 	}
 	return nil, nil, nil
-}
-
-// containsSpan reports whether spans contains the given span (byte-equal).
-func containsSpan(spans [][]byte, span []byte) bool {
-	for _, s := range spans {
-		if bytes.Equal(s, span) {
-			return true
-		}
-	}
-	return false
 }
 
 // Search finds the k nearest neighbors to the query vector.

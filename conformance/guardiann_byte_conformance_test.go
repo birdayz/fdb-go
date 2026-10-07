@@ -773,6 +773,38 @@ var _ = Describe("GuardiANN persisted bytes by scenario", func() {
 			"the scenario must refuse a task write, and run a delete that writes no task")
 	})
 
+	// A grid of small clusters, then one grows past the maximum: its split
+	// force-reassigns several neighbours, so the split's bounce runs with two
+	// to six outstanding dependents and re-enqueues itself (BounceTask.java:
+	// 161-190: the pick, the fresh bounce id and the follow-up task ids drawn
+	// from the task id's RNG), and the centroid deletes repair HNSW neighbour
+	// lists that re-insert an existing neighbour (InsertNeighborsChangeSet.
+	// merge moves it to the end). Every step's bytes must agree.
+	It("bounce re-enqueue and follow-up ids over a split among a grid of clusters", func() {
+		for _, shape := range []struct{ groups, per, grow int }{{5, 8, 6}, {7, 8, 8}, {4, 9, 12}} {
+			var ops []guardiannOp
+			id := int64(0)
+			pt := func(g int, j int) (float64, float64) {
+				return float64(g%3)*3 + float64(j%4)*0.13, float64(g/3)*3 + float64(j%3)*0.17 - float64(j)*0.01
+			}
+			for j := 0; j < shape.per; j++ {
+				for g := 0; g < shape.groups; g++ {
+					x, y := pt(g, j)
+					ops = append(ops, gInsert(id, x, y))
+					id++
+				}
+				ops = append(ops, gDrain())
+			}
+			for j := 0; j < shape.grow; j++ {
+				x, y := pt(1, shape.per+j)
+				ops = append(ops, gInsert(id, x, y))
+				id++
+			}
+			ops = append(ops, gDrain())
+			Expect(runGuardiannByteScript(0, ops)).To(BeEmpty())
+		}
+	})
+
 	It("split and reassign: a growing cluster splits beside a neighbour", func() {
 		var ops []guardiannOp
 		for i := int64(0); i < 4; i++ {

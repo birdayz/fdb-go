@@ -816,9 +816,19 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   `consumerOutcome` (CONSUMED / RUNS / REFUSED / REFUSED_UNLESS_ALL_NK) over
   each kind's prologue, and an inline delete skips a refused head task
   (DIVERGENCES "GuardiANN inline deletes skip a head task Go would refuse",
-  `guardiann_consumer_outcome_test.go`, mutation-checked). Not ported from
-  the design's (d) fixture list: the bounce follow-up ids JVM-row byte
-  comparison and the 1020 race fixtures. Bits-9 quantizer refusal done
+  `guardiann_consumer_outcome_test.go`, mutation-checked). The (d) race
+  fixtures are done (2026-10-07, `guardiann_consumer_outcome_test.go`): a
+  skipping delete commits over a concurrent drain of the task it skipped; a
+  false-alarm clear fails with 1020 after a concurrent insert into its
+  cluster; a non-skipping delete fails with 1020 after a concurrent
+  higher-priority enqueue. Each is mutation-checked (a serializable skip read,
+  a snapshot prologue, a snapshot queue read). The bounce JVM row is done
+  ("bounce re-enqueue and follow-up ids over a split among a grid of clusters",
+  `rfc257_guardiann_test`): bounces with up to six outstanding dependents
+  re-enqueue byte-equal. It found an HNSW divergence, now fixed: a delete
+  repair that re-inserts a neighbour already in a list now moves it to the
+  end and rewrites the node, as Java's InsertNeighborsChangeSet.merge does.
+  Go had kept it in place (mutation-checked). Bits-9 quantizer refusal done
   (2026-10-07): the codec defers the RaBitQ construction error
   (`requireQuantizer`) to Java's construction points (an insert of a new key,
   a search, a task write but a bounce's, a split/merge/reassign/collapse body
