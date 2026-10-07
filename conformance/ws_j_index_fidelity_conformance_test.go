@@ -246,7 +246,8 @@ func wsjOtherIndexFields(g, j *gen.Index) []string {
 }
 
 // wsjCanonical returns a copy of md with the two differences WS-J declares as
-// not ported (ws-j-design.md section 4) removed, and nothing else:
+// not ported (DIVERGENCES.md "Go does not reproduce Java's record_types order
+// or anonymous type names") removed, and nothing else:
 //   - record_types sorted by name (Java's order is HashMap iteration order);
 //   - anonymous "__type__<id>" descriptor messages renamed IN PLACE by the path
 //     that reaches them from a named message ("__anon__<owner>.<field>"), since
@@ -1752,7 +1753,9 @@ var _ = Describe("WS-J Go-stored template planned by the target", func() {
 		longTmpl, err := metadata.NewRecordLayerSchemaTemplateWithVersion(longName, longMD, goTmpl.Version())
 		Expect(err).NotTo(HaveOccurred())
 		// The build path refuses a key the target cannot plan (the lane check,
-		// ws-j-design.md section 3.2): bitmap_bucket_offset over (LONG, LONG).
+		// DIVERGENCES.md "An arithmetic function key with no lane is refused when
+		// hand-built metadata is saved as a template"): bitmap_bucket_offset over
+		// (LONG, LONG).
 		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			return nil, cat.SchemaTemplateCatalog().CreateTemplate(catalog.NewFDBTransaction(rtx), longTmpl)
 		})
@@ -2938,7 +2941,9 @@ var _ = Describe("WS-J stored index protos read as Java reads them", func() {
 // ArithmeticValue.java:213-231). Go's key generator builds these keys without
 // consulting the lane table (ddl/generator.go, the ArithmeticValue and bit
 // ScalarFunctionValue arms), so its DDL stored a key the target can never plan
-// (ws-j-design.md section 3.2, "the lane check"): eight shapes stored, the two
+// ("the lane check", DIVERGENCES.md "An arithmetic function key with no lane
+// is refused when hand-built metadata is saved as a template"): eight shapes
+// stored, the two
 // STRUCT shapes refused by the metadata build with another message. The
 // generator now runs encapsulate's checks at the clause (encapsulateLane), and
 // Go's outcome is asserted equal to the target's on SQLSTATE and message: Go
@@ -2961,9 +2966,10 @@ var _ = Describe("WS-J bit and bitmap index keys over an operand with no lane", 
 		{"bucket_offset_struct", `create type as struct s1(x bigint) create table t(id bigint, v s1, primary key(id)) create index ix as select bitmap_bucket_offset(v) from t order by bitmap_bucket_offset(v)`, complexArg, ""},
 		// Two faults: a lane-less index key BEFORE a later table the target
 		// refuses. The target registers every table before it generates any
-		// index (ws-j-design.md section 4), so the table's fault is reported.
+		// index, so the table's fault is reported.
 		{"bitand_double_then_bad_table", `create table t(id bigint, v double, primary key(id)) create index ix as select v & 1 from t order by v & 1 create table z(id bigint, x nosuchtype, primary key(id))`, `ERROR 42F18 RelationalException "could not find type 'NOSUCHTYPE'"`, ""},
-		// The two cases section 9 (t) kept as Go's until step 6 moved the lane
+		// The two cases kept as Go's (DIVERGENCES.md "An arithmetic function key with
+		// no lane is refused when hand-built metadata is saved as a template") until step 6 moved the lane
 		// into Value construction. A lane-less operator in the index's WHERE,
 		// which the key generator never sees, is now refused as the target
 		// refuses it. A lane-less key against a fault in the index query's
@@ -3036,8 +3042,9 @@ var _ = Describe("WS-J bit and bitmap index keys over an operand with no lane", 
 	}
 })
 
-// Shape (d) (ws-j-design.md section 4c) refuses stored metadata whose message
-// named UnionDescriptor is not the union found when the pre-upgrade Go loader,
+// Shape (d), a message named UnionDescriptor beside the union, which a
+// pre-upgrade Go build took for the union: Go used to refuse stored metadata
+// whose message named UnionDescriptor is not the union found when the pre-upgrade Go loader,
 // taking that message for the union, would have loaded the same bytes: its loop
 // made a record type of a message-typed field, every such record type has a
 // stored primary key, and no index covers a record type the loop did not make.
@@ -3047,8 +3054,8 @@ var _ = Describe("WS-J bit and bitmap index keys over an operand with no lane", 
 // a table, and no index on a table it does not frame. This
 // measures that the target creates and stores each shape, and pins what Go does
 // with the target's stored template and with the same DDL through its own
-// driver: refused with 0A000 (the declared residual of shape (d)) when the
-// replayed pre-upgrade loader loads it, and loaded when it does not.
+// driver: both now load it, as the target does (before the owner's ruling on
+// pre-release data, RFC-257 item 9, Go refused it with 0A000).
 var _ = Describe("WS-J a column typed by a table", func() {
 	for _, c := range []struct {
 		name, body string
@@ -3452,7 +3459,8 @@ var _ = Describe("WS-J an unset field with a declared default reads as the targe
 	})
 })
 
-// Section 4's tests whose v1 the target writes (ws-j-design.md section 4, 4e):
+// Carry-rule tests whose v1 the target writes (DIVERGENCES.md "CreateTemplate
+// refuses more than an exact duplicate, and carries a new version"):
 // the target creates v1 through its DDL in the shared catalog, and Go carries
 // v2, built by its own DDL, from those stored bytes through its catalog library
 // (CreateTemplate at the Java-compatible catalog subspace). The record-type keys

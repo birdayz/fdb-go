@@ -22,7 +22,8 @@ import (
 	"fdb.dev/pkg/relational/core/metadata"
 )
 
-// RFC-257 WS-J step 4 (ws-j-design.md section 2): CREATE SCHEMA's order and the
+// RFC-257 WS-J step 4 (parity with Java's SchemaExistsBehavior.shouldWrite,
+// SchemaExistsBehavior.java:39-80): CREATE SCHEMA's order and the
 // catalog's saveSchema under each SchemaExistsBehavior, arm by arm, through both
 // engines; each outcome's SQLSTATE and message must be the target's. Each
 // engine runs the arms on its own names (the Go driver keeps its catalog and

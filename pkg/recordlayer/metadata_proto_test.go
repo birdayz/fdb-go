@@ -813,7 +813,8 @@ func TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt(t *testing.T) {
 // reused (pooled) message decoded from bytes without a subspace key reads the
 // key as present and empty, and the loader refuses it as Java refuses an empty
 // key. Nothing in this repository pools MetaData, Index or FormerIndex messages
-// (ws-j-design.md, the carry rule's stored side); this is what a loader handed
+// (the carry rule's stored side, DIVERGENCES.md "CreateTemplate refuses more
+// than an exact duplicate, and carries a new version"); this is what a loader handed
 // one would do: refuse loudly, never read another index's key.
 func TestReusedIndexMessageKeepsAnEmptySubspaceKey(t *testing.T) {
 	t.Parallel()

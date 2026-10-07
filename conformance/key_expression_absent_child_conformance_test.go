@@ -21,8 +21,9 @@ import (
 	"fdb.dev/pkg/relational/core/catalog"
 )
 
-// An absent child of a key expression, read as Java reads it (RFC-257 WS-J,
-// ws-j-design.md 4d): protobuf-java hands an absent message field over as its
+// An absent child of a key expression, read as Java reads it (RFC-257 WS-J;
+// DIVERGENCES.md "Key-expression shapes Java loads and Go refuses on load"):
+// protobuf-java hands an absent message field over as its
 // default instance, an expression with no root, which fromProto refuses
 // ("Exactly one root must be specified for an index"). From stored bytes only a
 // Nesting's child can be absent (the others are proto2 required and fail at
@@ -82,7 +83,8 @@ var _ = Describe("RFC-257 an absent key-expression child is Java's refusal", fun
 })
 
 // A key expression Java's constructors refuse, read as Java reads it (RFC-257
-// WS-J, ws-j-design.md 3.6): a Field without its name or its fan type
+// WS-J; DIVERGENCES.md "Key-expression shapes Java loads and Go refuses on
+// load"): a Field without its name or its fan type
 // (FieldKeyExpression.java:122-128; both are proto2 required fields, so only an
 // in-memory or partially parsed proto lacks them, and protobuf-java parses a fan
 // type number the enum does not declare into the unknown fields, a missing fan

@@ -238,7 +238,8 @@ func formerName(f *gen.FormerIndex) string {
 // latest stored one (INVALID_SCHEMA_TEMPLATE, a declared Go extension: Java's
 // createTemplate refuses only an exact duplicate) and its relational evolution
 // check against that latest version, both moved here from the save action so
-// every build-path writer runs them (ws-j-design.md section 4, 9 (w)).
+// every build-path writer runs them (DIVERGENCES.md "CreateTemplate refuses
+// more than an exact duplicate, and carries a new version").
 func refuseBelowLatest(latest, newTemplate api.SchemaTemplate) error {
 	if newTemplate.Version() <= latest.Version() {
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
@@ -256,7 +257,8 @@ func refuseBelowLatest(latest, newTemplate api.SchemaTemplate) error {
 // lane check then reads the indexes the new version defines (NEW and CHANGED),
 // and the evolution validator checks the carried meta-data against the stored
 // one with index rebuilds allowed: a CHANGED or NEW index is rebuilt when a
-// store opens under the new version (ws-j-design.md section 4).
+// store opens under the new version (DIVERGENCES.md "CreateTemplate refuses
+// more than an exact duplicate, and carries a new version").
 func carryTemplate(stored *gen.MetaData, rl *metadata.RecordLayerSchemaTemplate) ([]byte, api.SchemaTemplate, error) {
 	built, err := rl.Underlying().ToProto()
 	if err != nil {

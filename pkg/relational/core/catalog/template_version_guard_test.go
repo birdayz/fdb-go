@@ -314,7 +314,9 @@ func TestInMemory_VersionGuard_BindAndDeleteSerialize(t *testing.T) {
 	}
 }
 
-// The third pair of the hooked interleaving (ws-j-design.md section 4e item 4):
+// The third pair of the hooked interleaving (DIVERGENCES.md "Saving a template
+// version is refused while a schema still binds a dropped version above the
+// latest stored"):
 // a SaveSchema holding the catalog between its check and its bind of (h, 1),
 // and a DROP SCHEMA TEMPLATE of h followed by a fresh CreateTemplate of h. The
 // DROP takes only the template catalog's lock and completes; the fresh create

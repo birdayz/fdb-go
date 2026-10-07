@@ -16,8 +16,9 @@ import (
 )
 
 // A record Go holds with a closed enum's undeclared number is saved as Java
-// reads it (RFC-257 ws-j-design.md 4g: the save moves the number to an unknown
-// field, as every later load reads it). SaveRecord's reading is pinned against
+// reads it (RFC-257 WS-J: the save moves the number to an unknown field, as
+// protobuf-java's parse does in MessageReflection.mergeFieldFrom, and as every
+// later load reads it). SaveRecord's reading is pinned against
 // the target (conformance, "a record Go holds with an undeclared number is
 // saved, updated and deleted as Java reads it"); the batch save and the dry run
 // apply the same move, and this pins that they write and return what SaveRecord

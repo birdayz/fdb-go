@@ -13,15 +13,15 @@ import (
 )
 
 // The INSERT…SELECT copy of a composite value into the target column's own
-// message type reads the source as Java reads it (RFC-257 ws-j-design.md 4g and
-// 4h). A source row holding a closed enum's undeclared number keeps it as an
-// unknown field (the read of Java-written bytes); the copy re-marshals it and
-// re-parses it into the target type, where protobuf-go's own parse would put
-// the number back into the field. The copy must leave the field unset and the
-// number unknown, as the source was read. The stored bytes are the same either
-// way (the save rewrites a held number as Java writes it, pinned by the
-// conformance spec "a record Go holds with an undeclared number is saved,
-// updated and deleted as Java reads it"); this pins the copy's own output.
+// message type reads the source as Java reads it (RFC-257 WS-J). A source row
+// holding a closed enum's undeclared number keeps it as an unknown field (the
+// read of Java-written bytes); the copy re-marshals it and re-parses it into
+// the target type, where protobuf-go's own parse would put the number back
+// into the field. The copy must leave the field unset and the number unknown,
+// as the source was read. The stored bytes are the same either way (the save
+// rewrites a held number as Java writes it, pinned by the conformance spec "a
+// record Go holds with an undeclared number is saved, updated and deleted as
+// Java reads it"); this pins the copy's own output.
 func TestRematerialize_ClosedEnumUndeclaredNumberCopiesAsRead(t *testing.T) {
 	t.Parallel()
 	opt := func(name string, n int32, typ descriptorpb.FieldDescriptorProto_Type, typeName string) *descriptorpb.FieldDescriptorProto {

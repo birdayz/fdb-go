@@ -143,7 +143,8 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) LoadTemplateProto(txn api.Transa
 }
 
 // CreateTemplate persists a new (name, version), the one build-path writer of
-// a template (ws-j-design.md section 4). In order:
+// a template (DIVERGENCES.md "CreateTemplate refuses more than an exact
+// duplicate, and carries a new version"). In order:
 //   - an existing (name, version) is refused with Java's text, "Schema template
 //     already exists" (ErrCodeDuplicateSchemaTemplate), Java's createTemplate's
 //     only refusal;
@@ -321,7 +322,9 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) DeleteTemplate(txn api.Transacti
 // template_bindings.go), where Java deletes the row regardless: deleting it
 // would leave the schema bound to a version the catalog no longer has, which
 // neither engine then loads, and which a later save could re-issue with other
-// metadata. The refusal is a declared divergence (ws-j-design.md 9 (s)).
+// metadata. The refusal is a declared divergence (DIVERGENCES.md
+// "DeleteTemplateVersion refuses a version schemas still bind; DROP SCHEMA
+// TEMPLATE does not").
 func (c *RecordLayerStoreSchemaTemplateCatalog) DeleteTemplateVersion(txn api.Transaction, templateName string, version int, throwIfDoesNotExist bool) error {
 	store, err := c.openStore(txn)
 	if err != nil {

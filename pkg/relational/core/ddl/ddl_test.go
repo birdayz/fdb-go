@@ -171,8 +171,8 @@ func TestCreateSchema_AlreadyExists(t *testing.T) {
 
 // CREATE SCHEMA over a schema whose bound template version is gone is refused as
 // the target refuses it: the catalog's save loads the stored row with its
-// template first, which fails with UNKNOWN_SCHEMA_TEMPLATE (ws-j-design.md
-// section 2).
+// template first, which fails with UNKNOWN_SCHEMA_TEMPLATE, as Java's catalog
+// load does.
 func TestCreateSchema_OverAGoneVersion(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)

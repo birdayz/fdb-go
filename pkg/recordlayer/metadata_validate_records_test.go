@@ -301,8 +301,7 @@ func TestSetRecordsWithUnionNameRefusesAnotherUnion(t *testing.T) {
 // Metadata a Go build before the validateRecords port STORED, loaded back through
 // RecordMetaDataFromProto (the metadata store's and the relational catalog's
 // loader): each shape the port now refuses is refused on load with the target's
-// message, so a store holding it stops opening (the upgrade path is in
-// rfcs/257-java-upgrade-audit/ws-j-design.md section 4c).
+// message, so a store holding it stops opening.
 func TestPreviouslyStoredMetaDataIsRefusedOnLoad(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -346,7 +345,7 @@ func TestPreviouslyStoredMetaDataIsRefusedOnLoad(t *testing.T) {
 }
 
 // TestRecordsFileWithALegacyNamedUnionDescriptorLoadsAsTheTargetLoadsIt pins
-// shape (d) of rfcs/257-java-upgrade-audit/ws-j-design.md section 4c: a records
+// shape (d): a records
 // file with a message named UnionDescriptor that is not the union
 // fetchUnionDescriptor finds. Before the upgrade Go took that message for the
 // union; the target does not, and neither does Go now, on any path. Data a

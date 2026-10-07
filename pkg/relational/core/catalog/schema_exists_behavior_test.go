@@ -38,7 +38,7 @@ var policyCatalogs = []struct {
 }
 
 // Every SchemaExistsBehavior against every state of the stored row, on both
-// catalogs (ws-j-design.md section 2): the outcome is Java's shouldWrite, with
+// catalogs (SchemaExistsBehavior.java:39-80): the outcome is Java's shouldWrite, with
 // its SCHEMA_ALREADY_EXISTS messages, after Java's load of the stored row, which
 // fails first when the row's template version is gone. The binding afterwards
 // shows whether the save wrote.

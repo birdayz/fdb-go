@@ -11,15 +11,15 @@ import (
 	"fdb.dev/gen"
 )
 
-// A buffered row resumes as the first page read it (RFC-257 ws-j-design.md 4g,
-// the resumed-page read). A record Java wrote with a closed enum holding an
-// undeclared number is read as protobuf-java reads it: the field unset, the
-// number an unknown field. A sort or a recursive cursor buffers such a row into
-// its continuation; on resume the row's bytes are decoded again, and
-// protobuf-go's own decode puts the number back into the field, so a resumed
-// page would read the number where the first page read NULL. Both arms of the
-// decode are driven: a dynamic row (the metadata resolver's message) and a
-// generated one (the registry's).
+// A buffered row resumes as the first page read it (RFC-257 WS-J, the
+// resumed-page read of a closed enum's undeclared number). A record Java wrote
+// with a closed enum holding an undeclared number is read as protobuf-java
+// reads it: the field unset, the number an unknown field. A sort or a
+// recursive cursor buffers such a row into its continuation; on resume the
+// row's bytes are decoded again, and protobuf-go's own decode puts the number
+// back into the field, so a resumed page would read the number where the first
+// page read NULL. Both arms of the decode are driven: a dynamic row (the
+// metadata resolver's message) and a generated one (the registry's).
 func TestContValue_ClosedEnumUndeclaredNumberResumesAsRead(t *testing.T) {
 	t.Parallel()
 	// Field 2 of Flower is its proto2 (closed) Color enum; 9 is not declared.

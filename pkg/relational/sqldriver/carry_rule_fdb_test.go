@@ -1,6 +1,7 @@
 package sqldriver_test
 
-// The carry rule (RFC-257 ws-j-design.md section 4, step 3) end to end: a new
+// The carry rule (RFC-257 WS-J; DIVERGENCES.md "CreateTemplate refuses more
+// than an exact duplicate, and carries a new version") end to end: a new
 // version of a stored template saved through fleet.SaveTemplate is carried
 // from the latest stored version, each tenant is rebound through fleet.Migrate,
 // and the rows written before the rebind read back by table after it. Section

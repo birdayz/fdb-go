@@ -17,8 +17,9 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
-// The key-function registry against the JVM's (RFC-257 WS-J, ws-j-design.md
-// 4d): each core function's argument bounds, column size and null result, and
+// The key-function registry against the JVM's (RFC-257 WS-J; DIVERGENCES.md
+// "Function names in stored key expressions are loaded whether or not Go
+// registers them"): each core function's argument bounds, column size and null result, and
 // FunctionKeyExpression.create's and fromProto's refusals.
 
 // javaCoreKeyFunctions is the measured name set of the target's core registry

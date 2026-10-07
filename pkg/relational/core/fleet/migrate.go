@@ -45,8 +45,9 @@ func NextTemplateVersion(ctx context.Context, db *recordlayer.FDBDatabase, cat a
 // the template AS STORED, read back in the same transaction. For a new version
 // of a stored template that differs from tmpl: tmpl holds the numbering its
 // builder gave it, and the stored version keeps the record-type keys, union
-// field numbers and index versions of the stored latest (ws-j-design.md
-// section 4), so a caller must rebind or compare against the returned template.
+// field numbers and index versions of the stored latest (DIVERGENCES.md
+// "CreateTemplate refuses more than an exact duplicate, and carries a new
+// version"), so a caller must rebind or compare against the returned template.
 //
 // This is the ONE step of a migration that is legitimately fleet-wide and
 // atomic: it writes a single catalog row, independent of tenant count.

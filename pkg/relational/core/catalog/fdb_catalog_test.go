@@ -444,7 +444,8 @@ func rawCreateTemplate(t *testing.T, cat *RecordLayerStoreCatalog, tx api.Transa
 // catalog persisted.
 //
 // Through CreateTemplate the new version is carried from the stored one
-// (ws-j-design.md section 4), so it keeps key 1 and the rebind is admitted;
+// (DIVERGENCES.md "CreateTemplate refuses more than an exact duplicate, and
+// carries a new version"), so it keeps key 1 and the rebind is admitted;
 // the guard is what refuses a version written past the build path.
 func TestFDB_SchemaRebindRejectsRecordTypeKeyChange(t *testing.T) {
 	t.Parallel()

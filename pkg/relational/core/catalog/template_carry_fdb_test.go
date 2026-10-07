@@ -18,7 +18,8 @@ import (
 )
 
 // CreateTemplate's route for a new version of a stored template
-// (ws-j-design.md section 4, step 3), at the catalog layer: the refusal at or
+// (DIVERGENCES.md "CreateTemplate refuses more than an exact duplicate, and
+// carries a new version"), at the catalog layer: the refusal at or
 // below the latest, Java's deleteTemplate sequences it closes, the splice of an
 // EQUIVALENT index's stored bytes, and the lane check on every route that
 // builds.
@@ -26,7 +27,9 @@ import (
 // Java's deleteTemplate(name, version) does not look at bindings, so a Java
 // delete of a bound version below the latest leaves a binding the version guard
 // (which reads from latest + 1) does not see; CreateTemplate at or below the
-// latest would re-issue it. Both sequences of ws-j-design.md 4e item 3 are
+// latest would re-issue it. Both sequences (a Java delete of a bound version
+// below the latest, then a re-issue; DIVERGENCES.md "DeleteTemplateVersion
+// refuses a version schemas still bind; DROP SCHEMA TEMPLATE does not") are
 // refused.
 func TestFDB_CreateTemplate_RefusesAReIssueBelowTheLatest(t *testing.T) {
 	t.Parallel()
@@ -212,7 +215,9 @@ func laneTemplate(t *testing.T, name string, version int, root *gen.KeyExpressio
 	return tmpl
 }
 
-// The lane check (ws-j-design.md section 3.2): an arithmetic function key whose
+// The lane check (DIVERGENCES.md "An arithmetic function key with no lane is
+// refused when hand-built metadata is saved as a template"): an arithmetic
+// function key whose
 // operands' types, typed as the Values Java builds for them, name no row of
 // ArithmeticValue's operator table is refused on the build path (42F59, naming
 // the index, the function and the types), since the target fails every query
@@ -330,7 +335,8 @@ func TestFDB_CreateTemplate_LaneCheckReadsOnlyTheIndexesASaveDefines(t *testing.
 	})
 }
 
-// Concurrent carried saves of one name (ws-j-design.md section 9 (z)): each
+// Concurrent carried saves of one name (they serialize through FDB's
+// read-conflict range; no divergence): each
 // CreateTemplate reads the stored latest with a reverse scan limited to one
 // row, whose read-conflict range runs from the row it returns to the end of the
 // name's range, so a concurrent write of any higher version lands in it and one

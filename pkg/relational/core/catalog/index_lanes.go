@@ -11,7 +11,9 @@ import (
 	"fdb.dev/pkg/relational/api"
 )
 
-// checkIndexLanes is the build path's lane check (ws-j-design.md section 3.2):
+// checkIndexLanes is the build path's lane check (DIVERGENCES.md "An arithmetic
+// function key with no lane is refused when hand-built metadata is saved as a
+// template"):
 // an index key the target cannot plan is refused before Go stores it. Java
 // builds an index's arithmetic function keys (add, sub, mul, div, mod, the bit
 // operators and the bitmap functions) into Values through

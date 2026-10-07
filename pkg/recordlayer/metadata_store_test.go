@@ -213,7 +213,7 @@ var _ = Describe("FDBMetaDataStore", func() {
 
 	// A records file with a message named UnionDescriptor beside the usage=UNION
 	// union: the target's union is the usage=UNION message, and the store saves
-	// and reloads the metadata so (ws-j-design.md 4d; data a pre-release Go build
+	// and reloads the metadata so (data a pre-release Go build
 	// framed by the message named UnionDescriptor is not supported, RFC-257 item 9).
 	It("stores metadata over a records file with a message named UnionDescriptor beside the union, as the target does", func() {
 		store := NewFDBMetaDataStore(specSubspace())

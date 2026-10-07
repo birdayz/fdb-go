@@ -127,7 +127,8 @@ func TestEnumDDL_StoredAsJavaStoresIt(t *testing.T) {
 // the JVM by the WS-J oracle shapes enums_identical_values and
 // structs_identical_fields (whole-template bytes equal) and
 // enums_identical_values_two_tables (canonical-equal: its record_types order
-// differs, ws-j-design.md 9(a)).
+// differs, DIVERGENCES.md "Go does not reproduce Java's record_types order or
+// anonymous type names").
 func TestDDL_OneShapeIsOneTypePerTable(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {

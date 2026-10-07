@@ -1107,17 +1107,29 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   catalog version/rebind/carry rules and index-definition fidelity.
   Audit (2026-10-07, against the designs at 13d5a3d1e). PINNED: WS-A ~14,
   WS-B ~20, WS-C ~40, WS-J ~60. Open, each to be closed:
-  - DIVERGENCES.md lost entries since 13d5a3d1e (3723 -> 3059 lines): restore,
-    updated for later decisions: WS-B "DeleteStore cancels pending replacement
-    retirement" (+ re-book its upstream report); WS-J §9 (c) rebind validator,
-    (d), (j) version guard, (l), (o) FormerIndex re-add, (q), (s)
-    DeleteTemplateVersion refusal, (t), (u), (v), (w), (x) restore refusals,
-    (aa)-(ad), the F10 half of (f). 23 Go files cite "ws-j-design.md §N",
-    which is no longer in the tree: point them at DIVERGENCES/the commit.
-  - Lost bookings: select-list-vs-WHERE fault precedence (§9(t), Java
-    QueryVisitor.java:272-274 vs :283-322); planner items v31-v35 (NLJ
-    orientation tie-break, USING over an unnest leg, a lateral chain's last
-    element, EXISTS over derived legs, table qualifier = template name).
+  - [x] DIVERGENCES.md lost entries restored (2026-10-07). Each of the 41
+    lost sections was checked against the current tree: 33 restored (12 of
+    them edited to the current code and tests) and 8 dropped as obsolete.
+    The dropped ones: superseded; the virtual prune deleted; NaN bits fixed;
+    spanning predicate now Java's; RFC-209 withdrawn. New sections were
+    written for WS-J §9 (a) (record_types order and anonymous names), (c)
+    and (l) (rebind validator, inline messages) and (f) (22003 vs XXXXX).
+    The "VECTOR index metadata validation" section is replaced by its
+    current text. The 35 `ws-j-design.md` citations in Go files point at
+    DIVERGENCES sections or Java source instead. (q), a Go message
+    argument's log name, is not declared; it is log-only.
+    Upstream report for the WS-B DeleteStore retirement callback: owed.
+  - Lost bookings, rechecked (2026-10-07). USING over an unnest leg is fixed
+    (DIVERGENCES "A FROM item's correlated path"). A lateral chain's last
+    element and EXISTS over derived legs are now compared equal (same
+    section). Table qualifier = template name is declared (DIVERGENCES "A
+    table's qualifier is its schema template's name"). Open:
+    - [ ] select-list-vs-WHERE fault precedence (§9(t), Java
+      QueryVisitor.java:272-274 vs :283-322): measure which fault each
+      engine reports first, then fix or declare it;
+    - [ ] a nested-loop join's orientation over a derived aggregate follows
+      the plan-hash tie-break: check that Go's tie-break hashes equal Java's
+      on the two re-blessed explaindiff shapes.
   - [x] WS-A: higher-layer HNSW entry replacement after the transform exists.
     Done (2026-10-07): "Same writes, same index bytes"
     (`conformance_test`) has both engines write 60 vectors and then 16 deletes

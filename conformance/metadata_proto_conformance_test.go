@@ -838,8 +838,9 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 		// when set, is the Java exception class (MetaDataException otherwise).
 		md        func(md *gen.MetaData)
 		wantClass string
-		// goRefuses, when set, is a declared divergence: the target loads the file
-		// and Go refuses it with this message (ws-j-design.md section 4c, shape d).
+		// goRefuses marks shape (d), a message named UnionDescriptor beside the
+		// union: Go refused it with this message before the upgrade and now
+		// loads it as the target does (see the goRefuses arm below).
 		goRefuses string
 	}{
 		{"valid", func(*descriptorpb.FileDescriptorProto) {}, "", nil, "", ""},
