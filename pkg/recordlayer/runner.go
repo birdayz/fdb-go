@@ -244,7 +244,7 @@ func (r *FDBDatabaseRunner) contextTimer() *StoreTimer {
 // Non-retryable errors are returned immediately.
 // Matches Java's FDBDatabaseRunnerImpl.run().
 func (r *FDBDatabaseRunner) RunWithRetry(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
-	policy := attemptPolicy{owner: "runner", maxAttempts: r.MaxAttempts, initialDelay: r.InitialDelay, maxDelay: r.MaxDelay}
+	policy := attemptPolicy{owner: "runner", maxAttempts: r.MaxAttempts, initialDelay: r.InitialDelay, maxDelay: r.MaxDelay, timer: r.contextTimer()}
 	return attemptLoop(ctx, r.db.Env(), r.db.observer(), policy, RouteOwnTransaction, func(AttemptCall) (any, error) {
 		return r.runOnce(ctx, fn)
 	})

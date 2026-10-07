@@ -845,7 +845,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   (another session) neither drains nor re-claims it, and the holder's
   merges drain the queue (`GuardiANN merge lock across engines`,
   mutation-checked: a Go merge that ignores a live lease fails).
-- [ ] Runner: unified bounded attempts, per-owner retries, commit ownership and
+- [x] Runner: unified bounded attempts, per-owner retries, commit ownership and
   deactivation, client proxy wait/body-chain causes, SPFresh stall bound and
   instrumentation. Apply the SPFresh paper review to affected algorithms.
   Scope is ws-d-design.md section 5, "Attempt bounds of the transaction
@@ -886,8 +886,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   faults commit and re-run inside one call and never surface an error to
   the loop, so its scenario model cannot see an exhausted call and needs no
   reconcile; keying its arms on `AttemptCall` is left until an arm needs it.
-  Open: SPFresh takeover/stall fixtures over a real split on SimFDB (the
-  loop's stall bound itself is unit-pinned).
+  SPFresh fixtures done over a real seal (spfresh_split_test.go): a stalled
+  seal fails with `SPFreshStalledSealError` after 100 uncounted retries, and
+  a takeover that publishes the split between attempts lets the write
+  complete with no attempt spent (both mutation-checked).
+  Instrumentation: each retry delay records `EventRetryDelay` (Java's
+  Events.RETRY_DELAY; the drawn delay under simulation).
   Pure-Go wrapper done: `TransactCtx`, `ReadTransactCtx` and the tenant
   forms keep the last execution's body error when OnError re-raises its
   code (the Apple binding's `retryable`), panics included

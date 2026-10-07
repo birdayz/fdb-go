@@ -266,3 +266,19 @@ func TestOnlineIndexer_MaxAttemptsBoundsItsTransactions(t *testing.T) {
 		}
 	}
 }
+
+// TestAttemptLoop_RecordsRetryDelay pins Java's RETRY_DELAY instrumentation
+// (RunRetriable.handle instruments each delay with FDBStoreTimer.Events.
+// RETRY_DELAY): one event per retry, none for the first attempt.
+func TestAttemptLoop_RecordsRetryDelay(t *testing.T) {
+	t.Parallel()
+	timer := NewStoreTimer()
+	policy := testPolicy(4)
+	policy.timer = timer
+	_, _ = attemptLoop(context.Background(), dst.NewSim(8), nil, policy, RouteAttempt, func(AttemptCall) (any, error) {
+		return nil, fdb.Error{Code: 1020}
+	})
+	if got := timer.GetCount(EventRetryDelay); got != 3 {
+		t.Fatalf("RETRY_DELAY count = %d, want 3 (one per retry of 4 attempts)", got)
+	}
+}

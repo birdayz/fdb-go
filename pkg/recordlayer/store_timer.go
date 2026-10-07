@@ -103,6 +103,9 @@ var (
 	EventScanIndex      = Event{"scan_index", "Scan Index", KindTimed}
 	EventOpenStore      = Event{"open_store", "Open Store", KindTimed}
 	EventRebuildIndex   = Event{"rebuild_index", "Rebuild Index", KindTimed}
+	// EventRetryDelay is Java's Events.RETRY_DELAY: the backoff between a
+	// transaction runner's attempts (FDBDatabaseRunnerImpl.RunRetriable.handle).
+	EventRetryDelay = Event{"retry_delay", "Retry Delay", KindTimed}
 )
 
 // Standard count events — matching Java's FDBStoreTimer.Counts. The KindSize
