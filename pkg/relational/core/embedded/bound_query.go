@@ -322,24 +322,6 @@ type loweredExists struct {
 // never reparses the child or publishes to the parent planner's registrations.
 func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 	out := loweredExists{plan: bound.plan, free: maps.Clone(bound.free)}
-	// Preserve the existing multi-source/UNNEST admission boundary even when
-	// private IDs make the child independent. Dependency and admission are
-	// different properties; changing the former must not widen the latter.
-	for _, source := range bound.parent {
-		if !source.Shadowing {
-			continue
-		}
-		inner := boundSourceNames(bound.plan)
-		if len(inner) > 1 {
-			outer := parentLexicalNames(bound.parent)
-			for _, leg := range inner {
-				if _, collision := outer[leg.lexical]; collision {
-					return out, &CorrelatedExistsError{Message: "EXISTS with a multi-source inner reusing an outer UNNEST-frame source name is not supported", Unsupported: true}
-				}
-			}
-		}
-		break
-	}
 	if !bound.correlated() {
 		return out, nil
 	}

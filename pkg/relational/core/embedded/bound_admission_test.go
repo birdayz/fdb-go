@@ -14,7 +14,7 @@ import (
 func TestBoundAdmissionKeepsLexicalPolicyWithPrivateParent(t *testing.T) {
 	t.Parallel()
 	for _, shadowing := range []bool{false, true} {
-		t.Run(map[bool]string{false: "private_parent_is_unambiguous", true: "unnest_frame_collision"}[shadowing], func(t *testing.T) {
+		t.Run(map[bool]string{false: "private_parent_is_unambiguous", true: "unnest_frame_same_name"}[shadowing], func(t *testing.T) {
 			t.Parallel()
 			owner, md := clauseTestOwner(t)
 			scope := semantic.NewScope(nil)
@@ -45,19 +45,10 @@ func TestBoundAdmissionKeepsLexicalPolicyWithPrivateParent(t *testing.T) {
 			if bound.correlated() == shadowing {
 				t.Fatal("dependency control did not distinguish admission from correlation")
 			}
-			_, err = lowerBoundExists(bound)
-			if !shadowing {
-				// Ordinary private parents are not scope-ambiguous merely because
-				// their lexical names repeat. Existing multi-source planning limits
-				// remain separate (the driver's minted-middle 0AF00 sentinel).
-				if err != nil {
-					t.Fatalf("private parent was treated as a lexical binding: %v", err)
-				}
-				return
-			}
-			var unsupported *CorrelatedExistsError
-			if !errors.As(err, &unsupported) || !unsupported.Unsupported {
-				t.Fatalf("private parent widened UNNEST admission: %v", err)
+			// A repeated lexical name is not ambiguous beside a private parent
+			// or an UNNEST frame: the inner legs have their own bindings.
+			if _, err = lowerBoundExists(bound); err != nil {
+				t.Fatalf("a repeated lexical name was refused: %v", err)
 			}
 		})
 	}
@@ -208,27 +199,25 @@ func TestBoundOnFailureDoesNotPublish(t *testing.T) {
 	}
 }
 
-// An ordinary inner source that reuses an outer source's name is admitted:
-// the subquery's legs have their own bindings, so the inner reference reads
-// the inner source (Java's inner shadow). The UNNEST-frame boundary still
-// refuses the same names.
+// An inner source that reuses an outer source's name is admitted, beside an
+// ordinary outer source or an UNNEST frame: the subquery's legs have their
+// own bindings, so the inner reference reads the inner source (Java's inner
+// shadow; conformance "ExistsInnerShadowJavaProbe").
 func TestBoundAdmissionQuotedLexicalNames(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name, outer, inner, binding string
 		extraParent                 bool
-		ordinaryReject              bool
-		unnestReject                bool
 	}{
-		{"quoted_outer", `"a"`, "A", "A", false, false, false},
-		{"quoted_inner", "A", `"a"`, "A", false, false, false},
-		{"identical_quoted", `"a"`, `"a"`, "A", false, false, true},
-		{"identical_unquoted", "a", "A", "A", false, false, true},
-		{"equivalent_quoted_upper", "A", `"A"`, "A", false, false, true},
-		{"private_parent", "A", "A", "PRIVATE_A", false, false, true},
-		{"dotless_i_runtime_uppercase", `"ı"`, `"ı"`, "I", false, false, true},
-		{"kelvin_is_not_runtime_k", `"K"`, `"K"`, "K", false, false, true},
-		{"different_parent_cannot_supply_binding", "A", "A", "PRIVATE_A", true, false, true},
+		{"quoted_outer", `"a"`, "A", "A", false},
+		{"quoted_inner", "A", `"a"`, "A", false},
+		{"identical_quoted", `"a"`, `"a"`, "A", false},
+		{"identical_unquoted", "a", "A", "A", false},
+		{"equivalent_quoted_upper", "A", `"A"`, "A", false},
+		{"private_parent", "A", "A", "PRIVATE_A", false},
+		{"dotless_i_runtime_uppercase", `"ı"`, `"ı"`, "I", false},
+		{"kelvin_is_not_runtime_k", `"K"`, `"K"`, "K", false},
+		{"different_parent_cannot_supply_binding", "A", "A", "PRIVATE_A", true},
 	} {
 		for _, shadowing := range []bool{false, true} {
 			kind := "ordinary"
@@ -268,20 +257,8 @@ func TestBoundAdmissionQuotedLexicalNames(t *testing.T) {
 					t.Fatal("projection must retain the independent P correlation before EXISTS lowering")
 				}
 				_, err = lowerBoundExists(bound)
-				reject := test.ordinaryReject
-				if shadowing {
-					reject = test.unnestReject
-				}
-				if !reject {
-					if err != nil {
-						t.Fatalf("distinct lexical name or private parent was rejected: %v", err)
-					}
-					return
-				}
-				want := "EXISTS with a multi-source inner reusing an outer UNNEST-frame source name is not supported"
-				var unsupported *CorrelatedExistsError
-				if !errors.As(err, &unsupported) || !unsupported.Unsupported || unsupported.Message != want {
-					t.Fatalf("same-name admission changed: got %v, want %q", err, want)
+				if err != nil {
+					t.Fatalf("same-name inner source was rejected: %v", err)
 				}
 			})
 		}

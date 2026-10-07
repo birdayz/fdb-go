@@ -69,6 +69,9 @@ var _ = Describe("ExistsInnerShadowJavaProbe", func() {
 			{"case2_hoist_notexists", `SELECT MA."ID" FROM MA, OT WHERE NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE EXISTS (SELECT 1 FROM OT AS "OX", ST AS "S2" WHERE OT."K" < 0 AND EXISTS (SELECT 1 FROM MA AS "M3" WHERE "M3"."C" > 0)))`},
 			{"projected_notexists", `SELECT MA."ID", NOT EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0)) FROM MA, OT`},
 			{"projected_exists", `SELECT MA."ID", EXISTS (SELECT 1 FROM ST, MA AS "M2" WHERE OT."K" < 0 AND EXISTS (SELECT 1 FROM OT AS "OX" WHERE OX."K" > 0)) AS "E" FROM MA, OT`},
+			{"unnest_frame_multisource", `SELECT X FROM ST, ST."ARR" AS X WHERE EXISTS (SELECT 1 FROM ST, MA WHERE ST."C" < X)`},
+			{"unnest_frame_multisource_outer_ref", `SELECT X FROM ST, ST."ARR" AS X WHERE EXISTS (SELECT 1 FROM ST AS "S2", MA WHERE MA."C" < X AND ST."C" > 10)`},
+			{"unnest_frame_same_name_inner", `SELECT X FROM ST, ST."ARR" AS X WHERE EXISTS (SELECT 1 FROM MA, ST WHERE ST."ID" = 2 AND MA."C" < X)`},
 			{"int_head_colliding", `SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(1, ST."C") = 1 AND OI."K" = OT."K")`},
 			{"nonfoldable_colliding", `SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(ST."C", 1) < OT."K")`},
 		} {
