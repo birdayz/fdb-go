@@ -416,6 +416,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] IN-union product limit/size, null-safe singleton candidates, zero-based
   EXPLODE ordinality/distinctness, subscript typing/errors, display-only EXPLAIN
   decoding, ordered Value folding, vector-preference applicability pins.
+  Vector-preference criterion pins done: Java's PlanningCostModelVectorEngineTest
+  cases against `compareVectorIndexEnginePreference`
+  (`TestVectorEnginePreference_JavaCases`, mutation-checked: counting several
+  accesses as one fails it). Open there: the yamsql fixtures (guardiannOnly,
+  mixed metrics, non-vector covering scan, union legs switching engines).
   Null-safe singleton candidates (W9, design section 5) are done.
   NOT_DISTINCT_FROM binds index and PK scans: a NULL operand reads the null
   key, and the literal may be on either side. IS DISTINCT FROM stays residual,

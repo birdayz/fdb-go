@@ -413,6 +413,7 @@ go_test(
         "planning_cost_model_hash_test.go",
         "planning_cost_model_rungs_test.go",
         "planning_cost_model_test.go",
+        "planning_cost_model_vector_engine_test.go",
         "point_probe_identity_test.go",
         "point_probe_proof_agreement_test.go",
         "point_probe_ranking_test.go",
@@ -1189,6 +1190,7 @@ go_test(
         "constraint_dependencies_test.go",
         "fold_prune_negative_control_test.go",
         "rejects_null_shapes_test.go",
+        "planning_cost_model_vector_engine_test.go",
     ],
     deps = [
         "//gen",
