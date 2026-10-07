@@ -968,14 +968,17 @@ func (c *autoContinuingCursor[T]) onNextWithRetry(ctx context.Context, attempt i
 	return result, nil
 }
 
-// isRetryableForContinuation extends isRetryableError with transaction_timed_out
-// (1031). Normally 1031 is not retryable — retrying the same transaction won't
-// help. But AutoContinuingCursor creates a NEW transaction with a saved
-// continuation, so it's safe to retry from the last successful position. This
-// handles the case where a scan hits FDB's 5-second transaction timeout before
-// the application-level time limit fires.
+// isRetryableForContinuation is AutoContinuingCursor's rule, Java's
+// FDBExceptions.isRetriable (the first FDB error in the chain, or a
+// RecordCoreRetriableTransactionException; isRetriableFirstCause), extended
+// with transaction_timed_out (1031), which the target excludes. Normally 1031
+// is not retryable — retrying the same transaction won't help. But
+// AutoContinuingCursor creates a NEW transaction with a saved continuation, so
+// it's safe to retry from the last successful position. This handles the case
+// where a scan hits FDB's 5-second transaction timeout before the
+// application-level time limit fires (DIVERGENCES.md).
 func (c *autoContinuingCursor[T]) isRetryableForContinuation(err error) bool {
-	if isRetryableError(err) {
+	if isRetriableFirstCause(err) {
 		return true
 	}
 	var fdbErr fdb.Error

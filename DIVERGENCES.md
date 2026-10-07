@@ -2890,6 +2890,16 @@ the runner's own commit in `ensureActive` with the same class (FDBRecordContext.
 its first commit whatever the outcome, and a second commit is refused with that class. Pinned by
 `record_context_active_fdb_test.go`.
 
+## An auto-continuing cursor also retries a transaction timeout
+
+`AutoContinuingCursor` retries what Java's `FDBExceptions.isRetriable` retries (a
+`RecordCoreRetriableTransactionException`, or the first FDB error in the chain when it is
+retryable), and Go adds transaction_timed_out (1031), which that predicate excludes: the cursor
+resumes from its saved continuation in a fresh transaction, so a scan that runs into FDB's
+five-second limit before the application's own time limit continues where it stopped instead
+of failing. The transaction runner's rule (`isRetriableAnyCause`, any cause in the chain) does
+not retry 1031, as the target's does not.
+
 ## A vector search holds its partition lock for the search, not the cursor
 
 Both engines read-lock `LockIdentifier(partitionSubspace)` for a vector scan, the key a write to

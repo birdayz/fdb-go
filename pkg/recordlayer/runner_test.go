@@ -104,12 +104,13 @@ var _ = Describe("FDBDatabaseRunner", func() {
 		})
 	})
 
-	// Codes match fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE, code) from fdb_c.cpp.
-	Describe("isRetryableError", func() {
+	// The runner's rule (isRetriableAnyCause) over fdb_error_predicate's
+	// RETRYABLE set from fdb_c.cpp (fdb.IsRetryable).
+	Describe("isRetriableAnyCause", func() {
 		DescribeTable("recognizes all retryable FDB error codes",
 			func(code int, desc string) {
 				err := fdb.Error{Code: code}
-				Expect(isRetryableError(err)).To(BeTrue(), "code %d (%s) should be retryable", code, desc)
+				Expect(isRetriableAnyCause(err)).To(BeTrue(), "code %d (%s) should be retryable", code, desc)
 			},
 			// MAYBE_COMMITTED
 			Entry("commit_unknown_result", 1021, "commit_unknown_result"),
@@ -125,24 +126,26 @@ var _ = Describe("FDBDatabaseRunner", func() {
 			Entry("grv_proxy_memory_limit_exceeded", 1078, "grv_proxy_memory_limit_exceeded"),
 			Entry("tag_throttled", 1213, "tag_throttled"),
 			Entry("proxy_tag_throttled", 1223, "proxy_tag_throttled"),
-			Entry("transaction_throttled_hot_shard", 1235, "transaction_throttled_hot_shard"),
-			Entry("transaction_rejected_range_locked", 1242, "transaction_rejected_range_locked"),
 		)
 
 		It("rejects non-retryable FDB errors", func() {
-			Expect(isRetryableError(fdb.Error{Code: 2000})).To(BeFalse())
-			Expect(isRetryableError(fdb.Error{Code: 1025})).To(BeFalse()) // transaction_cancelled
-			Expect(isRetryableError(fdb.Error{Code: 1031})).To(BeFalse()) // transaction_timed_out
-			Expect(isRetryableError(fdb.Error{Code: 1034})).To(BeFalse()) // future_released
+			Expect(isRetriableAnyCause(fdb.Error{Code: 2000})).To(BeFalse())
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1025})).To(BeFalse()) // transaction_cancelled
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1031})).To(BeFalse()) // transaction_timed_out
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1034})).To(BeFalse()) // future_released
+			// Outside fdb_error_predicate's RETRYABLE set (7.4+ codes the client's
+			// OnError retries): the target's runner does not retry them.
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1235})).To(BeFalse())
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1242})).To(BeFalse())
 		})
 
 		It("rejects non-FDB errors", func() {
-			Expect(isRetryableError(errors.New("not an FDB error"))).To(BeFalse())
+			Expect(isRetriableAnyCause(errors.New("not an FDB error"))).To(BeFalse())
 		})
 
-		It("detects wrapped FDB errors via errors.As", func() {
+		It("detects wrapped FDB errors", func() {
 			wrapped := fmt.Errorf("context: %w", fdb.Error{Code: 1020})
-			Expect(isRetryableError(wrapped)).To(BeTrue())
+			Expect(isRetriableAnyCause(wrapped)).To(BeTrue())
 		})
 	})
 

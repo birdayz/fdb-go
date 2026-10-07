@@ -857,9 +857,18 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   anything commits; the two self-committing bodies (`runDDL`,
   `ensureCatalogInit`) no longer commit inside Run
   (`record_context_active_fdb_test.go`, mutation-checked; DIVERGENCES).
-  Open: the bounded attempt loop (maxAttempts 10, any-cause retry rule,
-  ExponentialDelay) for Run, per-owner policies, body error-chain
-  preservation through the client, the SPFresh stall bound.
+  Retry predicates and delay done: `isRetriableAnyCause` (the runner's
+  rule, walking error trees) for RunWithRetry and the heartbeat cleanup,
+  `isRetriableFirstCause` (FDBExceptions.isRetriable) for the
+  auto-continuing cursor, `RecordCoreRetriableTransactionError`, Java's
+  ExponentialDelay (uniform [0, current), doubling, 2 ms floor);
+  runner.go's own code list (with 1235/1242) is gone
+  (`TestRetryPredicates_AnyCauseAndFirstCause`, mutation-checked).
+  Open: moving Run and its variants onto a bounded attempt loop
+  (maxAttempts 10, retry limit 0 on the backend), the body error-chain
+  recorder, per-owner policies, the SPFresh split-window and stall bound;
+  the client prerequisites (proxy wait instead of 1200, the pure-Go
+  wrapper keeping the body's chain) go through the client review gate.
 
 ## 4. WS-H — stored-query runtime
 

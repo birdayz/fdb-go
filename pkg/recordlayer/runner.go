@@ -2,9 +2,6 @@ package recordlayer
 
 import (
 	"context"
-	"errors"
-	"math"
-	"math/rand/v2"
 	"sort"
 	"time"
 
@@ -248,10 +245,13 @@ func (r *FDBDatabaseRunner) contextTimer() *StoreTimer {
 // Matches Java's FDBDatabaseRunnerImpl.run().
 func (r *FDBDatabaseRunner) RunWithRetry(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastErr error
+	// FDBDatabaseRunnerImpl.RunRetriable: one ExponentialDelay per run, and a
+	// retry while some cause is retriable (isRetriableAnyCause).
+	backoff := newExponentialDelay(r.InitialDelay, r.MaxDelay, r.db.Env())
 
 	for attempt := 0; attempt < r.MaxAttempts; attempt++ {
 		if attempt > 0 {
-			delay := r.calculateDelay(attempt)
+			delay := backoff.delay()
 			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
@@ -267,7 +267,7 @@ func (r *FDBDatabaseRunner) RunWithRetry(ctx context.Context, fn func(rtx *FDBRe
 		}
 
 		lastErr = err
-		if !isRetryableError(err) {
+		if !isRetriableAnyCause(err) {
 			return nil, err
 		}
 	}
@@ -392,49 +392,4 @@ func (r *FDBDatabaseRunner) OpenContext(ctx context.Context) (*FDBRecordContext,
 	}
 
 	return recordCtx, nil
-}
-
-// calculateDelay returns the delay for the given attempt using exponential backoff with jitter.
-func (r *FDBDatabaseRunner) calculateDelay(attempt int) time.Duration {
-	delay := float64(r.InitialDelay) * math.Pow(2, float64(attempt-1))
-	if delay > float64(r.MaxDelay) {
-		delay = float64(r.MaxDelay)
-	}
-	// Add jitter: random value between 0.5x and 1.5x
-	jitter := 0.5 + rand.Float64()
-	return time.Duration(delay * jitter)
-}
-
-// isRetryableError checks if an FDB error is retryable.
-// These codes match FDB's fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE, code),
-// which is RETRYABLE = MAYBE_COMMITTED ∪ RETRYABLE_NOT_COMMITTED.
-// The Go binding exposes fdb.ErrorPredicateRetryable (50000) but not the C function
-// fdb_error_predicate() itself, so we maintain the list manually.
-// Source of truth: fdb_c.cpp fdb_error_predicate() + flow/error_definitions.h
-func isRetryableError(err error) bool {
-	var fdbErr fdb.Error
-	if !errors.As(err, &fdbErr) {
-		return false
-	}
-	switch fdbErr.Code {
-	// MAYBE_COMMITTED
-	case 1021, // commit_unknown_result
-		1039: // cluster_version_changed
-		return true
-	// RETRYABLE_NOT_COMMITTED
-	case 1007, // transaction_too_old
-		1009, // future_version
-		1020, // not_committed (conflict)
-		1037, // process_behind
-		1038, // database_locked
-		1042, // commit_proxy_memory_limit_exceeded
-		1051, // batch_transaction_throttled
-		1078, // grv_proxy_memory_limit_exceeded
-		1213, // tag_throttled
-		1223, // proxy_tag_throttled
-		1235, // transaction_throttled_hot_shard
-		1242: // transaction_rejected_range_locked
-		return true
-	}
-	return false
 }

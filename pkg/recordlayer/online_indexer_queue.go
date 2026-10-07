@@ -318,13 +318,14 @@ func (oi *OnlineIndexer) cleanupPendingQueueHeartbeat(heartbeat *IndexingHeartbe
 // fallback after a terminal failure or exhaustion of the cleanup deadline.
 func (oi *OnlineIndexer) cleanupHeartbeatWithin(ctx context.Context, heartbeat *IndexingHeartbeat) error {
 	runner := NewFDBDatabaseRunner(oi.db)
+	backoff := newExponentialDelay(runner.InitialDelay, runner.MaxDelay, oi.db.Env())
 	var err error
 	for attempt := 0; attempt < runner.MaxAttempts; attempt++ {
 		if cause := ctx.Err(); cause != nil {
 			return cause
 		}
 		if attempt > 0 {
-			timer := time.NewTimer(runner.calculateDelay(attempt))
+			timer := time.NewTimer(backoff.delay())
 			select {
 			case <-ctx.Done():
 				timer.Stop()
@@ -333,7 +334,7 @@ func (oi *OnlineIndexer) cleanupHeartbeatWithin(ctx context.Context, heartbeat *
 			}
 		}
 		err = oi.cleanupHeartbeatAttempt(ctx, heartbeat)
-		if err == nil || !isRetryableError(err) {
+		if err == nil || !isRetriableAnyCause(err) {
 			return err
 		}
 	}
