@@ -44,6 +44,9 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - `UPDATE … RETURNING` and `DELETE … RETURNING` answer the modified rows through `Query`, as in Java 4.14.2.0 (an UPDATE's `"old"` and `"new"` records); on `Exec` such a statement is refused with 42F61, and a statement without a result set on `Query` with 02F01, before it runs.
 - A boolean ARRAY parameter binds; a join comparing two rows' `__ROW_VERSION` through a version index runs.
 - SQL accepts EXISTS inside AND/OR/NOT boolean expressions in WHERE and INNER JOIN ON, matching Java's one-row existential witness semantics.
+- An EXISTS subquery whose own source reuses an outer name reads its inner source, as in Java 4.14.2.0 (Java's inner shadow). Shapes Go declined with 0A000 now answer: an inner source named like an outer source or an outer UNNEST frame, an early JOIN ON naming an alias a later inner leg reuses (the ON resolves left to right, so the later leg does not capture it), and NOT EXISTS or a projected EXISTS over a middle subquery whose outer-only conjunct sits beside a nested EXISTS.
+- An unknown column is 42703 `Attempting to query non existing column X`, Java's text.
+- A query block whose select list and WHERE both fault reports the WHERE's fault, as Java binds WHERE first (blocks with a join ON keep their existing order).
 - `frl` is a package of the root module and releases under the project's `vX.Y.Z` tag.
 - SQL `LIKE` follows Java 4.14.2.0: wildcards cross newlines, `LIKE NULL` is allowed, and invalid escapes raise 22019/2200B/22025 per row.
 - SQL comments follow Java 4.14.2.0: block comments nest, an unterminated one is 42601, and `#` is no longer a comment.
