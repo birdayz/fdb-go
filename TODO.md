@@ -1171,11 +1171,18 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     Each is mutation-checked.
     MISSING: Lucene pending-queue consumption (keep visible; L); vector merge
     heartbeat callback (book under WS-D's GuardiANN adapter).
-  - WS-J: restore one-history swapped-key / key-reuse rows
-    (MetaDataEvolutionValidator.java:354-377); concurrent second
-    RestoreTemplateVersion; "Could not delete unknown schema template"
-    asserted; an unnest / derived-source index through the SQL DDL path;
-    negative grouped_count refusal (key_expression_proto.go:342).
+  - [x] WS-J. Done (2026-10-07):
+    - restore one-history rows for swapped record-type keys and a
+      former-index key reused by a live index (`TestFDB_Restore_OneHistory`);
+    - a concurrent second RestoreTemplateVersion of the same or other bytes:
+      the first conflicts, and its retry is refused 42F62 "it is stored"
+      (`TestFDB_Restore_ConcurrentWrites`);
+    - "Could not delete unknown schema template" asserted, both deletes, with
+      the no-op when not thrown (`TestFDB_VersionGuard_DeleteBoundVersionRefused`);
+    - unnest- and derived-sourced indexes in the production-path template pin
+      (`TestFDB_ExecutedTemplateIsTheToolingPathsTemplate`);
+    - grouped_count and split_point outside [0, columns], negative and
+      too-large (`TestKeyExpressionFromProtoErrors`).
 - [x] WS-G implementation: Java aggregate continuation state, legacy reads,
   grouping-output simplification/ARRAY_AGG cap/resume and plan-schema tags have
   committed pins. Whole-upgrade acceptance remains open.

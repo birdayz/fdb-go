@@ -102,8 +102,8 @@ func TestFDB_IndexDefinitionProductionPathStoresTargetShapes(t *testing.T) {
 // it built (the catalog's write of a fresh name does not re-derive it). The
 // clause kinds Go's DDL takes are present: WITH OPTIONS, an enum, a struct
 // (holding the enum), tables, on-source, as-select, filtered (WHERE) and
-// aggregate indexes (one over the enum column), index options and a vector
-// index.
+// aggregate indexes (one over the enum column), unnest- and derived-sourced
+// indexes, index options and a vector index.
 func TestFDB_ExecutedTemplateIsTheToolingPathsTemplate(t *testing.T) {
 	t.Parallel()
 	setup := openTestDB(t, "/__SYS")
@@ -117,6 +117,8 @@ func TestFDB_ExecutedTemplateIsTheToolingPathsTemplate(t *testing.T) {
 		"CREATE TYPE AS STRUCT sc (x BIGINT, y STRING, k mood) " +
 		"CREATE TABLE t (id BIGINT, s sc, a BIGINT, b STRING, g BIGINT, v BIGINT, m mood, PRIMARY KEY (id)) " +
 		"CREATE TABLE u (k STRING, w DOUBLE, e VECTOR(3, FLOAT), PRIMARY KEY (k)) " +
+		"CREATE TYPE AS STRUCT it (q STRING) " +
+		"CREATE TABLE w (id BIGINT, c2 BIGINT, c4 BIGINT ARRAY, c6 it ARRAY, PRIMARY KEY (id)) " +
 		"CREATE INDEX t_ab ON t (a DESC, b) " +
 		"CREATE UNIQUE INDEX t_b AS SELECT b FROM t ORDER BY b " +
 		"CREATE INDEX t_sx AS SELECT s.x, a FROM t ORDER BY s.x, a " +
@@ -125,6 +127,8 @@ func TestFDB_ExecutedTemplateIsTheToolingPathsTemplate(t *testing.T) {
 		"CREATE INDEX t_ap1 AS SELECT a + 1 FROM t ORDER BY a + 1 " +
 		"CREATE INDEX t_where AS SELECT g FROM t WHERE g > 20 ORDER BY g " +
 		"CREATE INDEX t_m AS SELECT m, id FROM t ORDER BY m, id " +
+		"CREATE INDEX w_unnest AS SELECT x.c2, \"e\" FROM w AS x, x.c4 AS \"e\" ORDER BY x.c2, \"e\" " +
+		"CREATE INDEX w_derived AS SELECT c2, eq.q FROM w, (SELECT q FROM w.c6) AS eq ORDER BY c2, eq.q " +
 		"CREATE VECTOR INDEX u_e USING HNSW ON u (e) OPTIONS (METRIC = EUCLIDEAN_METRIC)"
 	ddl := "CREATE SCHEMA TEMPLATE " + name + " " + body + " WITH OPTIONS (STORE_ROW_VERSIONS = true)"
 	built, err := embedded.BuildSchemaTemplateFromDDL(ddl)
@@ -148,8 +152,8 @@ func TestFDB_ExecutedTemplateIsTheToolingPathsTemplate(t *testing.T) {
 			t.Errorf("the executed CREATE stored another template than the tooling path builds:\n stored %v\n built  %v",
 				prototext.Format(stored), prototext.Format(want))
 		}
-		if len(stored.GetIndexes()) != 9 {
-			t.Errorf("stored %d indexes, want the 9 the DDL declares", len(stored.GetIndexes()))
+		if len(stored.GetIndexes()) != 11 {
+			t.Errorf("stored %d indexes, want the 11 the DDL declares", len(stored.GetIndexes()))
 		}
 		if enums := stored.GetRecords().GetEnumType(); len(enums) != 1 || enums[0].GetName() != "MOOD" {
 			t.Errorf("stored enum types %v, want the one MOOD", enums)

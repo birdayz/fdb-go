@@ -353,6 +353,37 @@ func TestFDB_Restore_OneHistory(t *testing.T) {
 				}
 			})
 		}, "record type key changed"},
+		{"two record types whose keys are swapped", func(t *testing.T) []byte {
+			// Each takes the other's implicit key (its union field number).
+			md := buildVersionedTemplate(t, "x", 1).(*metadata.RecordLayerSchemaTemplate).Underlying()
+			keyOf := func(name string) int64 {
+				k, ok := md.GetRecordType(name).GetRecordTypeKey().(int64)
+				if !ok {
+					t.Fatalf("%s key %v", name, md.GetRecordType(name).GetRecordTypeKey())
+				}
+				return k
+			}
+			orderKey, customerKey := keyOf("Order"), keyOf("Customer")
+			return demoMetaData(t, 5, func(p *gen.MetaData) {
+				withPriceIndex(2, 5, recordlayer.Field("price"), priceAbove(1))(p)
+				for _, rt := range p.RecordTypes {
+					switch rt.GetName() {
+					case "Order":
+						rt.ExplicitKey = &gen.Value{LongValue: proto.Int64(customerKey)}
+					case "Customer":
+						rt.ExplicitKey = &gen.Value{LongValue: proto.Int64(orderKey)}
+					}
+				}
+			})
+		}, "record type key changed"},
+		{"a former-index key the other version's live index reuses", func(t *testing.T) []byte {
+			return demoMetaData(t, 5, func(p *gen.MetaData) {
+				p.FormerIndexes = append(p.FormerIndexes, &gen.FormerIndex{
+					SubspaceKey: tuple.Tuple{"Order$price"}.Pack(), AddedVersion: proto.Int32(2),
+					RemovedVersion: proto.Int32(5), FormerName: proto.String("Order$price"),
+				})
+			})
+		}, "former index key used for new index in meta-data"},
 		{"an index predicate that differs", func(t *testing.T) []byte {
 			return demoMetaData(t, 5, withPriceIndex(2, 5, recordlayer.Field("price"), priceAbove(2)))
 		}, "index Order$price differs in predicate"},
@@ -615,6 +646,39 @@ func TestFDB_Restore_ConcurrentWrites(t *testing.T) {
 			t.Fatal("the restored row is not the restored bytes")
 		}
 	})
+
+	// A second restore of (t, v) commits between the first's reads and its
+	// commit: the first conflicts, and its retry is refused as stored
+	// (42F62), whether it restores the same bytes or other bytes. Only a retry
+	// after an unknown commit result takes equal bytes as its own write.
+	for _, same := range []bool{true, false} {
+		name := "a second restore of the same bytes before the commit"
+		if !same {
+			name = "a second restore of other bytes before the commit"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			e, v3 := setup(t, "a")
+			other := v3
+			if !same {
+				other = demoMetaData(t, 1, withPriceIndex(1, 1, recordlayer.Field("price"), nil))
+			}
+			opts := &restoreOptions{batch: restoreHeaderBatch, beforeCommit: once(func() {
+				if err := e.restore(3, v3, nil); err != nil {
+					t.Fatalf("the second restore: %v", err)
+				}
+			})}
+			wantRestoreRefused(t, e.restore(3, other, opts), api.ErrCodeDuplicateSchemaTemplate,
+				"schema template r version 3 cannot be restored: it is stored")
+			if opts.attempts != 2 {
+				t.Fatalf("%d restoring transactions, want 2 (the first conflicts)", opts.attempts)
+			}
+			if row := e.storedRow(3); string(row) != string(v3) {
+				t.Fatal("the stored row is not the second restore's bytes")
+			}
+			e.readsBack("/FRL/db", "a")
+		})
+	}
 
 	t.Run("a template write of the name before the commit", func(t *testing.T) {
 		t.Parallel()

@@ -302,6 +302,17 @@ func TestFDB_VersionGuard_DeleteBoundVersionRefused(t *testing.T) {
 	mustRun(t, run, func(tx api.Transaction) error { return tc.DeleteTemplateVersion(tx, "del", 1, true) })
 	mustRun(t, run, func(tx api.Transaction) error { return cat.DeleteSchema(tx, "/FRL/db", "s") })
 	mustRun(t, run, func(tx api.Transaction) error { return tc.DeleteTemplateVersion(tx, "del", 2, true) })
+
+	// Deleting what is not stored: Java's text and code
+	// (RecordLayerStoreSchemaTemplateCatalog.java:309, :323); without
+	// throwIfDoesNotExist both deletes are no-ops.
+	const unknown = "Could not delete unknown schema template del"
+	wantAPIError(t, run(func(tx api.Transaction) error { return tc.DeleteTemplateVersion(tx, "del", 2, true) }),
+		api.ErrCodeUnknownSchemaTemplate, unknown)
+	wantAPIError(t, run(func(tx api.Transaction) error { return tc.DeleteTemplate(tx, "del", true) }),
+		api.ErrCodeUnknownSchemaTemplate, unknown)
+	mustRun(t, run, func(tx api.Transaction) error { return tc.DeleteTemplateVersion(tx, "del", 2, false) })
+	mustRun(t, run, func(tx api.Transaction) error { return tc.DeleteTemplate(tx, "del", false) })
 }
 
 // openRaced opens a catalog transaction the test commits by hand, so two of

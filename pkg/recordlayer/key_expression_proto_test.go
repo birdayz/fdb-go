@@ -2,6 +2,8 @@ package recordlayer
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"fdb.dev/gen"
@@ -189,6 +191,30 @@ func TestKeyExpressionFromProtoErrors(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatal("expected error for Nesting without parent")
+		}
+	})
+
+	// Go's declared load refusals (DIVERGENCES "Key-expression shapes Java
+	// loads and Go refuses on load"): a grouping's grouped_count and a
+	// key-with-value's split_point outside [0, columns]. Java's constructors
+	// store them unchecked.
+	t.Run("grouped_count_and_split_point_out_of_range", func(t *testing.T) {
+		t.Parallel()
+		two := Concat(Field("a"), Field("b")).ToKeyExpression()
+		for _, n := range []int32{-1, 3, -2147483648} {
+			_, err := KeyExpressionFromProto(&gen.KeyExpression{Grouping: &gen.Grouping{WholeKey: two, GroupedCount: proto.Int32(n)}})
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("grouping grouped_count %d out of range [0, 2]", n)) {
+				t.Errorf("grouped_count %d: %v", n, err)
+			}
+			_, err = KeyExpressionFromProto(&gen.KeyExpression{KeyWithValue: &gen.KeyWithValue{InnerKey: two, SplitPoint: proto.Int32(n)}})
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("key_with_value split_point %d out of range [0, 2]", n)) {
+				t.Errorf("split_point %d: %v", n, err)
+			}
+		}
+		for _, n := range []int32{0, 2} {
+			if _, err := KeyExpressionFromProto(&gen.KeyExpression{Grouping: &gen.Grouping{WholeKey: two, GroupedCount: proto.Int32(n)}}); err != nil {
+				t.Errorf("grouped_count %d refused: %v", n, err)
+			}
 		}
 	})
 
