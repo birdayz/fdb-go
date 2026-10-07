@@ -284,9 +284,9 @@ var engineGaps = []EngineGap{
 	// NULL into a NOT NULL ARRAY column: Go raises the clean 23502 at plan
 	// time (the type-nullability gate, ExpressionVisitor:1067 semantics
 	// applied to the literal), where Java lets the NULL reach message
-	// coercion and dies with an internal XX000 — the code class differs on
-	// a shared-surface statement, so it stays a counted divergence.
-	{"arrays.yamsql", SkipGapErrorClass, "expecting 'XX000' error code, got '23502'", "RFC-204 P2"},
+	// coercion and dies with an internal XX000 (INTERNAL_ERROR, an upstream
+	// defect rather than a contract), so it is booked as a Java bug.
+	{"arrays.yamsql", SkipConformanceJavaPlannerBug, "expecting 'XX000' error code, got '23502'", "RFC-204 P2; Java internal error on NULL into a NOT NULL array"},
 
 	// ---- Gaps armed by RFC-202 S2: these files' index DDL now succeeds, so
 	// their queries run for the first time and each reaches its own

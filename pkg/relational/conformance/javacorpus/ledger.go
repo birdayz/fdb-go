@@ -160,9 +160,6 @@ const (
 	// SkipGapExistsFromAlias is a subquery whose FROM names an enclosing
 	// query's FROM alias as a table (`… FROM ct AS c … EXISTS (SELECT … FROM c)`).
 	SkipGapExistsFromAlias SkipClass = "engine-gap:exists-from-alias"
-	// SkipGapErrorClass is an error that reaches the client without a SQLSTATE,
-	// so the corpus's error-class assertion has nothing to compare against.
-	SkipGapErrorClass SkipClass = "engine-gap:error-class"
 	// SkipConformanceGoAccepts is a query Go executes that Java rejects — a
 	// widening of the shared surface, tracked because the conformance
 	// principle governs that surface in both directions.
@@ -229,7 +226,6 @@ func AllSkipClasses() []SkipClass {
 		SkipGapStructDML,
 
 		SkipGapExistsFromAlias,
-		SkipGapErrorClass,
 		SkipConformanceGoAccepts,
 		SkipConformanceJavaPlannerBug,
 		SkipGapStarGroupBy,
