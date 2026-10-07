@@ -2,6 +2,7 @@ package sqldriver_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -11,6 +12,8 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
+	apiddl "fdb.dev/pkg/relational/api/ddl"
+	rlddl "fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/embedded"
 	relkeyspace "fdb.dev/pkg/relational/core/keyspace"
 )
@@ -64,10 +67,33 @@ func TestFDB_QueuedVectorIndexIsWriteOnlyToSQL(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	inStore(15, func(store *recordlayer.FDBRecordStore) error {
-		_, markErr := store.MarkIndexWriteOnlyWithQueue("DOCSIDX")
-		return markErr
-	})
+	// Queue the index as Java's `set schema state` does: the store-state action
+	// in one metadata transaction. At the store's format 14 Go refuses it
+	// (DIVERGENCES "Queued index states require format 15 ..."); at 15 it lands.
+	setState := func(format int32) error {
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		return conn.Raw(func(dc any) error {
+			ec, ok := dc.(*embedded.EmbeddedConnection)
+			if !ok {
+				return fmt.Errorf("need an embedded connection, got %T", dc)
+			}
+			return ec.ApplyMetadataOperation(ctx, func(f apiddl.MetadataOperationsFactory, txn api.Transaction) error {
+				return f.(*rlddl.RecordLayerMetadataOperationsFactory).SetStoreState(strings.ToUpper(dbPath), strings.ToUpper(schemaName),
+					rlddl.RecordLayerConfig{IndexStates: map[string]recordlayer.IndexState{"DOCSIDX": recordlayer.IndexStateWriteOnlyWithQueue}, FormatVersion: format}).Execute(txn)
+			})
+		})
+	}
+	var unsupported *recordlayer.UnsupportedFeatureForFormatVersionError
+	if err := setState(0); !errors.As(err, &unsupported) {
+		t.Fatalf("set schema state WRITE_ONLY_WITH_QUEUE at format 14: %v; want UnsupportedFeatureForFormatVersionError", err)
+	}
+	if err := setState(15); err != nil {
+		t.Fatalf("set schema state WRITE_ONLY_WITH_QUEUE at format 15: %v", err)
+	}
 
 	for i, v := range [][]float64{{1, 0}, {0.9, 0.1}, {0, 1}} {
 		if _, err := db.ExecContext(ctx, "INSERT INTO docs VALUES (?, ?)", int64(i+1), vectorcodec.Serialize(v)); err != nil {

@@ -1143,11 +1143,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   - WS-C: DELETE_WHERE duplicate / last-known-wins envelope rows; overflow
     commit check across two stores with one index name; DeleteStore of the
     heartbeat:/merge: checks and delete-then-recreate with pending chunks;
-    rebuild to WRITE_ONLY_WITH_QUEUE and its format-14 refusal
-    (store_builder.go:440); state-4 consumers (unique, rank, bitmap,
-    GetWriteOnlyIndexes); markReadable continuing past a failed target;
-    publication before a state-4 writer; drain defaults (4 s quota, 10,000
-    deletes/s, commitWhenDone); `SetStoreState` to WRITE_ONLY_WITH_QUEUE.
+    state-4 consumers (unique, rank, bitmap, GetWriteOnlyIndexes);
+    markReadable continuing past a failed target; publication before a
+    state-4 writer. Done (2026-10-07):
+    - rebuild to WRITE_ONLY_WITH_QUEUE and its format-14 refusal
+      (`rebuild_write_only_with_queue_test.go`), with a new DIVERGENCES entry
+      "Queued index states require format 15 and a queue-capable index";
+    - drain defaults (`TestThrottledIteratorDefaults`);
+    - `SetStoreState` to WRITE_ONLY_WITH_QUEUE, through the metadata action
+      at format 14 (refused) and at 15 (`TestFDB_QueuedVectorIndexIsWriteOnlyToSQL`).
+    Each is mutation-checked.
     MISSING: Lucene pending-queue consumption (keep visible; L); vector merge
     heartbeat callback (book under WS-D's GuardiANN adapter).
   - WS-J: restore one-history swapped-key / key-reuse rows

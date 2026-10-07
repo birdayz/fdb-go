@@ -234,6 +234,10 @@ func (oi *OnlineIndexer) prepareIndexingState(store *FDBRecordStore) ([]*Index, 
 	return queued, indexingSessionBuild, nil
 }
 
+// pendingQueueMaxDeletesPerSecond is IndexingPendingWriteQueue.
+// MAX_RECORDS_DELETE_PER_SECOND, the drain's delete rate.
+const pendingQueueMaxDeletesPerSecond = 10_000
+
 // drainPendingIndexWrites gives each queue drain one retry owner and refreshes
 // the build session at commit, including the final empty transaction. Every
 // queue is drained even when one fails, as Java's whenAll does; the first error
@@ -298,7 +302,7 @@ func (oi *OnlineIndexer) drainPendingIndexWritesForIndex(ctx context.Context, in
 	iterator.onSuccess = func(*iterationQuota) {
 		oi.addMergeRequests(store.GetIndexDeferredMaintenanceControl().GetMergeRequiredIndexes())
 	}
-	iterator.deletedPerSecond = 10000
+	iterator.deletedPerSecond = pendingQueueMaxDeletesPerSecond
 	err := iterator.iterateAll(ctx)
 	iterator.Close()
 	return err

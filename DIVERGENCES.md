@@ -3057,3 +3057,17 @@ insert, temp-table insert, intersection and recursive (DFS join, level union) ru
   the same local choice with the same comparator. Yielding per inner member instead moved 3 golden and
   15 factory plans, several to a fetch before the residual, because the choice then moves to the
   parent group; per outer member exhausts the task budget on a union-heavy outer.
+
+## Queued index states require format 15 and a queue-capable index
+
+Java's `markIndexWriteOnlyWithQueue` and `clearAndMarkIndexWriteOnlyWithQueue` write state 4
+(WRITE_ONLY_WITH_QUEUE) for any index at any format version (`FDBRecordStore.markIndexNotReadable`).
+That includes a rebuild policy that answers WRITE_ONLY_WITH_QUEUE
+(`rebuildOrMarkIndex`). A store below format 15 has no pending-write queue, and an index whose
+maintainer cannot replay queued entries (or whose key has version columns) can never drain one, so
+such an index stays queued forever. Go refuses the request instead: `MarkIndexWriteOnlyWithQueue`,
+`ClearAndMarkIndexWriteOnlyWithQueue` and the open-time rebuild return
+`UnsupportedFeatureForFormatVersionError` below format 15, and a `RecordCoreError` ("index does not
+support queued writes") for an index that cannot be queued. Nothing is written. Pinned by
+`rebuild_write_only_with_queue_test.go`: the format-15 rebuild clears and queues the index, and the
+format-14 open is refused and leaves the store at its old metadata.

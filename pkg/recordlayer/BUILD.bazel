@@ -419,6 +419,7 @@ go_test(
         "ranked_set_test.go",
         "rebuild_count_selection_test.go",
         "rebuild_index_test.go",
+        "rebuild_write_only_with_queue_test.go",
         "record_context_active_fdb_test.go",
         "record_count_batch_test.go",
         "record_count_isolation_test.go",

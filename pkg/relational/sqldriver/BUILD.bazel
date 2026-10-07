@@ -798,6 +798,7 @@ go_test(
         "//pkg/recordlayer/rlmetrics",
         "//pkg/recordlayer/vectorcodec",
         "//pkg/relational/api",
+        "//pkg/relational/api/ddl",
         "//pkg/relational/conformance/coveringleaf",
         "//pkg/relational/conformance/rowdiff",
         "//pkg/relational/core/catalog",

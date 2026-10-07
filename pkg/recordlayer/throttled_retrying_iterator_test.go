@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -234,5 +235,21 @@ func TestThrottledIteratorDelay(t *testing.T) {
 		if got := throttledIteratorDelay(tc.elapsed, tc.rate, tc.count); got != tc.want {
 			t.Errorf("delay(%d,%d,%d)=%d want %d", tc.elapsed, tc.rate, tc.count, got, tc.want)
 		}
+	}
+}
+
+// TestThrottledIteratorDefaults pins ThrottledRetryingIterator.Builder's
+// defaults (ThrottledRetryingIterator.java:439-444) and the pending-queue
+// drain's delete rate (IndexingPendingWriteQueue.MAX_RECORDS_DELETE_PER_SECOND).
+func TestThrottledIteratorDefaults(t *testing.T) {
+	t.Parallel()
+	it := newThrottledRetryingIterator[int](nil, nil, nil)
+	if it.timeQuota != 4*time.Second || it.maxDeletes != 0 || it.scannedPerSecond != 0 ||
+		it.deletedPerSecond != 0 || it.retries != 100 || !it.commit {
+		t.Fatalf("defaults: quota %v maxDeletes %d scanned/s %d deleted/s %d retries %d commit %v",
+			it.timeQuota, it.maxDeletes, it.scannedPerSecond, it.deletedPerSecond, it.retries, it.commit)
+	}
+	if pendingQueueMaxDeletesPerSecond != 10_000 {
+		t.Fatalf("pending-queue drain deletes/s = %d, want 10,000", pendingQueueMaxDeletesPerSecond)
 	}
 }
