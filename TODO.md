@@ -430,8 +430,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   Vector-preference criterion pins done: Java's PlanningCostModelVectorEngineTest
   cases against `compareVectorIndexEnginePreference`
   (`TestVectorEnginePreference_JavaCases`, mutation-checked: counting several
-  accesses as one fails it). Open there: the yamsql fixtures (guardiannOnly,
-  mixed metrics, non-vector covering scan, union legs switching engines).
+  accesses as one fails it). The yamsql fixtures are done too:
+  `TestFDB_VectorIndexEnginePreference` runs Java's
+  vector-engine-preference.yamsql fixture set (both-engine tables, union
+  legs switching engine, GUARDIANNONLY, HNSWONLY, MIXEDMETRICS per metric,
+  the non-vector covering scan) and asserts Java's EXPLAIN index names and
+  rows (mutation-checked: the criterion disabled fails three cases).
   Null-safe singleton candidates (W9, design section 5) are done.
   NOT_DISTINCT_FROM binds index and PK scans: a NULL operand reads the null
   key, and the literal may be on either side. IS DISTINCT FROM stays residual,
