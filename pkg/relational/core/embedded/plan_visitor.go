@@ -473,7 +473,7 @@ func (v *PlanVisitor) moveCorrelatedGroupColumns(cls *selectClassification, fs *
 	correlatedGroupColumnsToComputed(cls, selectOutputSlots(simpleTable, expandStar), isOuter)
 }
 
-func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleTableContext) (logical.LogicalOperator, error) {
+func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleTableContext) (_ logical.LogicalOperator, err error) {
 	// Step 1: parse the source before classifying the SELECT list. An absent
 	// FROM yields a singleton with no visible attributes, as in QueryVisitor.
 	fs, err := parseFromSource(simpleTable)
@@ -626,6 +626,9 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// through this scope — same architecture as Java's QueryVisitor
 	// holding a SemanticAnalyzer.
 	resolver := buildSelectScope(sq, v.md, v.templateName, queryCTEScopes)
+	// Java resolves the WHERE before the select list (QueryVisitor.java:
+	// 272-274 before :283-322): a fault in both reports the WHERE's.
+	defer func() { err = whereFaultFirst(resolver, sq, err) }()
 
 	// (1) Expand qualified stars (a.*) in the projection list.
 	needRebuild := false

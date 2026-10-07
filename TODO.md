@@ -1124,9 +1124,19 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     element and EXISTS over derived legs are now compared equal (same
     section). Table qualifier = template name is declared (DIVERGENCES "A
     table's qualifier is its schema template's name"). Open:
-    - [ ] select-list-vs-WHERE fault precedence (§9(t), Java
-      QueryVisitor.java:272-274 vs :283-322): measure which fault each
-      engine reports first, then fix or declare it;
+    - [x] select-list-vs-WHERE fault precedence (§9(t), Java
+      QueryVisitor.java:272-274 vs :283-322). Done (2026-10-07): when a
+      SELECT build fails, both builders re-resolve the WHERE
+      (`whereFaultFirst`) and report the WHERE's fault. Three of the four JVM
+      probe shapes moved to Java's answer (`select_where_precedence_java_probe_test.go`);
+      mutation-checked. Not covered: a block with a join ON keeps the build's
+      own order, and so do the select-list function checks that run before
+      the scope exists (`unknownScalarFunction`).
+    - [ ] 42703 message text: Java says "Attempting to query non existing
+      column <identifier>" (SemanticAnalyzer.java:446); Go says
+      `column "<name>" does not exist` at 14 sites, and qualifies the name
+      differently by path. Align the text and the identifier rendering; the
+      explaindiff golden and several tests assert Go's text;
     - [ ] a nested-loop join's orientation over a derived aggregate follows
       the plan-hash tie-break: check that Go's tie-break hashes equal Java's
       on the two re-blessed explaindiff shapes.

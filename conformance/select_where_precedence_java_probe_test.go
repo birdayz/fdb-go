@@ -6,10 +6,8 @@ package conformance_test
 // select list and its WHERE. Java's QueryVisitor resolves FROM, then WHERE,
 // then the select list (QueryVisitor.java:272-274 before :283-322), so the
 // WHERE's fault wins; Go's catalog SELECT builder resolves the select list
-// first. TODO.md "A query faulting in both its select list and its WHERE
-// reports the select list's fault; Java reports the WHERE's" is the work; this
-// pins what both engines answer today, so either moving reddens it. When Go
-// resolves the WHERE first, the first two shapes' Go answers become Java's.
+// first and then, on a failed build, re-resolves the WHERE and reports its
+// fault (whereFaultFirst), so both engines report the WHERE's.
 
 import (
 	"context"
@@ -64,8 +62,10 @@ var _ = Describe("SelectWherePrecedenceJavaProbe", func() {
 			sql        string
 			java, goes want
 		}{
-			{`SELECT nosucha FROM t WHERE nosuchb = 1`, want{"42703", "NOSUCHB"}, want{"42703", "NOSUCHA"}},
-			{`SELECT f & 1 FROM t WHERE nosuchb = 1`, want{"42703", "NOSUCHB"}, want{"XX000", "unable to encapsulate arithmetic operation"}},
+			{`SELECT nosucha FROM t WHERE nosuchb = 1`, want{"42703", "NOSUCHB"}, want{"42703", "NOSUCHB"}},
+			{`SELECT f & 1 FROM t WHERE nosuchb = 1`, want{"42703", "NOSUCHB"}, want{"42703", "NOSUCHB"}},
+			// The WHERE's own non-resolution fault wins too.
+			{`SELECT nosucha FROM t WHERE f & 1 = 1`, want{"XX000", "unable to encapsulate arithmetic operation"}, want{"XX000", "unable to encapsulate arithmetic operation"}},
 			{`SELECT id FROM t WHERE nosuchb = 1 AND f & 1 = 1`, want{"42703", "NOSUCHB"}, want{"42703", "NOSUCHB"}},
 		} {
 			j := outcome(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))

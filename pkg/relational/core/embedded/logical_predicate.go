@@ -1112,6 +1112,46 @@ func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery, md *recordlay
 // correlated subquery's BuildExists can fall back to buildCorrelatedExists with
 // its richer outer scope (RFC-141/RFC-142); in the JOIN-ON path the same mapping
 // is simply the correct 42703 for an ON column that does not exist.
+// whereFaultFirst is Java's clause order on a failed SELECT build: the WHERE
+// is resolved before the select list, so when the build failed and the WHERE
+// alone fails to resolve, the WHERE's fault is the one reported. A WHERE with
+// a subquery is not re-walked (its subqueries need the clause's planner); a
+// WHERE that resolves leaves err as it is. A join's ON is resolved with the
+// FROM, before the WHERE, and its faults are reported by the build itself, so
+// a block with an ON keeps err. When both faults are 42703 on one column (a
+// select list and a WHERE naming d.cc), err's qualified rendering is kept.
+func whereFaultFirst(resolver *expr.Resolver, sq *selectQuery, err error) error {
+	if err == nil || resolver == nil || sq == nil || sq.whereExpr == nil {
+		return err
+	}
+	for _, j := range sq.joins {
+		if j.onExpr != nil {
+			return err
+		}
+	}
+	where := sq.whereExpr.Expression()
+	if where == nil || expr.ContainsSubqueryAtom(where) {
+		return err
+	}
+	_, walkErr := resolver.WalkPredicate(where)
+	if walkErr == nil {
+		return err
+	}
+	whereErr := mapPredicateWalkError(walkErr)
+	if whereErr == nil && !errors.As(walkErr, &whereErr) {
+		return err
+	}
+	var buildErr *api.Error
+	if errors.As(err, &buildErr) && buildErr.Code == api.ErrCodeUndefinedColumn && whereErr.Code == api.ErrCodeUndefinedColumn {
+		var missing *semantic.ColumnNotFoundError
+		if errors.As(walkErr, &missing) && strings.HasSuffix(strings.ToUpper(buildErr.Message),
+			strings.ToUpper(fmt.Sprintf(`.%s" does not exist`, missing.Id.Name()))) {
+			return err
+		}
+	}
+	return whereErr
+}
+
 func mapPredicateWalkError(walkErr error) *api.Error {
 	var tableNotFound *semantic.TableNotFoundError
 	if errors.As(walkErr, &tableNotFound) {
@@ -2387,12 +2427,15 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 // buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded runs the upgrades;
 // buildLogicalPlanForSelectWithCTECatalog_postBuild folds the block's
 // ON-clause EXISTS afterwards.
-func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteProducers ...logical.CTERegistry) (logical.LogicalOperator, error) {
+func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteProducers ...logical.CTERegistry) (_ logical.LogicalOperator, err error) {
 	queryCTEScopes := singleSourceQueryBlockCTEScopes(sq, cteScopes, cteOnScopes)
 	// Build the semantic scope once. All identifier resolution below
 	// goes through this scope — same architecture as Java's
 	// QueryVisitor holding a SemanticAnalyzer.
 	resolver := buildSelectScope(sq, md, templateName, queryCTEScopes)
+	// Java resolves the WHERE before the select list (QueryVisitor.java:
+	// 272-274 before :283-322): a fault in both reports the WHERE's.
+	defer func() { err = whereFaultFirst(resolver, sq, err) }()
 
 	// Expand qualified stars (a.*) in the projection list. Replaces each
 	// qualified-star slot with explicit column names from the source.
