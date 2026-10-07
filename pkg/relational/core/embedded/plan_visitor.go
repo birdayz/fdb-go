@@ -539,6 +539,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 		return nil, err
 	}
 	fs.enclosingScope = v.enclosingScope
+	v.resolveEnclosingAliasSources(fs)
 	v.assignDerivedSourceBindings(fs)
 	if err := v.prepareDerivedSourceBodies(fs); err != nil {
 		return nil, err
@@ -2441,4 +2442,65 @@ func (v *PlanVisitor) visitUnion(setQ *antlrgen.SetQueryContext) (logical.Logica
 	// Branches are built by this same owner: schemas alone cannot preserve an
 	// enclosing CTE definition or the lexical parent of a scalar in a branch.
 	return v.buildLogicalPlanForUnion(setQ, v.inRecursiveCTEBody)
+}
+
+// resolveEnclosingAliasSources is Java's findCteMaybe for a FROM name that is
+// no table, view or common table expression: an enclosing FROM item named by
+// it (`FROM t AS x WHERE EXISTS (SELECT … FROM x …)`) is read again, a new
+// reference to the same table or CTE, uncorrelated, as Java's generateAccess
+// does with the named operator. A name that matches nothing stays as it is.
+func (v *PlanVisitor) resolveEnclosingAliasSources(fs *fromSource) {
+	if v.md == nil || v.enclosingScope == nil {
+		return
+	}
+	resolve := func(name string) (string, bool) {
+		if name == "" || strings.Contains(name, ".") || v.md.GetRecordType(name) != nil {
+			return "", false
+		}
+		upper := strings.ToUpper(name)
+		if _, cte := v.cteScopes[upper]; cte {
+			return "", false
+		}
+		if _, cte := v.cteOnScopes[upper]; cte {
+			return "", false
+		}
+		id := semantic.FromNormalized(name)
+		for scope := v.enclosingScope; scope != nil; scope = scope.Parent() {
+			for _, src := range scope.Sources() {
+				if !src.NamedBy(id) {
+					continue
+				}
+				if src.CTE != nil {
+					return src.CTE.Name(), true
+				}
+				if src.Table != nil {
+					if table := src.Table.Name().Name(); v.md.GetRecordType(table) != nil {
+						return table, true
+					}
+				}
+				return "", false
+			}
+		}
+		return "", false
+	}
+	if fs.derivedQuery == nil && fs.inlineValues == nil && len(fs.sourceSegments) == 1 {
+		if real, ok := resolve(fs.tableName); ok {
+			if !fs.tableAliasExplicit {
+				fs.tableAlias, fs.tableAliasExplicit = fs.tableName, true
+			}
+			fs.tableName, fs.sourceSegments = real, []string{real}
+		}
+	}
+	for i := range fs.joins {
+		j := &fs.joins[i]
+		if j.derivedQuery != nil || j.inlineValues != nil || len(j.segments) != 1 {
+			continue
+		}
+		if real, ok := resolve(j.tableName); ok {
+			if !j.aliasExplicit {
+				j.alias, j.aliasExplicit = j.tableName, true
+			}
+			j.tableName, j.segments = real, []string{real}
+		}
+	}
 }

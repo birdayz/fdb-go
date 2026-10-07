@@ -201,6 +201,10 @@ Never mark a whole workstream complete because one of its subitems passed.
       `create-drop.yamsql` pass; so does `valid-identifiers.yamsql`, once a
       loaded template's table answers to its decoded name (GetRecordType's
       last fallback; 145 files, 9132 queries).
+      An enclosing FROM alias used as a table re-reads its table or CTE
+      (`StarScopeJavaProbe` from_outer_alias_*, mutation-checked). The
+      documentation file stops at the recursive reference read inside a
+      subquery of its own recursive leg (engine-gap:recursive-reference-in-subquery).
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays

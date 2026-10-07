@@ -69,6 +69,9 @@ var _ = Describe("StarScopeJavaProbe", func() {
 			{"exists_mixed_star_group_outer_col", "SELECT B1 FROM B WHERE EXISTS (SELECT A.*, B1 FROM A GROUP BY A1, A2, A3)"},
 			{"exists_outer_star", "SELECT B.* FROM B WHERE EXISTS (SELECT A.*, B.* FROM A)"},
 			{"exists_outer_star_correlated", "SELECT B1 FROM B WHERE EXISTS (SELECT B.* FROM A WHERE A.A1 = B.B1)"},
+			{"from_outer_alias_exists", "SELECT B1 FROM B AS X WHERE EXISTS (SELECT 1 FROM X WHERE X.B2 > 25)"},
+			{"from_outer_alias_correlated", "SELECT X.B1 FROM B AS X WHERE EXISTS (SELECT 1 FROM X AS Y WHERE Y.B2 = X.B2 AND Y.B1 <> X.B1)"},
+			{"from_outer_alias_cte", "WITH C AS (SELECT A1 FROM A) SELECT Q.A1 FROM C AS Q WHERE EXISTS (SELECT 1 FROM Q WHERE Q.A1 > 2)"},
 			{"exists_outer_star_filtered", "SELECT B1 FROM B WHERE EXISTS (SELECT B.* FROM A WHERE A.A1 = B.B1 AND B.B2 = 20)"},
 		} {
 			j := render(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))

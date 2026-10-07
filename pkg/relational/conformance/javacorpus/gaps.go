@@ -91,8 +91,10 @@ var engineGaps = []EngineGap{
 	// inner names are declared before the seed and wrap each union leg, so
 	// recursive-cte.yamsql passes. The documentation file's nested example
 	// reads a FROM alias of the recursive reference as a table inside an
-	// EXISTS (`NOT EXISTS (SELECT name FROM c …)`), its own gap.
-	{"documentation-queries/with-documentation-queries.yamsql", SkipGapExistsFromAlias, "EXISTS input has no result producer", "CQ-72"},
+	// EXISTS (`NOT EXISTS (SELECT name FROM c …)`); an enclosing alias read as
+	// a table re-reads its source since 2026-10-07, which here is the
+	// recursive reference itself, inside a subquery of its own recursive leg.
+	{"documentation-queries/with-documentation-queries.yamsql", SkipGapRecursiveReferenceInSubquery, "no bound dependency property for <nil>", "CQ-72"},
 
 	// joins-documentation-queries.yamsql used to stop at a JOIN-bodied derived
 	// table whose ON clause could not be resolved back to its sources. CLOSED:
