@@ -1618,9 +1618,26 @@ func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 		return rt
 	}
 	if storage, err := ToProtoBufCompliantName(name); err == nil && storage != name {
-		return m.recordTypes[storage]
+		if rt, ok := m.recordTypes[storage]; ok {
+			return rt
+		}
 	}
-	return nil
+	// Metadata loaded from Java (a stored template, a metadata file) may name
+	// a type with an escape the encoder would not produce for its user name
+	// (`___T6__2__UNESCAPED` is the user name `___T6.__UNESCAPED`, whose own
+	// encoding differs). Java keys a template's tables by the decoded name
+	// (RecordLayerSchemaTemplate.fromRecordMetadata), so a last lookup
+	// compares decoded names; it runs only when both keys above miss.
+	var found *RecordType
+	for stored, rt := range m.recordTypes {
+		if stored != name && ToUserIdentifier(stored) == name {
+			if found != nil {
+				return nil
+			}
+			found = rt
+		}
+	}
+	return found
 }
 
 // RecordTypes returns all record types

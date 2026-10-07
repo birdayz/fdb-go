@@ -189,13 +189,10 @@ var engineGaps = []EngineGap{
 	// XX000 while a warm connection answers 42804 "Elements of array literal
 	// are not of identical type!", which Go answers (upstream issue #3583).
 	{"in-predicate.yamsql", SkipConformanceJavaPlannerBug, `"select a, b from ta where b in (1, 3.0, 5, 7.0)": expecting 'XX000' error code, got '42804'`, "Issue #3583"},
-	// The catalog tables are queryable (2026-10-07; create-drop.yamsql and
-	// catalog.yamsql pass), and a table's or column's invalid name is 42602
-	// before its types or primary key are checked. The file then stops at an
-	// INSERT into a table of a template loaded from Java's metadata JSON whose
-	// decoded name holds a dot (`"___T6.__UNESCAPED"`, message
-	// ___T6__2__UNESCAPED).
-	{"valid-identifiers.yamsql", SkipGapProtoTemplateDottedTable, "42F01: Unknown table ___T6.__UNESCAPED", "CQ-72"},
+	// valid-identifiers.yamsql, catalog.yamsql and create-drop.yamsql pass
+	// (2026-10-07): the catalog tables are queryable, an invalid name is
+	// 42602 before types and keys, and a loaded template's table answers to
+	// its decoded name.
 	// RE-BOOKED, not closed-by-relabel: the duplicate qualified star this file
 	// was booked for is FIXED. Java's expandStar has no uniqueness rule, so
 	// `SELECT A.*, A.* FROM A` is legal and the 42702 comes from the OUTER
