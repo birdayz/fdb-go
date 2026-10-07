@@ -1102,7 +1102,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## 7. Migration-wide acceptance and decisions
 
-- [ ] Reconcile implemented WS-A/B/C/J against the historical designs and current
+- [x] Reconcile implemented WS-A/B/C/J against the historical designs and current
   regression tests. The archive's completion ledger did not list new obligations
   for them; that is not a fresh completeness proof. Include recursive promotion,
   RaBitQ/HNSW legacy compatibility, storage lifecycle, pending writes/format 15,
@@ -1120,7 +1120,9 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     current text. The 35 `ws-j-design.md` citations in Go files point at
     DIVERGENCES sections or Java source instead. (q), a Go message
     argument's log name, is not declared; it is log-only.
-    Upstream report for the WS-B DeleteStore retirement callback: owed.
+    Upstream report drafts are written (`docs/upstream/record-layer-4.14.2.0-reports.md`):
+    the DeleteStore retirement callback and the overflow check keyed by
+    name. They are not filed; filing them is the owner's call.
   - Lost bookings, rechecked (2026-10-07). USING over an unnest leg is fixed
     (DIVERGENCES "A FROM item's correlated path"). A lateral chain's last
     element and EXISTS over derived legs are now compared equal (same
