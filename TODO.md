@@ -327,6 +327,21 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] Conditional decorrelate→simplify and merge→pushdown rule chains with
   progress-driven fallback; partition-based select merge; multi-leg pushdown;
   physical REWRITING prune; full comparator configuration; per-partition yields.
+  W6 step 1 rule-call observer done (2026-10-07): `Planner.SetRuleCallObserver`
+  reports every rule call (phase, the inner rule's Java name, expression,
+  progress); `embedded.PlanQueryForTestObservingRules` plans through it.
+  Through it, Java's wrapper-name rule is ported: disabling
+  `ConditionalCascadesRule` turns every conditional chain off, as Java's
+  isRuleEnabled does for the wrapper (Go ignored the name)
+  (`TestRuleCallObserver_SelectMergeAndPushDownChain`, mutation-checked).
+  FINDING, open: a WHERE over a UNION ALL derived table is not pushed into
+  the legs. Go's translator emits a LogicalFilterExpression there
+  (cascades_translator.go `exactFilter`), which PredicatePushDownRule never
+  matches, and no rule pushes a filter through a union; Java builds a
+  SelectExpression and pushes in one firing. Plan today:
+  `PredicatesFilter(UnorderedUnion(...))`. Needs the translator to emit
+  Java's Select for a WHERE (a plan-wide change) or a filter-through-union
+  push; §2.7's UNION ALL plan_contains pin waits on it.
   The physical REWRITING prune (F-5) is done.
   - Measured on the whole plan corpus before the change: every group crossed into
     PLANNING with exactly one final, and every child the REWRITING comparator

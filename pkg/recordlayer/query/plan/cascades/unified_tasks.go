@@ -715,6 +715,11 @@ func (t *TransformExprTask) runRule(ctx context.Context, p *Planner) (progress b
 	if !t.Ref.ContainsExactly(t.Expr) {
 		return
 	}
+	if p.ruleObserver != nil {
+		defer func() {
+			p.ruleObserver(ObservedRuleCall{Phase: t.Phase, Rule: shortTypeName(t.Rule), Expression: t.Expr, Progress: progress})
+		}()
+	}
 
 	// Java's per-rule-call match cap counts ONE stream per rule invocation
 	// (CascadesPlanner.execute: a single numMatches over bindMatches, which
@@ -935,6 +940,11 @@ func (t *TransformImplTask) Run(ctx context.Context, p *Planner) {
 func (t *TransformImplTask) runRule(ctx context.Context, p *Planner, rule ImplementationRule) (progress bool) {
 	if !t.Ref.ContainsExactly(t.Expr) {
 		return
+	}
+	if p.ruleObserver != nil {
+		defer func() {
+			p.ruleObserver(ObservedRuleCall{Phase: t.Phase, Rule: shortTypeName(rule), Expression: t.Expr, Progress: progress})
+		}()
 	}
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), t.Expr)
 	if ctx.Err() != nil {

@@ -66,6 +66,10 @@ type plannerOptions struct {
 	// caller executes rather than one with untyped placeholders. The
 	// connection path binds its own and never sets it.
 	params []driver.NamedValue
+
+	// ruleObserver is the no-FDB harness's rule-call observer (WS-F W6 step
+	// 1); the connection path never sets it.
+	ruleObserver func(cascades.ObservedRuleCall)
 }
 
 // plannerOptionsFrom resolves the connection's api.Options into the planner's

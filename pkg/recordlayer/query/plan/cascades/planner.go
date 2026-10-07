@@ -147,6 +147,10 @@ type Planner struct {
 	// compare per yield. See plan_reachability.go.
 	reach *ReachabilityCollector
 
+	// ruleObserver, when set, is told of every rule call (see ObservedRuleCall). Nil in
+	// production: one nil compare per rule call.
+	ruleObserver func(ObservedRuleCall)
+
 	// withoutPlanningMerges keeps equivalent PLANNING groups apart: the
 	// control that measures what merging them changes.
 	withoutPlanningMerges bool

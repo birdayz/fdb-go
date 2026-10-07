@@ -51,12 +51,24 @@ func (conditionalRuleMatchedError) Error() string {
 
 var errConditionalRuleMatched error = conditionalRuleMatchedError{}
 
+// conditionalRuleName is the Java simple name of the conditional wrapper,
+// ConditionalCascadesRule. Java's isRuleEnabled checks the wrapper's own name
+// before its inner rules' (CascadesPlanner.pushTransformExpressionIfNeeded,
+// RecordQueryPlannerConfiguration.isRuleEnabled), so disabling it disables
+// every conditional chain: none of its rules fires.
+const conditionalRuleName = "ConditionalCascadesRule"
+
 // enabledImplementationRules drops the disabled rules by Java simple name,
-// filtering a conditional rule's inner rules and dropping it once empty.
+// filtering a conditional rule's inner rules and dropping it once empty, or
+// outright when the wrapper's own name is disabled.
 func enabledImplementationRules(rules []ImplementationRule, disabled map[string]struct{}) []ImplementationRule {
+	_, wrapperOff := disabled[conditionalRuleName]
 	out := rules[:0:0]
 	for _, r := range rules {
 		if cond, ok := r.(*conditionalImplementationRule); ok {
+			if wrapperOff {
+				continue
+			}
 			var inner []ImplementationRule
 			for _, ir := range cond.rules {
 				if _, off := disabled[shortTypeName(ir)]; !off {
@@ -79,9 +91,13 @@ func enabledImplementationRules(rules []ImplementationRule, disabled map[string]
 
 // enabledExpressionRules is enabledImplementationRules for exploration rules.
 func enabledExpressionRules(rules []ExpressionRule, disabled map[string]struct{}) []ExpressionRule {
+	_, wrapperOff := disabled[conditionalRuleName]
 	out := rules[:0:0]
 	for _, r := range rules {
 		if cond, ok := r.(*conditionalExpressionRule); ok {
+			if wrapperOff {
+				continue
+			}
 			var inner []ExpressionRule
 			for _, er := range cond.rules {
 				if _, off := disabled[shortTypeName(er)]; !off {

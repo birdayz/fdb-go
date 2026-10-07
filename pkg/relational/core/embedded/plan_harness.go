@@ -81,6 +81,21 @@ func PlanQueryForTestWithDisabledRules(
 	return plan.Explain(), nil
 }
 
+// PlanQueryForTestObservingRules is PlanQueryForTestWithDisabledRules with the
+// planner's rule-call observer (WS-F W6 step 1) reporting every rule call.
+func PlanQueryForTestObservingRules(
+	sql, schemaDDL string, disabled []string, observe func(cascades.ObservedRuleCall),
+) (string, error) {
+	opts := api.NewOptionsBuilder().Set(api.OptDisabledPlannerRules, disabled).Build()
+	popts := plannerOptionsFrom(opts)
+	popts.ruleObserver = observe
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, nil, false, nil, popts)
+	if err != nil {
+		return "", err
+	}
+	return plan.Explain(), nil
+}
+
 // PlanPhysicalForTestWithReachability is PlanPhysicalForTest with RFC-183's
 // yield-time plan-reachability accounting routed into the caller's collector.
 //
@@ -379,6 +394,9 @@ func planReferenceToPhysical(
 	// nil is the production path: the planner then pays one nil compare per
 	// yield and accumulates nothing.
 	planner.SetReachabilityCollector(reach)
+	if popts.ruleObserver != nil {
+		planner.SetRuleCallObserver(popts.ruleObserver)
+	}
 
 	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	var extractionReport *cascades.ExtractionVerificationReport

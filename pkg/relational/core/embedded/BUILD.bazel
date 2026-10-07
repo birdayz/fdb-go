@@ -258,6 +258,7 @@ go_test(
         "rfc153_joined_preserved_plan_test.go",
         "rfc220_probe_test.go",
         "rfc232_planning_gaps_test.go",
+        "rule_call_observer_test.go",
         "same_shaped_join_legs_test.go",
         "scan_type_test.go",
         "scope_ambiguous_test.go",
@@ -534,6 +535,7 @@ go_test(
         "relational_plan_cache_test.go",
         "domain_registration_test.go",
         "stored_query_warm_up.go",
+        "rule_call_observer_test.go",
     ],
     deps = [
         "//gen",
