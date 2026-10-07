@@ -11,8 +11,11 @@ import (
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -226,6 +229,134 @@ type byteExecution struct {
 	Executed  *int   `json:"executed"`
 	Exception string `json:"exception"`
 	Site      string `json:"site"`
+}
+
+// GuardiANN through the record layer: the vector maintainer's own state (the
+// task counts and merge lock in the index secondary subspace) beside the
+// engine's, compared byte for byte after every save and delete.
+var _ = Describe("GuardiANN index persisted bytes through the record layer", func() {
+	for _, autoMerge := range []bool{false, true} {
+		autoMerge := autoMerge
+		It(fmt.Sprintf("are the same in both engines (autoMergeDuringCommit=%v)", autoMerge), func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			env, err := SetupTenantEnvironment(ctx, sharedContainer, "guardiann_record_bytes_"+uuid.New().String())
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { Expect(env.Cleanup(context.Background())).To(Succeed()) })
+
+			var ops []guardiannOp
+			for i := int64(0); i < 14; i++ {
+				ops = append(ops, guardiannOp{"save", i, 0.01 * float64(i), 0.02 * float64(i%3)})
+			}
+			for i := int64(100); i < 104; i++ {
+				ops = append(ops, guardiannOp{"save", i, 100 + 0.01*float64(i), 100.0})
+			}
+			ops = append(ops, guardiannOp{"delete", int64(2), 0.0, 0.0}, guardiannOp{"delete", int64(101), 0.0, 0.0})
+
+			javaSS, goSS := env.Keyspace.Sub("java"), env.Keyspace.Sub("go")
+			var javaSteps []guardiannStep
+			Expect(NewJavaInvoker().InvokeAs(ctx, "guardiannRecordByteProbe", map[string]any{
+				"clusterFile": env.ClusterFile, "tenantName": env.TenantName,
+				"subspace": BytesToIntArray(javaSS.Bytes()), "autoMerge": autoMerge, "ops": ops,
+			}, &javaSteps)).To(Succeed())
+
+			index := recordlayer.NewVectorIndex("gv", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
+			for k, v := range map[string]string{
+				recordlayer.IndexOptionVectorEngine:                     "GUARDIANN",
+				recordlayer.IndexOptionVectorMetric:                     "EUCLIDEAN_METRIC",
+				recordlayer.IndexOptionGuardiannPrimaryClusterMin:       "0",
+				recordlayer.IndexOptionGuardiannPrimaryClusterMax:       "10",
+				recordlayer.IndexOptionGuardiannPrimaryClusterHardMax:   "40",
+				recordlayer.IndexOptionGuardiannCollapseMinDuplicates:   "5",
+				recordlayer.IndexOptionGuardiannDeterministicRandomness: "true",
+			} {
+				index.Options[k] = v
+			}
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+			builder.AddIndex("Order", index)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			open := func(rc *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
+				return recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(goSS).CreateOrOpen()
+			}
+			var goSteps []guardiannStep
+			for _, op := range ops {
+				id, x, y := op[1].(int64), op[2].(float64), op[3].(float64)
+				_, err := env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+					store, err := open(rc)
+					if err != nil {
+						return nil, err
+					}
+					store.GetIndexDeferredMaintenanceControl().SetAutoMergeDuringCommit(autoMerge)
+					if op[0] == "save" {
+						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), VectorData: recordlayer.SerializeVector([]float64{x, y})})
+					} else {
+						_, err = store.DeleteRecord(tuple.Tuple{id})
+					}
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+				var kvs [][]string
+				_, err = env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+					store, err := open(rc)
+					if err != nil {
+						return nil, err
+					}
+					kvs = nil
+					for _, part := range []subspace.Subspace{store.IndexSubspace(index), store.IndexSecondarySubspace(index)} {
+						r, err := fdb.PrefixRange(part.Bytes())
+						if err != nil {
+							return nil, err
+						}
+						got, err := rc.Transaction().GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
+						if err != nil {
+							return nil, err
+						}
+						for _, kv := range got {
+							key := kv.Key[len(goSS.Bytes()):]
+							kvs = append(kvs, []string{fmt.Sprintf("%q", key), hex.EncodeToString(key), hex.EncodeToString(kv.Value)})
+						}
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				goSteps = append(goSteps, guardiannStep{Op: fmt.Sprintf("%s %d", op[0], id), KVs: kvs})
+			}
+			Expect(len(goSteps)).To(Equal(len(javaSteps)))
+			for i := range goSteps {
+				Expect(guardiannStepDiffs(javaSteps[i].KVs, goSteps[i].KVs)).To(BeEmpty(), "after step %d (%s)", i+1, goSteps[i].Op)
+			}
+			Expect(javaSteps[len(javaSteps)-1].KVs).NotTo(BeEmpty())
+		})
+	}
+})
+
+// guardiannStepDiffs lists the keys only one engine wrote and the values that
+// differ, keys in the engines' printable form.
+func guardiannStepDiffs(javaKVs, goKVs [][]string) []string {
+	var diffs []string
+	javaByKey := map[string]string{}
+	for _, kv := range javaKVs {
+		javaByKey[kv[1]] = kv[2]
+	}
+	goByKey := map[string]string{}
+	for _, kv := range goKVs {
+		goByKey[kv[1]] = kv[2]
+		if jv, ok := javaByKey[kv[1]]; !ok {
+			diffs = append(diffs, "only Go:   "+kv[0]+" = "+kv[2])
+		} else if jv != kv[2] {
+			diffs = append(diffs, "value: "+kv[0]+"\n      java "+jv+"\n      go   "+kv[2])
+		}
+	}
+	for _, kv := range javaKVs {
+		if _, ok := goByKey[kv[1]]; !ok {
+			diffs = append(diffs, "only Java: "+kv[0]+" = "+kv[2])
+		}
+	}
+	return diffs
 }
 
 // guardiannOp is one step of a scripted byte differential: insert or delete

@@ -835,9 +835,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   removed early return also hid an out-of-range slice in the no-triangle
   branch). Bounce is covered by the collapse scenario (every collapse
   enqueues a bounce), and a RaBitQ scenario (sampling, statistics, training,
-  encoded references; asserted to end trained) is byte-identical. Still to
-  add, at the record-layer level the engine differential does not reach: the
-  vector task counts and merge lock in the index's secondary subspace.
+  encoded references; asserted to end trained) is byte-identical. Through
+  the record layer too: Java and Go stores save and delete the same Orders
+  into a GUARDIANN index, deferred and with autoMergeDuringCommit, and the
+  index subspace AND the secondary subspace (vector task counts) match after
+  every step (mutation-checked: dropping Go's enqueue count fails at the
+  first split). Still open: the merge lock across engines (one engine holds
+  it, the other's merge must be refused); its contents are an owner UUID
+  and a timestamp, so it is a behaviour pin, not a byte pin.
 - [ ] Runner: unified bounded attempts, per-owner retries, commit ownership and
   deactivation, client proxy wait/body-chain causes, SPFresh stall bound and
   instrumentation. Apply the SPFresh paper review to affected algorithms.

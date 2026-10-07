@@ -1235,6 +1235,65 @@ class GuardiannProbeSteps extends ConformanceBase {
     }
 
     /**
+     * Record-layer byte differential: saves (and deletes) Order records with the GuardiANN index "gv"
+     * (guardiannRecordMetaData) one per transaction, with autoMergeDuringCommit as given, and after
+     * every step dumps the index subspace and the index secondary subspace (vector task counts and
+     * merge lock), keys relative to the store subspace. An op is ["save"|"delete", id, x, y].
+     */
+    @ConformanceStep("guardiannRecordByteProbe")
+    public List<Map<String, Object>> guardiannRecordByteProbe(String clusterFile, String tenantName, byte[] subspace,
+                                                              boolean autoMerge, List<List<Object>> ops) {
+        var metadata = guardiannRecordMetaData("40");
+        var index = metadata.getIndex("gv");
+        var space = new Subspace(subspace);
+        List<Map<String, Object>> steps = new ArrayList<>();
+        runInContext(clusterFile, tenantName, context -> {
+            com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore.newBuilder()
+                    .setMetaDataProvider(metadata).setContext(context).setSubspace(space).create();
+            return null;
+        });
+        var descriptor = metadata.getRecordType("Order").getDescriptor();
+        for (List<Object> op : ops) {
+            String kind = (String) op.get(0);
+            long id = ((Number) op.get(1)).longValue();
+            double[] v = {((Number) op.get(2)).doubleValue(), ((Number) op.get(3)).doubleValue()};
+            runInContext(clusterFile, tenantName, context -> {
+                var store = com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore.newBuilder()
+                        .setMetaDataProvider(metadata).setContext(context).setSubspace(space).open();
+                store.getIndexDeferredMaintenanceControl().setAutoMergeDuringCommit(autoMerge);
+                if (kind.equals("save")) {
+                    store.saveRecord(com.google.protobuf.DynamicMessage.newBuilder(descriptor)
+                            .setField(descriptor.findFieldByName("order_id"), id)
+                            .setField(descriptor.findFieldByName("vector_data"),
+                                    com.google.protobuf.ByteString.copyFrom(new DoubleRealVector(v).getRawData()))
+                            .build());
+                } else {
+                    store.deleteRecord(Tuple.from(id));
+                }
+                return null;
+            });
+            Map<String, Object> step = new LinkedHashMap<>();
+            step.put("op", kind + " " + id);
+            List<List<String>> kvs = new ArrayList<>();
+            runInContext(clusterFile, tenantName, context -> {
+                var store = com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore.newBuilder()
+                        .setMetaDataProvider(metadata).setContext(context).setSubspace(space).open();
+                for (Subspace part : List.of(store.indexSubspace(index), store.indexSecondarySubspace(index))) {
+                    for (com.apple.foundationdb.KeyValue kv : context.ensureActive().getRange(part.range()).asList().join()) {
+                        byte[] key = java.util.Arrays.copyOfRange(kv.getKey(), subspace.length, kv.getKey().length);
+                        kvs.add(List.of(com.apple.foundationdb.tuple.ByteArrayUtil.printable(key),
+                                java.util.HexFormat.of().formatHex(key), java.util.HexFormat.of().formatHex(kv.getValue())));
+                    }
+                }
+                return null;
+            });
+            step.put("kvs", kvs);
+            steps.add(step);
+        }
+        return steps;
+    }
+
+    /**
      * Inline maintenance reached through the RECORD LAYER: every save runs with
      * IndexDeferredMaintenanceControl.autoMergeDuringCommit, which VectorIndexMaintainer passes to
      * the engine as maintainInTransaction. Saves nearCount near vectors, then farCount far vectors,
