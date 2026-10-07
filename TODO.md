@@ -578,7 +578,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   rewrites a select holding the IN, and the `w8_rl` in-joins plan. The
   one-value row `w8_rl_default_in1_order_by_price` is Go's single-element
   collapse, declared `DIFF-PATH single-element-in` (WS-E section 4).
-  Still open: item 10 (the two-source in-union, WS-E section 4). The DESC
+  Item 10 (the two-source in-union, WS-E section 4) is in place: measured
+  2026-10-07, `a IN (7, 8) AND d IN (9, 3) ORDER BY v` over an (a, d, v)
+  index plans `InUnion(IndexScan(IAD, [=, =, *] COVERING), bindings=2)`, as
+  Java's two-source in-union. Ordered by the IN columns themselves Go keeps
+  the sorted in-joins (`w8_in5x5`/`w8_in4x6`, DIFF-PATH rfc-191, declared).
+  The DESC
   tie row is resolved: `w8_tie_in_order_by_col1_desc_explain` and its ASC
   twin are SAME-PATH (the sorted IN-join over I5, as Java).
   Item 10 measured (2026-10-06), both variants reverted. Go's WHERE carrier
