@@ -36,7 +36,11 @@ var engineGaps = []EngineGap{
 	// cast-tests progresses past its array inserts and dies planning the
 	// FIRST test: an array subscript (`arr[1]`) inside an array constructor
 	// under CAST … AS STRING ARRAY — Cascades declines with 0AF00.
-	{"cast-tests.yamsql", SkipGapErrorClass, `"select [] from test_cast where id = 1": expecting 'XXXXX' error code, got '0AF00'`, "CQ-72"},
+	// Java fails an untyped empty array literal with an internal error
+	// (XXXXX "should not be called"; `[] = []` in a WHERE is XX000
+	// VerifyException, measured): an upstream defect, not a contract. Go
+	// refuses the projection with 0AF00 (no exact result type).
+	{"cast-tests.yamsql", SkipConformanceJavaPlannerBug, `"select [] from test_cast where id = 1": expecting 'XXXXX' error code, got '0AF00'`, "Java internal error on an untyped empty array"},
 	// Array COMPARISON semantics are closed (`[1] = [1]` is TRUE, the
 	// NULL/NONE matrix and the 42804 rejections match Java — pinned by
 	// TestFDB_ArrayComparison and the live-Java ArrayComparisonJavaProbe).
