@@ -3919,7 +3919,7 @@ func baseTableColumns(table string, md *recordlayer.RecordMetaData, templateName
 		return nil
 	}
 	tbl, ok := rlcatalog.Wrap(md).LookupTable(
-		semantic.FromSegments(strings.Split(resolved, "."), false))
+		semantic.FromSegments(strings.Split(resolved, "."), true))
 	if !ok {
 		return nil
 	}

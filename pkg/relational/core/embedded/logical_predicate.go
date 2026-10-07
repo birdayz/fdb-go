@@ -133,7 +133,7 @@ func buildWherePredicateForTableE(
 	if segments == nil {
 		segments = strings.Split(tableName, ".")
 	}
-	tbl, err := analyzer.ResolveTable(semantic.FromSegments(segments, false))
+	tbl, err := analyzer.ResolveTable(semantic.FromSegments(segments, true))
 	if err != nil {
 		return nil, false, nil
 	}
@@ -959,7 +959,7 @@ func aggBodySourceColumns(sq *selectQuery, md *recordlayer.RecordMetaData, templ
 		return src.Table.Columns()
 	}
 	analyzer := semantic.NewAnalyzer(rlcatalog.Wrap(md), false)
-	tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(sq.tableName, "."), false))
+	tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(sq.tableName, "."), true))
 	if err != nil || tbl == nil {
 		return nil
 	}
@@ -1332,7 +1332,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		if isCTE {
 			tbl = cte.Table
 		} else {
-			tbl, _ = analyzer.ResolveTable(semantic.FromSegments(segments, false))
+			tbl, _ = analyzer.ResolveTable(semantic.FromSegments(segments, true))
 		}
 		if tbl == nil {
 			// A DECLARED CTE whose schema derivation declined (join/unnest
@@ -1905,7 +1905,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 		// present, else the alias.
 		binding := bindingOrAlias(bindingID, aliasID)
 		// Try metadata first, then CTE scopes.
-		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), true))
 		if err == nil {
 			return scope.AddSource(semantic.ScopeSource{
 				Table:           tbl,
@@ -1977,7 +1977,7 @@ func buildWherePredicateForJoins(
 	scope := semantic.NewScope(sq.enclosingScope)
 
 	addSource := func(tableName, alias, bindingID string, namePath []string) bool {
-		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), true))
 		if err != nil {
 			return false
 		}
@@ -3260,7 +3260,7 @@ func buildSelectScopeChecked(
 			cteSrc.HiddenColumns = hiddenColumnSet(hidden)
 			return scope.AddSource(at(cteSrc, position))
 		}
-		tbl, err := analyzer.ResolveTable(semantic.FromSegments(segments, false))
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(segments, true))
 		if err != nil {
 			if mapped := mapPredicateWalkError(err); mapped != nil {
 				return mapped

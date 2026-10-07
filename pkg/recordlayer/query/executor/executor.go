@@ -3894,14 +3894,26 @@ func executeInsert(
 func buildInsertRecord(desc protoreflect.MessageDescriptor, datum map[string]any) (proto.Message, error) {
 	msg := dynamicpb.NewMessage(desc)
 	refl := msg.ProtoReflect()
+	// An exact key wins; the folded match is a fallback only for a key no
+	// other datum key folds to, so quoted columns differing only in case
+	// ("COLUMN", "column") each keep their own value as in Java.
 	folded := make(map[string]any, len(datum))
+	foldedCount := make(map[string]int, len(datum))
 	for k, v := range datum {
-		folded[strings.ToLower(k)] = v
+		lk := strings.ToLower(k)
+		folded[lk] = v
+		foldedCount[lk]++
 	}
 	fields := desc.Fields()
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
-		v, ok := folded[strings.ToLower(string(fd.Name()))]
+		v, ok := datum[string(fd.Name())]
+		if !ok {
+			lk := strings.ToLower(string(fd.Name()))
+			if foldedCount[lk] == 1 {
+				v, ok = folded[lk]
+			}
+		}
 		if !ok || v == nil {
 			continue // absent / NULL → leave field unset (SQL NULL)
 		}

@@ -13,6 +13,7 @@ func TestCaseSensitiveIdentifiers(t *testing.T) {
 		{`SELECT t.Col FROM T1 AS t WHERE t.x > 'Abc'`, `SELECT "t"."Col" FROM "T1" AS "t" WHERE "t"."x" > 'Abc'`},
 		{`select count(*) from "Q" where abs(v) > 0`, `select count(*) from "Q" where abs("v") > 0`},
 		{`insert into TaBlE1 values (1, 'foo')`, `insert into "TaBlE1" values (1, 'foo')`},
+		{`select f3(col1), cardinality(a) from t`, `select "f3"("col1"), cardinality("a") from "t"`},
 		{`not sql at all (`, `not sql at all (`},
 	} {
 		if got := caseSensitiveIdentifiers(c.in); got != c.want {

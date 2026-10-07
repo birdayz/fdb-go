@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"sort"
+	"strings"
 
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -29,6 +30,17 @@ func caseSensitiveIdentifiers(sql string) string {
 		if u, ok := n.(*antlrgen.UidContext); ok {
 			if u.DOUBLE_QUOTE_ID() == nil && u.GetStart() != nil && u.GetStop() != nil {
 				spans = append(spans, span{u.GetStart().GetStart(), u.GetStop().GetStop()})
+			}
+			return
+		}
+		// A user-defined scalar call name is normalized like a uid
+		// (ExpressionVisitor.visitUserDefinedScalarFunctionCall), but a
+		// built-in reached through that rule resolves case-insensitively
+		// before any user function (SqlFunctionCatalogImpl's lower-cased
+		// synonyms), so its name is left as written.
+		if f, ok := n.(*antlrgen.UserDefinedScalarFunctionNameContext); ok {
+			if id := f.ID(); id != nil && !strings.EqualFold(id.GetText(), "CARDINALITY") && !strings.EqualFold(id.GetText(), "JAVA_CALL") {
+				spans = append(spans, span{id.GetSymbol().GetStart(), id.GetSymbol().GetStop()})
 			}
 			return
 		}

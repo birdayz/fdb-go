@@ -189,11 +189,6 @@ const (
 	// conformance/duplicate_star_java_probe_test.go (group_by_star_covers vs
 	// group_by_star_exceeds).
 	SkipGapStarGroupBy SkipClass = "engine-gap:star-group-by-expansion"
-	// SkipGapCaseSensitiveIdentifiers is a file that runs under the
-	// CASE_SENSITIVE_IDENTIFIERS connection option, which Go ignores: Java's
-	// DDL then stores unquoted names as written, Go folds them, and the file's
-	// verbatim connect URI names a schema only Java stored.
-	SkipGapCaseSensitiveIdentifiers SkipClass = "engine-gap:case-sensitive-identifiers"
 	// SkipConformanceJavaDisabled is a file Java's test class @Disabled
 	// because Java fails it, failing here for the same reason. Nothing is
 	// missing on the Go side relative to Java; the booking names Java's TODO.
@@ -229,7 +224,6 @@ func AllSkipClasses() []SkipClass {
 		SkipConformanceGoAccepts,
 		SkipConformanceJavaPlannerBug,
 		SkipGapStarGroupBy,
-		SkipGapCaseSensitiveIdentifiers,
 		SkipConformanceJavaDisabled,
 		SkipCheckCache,
 		SkipRandomInjection,

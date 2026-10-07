@@ -314,13 +314,13 @@ var engineGaps = []EngineGap{
 	//     under exact-ordinal resolution; the file's live signature is now the
 	//     parenthesised star, booked at its own entry below.
 	//
-	// CASE_SENSITIVE_IDENTIFIERS is honoured (2026-10-07): an unquoted
-	// identifier keeps its case, as if quoted, so setup-with-connection-options
-	// .yamsql passes. What both remaining files need is tables or columns whose
-	// names differ only in case (`Table1` beside `TaBlE1`, "COLUMN" beside
-	// "column"), which Go's planner and positional row layout still fold.
-	{"case-sensitivity.yamsql", SkipGapCaseSensitiveIdentifiers, "projection result has 2 labels but 0 resolved values", "TODO.md, Go folds case-colliding identifiers"},
-	{"keyword-case-insensitivity.yamsql", SkipGapCaseSensitiveIdentifiers, `column names "COLUMN" and "column" collide case-insensitively`, "TODO.md, Go folds quoted identifiers in the positional row layout"},
+	// CASE_SENSITIVE_IDENTIFIERS is honoured and names differing only in case
+	// (`Table1` beside `TaBlE1`, "COLUMN" beside "column") are distinct
+	// (2026-10-07): setup-with-connection-options and keyword-case-insensitivity
+	// pass. case-sensitivity.yamsql runs to its case-sensitivity-off block,
+	// where Java rejects an unquoted `col1` against the column "col1" and Go's
+	// relaxed case pass resolves it (DIVERGENCES.md, Identifier resolution).
+	{"case-sensitivity.yamsql", SkipConformanceGoAccepts, `line 129: "with c1 as (select col1, col2 from \"Table1\") select col1, col2 from c1": expecting statement to throw an error 42703, however it succeeded`, "DIVERGENCES.md, Go over-resolves case"},
 	// exists-in-select.yamsql passes (2026-10-07): PartitionSelectRule
 	// partitions a select holding several existentials, projected ones too.
 	// Go's in-memory sort extension plans this grouped empty-input shape where

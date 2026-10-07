@@ -208,10 +208,17 @@ Never mark a whole workstream complete because one of its subitems passed.
       CASE_SENSITIVE_IDENTIFIERS is honoured (unquoted uids are quoted as
       written before planning, Java's normalizeString branch;
       `TestCaseSensitiveIdentifiers`); `setup-with-connection-options.yamsql`
-      passes (147 files, 9139 queries). Open: names differing only in case
-      (`Table1` beside `TaBlE1`, "COLUMN" beside "column"), which the planner
-      and the positional row layout still fold (case-sensitivity.yamsql,
-      keyword-case-insensitivity.yamsql).
+      passes (147 files, 9139 queries). Names differing only in case are
+      distinct (2026-10-07): INSERT no longer folds "COLUMN"/"column" onto one
+      field, the planner's table lookups no longer re-fold a normalized
+      `Table1`, a user scalar function call name is case-preserved, and the
+      CREATE-time refusal of case-colliding columns is gone;
+      keyword-case-insensitivity.yamsql passes (148 files, 9205 queries).
+      case-sensitivity.yamsql is booked go-accepts at its case-off block
+      (Go's relaxed case pass, DIVERGENCES.md).
+- [ ] UPDATE/DELETE … RETURNING a quoted lower-case column (`returning "y"`)
+      fails 42703 "Attempting to query non existing column y", even on a
+      single table.
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays
