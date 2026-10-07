@@ -1358,3 +1358,5 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   A fast-lane `sqldriver_fast_test` (same binary, 45 heavy tests skipped) was
   tried and reverted (2026-10-07): ~170 s on every commit hook is too slow for
   the fast lane. The test-suite speed investigation owns this now.
+  - Urgent: CI's race lane fails its budget check on it (59m6s of the 1h
+    eternal budget, run 37624319889); the next slowdown times it out.
