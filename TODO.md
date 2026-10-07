@@ -572,8 +572,9 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   rewrites a select holding the IN, and the `w8_rl` in-joins plan. The
   one-value row `w8_rl_default_in1_order_by_price` is Go's single-element
   collapse, declared `DIFF-PATH single-element-in` (WS-E section 4).
-  Still open: item 10 (the two-source in-union, WS-E section 4) and the DESC
-  tie row's cause (needs the W6 step 1 observer).
+  Still open: item 10 (the two-source in-union, WS-E section 4). The DESC
+  tie row is resolved: `w8_tie_in_order_by_col1_desc_explain` and its ASC
+  twin are SAME-PATH (the sorted IN-join over I5, as Java).
   Item 10 measured (2026-10-06), both variants reverted. Go's WHERE carrier
   (the filter arm of InComparisonToExplodeRule) explodes one IN per firing,
   so two lists nest two one-source in-unions; ImplementInUnionRule itself
