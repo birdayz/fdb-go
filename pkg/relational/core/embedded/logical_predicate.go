@@ -1117,29 +1117,44 @@ func buildDerivedTableSourceFromAgg(alias string, sq *selectQuery, md *recordlay
 // alone fails to resolve, the WHERE's fault is the one reported. A WHERE with
 // a subquery is not re-walked (its subqueries need the clause's planner); a
 // WHERE that resolves leaves err as it is. A join's ON is resolved with the
-// FROM, before the WHERE, and its faults are reported by the build itself, so
-// a block with an ON keeps err. When both faults are 42703 on one column (a
+// FROM, before the WHERE, so an ON's fault comes first. When both faults are 42703 on one column (a
 // select list and a WHERE naming d.cc), err's qualified rendering is kept.
 func whereFaultFirst(resolver *expr.Resolver, sq *selectQuery, err error) error {
-	if err == nil || resolver == nil || sq == nil || sq.whereExpr == nil {
+	if err == nil || resolver == nil || sq == nil {
 		return err
 	}
+	// The FROM, its ONs included, resolves first, in join order. A USING
+	// join's synthesized ON is checked by its own pre-pass.
 	for _, j := range sq.joins {
-		if j.onExpr != nil {
-			return err
+		if j.onExpr == nil || len(j.usingColTexts) != 0 {
+			continue
+		}
+		if onErr := clauseFault(resolver, j.onExpr, err); onErr != nil {
+			return onErr
 		}
 	}
-	where := sq.whereExpr.Expression()
-	if where == nil || expr.ContainsSubqueryAtom(where) {
+	if sq.whereExpr == nil {
 		return err
+	}
+	if whereErr := clauseFault(resolver, sq.whereExpr.Expression(), err); whereErr != nil {
+		return whereErr
+	}
+	return err
+}
+
+// clauseFault is the fault a clause reports when resolved alone, or nil when
+// it resolves (or holds a subquery, which needs the clause's planner).
+func clauseFault(resolver *expr.Resolver, where antlrgen.IExpressionContext, err error) error {
+	if where == nil || expr.ContainsSubqueryAtom(where) {
+		return nil
 	}
 	_, walkErr := resolver.WalkPredicate(where)
 	if walkErr == nil {
-		return err
+		return nil
 	}
 	whereErr := mapPredicateWalkError(walkErr)
 	if whereErr == nil && !errors.As(walkErr, &whereErr) {
-		return err
+		return nil
 	}
 	var buildErr *api.Error
 	if errors.As(err, &buildErr) && buildErr.Code == api.ErrCodeUndefinedColumn && whereErr.Code == api.ErrCodeUndefinedColumn {

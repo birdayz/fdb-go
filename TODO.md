@@ -1141,9 +1141,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
       SELECT build fails, both builders re-resolve the WHERE
       (`whereFaultFirst`) and report the WHERE's fault. Three of the four JVM
       probe shapes moved to Java's answer (`select_where_precedence_java_probe_test.go`);
-      mutation-checked. Not covered: a block with a join ON keeps the build's
-      own order, and so do the select-list function checks that run before
-      the scope exists (`unknownScalarFunction`).
+      mutation-checked. Since extended (2026-10-07): a block's join ONs are
+      resolved first, in join order, then the WHERE, and the unknown-function
+      check waits for the scope, so its 0AF00 also yields to a WHERE fault.
+      Eight more probe rows (ON, LEFT JOIN, USING, comma join, function),
+      all equal to Java; both changes mutation-checked.
     - [x] 42703 message text (2026-10-07): every Go unknown-column site
       says Java's "Attempting to query non existing column <identifier>"
       (SemanticAnalyzer.java:446). The fromless JVM probe's `unknown` and

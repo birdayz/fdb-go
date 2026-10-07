@@ -58,7 +58,7 @@ var _ = Describe("SelectWherePrecedenceJavaProbe", func() {
 		// Each engine's SQLSTATE and a fragment its message must hold: the
 		// column a 42703 names, or the fault an XX000 reports.
 		type want struct{ state, holds string }
-		for _, c := range []struct {
+		cases := []struct {
 			sql        string
 			java, goes want
 		}{
@@ -67,10 +67,25 @@ var _ = Describe("SelectWherePrecedenceJavaProbe", func() {
 			// The WHERE's own non-resolution fault wins too.
 			{`SELECT nosucha FROM t WHERE f & 1 = 1`, want{"XX000", "unable to encapsulate arithmetic operation"}, want{"XX000", "unable to encapsulate arithmetic operation"}},
 			{`SELECT id FROM t WHERE nosuchb = 1 AND f & 1 = 1`, want{"42703", "NOSUCHB"}, want{"42703", "NOSUCHB"}},
-		} {
-			j := outcome(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
-			g := outcome(goRunner.RunWithSetup(ctx, schema, setup, c.sql))
-			GinkgoWriter.Printf("SWPREC %s\n  java=%s\n  go  =%s\n", c.sql, j, g)
+			// Blocks with a join ON.
+			{`SELECT a.nosucha FROM t a JOIN t b ON a.id = b.id WHERE b.nosuchb = 1`, want{"42703", "NOSUCHB"}, want{"42703", "NOSUCHB"}},
+			{`SELECT a.nosucha FROM t a JOIN t b ON a.nosuchc = b.id WHERE b.nosuchb = 1`, want{"42703", "NOSUCHC"}, want{"42703", "NOSUCHC"}},
+			{`SELECT a.id FROM t a JOIN t b ON a.nosuchc = b.id WHERE b.nosuchb = 1`, want{"42703", "NOSUCHC"}, want{"42703", "NOSUCHC"}},
+			{`SELECT a.f & 1 FROM t a JOIN t b ON a.id = b.id WHERE b.nosuchb = 1`, want{"42703", "NOSUCHB"}, want{"42703", "NOSUCHB"}},
+			{`SELECT a.nosucha FROM t a, t b WHERE b.nosuchb = 1`, want{"42703", "NOSUCHB"}, want{"42703", "NOSUCHB"}},
+			{`SELECT a.nosucha FROM t a LEFT JOIN t b ON a.id = b.id WHERE b.nosuchb = 1`, want{"42703", "NOSUCHB"}, want{"42703", "NOSUCHB"}},
+			{`SELECT a.nosucha FROM t a JOIN t b USING (id) WHERE b.nosuchb = 1`, want{"42703", "NOSUCHB"}, want{"42703", "NOSUCHB"}},
+			// The select list's function check that runs before the scope.
+			{`SELECT nosuchfn(id) FROM t WHERE nosuchb = 1`, want{"42703", "NOSUCHB"}, want{"42703", "NOSUCHB"}},
+		}
+		got := make([][2]string, len(cases))
+		for i, c := range cases {
+			got[i][0] = outcome(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
+			got[i][1] = outcome(goRunner.RunWithSetup(ctx, schema, setup, c.sql))
+			GinkgoWriter.Printf("SWPREC %s\n  java=%s\n  go  =%s\n", c.sql, got[i][0], got[i][1])
+		}
+		for i, c := range cases {
+			j, g := got[i][0], got[i][1]
 			for _, side := range []struct {
 				engine, got string
 				want        want

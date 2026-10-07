@@ -507,9 +507,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	if simpleTable.GroupByClause() != nil || hasPositionalOrderBy(simpleTable) || hasMixedSelectStar(simpleTable) {
 		expandStar = starExpanderFor(fs, v.md, v.templateName, v.cteScopes)
 	}
-	if fn := unknownScalarFunction(simpleTable.SelectElements(), v.md); fn != "" {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
-	}
+	unknownFn := unknownScalarFunction(simpleTable.SelectElements(), v.md)
 	cls, err := classifySelectElements(simpleTable, expandStar)
 	if err != nil {
 		return nil, err
@@ -629,6 +627,9 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// Java resolves the WHERE before the select list (QueryVisitor.java:
 	// 272-274 before :283-322): a fault in both reports the WHERE's.
 	defer func() { err = whereFaultFirst(resolver, sq, err) }()
+	if unknownFn != "" {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+unknownFn)
+	}
 
 	// (1) Expand qualified stars (a.*) in the projection list.
 	needRebuild := false
