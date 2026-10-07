@@ -260,25 +260,7 @@ var _ = Describe("GuardiANN index persisted bytes through the record layer", fun
 				"subspace": BytesToIntArray(javaSS.Bytes()), "autoMerge": autoMerge, "ops": ops,
 			}, &javaSteps)).To(Succeed())
 
-			index := recordlayer.NewVectorIndex("gv", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
-			for k, v := range map[string]string{
-				recordlayer.IndexOptionVectorEngine:                     "GUARDIANN",
-				recordlayer.IndexOptionVectorMetric:                     "EUCLIDEAN_METRIC",
-				recordlayer.IndexOptionGuardiannPrimaryClusterMin:       "0",
-				recordlayer.IndexOptionGuardiannPrimaryClusterMax:       "10",
-				recordlayer.IndexOptionGuardiannPrimaryClusterHardMax:   "40",
-				recordlayer.IndexOptionGuardiannCollapseMinDuplicates:   "5",
-				recordlayer.IndexOptionGuardiannDeterministicRandomness: "true",
-			} {
-				index.Options[k] = v
-			}
-			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
-			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
-			builder.AddIndex("Order", index)
-			md, err := builder.Build()
-			Expect(err).NotTo(HaveOccurred())
+			md, index := guardiannRecordMetaDataGo()
 			open := func(rc *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
 				return recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(goSS).CreateOrOpen()
 			}
@@ -333,6 +315,156 @@ var _ = Describe("GuardiANN index persisted bytes through the record layer", fun
 		})
 	}
 })
+
+// The vector merge lock across engines: a partition lease one engine's merge
+// session holds is honoured by the other engine's merge (VectorIndexMergeLock:
+// owner UUID and timestamp under the index secondary subspace). A merge
+// claims a free partition in one step and drains a partition it holds in the
+// next; a merge of another session neither drains nor re-claims it.
+var _ = Describe("GuardiANN merge lock across engines", func() {
+	for _, javaFirst := range []bool{true, false} {
+		javaFirst := javaFirst
+		It(fmt.Sprintf("keeps another session's merge out (java first=%v)", javaFirst), func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			env, err := SetupTenantEnvironment(ctx, sharedContainer, "guardiann_merge_lock_"+uuid.New().String())
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { Expect(env.Cleanup(context.Background())).To(Succeed()) })
+			ss := env.Keyspace.Sub("shared")
+			md, index := guardiannRecordMetaDataGo()
+			open := func(rc *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
+				return recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+			}
+			for i := int64(0); i < 14; i++ {
+				_, err := env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+					store, err := open(rc)
+					if err != nil {
+						return nil, err
+					}
+					store.GetIndexDeferredMaintenanceControl().SetAutoMergeDuringCommit(false)
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId:    proto.Int64(i),
+						VectorData: recordlayer.SerializeVector([]float64{0.01 * float64(i), 0.02 * float64(i%3)}),
+					})
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			// state is the lease owner (nil when free) and the outstanding task count.
+			state := func() (*uuid.UUID, int64) {
+				var owner *uuid.UUID
+				var count int64
+				_, err := env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+					store, err := open(rc)
+					if err != nil {
+						return nil, err
+					}
+					secondary := store.IndexSecondarySubspace(index)
+					owner, count = nil, 0
+					v, err := rc.Transaction().Get(fdb.Key(secondary.Sub(int64(1)).Pack(tuple.Tuple{}))).Get()
+					if err != nil {
+						return nil, err
+					}
+					if v != nil {
+						t, err := tuple.Unpack(v)
+						if err != nil {
+							return nil, err
+						}
+						u := uuid.UUID(t[0].(tuple.UUID))
+						owner = &u
+					}
+					c, err := rc.Transaction().Get(fdb.Key(secondary.Sub(int64(0)).Pack(tuple.Tuple{}))).Get()
+					if err != nil {
+						return nil, err
+					}
+					for i := len(c) - 1; i >= 0; i-- {
+						count = count<<8 | int64(c[i])
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				return owner, count
+			}
+			merge := func(java bool, session uuid.UUID) {
+				if java {
+					var result struct {
+						Outcome struct {
+							OK        bool   `json:"ok"`
+							Exception string `json:"exception"`
+						} `json:"outcome"`
+					}
+					Expect(NewJavaInvoker().InvokeAs(ctx, "guardiannMergeStep", map[string]any{
+						"clusterFile": env.ClusterFile, "tenantName": env.TenantName,
+						"subspace": BytesToIntArray(ss.Bytes()), "sessionId": session.String(),
+					}, &result)).To(Succeed())
+					Expect(result.Outcome.OK).To(BeTrue(), "Java merge: %s", result.Outcome.Exception)
+					return
+				}
+				_, err := env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+					store, err := open(rc)
+					if err != nil {
+						return nil, err
+					}
+					store.GetIndexDeferredMaintenanceControl().SetMergeSessionID(&session)
+					m, err := store.GetIndexMaintainer(index)
+					if err != nil {
+						return nil, err
+					}
+					return nil, m.MergeIndex()
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			holder, other := uuid.New(), uuid.New()
+			owner, queued := state()
+			Expect(owner).To(BeNil())
+			Expect(queued).To(BeNumerically(">", 0), "the deferred saves must queue tasks")
+
+			merge(javaFirst, holder) // claims the free partition
+			owner, count := state()
+			Expect(owner).To(Equal(&holder))
+			Expect(count).To(Equal(queued))
+
+			merge(!javaFirst, other) // another session: the lease is live, nothing happens
+			owner, count = state()
+			Expect(owner).To(Equal(&holder), "the other engine's merge took a live lease")
+			Expect(count).To(Equal(queued), "the other engine's merge drained a partition it does not hold")
+
+			// The holder drains (a task may enqueue follow-ups, so the count need
+			// not fall at once); its merges empty the queue.
+			for round := 0; round < 20 && count > 0; round++ {
+				merge(javaFirst, holder)
+				_, count = state()
+			}
+			Expect(count).To(BeZero(), "the holder's merges did not drain its partition")
+		})
+	}
+})
+
+// guardiannRecordMetaDataGo is the conformance step's guardiannRecordMetaData("40")
+// in Go: Order with the GUARDIANN index "gv" over vector_data.
+func guardiannRecordMetaDataGo() (*recordlayer.RecordMetaData, *recordlayer.Index) {
+	index := recordlayer.NewVectorIndex("gv", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
+	for k, v := range map[string]string{
+		recordlayer.IndexOptionVectorEngine:                     "GUARDIANN",
+		recordlayer.IndexOptionVectorMetric:                     "EUCLIDEAN_METRIC",
+		recordlayer.IndexOptionGuardiannPrimaryClusterMin:       "0",
+		recordlayer.IndexOptionGuardiannPrimaryClusterMax:       "10",
+		recordlayer.IndexOptionGuardiannPrimaryClusterHardMax:   "40",
+		recordlayer.IndexOptionGuardiannCollapseMinDuplicates:   "5",
+		recordlayer.IndexOptionGuardiannDeterministicRandomness: "true",
+	} {
+		index.Options[k] = v
+	}
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.AddIndex("Order", index)
+	md, err := builder.Build()
+	Expect(err).NotTo(HaveOccurred())
+	return md, index
+}
 
 // guardiannStepDiffs lists the keys only one engine wrote and the values that
 // differ, keys in the engines' printable form.

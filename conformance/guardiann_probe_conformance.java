@@ -1294,6 +1294,27 @@ class GuardiannProbeSteps extends ConformanceBase {
     }
 
     /**
+     * One VectorIndexMaintainer.mergeIndex invocation on the "gv" index of the store at subspace, in its own
+     * transaction, under merge session sessionId: what IndexingMerger runs per step. The merge lock it takes or
+     * keeps lives in the index secondary subspace, which a Go store's merge reads.
+     */
+    @ConformanceStep("guardiannMergeStep")
+    public Map<String, Object> guardiannMergeStep(String clusterFile, String tenantName, byte[] subspace,
+                                                  String sessionId) {
+        var metadata = guardiannRecordMetaData("40");
+        var index = metadata.getIndex("gv");
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("outcome", phase(() -> runInContext(clusterFile, tenantName, context -> {
+            var store = com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore.newBuilder()
+                    .setMetaDataProvider(metadata).setContext(context).setSubspace(new Subspace(subspace)).open();
+            store.getIndexDeferredMaintenanceControl().setMergeSessionId(UUID.fromString(sessionId));
+            store.getIndexMaintainer(index).mergeIndex().join();
+            return null;
+        })));
+        return result;
+    }
+
+    /**
      * Inline maintenance reached through the RECORD LAYER: every save runs with
      * IndexDeferredMaintenanceControl.autoMergeDuringCommit, which VectorIndexMaintainer passes to
      * the engine as maintainInTransaction. Saves nearCount near vectors, then farCount far vectors,

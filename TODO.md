@@ -810,7 +810,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   record layer's HNSW search is kNearestNeighborsSearch only (orderByDistance
   is used by GuardiANN's centroid walk alone, ported), and cardinality reads
   at most two layer-0 keys.
-- [ ] Distinguishing pins for codecs, evaluator, collapse, bounce, reassignment,
+- [x] Distinguishing pins for codecs, evaluator, collapse, bounce, reassignment,
   task counts and merge locks.
   Persisted-byte differential added (2026-10-06,
   `conformance/guardiann_byte_conformance_test.go`): Java's Guardiann and Go's
@@ -840,9 +840,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   into a GUARDIANN index, deferred and with autoMergeDuringCommit, and the
   index subspace AND the secondary subspace (vector task counts) match after
   every step (mutation-checked: dropping Go's enqueue count fails at the
-  first split). Still open: the merge lock across engines (one engine holds
-  it, the other's merge must be refused); its contents are an owner UUID
-  and a timestamp, so it is a behaviour pin, not a byte pin.
+  first split). The merge lock across engines is pinned both ways: one
+  engine's merge session claims the partition, the other engine's merge
+  (another session) neither drains nor re-claims it, and the holder's
+  merges drain the queue (`GuardiANN merge lock across engines`,
+  mutation-checked: a Go merge that ignores a live lease fails).
 - [ ] Runner: unified bounded attempts, per-owner retries, commit ownership and
   deactivation, client proxy wait/body-chain causes, SPFresh stall bound and
   instrumentation. Apply the SPFresh paper review to affected algorithms.
