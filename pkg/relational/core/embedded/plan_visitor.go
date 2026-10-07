@@ -1763,6 +1763,14 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 			}
 		}
 	}
+	if fs != nil && fs.enclosingScope != nil {
+		sq := selectQueryFromClassification(cls, fs)
+		if resolver := buildSelectScope(sq, v.md, v.templateName, v.cteScopes); resolver != nil {
+			if err := correlatedStarColumnsToExpressions(cls.aggCols, outerColumnSegsFilter(sq, resolver)); err != nil {
+				return nil, "", err
+			}
+		}
+	}
 	aggCalls, aggProvenance, hasDistinct := logicalAggregateCalls(cls.aggCols, cls.countStar, strip)
 	outputAggCols := visibleAggregateOutputColumns(cls.aggCols, cls.countStar, cls.countStarAlias)
 	// Every aggregate's internal ABI is canonical and alias-free:

@@ -175,17 +175,6 @@ const (
 	// for, and the fix would cost real correctness elsewhere, so these stay
 	// booked rather than closed.
 	SkipConformanceJavaPlannerBug SkipClass = "conformance:java-planner-bug"
-	// SkipGapStarGroupBy is a qualified star in a SELECT list that also carries
-	// GROUP BY. Java expands the star FIRST and then requires each expanded
-	// output to be composable from the grouping expressions, the aggregates and
-	// the outer correlations (LogicalOperator.java:435-441, isComposableFrom →
-	// GROUPING_ERROR), so `SELECT a.* … GROUP BY a1, a2, a3` over a table with
-	// exactly those columns is LEGAL. Go rejects every star-with-GROUP-BY
-	// unconditionally at parse time, where no schema is in hand to expand
-	// against — measured against the live JVM in
-	// conformance/duplicate_star_java_probe_test.go (group_by_star_covers vs
-	// group_by_star_exceeds).
-	SkipGapStarGroupBy SkipClass = "engine-gap:star-group-by-expansion"
 	// SkipConformanceJavaDisabled is a file Java's test class @Disabled
 	// because Java fails it, failing here for the same reason. Nothing is
 	// missing on the Go side relative to Java; the booking names Java's TODO.
@@ -219,7 +208,6 @@ func AllSkipClasses() []SkipClass {
 
 		SkipConformanceGoAccepts,
 		SkipConformanceJavaPlannerBug,
-		SkipGapStarGroupBy,
 		SkipConformanceJavaDisabled,
 		SkipCheckCache,
 		SkipRandomInjection,

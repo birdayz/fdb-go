@@ -73,10 +73,23 @@ var _ = Describe("StarScopeJavaProbe", func() {
 			{"from_outer_alias_correlated", "SELECT X.B1 FROM B AS X WHERE EXISTS (SELECT 1 FROM X AS Y WHERE Y.B2 = X.B2 AND Y.B1 <> X.B1)"},
 			{"from_outer_alias_cte", "WITH C AS (SELECT A1 FROM A) SELECT Q.A1 FROM C AS Q WHERE EXISTS (SELECT 1 FROM Q WHERE Q.A1 > 2)"},
 			{"exists_outer_star_filtered", "SELECT B1 FROM B WHERE EXISTS (SELECT B.* FROM A WHERE A.A1 = B.B1 AND B.B2 = 20)"},
+			{"exists_outer_star_group", "SELECT B.* FROM B WHERE EXISTS (SELECT A.*, B.* FROM A GROUP BY A1, A2, A3)"},
+			{"exists_outer_star_first_group", "SELECT B1 FROM B WHERE EXISTS (SELECT B.*, A1 FROM A GROUP BY A1)"},
+			{"exists_outer_star_group_filtered", "SELECT B1 FROM B WHERE EXISTS (SELECT A1, B.* FROM A WHERE A.A1 = B.B1 GROUP BY A1)"},
+			{"exists_outer_star_group_having", "SELECT B1 FROM B WHERE EXISTS (SELECT A1, B.* FROM A GROUP BY A1 HAVING A1 > B.B1)"},
 		} {
 			j := render(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
 			g := render(goRunner.RunWithSetup(ctx, schema, setup, c.sql))
 			GinkgoWriter.Printf("STARSCOPE %s\n  java %s\n  go   %s\n", c.name, j, g)
+			// A HAVING that reads an enclosing column inside EXISTS is a Go
+			// limit of its own, star or no star (DIVERGENCES.md "A correlated
+			// HAVING inside EXISTS"); the row reddens when it changes.
+			if c.name == "exists_outer_star_group_having" {
+				if g != "ERR 0AF00" || j == g {
+					mismatches = append(mismatches, fmt.Sprintf("%s: java %s, go %s", c.name, j, g))
+				}
+				continue
+			}
 			if j != g {
 				mismatches = append(mismatches, fmt.Sprintf("%s: java %s, go %s", c.name, j, g))
 			}

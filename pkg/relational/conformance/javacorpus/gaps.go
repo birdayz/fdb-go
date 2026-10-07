@@ -229,10 +229,10 @@ var engineGaps = []EngineGap{
 	//
 	// Booked to that gap at its own exact rejection, so the struct class no
 	// longer claims the file and the real blocker is counted under its own name.
-	// The mixed arm is expanded in place now (2026-10-07); what remains is a
-	// star over an ENCLOSING source in a grouped list (DIVERGENCES.md "A
-	// correlated star in a grouped select list").
-	{"select-a-star.yamsql", SkipGapStarGroupBy, "a correlated star in a grouped select list is not supported", "CQ-72"},
+	// The mixed arm is expanded in place now (2026-10-07), and a star over an
+	// ENCLOSING source in a grouped list reads its columns as the outer
+	// references written by name (StarScopeJavaProbe exists_outer_star_group*):
+	// select-a-star.yamsql passes.
 
 	// NOT struct-related, re-armed by the struct DML landing (these files'
 	// later blocks run for the first time):

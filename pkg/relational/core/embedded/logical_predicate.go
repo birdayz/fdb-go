@@ -49,6 +49,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
+	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
@@ -5342,6 +5343,36 @@ func outerColumnSegsFilter(sq *selectQuery, resolver *expr.Resolver) func(segs [
 	}
 }
 
+// correlatedStarColumnsToExpressions rewrites each column a star over an
+// enclosing source contributed to a grouped select list (`SELECT a.*, outer.*
+// … GROUP BY …`) into the column written by name, `"OUTER"."C"`, which the
+// grouped list evaluates over the aggregated row like any outer reference:
+// the value is fixed per group, and Java answers it.
+func correlatedStarColumnsToExpressions(aggCols []aggSelectCol, outerSegs func([]string) bool) error {
+	if outerSegs == nil {
+		return nil
+	}
+	for i, ac := range aggCols {
+		if ac.aggFunc != "" || !ac.visible || ac.outExpr != nil || ac.groupColValue == nil ||
+			len(ac.groupColSegs) < 2 || !outerSegs(ac.groupColSegs) {
+			continue
+		}
+		quoted := make([]string, len(ac.groupColSegs))
+		for k, seg := range ac.groupColSegs {
+			quoted[k] = `"` + strings.ReplaceAll(seg, `"`, `""`) + `"`
+		}
+		expr, err := parser.ParseExpression(strings.Join(quoted, "."))
+		if err != nil {
+			return api.NewErrorf(api.ErrCodeInternalError, "correlated star column %s: %v", strings.Join(ac.groupColSegs, "."), err)
+		}
+		aggCols[i] = aggSelectCol{
+			outName: ac.outName, selectOrdinal: ac.selectOrdinal, outExpr: expr,
+			outputAliased: ac.outputAliased, outputInheritedName: ac.outputInheritedName, visible: true,
+		}
+	}
+	return nil
+}
+
 func findAggregate(op logical.LogicalOperator) *logical.LogicalAggregate {
 	for cur := op; cur != nil; {
 		if a, ok := cur.(*logical.LogicalAggregate); ok {
@@ -5641,9 +5672,11 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData, 
 				continue
 			}
 			// An enclosing query's column from a star (`SELECT a.*, outer.*
-			// … GROUP BY …`) is fixed per group and Java answers it; Go has no
-			// post-aggregate slot for a bound outer value yet (DIVERGENCES.md
-			// "A correlated star in a grouped select list").
+			// … GROUP BY …`) is fixed per group and Java answers it. It is
+			// the column written by name (`outer.c`), which a grouped list
+			// evaluates over the aggregated row as an expression.
+			// (correlatedStarColumnsToExpressions rewrote it before the
+			// aggregate was built; one left here is a path that did not.)
 			if outerSegs != nil && ac.groupColValue != nil && len(ac.groupColSegs) > 1 && outerSegs(ac.groupColSegs) {
 				return api.NewError(api.ErrCodeUnsupportedOperation, "a correlated star in a grouped select list is not supported")
 			}
