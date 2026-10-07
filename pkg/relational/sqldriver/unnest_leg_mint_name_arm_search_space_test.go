@@ -46,11 +46,12 @@ import (
 //
 // THE ASSERTION IS THE OUTCOME PARTITION, not the census counts: the census is a
 // process global and this package's tests run in parallel, so counters cannot be
-// read here. `declines` is the load-bearing half. A query that moves from
-// DECLINE to PLAN means a name-model path was restored under it, which re-arms
-// the name arm and RE-OPENS the reachability question this file answered — and
-// it would otherwise re-open silently, since the arm is unreachable today only
-// because the decline is loud.
+// read here. `chainDeclines` is the remaining decline half. A query that moves
+// from DECLINE to PLAN may mean a name-model path was restored under it, which
+// re-arms the name arm and RE-OPENS the reachability question this file
+// answered; re-measure with a panic on the name arms before moving it to a
+// plans list (the EXISTS scope-collision levers moved that way once the bound
+// EXISTS lowering bound every inner leg privately: zero name-arm hits).
 //
 // SCOPE OF THE NEGATIVE READING, so it can be seen to go stale: at the 45
 // queries below, over the two schemas they use, and against the whole
@@ -66,14 +67,11 @@ import (
 // therefore stay.
 //
 // MUTATION TEETH, per arm, stated because an arm nothing can redden is not
-// coverage. Three of the four arms redden under a SINGLE source mutation, and
-// each reddens a DIFFERENT arm — they test separate sites, not one site four
-// times:
+// coverage. Two of the three arms redden under a SINGLE source mutation, and
+// each reddens a DIFFERENT arm — they test separate sites:
 //
-//   - `declines`   — disabling existsInnerScopeCollidesOuter makes 3 of its 4
-//     levers plan; `plans` stays green.
 //   - `plans`      — making admitExistentialGather always decline reddens 14 of
-//     its entries; `declines` stays green.
+//     its entries.
 //   - `chainPlans` — making chainedUnnestOrdinalGate always decline reddens all
 //     13; nothing else moves.
 //   - `chainDeclines` — NO single source mutation was found that reddens it.
@@ -129,13 +127,11 @@ func TestUnnestLegMintNameArmSearchSpace(t *testing.T) {
 		// A multi-source EXISTS inner whose aliases do NOT collide with the
 		// outer legs — the near-miss of the scope-collision lever.
 		{"multisrc_inner_no_collision", `SELECT "X" FROM A, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM B, EE WHERE B."K" = EE."CK" AND EE."CK" = A."K")`},
-	}
-
-	// The shapes that LOUD-DECLINE. This is the half that keeps the name arms
-	// unreachable: each is a decline lever that once landed on the name model
-	// and now has no fallback to land on.
-	declines := []struct{ name, sql string }{
-		// EXISTS inner scope collision (unnestExistsSeedSafe / the gather).
+		// An EXISTS inner source reusing an outer leg's name. These declined
+		// until the bound EXISTS lowering gave every inner leg its own
+		// binding (Java's inner shadow); they now plan on a windowed seed —
+		// measured with a panic on every name arm, zero hits — and answer
+		// Java's rows (conformance ExistsInnerShadowJavaProbe, unnest_reuse_*).
 		{"collide_reuse_A_inner", `SELECT "X" FROM A, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM A, EE WHERE A."K" = EE."CK")`},
 		{"collide_reuse_A_box", `SELECT "X" FROM A LEFT JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM A, EE WHERE A."K" = EE."CK")`},
 		{"collide_reuse_B_multisrc", `SELECT "X" FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM B, EE WHERE B."K" = EE."CK" AND EE."CK" = A."K")`},
@@ -148,19 +144,6 @@ func TestUnnestLegMintNameArmSearchSpace(t *testing.T) {
 			t.Errorf("%s: expected a plan, got %v\n  sql: %s", tc.name, err, tc.sql)
 		}
 	}
-	for _, tc := range declines {
-		_, err := embedded.PlanRecordQueryWithMetadata(tc.sql, md, nil)
-		if err == nil {
-			t.Errorf("%s: PLANNED, and it used to LOUD-DECLINE.\n"+
-				"  A decline lever that starts planning means a non-windowed seed now has a\n"+
-				"  path through the unnest lowering. That is exactly what would make the\n"+
-				"  `!seedWindowed` name arms of rebaseUnnestOuterLegPredicate reachable, and\n"+
-				"  the failure at those arms is SILENT (an unbound leg QOV evaluates NULL and\n"+
-				"  EXISTS drops every row). Re-run the reachability measurement before\n"+
-				"  touching those arms.\n  sql: %s", tc.name, tc.sql)
-		}
-	}
-
 	// The CHAINED site's own levers, on the chained schema. The impure-bottom
 	// decline is loud (its wording is pinned by
 	// TestOuterJoinUnderChainedUnnestDeclines); what matters here is that the
@@ -206,13 +189,6 @@ func TestUnnestLegMintNameArmSearchSpace(t *testing.T) {
 		// resolution error: a typo in the SQL would decline too, and would make
 		// this half of the partition vacuous.
 		if !strings.HasPrefix(err.Error(), "0A") {
-			t.Errorf("%s: declined with a non-unsupported error %v — the lever may not be "+
-				"exercising the path it names.\n  sql: %s", tc.name, err, tc.sql)
-		}
-	}
-	for _, tc := range declines {
-		_, err := embedded.PlanRecordQueryWithMetadata(tc.sql, md, nil)
-		if err != nil && !strings.HasPrefix(err.Error(), "0A") {
 			t.Errorf("%s: declined with a non-unsupported error %v — the lever may not be "+
 				"exercising the path it names.\n  sql: %s", tc.name, err, tc.sql)
 		}

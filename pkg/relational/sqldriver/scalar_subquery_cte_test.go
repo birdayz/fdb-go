@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/onsi/gomega"
-
-	"fdb.dev/pkg/relational/api"
 )
 
 // TestFDB_ScalarSubqueryCTE verifies that a scalar subquery can reference
@@ -374,9 +374,12 @@ func TestFDB_ScalarCTEBodySurvivesCorrelatedDerivedExists(t *testing.T) {
 }
 
 // TestFDB_NestedExistsConsumerAdmission holds the child SQL fixed while varying
-// its consumer. These unsupported results are current Go admission contracts,
-// not SQL truth claims: the positive predicate has independently derived rows,
-// but negated/projected uses must not gain acceptance during ownership repair.
+// its consumer. The child's outer-only conjunct f.k > 0 stays inside the
+// existential under every consumer, as in Java (conformance
+// ExistsInnerShadowJavaProbe, case1_*/projected_*): flags holds a row for which
+// it holds (50) and one for which it does not (-1), so each consumer's rows
+// show where the conjunct was evaluated. Go once declined the negated and
+// projected consumers with 0A000.
 func TestFDB_NestedExistsConsumerAdmission(t *testing.T) {
 	t.Parallel()
 	db := setupErrorTestDB(t, "/FRL/nested_exists_consumer", "nested_exists_consumer",
@@ -384,50 +387,54 @@ func TestFDB_NestedExistsConsumerAdmission(t *testing.T) {
 			"CREATE TABLE flags (k BIGINT, PRIMARY KEY (k)) "+
 			"CREATE TABLE seed (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
-	for _, statement := range []string{"INSERT INTO t VALUES (7), (9)", "INSERT INTO flags VALUES (50)", "INSERT INTO seed VALUES (1)"} {
+	for _, statement := range []string{"INSERT INTO t VALUES (7), (9)", "INSERT INTO flags VALUES (50), (-1)", "INSERT INTO seed VALUES (1)"} {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
 	}
 	const child = `SELECT 1 FROM seed s, t m WHERE f.k > 0 AND EXISTS (SELECT 1 FROM flags nf WHERE nf.k > 0)`
-	const positive = `SELECT o.id FROM t o, flags f WHERE EXISTS (` + child + `) ORDER BY o.id`
 	for _, tc := range []struct {
 		name, sql string
-		decline   bool
+		want      []string
 	}{
-		{"positive_predicate", positive, false},
-		{"negated_predicate", `SELECT o.id FROM t o, flags f WHERE NOT EXISTS (` + child + `) ORDER BY o.id`, true},
-		{"positive_projection", `SELECT o.id, EXISTS (` + child + `) AS present FROM t o, flags f ORDER BY o.id`, true},
-		{"negated_projection", `SELECT o.id, NOT EXISTS (` + child + `) AS present FROM t o, flags f ORDER BY o.id`, true},
+		{"positive_predicate", `SELECT o.id, f.k FROM t o, flags f WHERE EXISTS (` + child + `)`, []string{"7 50", "9 50"}},
+		{"negated_predicate", `SELECT o.id, f.k FROM t o, flags f WHERE NOT EXISTS (` + child + `)`, []string{"7 -1", "9 -1"}},
+		{"positive_projection", `SELECT o.id, f.k, EXISTS (` + child + `) AS present FROM t o, flags f`, []string{"7 -1 false", "7 50 true", "9 -1 false", "9 50 true"}},
+		{"negated_projection", `SELECT o.id, f.k, NOT EXISTS (` + child + `) AS present FROM t o, flags f`, []string{"7 -1 true", "7 50 false", "9 -1 true", "9 50 false"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if tc.decline {
-				rows, err := db.QueryContext(ctx, tc.sql)
-				if rows != nil {
-					rows.Close()
-				}
-				requireSQLSTATE(t, err, api.ErrCodeUnsupportedOperation)
-				t.Log("consumer rejected with SQLSTATE 0A000")
-			}
-			// A fresh valid query must still work after a declined consumer.
-			// Same-planner registration atomicity is a separate builder contract.
-			rows, err := db.QueryContext(ctx, positive)
+			rows, err := db.QueryContext(ctx, tc.sql)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer rows.Close()
-			for _, want := range []int64{7, 9} {
-				if !rows.Next() {
-					t.Fatalf("missing positive row %d: %v", want, rows.Err())
-				}
-				var got int64
-				if err := rows.Scan(&got); err != nil || got != want {
-					t.Fatalf("positive row = %d, %v; want %d", got, err, want)
-				}
+			cols, err := rows.Columns()
+			if err != nil {
+				t.Fatal(err)
 			}
-			if rows.Next() || rows.Err() != nil {
-				t.Fatalf("unexpected positive row/error: %v", rows.Err())
+			var got []string
+			for rows.Next() {
+				vals := make([]any, len(cols))
+				ptrs := make([]any, len(cols))
+				for i := range vals {
+					ptrs[i] = &vals[i]
+				}
+				if err := rows.Scan(ptrs...); err != nil {
+					t.Fatal(err)
+				}
+				parts := make([]string, len(vals))
+				for i, v := range vals {
+					parts[i] = fmt.Sprint(v)
+				}
+				got = append(got, strings.Join(parts, " "))
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			sort.Strings(got)
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("rows = %q, want %q", got, tc.want)
 			}
 		})
 	}
