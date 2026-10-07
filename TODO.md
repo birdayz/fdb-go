@@ -155,6 +155,10 @@ Never mark a whole workstream complete because one of its subitems passed.
       reused as a later inner join source" decline are gone too: an early
       ON resolves left-to-current, so a later same-name inner leg does not
       capture it (probe row `on_before_later_same_name`, Java [2]).
+      The translator's `existsInnerScopeCollidesOuter` guard is no longer
+      reached from SQL (measured 2026-10-07: a panic on its true arm, zero
+      hits over sqldriver, core, conformance corpora and probes); it stays
+      as a net, with no effect on answers.
   - (d): Java's COALESCE rule. Only a NULL head (NullValue, a nil constant)
     or a BOOLEAN literal head folds; an INT/STRING literal head stays, so
     `COALESCE(1, 1/0) = 1` in a WHERE raises 22012 as in Java.
