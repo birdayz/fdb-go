@@ -336,14 +336,12 @@ var _ = Describe("RFC-257 WS-J: UPDATE resolves its SET column once", func() {
 			`UPDATE w SET f = nosuchcol, nosuch = 1 WHERE id = 1`: "NOSUCHCOL",
 		} {
 			Expect(answers[stmt][0]).To(HaveSuffix(" column "+column), stmt)
+			Expect(answers[stmt][1]).To(HaveSuffix(" column "+column), stmt)
 		}
-		// The fault Go names, and the messages Go shares with Java.
+		// The messages Go shares with Java.
 		for stmt, holds := range map[string]string{
-			`UPDATE w SET f = 1, f = 2 WHERE nosuch = 1`:          `"NOSUCH"`,
-			`UPDATE w SET nosuch = 1 WHERE nosuchb = 1`:           `"NOSUCHB"`,
-			`UPDATE w SET f = nosuchcol, nosuch = 1 WHERE id = 1`: `"NOSUCHCOL"`,
-			`UPDATE n SET "a$b" = NULL WHERE id = 1`:              "A null value cannot be assigned to a variable that is of a non-nullable type.",
-			`UPDATE w SET s = (1, 'a'), s.f = 5 WHERE id = 1`:     "The transformations used in an UPDATE statement are ambiguous.",
+			`UPDATE n SET "a$b" = NULL WHERE id = 1`:          "A null value cannot be assigned to a variable that is of a non-nullable type.",
+			`UPDATE w SET s = (1, 'a'), s.f = 5 WHERE id = 1`: "The transformations used in an UPDATE statement are ambiguous.",
 		} {
 			Expect(answers[stmt][1]).To(ContainSubstring(holds), stmt)
 		}
