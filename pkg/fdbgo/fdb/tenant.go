@@ -27,21 +27,22 @@ func (t Tenant) Transact(f func(WritableTransaction) (any, error)) (any, error) 
 // commit + commit_unknown barrier run detached (in client.Database.Transact); ctx never
 // cancels an in-flight commit.
 func (t Tenant) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
-	result, err := t.db.d.inner.Transact(ctx, func(tx *client.Transaction) (r any, e error) {
-		defer func() { e = unconvertError(e) }()
-		defer panicToError(&e)
-		tx.SetTenantId(t.tenantId)
-		txn := &transaction{
-			inner:         tx,
-			db:            t.db,
-			ctx:           ctx,
-			versionstamps: true,
-		}
-		t.db.applyTxDefaults(txn) // inherit DB-level option defaults — parity with Database.TransactCtx
-		return f(Transaction{t: txn})
+	var body bodyRun
+	result, err := t.db.d.inner.Transact(ctx, func(tx *client.Transaction) (any, error) {
+		return body.run(func() (any, error) {
+			tx.SetTenantId(t.tenantId)
+			txn := &transaction{
+				inner:         tx,
+				db:            t.db,
+				ctx:           ctx,
+				versionstamps: true,
+			}
+			t.db.applyTxDefaults(txn) // inherit DB-level option defaults — parity with Database.TransactCtx
+			return f(Transaction{t: txn})
+		})
 	})
 	if err != nil {
-		return nil, convertError(err)
+		return nil, body.keepBodyError(err)
 	}
 	return result, nil
 }
@@ -54,20 +55,21 @@ func (t Tenant) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) 
 
 // ReadTransactCtx is ReadTransact bounded by ctx (RFC-090 / fdb.CtxReadTransactor).
 func (t Tenant) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) (any, error)) (any, error) {
-	result, err := t.db.d.inner.ReadTransact(ctx, func(tx *client.Transaction) (r any, e error) {
-		defer func() { e = unconvertError(e) }()
-		defer panicToError(&e)
-		tx.SetTenantId(t.tenantId)
-		txn := &transaction{
-			inner: tx,
-			db:    t.db,
-			ctx:   ctx,
-		}
-		t.db.applyTxDefaults(txn) // inherit DB-level option defaults — parity with Database.ReadTransactCtx
-		return f(Transaction{t: txn})
+	var body bodyRun
+	result, err := t.db.d.inner.ReadTransact(ctx, func(tx *client.Transaction) (any, error) {
+		return body.run(func() (any, error) {
+			tx.SetTenantId(t.tenantId)
+			txn := &transaction{
+				inner: tx,
+				db:    t.db,
+				ctx:   ctx,
+			}
+			t.db.applyTxDefaults(txn) // inherit DB-level option defaults — parity with Database.ReadTransactCtx
+			return f(Transaction{t: txn})
+		})
 	})
 	if err != nil {
-		return nil, convertError(err)
+		return nil, body.keepBodyError(err)
 	}
 	return result, nil
 }

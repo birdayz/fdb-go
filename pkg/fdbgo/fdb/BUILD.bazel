@@ -37,6 +37,7 @@ go_test(
     timeout = "long",
     srcs = [
         "approxsize_deferred_test.go",
+        "body_error_chain_fdb_test.go",
         "conflictrange_workload_test.go",
         "convert_teardown_test.go",
         "database_bootstrap_test.go",

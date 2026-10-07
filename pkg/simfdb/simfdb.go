@@ -212,9 +212,8 @@ func (db *SimDB) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, e
 // with a non-fdb.Error or a different code (bindings/go/src/fdb/database.go, retryable, at
 // 7.3.77), and the libfdb_c backend follows that rule (libfdbc/backend.go, runLoop). So a
 // decline of the same code returns the caller's error with its chain; any other error from
-// OnError is OnError's own and is returned as it is. The pure-Go fdb wrapper does not keep the
-// chain today (unconvertError/convertError); RFC-257 WS-D section 5, "The body's error chain",
-// makes it adopt the same rule before D-0 sets a retry limit.
+// OnError is OnError's own and is returned as it is. The pure-Go fdb wrapper follows the same
+// rule (bodyRun.keepBodyError, pkg/fdbgo/fdb/transaction.go).
 func declinedRetryError(err error, fe fdb.Error, oerr error) error {
 	var oe fdb.Error
 	if errors.As(oerr, &oe) && oe.Code == fe.Code {

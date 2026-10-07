@@ -866,8 +866,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   (`TestRetryPredicates_AnyCauseAndFirstCause`, mutation-checked).
   Open: moving Run and its variants onto a bounded attempt loop
   (maxAttempts 10, retry limit 0 on the backend), the body error-chain
-  recorder, per-owner policies, the SPFresh split-window and stall bound;
-  the pure-Go wrapper keeping the body's error chain.
+  recorder, per-owner policies, the SPFresh split-window and stall bound.
+  Pure-Go wrapper done: `TransactCtx`, `ReadTransactCtx` and the tenant
+  forms keep the last execution's body error when OnError re-raises its
+  code (the Apple binding's `retryable`), panics included
+  (`TestFDB_*KeepsBodyErrorChain`, mutation-checked).
   Proxy wait done: a commit with no known commit proxy now waits for a
   proxy change or its context, then reports 1021 through the
   maybe-delivered fence (C++ LoadBalance over the empty set raced against

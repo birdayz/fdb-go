@@ -503,22 +503,74 @@ func WrapTransaction(tx *client.Transaction, db Database) Transaction {
 	}}
 }
 
-// panicToError catches error panics and converts them to returned errors.
-// Apple's binding only catches fdb.Error (since the C client only produces
-// those), but our pure Go client can surface arbitrary errors (network,
-// context, etc.) via MustGet(), so we catch the full error interface.
+// panicToError catches error panics and returns them as errors, unchanged, as
+// the Apple binding's panicToError does. Apple's catches only fdb.Error (the C
+// client produces nothing else), but the pure-Go client can surface arbitrary
+// errors (network, context, etc.) via MustGet(), so we catch the full error
+// interface. The retry-loop wrappers convert the result for OnError themselves
+// (bodyRun.run), keeping the raw error for the caller.
 func panicToError(e *error) {
 	if r := recover(); r != nil {
 		if err, ok := r.(error); ok {
-			// Apply unconvertError so fdb.Error panics from MustGet()
-			// are converted back to *wire.FDBError for the retry loop.
-			// Without this, panicked fdb.Error escapes the retry loop
-			// because OnError doesn't recognize it via errors.As.
-			*e = unconvertError(err)
+			*e = err
 		} else {
 			panic(r) // re-panic non-error panics
 		}
 	}
+}
+
+// bodyRun is one execution of a transactional body inside the client's retry
+// loop. It hands the loop the body's error with any FDB code exposed as a bare
+// *wire.FDBError (what OnError recognizes) and keeps the error the body actually
+// returned, so the wrapper can give it back to the caller (keepBodyError).
+//
+// The kept error is the LAST execution's: reset when an execution starts, set
+// only when its body fails. An earlier execution's error therefore never pairs
+// with a later commit failure of the same code.
+type bodyRun struct {
+	err error
+}
+
+// run executes body once. A panicking error is caught raw, so the kept error is
+// the panic value itself, chain intact.
+func (b *bodyRun) run(body func() (any, error)) (r any, e error) {
+	b.err = nil
+	defer func() {
+		b.err = e
+		e = unconvertError(e)
+	}()
+	defer panicToError(&e)
+	return body()
+}
+
+// keepBodyError maps the client loop's terminal error for the caller. It follows
+// the Apple binding's retryable (bindings/go/src/fdb/database.go:163-191 at
+// 7.3.77): the attempt's own error is replaced only when OnError's error is not
+// an FDB error or carries a different code. fdb_transaction_on_error almost
+// always re-raises the same code, so a body error that wraps a retryable code
+// reaches the caller with its chain at the retry limit, as it does through the
+// Apple binding and the libfdb_c backend (libfdbc/backend.go).
+func (b *bodyRun) keepBodyError(err error) error {
+	var loopErr *wire.FDBError
+	if b.err != nil && errors.As(err, &loopErr) {
+		if code, ok := fdbErrorCode(b.err); ok && code == loopErr.Code {
+			return b.err
+		}
+	}
+	return convertError(err)
+}
+
+// fdbErrorCode returns the FDB code an error chain carries, in either form.
+func fdbErrorCode(err error) (int, bool) {
+	var fe Error
+	if errors.As(err, &fe) {
+		return fe.Code, true
+	}
+	var we *wire.FDBError
+	if errors.As(err, &we) {
+		return we.Code, true
+	}
+	return 0, false
 }
 
 // convertError converts a client error to an fdb.Error if applicable.

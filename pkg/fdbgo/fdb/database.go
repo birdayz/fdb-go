@@ -382,21 +382,21 @@ func (db Database) Transact(f func(WritableTransaction) (any, error)) (any, erro
 // caller's ctx never cancels an in-flight commit — which is already bounded by the
 // per-RPC timeout.
 func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
-	result, err := db.d.inner.Transact(ctx, func(tx *client.Transaction) (r any, e error) {
-		defer panicToError(&e)
-		t := &transaction{
-			inner:         tx,
-			db:            db,
-			ctx:           ctx,
-			versionstamps: true,
-		}
-		db.applyTxDefaults(t)
-		r, e = f(Transaction{t: t})
-		e = unconvertError(e)
-		return
+	var body bodyRun
+	result, err := db.d.inner.Transact(ctx, func(tx *client.Transaction) (any, error) {
+		return body.run(func() (any, error) {
+			t := &transaction{
+				inner:         tx,
+				db:            db,
+				ctx:           ctx,
+				versionstamps: true,
+			}
+			db.applyTxDefaults(t)
+			return f(Transaction{t: t})
+		})
 	})
 	if err != nil {
-		return nil, convertError(err)
+		return nil, body.keepBodyError(err)
 	}
 	return result, nil
 }
@@ -417,20 +417,20 @@ func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) 
 	// The transaction struct is stack-allocated (doesn't escape because
 	// the closure doesn't store it — it only stores the Transaction value
 	// which embeds a pointer to t).
-	result, err := db.d.inner.ReadTransact(ctx, func(tx *client.Transaction) (r any, e error) {
-		defer panicToError(&e)
-		t := transaction{
-			inner: tx,
-			db:    db,
-			ctx:   ctx,
-		}
-		db.applyTxDefaults(&t)
-		r, e = f(Transaction{t: &t})
-		e = unconvertError(e)
-		return
+	var body bodyRun
+	result, err := db.d.inner.ReadTransact(ctx, func(tx *client.Transaction) (any, error) {
+		return body.run(func() (any, error) {
+			t := transaction{
+				inner: tx,
+				db:    db,
+				ctx:   ctx,
+			}
+			db.applyTxDefaults(&t)
+			return f(Transaction{t: &t})
+		})
 	})
 	if err != nil {
-		return nil, convertError(err)
+		return nil, body.keepBodyError(err)
 	}
 	return result, nil
 }
