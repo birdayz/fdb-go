@@ -216,9 +216,6 @@ Never mark a whole workstream complete because one of its subitems passed.
       keyword-case-insensitivity.yamsql passes (148 files, 9205 queries).
       case-sensitivity.yamsql is booked go-accepts at its case-off block
       (Go's relaxed case pass, DIVERGENCES.md).
-- [ ] UPDATE/DELETE … RETURNING a quoted lower-case column (`returning "y"`)
-      fails 42703 "Attempting to query non existing column y", even on a
-      single table.
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays
