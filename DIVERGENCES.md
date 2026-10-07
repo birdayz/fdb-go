@@ -944,6 +944,13 @@ expansion has no expression to rewrite). A star over an enclosing source without
 local star beside other items under GROUP BY, answer as Java (`StarScopeJavaProbe`). Java corpus:
 `select-a-star.yamsql` stops here.
 
+### A LEFT JOIN over a lateral unnest (Go refuses)
+
+`SELECT … FROM t1, t1.arr AS r LEFT JOIN t2 ON r = t2.id`: Java answers; Go fails with 0AF00
+"lateral unnest did not ordinalize". The unnest's ordinal seed cannot sit on the preserved side
+of an outer join. An INNER join after the unnest, and a LEFT JOIN before it, answer as Java
+(`CommaJoinJavaProbe`).
+
 ## Go-Only Extensions (features Java 4.12.11 rejects)
 
 Go supports these SQL features that Java rejects. Removing them would be a user-visible regression; they stay as Go extensions.

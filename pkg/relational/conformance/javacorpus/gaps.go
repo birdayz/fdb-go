@@ -52,8 +52,8 @@ var engineGaps = []EngineGap{
 	// file's two-value INSERT into its five-field T1 is refused by Java's
 	// implicit-column arity check, which Go ports.
 	{"deprecated-fields-tests-proto.yamsql", SkipConformanceJavaDisabled, "provided record cannot be assigned as its type is incompatible with the target type", "Java @Disabled TODO [Wave 1]"},
-	// A JOIN mixed into a comma-separated FROM list.
-	{"right-deep-plan-tests.yamsql", SkipGapCommaJoinFrom, "JOIN clauses on comma-separated FROM sources are not supported", "CQ-72"},
+	// right-deep-plan-tests.yamsql passes (2026-10-07): a comma source's own
+	// JOINs follow it in the FROM's left-deep order.
 
 	// Querying the catalog's own tables (TEMPLATES, SCHEMAS) from a user
 	// connection finds no schema metadata to plan against.

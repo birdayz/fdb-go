@@ -2875,11 +2875,12 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"unsupported extra table source %T", extra)
 		}
-		// Bare-source joins are not supported on extras (grammar quirk).
-		if len(eb.AllJoinPart()) > 0 {
-			return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-				"JOIN clauses on comma-separated FROM sources are not supported")
-		}
+		// A comma source's own JOINs (`FROM a, b JOIN c ON …`) follow it, left
+		// to right, each ON seeing every source before it, as Java's
+		// fragment does: a × (b ⋈ c) is (a × b) ⋈ c for an INNER or LEFT
+		// join. A RIGHT or FULL join there would preserve rows the flattened
+		// order cannot, so it stays refused.
+		groupStart := len(extraCrossJoins)
 		switch item := eb.TableSourceItem().(type) {
 		case *antlrgen.AtomTableItemContext:
 			// A comma source may be a LATERAL ARRAY UNNEST (`FROM t, t.arr AS x
@@ -2937,6 +2938,19 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"FROM: comma-separated sources must be plain table names, got %T",
 				eb.TableSourceItem())
+		}
+		if len(eb.AllJoinPart()) > 0 {
+			parts, err := parseJoinParts(eb, extraCrossJoins[groupStart].alias)
+			if err != nil {
+				return nil, err
+			}
+			for _, jc := range parts {
+				if jc.joinType == joinTypeRight || jc.joinType == joinTypeFull {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+						"a RIGHT or FULL JOIN on a comma-separated FROM source is not supported")
+				}
+			}
+			extraCrossJoins = append(extraCrossJoins, parts...)
 		}
 	}
 	// Resolve FROM source: derived table `FROM (SELECT ...) AS alias` or
@@ -3058,6 +3072,19 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 // shared by the atom-table primary path AND the derived-table primary path so a
 // `FROM (SELECT ...) x JOIN t ON ...` does not silently drop its JOINs.
 func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string, extraCrossJoins []joinClause) ([]joinClause, error) {
+	joins, err := parseJoinParts(srcBase, leftAlias)
+	if err != nil {
+		return nil, err
+	}
+	// Implicit cross joins from comma-separated FROM sources run last; the
+	// WHERE predicate decides which combinations survive.
+	joins = append(joins, extraCrossJoins...)
+	return joins, nil
+}
+
+// parseJoinParts extracts a table source's JOIN parts, left to right, with
+// USING lowered to ON against the preceding source (leftAlias for the first).
+func parseJoinParts(srcBase *antlrgen.TableSourceBaseContext, leftAlias string) ([]joinClause, error) {
 	var joins []joinClause
 	for _, jp := range srcBase.AllJoinPart() {
 		jc, jErr := extractJoinClause(jp)
@@ -3090,9 +3117,6 @@ func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string
 		joins[i].onExpr = synth
 		joins[i].usingUids = nil
 	}
-	// Implicit cross joins from comma-separated FROM sources run last; the
-	// WHERE predicate decides which combinations survive.
-	joins = append(joins, extraCrossJoins...)
 	return joins, nil
 }
 

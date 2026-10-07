@@ -186,6 +186,10 @@ Never mark a whole workstream complete because one of its subitems passed.
       22000); a comparison is an IN item. `InComparandSourceJavaProbe` has
       42 rows, all equal; `in-predicate.yamsql` now runs 324 queries and stops
       at its run-once block (Java's cache-dependent XX000, issue #3583).
+      A comma source's own JOINs follow it in the FROM's left-deep order
+      (`CommaJoinJavaProbe`, 4 rows equal; a LEFT JOIN over a lateral unnest
+      is a declared Go refusal); `right-deep-plan-tests.yamsql` passes
+      (141 files, 8808 queries).
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays

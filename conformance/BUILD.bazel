@@ -417,6 +417,7 @@ go_test(
         "boolean_expression_position_java_probe_test.go",
         "case_condition_typing_java_probe_test.go",
         "case_parenthesized_condition_java_probe_test.go",
+        "comma_join_java_probe_test.go",
         "conformance_suite_test.go",
         "container_test.go",
         "dotted_and_recursive_seed_java_probe_test.go",

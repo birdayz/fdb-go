@@ -156,9 +156,6 @@ const (
 // booked. They are separate classes rather than one bucket because a gap
 // without a name cannot be sized, prioritised or noticed when it closes.
 const (
-	// SkipGapCommaJoinFrom is a JOIN clause combined with comma-separated
-	// FROM sources (`FROM a, a.refs AS r JOIN b ON …`).
-	SkipGapCommaJoinFrom SkipClass = "engine-gap:comma-join-mixed-from"
 	// SkipGapCatalogTables is a query against the catalog's own system tables.
 	SkipGapCatalogTables SkipClass = "engine-gap:catalog-system-tables"
 
@@ -231,7 +228,6 @@ func AllSkipClasses() []SkipClass {
 		SkipDDLFunction,
 		SkipDDLOther,
 		SkipGapStructDML,
-		SkipGapCommaJoinFrom,
 		SkipGapCatalogTables,
 
 		SkipGapNestedRecursiveWith,

@@ -227,17 +227,12 @@ func TestFDB_BuriedElementPredicate(t *testing.T) {
 		wantSet(t, `SELECT A."K", "X" FROM A, C, C."ARR" AS "X" WHERE A."K" = "X"`, one)
 	})
 
-	// A buried-element ON conjunct is UNREACHABLE via supported SQL: the element requires a
-	// comma-lateral unnest, and a JOIN whose ON could see it must mix with that comma —
-	// rejected 0A000 ("JOIN clauses on comma-separated FROM sources are not supported").
-	// The WHERE source is the reachable predicate dimension; pinned above.
-	t.Run("buried_element_on_conjunct_unreachable", func(t *testing.T) {
-		_, perr := embedded.PlanRecordQueryWithMetadata(
-			`SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", C."ARR" AS "X" JOIN B ON A."K" = "X"`, md, nil,
-		)
-		if perr == nil {
-			t.Fatalf("a buried-element ON on a comma-lateral unnest is expected to be 0A000-unsupported; if it now plans, pin its rows")
-		}
-		requireSQLSTATE(t, perr, "0A000")
+	// A buried-element ON conjunct: the element comes from a comma-lateral
+	// unnest, and a JOIN after it (`…, C.ARR AS X JOIN B ON A.K = X`) sees it in
+	// its ON, as Java's fragment does. Go refused the mixed comma/JOIN FROM with
+	// 0A000 until 2026-10-07. FULL A-C gives (A1,C1), (A2,C2), (null,C5); the
+	// unnest gives X = 7, 8 / 9 / 55; only A.K = 7 = X joins B.
+	t.Run("buried_element_on_conjunct", func(t *testing.T) {
+		wantSet(t, `SELECT A."K", "X" FROM A FULL OUTER JOIN C ON A."AID" = C."CID", C."ARR" AS "X" JOIN B ON A."K" = "X"`, one)
 	})
 }
