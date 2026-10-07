@@ -169,7 +169,10 @@ Never mark a whole workstream complete because one of its subitems passed.
       A correlated conjunct in an OUTER join's ON, or in an inner ON before
       a later RIGHT join, is answered (it stays in its ON; was 0A000; nine
       probe rows, mutation-checked by lifting it). Still refused: a nested
-      EXISTS inside such an ON (DIVERGENCES.md, pinned).
+      EXISTS inside such an ON (DIVERGENCES.md, pinned). A correlated UNION
+      ALL body is answered too (each branch keeps its correlation; five
+      probe rows), and the Java corpus file `union-empty-tables.yamsql` now
+      stops at the parenthesised-star union `union.yamsql` stops at.
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays

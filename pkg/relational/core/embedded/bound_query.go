@@ -334,10 +334,10 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 			copy.Main, err = strip(node.Main)
 			return &copy, err
 		case *logical.LogicalUnion:
-			// Correlated set-operation bodies require branch-local attachment
-			// predicates. Preserve their admission restriction before lowering;
-			// a derived UNION source remains a separate, supported FROM producer.
-			return nil, &CorrelatedExistsError{Message: "correlated EXISTS: unsupported query body shape", Unsupported: true}
+			// A set-operation body keeps each branch's correlation inside
+			// the branch, read from the outer binding, as Java evaluates it:
+			// nothing is lifted to the attachment predicate.
+			return node, nil
 		case *logical.LogicalProject:
 			return strip(node.Input)
 		case *logical.LogicalSort:

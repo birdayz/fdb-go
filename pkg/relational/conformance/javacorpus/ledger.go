@@ -162,8 +162,6 @@ const (
 	// SkipGapCatalogTables is a query against the catalog's own system tables.
 	SkipGapCatalogTables SkipClass = "engine-gap:catalog-system-tables"
 
-	// SkipGapCorrelatedExistsSetOp is a correlated EXISTS over a set operation.
-	SkipGapCorrelatedExistsSetOp SkipClass = "engine-gap:correlated-exists-setop"
 	// SkipGapNestedRecursiveWith is a WITH nested inside a recursive CTE body.
 	SkipGapNestedRecursiveWith SkipClass = "engine-gap:nested-recursive-with"
 	// SkipGapPlannerDeclines is a query Cascades declines to plan.
@@ -238,7 +236,6 @@ func AllSkipClasses() []SkipClass {
 		SkipGapCommaJoinFrom,
 		SkipGapCatalogTables,
 
-		SkipGapCorrelatedExistsSetOp,
 		SkipGapNestedRecursiveWith,
 		SkipGapPlannerDeclines,
 		SkipGapErrorClass,

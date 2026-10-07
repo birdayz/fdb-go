@@ -112,9 +112,9 @@ func TestBoundExistsSetOperationAdmission(t *testing.T) {
 		name, sql string
 		reject    bool
 	}{
-		{"correlated_union_all", "SELECT i.id FROM t i WHERE i.id = o.id UNION ALL SELECT j.id FROM t j WHERE j.id = o.id", true},
+		{"correlated_union_all", "SELECT i.id FROM t i WHERE i.id = o.id UNION ALL SELECT j.id FROM t j WHERE j.id = o.id", false},
 		{"correlated_union_distinct", "SELECT i.id FROM t i WHERE i.id = o.id UNION SELECT j.id FROM t j WHERE j.id = o.id", true},
-		{"correlated_union_cte_envelope", "WITH c AS (SELECT id FROM t) SELECT id FROM c WHERE id = o.id UNION ALL SELECT id FROM t WHERE id = o.id", true},
+		{"correlated_union_cte_envelope", "WITH c AS (SELECT id FROM t) SELECT id FROM c WHERE id = o.id UNION ALL SELECT id FROM t WHERE id = o.id", false},
 		{"independent_union", "SELECT id FROM t UNION ALL SELECT id FROM t", false},
 		{"correlated_derived_union", "SELECT d.id FROM (SELECT id FROM t UNION ALL SELECT id FROM t) d WHERE d.id = o.id", false},
 	} {
@@ -129,17 +129,12 @@ func TestBoundExistsSetOperationAdmission(t *testing.T) {
 			alias, typ, err := clause.BuildExists(q)
 			if test.reject {
 				// UNION DISTINCT is rejected by the shared query visitor before
-				// correlation classification, matching Java visitSetQuery.
-				if test.name == "correlated_union_distinct" {
-					var typed *api.Error
-					if !errors.As(err, &typed) || typed.Code != api.ErrCodeUnsupportedQuery || typed.Message != "only UNION ALL is supported" {
-						t.Fatalf("UNION DISTINCT syntax rejection = %v", err)
-					}
-				} else {
-					var unsupported *CorrelatedExistsError
-					if !errors.As(err, &unsupported) || !unsupported.Unsupported || unsupported.Message != "correlated EXISTS: unsupported query body shape" {
-						t.Fatalf("correlated set-operation admission = %v, want existing body-shape rejection", err)
-					}
+				// correlation classification, matching Java visitSetQuery. A
+				// correlated UNION ALL body is admitted: each branch keeps its
+				// correlation (conformance ExistsInnerShadowJavaProbe union_*).
+				var typed *api.Error
+				if !errors.As(err, &typed) || typed.Code != api.ErrCodeUnsupportedQuery || typed.Message != "only UNION ALL is supported" {
+					t.Fatalf("UNION DISTINCT syntax rejection = %v", err)
 				}
 				if len(clause.subqueries)+len(owner.subqueries)+len(owner.scalarSubqueries)+len(owner.correlatedScalarSubqueries) != 0 {
 					t.Fatal("rejected set operation published an attachment")

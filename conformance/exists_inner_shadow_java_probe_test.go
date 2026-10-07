@@ -98,6 +98,11 @@ var _ = Describe("ExistsInnerShadowJavaProbe", func() {
 			{"outer_join_on_corr_nested_control", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT 1 FROM MA AS "A" LEFT JOIN ST AS "B" ON "B"."ID" = "A"."ID" AND "B"."C" = "O"."C" WHERE "B"."ID" IS NULL AND EXISTS (SELECT 1 FROM MA AS "M2" WHERE "M2"."C" = "O"."C"))`},
 			{"corr_on_before_right", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT 1 FROM MA AS "A" JOIN ST AS "B" ON "B"."C" = "O"."C" RIGHT JOIN MA AS "M" ON "M"."ID" = "A"."ID")`},
 			{"on_nested_exists", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT 1 FROM MA AS "A" JOIN ST AS "B" ON EXISTS (SELECT 1 FROM MA AS "G" WHERE "G"."C" = "O"."C"))`},
+			{"union_body", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT "A"."ID" FROM MA AS "A" WHERE "A"."C" = "O"."C" UNION ALL SELECT "B"."ID" FROM ST AS "B" WHERE "B"."C" = "O"."C" + 1)`},
+			{"union_body_notexists", `SELECT "O"."ID" FROM ST AS "O" WHERE NOT EXISTS (SELECT "A"."ID" FROM MA AS "A" WHERE "A"."C" = "O"."C" UNION ALL SELECT "B"."ID" FROM ST AS "B" WHERE "B"."C" = "O"."C" + 900)`},
+			{"union_body_projected", `SELECT "O"."ID", EXISTS (SELECT "A"."ID" FROM MA AS "A" WHERE "A"."C" = "O"."C" UNION ALL SELECT "B"."ID" FROM ST AS "B" WHERE "B"."C" = "O"."C" + 900) FROM ST AS "O"`},
+			{"union_body_join_branch", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT "A"."ID" FROM MA AS "A" JOIN ST AS "B" ON "B"."ID" = "A"."ID" - 10 AND "B"."C" = "O"."C" UNION ALL SELECT "B"."ID" FROM ST AS "B" WHERE "B"."C" = "O"."C" + 900)`},
+			{"union_body_outer_filter", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT "A"."ID" FROM MA AS "A" WHERE "O"."ID" = 3 UNION ALL SELECT "B"."ID" FROM ST AS "B" WHERE "B"."C" = "O"."C" + 900)`},
 			{"int_head_colliding", `SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(1, ST."C") = 1 AND OI."K" = OT."K")`},
 			{"nonfoldable_colliding", `SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(ST."C", 1) < OT."K")`},
 		} {
