@@ -1135,8 +1135,9 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     mapping moved off 2 reddens it). Not ported: resolver locking/migration/
     setMapping/setWindow administration, the global root interning layer
     (0xFC), and the in-memory reverse-directory cache's retriable mismatch.
-    `pkg/recordlayer/keyspace`'s Go-only `FDBResolver` has no users; remove it
-    with that package's review.
+    `pkg/recordlayer/keyspace`'s Go-only `FDBResolver` had no users and is
+    removed (2026-10-07); the package keeps the `LocatableResolver` interface
+    and `ResolverDirectory`.
 - [ ] Reconcile living compatibility claims/CHANGELOG, run `just test-full` and
   required interop/performance checks, then final migration review and PR CI.
   Fix all Medium-or-higher findings before declaring completion.
