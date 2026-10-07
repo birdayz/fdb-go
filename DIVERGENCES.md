@@ -923,6 +923,17 @@ A partition *inequality* is the one deliberate residual divergence: Go's executo
 |---|---|
 | CollapseRecordConstructorOverFieldsToStar | Blocked: needs field-level type metadata (ordinal positions) |
 
+### A nested EXISTS inside a JOIN ON of a correlated EXISTS (Go refuses)
+
+`… WHERE EXISTS (SELECT 1 FROM a JOIN b ON EXISTS (SELECT 1 FROM g WHERE g.c = o.c))`:
+Java answers; Go refuses with 0A000 "a nested subquery inside a JOIN ON clause is not
+supported". The correlated EXISTS lowering keeps a join's ON on the join node, which carries
+no existential edges, and lifting the ON to the EXISTS level would drop the join's
+emptiness (an empty `a JOIN b` must answer false). A correlated conjunct in an OUTER join's
+ON, or in an inner ON before a later RIGHT join, is answered as Java does: it stays in its
+ON. Pinned by `ExistsInnerShadowJavaProbe` (`on_nested_exists` asserts the refusal and
+Java's [2]) and `TestFDB_CorrelatedExistsNestedSubqueryInOnDeclines`.
+
 ## Go-Only Extensions (features Java 4.12.11 rejects)
 
 Go supports these SQL features that Java rejects. Removing them would be a user-visible regression; they stay as Go extensions.

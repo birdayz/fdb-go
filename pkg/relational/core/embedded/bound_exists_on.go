@@ -64,11 +64,11 @@ func lowerBoundOn(from logical.LogicalOperator, parent []semantic.ScopeSource) (
 		if correlation == nil {
 			return &copy, nil
 		}
-		if join.Kind != logical.JoinInner {
-			return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a correlation inside an OUTER (LEFT/RIGHT/FULL) JOIN ON clause is not supported", Unsupported: true}
-		}
-		if laterNullExtension {
-			return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a correlated ON before a later RIGHT/FULL join is not supported", Unsupported: true}
+		if join.Kind != logical.JoinInner || laterNullExtension {
+			// Lifting would turn a null-extending ON into a filter. The
+			// correlation stays in the ON, read from the outer binding,
+			// as Java evaluates it.
+			return &copy, nil
 		}
 		// A later inner source that reuses an outer name does not capture
 		// this ON's reference: the ON resolved left-to-current against the

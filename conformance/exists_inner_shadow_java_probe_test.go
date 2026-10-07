@@ -43,7 +43,7 @@ var _ = Describe("ExistsInnerShadowJavaProbe", func() {
 		setup := []string{
 			"INSERT INTO ST VALUES (1, 100, [10, 200]), (2, 5, [20, 300]), (3, 1000, [4])",
 			"INSERT INTO MA VALUES (11, 11, [10, 11, 12]), (12, 5, [20, 21])",
-			"INSERT INTO OT VALUES (1000, 50), (2000, -5)",
+			"INSERT INTO OT VALUES (1000, 50), (2000, -5), (3000, 5)",
 		}
 		outcome := func(r plandiff.RunResult) string {
 			if r.Err != nil {
@@ -82,12 +82,37 @@ var _ = Describe("ExistsInnerShadowJavaProbe", func() {
 			{"unnest_reuse_leftbox_corr", `SELECT X FROM ST LEFT JOIN OT ON ST."ID" = OT."ID", ST."ARR" AS X WHERE EXISTS (SELECT 1 FROM ST, MA WHERE ST."C" = MA."C" AND MA."C" < X)`},
 			{"unnest_reuse_leftbox_oth", `SELECT X FROM MA LEFT JOIN OT ON MA."ID" = OT."ID", MA."ARR" AS X WHERE EXISTS (SELECT 1 FROM MA, ST WHERE ST."C" = MA."C" AND ST."ID" < X)`},
 			{"unnest_reuse_notexists", `SELECT X FROM ST, OT, ST."ARR" AS X WHERE NOT EXISTS (SELECT 1 FROM OT, MA WHERE OT."K" = MA."C" + 45 AND MA."C" = ST."C")`},
+			{"outer_join_on_corr_left", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT 1 FROM MA AS "A" LEFT JOIN ST AS "B" ON "B"."C" = "O"."C" WHERE "A"."C" > 0)`},
+			{"outer_join_on_corr_left_null", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT 1 FROM MA AS "A" LEFT JOIN ST AS "B" ON "B"."C" = "O"."C" AND "B"."ID" = "A"."ID" - 10 WHERE "B"."ID" IS NULL)`},
+			{"outer_join_on_corr_projected", `SELECT "O"."ID", EXISTS (SELECT 1 FROM MA AS "A" LEFT JOIN ST AS "B" ON "B"."C" = "O"."C" AND "B"."ID" = "A"."ID" - 10 WHERE "B"."ID" IS NULL) FROM ST AS "O"`},
+			// Lifting the ON's correlation to a filter, or dropping it, answers
+			// differently from keeping it in the null-extending ON.
+			{"outer_join_on_corr_discriminating", `SELECT "O"."ID", EXISTS (SELECT 1 FROM MA AS "A" LEFT JOIN ST AS "B" ON "B"."C" = "O"."C" AND "B"."ID" = "A"."ID" - 10 WHERE "B"."ID" IS NULL AND "A"."ID" = 11) FROM ST AS "O"`},
+			{"outer_join_on_corr_where_exists", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT 1 FROM MA AS "A" LEFT JOIN ST AS "B" ON "B"."C" = "O"."C" AND "B"."ID" = "A"."ID" - 10 WHERE "B"."ID" IS NULL AND "A"."ID" = 11)`},
+			{"outer_join_on_corr_not_exists", `SELECT "O"."ID" FROM ST AS "O" WHERE NOT EXISTS (SELECT 1 FROM MA AS "A" LEFT JOIN ST AS "B" ON "B"."C" = "O"."C" AND "B"."ID" = "A"."ID" - 10 WHERE "B"."ID" IS NULL AND "A"."ID" = 11)`},
+			{"corr_on_before_right_discriminating", `SELECT OT."ID" FROM OT WHERE EXISTS (SELECT 1 FROM MA AS "A" JOIN ST AS "B" ON "B"."C" = OT."K" RIGHT JOIN MA AS "M" ON "M"."ID" = "A"."ID" WHERE "A"."ID" IS NULL)`},
+			{"right_join_on_corr", `SELECT OT."ID" FROM OT WHERE EXISTS (SELECT 1 FROM ST AS "B" RIGHT JOIN MA AS "M" ON "B"."C" = OT."K" AND "M"."C" = OT."K" WHERE "B"."ID" IS NULL)`},
+			// An enclosing name re-bound inside a nested EXISTS below the outer
+			// join: the ON's O."C" stays on the LEFT JOIN.
+			{"outer_join_on_corr_nested_shadow", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT 1 FROM MA AS "A" LEFT JOIN ST AS "B" ON "B"."ID" = "A"."ID" AND "B"."C" = "O"."C" WHERE EXISTS (SELECT 1 FROM ST AS "O" WHERE "O"."ID" = "A"."ID" - 10))`},
+			{"outer_join_on_corr_nested_control", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT 1 FROM MA AS "A" LEFT JOIN ST AS "B" ON "B"."ID" = "A"."ID" AND "B"."C" = "O"."C" WHERE "B"."ID" IS NULL AND EXISTS (SELECT 1 FROM MA AS "M2" WHERE "M2"."C" = "O"."C"))`},
+			{"corr_on_before_right", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT 1 FROM MA AS "A" JOIN ST AS "B" ON "B"."C" = "O"."C" RIGHT JOIN MA AS "M" ON "M"."ID" = "A"."ID")`},
+			{"on_nested_exists", `SELECT "O"."ID" FROM ST AS "O" WHERE EXISTS (SELECT 1 FROM MA AS "A" JOIN ST AS "B" ON EXISTS (SELECT 1 FROM MA AS "G" WHERE "G"."C" = "O"."C"))`},
 			{"int_head_colliding", `SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(1, ST."C") = 1 AND OI."K" = OT."K")`},
 			{"nonfoldable_colliding", `SELECT OT."K" FROM ST, OT WHERE EXISTS (SELECT 1 FROM OT AS "OI", ST WHERE COALESCE(ST."C", 1) < OT."K")`},
 		} {
 			j := outcome(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
 			g := outcome(goRunner.RunWithSetup(ctx, schema, setup, c.sql))
 			fmt.Fprintf(GinkgoWriter, "EXSHADOW %s\n  java %s\n  go   %s\n", c.name, j, g)
+			// Go still refuses a nested EXISTS inside a correlated EXISTS's
+			// JOIN ON (DIVERGENCES.md "A nested EXISTS inside a JOIN ON of a
+			// correlated EXISTS"); the row reddens when that changes.
+			if c.name == "on_nested_exists" {
+				if j != "[2]" || !strings.Contains(g, "a nested subquery inside a JOIN ON clause is not supported") {
+					mismatches = append(mismatches, c.name)
+				}
+				continue
+			}
 			if g != j {
 				mismatches = append(mismatches, c.name)
 			}

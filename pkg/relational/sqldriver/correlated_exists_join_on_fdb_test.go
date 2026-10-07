@@ -316,13 +316,12 @@ func TestFDB_CorrelatedExistsInnerThenOuterJoinLevel(t *testing.T) {
 
 // TestFDB_CorrelatedExistsOnCorrelationBeforeRightFull pins the correlation
 // sibling of the join-level ON placement: a CORRELATED conjunct in an INNER-join
-// ON is lifted to the EXISTS level, which applies it AFTER the whole inner plan.
-// That is correct only when no LATER join preserves the other side with NULLs on
-// this join's columns. A later RIGHT/FULL join preserves g-side rows with NULL e,
-// so the lifted `e.eid = p.id` evaluates NULL→false and rejects those preserved
-// rows — EXISTS wrongly false. Reproducing the ON's join-level placement is not
-// something this front-end fallback can do, so it DECLINES cleanly (0A000). A
-// later LEFT/INNER join does not preserve NULL-e rows, so the lift is kept.
+// ON is lifted to the EXISTS level only when no LATER join preserves the other
+// side with NULLs on this join's columns. Before a later RIGHT/FULL join the
+// conjunct stays in its ON, read from the outer binding, as Java evaluates it
+// (Go declined this with 0A000 until 2026-10-07; conformance
+// ExistsInnerShadowJavaProbe corr_on_before_right_*). Lifted, `e.eid = p.id`
+// would reject the preserved g row (NULL e) and answer EXISTS false.
 //
 // Data:
 //
@@ -357,61 +356,49 @@ func TestFDB_CorrelatedExistsOnCorrelationBeforeRightFull(t *testing.T) {
 	mustExec(t, db, ctx, "INSERT INTO f VALUES (200)")
 	mustExec(t, db, ctx, "INSERT INTO g VALUES (5)")
 
-	requireDecline := func(t *testing.T, sqlText string) {
+	projected := func(t *testing.T, sqlText string) (int64, bool) {
 		t.Helper()
-		rows, qerr := db.QueryContext(ctx, sqlText)
-		if qerr == nil {
-			// Some plan errors only surface on iteration; force it.
-			for rows.Next() {
-			}
-			qerr = rows.Err()
-			rows.Close()
+		var v int64
+		var ex bool
+		if serr := db.QueryRowContext(ctx, sqlText).Scan(&v, &ex); serr != nil {
+			t.Fatalf("%s: %v", sqlText, serr)
 		}
-		if qerr == nil {
-			t.Fatalf("expected a clean decline (0A000), got no error for %q", sqlText)
-		}
-		requireSQLSTATE(t, qerr, api.ErrCodeUnsupportedOperation)
+		return v, ex
 	}
 
-	// Correlated INNER-join ON (`e.eid = p.id`) before a later RIGHT join: the
-	// RIGHT join preserves g rows with NULL e, so lifting the ON would drop them.
-	// Decline. (Without the decline the lift returns EXISTS false for the
-	// preserved g row — a silent-wrong answer.)
-	t.Run("decline_before_right", func(t *testing.T) {
-		requireDecline(t, "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON e.eid = p.id "+
-			"RIGHT JOIN g ON g.gid = f.fid) FROM p")
+	// The RIGHT join preserves g(5) with NULL e/f, so EXISTS is true.
+	t.Run("before_right", func(t *testing.T) {
+		if v, ex := projected(t, "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON e.eid = p.id "+
+			"RIGHT JOIN g ON g.gid = f.fid) FROM p"); v != 10 || !ex {
+			t.Errorf("got (%d,%v), want (10,true)", v, ex)
+		}
 	})
 
 	// Same before a later FULL join.
-	t.Run("decline_before_full", func(t *testing.T) {
-		requireDecline(t, "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON e.eid = p.id "+
-			"FULL JOIN g ON g.gid = f.fid) FROM p")
+	t.Run("before_full", func(t *testing.T) {
+		if v, ex := projected(t, "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON e.eid = p.id "+
+			"FULL JOIN g ON g.gid = f.fid) FROM p"); v != 10 || !ex {
+			t.Errorf("got (%d,%v), want (10,true)", v, ex)
+		}
 	})
 
-	// A later LEFT join preserves the LEFT (e/f) side — which HAS the correlation
-	// column e — so the lift is safe and must NOT decline. e JOIN f ON e.eid=p.id
-	// = {(1,100,200)}; LEFT JOIN g (no g.gid=200) keeps it -> EXISTS true. This
-	// pins that the fix is surgical (no over-decline of the common shape).
+	// A later LEFT join preserves the e/f side, which has the correlation
+	// column, so the lift is safe: e JOIN f ON e.eid=p.id = {(1,100,200)};
+	// LEFT JOIN g keeps it -> EXISTS true.
 	t.Run("safe_before_left", func(t *testing.T) {
-		var v int64
-		var ex bool
-		if serr := db.QueryRowContext(ctx, "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON e.eid = p.id "+
-			"LEFT JOIN g ON g.gid = f.fid) FROM p").Scan(&v, &ex); serr != nil {
-			t.Fatalf("later-LEFT lift must NOT decline: %v", serr)
-		}
-		if v != 10 || !ex {
-			t.Errorf("later-LEFT: got (%d,%v), want (10,true)", v, ex)
+		if v, ex := projected(t, "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON e.eid = p.id "+
+			"LEFT JOIN g ON g.gid = f.fid) FROM p"); v != 10 || !ex {
+			t.Errorf("got (%d,%v), want (10,true)", v, ex)
 		}
 	})
 
-	// WHERE-EXISTS form of the decline must ALSO surface 0A000 (unsupported), not
-	// 42703 (undefined-column). The WHERE-EXISTS planning path maps a
-	// CorrelatedExistsError from the predicate walk; an intentional decline must be
-	// distinguished from a genuine resolution failure so both the projected and
-	// WHERE-EXISTS positions report the same 0A000.
-	t.Run("decline_where_exists_before_right", func(t *testing.T) {
-		requireDecline(t, "SELECT p.v FROM p WHERE EXISTS (SELECT 1 FROM e JOIN f ON e.eid = p.id "+
-			"RIGHT JOIN g ON g.gid = f.fid)")
+	// The WHERE-EXISTS form answers the same.
+	t.Run("where_exists_before_right", func(t *testing.T) {
+		var v int64
+		if serr := db.QueryRowContext(ctx, "SELECT p.v FROM p WHERE EXISTS (SELECT 1 FROM e JOIN f ON e.eid = p.id "+
+			"RIGHT JOIN g ON g.gid = f.fid)").Scan(&v); serr != nil || v != 10 {
+			t.Errorf("got %d, %v; want 10", v, serr)
+		}
 	})
 }
 

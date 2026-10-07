@@ -166,6 +166,10 @@ Never mark a whole workstream complete because one of its subitems passed.
       reused as a later inner join source" decline are gone too: an early
       ON resolves left-to-current, so a later same-name inner leg does not
       capture it (probe row `on_before_later_same_name`, Java [2]).
+      A correlated conjunct in an OUTER join's ON, or in an inner ON before
+      a later RIGHT join, is answered (it stays in its ON; was 0A000; nine
+      probe rows, mutation-checked by lifting it). Still refused: a nested
+      EXISTS inside such an ON (DIVERGENCES.md, pinned).
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays

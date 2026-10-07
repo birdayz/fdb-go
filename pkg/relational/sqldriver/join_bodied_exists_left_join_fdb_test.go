@@ -6,13 +6,9 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"testing"
-
-	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_JoinBodiedExistsOverLeftJoin(t *testing.T) {
@@ -149,43 +145,18 @@ func TestFDB_JoinBodiedExistsOverLeftJoin(t *testing.T) {
 	}
 }
 
-// TestFDB_BuriedAliasShadowingIsRejectedUpstream is a NEGATIVE result, pinned
-// because the conclusion it supports is load-bearing.
+// TestFDB_BuriedAliasShadowingIsRejectedUpstream (the name predates the
+// change) pins an enclosing correlation inside an OUTER JOIN's ON below an
+// EXISTS whose nested existential re-binds the enclosing name.
 //
-// The fix above maps every alias BOUND INSIDE an existential's subgraph to that
-// existential, so a hoisted predicate naming a subquery-internal alias stays
-// above the null-extension. The map keys on a NAME, and a
-// CorrelationIdentifier's name is not unique across scopes — nothing uniquifies
-// a table binding across nesting levels. So a predicate naming an ENCLOSING
-// alias whose name is re-bound inside one of this select's existentials would be
-// classified above by mistake, lifting a genuine ON-conjunct over the
-// null-extension and degrading LEFT JOIN to INNER silently. That is the same
-// failure class the fix closes, mirrored.
-//
-// It does not reproduce, and the reason is upstream of the planner in BOTH
-// routes that can build a JoinLeftOuter select carrying an external
-// correlation. Each arm below names its own guard, because they are different
-// guards and only one of them is about outer joins at all:
-//
-//   - the EXISTS route (existsSubqueryPlanner.buildCorrelatedExists) refuses a
-//     correlation inside an OUTER JOIN's ON clause outright;
-//   - the correlated-SCALAR route (buildCorrelatedScalar) builds its JoinLeft
-//     legs with the walked ON predicate verbatim and has NO outer-join decline —
-//     it is stopped earlier and for an unrelated reason, by the predicate walk
-//     refusing a nested EXISTS at all.
-//
-// SCOPE, because a reader will otherwise close this on the wrong guard: the
-// outer/inner alias-collision decline that sits a few lines below the EXISTS
-// guard does NOT cover this. Its inner-alias set is the EXISTS body's own scan
-// plus its join legs — SAME LEVEL only — so a name re-bound inside a NESTED
-// existential passes it untouched.
-//
-// THIS TEST PINS THE REJECTIONS, NOT THE RULE. If either is relaxed — and the
-// scalar one especially, since it is incidental rather than a considered
-// outer-join guard — the name-collision path becomes reachable and silent. What
-// re-arms it is this test going green in the OTHER direction: an accepted query
-// instead of a refusal. Predicate ownership must remain attached to the child
-// query rather than be re-derived by alias intersection in planner rules.
+// Predicate ownership keys on a binding, and a subquery's legs have private
+// bindings, so the ON's t.z stays on the LEFT JOIN, above the null-extension,
+// and the nested EXISTS reads its own t. Go refused the EXISTS route with
+// 0A000 ("correlation inside an OUTER JOIN ON clause") until 2026-10-07; it now
+// keeps the correlation in the ON and answers Java's rows (conformance
+// ExistsInnerShadowJavaProbe, outer_join_on_corr_*). A lifted ON conjunct
+// would turn the LEFT JOIN inner: b is null-extended here (a.k=5, b.k=9), so
+// the shadowed case would lose its row.
 func TestFDB_BuriedAliasShadowingIsRejectedUpstream(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -214,94 +185,65 @@ func TestFDB_BuriedAliasShadowingIsRejectedUpstream(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (9, 100)")
 
 	for _, tc := range []struct {
-		name      string
-		sql       string
-		wantGuard string
+		name string
+		sql  string
+		want string
 	}{
 		{
-			// The collision itself, EXISTS route: `t` is bound outside AND
-			// re-bound inside the nested existential.
+			// `t` is bound outside AND re-bound inside the nested existential.
 			name: "exists_route_shadowed_enclosing_alias",
 			sql: "SELECT id FROM t WHERE EXISTS (" +
 				"SELECT 1 FROM a LEFT JOIN b ON b.k = a.k AND b.z = t.z " +
 				"WHERE EXISTS (SELECT 1 FROM t WHERE t.id = a.id))",
-			wantGuard: "correlation inside an OUTER",
+			want: "[1]",
 		},
 		{
-			// CONTROL, and it is what identifies the refusal's real cause: no name
-			// is shadowed here, and it is refused identically. So the rejection is
-			// about the correlation in the OUTER JOIN's ON clause, not about the
-			// shadowing — which is why relaxing it re-arms the collision.
-			name: "exists_route_unshadowed_control_refused_identically",
+			// No name is shadowed; the nested EXISTS finds no b2 with k = 5.
+			name: "exists_route_unshadowed_control",
 			sql: "SELECT id FROM t WHERE EXISTS (" +
 				"SELECT 1 FROM a LEFT JOIN b ON b.k = a.k AND b.z = t.z " +
 				"WHERE EXISTS (SELECT 1 FROM b AS b2 WHERE b2.k = a.k))",
-			wantGuard: "correlation inside an OUTER",
+			want: "[]",
 		},
 		{
-			// The SECOND route now passes through the shared full-query visitor.
-			// The exact row assertion below proves the externally-correlated ON
-			// conjunct remains on the LEFT JOIN while the nested EXISTS rebinds t.
+			// The correlated-scalar route through the shared full-query visitor.
 			name: "scalar_route_shadowed_enclosing_alias",
 			sql: "SELECT id, (SELECT COUNT(*) FROM a LEFT JOIN b ON b.k = a.k AND b.z = t.z " +
 				"WHERE EXISTS (SELECT 1 FROM t WHERE t.id = a.id)) FROM t",
-			wantGuard: "unsupported shape: EXISTS",
+			want: "[1|1]",
 		},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			rows, queryErr := db.QueryContext(ctx, tc.sql)
-			if queryErr == nil {
-				defer rows.Close()
-				var got []string
-				for rows.Next() {
-					var a, b sql.NullString
-					cols, colErr := rows.Columns()
-					if colErr != nil {
-						t.Fatalf("columns: %v", colErr)
-					}
-					if len(cols) == 1 {
-						if scanErr := rows.Scan(&a); scanErr != nil {
-							t.Fatalf("scan: %v", scanErr)
-						}
-						got = append(got, a.String)
-						continue
-					}
-					if scanErr := rows.Scan(&a, &b); scanErr != nil {
+			if queryErr != nil {
+				t.Fatalf("%s: %v", tc.name, queryErr)
+			}
+			defer rows.Close()
+			cols, colErr := rows.Columns()
+			if colErr != nil {
+				t.Fatalf("columns: %v", colErr)
+			}
+			got := []string{}
+			for rows.Next() {
+				var a, b sql.NullString
+				if len(cols) == 1 {
+					if scanErr := rows.Scan(&a); scanErr != nil {
 						t.Fatalf("scan: %v", scanErr)
 					}
-					got = append(got, a.String+"|"+b.String)
+					got = append(got, a.String)
+					continue
 				}
-				if tc.name == "scalar_route_shadowed_enclosing_alias" {
-					if fmt.Sprint(got) != "[1|1]" {
-						t.Fatalf("%s: rows = %v, want [1|1]; the LEFT JOIN was not null-extended or the nested EXISTS rebound the wrong t", tc.name, got)
-					}
-					return
+				if scanErr := rows.Scan(&a, &b); scanErr != nil {
+					t.Fatalf("scan: %v", scanErr)
 				}
-				t.Fatalf("%s: the query was ACCEPTED and returned %v; this outer-join guard must still refuse the EXISTS route", tc.name, got)
+				got = append(got, a.String+"|"+b.String)
 			}
-			// The engine's own error type, not just its text: a refusal that stops
-			// being an *api.Error means the query died somewhere other than the
-			// planner, which would satisfy a substring check while proving nothing.
-			var apiErr *api.Error
-			if !errors.As(queryErr, &apiErr) {
-				t.Fatalf("%s: refused with %T, not *api.Error — the refusal did not come from\n"+
-					"  the engine, so it says nothing about whether this shape can be planned.\n  got: %v",
-					tc.name, queryErr, queryErr)
+			if err := rows.Err(); err != nil {
+				t.Fatalf("rows: %v", err)
 			}
-			if apiErr.Code != "0A000" {
-				t.Fatalf("%s: refused with SQLSTATE %s, want 0A000 (unsupported). A different\n"+
-					"  code means a different failure, and the unreachability argument no longer\n"+
-					"  rests on what this test checked.\n  got: %v", tc.name, apiErr.Code, queryErr)
-			}
-			// The substring is deliberate ON TOP of the typed check: 0A000 covers
-			// every unsupported shape, and the claim here is about ONE specific
-			// guard per arm. Do not "tidy" it away into the code check.
-			if !strings.Contains(queryErr.Error(), tc.wantGuard) {
-				t.Fatalf("%s: refused with 0A000 but NOT by the guard this arm pins (%q).\n  got: %v\n"+
-					"  A different guard means the shape now reaches the planner by another route\n"+
-					"  and the name-collision hazard needs re-checking.", tc.name, tc.wantGuard, queryErr)
+			if fmt.Sprint(got) != tc.want {
+				t.Fatalf("%s: rows = %v, want %s", tc.name, got, tc.want)
 			}
 		})
 	}

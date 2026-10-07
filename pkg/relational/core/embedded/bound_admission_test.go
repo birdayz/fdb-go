@@ -163,7 +163,7 @@ func TestBoundExistsSetOperationAdmission(t *testing.T) {
 func TestBoundOnFailureDoesNotPublish(t *testing.T) {
 	t.Parallel()
 	owner, _ := clauseTestOwner(t)
-	q, err := parseQueryFromSelect(t, "SELECT a.id FROM t a LEFT JOIN t b ON b.id = o.id")
+	q, err := parseQueryFromSelect(t, "SELECT a.id FROM t a JOIN t b ON EXISTS (SELECT 1 FROM t g WHERE g.id = o.id)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestBoundOnFailureDoesNotPublish(t *testing.T) {
 	_, _, err = clause.BuildExists(q)
 	var unsupported *CorrelatedExistsError
 	if !errors.As(err, &unsupported) || !unsupported.Unsupported {
-		t.Fatalf("correlated OUTER ON = %v", err)
+		t.Fatalf("nested EXISTS in a correlated ON = %v", err)
 	}
 	if len(owner.subqueries)+len(owner.scalarSubqueries)+len(owner.correlatedScalarSubqueries) != 0 {
 		t.Fatal("failed ON published an edge")
