@@ -1185,9 +1185,8 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   targets (manual ones included): 109 pass, 2 failed and were fixed in
   `c116de63b` (a typed NULL CASE branch lost its type in result metadata;
   stale CQ-74 oracle pins), both re-run green.
-- [x] Split `sqldriver_test` (1748 tests, ~7.5 min, 77% of its time in ~40
+- [ ] Split `sqldriver_test` (1748 tests, ~7.5 min, 77% of its time in ~40
   sweep/probe tests) so its cheap regression pins return to the fast lane.
-  Done: `sqldriver_fast_test` (fast lane, ~170 s) runs the same binary with
-  `-test.skip` over `SQLDRIVER_HEAVY_TESTS` (the 45 tests of 10 s or more);
-  `sqldriver_test` stays in test-full and runs everything, census floors
-  included.
+  A fast-lane `sqldriver_fast_test` (same binary, 45 heavy tests skipped) was
+  tried and reverted (2026-10-07): ~170 s on every commit hook is too slow for
+  the fast lane. The test-suite speed investigation owns this now.

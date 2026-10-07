@@ -12,9 +12,13 @@ permissions:
   issues: write
   pull-requests: write
 
+# A running CI always finishes: pushes come faster than the full run (~50 min),
+# so cancelling in progress meant no run on an active branch ever completed.
+# Within the group GitHub keeps one run going and only the NEWEST pending one
+# queued (older pending runs are dropped), so frequent pushes still coalesce.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   ci:
