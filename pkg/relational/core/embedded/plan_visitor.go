@@ -123,150 +123,12 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 	if err != nil {
 		return nil, err
 	}
-	ctesCtx := q.Ctes()
-	if ctesCtx != nil {
-		if v.cteScopes == nil {
-			v.cteScopes = make(map[string]semantic.ScopeSource)
+	if ctesCtx := q.Ctes(); ctesCtx != nil {
+		named, err := v.declareCTEs(ctesCtx)
+		if err != nil {
+			return nil, err
 		}
-		if v.cteOnScopes == nil {
-			v.cteOnScopes = make(map[string]semantic.ScopeSource)
-		}
-		predeclared := make(map[string]struct{})
-		for _, nq := range ctesCtx.AllNamedQuery() {
-			name := functions.FullIdToName(nq.GetName())
-			upper := strings.ToUpper(name)
-			if _, exists := predeclared[upper]; exists {
-				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias, "found '%s' more than once", name)
-			}
-			predeclared[upper] = struct{}{}
-		}
-		recursive := ctesCtx.RECURSIVE() != nil
-		traversal := logical.TraversalAnyOrder
-		if toc := ctesCtx.TraversalOrderClause(); toc != nil {
-			traversal = logical.TraversalLevelOrder
-			if toc.PRE_ORDER() != nil {
-				traversal = logical.TraversalPreOrder
-			} else if toc.POST_ORDER() != nil {
-				traversal = logical.TraversalPostOrder
-			}
-		}
-		for _, nq := range ctesCtx.AllNamedQuery() {
-			name := functions.FullIdToName(nq.GetName())
-			upper := strings.ToUpper(name)
-			var aliases []string
-			if list, ok := nq.GetColumnAliases().(*antlrgen.FullIdListContext); ok && list != nil {
-				for _, id := range list.AllFullId() {
-					aliases = append(aliases, functions.FullIdToName(id))
-				}
-			}
-			var seedContext antlrgen.IQueryExpressionBodyContext
-			var seed logical.LogicalOperator
-			if recursive {
-				if !containsTableRef(nq.Query().QueryExpressionBody(), upper) {
-					return nil, api.NewError(api.ErrCodeUnsupportedOperation, "condition is not met!")
-				}
-				if _, isSet := nq.Query().QueryExpressionBody().(*antlrgen.SetQueryContext); !isSet {
-					return nil, api.NewError(api.ErrCodeUnsupportedOperation, "recursive CTE requires UNION ALL body")
-				}
-				if nq.Query().Ctes() != nil {
-					return nil, api.NewError(api.ErrCodeUnsupportedQuery, "nested WITH inside a recursive CTE body is not supported")
-				}
-				setQuery := nq.Query().QueryExpressionBody().(*antlrgen.SetQueryContext)
-				seedContext = setQuery.GetLeft()
-				previousRecursive := v.inRecursiveCTEBody
-				v.inRecursiveCTEBody = true
-				var seedErr error
-				seed, seedErr = v.visitUnionBranch(seedContext)
-				v.inRecursiveCTEBody = previousRecursive
-				if seedErr != nil {
-					return nil, seedErr
-				}
-				logical.BindCTESources(seed, v.cteProducers)
-				source, exact := exactVirtualScopeSource(name, seed, v.md, nil, v.cteScopes)
-				if exact {
-					if len(aliases) > 0 && len(aliases) != len(source.Table.Columns()) {
-						return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference, "cte query has %d column(s), however %d aliases defined", len(source.Table.Columns()), len(aliases))
-					}
-					// The body's self-reference reads the seed's row through a
-					// quantifier; the column list applies once the producer is
-					// complete, below.
-					v.cteScopes[upper] = quantifierNamedSource(source)
-					delete(v.cteOnScopes, upper)
-				} else {
-					v.cteScopes[upper] = semantic.ScopeSource{}
-					v.cteOnScopes[upper] = semantic.ScopeSource{}
-				}
-			}
-
-			producer, err := logical.PrepareCTE(name, recursive, v.cteProducers, func(registry logical.CTERegistry) (logical.LogicalOperator, error) {
-				previous, wasRecursive, previousBodies := v.cteProducers, v.inRecursiveCTEBody, v.preparedQueryBodies
-				v.cteProducers, v.inRecursiveCTEBody = registry, recursive
-				if recursive {
-					v.preparedQueryBodies = map[antlrgen.IQueryExpressionBodyContext]logical.LogicalOperator{seedContext: seed}
-					source := v.cteScopes[upper]
-					source.CTE = registry.Lookup(name, fullIDSegments(nq.GetName())...)
-					v.cteScopes[upper] = source
-				}
-				defer func() {
-					v.cteProducers, v.inRecursiveCTEBody, v.preparedQueryBodies = previous, wasRecursive, previousBodies
-				}()
-				return v.buildCTEBodyQuery(nq.Query())
-			}, logical.CTEColumns(aliases...), logical.CTETraversal(traversal), logical.CTENamePath(fullIDSegments(nq.GetName())...))
-			if err != nil {
-				return nil, err
-			}
-			if producer.Body() == nil {
-				return nil, api.NewError(api.ErrCodeUnsupportedQuery, "CTE body has no logical plan")
-			}
-			{
-				var source semantic.ScopeSource
-				var exact bool
-				if recursive {
-					// The seed schema was only the temporary declaration used to
-					// bind self-references. Main-query consumers must resolve against
-					// the completed producer's common row, before their Values are
-					// built (QueryVisitor.handleRecursiveNamedQuery publishes the
-					// recursive union's quantifier, not the temporary scan).
-					scan := logical.NewScan(name, "")
-					scan.Source = logical.CTEScanSource(producer)
-					row, typeErr := query.LogicalResultTypeAfterUnionPromotionWithCTEs(scan, v.md, nil)
-					if typeErr != nil && v.md != nil {
-						return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
-							"recursive CTE %q has no exact common result row: %v", name, typeErr)
-					}
-					if typeErr == nil {
-						source, exact = virtualScopeSourceFromResultType(name, scan, v.md, row, aliases, v.cteScopes)
-						if exact && len(aliases) == 0 {
-							source = quantifierNamedSource(source)
-						}
-					}
-				} else {
-					source, exact = exactVirtualScopeSource(name, producer.Body(), v.md, nil, v.cteScopes)
-				}
-				if !exact {
-					delete(v.cteScopes, upper)
-					v.cteOnScopes[upper] = semantic.ScopeSource{}
-				} else {
-					if len(aliases) > 0 && len(aliases) != len(source.Table.Columns()) {
-						return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference, "cte query has %d column(s), however %d aliases defined", len(source.Table.Columns()), len(aliases))
-					}
-					v.cteScopes[upper] = applyCTEColumnAliases(source, nq.GetColumnAliases())
-					delete(v.cteOnScopes, upper)
-				}
-			}
-			source, ok := v.cteScopes[upper]
-			if ok {
-				source.CTE = producer
-				v.cteScopes[upper] = source
-			}
-			onSource, ok := v.cteOnScopes[upper]
-			if ok {
-				onSource.CTE = producer
-				v.cteOnScopes[upper] = onSource
-			}
-			v.cteProducers = v.cteProducers.With(producer)
-			declarations = append(declarations, producer)
-		}
+		declarations = append(declarations, named...)
 	}
 	main, err := v.VisitQueryBody(q.QueryExpressionBody())
 	if err != nil || main == nil {
@@ -280,6 +142,194 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 		return nil, err
 	}
 	return main, nil
+}
+
+// declareCTEs declares a WITH clause's named queries in order, each visible to
+// the ones after it and to the query body, and returns their producers.
+func (v *PlanVisitor) declareCTEs(ctesCtx antlrgen.ICtesContext) ([]*logical.CTEProducer, error) {
+	var declarations []*logical.CTEProducer
+	if v.cteScopes == nil {
+		v.cteScopes = make(map[string]semantic.ScopeSource)
+	}
+	if v.cteOnScopes == nil {
+		v.cteOnScopes = make(map[string]semantic.ScopeSource)
+	}
+	predeclared := make(map[string]struct{})
+	for _, nq := range ctesCtx.AllNamedQuery() {
+		name := functions.FullIdToName(nq.GetName())
+		upper := strings.ToUpper(name)
+		if _, exists := predeclared[upper]; exists {
+			return nil, api.NewErrorf(api.ErrCodeDuplicateAlias, "found '%s' more than once", name)
+		}
+		predeclared[upper] = struct{}{}
+	}
+	recursive := ctesCtx.RECURSIVE() != nil
+	traversal := logical.TraversalAnyOrder
+	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
+		traversal = logical.TraversalLevelOrder
+		if toc.PRE_ORDER() != nil {
+			traversal = logical.TraversalPreOrder
+		} else if toc.POST_ORDER() != nil {
+			traversal = logical.TraversalPostOrder
+		}
+	}
+	for _, nq := range ctesCtx.AllNamedQuery() {
+		name := functions.FullIdToName(nq.GetName())
+		upper := strings.ToUpper(name)
+		var aliases []string
+		if list, ok := nq.GetColumnAliases().(*antlrgen.FullIdListContext); ok && list != nil {
+			for _, id := range list.AllFullId() {
+				aliases = append(aliases, functions.FullIdToName(id))
+			}
+		}
+		var seedContext antlrgen.IQueryExpressionBodyContext
+		var seed logical.LogicalOperator
+		var innerDecls []*logical.CTEProducer
+		restoreInner := func() {}
+		if recursive {
+			if !containsTableRef(nq.Query().QueryExpressionBody(), upper) {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation, "condition is not met!")
+			}
+			if _, isSet := nq.Query().QueryExpressionBody().(*antlrgen.SetQueryContext); !isSet {
+				return nil, api.NewError(api.ErrCodeUnsupportedOperation, "recursive CTE requires UNION ALL body")
+			}
+			// A WITH inside the recursive body (`WITH RECURSIVE x AS (WITH
+			// RECURSIVE y AS (…) SELECT … FROM y UNION ALL …)`) is declared
+			// first, so the seed and the recursive leg both see it; its
+			// names leave scope with this named query.
+			if inner := nq.Query().Ctes(); inner != nil {
+				outerScopes, outerOn, outerProducers := maps.Clone(v.cteScopes), maps.Clone(v.cteOnScopes), v.cteProducers
+				restoreInner = func() {
+					v.cteScopes, v.cteOnScopes, v.cteProducers = outerScopes, outerOn, outerProducers
+				}
+				var innerErr error
+				innerDecls, innerErr = v.declareCTEs(inner)
+				if innerErr != nil {
+					restoreInner()
+					return nil, innerErr
+				}
+			}
+			setQuery := nq.Query().QueryExpressionBody().(*antlrgen.SetQueryContext)
+			seedContext = setQuery.GetLeft()
+			previousRecursive := v.inRecursiveCTEBody
+			v.inRecursiveCTEBody = true
+			var seedErr error
+			seed, seedErr = v.visitUnionBranch(seedContext)
+			v.inRecursiveCTEBody = previousRecursive
+			if seedErr != nil {
+				return nil, seedErr
+			}
+			logical.BindCTESources(seed, v.cteProducers)
+			source, exact := exactVirtualScopeSource(name, seed, v.md, nil, v.cteScopes)
+			if exact {
+				if len(aliases) > 0 && len(aliases) != len(source.Table.Columns()) {
+					return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference, "cte query has %d column(s), however %d aliases defined", len(source.Table.Columns()), len(aliases))
+				}
+				// The body's self-reference reads the seed's row through a
+				// quantifier; the column list applies once the producer is
+				// complete, below.
+				v.cteScopes[upper] = quantifierNamedSource(source)
+				delete(v.cteOnScopes, upper)
+			} else {
+				v.cteScopes[upper] = semantic.ScopeSource{}
+				v.cteOnScopes[upper] = semantic.ScopeSource{}
+			}
+		}
+
+		producer, err := logical.PrepareCTE(name, recursive, v.cteProducers, func(registry logical.CTERegistry) (logical.LogicalOperator, error) {
+			previous, wasRecursive, previousBodies := v.cteProducers, v.inRecursiveCTEBody, v.preparedQueryBodies
+			v.cteProducers, v.inRecursiveCTEBody = registry, recursive
+			if recursive {
+				v.preparedQueryBodies = map[antlrgen.IQueryExpressionBodyContext]logical.LogicalOperator{seedContext: seed}
+				source := v.cteScopes[upper]
+				source.CTE = registry.Lookup(name, fullIDSegments(nq.GetName())...)
+				v.cteScopes[upper] = source
+			}
+			defer func() {
+				v.cteProducers, v.inRecursiveCTEBody, v.preparedQueryBodies = previous, wasRecursive, previousBodies
+			}()
+			if len(innerDecls) == 0 {
+				return v.buildCTEBodyQuery(nq.Query())
+			}
+			body, err := v.VisitQueryBody(nq.Query().QueryExpressionBody())
+			if err != nil || body == nil {
+				return body, err
+			}
+			logical.BindCTESources(body, v.cteProducers)
+			// The recursive union stays the body (seed and recursive leg are
+			// its inputs); each leg carries the inner declarations it reads.
+			wrap := func(op logical.LogicalOperator) logical.LogicalOperator {
+				for i := len(innerDecls) - 1; i >= 0; i-- {
+					op = logical.NewCTEReference(innerDecls[i], op)
+				}
+				return op
+			}
+			if union, ok := body.(*logical.LogicalUnion); ok {
+				legs := make([]logical.LogicalOperator, len(union.Inputs))
+				for i, leg := range union.Inputs {
+					legs[i] = wrap(leg)
+				}
+				return logical.NewUnion(legs, union.Distinct), nil
+			}
+			return wrap(body), nil
+		}, logical.CTEColumns(aliases...), logical.CTETraversal(traversal), logical.CTENamePath(fullIDSegments(nq.GetName())...))
+		restoreInner()
+		if err != nil {
+			return nil, err
+		}
+		if producer.Body() == nil {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "CTE body has no logical plan")
+		}
+		{
+			var source semantic.ScopeSource
+			var exact bool
+			if recursive {
+				// The seed schema was only the temporary declaration used to
+				// bind self-references. Main-query consumers must resolve against
+				// the completed producer's common row, before their Values are
+				// built (QueryVisitor.handleRecursiveNamedQuery publishes the
+				// recursive union's quantifier, not the temporary scan).
+				scan := logical.NewScan(name, "")
+				scan.Source = logical.CTEScanSource(producer)
+				row, typeErr := query.LogicalResultTypeAfterUnionPromotionWithCTEs(scan, v.md, nil)
+				if typeErr != nil && v.md != nil {
+					return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+						"recursive CTE %q has no exact common result row: %v", name, typeErr)
+				}
+				if typeErr == nil {
+					source, exact = virtualScopeSourceFromResultType(name, scan, v.md, row, aliases, v.cteScopes)
+					if exact && len(aliases) == 0 {
+						source = quantifierNamedSource(source)
+					}
+				}
+			} else {
+				source, exact = exactVirtualScopeSource(name, producer.Body(), v.md, nil, v.cteScopes)
+			}
+			if !exact {
+				delete(v.cteScopes, upper)
+				v.cteOnScopes[upper] = semantic.ScopeSource{}
+			} else {
+				if len(aliases) > 0 && len(aliases) != len(source.Table.Columns()) {
+					return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference, "cte query has %d column(s), however %d aliases defined", len(source.Table.Columns()), len(aliases))
+				}
+				v.cteScopes[upper] = applyCTEColumnAliases(source, nq.GetColumnAliases())
+				delete(v.cteOnScopes, upper)
+			}
+		}
+		source, ok := v.cteScopes[upper]
+		if ok {
+			source.CTE = producer
+			v.cteScopes[upper] = source
+		}
+		onSource, ok := v.cteOnScopes[upper]
+		if ok {
+			onSource.CTE = producer
+			v.cteOnScopes[upper] = onSource
+		}
+		v.cteProducers = v.cteProducers.With(producer)
+		declarations = append(declarations, producer)
+	}
+	return declarations, nil
 }
 
 // declareViews declares, as named queries, every schema view the query reaches

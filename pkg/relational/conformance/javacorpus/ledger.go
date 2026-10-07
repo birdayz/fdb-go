@@ -159,8 +159,9 @@ const (
 	// SkipGapCatalogTables is a query against the catalog's own system tables.
 	SkipGapCatalogTables SkipClass = "engine-gap:catalog-system-tables"
 
-	// SkipGapNestedRecursiveWith is a WITH nested inside a recursive CTE body.
-	SkipGapNestedRecursiveWith SkipClass = "engine-gap:nested-recursive-with"
+	// SkipGapExistsFromAlias is a subquery whose FROM names an enclosing
+	// query's FROM alias as a table (`… FROM ct AS c … EXISTS (SELECT … FROM c)`).
+	SkipGapExistsFromAlias SkipClass = "engine-gap:exists-from-alias"
 	// SkipGapErrorClass is an error that reaches the client without a SQLSTATE,
 	// so the corpus's error-class assertion has nothing to compare against.
 	SkipGapErrorClass SkipClass = "engine-gap:error-class"
@@ -230,7 +231,7 @@ func AllSkipClasses() []SkipClass {
 		SkipGapStructDML,
 		SkipGapCatalogTables,
 
-		SkipGapNestedRecursiveWith,
+		SkipGapExistsFromAlias,
 		SkipGapErrorClass,
 		SkipConformanceGoAccepts,
 		SkipConformanceJavaPlannerBug,

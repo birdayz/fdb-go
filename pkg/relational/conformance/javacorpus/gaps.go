@@ -85,14 +85,12 @@ var engineGaps = []EngineGap{
 	// parenthesised statement (`((SELECT …) UNION ALL …)`) is the query it
 	// encloses.
 
-	// A WITH nested inside a recursive CTE's body.
-	{"documentation-queries/with-documentation-queries.yamsql", SkipGapNestedRecursiveWith, "nested WITH inside a recursive CTE body", "CQ-72"},
-	// recursive-cte.yamsql ran its schema DDL for the first time when the
-	// sparse-index predicate arm landed (RFC-202 S5 — its CHILDIDXNONULLS
-	// declares `where parent is not null`); the file then progresses to its
-	// line-185 statement, a WITH nested inside a recursive CTE body — the
-	// same gap as the entry above, reached from a second carrier.
-	{"recursive-cte.yamsql", SkipGapNestedRecursiveWith, "nested WITH inside a recursive CTE body", "CQ-72"},
+	// A WITH nested inside a recursive CTE's body is CLOSED (2026-10-07): the
+	// inner names are declared before the seed and wrap each union leg, so
+	// recursive-cte.yamsql passes. The documentation file's nested example
+	// reads a FROM alias of the recursive reference as a table inside an
+	// EXISTS (`NOT EXISTS (SELECT name FROM c …)`), its own gap.
+	{"documentation-queries/with-documentation-queries.yamsql", SkipGapExistsFromAlias, "EXISTS input has no result producer", "CQ-72"},
 
 	// joins-documentation-queries.yamsql used to stop at a JOIN-bodied derived
 	// table whose ON clause could not be resolved back to its sources. CLOSED:

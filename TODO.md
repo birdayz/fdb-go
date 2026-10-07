@@ -189,7 +189,11 @@ Never mark a whole workstream complete because one of its subitems passed.
       A comma source's own JOINs follow it in the FROM's left-deep order
       (`CommaJoinJavaProbe`, 4 rows equal; a LEFT JOIN over a lateral unnest
       is a declared Go refusal); `right-deep-plan-tests.yamsql` passes
-      (141 files, 8808 queries).
+      (141 files, 8808 queries). A WITH nested in a recursive CTE body is
+      declared before the seed and wraps each union leg;
+      `recursive-cte.yamsql` passes (142 files, 8899 queries). The
+      documentation file's nested example stops at a subquery reading a
+      FROM alias as a table (`engine-gap:exists-from-alias`).
       The translator's `existsInnerScopeCollidesOuter` guard is no longer
       reached from SQL (measured 2026-10-07: a panic on its true arm, zero
       hits over sqldriver, core, conformance corpora and probes); it stays
