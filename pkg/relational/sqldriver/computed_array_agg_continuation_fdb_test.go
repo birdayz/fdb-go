@@ -14,7 +14,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -65,7 +65,7 @@ func TestFDB_ComputedRecordArrayAggContinuation(t *testing.T) {
 	plan, err := embedded.PlanRecordQueryWithMetadata("SELECT ARRAY_AGG((id,v)) FROM t", md, nil)
 	require.NoError(t, err)
 	require.Contains(t, plan.Explain(), "StreamingAgg")
-	require.NoError(t, cascades.FinalizePlan(plan))
+	require.NoError(t, plans.FinalizePlan(plan))
 	var continuation []byte
 	var got [][]any
 	done := false

@@ -7,7 +7,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
@@ -15,7 +14,7 @@ import (
 
 func executeInlineValuesPlan(t testing.TB, plan plans.RecordQueryPlan) []executor.QueryResult {
 	t.Helper()
-	if err := cascades.FinalizePlan(plan); err != nil {
+	if err := plans.FinalizePlan(plan); err != nil {
 		t.Fatalf("FinalizePlan: %v", err)
 	}
 	cursor, err := executor.ExecutePlan(context.Background(), plan, nil,
@@ -69,7 +68,7 @@ func TestInlineValuesPhysicalLeafEmitsItsExactPublishedRow(t *testing.T) {
 	// particular this stamps the inline row constructors with the plan's
 	// synthetic protobuf descriptors; the direct harness otherwise leaves them
 	// as name-keyed maps and would miss representation-only type drift.
-	if err := cascades.FinalizePlan(plan); err != nil {
+	if err := plans.FinalizePlan(plan); err != nil {
 		t.Fatalf("FinalizePlan: %v", err)
 	}
 	cursor, err := executor.ExecutePlan(context.Background(), explode, nil,

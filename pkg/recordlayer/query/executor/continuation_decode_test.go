@@ -30,7 +30,6 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -1657,12 +1656,12 @@ func TestContinuationResolverUsesFinalizedComputedDescriptors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cascades.FinalizePlan(plan); err != nil {
+	if err := plans.FinalizePlan(plan); err != nil {
 		t.Fatal(err)
 	}
 	resolve := continuationMessageResolver(nil, plan)
 	seen := map[protoreflect.FullName]bool{}
-	cascades.ForEachPlanMessageDescriptor(plan, func(desc protoreflect.MessageDescriptor) {
+	plans.ForEachPlanMessageDescriptor(plan, func(desc protoreflect.MessageDescriptor) {
 		got, err := resolve(string(desc.FullName()))
 		if err != nil || got != desc {
 			t.Fatalf("descriptor %s: got %v, %v", desc.FullName(), got, err)

@@ -37,7 +37,6 @@ go_library(
         "//pkg/recordlayer/indexpredicate",
         "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/protoscope",
-        "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",

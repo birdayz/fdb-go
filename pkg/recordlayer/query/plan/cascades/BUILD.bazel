@@ -62,7 +62,6 @@ go_library(
         "plan_context_builder.go",
         "plan_executability.go",
         "plan_extraction.go",
-        "plan_finalize.go",
         "plan_invariants.go",
         "plan_properties.go",
         "plan_property_dependencies.go",
@@ -221,7 +220,6 @@ go_library(
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
         "@org_golang_google_protobuf//proto",
-        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )
 
@@ -381,7 +379,6 @@ go_test(
         "plan_expression_flag_parity_test.go",
         "plan_extraction_fuzz_test.go",
         "plan_extraction_test.go",
-        "plan_finalize_test.go",
         "plan_invariants_test.go",
         "plan_properties_order_test.go",
         "plan_properties_reuse_test.go",
@@ -1059,8 +1056,6 @@ go_test(
         "index_predicate_to_query.go",
         "sparse_candidate_expansion_test.go",
         "normalize_size_overflow_test.go",
-        "plan_finalize.go",
-        "plan_finalize_test.go",
         "grouping_primitive_expansion.go",
         "physical_equality_cost_test.go",
         "physical_key_component_types_test.go",

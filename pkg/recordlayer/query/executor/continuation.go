@@ -11,7 +11,6 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -1460,7 +1459,7 @@ func continuationMessageResolver(md *recordlayer.RecordMetaData, plan plans.Reco
 		if resolve == nil {
 			var files []protoreflect.FileDescriptor
 			seen := map[protoreflect.FileDescriptor]bool{}
-			cascades.ForEachPlanMessageDescriptor(plan, func(desc protoreflect.MessageDescriptor) {
+			plans.ForEachPlanMessageDescriptor(plan, func(desc protoreflect.MessageDescriptor) {
 				file := desc.ParentFile()
 				if !seen[file] {
 					seen[file] = true

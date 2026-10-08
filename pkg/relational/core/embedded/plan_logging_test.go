@@ -7,7 +7,6 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	cascadesvalues "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 	"fdb.dev/pkg/relational/api"
@@ -676,7 +675,7 @@ func TestFinalizePlanContainsDuplicateNameRegistrationFailure(t *testing.T) {
 	// FinalizePlan — so without this every constructor is trivially unstamped
 	// and the assertions below would hold for any plan at all. The survivor
 	// asserted at the end is what proves the bake actually ran.
-	if bakeErr := cascades.FinalizePlan(plan); bakeErr != nil {
+	if bakeErr := plans.FinalizePlan(plan); bakeErr != nil {
 		t.Fatalf("FinalizePlan over the FULL OUTER JOIN: %v", bakeErr)
 	}
 
@@ -687,7 +686,7 @@ func TestFinalizePlanContainsDuplicateNameRegistrationFailure(t *testing.T) {
 	// smaller population that still reads like a measurement. That is how the
 	// exact-shape guard at the end of this function would fail OPEN.
 	var constructors, duplicates, unstamped int
-	cascades.ForEachPlanRecordConstructor(plan, func(rc *cascadesvalues.RecordConstructorValue) {
+	plans.ForEachPlanRecordConstructor(plan, func(rc *cascadesvalues.RecordConstructorValue) {
 		row, isRow := rc.Type().(*cascadesvalues.RecordType)
 		if !isRow {
 			return
@@ -729,11 +728,11 @@ func TestFinalizePlanPromotesAnonymousRecordArray(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := cascades.FinalizePlan(plan); err != nil {
+			if err := plans.FinalizePlan(plan); err != nil {
 				t.Fatal(err)
 			}
 			var found int
-			cascades.ForEachPlanRecordConstructor(plan, func(rc *cascadesvalues.RecordConstructorValue) {
+			plans.ForEachPlanRecordConstructor(plan, func(rc *cascadesvalues.RecordConstructorValue) {
 				if len(rc.Fields) != 1 || rc.Fields[0].Name != "CH" {
 					return
 				}

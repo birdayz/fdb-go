@@ -565,7 +565,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// constructors. This is the plan-cache MISS path — the hit path above
 	// returns the same plan pointer to concurrent executions, so this is the
 	// only point at which stamping is not a data race.
-	if err := cascades.FinalizePlan(physPlan); err != nil {
+	if err := plans.FinalizePlan(physPlan); err != nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "result descriptor: "+err.Error())
 	}
 	// Plan scalar subqueries independently through the Cascades pipeline
@@ -1238,7 +1238,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "malformed DML plan: "+err.Error())
 	}
-	if err := cascades.FinalizePlan(physPlan); err != nil {
+	if err := plans.FinalizePlan(physPlan); err != nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "result descriptor: "+err.Error())
 	}
 

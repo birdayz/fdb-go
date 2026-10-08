@@ -1,4 +1,4 @@
-package cascades
+package plans
 
 import (
 	"errors"
@@ -7,7 +7,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // FinalizePlan collects computed types, validates their closures, seals one
@@ -23,7 +22,7 @@ import (
 // Failed roots (duplicate field names, unescapable names, erased arrays and
 // other non-protobuf types) retain the supported raw fallback without poisoning
 // unrelated roots. Conflicting valid declarations of a name remain errors.
-func FinalizePlan(plan plans.RecordQueryPlan) error {
+func FinalizePlan(plan RecordQueryPlan) error {
 	if plan == nil {
 		return nil
 	}
@@ -106,12 +105,12 @@ type planStamper struct {
 // multi_row_insert_values_is_not_baked subtest pins that, and names what gets
 // re-armed if RETURNING ever lands: the returned projection would need
 // stamping while the write source still must not be.
-func feedsAWrite(plan plans.RecordQueryPlan) bool {
+func feedsAWrite(plan RecordQueryPlan) bool {
 	switch plan.(type) {
-	case *plans.RecordQueryInsertPlan,
-		*plans.RecordQueryUpdatePlan,
-		*plans.RecordQueryDeletePlan,
-		*plans.RecordQueryTempTableInsertPlan:
+	case *RecordQueryInsertPlan,
+		*RecordQueryUpdatePlan,
+		*RecordQueryDeletePlan,
+		*RecordQueryTempTableInsertPlan:
 		return true
 	}
 	return false
@@ -142,29 +141,29 @@ func feedsAWrite(plan plans.RecordQueryPlan) bool {
 // FinalizePlan. A plan that grows a new value-bearing field, or one whose
 // subtree stops being reachable, fails that test rather than silently going
 // unstamped.
-func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) {
+func forEachNodeLocalValue(plan RecordQueryPlan, emit func(values.Value)) {
 	emit(plan.GetResultValue())
 
 	switch p := plan.(type) {
-	case *plans.RecordQueryPredicatesFilterPlan:
+	case *RecordQueryPredicatesFilterPlan:
 		forEachPredicateValue(p.GetPredicates(), emit)
-	case *plans.RecordQueryFilterPlan:
+	case *RecordQueryFilterPlan:
 		forEachPredicateValue(p.GetPredicates(), emit)
-	case *plans.RecordQueryNestedLoopJoinPlan:
+	case *RecordQueryNestedLoopJoinPlan:
 		forEachPredicateValue(p.GetPredicates(), emit)
-	case *plans.RecordQueryStreamingAggregationPlan:
+	case *RecordQueryStreamingAggregationPlan:
 		forEachValue(p.GetGroupingKeys(), emit)
 		for _, a := range p.GetAggregates() {
 			emit(a.Operand)
 		}
-	case *plans.RecordQueryScanPlan:
+	case *RecordQueryScanPlan:
 		forEachValue(p.GetPrimaryKeyValues(), emit)
 		forEachValue(p.GetCommonPrimaryKeyValues(), emit)
 		forEachScanComparisonValue(p.GetScanComparisons(), emit)
-	case *plans.RecordQueryIndexPlan:
+	case *RecordQueryIndexPlan:
 		forEachValue(p.GetCommonPrimaryKeyValues(), emit)
 		forEachScanComparisonValue(p.GetScanComparisons(), emit)
-	case *plans.RecordQueryAggregateIndexPlan:
+	case *RecordQueryAggregateIndexPlan:
 		// The wrapped index scan is a STRUCTURAL field, not a child: this plan
 		// is Java's RecordQueryPlanWithNoChildren and GetChildren returns nil.
 		// So the plan walk never descends into it and only this arm reaches its
@@ -176,7 +175,7 @@ func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) 
 		if idx := p.GetIndexPlan(); idx != nil {
 			forEachNodeLocalValue(idx, emit)
 		}
-	case *plans.RecordQueryCoveringIndexPlan:
+	case *RecordQueryCoveringIndexPlan:
 		// The second plan of the same shape, and for the same reason: the
 		// wrapped index scan is a STRUCTURAL field (Java's covering plan
 		// likewise implements RecordQueryPlanWithNoChildren), GetChildren
@@ -193,51 +192,51 @@ func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) 
 		if idx := p.GetIndexPlan(); idx != nil {
 			forEachNodeLocalValue(idx, emit)
 		}
-	case *plans.RecordQueryCoveringIndexValuePlan:
+	case *RecordQueryCoveringIndexValuePlan:
 		// Same shape; its reader is read leaf by leaf by the covering cursor,
 		// never evaluated as a record constructor.
 		if idx := p.GetIndexPlan(); idx != nil {
 			forEachNodeLocalValue(idx, emit)
 		}
-	case *plans.RecordQueryVectorIndexPlan:
+	case *RecordQueryVectorIndexPlan:
 		forEachValue(p.GetCommonPrimaryKeyValues(), emit)
 		forEachScanComparisonValue(p.GetPrefixComparisons(), emit)
 		emit(p.GetQueryVector())
 		emit(p.GetK())
-	case *plans.RecordQueryInMemorySortPlan:
+	case *RecordQueryInMemorySortPlan:
 		for _, sk := range p.GetSortKeys() {
 			emit(sk.ValueExpr)
 		}
-	case *plans.RecordQueryMergeSortUnionPlan:
+	case *RecordQueryMergeSortUnionPlan:
 		forEachValue(p.GetComparisonKeys(), emit)
-	case *plans.RecordQueryInUnionPlan:
+	case *RecordQueryInUnionPlan:
 		forEachValue(p.GetComparisonKeys(), emit)
 		for _, c := range p.GetInComparands() {
 			if c != nil {
 				emit(c)
 			}
 		}
-	case *plans.RecordQueryInJoinPlan:
+	case *RecordQueryInJoinPlan:
 		if c := p.GetInComparand(); c != nil {
 			emit(c)
 		}
-	case *plans.RecordQueryIntersectionPlan:
+	case *RecordQueryIntersectionPlan:
 		forEachValue(p.GetComparisonKeyValues(), emit)
-	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
+	case *RecordQueryMultiIntersectionOnValuesPlan:
 		forEachValue(p.GetComparisonKey(), emit)
-	case *plans.RecordQueryComparatorPlan:
+	case *RecordQueryComparatorPlan:
 		forEachValue(p.GetComparisonKeyValues(), emit)
-	case *plans.RecordQueryExplodePlan:
+	case *RecordQueryExplodePlan:
 		emit(p.GetCollectionValue())
-	case *plans.RecordQueryValuesPlan:
+	case *RecordQueryValuesPlan:
 		forEachValue(p.GetColumns(), emit)
-	case *plans.RecordQueryTableFunctionPlan:
+	case *RecordQueryTableFunctionPlan:
 		emit(p.GetStreamValue())
-	case *plans.RecordQueryFirstOrDefaultPlan:
+	case *RecordQueryFirstOrDefaultPlan:
 		emit(p.GetDefaultValue())
-	case *plans.RecordQueryDefaultOnEmptyPlan:
+	case *RecordQueryDefaultOnEmptyPlan:
 		emit(p.GetDefaultValue())
-	case *plans.RecordQueryLimitPlan:
+	case *RecordQueryLimitPlan:
 		emit(p.GetLimitValue())
 	}
 }
@@ -274,7 +273,7 @@ func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) 
 //
 // visit is called once per constructor occurrence, so a value reachable by two
 // routes is visited twice; plan NODES are visited once each.
-func ForEachPlanRecordConstructor(plan plans.RecordQueryPlan, visit func(*values.RecordConstructorValue)) {
+func ForEachPlanRecordConstructor(plan RecordQueryPlan, visit func(*values.RecordConstructorValue)) {
 	forEachPlanValue(plan, func(node values.Value) {
 		if rc, ok := node.(*values.RecordConstructorValue); ok {
 			visit(rc)
@@ -282,10 +281,10 @@ func ForEachPlanRecordConstructor(plan plans.RecordQueryPlan, visit func(*values
 	})
 }
 
-func forEachPlanValue(plan plans.RecordQueryPlan, visit func(values.Value)) {
-	seen := map[plans.RecordQueryPlan]struct{}{}
-	var walk func(plans.RecordQueryPlan)
-	walk = func(p plans.RecordQueryPlan) {
+func forEachPlanValue(plan RecordQueryPlan, visit func(values.Value)) {
+	seen := map[RecordQueryPlan]struct{}{}
+	var walk func(RecordQueryPlan)
+	walk = func(p RecordQueryPlan) {
 		if p == nil {
 			return
 		}
@@ -387,7 +386,7 @@ func stampRecordConstructor(rc *values.RecordConstructorValue, st *planStamper) 
 // ForEachPlanMessageDescriptor visits the computed descriptors bound during
 // finalization. Continuation readers need these alongside stored metadata;
 // reconstructing a fresh repository would assign different anonymous names.
-func ForEachPlanMessageDescriptor(plan plans.RecordQueryPlan, visit func(protoreflect.MessageDescriptor)) {
+func ForEachPlanMessageDescriptor(plan RecordQueryPlan, visit func(protoreflect.MessageDescriptor)) {
 	forEachPlanValue(plan, func(node values.Value) {
 		switch v := node.(type) {
 		case *values.RecordConstructorValue:

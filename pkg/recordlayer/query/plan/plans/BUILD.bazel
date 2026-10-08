@@ -38,6 +38,7 @@ go_library(
         "physical_equality_properties.go",
         "plan.go",
         "plan_expression.go",
+        "plan_finalize.go",
         "plan_hash.go",
         "plan_structural_hash_memo.go",
         "plan_structural_key.go",
@@ -72,6 +73,7 @@ go_library(
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )
 
@@ -121,6 +123,7 @@ go_test(
         "pk_scan_ordering_test.go",
         "plan_comparison_identity_drift_test.go",
         "plan_expression_memo_participation_test.go",
+        "plan_finalize_test.go",
         "plan_hash_test.go",
         "plan_structural_hash_memo_census_test.go",
         "plan_structural_hash_memo_test.go",
@@ -278,6 +281,8 @@ go_test(
         "aggregate_index_cardinality_test.go",
         "covering_index_value_scan.go",
         "covering_index_value_scan_test.go",
+        "plan_finalize.go",
+        "plan_finalize_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
@@ -285,5 +290,6 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/properties",
         "//pkg/recordlayer/query/plan/cascades/values",
+        "@org_golang_google_protobuf//proto",
     ],
 )
