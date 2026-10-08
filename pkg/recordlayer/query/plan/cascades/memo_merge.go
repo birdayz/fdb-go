@@ -389,6 +389,16 @@ func (m *Memo) addLeafRefIfLeaf(winner *expressions.Reference) {
 // dedupEdges removes duplicate (parent, expr) edges, preserving order.
 func dedupEdges(edges []parentEdge) []parentEdge {
 	out := edges[:0]
+	if len(edges) > 16 {
+		seen := make(map[parentEdge]struct{}, len(edges))
+		for _, e := range edges {
+			if _, dup := seen[e]; !dup {
+				seen[e] = struct{}{}
+				out = append(out, e)
+			}
+		}
+		return out
+	}
 	for _, e := range edges {
 		dup := false
 		for _, k := range out {
