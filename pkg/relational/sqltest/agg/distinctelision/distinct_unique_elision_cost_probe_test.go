@@ -731,7 +731,16 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// window that failed once failed during a period this run was also timing
 	// everything else.
 	sawWindowLost := false
-	for rep := 0; rep < duecReps; rep++ {
+	// The reps exist for the median the wall-clock criteria compare; without
+	// DUEC_ASSERT_WALLCLOCK those criteria only log, while every asserted
+	// property (shapes, row and NULL counts, the budget rows) is a count one
+	// run already fixes. So an unarmed run takes one rep (~40 s of timed reps
+	// saved on every PR) and an armed run takes all duecReps.
+	reps := 1
+	if duecAssertWallClock() {
+		reps = duecReps
+	}
+	for rep := 0; rep < reps; rep++ {
 		for _, o := range order {
 			s := series[o.tag]
 			sample, nulls, windowLost := duecRunInTx(t, ctx, tconn, o.query)
