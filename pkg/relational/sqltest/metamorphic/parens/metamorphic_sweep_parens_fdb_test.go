@@ -96,7 +96,41 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 	}
 	g := &testkit.MhGen{R: rand.New(rand.NewSource(seed))}
 
-	rowsFor := func(q string) ([]string, error) { return testkit.QueryRowStrings(t, ctx, db, q) }
+	// Each axis first generates its cases (the random draw sequence does not
+	// depend on any answer), then reads every statement concurrently over the
+	// unchanging fixture, then checks in generation order — so the counters,
+	// failure output and its order are the serial ones.
+	type mmpCase struct {
+		bare     string
+		variants []string
+	}
+	scan := func(ctx context.Context, db *sql.DB, q string) ([]string, error) {
+		return testkit.QueryRowStrings(t, ctx, db, q)
+	}
+	type answer struct {
+		rows []string
+		err  error
+	}
+	readCases := func(cases []mmpCase) (bare []answer, variants [][]answer) {
+		var reads []testkit.Read
+		for _, c := range cases {
+			reads = append(reads, testkit.Read{DB: db, SQL: c.bare})
+			for _, v := range c.variants {
+				reads = append(reads, testkit.Read{DB: db, SQL: v})
+			}
+		}
+		res := testkit.ReadAll(ctx, reads, scan)
+		for _, c := range cases {
+			bare = append(bare, answer{res[0].Rows, res[0].Err})
+			var vs []answer
+			for j := range c.variants {
+				vs = append(vs, answer{res[1+j].Rows, res[1+j].Err})
+			}
+			variants = append(variants, vs)
+			res = res[1+len(c.variants):]
+		}
+		return bare, variants
+	}
 
 	// The population guards. Three distinct ways this sweep could be green
 	// while proving nothing, so three counters:
@@ -114,17 +148,27 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 	// The whole predicate, then each conjunct: `p` vs `(p)` vs `((p))`, and
 	// `p AND q` vs `(p) AND (q)`.
 	t.Run("where_predicate", func(t *testing.T) {
+		var cases []mmpCase
 		for i := 0; i < iters; i++ {
 			p := g.Pred(2)
-			bare := fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY id", p)
-			want, err := rowsFor(bare)
+			cases = append(cases, mmpCase{
+				bare: fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY id", p),
+				variants: []string{
+					fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY id", mmpWrap(p, 1)),
+					fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY id", mmpWrap(p, 2)),
+				},
+			})
+		}
+		bares, vars := readCases(cases)
+		for i, c := range cases {
+			bare := c.bare
+			want, err := bares[i].rows, bares[i].err
 			if err != nil {
 				// An unsupported shape is not a finding here: what matters is
 				// that the parenthesized twin behaves the SAME way, which the
 				// error comparison below still checks.
-				for _, d := range []int{1, 2} {
-					variant := fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY id", mmpWrap(p, d))
-					if _, verr := rowsFor(variant); (verr == nil) != (err == nil) {
+				for j, variant := range c.variants {
+					if verr := vars[i][j].err; (verr == nil) != (err == nil) {
 						t.Errorf("parenthesizing changed whether the query is ACCEPTED\n"+
 							"  bare : %s\n  err  : %v\n  paren: %s\n  err  : %v", bare, err, variant, verr)
 					}
@@ -132,9 +176,8 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 				skipped++
 				continue
 			}
-			for _, d := range []int{1, 2} {
-				variant := fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY id", mmpWrap(p, d))
-				got, verr := rowsFor(variant)
+			for j, variant := range c.variants {
+				got, verr := vars[i][j].rows, vars[i][j].err
 				if verr != nil {
 					t.Errorf("the bare predicate ran but its parenthesized twin failed\n"+
 						"  bare : %s\n  paren: %s\n  err  : %v", bare, variant, verr)
@@ -160,6 +203,7 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 	// CASE's own output rather than over a filtered row set.
 	t.Run("case_arms", func(t *testing.T) {
 		lits := []string{"1", "0", "-3", "'z'", "NULL"}
+		var cases []mmpCase
 		for i := 0; i < iters; i++ {
 			p := g.Pred(1)
 			thenLit := g.Pick(lits)
@@ -171,11 +215,6 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 			}
 			bare := fmt.Sprintf("SELECT CASE WHEN %s THEN %s ELSE %s END FROM t ORDER BY id",
 				p, thenLit, elseLit)
-			want, err := rowsFor(bare)
-			if err != nil {
-				skipped++
-				continue
-			}
 			variants := []string{
 				fmt.Sprintf("SELECT CASE WHEN %s THEN %s ELSE %s END FROM t ORDER BY id",
 					p, mmpWrap(thenLit, 1), elseLit),
@@ -189,8 +228,18 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 				fmt.Sprintf("SELECT CASE WHEN %s THEN %s ELSE %s END FROM t ORDER BY id",
 					mmpWrap(p, 1), thenLit, elseLit),
 			}
-			for _, variant := range variants {
-				got, verr := rowsFor(variant)
+			cases = append(cases, mmpCase{bare, variants})
+		}
+		bares, vars := readCases(cases)
+		for i, c := range cases {
+			bare := c.bare
+			want, err := bares[i].rows, bares[i].err
+			if err != nil {
+				skipped++
+				continue
+			}
+			for j, variant := range c.variants {
+				got, verr := vars[i][j].rows, vars[i][j].err
 				if verr != nil {
 					t.Errorf("the bare CASE ran but its parenthesized twin failed\n"+
 						"  bare : %s\n  paren: %s\n  err  : %v", bare, variant, verr)
@@ -217,19 +266,30 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 	// flatten and the predicate-first condition walk meet. The literal arms
 	// above cannot reach it: their operands are never predicates.
 	t.Run("case_arm_is_a_comparison", func(t *testing.T) {
+		var cases []mmpCase
 		for i := 0; i < iters/2; i++ {
 			thenPred := g.Atom(1)
-			bare := fmt.Sprintf("SELECT CASE WHEN id > 0 THEN %s ELSE FALSE END FROM t ORDER BY id",
-				thenPred)
-			want, err := rowsFor(bare)
+			cases = append(cases, mmpCase{
+				bare: fmt.Sprintf("SELECT CASE WHEN id > 0 THEN %s ELSE FALSE END FROM t ORDER BY id",
+					thenPred),
+				variants: []string{
+					fmt.Sprintf("SELECT CASE WHEN id > 0 THEN %s ELSE FALSE END FROM t ORDER BY id",
+						mmpWrap(thenPred, 1)),
+					fmt.Sprintf("SELECT CASE WHEN id > 0 THEN %s ELSE FALSE END FROM t ORDER BY id",
+						mmpWrap(thenPred, 2)),
+				},
+			})
+		}
+		bares, vars := readCases(cases)
+		for i, c := range cases {
+			bare := c.bare
+			want, err := bares[i].rows, bares[i].err
 			if err != nil {
 				skipped++
 				continue
 			}
-			for _, d := range []int{1, 2} {
-				variant := fmt.Sprintf("SELECT CASE WHEN id > 0 THEN %s ELSE FALSE END FROM t ORDER BY id",
-					mmpWrap(thenPred, d))
-				got, verr := rowsFor(variant)
+			for j, variant := range c.variants {
+				got, verr := vars[i][j].rows, vars[i][j].err
 				if verr != nil {
 					t.Errorf("a bare comparison CASE arm ran but its parenthesized twin failed\n"+
 						"  bare : %s\n  paren: %s\n  err  : %v", bare, variant, verr)
@@ -250,16 +310,12 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 
 	// ---- axis 3: parenthesized IN-list items -------------------------------
 	t.Run("in_list_items", func(t *testing.T) {
+		var cases []mmpCase
 		for i := 0; i < iters; i++ {
 			col := g.Pick(g.Ints())
 			items := []string{g.Pick(testkit.MhIntLits), g.Pick(testkit.MhIntLits), g.Pick(testkit.MhIntLits)}
 			bare := fmt.Sprintf("SELECT id FROM t WHERE %s IN (%s) ORDER BY id",
 				col, strings.Join(items, ", "))
-			want, err := rowsFor(bare)
-			if err != nil {
-				skipped++
-				continue
-			}
 			wrapped := make([]string, len(items))
 			for j, it := range items {
 				wrapped[j] = mmpWrap(it, 1)
@@ -275,8 +331,18 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 				fmt.Sprintf("SELECT id FROM t WHERE %s IN (%s) ORDER BY id",
 					mmpWrap(col, 1), strings.Join(wrapped, ", ")),
 			}
-			for _, variant := range variants {
-				got, verr := rowsFor(variant)
+			cases = append(cases, mmpCase{bare, variants})
+		}
+		bares, vars := readCases(cases)
+		for i, c := range cases {
+			bare := c.bare
+			want, err := bares[i].rows, bares[i].err
+			if err != nil {
+				skipped++
+				continue
+			}
+			for j, variant := range c.variants {
+				got, verr := vars[i][j].rows, vars[i][j].err
 				if verr != nil {
 					t.Errorf("the bare IN list ran but its parenthesized twin failed\n"+
 						"  bare : %s\n  paren: %s\n  err  : %v", bare, variant, verr)
