@@ -221,3 +221,65 @@ func TestFDB_DirectAccessRoundTrip(t *testing.T) {
 		t.Errorf("%d records left, want 0", left)
 	}
 }
+
+// TestFDB_DirectAccessScanPaging pins Java's executeScan paging
+// (EmbeddedRelationalStatement.executeScan over RecordTypeTable.openScan):
+// MAX_ROWS bounds a scan's page, the continuation past a page resumes the
+// scan where it stopped, the last page's continuation is the end, and a
+// continuation is refused until the page is consumed.
+func TestFDB_DirectAccessScanPaging(t *testing.T) {
+	t.Parallel()
+	db := openDirectAccessDB(t, "/FRL/testdb_direct_paging", "direct_paging")
+	ctx := context.Background()
+
+	var rows []api.Struct
+	for k := int64(1); k <= 5; k++ {
+		rows = append(rows, rowstruct.NewStructBuilder().AddLong("TU_P", 1).AddLong("TU_K", k).AddUUID("TU_U", uuid.New()).Build())
+	}
+	rows = append(rows, rowstruct.NewStructBuilder().AddLong("TU_P", 2).AddLong("TU_K", 1).AddUUID("TU_U", uuid.New()).Build())
+	if err := directAccess(t, db, func(s api.DirectAccessStatement) error {
+		_, err := s.ExecuteInsert(ctx, "TU", rows, nil)
+		return err
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	prefix := api.NewKeySet()
+	_, _ = prefix.SetKeyColumn("TU_P", int64(1))
+	var pages [][]int64
+	var cont api.Continuation
+	for i := 0; i < 5; i++ {
+		b := api.NewOptionsBuilder().Set(api.OptMaxRows, 2)
+		if cont != nil {
+			b = b.Set(api.OptContinuation, cont)
+		}
+		if err := directAccess(t, db, func(s api.DirectAccessStatement) error {
+			rs, err := s.ExecuteScan(ctx, "TU", prefix, b.Build())
+			if err != nil {
+				return err
+			}
+			if _, err := rs.Continuation(); err == nil {
+				t.Error("continuation given before the page was consumed")
+			}
+			var page []int64
+			for rs.Next() {
+				k, _ := rs.LongByName("TU_K")
+				page = append(page, k)
+			}
+			pages = append(pages, page)
+			cont, err = rs.Continuation()
+			return err
+		}); err != nil {
+			t.Fatalf("page %d: %v", i, err)
+		}
+		if api.AtEnd(cont) {
+			break
+		}
+	}
+	if got := fmt.Sprint(pages); got != "[[1 2] [3 4] [5]]" {
+		t.Errorf("pages = %s, want [[1 2] [3 4] [5]]", got)
+	}
+	if cont == nil || !api.AtEnd(cont) {
+		t.Errorf("last continuation = %v, want the end", cont)
+	}
+}

@@ -92,6 +92,7 @@ go_library(
         "//pkg/relational/core/session",
         "@com_github_antlr4_go_antlr_v4//:antlr",
         "@com_github_google_uuid//:uuid",
+        "@org_golang_google_protobuf//encoding/protowire",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/dynamicpb",

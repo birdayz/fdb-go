@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -60,9 +61,13 @@ func (s *directAccessStatement) run(ctx context.Context, tableName string, opts 
 		}
 	}
 	// A continuation that carries a query's binding hash is not one a direct
-	// access minted (validateBindingHash, :258-262).
+	// access minted (validateBindingHash, :258-262). Go's query continuations
+	// carry no hash, so the test is by kind: a direct-access continuation, or
+	// one at the beginning or the end, is accepted; any other is a query's.
 	if cont, ok := merged.Get(api.OptContinuation).(api.Continuation); ok && cont != nil && len(cont.ExecutionState()) > 0 {
-		return nil, api.NewError(api.ErrCodeInvalidContinuation, "Continuation doesn't match direct access APIs.")
+		if _, direct := cont.(*directContinuation); !direct {
+			return nil, api.NewError(api.ErrCodeInvalidContinuation, "Continuation doesn't match direct access APIs.")
+		}
 	}
 	schemaName, table, err := s.schemaAndTable(tableName)
 	if err != nil {
@@ -178,9 +183,9 @@ func (s *directAccessStatement) ExecuteGet(ctx context.Context, tableName string
 		}
 		rec, err := t.store.LoadRecord(pk)
 		if err != nil || rec == nil {
-			return directRows{desc: t.rt.Descriptor}, err
+			return directRows{desc: t.rt.Descriptor, after: directBeginContinuation()}, err
 		}
-		return directRows{desc: t.rt.Descriptor, records: []proto.Message{rec.Record}}, nil
+		return directRows{desc: t.rt.Descriptor, records: []proto.Message{rec.Record}, after: directEndContinuation()}, nil
 	})
 	if err != nil {
 		return nil, err
@@ -188,16 +193,22 @@ func (s *directAccessStatement) ExecuteGet(ctx context.Context, tableName string
 	return newDirectResultSet(rows.(directRows))
 }
 
-// directRows is a read's records and the descriptor they are read with.
+// directRows is a read's records, the descriptor they are read with, and the
+// continuation past the last of them.
 type directRows struct {
 	desc    protoreflect.MessageDescriptor
 	records []proto.Message
+	after   *directContinuation
 }
 
 // ExecuteScan returns the records of tableName whose primary key begins with
-// keyPrefix, in primary-key order (executeScan, :108-132). The rows are read
-// in this call's transaction and materialized, so the result set's
-// continuation is always the end; Java's streams and resumes.
+// keyPrefix, in primary-key order (executeScan, :108-132), resuming from the
+// CONTINUATION option and stopping after MAX_ROWS records
+// (QueryPropertiesUtils.getScanProperties: the returned-row limit). The page
+// is read in this call's transaction and materialized; its continuation, once
+// the rows are consumed, resumes the scan where the page stopped, or is the
+// end when the scan is exhausted. Java streams the page out of an open
+// transaction instead; the rows and continuations are the same.
 func (s *directAccessStatement) ExecuteScan(ctx context.Context, tableName string, keyPrefix *api.KeySet, opts *api.Options) (api.ResultSet, error) {
 	rows, err := s.run(ctx, tableName, opts, func(t directTable, o *api.Options) (any, error) {
 		if hint, ok := o.Get(api.OptIndexHint).(string); ok && hint != "" {
@@ -207,13 +218,28 @@ func (s *directAccessStatement) ExecuteScan(ctx context.Context, tableName strin
 		if err != nil {
 			return nil, err
 		}
-		records, err := scanDirectRecords(ctx, t, prefix)
-		return directRows{desc: t.rt.Descriptor, records: records}, err
+		cont, _ := o.Get(api.OptContinuation).(api.Continuation)
+		records, after, err := scanDirectPage(ctx, t, prefix, cont, directRowLimit(o))
+		return directRows{desc: t.rt.Descriptor, records: records, after: after}, err
 	})
 	if err != nil {
 		return nil, err
 	}
 	return newDirectResultSet(rows.(directRows))
+}
+
+// directRowLimit is MAX_ROWS as a returned-row limit, zero for none
+// (QueryPropertiesUtils.getExecuteProperties).
+func directRowLimit(o *api.Options) int {
+	switch n := o.Get(api.OptMaxRows).(type) {
+	case int:
+		return n
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	}
+	return 0
 }
 
 // ExecuteDelete deletes the record whose complete primary key is key and
@@ -327,6 +353,69 @@ func scanDirectRecords(ctx context.Context, t directTable, prefix tuple.Tuple) (
 			out = append(out, rec.Record)
 		}
 	}
+}
+
+// scanDirectPage reads one page of the records of t whose primary key begins
+// with prefix: RecordTypeTable.openScan over BackingRecordStore.scanType
+// (BackingRecordStore.java:192-200), resumed from cont and limited to limit
+// returned rows, the type filter applied after the limit as Java's is. The
+// continuation is RecordLayerIterator's after the page: the end when the
+// source is exhausted, otherwise the cursor's continuation where it stopped.
+func scanDirectPage(ctx context.Context, t directTable, prefix tuple.Tuple, cont api.Continuation, limit int) ([]proto.Message, *directContinuation, error) {
+	var state []byte
+	if cont != nil {
+		state = cont.ExecutionState()
+		if state != nil && len(state) == 0 {
+			// Resuming from the end reads nothing.
+			return nil, directEndContinuation(), nil
+		}
+	}
+	var whole tuple.Tuple
+	if len(prefix) > 0 {
+		whole = prefix
+	}
+	r := recordlayer.TupleRangeAllOf(whole)
+	props := recordlayer.NewScanProperties(recordlayer.DefaultExecuteProperties().WithReturnedRowLimit(limit))
+	low := r.LowEndpoint
+	if state != nil {
+		// The cursor resumes after the continuation's key, within the range.
+		low = recordlayer.EndpointTypeContinuation
+	}
+	cursor := t.store.ScanRecordsInRange(r.Low, r.High, low, r.HighEndpoint, state, props)
+	defer cursor.Close()
+	var out []proto.Message
+	for {
+		res, err := cursor.OnNext(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !res.HasNext() {
+			after, err := directContinuationAfter(res.GetNoNextReason(), res.GetContinuation())
+			return out, after, err
+		}
+		rec := res.GetValue()
+		if rec.RecordType != nil && rec.RecordType.Name == t.rt.Name {
+			out = append(out, rec.Record)
+		}
+	}
+}
+
+// directContinuationAfter is RecordLayerIterator.fetchNextResult's
+// continuation for a cursor that stopped for reason with cont, and
+// RecordLayerResultSet.continuationReason's reason for it.
+func directContinuationAfter(reason recordlayer.NoNextReason, cont recordlayer.RecordCursorContinuation) (*directContinuation, error) {
+	if reason == recordlayer.SourceExhausted || cont == nil || cont.IsEnd() {
+		return directEndContinuation(), nil
+	}
+	b, err := cont.ToBytes()
+	if err != nil {
+		return nil, err
+	}
+	why := api.ContinuationTransactionLimitReached
+	if reason == recordlayer.ReturnLimitReached {
+		why = api.ContinuationQueryExecutionLimitReached
+	}
+	return &directContinuation{state: b, reason: why}, nil
 }
 
 // directRecordKey is a record's primary key (KeyBuilder.buildKey(Row)).
@@ -577,6 +666,7 @@ func directElementValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Va
 type directResultSet struct {
 	md      *directResultSetMetaData
 	rows    []*rowstruct.MessageStruct
+	after   *directContinuation
 	pos     int
 	wasNull bool
 	closed  bool
@@ -587,7 +677,7 @@ func newDirectResultSet(rows directRows) (api.ResultSet, error) {
 	if err != nil {
 		return nil, err
 	}
-	rs := &directResultSet{md: &directResultSetMetaData{st: st}}
+	rs := &directResultSet{md: &directResultSetMetaData{st: st}, after: rows.after}
 	for _, rec := range rows.records {
 		row, err := rowstruct.New(rec.ProtoReflect())
 		if err != nil {
@@ -691,8 +781,14 @@ func (r *directResultSet) Object(i int) (any, error) { return r.cell(i) }
 
 func (r *directResultSet) WasNull() bool { return r.wasNull }
 
+// Continuation is the continuation past the rows, given only once they are
+// consumed (RecordLayerResultSet.getContinuation, IteratorResultSet's).
 func (r *directResultSet) Continuation() (api.Continuation, error) {
-	return directEndContinuation{}, nil
+	if !r.closed && r.pos < len(r.rows) {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"Continuation can only be returned once the result set has been exhausted")
+	}
+	return r.after, nil
 }
 
 func (r *directResultSet) LongByName(name string) (int64, error) {
@@ -720,14 +816,36 @@ func (r *directResultSet) BooleanByName(name string) (bool, error) {
 
 func (r *directResultSet) ObjectByName(name string) (any, error) { return r.cellByName(name) }
 
-// directEndContinuation is the continuation past a direct access's last row.
-type directEndContinuation struct{}
-
-func (directEndContinuation) Serialize() []byte      { return nil }
-func (directEndContinuation) ExecutionState() []byte { return nil }
-func (directEndContinuation) Reason() api.ContinuationReason {
-	return api.ContinuationCursorAfterLast
+// directContinuation is a direct access's continuation: Java's ContinuationImpl
+// over the cursor's bytes, with no binding hash. A nil state is the beginning,
+// an empty one the end.
+type directContinuation struct {
+	state  []byte
+	reason api.ContinuationReason
 }
+
+func directBeginContinuation() *directContinuation {
+	return &directContinuation{reason: api.ContinuationCursorAfterLast}
+}
+
+func directEndContinuation() *directContinuation {
+	return &directContinuation{state: []byte{}, reason: api.ContinuationCursorAfterLast}
+}
+
+// Serialize is the ContinuationProto ContinuationImpl serializes: version 1
+// and, unless at the beginning, the execution state (continuation.proto).
+func (c *directContinuation) Serialize() []byte {
+	b := protowire.AppendTag(nil, 1, protowire.VarintType)
+	b = protowire.AppendVarint(b, 1)
+	if c.state != nil {
+		b = protowire.AppendTag(b, 2, protowire.BytesType)
+		b = protowire.AppendBytes(b, c.state)
+	}
+	return b
+}
+
+func (c *directContinuation) ExecutionState() []byte         { return c.state }
+func (c *directContinuation) Reason() api.ContinuationReason { return c.reason }
 
 // directResultSetMetaData describes a direct access's rows: the table's
 // columns in declaration order.
