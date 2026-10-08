@@ -42,6 +42,7 @@ go_library(
         "multiway_join_index_probe.go",
         "ordering_limit_oracle_fdb.go",
         "packages.go",
+        "parallel_reads.go",
         "plan_logging_fdb.go",
         "plan_shape_conformance.go",
         "planner_cap_hit_fdb.go",
