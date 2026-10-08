@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -161,9 +162,18 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 		return res
 	}
 
+	// The typed-plan checks below plan each statement a second time, purely
+	// in memory and independently of the engine run. They are planned up
+	// front on a worker pool and consumed in statement order, so the seed's
+	// histogram, mismatches and their order are exactly the serial ones; the
+	// engine queries stay serial on their (possibly pinned) connection.
+	typed := planTypedConcurrently(c, ddl)
+
+	n := -1
 	for _, q := range c.Queries {
 		for _, projection := range c.ProjectionsFor(q) {
 			sqlText := c.SQL(q, projection)
+			n++
 
 			// Plan-family telemetry from the TYPED plan tree (never EXPLAIN
 			// text), via the embedded planner over the same DDL. Classified
@@ -171,7 +181,7 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 			// an identical WHERE (a star variant can fetch where the narrow
 			// variant is covering), so star-only classification under-reports
 			// executed families.
-			if plan, planErr := embedded.PlanPhysicalForTest(sqlText, ddl, nil); planErr == nil {
+			if plan, planErr := typed[n].await(); planErr == nil {
 				for _, fam := range classifyPlan(plan) {
 					res.Histogram[fam]++
 				}
@@ -267,6 +277,45 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 	}
 
 	return finalizeResult(res)
+}
+
+// typedPlan is one statement's in-memory physical plan, filled by a worker.
+type typedPlan struct {
+	done chan struct{}
+	plan plans.RecordQueryPlan
+	err  error
+}
+
+func (p *typedPlan) await() (plans.RecordQueryPlan, error) {
+	<-p.done
+	return p.plan, p.err
+}
+
+// planTypedConcurrently starts PlanPhysicalForTest for every (query,
+// projection) statement of c, in RunCase's iteration order, on up to four
+// goroutines (sweeps already run several seeds at once). Callers that return early leave the remaining
+// workers to finish on their own; they touch nothing but their own slot.
+func planTypedConcurrently(c *Case, ddl string) []*typedPlan {
+	var out []*typedPlan
+	var sqls []string
+	for _, q := range c.Queries {
+		for _, projection := range c.ProjectionsFor(q) {
+			sqls = append(sqls, c.SQL(q, projection))
+			out = append(out, &typedPlan{done: make(chan struct{})})
+		}
+	}
+	sem := make(chan struct{}, min(runtime.GOMAXPROCS(0), 4))
+	go func() {
+		for i, sqlText := range sqls {
+			sem <- struct{}{}
+			go func(p *typedPlan, sqlText string) {
+				defer func() { <-sem }()
+				defer close(p.done)
+				p.plan, p.err = embedded.PlanPhysicalForTest(sqlText, ddl, nil)
+			}(out[i], sqlText)
+		}
+	}()
+	return out
 }
 
 // finalizeResult resolves the seed's single Kind with MISMATCH precedence:
