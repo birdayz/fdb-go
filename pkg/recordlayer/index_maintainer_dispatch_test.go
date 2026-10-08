@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"fdb.dev/gen"
 	. "github.com/onsi/ginkgo/v2"
@@ -91,6 +92,24 @@ var _ = Describe("index maintainer dispatch", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("Order$other"))
 			Expect(err.Error()).To(ContainSubstring("still_unknown"))
+		})
+	})
+
+	Describe("a type a registered factory maintains", func() {
+		It("is maintained by the factory's maintainer, built from the store's state", func() {
+			idx := NewIndex("Order$registered", Field("price"))
+			idx.Type = registryTestIndexType
+
+			Expect(saveOne(buildMetaWithIndex(idx))).To(Succeed())
+			state, ok := registryTestFactory.states.Load("Order$registered")
+			Expect(ok).To(BeTrue(), "the registered factory never built the index's maintainer")
+			Expect(state.(IndexMaintainerState).Index.Name).To(Equal("Order$registered"))
+			Expect(state.(IndexMaintainerState).Store).NotTo(BeNil())
+		})
+
+		It("refuses a second factory for the same type", func() {
+			Expect(func() { RegisterIndexMaintainerFactory(registryTestFactory) }).To(
+				PanicWith(ContainSubstring(registryTestIndexType)))
 		})
 	})
 
@@ -206,3 +225,26 @@ var _ = Describe("index maintainer dispatch", func() {
 		})
 	})
 })
+
+const registryTestIndexType = "registry_test_index_type"
+
+// registryTestFactory maintains registryTestIndexType as a value index and
+// records the state each maintainer was built from.
+var registryTestFactory = &recordingIndexMaintainerFactory{}
+
+func init() { RegisterIndexMaintainerFactory(registryTestFactory) }
+
+type recordingIndexMaintainerFactory struct{ states sync.Map }
+
+func (*recordingIndexMaintainerFactory) IndexTypes() []string { return []string{registryTestIndexType} }
+
+func (f *recordingIndexMaintainerFactory) NewIndexMaintainer(state IndexMaintainerState) (IndexMaintainer, error) {
+	f.states.Store(state.Index.Name, state)
+	return newStandardIndexMaintainer(state.Index, state.IndexSubspace, state.Transaction, state.Store), nil
+}
+
+func (*recordingIndexMaintainerFactory) ValidateIndexOptions(*Index) error { return nil }
+
+func (*recordingIndexMaintainerFactory) ValidateChangedOptions(_, _ *Index, _ map[string]bool) error {
+	return nil
+}

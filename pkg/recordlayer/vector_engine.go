@@ -2,10 +2,6 @@ package recordlayer
 
 import "strings"
 
-// IndexOptionVectorEngine selects a VECTOR index's engine (Java
-// IndexOptions.VECTOR_ENGINE); absent means HNSW.
-const IndexOptionVectorEngine = "vectorEngine"
-
 // VectorEngineKind is Java's VectorIndexEngineKind.
 type VectorEngineKind int
 
@@ -36,20 +32,3 @@ func VectorEngineOf(index *Index) (VectorEngineKind, error) {
 	}
 	return VectorEngineHNSW, &MetaDataError{Message: "unknown vector index engine: " + v}
 }
-
-// GuardiANN option names (Java IndexOptions.GUARDIANN_*).
-const (
-	IndexOptionGuardiannPrimaryClusterMin                = "guardiannPrimaryClusterMin"
-	IndexOptionGuardiannPrimaryClusterMax                = "guardiannPrimaryClusterMax"
-	IndexOptionGuardiannPrimaryClusterHardMax            = "guardiannPrimaryClusterHardMax"
-	IndexOptionGuardiannUnderreplicatedPrimaryClusterMax = "guardiannUnderreplicatedPrimaryClusterMax"
-	IndexOptionGuardiannReplicatedClusterMaxWrites       = "guardiannReplicatedClusterMaxWrites"
-	IndexOptionGuardiannReplicatedClusterTarget          = "guardiannReplicatedClusterTarget"
-	IndexOptionGuardiannReplicationPriorityMin           = "guardiannReplicationPriorityMin"
-	IndexOptionGuardiannInsertMaxCandidateClusters       = "guardiannInsertMaxCandidateClusters"
-	IndexOptionGuardiannDeleteMaxCandidateClusters       = "guardiannDeleteMaxCandidateClusters"
-	IndexOptionGuardiannSplitNumNearestClusters          = "guardiannSplitNumNearestClusters"
-	IndexOptionGuardiannMergeNumNearestClusters          = "guardiannMergeNumNearestClusters"
-	IndexOptionGuardiannReassignNumNeighboringClusters   = "guardiannReassignNumNeighboringClusters"
-	IndexOptionGuardiannCollapseMinDuplicates            = "guardiannCollapseMinDuplicates"
-)

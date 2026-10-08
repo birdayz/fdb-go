@@ -7,57 +7,6 @@ import (
 	"fdb.dev/pkg/rabitq"
 )
 
-// SPFresh index options (RFC-094 §10). All structural options are immutable for
-// an existing index — enforced by the metadata-evolution validator — because
-// the lifecycle invariants (topology, posting sizes, closure replication) are
-// derived from them. Runtime knobs (probe width w, k_c, ε, re-rank C, refresh
-// interval, rebalancer pacing) are deliberately NOT index options: they are
-// query/maintenance-time parameters and are never stored.
-const (
-	// IndexOptionSPFreshNumDimensions is the vector dimensionality. Required.
-	IndexOptionSPFreshNumDimensions = "spfreshNumDimensions"
-	// IndexOptionSPFreshMetric is the distance metric (EUCLIDEAN_METRIC,
-	// COSINE_METRIC, DOT_PRODUCT_METRIC — same names the HNSW index accepts).
-	IndexOptionSPFreshMetric = "spfreshMetric"
-	// IndexOptionSPFreshLmax is the posting-list split threshold in entries.
-	// Sized so one posting fits a single range-reply (REPLY_BYTE_LIMIT = 80 KB).
-	IndexOptionSPFreshLmax = "spfreshLmax"
-	// IndexOptionSPFreshLminRatio divides Lmax to produce the merge threshold.
-	IndexOptionSPFreshLminRatio = "spfreshLminRatio"
-	// IndexOptionSPFreshCellTarget is the fine-centroids-per-cell build target;
-	// sized so one L2 cell load fits a single range-reply.
-	IndexOptionSPFreshCellTarget = "spfreshCellTarget"
-	// IndexOptionSPFreshCellMax is the coarse-split threshold in fine centroids.
-	IndexOptionSPFreshCellMax = "spfreshCellMax"
-	// IndexOptionSPFreshReplication is the closure replication cap r.
-	IndexOptionSPFreshReplication = "spfreshReplication"
-	// IndexOptionSPFreshAlpha is the RNG closure threshold: keep centroid c_i of
-	// the r nearest iff dist(v,c_i) <= alpha * dist(v,c_1). Must be > 1.0 or
-	// only the nearest centroid is ever admitted (effective r=1).
-	IndexOptionSPFreshAlpha = "spfreshAlpha"
-	// IndexOptionSPFreshKn is the NPA reassignment neighborhood (centroids).
-	IndexOptionSPFreshKn = "spfreshKn"
-	// IndexOptionSPFreshBuildAssignCells is the bulk-build wave-B assignment
-	// width w_b (RFC-099): how many nearest coarse cells supply candidate fine
-	// centroids when assigning an imported vector. Build-time only — it changes
-	// which fine a vector is assigned to, never the on-disk format. Must be ≥
-	// the query probe width so build assignments are query-reachable.
-	IndexOptionSPFreshBuildAssignCells = "spfreshBuildAssignCells"
-	// IndexOptionSPFreshCooldownSec is the post-split merge cooldown.
-	IndexOptionSPFreshCooldownSec = "spfreshCooldownSec"
-	// IndexOptionSPFreshRaBitQNumExBits is the RaBitQ extended-bits parameter
-	// for posting residual codes.
-	IndexOptionSPFreshRaBitQNumExBits = "spfreshRaBitQNumExBits"
-	// IndexOptionSPFreshSidecar enables the fp16 SIDECAR subspace. Default
-	// true — and currently REQUIRED: the sidecar is not just the query
-	// re-rank source, every rebalancer lifecycle reads it (split 2-means,
-	// chunked drain, merge drain, GC re-home), so disabling it would brick
-	// maintenance permanently. ValidateSPFreshConfig rejects false until a
-	// source-record fallback exists for all of those paths. The option stays
-	// (the wire layout reserves the choice); only the value is constrained.
-	IndexOptionSPFreshSidecar = "spfreshSidecar"
-)
-
 // SPFresh tuning defaults (RFC-094 §3/§9; frozen after the 094.1 benchmark).
 const (
 	spfreshDefaultLmax        = 256

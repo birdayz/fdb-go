@@ -911,9 +911,3 @@ type byDistanceScanner interface {
 type orderedStreamScanner interface {
 	ScanByDistanceOrderedStream(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
 }
-
-var (
-	_ byDistanceScanner    = (*vectorIndexMaintainer)(nil)
-	_ byDistanceScanner    = (*spfreshIndexMaintainer)(nil)
-	_ orderedStreamScanner = (*spfreshIndexMaintainer)(nil)
-)

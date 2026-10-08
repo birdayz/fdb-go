@@ -1360,39 +1360,14 @@ func (store *FDBRecordStore) createIndexMaintainer(index *Index) (IndexMaintaine
 			numDims = d.DimensionsSize
 		}
 		return newMultidimensionalIndexMaintainer(index, idxSubspace, store.indexSecondarySubspace(index), tx, store, numDims)
-	case IndexTypeVector:
-		// Java's VectorIndexMaintainer stores HNSW graph data under the primary index subspace
-		// (getIndexSubspace()), not the secondary subspace. Match Java's layout.
-		vm, err := newVectorIndexMaintainer(index, idxSubspace, idxSubspace, store.indexSecondarySubspace(index), tx, store)
+	default:
+		factory, err := lookupIndexMaintainerFactory(index)
 		if err != nil {
 			return nil, err
 		}
-		// Sliding-window DECORATION. Java's IndexMaintainerFactoryRegistryImpl
-		// detects the row-number window predicate and wraps the vector factory
-		// with SlidingWindowIndexMaintainerFactory; the wrapping is transparent
-		// to everything downstream. Same here: the decorator implements
-		// IndexMaintainer and forwards the read path, so only the WRITE path
-		// changes — which records reach the HNSW graph.
-		//
-		// Only IndexTypeVector is eligible, matching Java's
-		// SlidingWindowIndexMaintainerFactory.isSlidingWindowIndex. Go's
-		// IndexTypeVectorSPFresh is a Go-only extension (RFC-094) and is
-		// deliberately NOT decorated: keyspace 10's layout is the wire contract
-		// for Java's HNSW vector index, so a Go-only pairing would write bytes
-		// under prefix 10 that no Java engine can interpret — the one thing
-		// wire compatibility forbids. SPFresh also runs its own background
-		// rebalancer over the postings it owns, which an external evictor would
-		// be racing rather than cooperating with.
-		if !index.HasRowNumberWindowPredicate() {
-			return vm, nil
+		if factory != nil {
+			return store.newRegisteredIndexMaintainer(factory, index, idxSubspace, tx)
 		}
-		return newSlidingWindowIndexMaintainer(
-			index, vm, store.indexSlidingWindowSubspace(index), tx, store, store.context.Timer())
-	case IndexTypeVectorSPFresh:
-		// Go-only FDB-native vector index (RFC-094); all data under the
-		// primary index subspace, generation-prefixed.
-		return newSPFreshIndexMaintainer(index, idxSubspace, tx, store, store.context, store.context.Timer())
-	default:
 		// FAIL CLOSED. Java's registry lookup throws MetaDataException here
 		// (IndexMaintainerFactoryRegistryImpl.java:78-82) and so does this.
 		//
@@ -1403,6 +1378,41 @@ func (store *FDBRecordStore) createIndexMaintainer(index *Index) (IndexMaintaine
 		// unmaintainable index; guessing costs the index's contents.
 		return nil, &UnknownIndexTypeError{IndexName: index.Name, IndexType: index.Type}
 	}
+}
+
+// newRegisteredIndexMaintainer builds a registered factory's maintainer and
+// applies the sliding-window DECORATION. Java's
+// IndexMaintainerFactoryRegistryImpl detects the row-number window predicate
+// and wraps the factory with SlidingWindowIndexMaintainerFactory; the wrapping
+// is transparent to everything downstream. Same here: the decorator implements
+// IndexMaintainer and forwards the read path, so only the WRITE path changes —
+// which records reach the delegate.
+//
+// Only IndexTypeVector is eligible (isSlidingWindowIndex), matching Java's
+// SlidingWindowIndexMaintainerFactory.isSlidingWindowIndex. Go's
+// IndexTypeVectorSPFresh is a Go-only extension (RFC-094) and is deliberately
+// NOT decorated: keyspace 10's layout is the wire contract for Java's HNSW
+// vector index, so a Go-only pairing would write bytes under prefix 10 that no
+// Java engine can interpret. SPFresh also runs its own background rebalancer
+// over the postings it owns, which an external evictor would be racing rather
+// than cooperating with.
+func (store *FDBRecordStore) newRegisteredIndexMaintainer(factory IndexMaintainerFactory, index *Index, idxSubspace subspace.Subspace, tx fdb.WritableTransaction) (IndexMaintainer, error) {
+	m, err := factory.NewIndexMaintainer(IndexMaintainerState{
+		Store:         store,
+		Context:       store.context,
+		Index:         index,
+		IndexSubspace: idxSubspace,
+		Transaction:   tx,
+		Timer:         store.context.Timer(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !isSlidingWindowIndex(index) {
+		return m, nil
+	}
+	return newSlidingWindowIndexMaintainer(
+		index, m, store.indexSlidingWindowSubspace(index), tx, store, store.context.Timer())
 }
 
 func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) error {
