@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -111,5 +113,38 @@ func TestStoreAddressFlags_Validate(t *testing.T) {
 				t.Errorf("validate() = %v; want substring %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// A relational config context names a store by the same text the
+// --database/--schema flags take, so it is folded the same way: unquoted
+// lower case resolves to the upper-case address CREATE DATABASE/SCHEMA stored.
+func TestStoreAddressFlags_ResolveFoldsRelationalContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := `current_context: rel
+contexts:
+  - name: rel
+    cluster_file: /etc/fdb/fdb.cluster
+    database: /FRL/frlsql
+    schema: main
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FRL_CONFIG", path)
+	target, err := (&storeAddressFlags{}).resolve()
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	flagTarget, err := (&storeAddressFlags{database: "/FRL/frlsql", schema: "main", clusterFile: "/etc/fdb/fdb.cluster"}).resolve()
+	if err != nil {
+		t.Fatalf("resolve flags: %v", err)
+	}
+	if target.database != flagTarget.database || target.schema != flagTarget.schema {
+		t.Fatalf("context resolves %q/%q, flags %q/%q: one text must name one store",
+			target.database, target.schema, flagTarget.database, flagTarget.schema)
+	}
+	if target.database != "/FRL/FRLSQL" || target.schema != "MAIN" {
+		t.Fatalf("context resolves %q/%q, want /FRL/FRLSQL/MAIN", target.database, target.schema)
 	}
 }

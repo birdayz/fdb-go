@@ -131,8 +131,10 @@ func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 			if target.metaFile != "" {
 				return nil, fmt.Errorf("conflicting metadata sources: --meta-file cannot be combined with relational context %q (the catalog is the metadata source for relational stores)", cfgCtx.GetName())
 			}
-			target.database = cfgCtx.GetDatabase()
-			target.schema = cfgCtx.GetSchema()
+			// Folded like the --database/--schema flags, so a context and the
+			// flags name the same store for the same text.
+			target.database = functions.NormalizeIdentifier(cfgCtx.GetDatabase())
+			target.schema = functions.NormalizeIdentifier(cfgCtx.GetSchema())
 		} else if cfgCtx.GetKeyspaceTuple() != nil {
 			t, err := tupleFromListValue(cfgCtx.GetKeyspaceTuple())
 			if err != nil {
