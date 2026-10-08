@@ -25,13 +25,13 @@ import (
 // The two legs are stored ONCE, as Quantifiers over References — Java's shape
 // (`RecordQueryFlatMapPlan`'s `Quantifier.Physical outerQuantifier` /
 // `innerQuantifier`). The raw `outer`/`inner` pointers they replace were a
-// second storage location for the same edges. They stay two separately-named
-// fields rather than a slice because the accessors, the Explain rendering and
-// the executor all address them by ROLE, not by position. RFC-183 P5 step 2.
+// second storage location for the same edges. They are kept as one array so
+// GetQuantifiers returns a view without allocating; everything else addresses
+// them by ROLE through GetOuter/GetInner. RFC-183 P5 step 2.
 type RecordQueryFlatMapPlan struct {
 	PlanExprBase
-	outerQ                       expressions.Quantifier
-	innerQ                       expressions.Quantifier
+	// quantifiers holds the outer then the inner leg.
+	quantifiers                  [2]expressions.Quantifier
 	outerAlias                   values.CorrelationIdentifier
 	innerAlias                   values.CorrelationIdentifier
 	resultValue                  values.Value
@@ -48,7 +48,8 @@ func NewRecordQueryFlatMapPlan(
 ) (*RecordQueryFlatMapPlan, error) {
 	return newRecordQueryFlatMapPlanFromQuantifiers(
 		QuantifierOverPlan(outer), QuantifierOverPlan(inner),
-		outerAlias, innerAlias, resultValue, inheritOuterRecordProperties, false, false)
+		outerAlias, innerAlias, resultValue, inheritOuterRecordProperties, false, false,
+	)
 }
 
 // NewRecordQueryFlatMapPlanFromQuantifiers builds a correlated FlatMap whose two
@@ -72,7 +73,8 @@ func NewRecordQueryFlatMapPlanFromQuantifiers(
 ) (*RecordQueryFlatMapPlan, error) {
 	return newRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ, outerAlias, innerAlias, resultValue,
-		inheritOuterRecordProperties, false, false)
+		inheritOuterRecordProperties, false, false,
+	)
 }
 
 // NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying builds a FlatMap
@@ -91,7 +93,8 @@ func NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying(
 ) (*RecordQueryFlatMapPlan, error) {
 	return newRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ, outerAlias, innerAlias, resultValue,
-		inheritOuterRecordProperties, nullSupplyingOuter, nullSupplyingInner)
+		inheritOuterRecordProperties, nullSupplyingOuter, nullSupplyingInner,
+	)
 }
 
 func newRecordQueryFlatMapPlanFromQuantifiers(
@@ -137,20 +140,21 @@ func newRecordQueryFlatMapPlanFromQuantifiers(
 		}
 	}
 	base, err := newPlanExprBaseForRetainedResult(
-		"RecordQueryFlatMapPlan", resultValue, nullSupplying)
+		"RecordQueryFlatMapPlan", resultValue, nullSupplying,
+	)
 	if err != nil {
 		return nil, err
 	}
 	base, err = flatMapBaseWithRetainedSources(
 		base, outerQ, innerQ, outerAlias, innerAlias,
-		resultValue, nullSupplying, nullSupplyingOuter, nullSupplyingInner)
+		resultValue, nullSupplying, nullSupplyingOuter, nullSupplyingInner,
+	)
 	if err != nil {
 		return nil, err
 	}
 	return &RecordQueryFlatMapPlan{
 		PlanExprBase:                 base,
-		outerQ:                       outerQ,
-		innerQ:                       innerQ,
+		quantifiers:                  [2]expressions.Quantifier{outerQ, innerQ},
 		outerAlias:                   outerAlias,
 		innerAlias:                   innerAlias,
 		resultValue:                  resultValue,
@@ -174,7 +178,8 @@ func pullUpNullSupplyingSource(
 		return resultValue, source, nil
 	}
 	nullable, err := values.NewQuantifiedObjectValue(
-		source.Correlation(), values.WithNullability(source.FlowedType(), true))
+		source.Correlation(), values.WithNullability(source.FlowedType(), true),
+	)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -252,7 +257,8 @@ func flatMapBaseWithRetainedSources(
 				selectedSource, sourceErr := leg.quantifier.RequireFlowedObjectValue()
 				if sourceErr != nil {
 					return PlanExprBase{}, fmt.Errorf(
-						"RecordQueryFlatMapPlan retained direct source: %w", sourceErr)
+						"RecordQueryFlatMapPlan retained direct source: %w", sourceErr,
+					)
 				}
 				if samePlanExactType(selectedSource.FlowedType(), source.FlowedType()) {
 					directSelectedRecord = true
@@ -293,7 +299,8 @@ func flatMapBaseWithRetainedSources(
 			childNullSupplying, nullErr := values.LayoutWindowNullSupplying(childLayout, source)
 			if nullErr != nil {
 				return PlanExprBase{}, fmt.Errorf(
-					"RecordQueryFlatMapPlan retained source presence: %w", nullErr)
+					"RecordQueryFlatMapPlan retained source presence: %w", nullErr,
+				)
 			}
 			if childNullSupplying {
 				continue
@@ -303,15 +310,18 @@ func flatMapBaseWithRetainedSources(
 				continue
 			}
 			legBinding, bindingErr := values.NewQuantifiedObjectValue(
-				leg.alias, values.PhysicalCarrierType(childLayout))
+				leg.alias, values.PhysicalCarrierType(childLayout),
+			)
 			if bindingErr != nil {
 				return PlanExprBase{}, bindingErr
 			}
 			childValue, reanchorErr = values.TranslatePhaseRoot(
-				childValue, childLayout.Carrier(), legBinding)
+				childValue, childLayout.Carrier(), legBinding,
+			)
 			if reanchorErr != nil {
 				return PlanExprBase{}, fmt.Errorf(
-					"RecordQueryFlatMapPlan retained source leg binding: %w", reanchorErr)
+					"RecordQueryFlatMapPlan retained source leg binding: %w", reanchorErr,
+				)
 			}
 			var outputValue values.Value
 			if resultRoot, identityResult := values.AsQuantifiedObjectValue(resultValue); identityResult {
@@ -324,14 +334,17 @@ func flatMapBaseWithRetainedSources(
 				// admission prevents a same-spelled scalar source from being
 				// rewritten as the whole row.
 				outputValue, reanchorErr = values.TranslateDeclaredEdgeRoot(
-					childValue, resultRoot, baseLayout.Carrier())
+					childValue, resultRoot, baseLayout.Carrier(),
+				)
 			} else {
 				outputValue, reanchorErr = values.ReanchorOwnedValueThroughProducer(
-					childValue, resultValue, baseLayout.Carrier(), ownedByResult)
+					childValue, resultValue, baseLayout.Carrier(), ownedByResult,
+				)
 			}
 			if reanchorErr != nil {
 				return PlanExprBase{}, fmt.Errorf(
-					"RecordQueryFlatMapPlan retained source output: %w", reanchorErr)
+					"RecordQueryFlatMapPlan retained source output: %w", reanchorErr,
+				)
 			}
 			field, isField := values.AsFieldValue(outputValue)
 			if !isField || field.ChildValue() != baseLayout.Carrier() ||
@@ -360,10 +373,12 @@ func flatMapBaseWithRetainedSources(
 		// no baked ordinal, and a top-level field-mode source would otherwise be
 		// invisible until the final factory call where it conflicts too late.
 		directLayout, directErr := values.NewFlatOrdinalLayoutForRetainedResult(
-			resultValue, nullSupplying)
+			resultValue, nullSupplying,
+		)
 		if directErr != nil {
 			return PlanExprBase{}, fmt.Errorf(
-				"RecordQueryFlatMapPlan direct retained-source layout: %w", directErr)
+				"RecordQueryFlatMapPlan direct retained-source layout: %w", directErr,
+			)
 		}
 		directResultLayout = directLayout
 		directResultCorrelations := make(map[values.CorrelationIdentifier]struct{})
@@ -384,7 +399,8 @@ func flatMapBaseWithRetainedSources(
 	if len(additional) == 0 && !directSelectedRecord {
 		if directResultLayout != nil && len(directResultLayout.WindowSources()) != 0 {
 			return newPlanExprBaseForProvidedLayout(
-				"RecordQueryFlatMapPlan", resultValue, directResultLayout)
+				"RecordQueryFlatMapPlan", resultValue, directResultLayout,
+			)
 		}
 		return base, nil
 	}
@@ -399,12 +415,14 @@ func flatMapBaseWithRetainedSources(
 		// above.
 		if len(baseLayout.WindowSources()) != 0 {
 			return PlanExprBase{}, fmt.Errorf(
-				"RecordQueryFlatMapPlan retained identity layout already publishes source windows")
+				"RecordQueryFlatMapPlan retained identity layout already publishes source windows",
+			)
 		}
 		recordType, isRecord := values.PhysicalCarrierType(baseLayout).(*values.RecordType)
 		if !isRecord || recordType == nil {
 			return PlanExprBase{}, fmt.Errorf(
-				"RecordQueryFlatMapPlan retained identity result is not an exact record")
+				"RecordQueryFlatMapPlan retained identity result is not an exact record",
+			)
 		}
 		var tiles []values.OrdinalTileSpec
 		if width := len(recordType.Fields); width > 0 {
@@ -425,14 +443,17 @@ func flatMapBaseWithRetainedSources(
 		layout, err = values.NewOrdinalLayout(baseLayout.Carrier(), tiles, windows)
 	} else {
 		layout, err = values.NewFlatOrdinalLayoutForRetainedResultWithSources(
-			resultValue, nullSupplying, additional)
+			resultValue, nullSupplying, additional,
+		)
 	}
 	if err != nil {
 		return PlanExprBase{}, fmt.Errorf(
-			"RecordQueryFlatMapPlan retained source output layout: %w", err)
+			"RecordQueryFlatMapPlan retained source output layout: %w", err,
+		)
 	}
 	return newPlanExprBaseForProvidedLayout(
-		"RecordQueryFlatMapPlan", resultValue, layout)
+		"RecordQueryFlatMapPlan", resultValue, layout,
+	)
 }
 
 func (p *RecordQueryFlatMapPlan) GetResultType() values.Type { return p.resultValue.Type() }
@@ -449,10 +470,10 @@ func (p *RecordQueryFlatMapPlan) GetChildren() []RecordQueryPlan {
 // (outer, inner), overriding PlanExprBase's none. That order is what
 // WithQuantifiers indexes into.
 func (p *RecordQueryFlatMapPlan) GetQuantifiers() []expressions.Quantifier {
-	if p.outerQ.GetRangesOver() == nil || p.innerQ.GetRangesOver() == nil {
+	if p.quantifiers[0].GetRangesOver() == nil || p.quantifiers[1].GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.outerQ, p.innerQ}
+	return p.quantifiers[:]
 }
 
 // WithQuantifiers atomically rebuilds the FlatMap over the replacement legs.
@@ -466,11 +487,11 @@ func (p *RecordQueryFlatMapPlan) WithQuantifiers(qs []expressions.Quantifier) (e
 	if err := validateQuantifierArity("RecordQueryFlatMapPlan", len(qs), 2); err != nil {
 		return nil, err
 	}
-	oldOuter, err := p.outerQ.RequireFlowedObjectValue()
+	oldOuter, err := p.quantifiers[0].RequireFlowedObjectValue()
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryFlatMapPlan.WithQuantifiers old outer input: %w", err)
 	}
-	oldInner, err := p.innerQ.RequireFlowedObjectValue()
+	oldInner, err := p.quantifiers[1].RequireFlowedObjectValue()
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryFlatMapPlan.WithQuantifiers old inner input: %w", err)
 	}
@@ -485,12 +506,14 @@ func (p *RecordQueryFlatMapPlan) WithQuantifiers(qs []expressions.Quantifier) (e
 	if !values.FlowedTypesEqual(oldOuter, newOuter) {
 		return nil, fmt.Errorf(
 			"RecordQueryFlatMapPlan.WithQuantifiers outer input type changed from %s to %s",
-			oldOuter.FlowedType(), newOuter.FlowedType())
+			oldOuter.FlowedType(), newOuter.FlowedType(),
+		)
 	}
 	if !values.FlowedTypesEqual(oldInner, newInner) {
 		return nil, fmt.Errorf(
 			"RecordQueryFlatMapPlan.WithQuantifiers inner input type changed from %s to %s",
-			oldInner.FlowedType(), newInner.FlowedType())
+			oldInner.FlowedType(), newInner.FlowedType(),
+		)
 	}
 
 	// The PHYSICAL type of each new input, not the public one. The relink builds
@@ -510,7 +533,8 @@ func (p *RecordQueryFlatMapPlan) WithQuantifiers(qs []expressions.Quantifier) (e
 	}
 	return newRecordQueryFlatMapPlanFromQuantifiers(
 		qs[0], qs[1], p.outerAlias, p.innerAlias, relinked,
-		p.inheritOuterRecordProperties, p.nullSupplyingOuter, p.nullSupplyingInner)
+		p.inheritOuterRecordProperties, p.nullSupplyingOuter, p.nullSupplyingInner,
+	)
 }
 
 // NullSupplyingOuter reports whether the outer edge is a DefaultOnEmpty the
@@ -551,9 +575,13 @@ func relinkFlatMapResultSource(
 	return values.TranslateLogicalSourceRoot(resultValue, declaration, target)
 }
 
-func (p *RecordQueryFlatMapPlan) GetOuter() RecordQueryPlan { return planFromQuantifier(p.outerQ) }
+func (p *RecordQueryFlatMapPlan) GetOuter() RecordQueryPlan {
+	return planFromQuantifier(p.quantifiers[0])
+}
 
-func (p *RecordQueryFlatMapPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+func (p *RecordQueryFlatMapPlan) GetInner() RecordQueryPlan {
+	return planFromQuantifier(p.quantifiers[1])
+}
 
 func (p *RecordQueryFlatMapPlan) GetOuterAlias() values.CorrelationIdentifier { return p.outerAlias }
 
@@ -592,7 +620,8 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan outer layout: %w", layoutErr)
 		}
 		reanchored, err = values.TranslateLogicalSourceNameNormalizationToCorrelation(
-			reanchored, p.outerAlias, values.PhysicalCarrierType(outerLayout))
+			reanchored, p.outerAlias, values.PhysicalCarrierType(outerLayout),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan outer source normalization: %w", err)
 		}
@@ -603,7 +632,8 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan inner layout: %w", layoutErr)
 		}
 		reanchored, err = values.TranslateLogicalSourceNameNormalizationToCorrelation(
-			reanchored, p.innerAlias, values.PhysicalCarrierType(innerLayout))
+			reanchored, p.innerAlias, values.PhysicalCarrierType(innerLayout),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan inner source normalization: %w", err)
 		}
@@ -666,7 +696,8 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 				reanchored, err = outerMaterializer.reanchorInputValueToOutput(reanchored)
 				if _, materializesResult := p.resultValue.(*values.RecordConstructorValue); err == nil && materializesResult {
 					reanchored, err = translateFlatMapChildOutputToBinding(
-						reanchored, outer, p.outerAlias)
+						reanchored, outer, p.outerAlias,
+					)
 				}
 			} else {
 				outerLayout, layoutErr := outer.ProvidedOutputLayout()
@@ -688,12 +719,14 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 				// crossing it is translateFlatMapChildOutputToBinding's job below.
 				reanchored, err = values.ReanchorOwnedValueThroughProducer(
 					reanchored, outer.GetResultValue(), outerLayout.Carrier(),
-					producerOwnedCorrelations(outer.GetResultValue()))
+					producerOwnedCorrelations(outer.GetResultValue()),
+				)
 				if err != nil {
 					return nil, fmt.Errorf("RecordQueryFlatMapPlan outer producer lineage: %w", err)
 				}
 				reanchored, err = values.ReanchorValueForLayout(
-					reanchored, outerLayout.Carrier(), outerLayout)
+					reanchored, outerLayout.Carrier(), outerLayout,
+				)
 				// Both lineage branches end on the CHILD's private current
 				// carrier, so both owe the same crossing back to the binding the
 				// result program addresses that row through. Only the
@@ -707,7 +740,8 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 				// ON x.id = y.id`: root RECORD(ID) against target RECORD(ID,ID).
 				if _, materializesResult := p.resultValue.(*values.RecordConstructorValue); err == nil && materializesResult {
 					reanchored, err = translateFlatMapChildOutputToBinding(
-						reanchored, outer, p.outerAlias)
+						reanchored, outer, p.outerAlias,
+					)
 				}
 			}
 			if err != nil {
@@ -754,7 +788,8 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 			reanchored, err = innerMaterializer.reanchorInputValueToOutput(reanchored)
 			if _, materializesResult := p.resultValue.(*values.RecordConstructorValue); err == nil && materializesResult {
 				reanchored, err = translateFlatMapChildOutputToBinding(
-					reanchored, inner, p.innerAlias)
+					reanchored, inner, p.innerAlias,
+				)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("RecordQueryFlatMapPlan inner lineage: %w", err)
@@ -763,12 +798,14 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 	}
 	reanchored, err = values.ReanchorOwnedValueThroughProducer(
 		reanchored, p.resultValue, layout.Carrier(),
-		producerOwnedCorrelations(p.resultValue))
+		producerOwnedCorrelations(p.resultValue),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryFlatMapPlan result lineage: %w", err)
 	}
 	reanchored, err = values.ReanchorValueForLayout(
-		reanchored, layout.Carrier(), layout)
+		reanchored, layout.Carrier(), layout,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryFlatMapPlan output carrier: %w", err)
 	}
@@ -794,7 +831,8 @@ func translateFlatMapChildOutputToBinding(
 		return nil, err
 	}
 	binding, err := values.NewQuantifiedObjectValue(
-		bindingAlias, values.PhysicalCarrierType(layout))
+		bindingAlias, values.PhysicalCarrierType(layout),
+	)
 	if err != nil {
 		return nil, err
 	}

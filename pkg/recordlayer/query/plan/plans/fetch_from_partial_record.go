@@ -36,7 +36,8 @@ const (
 //   - A FetchIndexRecords mode.
 type RecordQueryFetchFromPartialRecordPlan struct {
 	PlanExprBase
-	innerQ                 expressions.Quantifier
+	// inner is the single input leg, as an array GetQuantifiers can view.
+	inner                  [1]expressions.Quantifier
 	translateValueFunction TranslateValueFunction
 	resultType             values.Type
 	fetchIndexRecords      FetchIndexRecords
@@ -50,7 +51,8 @@ func NewRecordQueryFetchFromPartialRecordPlan(
 	fetchIndexRecords FetchIndexRecords,
 ) (*RecordQueryFetchFromPartialRecordPlan, error) {
 	return NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
-		QuantifierOverPlan(inner), translateValueFunction, resultType, fetchIndexRecords)
+		QuantifierOverPlan(inner), translateValueFunction, resultType, fetchIndexRecords,
+	)
 }
 
 // NewRecordQueryFetchFromPartialRecordPlanFromQuantifier builds a fetch whose
@@ -70,7 +72,7 @@ func NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 	}
 	return &RecordQueryFetchFromPartialRecordPlan{
 		PlanExprBase:           base,
-		innerQ:                 innerQ,
+		inner:                  [1]expressions.Quantifier{innerQ},
 		translateValueFunction: translateValueFunction,
 		resultType:             resultType,
 		fetchIndexRecords:      fetchIndexRecords,
@@ -80,7 +82,7 @@ func NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 // GetInner returns the inner plan (typically a covering index scan),
 // dereferenced through the quantifier.
 func (p *RecordQueryFetchFromPartialRecordPlan) GetInner() RecordQueryPlan {
-	return planFromQuantifier(p.innerQ)
+	return planFromQuantifier(p.inner[0])
 }
 
 // GetInnerQuantifier returns the live child quantifier — the single memo edge
@@ -89,16 +91,16 @@ func (p *RecordQueryFetchFromPartialRecordPlan) GetInner() RecordQueryPlan {
 // since RFC-184 W2 the memo holds the bare plan (no physicalFetchFromPartialRecordWrapper
 // whose innerQuant field they used to read), this exposes the same edge.
 func (p *RecordQueryFetchFromPartialRecordPlan) GetInnerQuantifier() expressions.Quantifier {
-	return p.innerQ
+	return p.inner[0]
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
 // PlanExprBase's none.
 func (p *RecordQueryFetchFromPartialRecordPlan) GetQuantifiers() []expressions.Quantifier {
-	if p.innerQ.GetRangesOver() == nil {
+	if p.inner[0].GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return p.inner[:]
 }
 
 // GetResultType returns the full record type post-fetch.
@@ -193,7 +195,7 @@ var (
 // carry, so identity-preserving copy is the only safe form.
 func (p *RecordQueryFetchFromPartialRecordPlan) WithInner(inner RecordQueryPlan) *RecordQueryFetchFromPartialRecordPlan {
 	cp := *p
-	cp.innerQ = QuantifierOverPlan(inner)
+	cp.inner[0] = QuantifierOverPlan(inner)
 	return &cp
 }
 
@@ -210,7 +212,7 @@ func (p *RecordQueryFetchFromPartialRecordPlan) WithQuantifiers(qs []expressions
 		return nil, err
 	}
 	cp := *p
-	cp.innerQ = qs[0]
+	cp.inner[0] = qs[0]
 	return &cp, nil
 }
 
