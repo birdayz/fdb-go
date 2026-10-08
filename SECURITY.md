@@ -48,5 +48,6 @@ Known accepted exception: `pkg/testcontainers` wraps the Docker SDK
 (`github.com/docker/docker`) **for tests only** (it is not part of the shipped
 library). That SDK currently has open upstream advisories with **no fixed
 release** (e.g. GO-2026-4887, GO-2026-4883), so the CI vulnerability scan excludes
-`pkg/testcontainers`. These do not affect production use; they will be picked up
+`pkg/testcontainers` and `pkg/relational/sqltest` (the end-to-end SQL test suite,
+whose shared `testkit` library imports it). These do not affect production use; they will be picked up
 when an upstream fix ships.
