@@ -173,6 +173,17 @@ func (reader *referenceCorrelationReader) publishMembers(ref *Reference) {
 	if p := ref.memberCorrelations.Load(); p != nil {
 		prior = *p
 	}
+	changed := false
+	for _, members := range [][]RelationalExpression{ref.members, ref.finalMembers} {
+		for _, member := range members {
+			if snapshot, ok := reader.expressions[member]; ok && prior[member] != snapshot {
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return
+	}
 	current := make(map[RelationalExpression]*correlationMemo, len(ref.members)+len(ref.finalMembers))
 	for _, members := range [][]RelationalExpression{ref.members, ref.finalMembers} {
 		for _, member := range members {

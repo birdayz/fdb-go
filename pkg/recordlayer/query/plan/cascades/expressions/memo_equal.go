@@ -223,18 +223,24 @@ func expressionCorrelations(e RelationalExpression, childCorrelations func(*Refe
 		return custom.ComputeCorrelatedTo(childCorrelations)
 	}
 	result := make(map[values.CorrelationIdentifier]struct{})
-	owned := make(map[values.CorrelationIdentifier]struct{})
-	for _, quantifier := range e.GetQuantifiers() {
-		owned[quantifier.GetAlias()] = struct{}{}
+	quantifiers := e.GetQuantifiers()
+	owned := func(alias values.CorrelationIdentifier) bool {
+		for _, quantifier := range quantifiers {
+			if quantifier.GetAlias() == alias {
+				return true
+			}
+		}
+		return false
 	}
 	for alias := range e.GetCorrelatedToWithoutChildren() {
-		if _, bound := owned[alias]; !bound {
+		if !owned(alias) {
 			result[alias] = struct{}{}
 		}
 	}
-	for _, quantifier := range e.GetQuantifiers() {
+	canCorrelate := e.CanCorrelate()
+	for _, quantifier := range quantifiers {
 		for alias := range childCorrelations(quantifier.GetRangesOver()) {
-			if _, bound := owned[alias]; !e.CanCorrelate() || !bound {
+			if !canCorrelate || !owned(alias) {
 				result[alias] = struct{}{}
 			}
 		}

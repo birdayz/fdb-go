@@ -1096,9 +1096,9 @@ func (p *PreparedMemberEquality) DuplicateWithHashes(
 	eArity := len(e.GetQuantifiers())
 	for i, m := range members {
 		mHash := uint64(0)
-		if i < len(hashes) {
+		known := i < len(hashes)
+		if known {
 			mHash = hashes[i]
-			equality.hashes[m] = mHash
 		} else {
 			mHash = equality.hash(m)
 		}
@@ -1107,6 +1107,9 @@ func (p *PreparedMemberEquality) DuplicateWithHashes(
 		// which ignores a select's quantifier list.
 		if mHash != eHash || len(m.GetQuantifiers()) != eArity {
 			continue
+		}
+		if known {
+			equality.hashes[m] = mHash
 		}
 		nodeEqual := m.EqualsWithoutChildren(e, EmptyAliasMap())
 		if nodeEqual && (preparedSameChildReferences(m, e) || equality.equal(m, e, EmptyAliasMap())) {
