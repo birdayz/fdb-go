@@ -1597,21 +1597,11 @@ func pushOrdinalInputRequirementsForMembers(
 // isExploratoryMember reports pointer-identity membership in the
 // EXPLORATORY set only (ContainsExactly admits finals too).
 func isExploratoryMember(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
-	for _, m := range ref.Members() {
-		if m == expr {
-			return true
-		}
-	}
-	return false
+	return ref.HasExploratoryMember(expr)
 }
 
 func isFinalMember(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
-	for _, m := range ref.FinalMembers() {
-		if m == expr {
-			return true
-		}
-	}
-	return false
+	return ref.HasFinalMember(expr)
 }
 
 // isPrunedInputsRule reports Java's CascadesRule.onlyOnPrunedInputs: such a

@@ -1,5 +1,7 @@
 package expressions
 
+import "slices"
+
 // PreparedMemberIndex owns one admission lane while its graph is stable.
 // Construct it only after the complete batch has passed memo admission.
 type PreparedMemberIndex struct {
@@ -30,12 +32,18 @@ type preparedInputSignature struct {
 	complete bool
 }
 
+// The index retains members and a complete hashes slice without copying; the
+// caller must not modify either afterwards.
 func (p *PreparedMemberEquality) NewMemberIndex(members []RelationalExpression, hashes []uint64) *PreparedMemberIndex {
 	index := &PreparedMemberIndex{
 		equality: p,
-		members:  append([]RelationalExpression(nil), members...),
-		hashes:   make([]uint64, len(members)),
+		members:  slices.Clip(members),
 	}
+	if len(hashes) == len(members) {
+		index.hashes = slices.Clip(hashes)
+		return index
+	}
+	index.hashes = make([]uint64, len(members))
 	for i, member := range members {
 		if i < len(hashes) {
 			index.hashes[i] = hashes[i]

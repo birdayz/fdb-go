@@ -3,6 +3,7 @@ package expressions
 import (
 	"bytes"
 	"iter"
+	"slices"
 	"sync/atomic"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -597,6 +598,36 @@ func (r *Reference) Members() []RelationalExpression {
 		return nil
 	}
 	return append([]RelationalExpression(nil), r.members...)
+}
+
+// HasExploratoryMember reports pointer-identity membership in the
+// exploratory lane without copying it.
+func (r *Reference) HasExploratoryMember(e RelationalExpression) bool {
+	r = canonicalReferenceReadOnly(r)
+	return r != nil && slices.Contains(r.members, e)
+}
+
+// HasFinalMember reports pointer-identity membership in the final lane
+// without copying it.
+func (r *Reference) HasFinalMember(e RelationalExpression) bool {
+	r = canonicalReferenceReadOnly(r)
+	return r != nil && slices.Contains(r.finalMembers, e)
+}
+
+// BorrowedMembers returns the view's own member lane, read-only and clipped
+// so an append copies.
+func (v *ReferenceAdmissionView) BorrowedMembers(set ReferenceMemberSet) []RelationalExpression {
+	if v == nil {
+		return nil
+	}
+	switch set {
+	case ReferenceExploratoryMembers:
+		return slices.Clip(v.exploratory)
+	case ReferenceFinalMembers:
+		return slices.Clip(v.final)
+	default:
+		return nil
+	}
 }
 
 // MembersWithHash iterates exploratory members without copying their slice.

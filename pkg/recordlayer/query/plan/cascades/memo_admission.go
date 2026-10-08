@@ -48,8 +48,8 @@ func prepareReferenceMemberBatch(
 		return nil, err
 	}
 
-	existingExploratory := view.Members(expressions.ReferenceExploratoryMembers)
-	existingFinal := view.Members(expressions.ReferenceFinalMembers)
+	existingExploratory := view.BorrowedMembers(expressions.ReferenceExploratoryMembers)
+	existingFinal := view.BorrowedMembers(expressions.ReferenceFinalMembers)
 	all := make([]expressions.RelationalExpression, 0, len(existingExploratory)+len(existingFinal)+len(intents))
 	all = append(all, existingExploratory...)
 	all = append(all, existingFinal...)
