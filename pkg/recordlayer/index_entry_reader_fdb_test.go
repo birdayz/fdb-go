@@ -12,6 +12,9 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// IndexEntry is the entry source the planner's index-entry reader Values read.
+var _ values.IndexEntryTuples = (*IndexEntry)(nil)
+
 type indexEntryBinding struct {
 	alias values.CorrelationIdentifier
 	entry *IndexEntry

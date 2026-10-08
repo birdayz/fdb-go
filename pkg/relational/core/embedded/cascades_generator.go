@@ -3115,7 +3115,7 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		)
 		primaryCandidate.WithKeyComponentTypes(keyTypes)
 		if rt.PrimaryKey != nil && rt.Descriptor != nil {
-			primaryCandidate.WithCommonPrimaryKey(recordlayer.TranslatePrimaryKeyToValues(rt.PrimaryKey, recordlayer.ToUserIdentifier, flowed))
+			primaryCandidate.WithCommonPrimaryKey(translatePrimaryKeyToValues(rt.PrimaryKey, recordlayer.ToUserIdentifier, flowed))
 		}
 		candidates = append(candidates, primaryCandidate)
 	}
@@ -3980,7 +3980,7 @@ func (d *metadataIndexDef) IndexCommonPrimaryKeyValues() []values.Value {
 	if len(rts) != 1 || rts[0].PrimaryKey == nil {
 		return nil
 	}
-	return recordlayer.TranslatePrimaryKeyToValues(
+	return translatePrimaryKeyToValues(
 		rts[0].PrimaryKey,
 		recordlayer.ToUserIdentifier,
 		d.IndexRowType(),
@@ -3998,7 +3998,7 @@ func (c *metadataPlanContext) GetCommonPrimaryKeyValues(recordType string) []val
 	if rt == nil || rt.PrimaryKey == nil || rt.Descriptor == nil {
 		return nil
 	}
-	return recordlayer.TranslatePrimaryKeyToValues(rt.PrimaryKey, recordlayer.ToUserIdentifier,
+	return translatePrimaryKeyToValues(rt.PrimaryKey, recordlayer.ToUserIdentifier,
 		executor.PositionalTypeForRecordLayout(rt.Descriptor, c.md.IsStoreRecordVersions()))
 }
 

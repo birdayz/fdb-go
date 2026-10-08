@@ -1,8 +1,11 @@
-package recordlayer
+package embedded
 
-import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+import (
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+)
 
-// TranslatePrimaryKeyToValues translates a common primary-key KeyExpression into
+// translatePrimaryKeyToValues translates a common primary-key KeyExpression into
 // a flat []values.Value that encodes STRUCTURE — record-type-key prefixes
 // (RecordTypeValue) and completely resolved ordinal paths — the Go analog of
 // Java's ScalarTranslationVisitor.translateKeyExpression used by
@@ -26,8 +29,8 @@ import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 // names MUST live in the SAME namespace as the plan's ordering/column values or
 // values.ValuesStructurallyEqual never matches and the dedup silently never
 // fires (the field-casing mismatch that made the structural common-PK inert).
-func TranslatePrimaryKeyToValues(
-	pk KeyExpression,
+func translatePrimaryKeyToValues(
+	pk recordlayer.KeyExpression,
 	normalizeName func(string) string,
 	flowedType values.Type,
 ) []values.Value {
@@ -37,7 +40,7 @@ func TranslatePrimaryKeyToValues(
 	if normalizeName == nil {
 		normalizeName = func(s string) string { return s }
 	}
-	normalized := normalizeKeyForPositions(pk)
+	normalized := recordlayer.NormalizeKeyForPositions(pk)
 	if len(normalized) == 0 {
 		return nil
 	}
@@ -62,13 +65,13 @@ func TranslatePrimaryKeyToValues(
 // translateKeyComponent maps a single normalized key-position expression to a
 // structure-encoding Value over `base` (nil = the record root). Returns nil for
 // any component whose scan identity is not a plain structural field path.
-func translateKeyComponent(ke KeyExpression, base values.Value, normalizeName func(string) string) values.Value {
+func translateKeyComponent(ke recordlayer.KeyExpression, base values.Value, normalizeName func(string) string) values.Value {
 	switch e := ke.(type) {
-	case *FieldKeyExpression:
-		if e.fanType != FanTypeNone {
+	case *recordlayer.FieldKeyExpression:
+		if e.FanType() != recordlayer.FanTypeNone {
 			return nil
 		}
-		request, err := values.FieldByName(normalizeName(e.fieldName))
+		request, err := values.FieldByName(normalizeName(e.FieldName()))
 		if err != nil {
 			return nil
 		}
@@ -77,13 +80,13 @@ func translateKeyComponent(ke KeyExpression, base values.Value, normalizeName fu
 			return nil
 		}
 		return resolved
-	case *RecordTypeKeyExpression:
+	case *recordlayer.RecordTypeKeyExpression:
 		return values.NewRecordTypeValue(base)
-	case *NestingKeyExpression:
-		if e.fanType != FanTypeNone {
+	case *recordlayer.NestingKeyExpression:
+		if e.FanType() != recordlayer.FanTypeNone {
 			return nil
 		}
-		request, err := values.FieldByName(normalizeName(e.parentField))
+		request, err := values.FieldByName(normalizeName(e.ParentField()))
 		if err != nil {
 			return nil
 		}
@@ -91,7 +94,7 @@ func translateKeyComponent(ke KeyExpression, base values.Value, normalizeName fu
 		if err != nil {
 			return nil
 		}
-		return translateKeyComponent(e.child, nestedBase, normalizeName)
+		return translateKeyComponent(e.Child(), nestedBase, normalizeName)
 	default:
 		return nil
 	}

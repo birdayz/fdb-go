@@ -483,6 +483,12 @@ func (f *FieldKeyExpression) ColumnSize() int {
 	return 1
 }
 
+// FieldName is Java's FieldKeyExpression.getFieldName().
+func (f *FieldKeyExpression) FieldName() string { return f.fieldName }
+
+// FanType is Java's FieldKeyExpression.getFanType().
+func (f *FieldKeyExpression) FanType() FanType { return f.fanType }
+
 // RecordTypeKeyExpression represents the special record type key prefix.
 // Matches Java's RecordTypeKeyExpression: evaluates to the record type key
 // (an integer derived from the union descriptor field number).
@@ -1026,6 +1032,15 @@ func (n *NestingKeyExpression) ColumnSize() int {
 	return n.child.ColumnSize()
 }
 
+// ParentField is the field name of Java's NestingKeyExpression.getParent().
+func (n *NestingKeyExpression) ParentField() string { return n.parentField }
+
+// FanType is the fan type of Java's NestingKeyExpression.getParent().
+func (n *NestingKeyExpression) FanType() FanType { return n.fanType }
+
+// Child is Java's NestingKeyExpression.getChild().
+func (n *NestingKeyExpression) Child() KeyExpression { return n.child }
+
 // createsDuplicates returns true if a key expression can produce multiple tuples
 // for a single record (e.g., FanOut on a repeated field). Matches Java's
 // KeyExpression.createsDuplicates() — used to validate primary keys don't fan
@@ -1112,11 +1127,15 @@ func createsDuplicatesRec(expr KeyExpression, unrecognized bool) bool {
 	}
 }
 
-// normalizeKeyForPositions flattens a key expression into a list of atomic
+// NormalizeKeyForPositions flattens a key expression into a list of atomic
 // components for position matching. CompositeKeyExpression is flattened
 // recursively; NestingKeyExpression re-wraps each child; all others return
 // themselves as a single-element list.
 // Matches Java's KeyExpression.normalizeKeyForPositions().
+func NormalizeKeyForPositions(expr KeyExpression) []KeyExpression {
+	return normalizeKeyForPositions(expr)
+}
+
 func normalizeKeyForPositions(expr KeyExpression) []KeyExpression {
 	switch e := expr.(type) {
 	case *CompositeKeyExpression:

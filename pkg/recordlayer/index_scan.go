@@ -7,7 +7,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -233,8 +232,6 @@ func (e *IndexEntry) IndexEntryKey() tuple.Tuple { return e.Key }
 
 // IndexEntryValue is the entry's raw VALUE tuple.
 func (e *IndexEntry) IndexEntryValue() tuple.Tuple { return e.Value }
-
-var _ values.IndexEntryTuples = (*IndexEntry)(nil)
 
 // PrimaryKey extracts the primary key portion from the index entry key.
 // When the index has primaryKeyComponentPositions, some PK components are

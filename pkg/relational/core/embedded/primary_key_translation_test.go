@@ -1,9 +1,10 @@
-package recordlayer
+package embedded
 
 import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -27,11 +28,11 @@ func TestTranslatePrimaryKeyToValues(t *testing.T) {
 		{Name: "id", FieldType: values.NotNullLong, Ordinal: 4},
 	})
 
-	flat := TranslatePrimaryKeyToValues(Field("ID"), nil, rowType)
+	flat := translatePrimaryKeyToValues(recordlayer.Field("ID"), nil, rowType)
 	if len(flat) != 1 {
 		t.Fatalf("Field(ID) → %d values, want 1", len(flat))
 	}
-	prefixed := TranslatePrimaryKeyToValues(Concat(RecordTypeKey(), Field("ID")), nil, rowType)
+	prefixed := translatePrimaryKeyToValues(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("ID")), nil, rowType)
 	if len(prefixed) != 2 {
 		t.Fatalf("Concat(RecordTypeKey(), Field(ID)) → %d values, want 2", len(prefixed))
 	}
@@ -41,14 +42,14 @@ func TestTranslatePrimaryKeyToValues(t *testing.T) {
 		t.Fatal("Field(ID) and Concat(RecordTypeKey(), Field(ID)) must NOT be structurally equal (M5 dropped-rows hazard)")
 	}
 
-	if !valuesSlicesStructurallyEqual(flat, TranslatePrimaryKeyToValues(Field("ID"), nil, rowType)) {
+	if !valuesSlicesStructurallyEqual(flat, translatePrimaryKeyToValues(recordlayer.Field("ID"), nil, rowType)) {
 		t.Fatal("identical PK expressions must translate to structurally-equal Values")
 	}
-	if !valuesSlicesStructurallyEqual(prefixed, TranslatePrimaryKeyToValues(Concat(RecordTypeKey(), Field("ID")), nil, rowType)) {
+	if !valuesSlicesStructurallyEqual(prefixed, translatePrimaryKeyToValues(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("ID")), nil, rowType)) {
 		t.Fatal("identical record-type-prefixed PKs must be structurally equal")
 	}
 
-	nested := TranslatePrimaryKeyToValues(Nest("addr", Field("city")), nil, rowType)
+	nested := translatePrimaryKeyToValues(recordlayer.Nest("addr", recordlayer.Field("city")), nil, rowType)
 	if len(nested) != 1 {
 		t.Fatalf("Nest → %d values, want 1", len(nested))
 	}
@@ -59,37 +60,37 @@ func TestTranslatePrimaryKeyToValues(t *testing.T) {
 	if got := fv.Path().Ordinals(); len(got) != 2 || got[0] != 1 || got[1] != 0 {
 		t.Fatalf("Nest(addr, city) resolved path = %v, want [1 0]", got)
 	}
-	if valuesSlicesStructurallyEqual(nested, TranslatePrimaryKeyToValues(Nest("other", Field("city")), nil, rowType)) {
+	if valuesSlicesStructurallyEqual(nested, translatePrimaryKeyToValues(recordlayer.Nest("other", recordlayer.Field("city")), nil, rowType)) {
 		t.Fatal("Nest(addr, city) and Nest(other, city) must not be structurally equal (different nesting path)")
 	}
-	if valuesSlicesStructurallyEqual(nested, TranslatePrimaryKeyToValues(Field("city"), nil, rowType)) {
+	if valuesSlicesStructurallyEqual(nested, translatePrimaryKeyToValues(recordlayer.Field("city"), nil, rowType)) {
 		t.Fatal("Nest(addr, city) must not equal a flat Field(city)")
 	}
 
-	if TranslatePrimaryKeyToValues(FanOut("tags"), nil, rowType) != nil {
+	if translatePrimaryKeyToValues(recordlayer.FanOut("tags"), nil, rowType) != nil {
 		t.Fatal("a fan-out field PK must abstain (nil)")
 	}
-	if TranslatePrimaryKeyToValues(VersionKey(), nil, rowType) != nil {
+	if translatePrimaryKeyToValues(recordlayer.VersionKey(), nil, rowType) != nil {
 		t.Fatal("a version PK must abstain (nil)")
 	}
 	// RecordTypeKey().Nest(f) is Java's concat(recordType(), f): it translates
 	// as the Then it is, both columns kept, so two such keys over different
 	// fields never conflate; a field the row lacks abstains.
-	nestedType1 := TranslatePrimaryKeyToValues(RecordTypeKey().Nest(Field("ID")), nil, rowType)
+	nestedType1 := translatePrimaryKeyToValues(recordlayer.RecordTypeKey().Nest(recordlayer.Field("ID")), nil, rowType)
 	if !valuesSlicesStructurallyEqual(nestedType1, prefixed) {
 		t.Fatalf("RecordTypeKey().Nest(ID) = %v, want concat(recordType(), ID) = %v", nestedType1, prefixed)
 	}
-	nestedTypeLower := TranslatePrimaryKeyToValues(RecordTypeKey().Nest(Field("id")), nil, rowType)
+	nestedTypeLower := translatePrimaryKeyToValues(recordlayer.RecordTypeKey().Nest(recordlayer.Field("id")), nil, rowType)
 	if len(nestedTypeLower) != 2 {
 		t.Fatalf("RecordTypeKey().Nest(id) = %v, want two values: the comparison below is vacuous against nil", nestedTypeLower)
 	}
 	if valuesSlicesStructurallyEqual(nestedType1, nestedTypeLower) {
 		t.Fatal("RecordTypeKey().Nest over two different fields must not translate alike")
 	}
-	if TranslatePrimaryKeyToValues(RecordTypeKey().Nest(Field("x")), nil, rowType) != nil {
+	if translatePrimaryKeyToValues(recordlayer.RecordTypeKey().Nest(recordlayer.Field("x")), nil, rowType) != nil {
 		t.Fatal("a PK over a field the row lacks must abstain (nil)")
 	}
-	if TranslatePrimaryKeyToValues(nil, nil, rowType) != nil {
+	if translatePrimaryKeyToValues(nil, nil, rowType) != nil {
 		t.Fatal("nil PK must return nil")
 	}
 
@@ -97,18 +98,18 @@ func TestTranslatePrimaryKeyToValues(t *testing.T) {
 	// protobuf field names are lifted into the same namespace as the plan's
 	// ordering values, so the structural PK can actually match (else B3 is inert).
 	// identity vs ToUpper must differ for a lowercase field.
-	lower := TranslatePrimaryKeyToValues(Field("id"), nil, rowType)
-	upper := TranslatePrimaryKeyToValues(Field("id"), strings.ToUpper, rowType)
+	lower := translatePrimaryKeyToValues(recordlayer.Field("id"), nil, rowType)
+	upper := translatePrimaryKeyToValues(recordlayer.Field("id"), strings.ToUpper, rowType)
 	if valuesSlicesStructurallyEqual(lower, upper) {
 		t.Fatal("the name normalizer must lift 'id' → 'ID' so the structural PK matches the uppercased ordering namespace")
 	}
 	if uv, ok := values.AsFieldValue(upper[0]); !ok || uv.DisplayName() != "ID" {
 		t.Fatalf("normalized field must be 'ID', got %v", upper[0])
 	}
-	if got := TranslatePrimaryKeyToValues(Nest("addr", Field("missing")), nil, rowType); got != nil {
+	if got := translatePrimaryKeyToValues(recordlayer.Nest("addr", recordlayer.Field("missing")), nil, rowType); got != nil {
 		t.Fatalf("invalid nested suffix must decline, got %v", got)
 	}
-	if got := TranslatePrimaryKeyToValues(Field("ID"), nil, values.UnknownType); got != nil {
+	if got := translatePrimaryKeyToValues(recordlayer.Field("ID"), nil, values.UnknownType); got != nil {
 		t.Fatalf("unresolved candidate layout must decline, got %v", got)
 	}
 }
