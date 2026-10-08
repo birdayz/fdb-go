@@ -1,6 +1,9 @@
 package metadata
 
-import "math"
+import (
+	"math"
+	"unicode/utf16"
+)
 
 // javaHashMapOrder is the iteration order of a java.util.HashMap that
 // received putAll(first) on an empty map and then put(k) for each of then:
@@ -58,9 +61,12 @@ func tableSizeFor(c int) int {
 	return n
 }
 
+// javaSpread is HashMap.hash(key): String.hashCode, which Java computes over
+// the string's UTF-16 code units (a non-BMP character is two surrogates, not
+// one code point), then (h ^ h>>>16).
 func javaSpread(s string) int {
 	var h uint32
-	for _, c := range s {
+	for _, c := range utf16.Encode([]rune(s)) {
 		h = 31*h + uint32(c)
 	}
 	return int(h ^ h>>16)
