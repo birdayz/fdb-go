@@ -49,13 +49,12 @@ tests:
   # generateGroupBy → SemanticAnalyzer.isComposableFrom — an exists() value
   # is composable from neither grouping keys nor aggregates). The old [3]
   # pin was authored against the retired pre-Cascades map-backed engine,
-  # never Java. Go declines via the HavingExistsSubqueries gate (0AF00);
-  # the remaining parity item is error-surface alignment (42803 at
-  # semantic analysis instead of a planner decline).
+  # never Java. Go raises the same 42803 once HAVING resolves
+  # (CorrelatedHavingExistsJavaProbe having_exists_*).
   - query: |
       SELECT COUNT(*) FROM orders
       HAVING EXISTS (SELECT k FROM flags)
-    error_code: "0AF00"
+    error_code: "42803"
 
   # JOIN path (map-backed evaluator) + EXISTS. Exercises the
   # evalPredicateOnMapExpr → ExistsExpressionAtomContext branch.

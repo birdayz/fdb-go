@@ -7094,9 +7094,9 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryFirstOrDefaultPlan
 shape:       RecordQueryMapPlan
 shape:         RecordQueryScanPlan
-=== exists.yaml#6 expect-error=0AF00
+=== exists.yaml#6 expect-error=42803
 sql:   SELECT COUNT(*) FROM orders HAVING EXISTS (SELECT k FROM flags)
-plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
+plan:  <PLAN-ERROR: 42803: Invalid reference to non-grouping expression EXISTS(SELECTkFROMflags)>
 === exists.yaml#7
 sql:   SELECT o.id FROM orders AS o, flags AS f WHERE EXISTS (SELECT k FROM flags) ORDER BY o.id
 plan:  InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, NestedLoopJoin(INNER, Scan(FLAGS), Map(PredicatesFilter(FirstOrDefault(Map(Scan(FLAGS), {K: _current.K#0})), [1 preds]), {_0: 1})), Scan(ORDERS)))
@@ -8529,9 +8529,9 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryScanPlan
-=== group_by_validation.yaml#29 expect-error=0AF00
+=== group_by_validation.yaml#29 expect-error=42803
 sql:   SELECT col1, SUM(col2) FROM t1 GROUP BY col1 HAVING EXISTS (SELECT 1 FROM t2 WHERE t2.id = 1) ORDER BY col1
-plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
+plan:  <PLAN-ERROR: 42803: Invalid reference to non-grouping expression EXISTS(SELECT1FROMt2WHEREt2.id=1)>
 === having.yaml#0
 sql:   SELECT grp, SUM(v) FROM t GROUP BY grp HAVING SUM(v) > 20
 plan:  Map(PredicatesFilter(StreamingAgg(keys=[_current.GRP#1], InMemorySort([_current.GRP#1 ASC], Scan(T))), [1 preds]), {GRP: _current.GRP#0, _1: _current.SUM(V)#1})

@@ -23,13 +23,13 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**404 scenarios · 3427 query/assertion cases** across 18 feature areas — 3010 supported, 103 unsupported-feature pins, 314 error-path pins.
+**404 scenarios · 3427 query/assertion cases** across 18 feature areas — 3010 supported, 101 unsupported-feature pins, 316 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 63 | 431 | 395 | 19 | 17 |
+| Aggregates & GROUP BY | 63 | 431 | 395 | 18 | 18 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
-| Subqueries (EXISTS / IN / scalar) | 47 | 323 | 270 | 30 | 23 |
+| Subqueries (EXISTS / IN / scalar) | 47 | 323 | 270 | 29 | 24 |
 | CTEs | 15 | 202 | 161 | 4 | 37 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 14 | 78 | 67 | 5 | 6 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 241 | 201 | 3 | 37 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 47 | 481 | 417 | 9 | 55 |
-| **Total** | **404** | **3427** | **3010** | **103** | **314** |
+| **Total** | **404** | **3427** | **3010** | **101** | **316** |
 
 ## Aggregates & GROUP BY
 
@@ -100,7 +100,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `group_by_multi` | 12 | 11 | 0 | 1 | Multi-column GROUP BY plus GROUP BY on arbitrary expressions. |
 | `group_by_null` | 2 | 2 | 0 | 0 | swingshift-35 commit b059485e: groupByKey no longer uses fmt.Sprintf |
 | `group_by_proj_expr` | 5 | 5 | 0 | 0 | SELECT projection of an EXPRESSION on group-by columns |
-| `group_by_validation` | 30 | 19 | 2 | 9 | Java's groupby-tests.yamsql validates that SELECT columns must |
+| `group_by_validation` | 30 | 19 | 1 | 10 | Java's groupby-tests.yamsql validates that SELECT columns must |
 | `having` | 23 | 22 | 0 | 1 | HAVING filters grouped results (post-aggregate). |
 | `having_avg` | 2 | 2 | 0 | 0 | HAVING with AVG aggregate |
 | `limit_aggregate` | 3 | 3 | 0 | 0 | LIMIT with GROUP BY aggregates |
@@ -202,7 +202,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `dml_not_exists` | 5 | 5 | 0 | 0 | DML with correlated NOT EXISTS + WHERE predicates |
 | `dml_subquery` | 9 | 9 | 0 | 0 | UPDATE and DELETE with subqueries in WHERE. |
 | `dml_subquery_residual` | 5 | 5 | 0 | 0 | Probes the DML correlated-EXISTS scan-loop rewrite when the correlation |
-| `exists` | 8 | 7 | 1 | 0 | EXISTS / NOT EXISTS subquery predicates. |
+| `exists` | 8 | 7 | 0 | 1 | EXISTS / NOT EXISTS subquery predicates. |
 | `exists_multi_table_inner` | 2 | 2 | 0 | 0 | EXISTS with multi-table inner query |
 | `exists_multivalued_version_index` | 1 | 1 | 0 | 0 | An EXISTS over a repeated field matches a multi-valued index whose key follows |
 | `exists_subquery_java` | 8 | 8 | 0 | 0 | EXISTS and NOT EXISTS subquery patterns. |

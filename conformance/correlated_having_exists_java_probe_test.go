@@ -81,6 +81,13 @@ var _ = Describe("CorrelatedHavingExistsJavaProbe", func() {
 			{"standalone_qualify_and_having", "SELECT A2, COUNT(*) FROM A GROUP BY A2 HAVING COUNT(*) > 1 QUALIFY A2 < 30"},
 			{"standalone_qualify_aggregate", "SELECT A2, COUNT(*) FROM A GROUP BY A2 QUALIFY COUNT(*) > 1"},
 			{"standalone_qualify_where_group", "SELECT A2, MAX(A1) FROM A WHERE A1 > 1 GROUP BY A2 QUALIFY A2 = 20"},
+			// An EXISTS in HAVING is never composable from the grouping keys
+			// and aggregates: Java raises 42803, correlated or not.
+			{"having_exists_uncorrelated", "SELECT B1 FROM B GROUP BY B1 HAVING EXISTS (SELECT A1 FROM A)"},
+			{"having_not_exists_uncorrelated", "SELECT B1 FROM B GROUP BY B1 HAVING NOT EXISTS (SELECT A1 FROM A WHERE A1 > 100)"},
+			{"having_exists_correlated", "SELECT B1 FROM B GROUP BY B1 HAVING EXISTS (SELECT A1 FROM A WHERE A.A1 = B.B1)"},
+			{"having_exists_and_agg", "SELECT B1 FROM B GROUP BY B1 HAVING COUNT(*) > 0 AND EXISTS (SELECT A1 FROM A)"},
+			{"qualify_exists_grouped", "SELECT B1 FROM B GROUP BY B1 QUALIFY EXISTS (SELECT A1 FROM A)"},
 			{"having_ungrouped", "SELECT B1 FROM B WHERE EXISTS (SELECT COUNT(*) FROM A WHERE A.A2 = B.B2 HAVING COUNT(*) > 1)"},
 		} {
 			j := render(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
@@ -89,6 +96,16 @@ var _ = Describe("CorrelatedHavingExistsJavaProbe", func() {
 			// An aggregate call in QUALIFY fails inside Java (XXXXX); Go
 			// evaluates it as a HAVING conjunct (DIVERGENCES.md "An aggregate
 			// in QUALIFY"). The row reddens when either side changes.
+			// An EXISTS in an aggregated block's QUALIFY: Java conjoins it after
+			// the grouping check and answers; Go cannot plan an existential
+			// over the aggregate (DIVERGENCES.md "An EXISTS in an aggregated
+			// block's QUALIFY"). The row reddens when it changes.
+			if c.name == "qualify_exists_grouped" {
+				if j != "[1] [2] [3] [4]" || g != "ERR 0AF00" {
+					mismatches = append(mismatches, fmt.Sprintf("%s: java %s, go %s", c.name, j, g))
+				}
+				continue
+			}
 			if c.name == "standalone_qualify_aggregate" {
 				if j != "ERR XXXXX" || g != "[10 2] [20 3]" {
 					mismatches = append(mismatches, fmt.Sprintf("%s: java %s, go %s", c.name, j, g))

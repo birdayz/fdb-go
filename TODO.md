@@ -188,7 +188,10 @@ Never mark a whole workstream complete because one of its subitems passed.
       aggregated block is a HAVING conjunct over the aggregate's output, as
       Java conjoins it, and a correlated QUALIFY inside EXISTS keeps its body
       whole (same probe, 17 rows; an aggregate in QUALIFY fails in Java and
-      is recorded in DIVERGENCES.md).
+      is recorded in DIVERGENCES.md). An EXISTS in HAVING is Java's 42803 after
+      the HAVING resolves (old RFC-180 Y4 "HAVING-EXISTS error-surface
+      alignment"; same probe, mutation-checked); an EXISTS in an aggregated
+      block's QUALIFY, which Java answers, stays 0AF00 (DIVERGENCES.md).
       IN-list typing follows Java's order (literal array identical types,
       then __internal_array promotion, then the IN's probe promotion,
       22000); a comparison is an IN item. `InComparandSourceJavaProbe` has

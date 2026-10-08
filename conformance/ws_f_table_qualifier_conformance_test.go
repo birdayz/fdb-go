@@ -450,9 +450,8 @@ var _ = Describe("RFC-257 WS-F: a table's qualifier is its schema template's nam
 		// Pinned with both answers, against the rows the setup wrote (before any
 		// DML below).
 		//
-		// A HAVING EXISTS: the target refuses it as a non-grouping expression
-		// (42803), Go at planning (0AF00). TODO.md "HAVING-EXISTS error-surface
-		// alignment".
+		// A HAVING EXISTS: both refuse it as a non-grouping expression (42803),
+		// after resolving the subquery.
 		//
 		// A GROUP BY over a derived table, qualified or not, or over a struct
 		// column: the target cannot plan it (0AF00); Go answers, a read-side
@@ -462,7 +461,7 @@ var _ = Describe("RFC-257 WS-F: a table's qualifier is its schema template's nam
 		// (An explicit JOIN's right side spelled as a correlated array is
 		// conformance/ws_f_join_unnest_conformance_test.go's.)
 		declared := map[string][2]string{
-			`SELECT f FROM x GROUP BY f HAVING EXISTS (SELECT 1 FROM y WHERE y.id = 1)`:  {"ERROR 42803", "ERROR 0AF00"},
+			`SELECT f FROM x GROUP BY f HAVING EXISTS (SELECT 1 FROM y WHERE y.id = 1)`:  {"ERROR 42803", "ERROR 42803"},
 			`SELECT d.f, COUNT(*) FROM (SELECT f FROM w WHERE id = 1) AS d GROUP BY d.f`: {"ERROR 0AF00", "[[1 1]]"},
 			`SELECT ss.ss, COUNT(*) FROM ss GROUP BY ss.ss`:                              {"ERROR 0AF00", "[[map[SS:8] 1]]"},
 		}

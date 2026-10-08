@@ -976,6 +976,10 @@ type selectClassification struct {
 	// output (QueryVisitor.visitSimpleTable), so it is walked with havingExpr.
 	// Without a HAVING it is havingExpr itself.
 	qualifyAfterAggregate antlrgen.IExpressionContext
+	// havingIsQualify: havingExpr is the block's QUALIFY (no HAVING was
+	// written). Java checks HAVING alone against the grouping keys and
+	// aggregates (generateGroupBy) and conjoins QUALIFY afterwards.
+	havingIsQualify bool
 	// postAggExprs is populated by the visitor's visitSelectGroupBy when
 	// post-aggregation computed projections are emitted.
 	postAggExprs []antlrgen.IExpressionContext
@@ -1951,6 +1955,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 	if cls.qualifyExpr != nil && (cls.countStar || len(cls.aggCols) > 0 || len(cls.groupBy) > 0) {
 		if cls.havingExpr == nil {
 			cls.havingExpr = cls.qualifyExpr
+			cls.havingIsQualify = true
 		} else {
 			cls.qualifyAfterAggregate = cls.qualifyExpr
 		}

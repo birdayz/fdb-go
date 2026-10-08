@@ -942,6 +942,12 @@ where Java places QUALIFY in an aggregated block (QueryVisitor.visitSimpleTable)
 QUALIFY over grouping keys, with or without HAVING, answers as Java
 (`CorrelatedHavingExistsJavaProbe`).
 
+### An EXISTS in an aggregated block's QUALIFY (Go refuses)
+
+`SELECT b1 FROM b GROUP BY b1 QUALIFY EXISTS (SELECT a1 FROM a)`: Java conjoins QUALIFY after its
+grouping check and answers; Go cannot plan an existential over the aggregate's output and refuses
+with 0AF00. An EXISTS in HAVING is 42803 in both (`CorrelatedHavingExistsJavaProbe`).
+
 ### A LEFT JOIN over a lateral unnest (Go refuses)
 
 `SELECT … FROM t1, t1.arr AS r LEFT JOIN t2 ON r = t2.id`: Java answers; Go fails with 0AF00
@@ -4008,8 +4014,6 @@ column. Every shape is measured in `conformance/ws_f_table_qualifier_conformance
   GROUP BY d.f`) or over a struct column (`GROUP BY ss.ss`): the target cannot plan it (0AF00). Go
   answers, a read-side reach the target lacks. Derived-table grouping is also covered by
   `pkg/relational/conformance/yamsql/testdata/group_by_derived_expr.yaml`.
-- A HAVING EXISTS: the target refuses it as a non-grouping expression (42803), Go at planning
-  (0AF00). Open item: TODO_OLD.md:6213 "HAVING-EXISTS error-surface alignment (RFC-180 Y4)".
 - An explicit JOIN whose right side is a correlated array (`FROM w JOIN w.arr AS v ON p`) is, in
   both engines, the comma form `FROM w, w.arr AS v WHERE p` (aligned in WS-J v29). Where it still
   differs, it is pinned with both answers in `declared` in

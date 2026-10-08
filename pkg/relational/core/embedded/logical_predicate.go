@@ -4843,6 +4843,14 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 		resolver.SetSubqueryPlanner(clause)
 	}
 	pred, err := resolver.WalkPredicate(sq.havingExpr)
+	// An EXISTS in HAVING is no expression over the grouping keys and
+	// aggregates: once HAVING resolves, Java's generateGroupBy finds it not
+	// composable from them and raises 42803 (LogicalOperator.java:437-440),
+	// correlated or not. QUALIFY is conjoined after that check.
+	if err == nil && !sq.havingIsQualify && expr.ContainsExistsAtom(sq.havingExpr) {
+		return api.NewErrorf(api.ErrCodeGroupingError,
+			"Invalid reference to non-grouping expression %s", sq.havingExpr.GetText())
+	}
 	if err == nil && sq.qualifyAfterAggregate != nil {
 		var qualify predicates.QueryPredicate
 		if qualify, err = resolver.WalkPredicate(sq.qualifyAfterAggregate); err == nil {
