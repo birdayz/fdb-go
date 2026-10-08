@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"maps"
 	"sync"
 	"sync/atomic"
 
@@ -10,6 +11,10 @@ import (
 type correlationMemo struct {
 	version      uint64
 	correlations map[values.CorrelationIdentifier]struct{}
+	// content identifies the correlation set: a recomputation that yields an
+	// equal set keeps it, so dependents compare content rather than snapshot
+	// identity and survive an ancestor-neutral change below them.
+	content      uint64
 	dependencies []correlationDependency
 	// validated is the correlation epoch at which every dependency was last
 	// seen unchanged; 0 is never.
@@ -25,6 +30,15 @@ var correlationEpoch atomic.Uint64
 func init() { correlationEpoch.Store(1) }
 
 func bumpCorrelationEpoch() { correlationEpoch.Add(1) }
+
+var correlationContents atomic.Uint64
+
+func newCorrelationContent() uint64 { return correlationContents.Add(1) }
+
+// sameCorrelations reports whether two snapshots carry the same correlation set.
+func sameCorrelations(a, b *correlationMemo) bool {
+	return a == b || a != nil && b != nil && a.content == b.content
+}
 
 // validatedAt reports whether the snapshot is current for epoch.
 func (m *correlationMemo) validatedAt(epoch uint64) bool {
@@ -104,7 +118,7 @@ func (reader *referenceCorrelationReader) computeExpressionSnapshot(expression R
 	if reader.expressions == nil {
 		reader.expressions = make(map[RelationalExpression]*correlationMemo)
 	}
-	computed := &correlationMemo{}
+	computed := &correlationMemo{content: newCorrelationContent()}
 	computed.correlations = expressionCorrelations(expression, func(child *Reference) map[values.CorrelationIdentifier]struct{} {
 		snapshot := reader.reference(child)
 		computed.dependencies = append(computed.dependencies, correlationDependency{child, snapshot})
@@ -125,7 +139,7 @@ func (reader *referenceCorrelationReader) memberSnapshot(member RelationalExpres
 	}
 	if prior != nil {
 		for _, dependency := range prior.dependencies {
-			if reader.reference(dependency.reference) != dependency.snapshot {
+			if !sameCorrelations(reader.reference(dependency.reference), dependency.snapshot) {
 				return reader.computeExpressionSnapshot(member)
 			}
 		}
@@ -190,7 +204,7 @@ func (reader *referenceCorrelationReader) reference(ref *Reference) *correlation
 	if cached != nil && cached.version == ref.memberVersion {
 		valid := true
 		for _, dependency := range cached.dependencies {
-			if reader.reference(dependency.reference) != dependency.snapshot {
+			if !sameCorrelations(reader.reference(dependency.reference), dependency.snapshot) {
 				valid = false
 				break
 			}
@@ -230,6 +244,11 @@ func (reader *referenceCorrelationReader) reference(ref *Reference) *correlation
 				computed.correlations[alias] = struct{}{}
 			}
 		}
+	}
+	if cached != nil && maps.Equal(cached.correlations, computed.correlations) {
+		computed.correlations, computed.content = cached.correlations, cached.content
+	} else {
+		computed.content = newCorrelationContent()
 	}
 	computed.validated.Store(epoch)
 	if reader.publish {

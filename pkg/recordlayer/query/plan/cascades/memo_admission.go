@@ -140,6 +140,7 @@ func prepareReferenceMemberBatch(
 			prepared.final = append(prepared.final, intent.expression)
 		}
 	}
+	prepared.equality.PrepareCorrelations(reference, append(append([]expressions.RelationalExpression(nil), prepared.exploratory...), prepared.final...))
 	return prepared, nil
 }
 
@@ -147,7 +148,8 @@ func (p *preparedReferenceBatch) commit() error {
 	if p == nil || p.reference == nil || p.view == nil {
 		return memoAdmissionError(values.MemoInvalidHandle, "memo.batch", "prepared Reference batch is nil or incomplete")
 	}
-	if err := p.reference.ApplyPreparedMemberBatch(
+	if err := p.equality.ApplyPreparedMemberBatch(
+		p.reference,
 		p.view,
 		p.relationType,
 		p.exploratory,

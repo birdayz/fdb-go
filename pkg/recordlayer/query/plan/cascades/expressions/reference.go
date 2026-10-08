@@ -328,6 +328,31 @@ func (r *Reference) ApplyPreparedMemberBatch(
 	final []RelationalExpression,
 	aliasAwareDedups int,
 ) error {
+	return r.applyPreparedMemberBatch(view, relationType, exploratory, final, aliasAwareDedups, nil)
+}
+
+// ApplyPreparedMemberBatch is Reference.ApplyPreparedMemberBatch carrying the
+// batch's proof, if it found one, that the new members leave the group's
+// correlations unchanged; then no reader above the group needs to revalidate.
+func (p *PreparedMemberEquality) ApplyPreparedMemberBatch(
+	r *Reference,
+	view *ReferenceAdmissionView,
+	relationType values.ExactTypeHandle,
+	exploratory []RelationalExpression,
+	final []RelationalExpression,
+	aliasAwareDedups int,
+) error {
+	return r.applyPreparedMemberBatch(view, relationType, exploratory, final, aliasAwareDedups, p.unchanged)
+}
+
+func (r *Reference) applyPreparedMemberBatch(
+	view *ReferenceAdmissionView,
+	relationType values.ExactTypeHandle,
+	exploratory []RelationalExpression,
+	final []RelationalExpression,
+	aliasAwareDedups int,
+	unchanged *unchangedCorrelations,
+) error {
 	canonical := canonicalReferenceReadOnly(r)
 	if canonical == nil || view == nil || view.reference != canonical {
 		return &values.ResolutionError{ErrorCode: values.MemoInvalidHandle, Path: "memo.reference", Detail: "prepared view does not belong to Reference"}
@@ -373,14 +398,18 @@ func (r *Reference) ApplyPreparedMemberBatch(
 	canonical.aliasAwareDedups += aliasAwareDedups
 	canonical.admittedResultType = exact
 	canonical.memberVersion++
-	bumpCorrelationEpoch()
 	if len(exploratory)+len(final) > 0 {
 		// Prepared admission is the planner's normal insertion path. A winner
 		// ranks the member set that existed when it was stamped; publishing any
 		// genuinely new member invalidates that snapshot just as Insert and
 		// InsertFinal do.
 		canonical.winner = nil
-		canonical.correlatedToCache.Store(nil)
+	}
+	if !unchanged.install(canonical, view.version) {
+		bumpCorrelationEpoch()
+		if len(exploratory)+len(final) > 0 {
+			canonical.correlatedToCache.Store(nil)
+		}
 	}
 	return nil
 }
@@ -928,8 +957,79 @@ func PreparedMemberDuplicateWithHashes(
 // batch. Its zero value is ready to use. After a successful commit, publish and
 // discard it: local derivations must not outlive mutations to the graph.
 type PreparedMemberEquality struct {
-	equality memoEquality
-	inputs   map[*Reference]preparedInputSignature
+	equality  memoEquality
+	inputs    map[*Reference]preparedInputSignature
+	unchanged *unchangedCorrelations
+}
+
+// unchangedCorrelations is a group's correlation snapshot after a batch whose
+// members add no correlation the group did not already have, derived on the
+// graph of one correlation epoch.
+type unchangedCorrelations struct {
+	reference *Reference
+	version   uint64
+	epoch     uint64
+	snapshot  *correlationMemo
+}
+
+// PrepareCorrelations records whether adding members to ref provably leaves
+// ref's correlations unchanged. It reads, but never publishes, snapshots.
+func (p *PreparedMemberEquality) PrepareCorrelations(ref *Reference, members []RelationalExpression) {
+	p.unchanged = nil
+	ref = canonicalReferenceReadOnly(ref)
+	if ref == nil {
+		return
+	}
+	reader := &p.equality.correlations
+	epoch := reader.currentEpoch()
+	if epoch != correlationEpoch.Load() {
+		return
+	}
+	old := reader.reference(ref)
+	if old == nil || old.version != ref.memberVersion {
+		return
+	}
+	dependencies := append([]correlationDependency(nil), old.dependencies...)
+	seen := make(map[*Reference]struct{}, len(dependencies))
+	for _, dependency := range dependencies {
+		seen[dependency.reference] = struct{}{}
+	}
+	for _, member := range members {
+		snapshot := reader.expressionSnapshot(member)
+		for alias := range snapshot.correlations {
+			if _, ok := old.correlations[alias]; !ok {
+				return
+			}
+		}
+		for _, dependency := range snapshot.dependencies {
+			if _, dup := seen[dependency.reference]; !dup {
+				seen[dependency.reference] = struct{}{}
+				dependencies = append(dependencies, dependency)
+			}
+		}
+	}
+	p.unchanged = &unchangedCorrelations{
+		reference: ref,
+		version:   ref.memberVersion,
+		epoch:     epoch,
+		snapshot: &correlationMemo{
+			correlations: old.correlations,
+			content:      old.content,
+			dependencies: dependencies,
+		},
+	}
+}
+
+// install publishes the prepared snapshot for r's new member version when the
+// graph is still the one it was derived on.
+func (u *unchangedCorrelations) install(r *Reference, version uint64) bool {
+	if u == nil || u.reference != r || u.version != version || u.epoch != correlationEpoch.Load() {
+		return false
+	}
+	u.snapshot.version = r.memberVersion
+	u.snapshot.validated.Store(u.epoch)
+	r.correlatedToCache.Store(u.snapshot)
+	return true
 }
 
 // SeedMemberCorrelations lets the batch reuse ref's member snapshots from

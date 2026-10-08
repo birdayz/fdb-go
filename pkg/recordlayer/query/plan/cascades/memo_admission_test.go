@@ -54,6 +54,15 @@ func (p *memoAdmissionHashSpyPlan) EqualsPlanWithoutChildren(other plans.RecordQ
 
 func (p *memoAdmissionHashSpyPlan) GetChildren() []plans.RecordQueryPlan { return nil }
 
+// The spy is a leaf with no correlations; admission derives them for new members.
+func (p *memoAdmissionHashSpyPlan) GetQuantifiers() []expressions.Quantifier { return nil }
+
+func (p *memoAdmissionHashSpyPlan) CanCorrelate() bool { return false }
+
+func (p *memoAdmissionHashSpyPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return nil
+}
+
 type hostileMemoExpression struct {
 	methodCalls atomic.Int32
 }
@@ -819,6 +828,9 @@ func TestMemoAdmissionPublishesCorrelationsOnlyAfterCommit(t *testing.T) {
 			reference = mustConstruct(t, reference, err)
 			incoming, err := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(child))
 			incoming = mustConstruct(t, incoming, err)
+			// Admitting member already published the child's correlations; drop
+			// them so this batch derives them itself.
+			child.InvalidateCorrelatedToCache()
 			visits = 0
 			batch, err := prepareReferenceMemberBatch(reference, []referenceMemberIntent{{
 				set: expressions.ReferenceExploratoryMembers, expression: incoming,
