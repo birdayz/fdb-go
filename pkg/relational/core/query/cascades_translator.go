@@ -818,16 +818,26 @@ func TargetElementType(fd protoreflect.FieldDescriptor) values.Type {
 			fields := make([]values.Field, msg.Fields().Len())
 			for i := range fields {
 				sub := msg.Fields().Get(i)
-				fields[i] = values.Field{
-					Name:      string(sub.Name()),
-					FieldType: TargetTypeForFD(sub),
-					Ordinal:   i,
-				}
+				fields[i] = TargetField(sub, i)
 			}
 			return values.NewRecordType(string(msg.Name()), true, fields)
 		}
 	}
 	return scalarTypeForKind(fd)
+}
+
+// TargetField is a struct field as Java's Type.Record.Field.fromDescriptor
+// (preserving names) has it: the user identifier, the protobuf number and the
+// storage name.
+func TargetField(fd protoreflect.FieldDescriptor, ordinal int) values.Field {
+	f := values.Field{
+		Name:      values.FieldNameForProtoField(fd),
+		FieldType: TargetTypeForFD(fd),
+		Ordinal:   ordinal,
+		Index:     int32(fd.Number()),
+	}
+	f.StorageName = values.ExplicitStorageName(f.Name, string(fd.Name()))
+	return f
 }
 
 // FieldTypeForFD maps a protoreflect.FieldDescriptor to a values.Type, mirroring

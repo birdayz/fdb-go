@@ -366,6 +366,12 @@ type Field struct {
 	// slice position directly (RecordType.FieldIndexUnique) for soundness even on
 	// a raw RecordType. Anonymous fields share Name="" but have distinct Ordinals.
 	Ordinal int
+	// Index is the protobuf field number of a descriptor-derived field, 0
+	// when there is none (Java's fieldIndexOptional). Provenance only.
+	Index int32
+	// StorageName is the protobuf field name when Name does not imply it;
+	// empty means DerivedStorageName(Name) (Java's Field.of). Provenance only.
+	StorageName string
 }
 
 // Equals reports whether two Fields are structurally equal: same

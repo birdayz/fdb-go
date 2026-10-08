@@ -246,6 +246,43 @@ func TestFDB_EnumStructMacroFunctions(t *testing.T) {
 	}
 }
 
+// A macro parameter's struct type is Java's descriptor type: a field whose
+// identifier needs escaping is named as written and stored under its
+// protobuf spelling, so the body can reach it.
+func TestFDB_MacroOverEscapedStructField(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	setup := testkit.OpenDB(t, "/FRL/testdb_escmacro")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_escmacro")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE escmacro_tpl "+
+		`CREATE TYPE AS STRUCT st("a.b" BIGINT, c BIGINT) `+
+		"CREATE TABLE t (id BIGINT, p st, PRIMARY KEY (id)) "+
+		`CREATE FUNCTION ab(IN x TYPE st) RETURNS BIGINT AS x."a.b"`)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_escmacro/s WITH TEMPLATE escmacro_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_ESCMACRO?cluster_file=%s&schema=S", testkit.ClusterFile()))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, (5, 6)), (2, (7, 8))")
+	rows, err := db.QueryContext(ctx, "SELECT ab(p) FROM t ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []int64
+	for rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, v)
+	}
+	rows.Close()
+	if fmt.Sprint(got) != "[5 7]" {
+		t.Errorf("ab(p) = %v, want [5 7]", got)
+	}
+}
+
 // CREATE TEMPORARY FUNCTION binds a function to the transaction, which drops
 // it when it ends (CreateTemporaryFunctionConstantAction).
 func TestFDB_TemporaryFunctions(t *testing.T) {

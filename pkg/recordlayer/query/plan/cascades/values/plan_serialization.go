@@ -23,8 +23,8 @@ func DerivedStorageName(name string) string {
 	return s
 }
 
-// explicitStorageName is storage when name does not already imply it.
-func explicitStorageName(name, storage string) string {
+// ExplicitStorageName is storage when name does not already imply it.
+func ExplicitStorageName(name, storage string) string {
 	if storage == DerivedStorageName(name) {
 		return ""
 	}
@@ -68,6 +68,7 @@ func (c *SerializationContext) TypeToProto(t Type) (*gen.PType, error) {
 		}
 		id := int32(len(c.recordIDs))
 		c.recordIDs[key] = id
+		c.records[id] = tt
 		rt := &gen.PType_PRecordType{ReferenceId: proto.Int32(id), IsNullable: proto.Bool(tt.Nullable)}
 		if tt.RecordName != "" {
 			rt.Name = proto.String(tt.RecordName)
@@ -132,17 +133,42 @@ func (c *SerializationContext) TypeToProto(t Type) (*gen.PType, error) {
 	}}}, nil
 }
 
-// fieldToProto is Java's Type.Record.Field.toProto; field indexes are 1-based.
+// fieldToProto is Java's Type.Record.Field.toProto: a descriptor-derived
+// field keeps its protobuf number and storage name; a constructed one is
+// numbered by position from 1 (Type.Record.normalizeFields).
 func (c *SerializationContext) fieldToProto(f Field, ordinal int) (*gen.PType_PRecordType_PField, error) {
 	ft, err := c.TypeToProto(f.FieldType)
 	if err != nil {
 		return nil, err
 	}
-	pf := &gen.PType_PRecordType_PField{FieldType: ft, FieldIndex: proto.Int32(int32(ordinal + 1))}
+	index := f.Index
+	if index == 0 {
+		index = int32(ordinal + 1)
+	}
+	pf := &gen.PType_PRecordType_PField{FieldType: ft, FieldIndex: proto.Int32(index)}
 	if f.Name != "" {
 		pf.FieldName = proto.String(f.Name)
 	}
+	storage := f.StorageName
+	if storage == "" {
+		storage = DerivedStorageName(f.Name)
+	}
+	if storage != f.Name {
+		pf.FieldStorageName = proto.String(storage)
+	}
 	return pf, nil
+}
+
+// declared is the record type written or read under t's identity: a
+// quantified object's exact type drops field numbers and storage names the
+// declared type keeps.
+func (c *SerializationContext) declared(t Type) Type {
+	if id, ok := c.recordIDs[recordIdentityKey(t)]; ok {
+		if rt, ok := c.records[id]; ok {
+			return rt
+		}
+	}
+	return t
 }
 
 // recordIdentityKey renders a record type with its names and structure.
@@ -203,7 +229,12 @@ func (c *SerializationContext) TypeFromProto(p *gen.PType) (Type, error) {
 			if err != nil {
 				return nil, err
 			}
-			fields[i] = Field{Name: pf.GetFieldName(), FieldType: ft, Ordinal: i}
+			fields[i] = Field{Name: pf.GetFieldName(), FieldType: ft, Ordinal: i, Index: pf.GetFieldIndex()}
+			if pf.FieldStorageName != nil {
+				fields[i].StorageName = ExplicitStorageName(fields[i].Name, pf.GetFieldStorageName())
+			} else if DerivedStorageName(fields[i].Name) != fields[i].Name {
+				fields[i].StorageName = fields[i].Name
+			}
 		}
 		t := NewRecordType(rt.GetName(), rt.GetIsNullable(), fields)
 		t.StorageName = rt.GetStorageName()
@@ -228,7 +259,7 @@ func (c *SerializationContext) TypeFromProto(p *gen.PType) (Type, error) {
 		for _, pv := range et.GetEnumValues() {
 			v := EnumValue{Name: pv.GetName(), Number: pv.GetNumber()}
 			if pv.StorageName != nil {
-				v.StorageName = explicitStorageName(v.Name, pv.GetStorageName())
+				v.StorageName = ExplicitStorageName(v.Name, pv.GetStorageName())
 			} else if DerivedStorageName(v.Name) != v.Name {
 				v.StorageName = v.Name
 			}
@@ -271,7 +302,10 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		parent := fv.ChildValue().Type()
 		for i := 0; i < fv.Path().Len(); i++ {
 			acc, _ := fv.Path().Accessor(i)
-			rt, ok := parent.(*RecordType)
+			if _, err := c.TypeToProto(parent); err != nil {
+				return nil, err
+			}
+			rt, ok := c.declared(parent).(*RecordType)
 			if !ok || acc.Ordinal() >= len(rt.Fields) {
 				return nil, fmt.Errorf("serialize field path: %s has no field %d", parent, acc.Ordinal())
 			}

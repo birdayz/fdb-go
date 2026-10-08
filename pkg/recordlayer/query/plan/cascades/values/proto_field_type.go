@@ -258,7 +258,7 @@ func enumTypeForProto(ed protoreflect.EnumDescriptor) Type {
 		// Java Type.Enum.enumValuesFromProto keeps the user identifier;
 		// string promotion compares that spelling, not protobuf escaping.
 		v := EnumValue{Name: protoname.ToUserIdentifier(string(value.Name())), Number: int32(value.Number())}
-		v.StorageName = explicitStorageName(v.Name, string(value.Name()))
+		v.StorageName = ExplicitStorageName(v.Name, string(value.Name()))
 		values = append(values, v)
 	}
 	// The enum's name as Java reads it, whatever scope the in-memory

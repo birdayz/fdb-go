@@ -189,7 +189,7 @@ func customType(name string, md *recordlayer.RecordMetaData, aux auxiliaryTypes)
 	fields := make([]values.Field, msg.Fields().Len())
 	for i := range fields {
 		f := msg.Fields().Get(i)
-		fields[i] = values.Field{Name: string(f.Name()), FieldType: query.TargetTypeForFD(f), Ordinal: i}
+		fields[i] = query.TargetField(f, i)
 	}
 	t := values.NewRecordType(name, true, fields)
 	t.StorageName = storage

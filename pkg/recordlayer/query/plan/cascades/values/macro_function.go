@@ -66,7 +66,7 @@ func MacroFunctionFromProto(p *gen.PUserDefinedMacroFunction) (*MacroFunction, e
 			return nil, fmt.Errorf("macro %s: parameter is not a quantified object", m.Name)
 		}
 		m.Params = append(m.Params, q)
-		m.ParamTypes = append(m.ParamTypes, q.FlowedType())
+		m.ParamTypes = append(m.ParamTypes, c.declared(q.FlowedType()))
 	}
 	m.Defaults = make([]Value, len(m.Params))
 	for i, d := range p.GetDefaultArgumentValues() {

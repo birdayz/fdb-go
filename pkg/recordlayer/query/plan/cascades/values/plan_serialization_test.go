@@ -330,3 +330,59 @@ func TestEnumFieldsDistinguishRecordReferences(t *testing.T) {
 		t.Fatalf("a different enum was written as a reference: %v", p)
 	}
 }
+
+// A descriptor-derived record keeps its protobuf field numbers and storage
+// names (Type.Record.Field.toProto), in the parameter type and in the body's
+// field path, though the body's quantified object flows an exact type that
+// has neither.
+func TestRecordFieldNumbersAndStorageNamesSerialize(t *testing.T) {
+	t.Parallel()
+	inner := NewRecordType("I", true, []Field{{Name: "z", FieldType: NullableLong, Index: 7}})
+	st := NewRecordType("T", true, []Field{
+		{Name: "a.b", FieldType: NullableString, Index: 10, StorageName: "a__2b"},
+		{Name: "b", FieldType: inner, Index: 20},
+	})
+	param, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("x"), st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := ResolveFieldOrdinals(param, []int{1, 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &MacroFunction{
+		Name: "F", Params: []QuantifiedObjectValue{param}, ParamTypes: []Type{st},
+		ParamNames: []string{"X"}, Defaults: []Value{nil}, Body: body,
+	}
+	p, err := m.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact := strings.Join(strings.Fields(prototext.Format(p)), "")
+	for _, want := range []string{
+		`field_name:"a.b"field_index:10field_storage_name:"a__2b"`,
+		`field_name:"b"field_index:20`,
+		`field_name:"z"field_index:7`,
+	} {
+		if !strings.Contains(compact, want) {
+			t.Errorf("serialized macro lacks %s:\n%s", want, compact)
+		}
+	}
+	if strings.Contains(compact, "field_index:1}") || strings.Contains(compact, "field_index:2}") {
+		t.Errorf("a field was renumbered by position:\n%s", compact)
+	}
+	back, err := MacroFunctionFromProto(p.GetUserDefinedMacroFunction())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := back.ParamTypes[0].(*RecordType).Fields[0]; f.Index != 10 || (f.StorageName != "a__2b" && DerivedStorageName(f.Name) != "a__2b") {
+		t.Errorf("read back field %+v", f)
+	}
+	again, err := back.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(p, again) {
+		t.Errorf("round trip changed the macro:\n%s\n%s", prototext.Format(p), prototext.Format(again))
+	}
+}
