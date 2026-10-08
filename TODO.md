@@ -703,7 +703,19 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     leaf climb (2026-10-06), reverted: under ORDER BY a join leg is asked for
     a concrete ordering no probe provides (Java cannot plan those queries),
     and the skip drops the leg's probes, so yamsql join scenarios degrade to
-    scans. It needs Go's in-memory sort to request PRESERVE below it too. Rows still open in
+    scans. It needs Go's in-memory sort to request PRESERVE below it too.
+    Third measurement (2026-10-08), reverted: the skip plus PRESERVE beside
+    the keys in all three sort pushes and the group-by push (skip only when
+    a request exists; Go's correlated join-inner probes are planned with
+    none) keeps every sorted query's probes: 2 corpus plans move, both OR
+    unions becoming MergeSortUnion (one regains COVERING legs). But the
+    distinct-union rule then enumerates an ordered union per request, and
+    {keys, PRESERVE} under a sort exhausts the 150000-task budget (54F02) on
+    three factory OR scenarios (fc_0001884206) and
+    TestPlanHarness_FixedFactorUnionJavaComparable/ordered; the metamorphic
+    ordering test and factory determinism fail too. The remaining route is a
+    Go-only mark on a request whose consumer can sort in memory, which the
+    skip honours and the union rules ignore, carried by every push rule. Rows still open in
     `wsfOpenUntil` as F-7c follow-ups: none. The IN-join versus filtered scan
     rows (`w8_in25`, `w8_in_union`, `w8_tie_in`) are declared `DIFF-PATH
     in-memory-sort` (DIVERGENCES.md "an IN ordered by a key no probe
