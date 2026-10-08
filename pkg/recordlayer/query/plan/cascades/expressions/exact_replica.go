@@ -26,6 +26,9 @@ func ExactReplica(a, b RelationalExpression) bool {
 	if len(a.GetQuantifiers()) != len(b.GetQuantifiers()) || a.CanCorrelate() != b.CanCorrelate() {
 		return false
 	}
+	if !sameInputGroups(a, b) {
+		return false
+	}
 	renameAny := InternsAliasAware(a) && InternsAliasAware(b)
 	pairable := func(left, right Quantifier) bool {
 		return renameAny || left.GetAlias() == right.GetAlias() ||
@@ -70,6 +73,42 @@ func sameInputGroup(a, b *Reference, aliases *AliasMap) bool {
 			return false
 		}
 		if source, renamed := aliases.GetSource(alias); renamed && source != alias {
+			return false
+		}
+	}
+	return true
+}
+
+// sameInputGroups is the input-group test ExactReplica's binding search must
+// pass, without the search: positionally, or as multisets for operators whose
+// children form a set.
+func sameInputGroups(a, b RelationalExpression) bool {
+	left, right := a.GetQuantifiers(), b.GetQuantifiers()
+	if !a.ChildrenAsSet() || !b.ChildrenAsSet() {
+		for i := range left {
+			if l := canonicalReferenceReadOnly(left[i].rangesOver); l == nil || l != canonicalReferenceReadOnly(right[i].rangesOver) {
+				return false
+			}
+		}
+		return true
+	}
+	var usedBuf [8]bool
+	var used []bool
+	if len(right) <= len(usedBuf) {
+		used = usedBuf[:len(right)]
+	} else {
+		used = make([]bool, len(right))
+	}
+	for i := range left {
+		l := canonicalReferenceReadOnly(left[i].rangesOver)
+		found := false
+		for j := range right {
+			if !used[j] && l != nil && l == canonicalReferenceReadOnly(right[j].rangesOver) {
+				used[j], found = true, true
+				break
+			}
+		}
+		if !found {
 			return false
 		}
 	}

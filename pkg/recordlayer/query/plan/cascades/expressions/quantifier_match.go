@@ -81,21 +81,34 @@ func quantifierDependencies(quantifiers []Quantifier, canCorrelate bool, correla
 		return nil
 	}
 	var dependencies [][]int
-	owned := make(map[values.CorrelationIdentifier]int, len(quantifiers))
 	for i, quantifier := range quantifiers {
-		owned[quantifier.GetAlias()] = i
-	}
-	for i, quantifier := range quantifiers {
-		for alias := range correlations(quantifier.GetRangesOver()) {
-			if j, local := owned[alias]; local {
-				if dependencies == nil {
-					dependencies = make([][]int, len(quantifiers))
-				}
-				dependencies[i] = append(dependencies[i], j)
+		reads := correlations(quantifier.GetRangesOver())
+		if len(reads) == 0 {
+			continue
+		}
+		for j, owner := range quantifiers {
+			if _, local := reads[owner.GetAlias()]; !local || !lastAliasOwner(quantifiers, j) {
+				continue
 			}
+			if dependencies == nil {
+				dependencies = make([][]int, len(quantifiers))
+			}
+			dependencies[i] = append(dependencies[i], j)
 		}
 	}
 	return dependencies
+}
+
+// lastAliasOwner reports whether no later quantifier rebinds quantifiers[j]'s
+// alias; a repeated alias names its last quantifier.
+func lastAliasOwner(quantifiers []Quantifier, j int) bool {
+	alias := quantifiers[j].GetAlias()
+	for _, later := range quantifiers[j+1:] {
+		if later.GetAlias() == alias {
+			return false
+		}
+	}
+	return true
 }
 
 func quantifierReady(dependencies []int, matched []bool) bool {

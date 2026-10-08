@@ -76,6 +76,13 @@ func (e *memoEquality) hash(expression RelationalExpression) uint64 {
 }
 
 func (e *memoEquality) equal(member, expression RelationalExpression, aliases *AliasMap) bool {
+	return e.equalIn(nil, member, nil, expression, aliases)
+}
+
+// equalIn is equal for a member of memberRef and an expression of
+// expressionRef, either nil when unknown; a member's group carries its
+// correlation snapshot from earlier reads.
+func (e *memoEquality) equalIn(memberRef *Reference, member RelationalExpression, expressionRef *Reference, expression RelationalExpression, aliases *AliasMap) bool {
 	if member == nil || expression == nil {
 		return member == nil && expression == nil
 	}
@@ -90,8 +97,8 @@ func (e *memoEquality) equal(member, expression RelationalExpression, aliases *A
 		e.hash(member) != e.hash(expression) {
 		return false
 	}
-	memberCorrelations := e.correlations.expression(member)
-	otherCorrelations := e.correlations.expression(expression)
+	memberCorrelations := e.correlations.expressionIn(memberRef, member)
+	otherCorrelations := e.correlations.expressionIn(expressionRef, expression)
 	if len(memberCorrelations) != len(otherCorrelations) {
 		return false
 	}
@@ -136,7 +143,7 @@ func (e *memoEquality) references(a, b *Reference, aliases *AliasMap) bool {
 	}
 	e.active[pair] = struct{}{}
 	cycles := e.cycles
-	result := e.members(a.members, b.members, aliases) && e.members(a.finalMembers, b.finalMembers, aliases)
+	result := e.members(a, a.members, b, b.members, aliases) && e.members(a, a.finalMembers, b, b.finalMembers, aliases)
 	delete(e.active, pair)
 	if e.cycles == cycles {
 		if e.matched == nil {
@@ -169,11 +176,11 @@ func (e *memoEquality) boundFreeAliases(ref *Reference, aliases *AliasMap) []val
 	return pairs
 }
 
-func (e *memoEquality) members(have, want []RelationalExpression, aliases *AliasMap) bool {
+func (e *memoEquality) members(haveRef *Reference, have []RelationalExpression, wantRef *Reference, want []RelationalExpression, aliases *AliasMap) bool {
 	for _, wanted := range want {
 		found := false
 		for _, member := range have {
-			if e.equal(member, wanted, aliases) {
+			if e.equalIn(haveRef, member, wantRef, wanted, aliases) {
 				found = true
 				break
 			}

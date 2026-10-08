@@ -110,6 +110,21 @@ func (reader *referenceCorrelationReader) expression(expression RelationalExpres
 	return reader.expressionSnapshot(expression).correlations
 }
 
+// expressionIn is expression for a member of ref, reusing the member snapshot
+// ref published, after revalidation.
+func (reader *referenceCorrelationReader) expressionIn(ref *Reference, expression RelationalExpression) map[values.CorrelationIdentifier]struct{} {
+	if cached, ok := reader.expressions[expression]; ok {
+		return cached.correlations
+	}
+	prior := reader.priors[expression]
+	if prior == nil && ref != nil {
+		if published := ref.memberCorrelations.Load(); published != nil {
+			prior = (*published)[expression]
+		}
+	}
+	return reader.memberSnapshot(expression, prior).correlations
+}
+
 func (reader *referenceCorrelationReader) expressionSnapshot(expression RelationalExpression) *correlationMemo {
 	return reader.memberSnapshot(expression, reader.priors[expression])
 }
