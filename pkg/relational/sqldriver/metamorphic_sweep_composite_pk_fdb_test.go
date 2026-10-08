@@ -75,15 +75,24 @@ func mhcpkLit(v any) string {
 // nonEmpty is whether the agreed answer had rows.
 func mhcpkCompare(w *mmTwin, stage string, q mhcpkQuery) (compared, nonEmpty bool) {
 	w.t.Helper()
-	gi, ei := mmRows(w.t, w.ctx, w.idx, q.sql)
+	compared, nonEmpty, _, _ = mhcpkCompareRows(w, stage, q)
+	return compared, nonEmpty
+}
+
+// mhcpkCompareRows is mhcpkCompare that also hands back the indexed side's
+// rows and error, so a later pass over the same unchanged fixture can reuse
+// them instead of re-reading.
+func mhcpkCompareRows(w *mmTwin, stage string, q mhcpkQuery) (compared, nonEmpty bool, gi []string, ei error) {
+	w.t.Helper()
+	gi, ei = mmRows(w.t, w.ctx, w.idx, q.sql)
 	gn, en := mmRows(w.t, w.ctx, w.plain, q.sql)
 	if (ei == nil) != (en == nil) {
 		w.t.Errorf("%s: ERROR ASYMMETRY\n  q: %s\n  indexed:   %v\n  unindexed: %v", stage, q.sql, ei, en)
-		return false, false
+		return false, false, gi, ei
 	}
 	if ei != nil {
 		w.t.Logf("%s: both errored: %s: %v", stage, q.sql, ei)
-		return false, false
+		return false, false, gi, ei
 	}
 	si, sn := append([]string(nil), gi...), append([]string(nil), gn...)
 	if !q.ordered {
@@ -93,9 +102,9 @@ func mhcpkCompare(w *mmTwin, stage string, q mhcpkQuery) (compared, nonEmpty boo
 	if !mmEqRows(si, sn) {
 		w.t.Errorf("%s: indexed and unindexed DISAGREE (ordered=%v)\n  q: %s\n  plan: %s\n  indexed   (%d): %v\n  unindexed (%d): %v",
 			stage, q.ordered, q.sql, w.Explain(q.sql), len(gi), gi, len(gn), gn)
-		return true, len(gi) > 0
+		return true, len(gi) > 0, gi, ei
 	}
-	return true, len(gi) > 0
+	return true, len(gi) > 0, gi, ei
 }
 
 func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
@@ -584,8 +593,17 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 	// nothing, and would otherwise be green. The floors at the end state the
 	// population this net actually measures.
 	var compared, nonEmpty, bothErrored, pagedCompared, pagingDeclined int
-	for _, q := range queries {
-		c, ne := mhcpkCompare(w, "read", q)
+	// The indexed side's one-shot answer per query, kept for the paging pass
+	// below: the fixture is read-only from here on, so re-reading it would
+	// return the same rows.
+	type idxRead struct {
+		rows []string
+		err  error
+	}
+	idxReads := make([]idxRead, len(queries))
+	for qi, q := range queries {
+		c, ne, gi, ei := mhcpkCompareRows(w, "read", q)
+		idxReads[qi] = idxRead{gi, ei}
 		if !c {
 			bothErrored++
 			continue
@@ -613,8 +631,8 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("set scan limit: %v", err)
 	}
-	for _, q := range queries {
-		full, err := mmRows(t, ctx, w.idx, q.sql)
+	for qi, q := range queries {
+		full, err := idxReads[qi].rows, idxReads[qi].err
 		if err != nil {
 			continue
 		}
