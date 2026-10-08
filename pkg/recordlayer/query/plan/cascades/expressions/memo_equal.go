@@ -247,6 +247,8 @@ func expressionCorrelations(e RelationalExpression, childCorrelations func(*Refe
 type memberSignature struct {
 	version            uint64
 	exploratory, final []uint64
+	// hashes are the exploratory members' hashes, sorted.
+	hashes []uint64
 }
 
 // memberSignature returns r's signature for its current members. r must be
@@ -255,21 +257,31 @@ func (r *Reference) memberSignature() *memberSignature {
 	if signature := r.signature.Load(); signature != nil && signature.version == r.memberVersion {
 		return signature
 	}
-	signature := &memberSignature{
-		version:     r.memberVersion,
-		exploratory: r.memberShapes(r.members),
-		final:       r.memberShapes(r.finalMembers),
-	}
+	signature := &memberSignature{version: r.memberVersion}
+	signature.exploratory, signature.hashes = r.memberShapes(r.members, true)
+	signature.final, _ = r.memberShapes(r.finalMembers, false)
 	r.signature.Store(signature)
 	return signature
 }
 
-func (r *Reference) memberShapes(members []RelationalExpression) []uint64 {
-	shapes := make([]uint64, 0, len(members))
+// hasExploratoryHash reports whether an exploratory member has hash.
+func (s *memberSignature) hasExploratoryHash(hash uint64) bool {
+	_, found := slices.BinarySearch(s.hashes, hash)
+	return found
+}
+
+func (r *Reference) memberShapes(members []RelationalExpression, withHashes bool) (shapes, hashes []uint64) {
+	shapes = make([]uint64, 0, len(members))
+	if withHashes {
+		hashes = make([]uint64, 0, len(members))
+	}
 	for _, member := range members {
 		hash, ok := r.memberHash[member]
 		if !ok {
 			hash = member.HashCodeWithoutChildren()
+		}
+		if withHashes {
+			hashes = append(hashes, hash)
 		}
 		shape := (hash*31+uint64(len(member.GetQuantifiers())))*2 + 1
 		if member.CanCorrelate() {
@@ -278,7 +290,8 @@ func (r *Reference) memberShapes(members []RelationalExpression) []uint64 {
 		shapes = append(shapes, shape)
 	}
 	slices.Sort(shapes)
-	return slices.Compact(shapes)
+	slices.Sort(hashes)
+	return slices.Compact(shapes), hashes
 }
 
 // covers reports whether every shape of other occurs in s, lane by lane: a

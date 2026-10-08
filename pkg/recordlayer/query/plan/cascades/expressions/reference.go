@@ -605,7 +605,7 @@ func (r *Reference) Members() []RelationalExpression {
 func (r *Reference) MembersWithHash(hash uint64) iter.Seq[RelationalExpression] {
 	return func(yield func(RelationalExpression) bool) {
 		ref := canonicalReferenceReadOnly(r)
-		if ref == nil {
+		if ref == nil || !ref.memberSignature().hasExploratoryHash(hash) {
 			return
 		}
 		for _, member := range ref.members {
