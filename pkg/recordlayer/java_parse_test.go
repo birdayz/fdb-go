@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/async/rtree"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 )
@@ -176,18 +177,18 @@ func TestRTreeConfigParsesAsJavaDoes(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		options map[string]string
-		want    RTreeConfig
+		want    rtree.RTreeConfig
 		errText string
 	}{
-		{"defaults", nil, RTreeConfig{MinM: 16, MaxM: 32, SplitS: 2, Storage: RTreeStorageByNode, StoreHilbertValues: true}, ""},
-		{"Hilbert false without storage keeps the default", map[string]string{IndexOptionRTreeStoreHilbertValues: "false"}, RTreeConfig{MinM: 16, MaxM: 32, SplitS: 2, Storage: RTreeStorageByNode, StoreHilbertValues: true}, ""},
-		{"storage alone stores no Hilbert values", map[string]string{IndexOptionRTreeStorage: "BY_NODE"}, RTreeConfig{MinM: 16, MaxM: 32, SplitS: 2, Storage: RTreeStorageByNode, StoreHilbertValues: false}, ""},
-		{"storage with Hilbert TRUE", map[string]string{IndexOptionRTreeStorage: "BY_SLOT", IndexOptionRTreeStoreHilbertValues: "TRUE"}, RTreeConfig{MinM: 16, MaxM: 32, SplitS: 2, Storage: RTreeStorageBySlot, StoreHilbertValues: true}, ""},
-		{"node slot index True", map[string]string{IndexOptionRTreeUseNodeSlotIndex: "True"}, RTreeConfig{MinM: 16, MaxM: 32, SplitS: 2, Storage: RTreeStorageByNode, StoreHilbertValues: true, UseNodeSlotIndex: true}, ""},
-		{"any int for M and S", map[string]string{IndexOptionRTreeMinM: "0", IndexOptionRTreeMaxM: "-3", IndexOptionRTreeSplitS: "+5"}, RTreeConfig{MinM: 0, MaxM: -3, SplitS: 5, Storage: RTreeStorageByNode, StoreHilbertValues: true}, ""},
-		{"storage in lower case", map[string]string{IndexOptionRTreeStorage: "by_slot"}, RTreeConfig{}, "No enum constant com.apple.foundationdb.async.rtree.RTree.Storage.by_slot"},
-		{"minM not an int", map[string]string{IndexOptionRTreeMinM: "16.0"}, RTreeConfig{}, `For input string: "16.0"`},
-		{"minM is read before storage", map[string]string{IndexOptionRTreeMinM: "x", IndexOptionRTreeStorage: "nope"}, RTreeConfig{}, `For input string: "x"`},
+		{"defaults", nil, rtree.RTreeConfig{MinM: 16, MaxM: 32, SplitS: 2, Storage: rtree.RTreeStorageByNode, StoreHilbertValues: true}, ""},
+		{"Hilbert false without storage keeps the default", map[string]string{IndexOptionRTreeStoreHilbertValues: "false"}, rtree.RTreeConfig{MinM: 16, MaxM: 32, SplitS: 2, Storage: rtree.RTreeStorageByNode, StoreHilbertValues: true}, ""},
+		{"storage alone stores no Hilbert values", map[string]string{IndexOptionRTreeStorage: "BY_NODE"}, rtree.RTreeConfig{MinM: 16, MaxM: 32, SplitS: 2, Storage: rtree.RTreeStorageByNode, StoreHilbertValues: false}, ""},
+		{"storage with Hilbert TRUE", map[string]string{IndexOptionRTreeStorage: "BY_SLOT", IndexOptionRTreeStoreHilbertValues: "TRUE"}, rtree.RTreeConfig{MinM: 16, MaxM: 32, SplitS: 2, Storage: rtree.RTreeStorageBySlot, StoreHilbertValues: true}, ""},
+		{"node slot index True", map[string]string{IndexOptionRTreeUseNodeSlotIndex: "True"}, rtree.RTreeConfig{MinM: 16, MaxM: 32, SplitS: 2, Storage: rtree.RTreeStorageByNode, StoreHilbertValues: true, UseNodeSlotIndex: true}, ""},
+		{"any int for M and S", map[string]string{IndexOptionRTreeMinM: "0", IndexOptionRTreeMaxM: "-3", IndexOptionRTreeSplitS: "+5"}, rtree.RTreeConfig{MinM: 0, MaxM: -3, SplitS: 5, Storage: rtree.RTreeStorageByNode, StoreHilbertValues: true}, ""},
+		{"storage in lower case", map[string]string{IndexOptionRTreeStorage: "by_slot"}, rtree.RTreeConfig{}, "No enum constant com.apple.foundationdb.async.rtree.RTree.Storage.by_slot"},
+		{"minM not an int", map[string]string{IndexOptionRTreeMinM: "16.0"}, rtree.RTreeConfig{}, `For input string: "16.0"`},
+		{"minM is read before storage", map[string]string{IndexOptionRTreeMinM: "x", IndexOptionRTreeStorage: "nope"}, rtree.RTreeConfig{}, `For input string: "x"`},
 	} {
 		got, err := parseRTreeConfig(&Index{Name: "md", Type: IndexTypeMultidimensional, Options: c.options}, 0)
 		if c.errText != "" {

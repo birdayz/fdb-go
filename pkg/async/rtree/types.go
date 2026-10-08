@@ -1,6 +1,7 @@
-package recordlayer
+package rtree
 
 import (
+	"bytes"
 	"fmt"
 	"math/big"
 
@@ -321,4 +322,23 @@ func compareHilbertValueAndKey(hv1 *big.Int, key1 tuple.Tuple, hv2 *big.Int, key
 	}
 	// Then compare keys by their packed bytes (FDB tuple order).
 	return tupleCompare(key1, key2)
+}
+
+// tupleCompare compares two tuples by their packed FDB bytes.
+func tupleCompare(a, b tuple.Tuple) int {
+	return bytes.Compare(a.Pack(), b.Pack())
+}
+
+// asInt64 extracts an int64 from a tuple element.
+func asInt64(v any) (int64, bool) {
+	switch val := v.(type) {
+	case int64:
+		return val, true
+	case int:
+		return int64(val), true
+	case int32:
+		return int64(val), true
+	default:
+		return 0, false
+	}
 }

@@ -1,4 +1,4 @@
-package recordlayer
+package rtree
 
 import (
 	"fmt"
@@ -11,10 +11,11 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/javanum"
 )
 
-// rtreeStorage serializes R-tree nodes in FDB in the layout the index's
-// rtreeStorage option names (RTreeConfig.Storage):
+// StorageAdapter serializes R-tree nodes in FDB in the layout the index's
+// StorageAdapter option names (RTreeConfig.Storage):
 //
 //   - BY_NODE (Java's ByNodeStorageAdapter): each node is one key-value pair,
 //     subspace.pack(nodeId) → tuple(nodeKind, slotList), slotList a nested
@@ -31,7 +32,7 @@ import (
 // the difference the operation made to the intermediate nodes it touched
 // (flushNodeSlotIndex) rather than per slot change as Java's change sets do;
 // the stored entries are the same.
-type rtreeStorage struct {
+type StorageAdapter struct {
 	subspace subspace.Subspace
 	config   RTreeConfig
 
@@ -53,14 +54,20 @@ type rtreeStorage struct {
 	env *dst.Env
 }
 
-func newRTreeStorage(ss subspace.Subspace, config RTreeConfig) *rtreeStorage {
-	return &rtreeStorage{subspace: ss, config: config}
+func NewStorageAdapter(ss subspace.Subspace, config RTreeConfig) *StorageAdapter {
+	return &StorageAdapter{subspace: ss, config: config}
 }
 
-// withNodeSlotIndex sets the node slot index's subspace, which an R-tree with
+// WithNodeSlotIndex sets the node slot index's subspace, which an R-tree with
 // the rtreeUseNodeSlotIndex option maintains.
-func (s *rtreeStorage) withNodeSlotIndex(sub subspace.Subspace) *rtreeStorage {
+func (s *StorageAdapter) WithNodeSlotIndex(sub subspace.Subspace) *StorageAdapter {
 	s.nodeSlotIndex, s.hasNodeSlotIndex = sub, true
+	return s
+}
+
+// WithEnv routes node-ID entropy through env (nil keeps production).
+func (s *StorageAdapter) WithEnv(env *dst.Env) *StorageAdapter {
+	s.env = env
 	return s
 }
 
@@ -73,7 +80,7 @@ type nodeSlotIndexTouch struct {
 // newRandomNodeID generates a random 16-byte UUID for a new node, drawing
 // entropy through the DST randomness seam (crypto/rand in production, the
 // seeded source in simulation). Matches Java's NodeHelpers.newRandomNodeId().
-func (s *rtreeStorage) newRandomNodeID() ([]byte, error) {
+func (s *StorageAdapter) newRandomNodeID() ([]byte, error) {
 	id := make([]byte, 16)
 	if _, err := s.env.Read(id); err != nil {
 		return nil, fmt.Errorf("rtree: generate node ID: %w", err)
@@ -82,7 +89,7 @@ func (s *rtreeStorage) newRandomNodeID() ([]byte, error) {
 }
 
 // fetchLeafNode loads a leaf node from FDB. Returns nil if not found.
-func (s *rtreeStorage) fetchLeafNode(tx fdb.ReadTransaction, nodeID []byte) (*leafNode, error) {
+func (s *StorageAdapter) fetchLeafNode(tx fdb.ReadTransaction, nodeID []byte) (*leafNode, error) {
 	leaf, inter, err := s.fetchNode(tx, nodeID)
 	if err != nil {
 		return nil, err
@@ -94,7 +101,7 @@ func (s *rtreeStorage) fetchLeafNode(tx fdb.ReadTransaction, nodeID []byte) (*le
 }
 
 // fetchIntermediateNode loads an intermediate node from FDB. Returns nil if not found.
-func (s *rtreeStorage) fetchIntermediateNode(tx fdb.ReadTransaction, nodeID []byte) (*intermediateNode, error) {
+func (s *StorageAdapter) fetchIntermediateNode(tx fdb.ReadTransaction, nodeID []byte) (*intermediateNode, error) {
 	leaf, inter, err := s.fetchNode(tx, nodeID)
 	if err != nil {
 		return nil, err
@@ -108,7 +115,7 @@ func (s *rtreeStorage) fetchIntermediateNode(tx fdb.ReadTransaction, nodeID []by
 // fetchNode loads any node. Returns (leaf, nil, err) or (nil, intermediate, err).
 // An intermediate node keeps a copy of the slots it was fetched with, the
 // node slot index entries it held before the operation.
-func (s *rtreeStorage) fetchNode(tx fdb.ReadTransaction, nodeID []byte) (*leafNode, *intermediateNode, error) {
+func (s *StorageAdapter) fetchNode(tx fdb.ReadTransaction, nodeID []byte) (*leafNode, *intermediateNode, error) {
 	var leaf *leafNode
 	var inter *intermediateNode
 	var err error
@@ -124,7 +131,7 @@ func (s *rtreeStorage) fetchNode(tx fdb.ReadTransaction, nodeID []byte) (*leafNo
 }
 
 // fetchNodeByNode reads a BY_NODE node's one key-value pair.
-func (s *rtreeStorage) fetchNodeByNode(tx fdb.ReadTransaction, nodeID []byte) (*leafNode, *intermediateNode, error) {
+func (s *StorageAdapter) fetchNodeByNode(tx fdb.ReadTransaction, nodeID []byte) (*leafNode, *intermediateNode, error) {
 	key := s.subspace.Pack(tuple.Tuple{nodeID})
 	data, err := tx.Get(fdb.Key(key)).Get()
 	if err != nil {
@@ -133,7 +140,7 @@ func (s *rtreeStorage) fetchNodeByNode(tx fdb.ReadTransaction, nodeID []byte) (*
 	if data == nil {
 		return nil, nil, nil
 	}
-	t, err := fastUnpack(data)
+	t, err := tuple.Unpack(data)
 	if err != nil {
 		return nil, nil, fmt.Errorf("rtree: unpack node: %w", err)
 	}
@@ -155,7 +162,7 @@ func (s *rtreeStorage) fetchNodeByNode(tx fdb.ReadTransaction, nodeID []byte) (*
 // BySlotStorageAdapter.fetchNodeInternal and fromKeyValues do: every pair must
 // carry the same node kind, and a leaf's slots are sorted by Hilbert value and
 // key when the values are not stored (FDB's order is then the key's alone).
-func (s *rtreeStorage) fetchNodeBySlot(tx fdb.ReadTransaction, nodeID []byte) (*leafNode, *intermediateNode, error) {
+func (s *StorageAdapter) fetchNodeBySlot(tx fdb.ReadTransaction, nodeID []byte) (*leafNode, *intermediateNode, error) {
 	prefix := s.subspace.Pack(tuple.Tuple{nodeID})
 	r, err := fdb.PrefixRange(prefix)
 	if err != nil {
@@ -187,7 +194,7 @@ func (s *rtreeStorage) fetchNodeBySlot(tx fdb.ReadTransaction, nodeID []byte) (*
 		if !haveKind {
 			kind, haveKind = NodeKind(k), true
 		} else if kind != NodeKind(k) {
-			return nil, nil, &IllegalArgumentError{Message: "same node id uses different node kinds"}
+			return nil, nil, &javanum.IllegalArgumentError{Message: "same node id uses different node kinds"}
 		}
 		slot := make(tuple.Tuple, 0, len(keyTuple)-1+len(valueTuple))
 		slot = append(slot, keyTuple[1:]...)
@@ -204,7 +211,7 @@ func (s *rtreeStorage) fetchNodeBySlot(tx fdb.ReadTransaction, nodeID []byte) (*
 }
 
 // nodeFromSlotList builds a node of the given kind from its slot tuples.
-func (s *rtreeStorage) nodeFromSlotList(nodeID []byte, kind NodeKind, slotList tuple.Tuple) (*leafNode, *intermediateNode, error) {
+func (s *StorageAdapter) nodeFromSlotList(nodeID []byte, kind NodeKind, slotList tuple.Tuple) (*leafNode, *intermediateNode, error) {
 	switch kind {
 	case NodeKindLeaf:
 		slots, err := s.deserializeItemSlots(slotList)
@@ -225,7 +232,7 @@ func (s *rtreeStorage) nodeFromSlotList(nodeID []byte, kind NodeKind, slotList t
 
 // writeLeafNode writes a leaf node to FDB. If the node has no slots, it is
 // deleted instead (empty nodes should not exist in the tree).
-func (s *rtreeStorage) writeLeafNode(tx fdb.WritableTransaction, node *leafNode) {
+func (s *StorageAdapter) writeLeafNode(tx fdb.WritableTransaction, node *leafNode) {
 	if len(node.slots) == 0 {
 		s.deleteNode(tx, node.id)
 		return
@@ -241,7 +248,7 @@ func (s *rtreeStorage) writeLeafNode(tx fdb.WritableTransaction, node *leafNode)
 // slots, it is deleted instead (empty nodes should not exist in the tree).
 // With the node slot index, the node's entries are recorded for the
 // operation's flush.
-func (s *rtreeStorage) writeIntermediateNode(tx fdb.WritableTransaction, node *intermediateNode) {
+func (s *StorageAdapter) writeIntermediateNode(tx fdb.WritableTransaction, node *intermediateNode) {
 	if t := s.touch(node); t != nil {
 		t.cur = s.nodeSlotIndexEntries(node.slots, node.height-1)
 	}
@@ -258,7 +265,7 @@ func (s *rtreeStorage) writeIntermediateNode(tx fdb.WritableTransaction, node *i
 
 // deleteIntermediateNode removes an intermediate node, and with the node slot
 // index records that it holds no entries any more.
-func (s *rtreeStorage) deleteIntermediateNode(tx fdb.WritableTransaction, node *intermediateNode) {
+func (s *StorageAdapter) deleteIntermediateNode(tx fdb.WritableTransaction, node *intermediateNode) {
 	if t := s.touch(node); t != nil {
 		t.cur = nil
 	}
@@ -276,7 +283,7 @@ const (
 // writeSlots writes a node's slot tuples in the configured layout. BY_SLOT
 // clears the node's pairs first, so the pairs of slots it no longer holds go;
 // the stored pairs then equal those Java's per-slot change sets leave.
-func (s *rtreeStorage) writeSlots(tx fdb.WritableTransaction, nodeID []byte, kind NodeKind, slotList tuple.Tuple, keySize int) {
+func (s *StorageAdapter) writeSlots(tx fdb.WritableTransaction, nodeID []byte, kind NodeKind, slotList tuple.Tuple, keySize int) {
 	if s.config.Storage != RTreeStorageBySlot {
 		tx.Set(fdb.Key(s.subspace.Pack(tuple.Tuple{nodeID})), tuple.Tuple{int64(kind), slotList}.Pack())
 		return
@@ -294,7 +301,7 @@ func (s *rtreeStorage) writeSlots(tx fdb.WritableTransaction, nodeID []byte, kin
 // deleteLeafNode removes a leaf from FDB. A leaf has no node slot index
 // entries of its own (its parent's slot names it, and the parent's write or
 // delete maintains that), so nothing else changes.
-func (s *rtreeStorage) deleteLeafNode(tx fdb.WritableTransaction, node *leafNode) {
+func (s *StorageAdapter) deleteLeafNode(tx fdb.WritableTransaction, node *leafNode) {
 	s.deleteNode(tx, node.id)
 }
 
@@ -302,7 +309,7 @@ func (s *rtreeStorage) deleteLeafNode(tx fdb.WritableTransaction, node *leafNode
 // pair under it (BY_SLOT). It does not maintain the node slot index, so only
 // the storage layer calls it; the tree deletes through deleteLeafNode and
 // deleteIntermediateNode, which say what kind of node goes.
-func (s *rtreeStorage) deleteNode(tx fdb.WritableTransaction, nodeID []byte) {
+func (s *StorageAdapter) deleteNode(tx fdb.WritableTransaction, nodeID []byte) {
 	key := s.subspace.Pack(tuple.Tuple{nodeID})
 	if s.config.Storage != RTreeStorageBySlot {
 		tx.Clear(fdb.Key(key))
@@ -316,7 +323,7 @@ func (s *rtreeStorage) deleteNode(tx fdb.WritableTransaction, nodeID []byte) {
 // touch returns the node's entry in the operation's node slot index record,
 // recording the entries it held when fetched at its first touch; nil without
 // the node slot index.
-func (s *rtreeStorage) touch(node *intermediateNode) *nodeSlotIndexTouch {
+func (s *StorageAdapter) touch(node *intermediateNode) *nodeSlotIndexTouch {
 	if !s.config.UseNodeSlotIndex {
 		return nil
 	}
@@ -339,7 +346,7 @@ func (s *rtreeStorage) touch(node *intermediateNode) *nodeSlotIndexTouch {
 // child slots, its children at childLevel (NodeSlotIndexAdapter.
 // createIndexKeyTuple: the level, the largest Hilbert value, the largest
 // key's items, the child id).
-func (s *rtreeStorage) nodeSlotIndexEntries(slots []ChildSlot, childLevel int) [][]byte {
+func (s *StorageAdapter) nodeSlotIndexEntries(slots []ChildSlot, childLevel int) [][]byte {
 	out := make([][]byte, 0, len(slots))
 	for _, slot := range slots {
 		t := make(tuple.Tuple, 0, 3+len(slot.LargestKey))
@@ -352,14 +359,14 @@ func (s *rtreeStorage) nodeSlotIndexEntries(slots []ChildSlot, childLevel int) [
 }
 
 // beginOperation starts an insert or delete's node slot index record.
-func (s *rtreeStorage) beginOperation() {
+func (s *StorageAdapter) beginOperation() {
 	s.touched = nil
 }
 
 // flushNodeSlotIndex writes the node slot index difference of the operation:
 // an entry the touched nodes held before and hold no more is cleared, one
 // they hold now and did not is set. Entries of untouched nodes did not change.
-func (s *rtreeStorage) flushNodeSlotIndex(tx fdb.WritableTransaction) error {
+func (s *StorageAdapter) flushNodeSlotIndex(tx fdb.WritableTransaction) error {
 	defer func() { s.touched = nil }()
 	if !s.config.UseNodeSlotIndex || len(s.touched) == 0 {
 		return nil
@@ -391,7 +398,7 @@ func (s *rtreeStorage) flushNodeSlotIndex(tx fdb.WritableTransaction) error {
 
 // serializeItemSlot serializes a leaf slot to a tuple.
 // Format: (hilbertValue, (pointCoords, keySuffix), value)
-func (s *rtreeStorage) serializeItemSlot(slot ItemSlot) tuple.Tuple {
+func (s *StorageAdapter) serializeItemSlot(slot ItemSlot) tuple.Tuple {
 	var hv any
 	if s.config.StoreHilbertValues && slot.HilbertValue != nil {
 		hv = slot.HilbertValue
@@ -405,7 +412,7 @@ func (s *rtreeStorage) serializeItemSlot(slot ItemSlot) tuple.Tuple {
 
 // deserializeItemSlots deserializes leaf slots from the slot list tuple.
 // Each element in slotList is a nested tuple: (hv, itemKey, value).
-func (s *rtreeStorage) deserializeItemSlots(slotList tuple.Tuple) ([]ItemSlot, error) {
+func (s *StorageAdapter) deserializeItemSlots(slotList tuple.Tuple) ([]ItemSlot, error) {
 	slots := make([]ItemSlot, len(slotList))
 	for i, elem := range slotList {
 		slotTuple, ok := elem.(tuple.Tuple)
@@ -463,7 +470,7 @@ func (s *rtreeStorage) deserializeItemSlots(slotList tuple.Tuple) ([]ItemSlot, e
 
 // serializeChildSlot serializes an intermediate slot to tuple elements.
 // Format: (smallestHV, smallestKey, largestHV, largestKey, childId, mbr)
-func (s *rtreeStorage) serializeChildSlot(slot ChildSlot) tuple.Tuple {
+func (s *StorageAdapter) serializeChildSlot(slot ChildSlot) tuple.Tuple {
 	return tuple.Tuple{
 		slot.SmallestHV,
 		slot.SmallestKey,
@@ -477,7 +484,7 @@ func (s *rtreeStorage) serializeChildSlot(slot ChildSlot) tuple.Tuple {
 // deserializeChildSlots deserializes intermediate slots from the slot list tuple.
 // Each element in slotList is a nested tuple with 6 elements:
 // (smallestHV, smallestKey, largestHV, largestKey, childId, mbr).
-func (s *rtreeStorage) deserializeChildSlots(slotList tuple.Tuple) ([]ChildSlot, error) {
+func (s *StorageAdapter) deserializeChildSlots(slotList tuple.Tuple) ([]ChildSlot, error) {
 	slots := make([]ChildSlot, len(slotList))
 	for i, elem := range slotList {
 		slotTuple, ok := elem.(tuple.Tuple)
@@ -528,7 +535,7 @@ func (s *rtreeStorage) deserializeChildSlots(slotList tuple.Tuple) ([]ChildSlot,
 //
 // The node slot index under the same prefix goes too, whatever the option
 // says, as Java's MultidimensionalIndexMaintainer.deleteWhere clears it.
-func (s *rtreeStorage) clearAll(tx fdb.WritableTransaction) error {
+func (s *StorageAdapter) clearAll(tx fdb.WritableTransaction) error {
 	r, err := fdb.PrefixRange(s.subspace.Bytes())
 	if err != nil {
 		return fmt.Errorf("rtree: clearAll prefix range: %w", err)

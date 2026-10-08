@@ -1,4 +1,4 @@
-package recordlayer
+package rtree
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 // index holding exactly one entry per child slot of every intermediate node
 // (level = the child's, a leaf being 0) or nothing when the option is off.
 // It returns the item count.
-func rtreeLayoutCheck(tx fdb.ReadTransaction, storage *rtreeStorage) int {
+func rtreeLayoutCheck(tx fdb.ReadTransaction, storage *StorageAdapter) int {
 	want := map[string]bool{}
 	items := 0
 	var walk func(id []byte) int
@@ -116,15 +116,15 @@ var _ = Describe("RTree storage layouts and the node slot index", func() {
 					// levels deep and deletes fuse and promote.
 					config.MinM, config.MaxM, config.SplitS = 2, 4, 2
 					config.Storage, config.UseNodeSlotIndex, config.StoreHilbertValues = storageKind, slotIndex, storeHV
-					newStorage := func() *rtreeStorage {
-						return newRTreeStorage(ks.Sub("tree"), config).withNodeSlotIndex(ks.Sub("nsi"))
+					newStorage := func() *StorageAdapter {
+						return NewStorageAdapter(ks.Sub("tree"), config).WithNodeSlotIndex(ks.Sub("nsi"))
 					}
 					rng := rand.New(rand.NewPCG(7, uint64(len(name))))
 					type item struct{ x, y, pk int64 }
 					live := map[int64]item{}
 					var next int64
 					step := func(inserts, deletes int) {
-						_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+						_, err := sharedDB.Run(ctx, func(rtx *testContext) (any, error) {
 							storage := newStorage()
 							rt, err := NewRTree(storage, config)
 							Expect(err).NotTo(HaveOccurred())
@@ -150,7 +150,7 @@ var _ = Describe("RTree storage layouts and the node slot index", func() {
 							return nil, nil
 						})
 						Expect(err).NotTo(HaveOccurred())
-						_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+						_, err = sharedDB.Run(ctx, func(rtx *testContext) (any, error) {
 							storage := newStorage()
 							Expect(rtreeLayoutCheck(rtx.Transaction(), storage)).To(Equal(len(live)))
 							rt, err := NewRTree(storage, config)
@@ -173,7 +173,7 @@ var _ = Describe("RTree storage layouts and the node slot index", func() {
 					step(0, 140)
 					step(40, 0)
 					step(0, 1000)
-					_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					_, err := sharedDB.Run(ctx, func(rtx *testContext) (any, error) {
 						for _, sub := range []subspace.Subspace{ks.Sub("tree"), ks.Sub("nsi")} {
 							r, err := fdb.PrefixRange(sub.Bytes())
 							Expect(err).NotTo(HaveOccurred())

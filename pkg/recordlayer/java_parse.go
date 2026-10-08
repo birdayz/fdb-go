@@ -13,11 +13,7 @@ import (
 // option parsers Java runs through the JDK: an out-of-range RankedSet level
 // count (RankedSet.ConfigBuilder.setNLevels) or an unknown enum name
 // (Enum.valueOf, as RTree.Storage.valueOf).
-type IllegalArgumentError struct {
-	Message string
-}
-
-func (e *IllegalArgumentError) Error() string { return e.Message }
+type IllegalArgumentError = javanum.IllegalArgumentError
 
 // NumberFormatError is Java's NumberFormatException, raised by
 // Integer.parseInt on an index option that is not a decimal int. Java's class

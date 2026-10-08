@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "javanum",
-    srcs = ["javanum.go"],
+    srcs = [
+        "illegal_argument.go",
+        "javanum.go",
+    ],
     importpath = "fdb.dev/pkg/recordlayer/javanum",
     visibility = ["//visibility:public"],
 )

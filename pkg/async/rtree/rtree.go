@@ -1,4 +1,4 @@
-package recordlayer
+package rtree
 
 import (
 	"bytes"
@@ -13,12 +13,12 @@ import (
 // RTree is a Hilbert R-tree backed by FDB.
 // Matches Java's com.apple.foundationdb.async.rtree.RTree.
 type RTree struct {
-	storage *rtreeStorage
+	storage *StorageAdapter
 	config  RTreeConfig
 }
 
 // NewRTree creates a new R-tree. Returns an error if config is invalid.
-func NewRTree(storage *rtreeStorage, config RTreeConfig) (*RTree, error) {
+func NewRTree(storage *StorageAdapter, config RTreeConfig) (*RTree, error) {
 	if err := ValidateRTreeConfig(config); err != nil {
 		return nil, err
 	}
