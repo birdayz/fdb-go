@@ -1579,7 +1579,7 @@ func TestSetPredicateProtoAcceptsRowNumberWindow(t *testing.T) {
 	if !idx.HasFilteringPredicate() {
 		t.Fatal("a top-N index was classified as NON-filtering — a scan of it would " +
 			"serve the qualifying slice as the whole table (see " +
-			"NormalizeIndexPredicateProto's row-window note)")
+			"indexpredicate.Normalize's row-window note)")
 	}
 }
 

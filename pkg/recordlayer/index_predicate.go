@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	gen "fdb.dev/gen"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/indexpredicate"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -50,7 +50,7 @@ func predicateFromProto(p *gen.Predicate) (IndexPredicate, error) {
 //
 // The consequence for anything reasoning about index COMPLETENESS is the
 // opposite of what this `true` suggests, so it must not leak upward: the index
-// holds only the qualifying rows. NormalizeIndexPredicateProto deliberately
+// holds only the qualifying rows. indexpredicate.Normalize deliberately
 // refuses to fold this arm to a constant, and indexPredicateToQueryPredicate
 // refuses to convert it at all, so a candidate over such an index is excluded
 // rather than matched as a full index. Both of those are reachable from here
@@ -80,13 +80,13 @@ func rowNumberWindowPredicateFromProto(p *gen.RowNumberWindowPredicate) (IndexPr
 }
 
 // predicateProtoIsTautology reports whether a stored index predicate provably
-// rejects no record. The classification itself lives in the cascades package,
-// beside the candidate boundary that is its other consumer: the executor's
-// completeness backstop and the planner's sparseness gates must never answer
-// differently about the same stored bytes, and one function is the only way to
-// guarantee that.
+// rejects no record. The classification itself lives in package indexpredicate,
+// shared with the planner's candidate boundary: the executor's completeness
+// backstop and the planner's sparseness gates must never answer differently
+// about the same stored bytes, and one function is the only way to guarantee
+// that.
 func predicateProtoIsTautology(p *gen.Predicate) bool {
-	return cascades.IndexPredicateProtoIsTautology(p)
+	return indexpredicate.IsTautology(p)
 }
 
 func andPredicateFromProto(p *gen.AndPredicate) (IndexPredicate, error) {

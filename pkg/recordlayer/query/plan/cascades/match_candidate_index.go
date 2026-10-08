@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/indexpredicate"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -589,8 +590,8 @@ func (c *ValueIndexScanMatchCandidate) WithPredicateProto(pred *gen.Predicate) *
 		c.predicateProto = nil
 		return c
 	}
-	normalized := NormalizeIndexPredicateProto(pred)
-	if constantPredicateArmIsTrue(normalized) {
+	normalized := indexpredicate.Normalize(pred)
+	if indexpredicate.ConstantArmIsTrue(normalized) {
 		c.predicateProto = nil
 		return c
 	}

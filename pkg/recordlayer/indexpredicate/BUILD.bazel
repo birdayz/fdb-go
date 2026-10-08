@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "indexpredicate",
+    srcs = ["normalize.go"],
+    importpath = "fdb.dev/pkg/recordlayer/indexpredicate",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//gen",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "indexpredicate_test",
+    srcs = ["normalize_test.go"],
+    embed = [":indexpredicate"],
+    deps = [
+        "//gen",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

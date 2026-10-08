@@ -28,9 +28,9 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/indexpredicate"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/protoscope"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -814,7 +814,7 @@ func requireReadableQueryIndexWithProof(store *recordlayer.FDBRecordStore, idx *
 			if len(proof) == 0 || current == nil {
 				return &FilteredIndexPlanError{IndexName: idx.Name}
 			}
-			encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(cascades.NormalizeIndexPredicateProto(current))
+			encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(indexpredicate.Normalize(current))
 			if err != nil || !bytes.Equal(encoded, proof) {
 				return &FilteredIndexPlanError{IndexName: idx.Name}
 			}

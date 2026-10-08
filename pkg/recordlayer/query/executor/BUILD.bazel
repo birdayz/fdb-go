@@ -34,6 +34,7 @@ go_library(
         "//gen",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/indexpredicate",
         "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/protoscope",
         "//pkg/recordlayer/query/plan/cascades",

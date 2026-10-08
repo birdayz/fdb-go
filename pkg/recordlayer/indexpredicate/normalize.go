@@ -1,4 +1,6 @@
-package cascades
+// Package indexpredicate classifies stored index predicates the way Java's
+// IndexPredicate.toPredicate constructors would (record.metadata.IndexPredicate).
+package indexpredicate
 
 import (
 	"fdb.dev/gen"
@@ -13,7 +15,7 @@ import (
 // index into a full one and a scan of it into wrong rows; keeping a predicate
 // that was in fact harmless costs at worst a declined candidate.
 //
-// NormalizeIndexPredicateProto applies Java's predicate CONSTRUCTION rules to a
+// Normalize applies Java's predicate CONSTRUCTION rules to a
 // stored index predicate, returning the equivalent predicate Java would have
 // built. It is the single authority on that question: the planner (deciding
 // whether a candidate carries a predicate to account for) and the executor
@@ -64,7 +66,7 @@ import (
 //
 // The result is always a deep clone; the input is never mutated and the two
 // trees share no nodes.
-func NormalizeIndexPredicateProto(p *gen.Predicate) *gen.Predicate {
+func Normalize(p *gen.Predicate) *gen.Predicate {
 	if p == nil {
 		return nil
 	}
@@ -87,13 +89,13 @@ func NormalizeIndexPredicateProto(p *gen.Predicate) *gen.Predicate {
 	case p.AndPredicate != nil:
 		kept := make([]*gen.Predicate, 0, len(p.AndPredicate.Children))
 		for _, child := range p.AndPredicate.Children {
-			normalized := NormalizeIndexPredicateProto(child)
+			normalized := Normalize(child)
 			// A conjunct that provably cannot reject a record contributes
 			// nothing to the conjunction. Java's `and` keeps Placeholders even
 			// when tautological, for the index-matching machinery; a stored
 			// index predicate has no placeholder arm, so there is nothing to
 			// except here.
-			if constantPredicateArmIsTrue(normalized) {
+			if ConstantArmIsTrue(normalized) {
 				continue
 			}
 			kept = append(kept, normalized)
@@ -111,7 +113,7 @@ func NormalizeIndexPredicateProto(p *gen.Predicate) *gen.Predicate {
 	case p.OrPredicate != nil:
 		kept := make([]*gen.Predicate, 0, len(p.OrPredicate.Children))
 		for _, child := range p.OrPredicate.Children {
-			kept = append(kept, NormalizeIndexPredicateProto(child))
+			kept = append(kept, Normalize(child))
 		}
 		// Java's `of` collapses a singleton and rejects an empty disjunction.
 		// An empty one cannot be reconstructed into anything safe, so it is
@@ -128,12 +130,12 @@ func NormalizeIndexPredicateProto(p *gen.Predicate) *gen.Predicate {
 	}
 }
 
-// IndexPredicateProtoIsTautology reports whether a stored index predicate
+// IsTautology reports whether a stored index predicate
 // provably rejects no record — i.e. whether the index it guards holds an entry
 // for every record. Normalize the way Java's constructors do, then apply Java's
 // narrow tautology test to the result.
-func IndexPredicateProtoIsTautology(p *gen.Predicate) bool {
-	return constantPredicateArmIsTrue(NormalizeIndexPredicateProto(p))
+func IsTautology(p *gen.Predicate) bool {
+	return ConstantArmIsTrue(Normalize(p))
 }
 
 // indexPredicateProtoHasNilChild reports whether any child slot of a composite
@@ -176,7 +178,7 @@ func indexPredicateProtoArmCount(p *gen.Predicate) int {
 	return n
 }
 
-// constantPredicateArmIsTrue is the narrow classifier Java's
+// ConstantArmIsTrue is the narrow classifier Java's
 // QueryPredicate.isTautology() is: only ConstantPredicate.TRUE overrides the
 // default `false` (ConstantPredicate.java:98 vs QueryPredicate.java:311). It
 // answers about the message AS GIVEN and folds nothing — callers normalize
@@ -187,7 +189,7 @@ func indexPredicateProtoArmCount(p *gen.Predicate) int {
 // GetValue() on an ABSENT arm returns TRUE. The nil-safe getters fail OPEN
 // here, not closed, which is why the arm is checked explicitly — and why
 // normalization above must only fold children that carry the arm.
-func constantPredicateArmIsTrue(p *gen.Predicate) bool {
+func ConstantArmIsTrue(p *gen.Predicate) bool {
 	if p == nil {
 		return false
 	}

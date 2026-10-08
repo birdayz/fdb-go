@@ -31,7 +31,6 @@ go_library(
         "in_source.go",
         "in_union_child_ordering.go",
         "index_expansion.go",
-        "index_predicate_normalize.go",
         "index_predicate_to_query.go",
         "intersector_primary_key.go",
         "key_expression_expansion.go",
@@ -211,6 +210,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//gen",
+        "//pkg/recordlayer/indexpredicate",
         "//pkg/recordlayer/internal/protovalue",
         "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/combinatorics",
@@ -1067,7 +1067,6 @@ go_test(
         "physical_key_types.go",
         "signed_zero_pk_suffix_ordering_test.go",
         "aggregate_index_unknown_key_type_test.go",
-        "index_predicate_normalize.go",
         "index_predicate_normalize_test.go",
         "logical_distinctness_proof.go",
         "logical_distinctness_proof_test.go",
@@ -1187,6 +1186,7 @@ go_test(
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer/indexpredicate",
         "//pkg/recordlayer/query/plan/cascades/combinatorics",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/internal/fuzzfloor",

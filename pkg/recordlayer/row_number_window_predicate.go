@@ -201,7 +201,7 @@ func rowNumberWindowSpecFromProto(p *gen.RowNumberWindowPredicate) (*RowNumberWi
 // keyspace-10 and HNSW contents would not be Java's.
 //
 // The same discipline is written down at
-// cascades.constantPredicateArmIsTrue: answer only for the arm the evaluator
+// indexpredicate.ConstantArmIsTrue: answer only for the arm the evaluator
 // would actually run.
 func findRowNumberWindowPredicateProto(p *gen.Predicate) *gen.RowNumberWindowPredicate {
 	if p == nil {
