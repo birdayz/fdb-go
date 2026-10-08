@@ -13,7 +13,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -259,6 +261,27 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 	})
 }
 
+// rowdiffWorkers is the sweep's seed concurrency, ROWDIFF_WORKERS to override
+// (1 is the serial walk). The default is small on purpose: per-seed cost is
+// planner CPU, and with both lanes at GOMAXPROCS (48 seeds on 24 cores) the
+// seeds' own fixture INSERTs outran the 5 s transaction limit and came back
+// INFRA. Four per lane already leaves the sweep bound by its slowest seed.
+func rowdiffWorkers(t *testing.T, seedCount uint64) int {
+	t.Helper()
+	n := min(runtime.GOMAXPROCS(0), 4)
+	if v := os.Getenv("ROWDIFF_WORKERS"); v != "" {
+		w, err := strconv.Atoi(v)
+		if err != nil || w <= 0 {
+			t.Fatalf("ROWDIFF_WORKERS=%q: want a positive integer", v)
+		}
+		n = w
+	}
+	if seedCount < uint64(n) {
+		n = int(seedCount)
+	}
+	return max(n, 1)
+}
+
 // runRowdiffSweep walks the seed range and reports, and it is the ONLY place
 // either sweep decides to stop early.
 //
@@ -306,8 +329,41 @@ func runRowdiffSweep(t *testing.T, lane string, seedStart, seedCount uint64, lim
 	var stop string
 	var fatal bool
 	done := uint64(0)
-	for i := uint64(0); i < seedCount; i++ {
-		res := run(seedStart + i)
+	// Seeds are independent (each owns its schema and template), so they run
+	// on a worker pool, but results are CONSUMED in seed order below: the
+	// tally, the log and both stop arms see exactly the sequence a serial walk
+	// would. Lookahead is bounded, and a stop drains what is in flight before
+	// reporting, so nothing outlives the test's database handles.
+	workers := rowdiffWorkers(t, seedCount)
+	type slot struct {
+		done chan struct{}
+		res  *rowdiff.SeedResult
+	}
+	var halted atomic.Bool
+	queue := make(chan *slot, workers)
+	sem := make(chan struct{}, workers)
+	go func() {
+		defer close(queue)
+		for i := uint64(0); i < seedCount && !halted.Load(); i++ {
+			s := &slot{done: make(chan struct{})}
+			sem <- struct{}{}
+			go func(seed uint64) {
+				defer close(s.done)
+				defer func() { <-sem }()
+				s.res = run(seed)
+			}(seedStart + i)
+			queue <- s
+		}
+	}()
+	defer func() {
+		halted.Store(true)
+		for s := range queue {
+			<-s.done
+		}
+	}()
+	for s := range queue {
+		<-s.done
+		res := s.res
 		reportRowdiff(t, res)
 		tally.add(res)
 		for fam, n := range res.Histogram {
@@ -325,8 +381,8 @@ func runRowdiffSweep(t *testing.T, lane string, seedStart, seedCount uint64, lim
 		}
 	}
 	elapsed := time.Since(start)
-	t.Logf("rowdiff: lane=%s seeds %d..%d (%d requested, %d walked), %d comparisons in %s (%.1f seeds/s); plan-family histogram: %v",
-		lane, seedStart, seedStart+seedCount-1, seedCount, done, executed, elapsed.Round(time.Millisecond),
+	t.Logf("rowdiff: lane=%s seeds %d..%d (%d requested, %d walked, %d workers), %d comparisons in %s (%.1f seeds/s); plan-family histogram: %v",
+		lane, seedStart, seedStart+seedCount-1, seedCount, done, workers, executed, elapsed.Round(time.Millisecond),
 		float64(done)/elapsed.Seconds(), histogram)
 	if stop != "" {
 		// Severity is the stop's own, not the fact of stopping. A cluster that
