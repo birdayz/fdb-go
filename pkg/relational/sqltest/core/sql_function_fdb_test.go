@@ -143,6 +143,70 @@ func TestFDB_MacroFunctions(t *testing.T) {
 	}
 }
 
+// Boolean macro bodies persist as Java's values: a boolean literal as a
+// LiteralValue, LIKE as a LikeOperatorValue, which a WHERE lifts back to the
+// LIKE predicate.
+func TestFDB_BooleanMacroFunctions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	setup := testkit.OpenDB(t, "/FRL/testdb_boolmacro")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_boolmacro")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE boolmacro_tpl "+
+		"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id)) "+
+		"CREATE FUNCTION always_true() RETURNS BOOLEAN RETURN TRUE "+
+		"CREATE FUNCTION always_false() RETURNS BOOLEAN AS FALSE "+
+		"CREATE FUNCTION starts_a(IN x STRING) RETURNS BOOLEAN RETURN x LIKE 'a%' "+
+		"CREATE FUNCTION pct(IN x STRING) RETURNS BOOLEAN RETURN x LIKE '%!%' ESCAPE '!'")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_boolmacro/s WITH TEMPLATE boolmacro_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_BOOLMACRO?cluster_file=%s&schema=S", testkit.ClusterFile()))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, 'abc'), (2, 'b%'), (3, 'a')")
+
+	for q, want := range map[string]string{
+		"SELECT id FROM t WHERE always_true() ORDER BY id":  "[1 2 3]",
+		"SELECT id FROM t WHERE always_false() ORDER BY id": "[]",
+		"SELECT id FROM t WHERE starts_a(s) ORDER BY id":    "[1 3]",
+		"SELECT id FROM t WHERE pct(s) ORDER BY id":         "[2]",
+	} {
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Errorf("%s: %v", q, err)
+			continue
+		}
+		got := []int64{}
+		for rows.Next() {
+			var v int64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, v)
+		}
+		rows.Close()
+		if fmt.Sprint(got) != want {
+			t.Errorf("%s: %v, want %s", q, got, want)
+		}
+	}
+	rows, err := db.QueryContext(ctx, "SELECT always_true(), starts_a(s) FROM t ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for rows.Next() {
+		var a, b bool
+		if err := rows.Scan(&a, &b); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprint(a, b))
+	}
+	rows.Close()
+	if want := "[true true true false true true]"; fmt.Sprint(got) != want {
+		t.Errorf("projected boolean macros = %v, want %s", got, want)
+	}
+}
+
 // CREATE TEMPORARY FUNCTION binds a function to the transaction, which drops
 // it when it ends (CreateTemporaryFunctionConstantAction).
 func TestFDB_TemporaryFunctions(t *testing.T) {

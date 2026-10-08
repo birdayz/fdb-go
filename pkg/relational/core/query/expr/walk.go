@@ -905,6 +905,24 @@ type PredicateValueHolder interface {
 	SetPredicate(predicates.QueryPredicate)
 }
 
+// MacroBodyValue is a macro body as the Value Java builds for it: a LIKE is
+// a LikeOperatorValue (ExpressionVisitor.visitLikePredicate), which persists
+// where the predicate wrapper cannot.
+func MacroBodyValue(v values.Value) values.Value {
+	pv, ok := v.(*predicateValue)
+	if !ok {
+		return v
+	}
+	cp, ok := pv.pred.(*predicates.ComparisonPredicate)
+	if !ok || cp.Comparison.Type != predicates.ComparisonLike {
+		return v
+	}
+	if pattern, ok := cp.Comparison.Operand.(*values.PatternForLikeValue); ok {
+		return values.NewLikeOperatorValue(cp.Operand, pattern)
+	}
+	return v
+}
+
 // predicateValue wraps a QueryPredicate as a Value for use in CASE
 // conditions. Evaluates to true/false/nil (SQL 3VL).
 type predicateValue struct {
@@ -2200,6 +2218,15 @@ func bareValueAtom(expr antlrgen.IExpressionContext) antlrgen.IExpressionAtomCon
 
 // liftValueToPredicate is the predicate a bare value used as one is.
 func (r *Resolver) liftValueToPredicate(v values.Value) (predicates.QueryPredicate, error) {
+	// A BooleanValue converts itself (Expression.Utils.toUnderlyingPredicate);
+	// LIKE is LikeOperatorValue.toQueryPredicate.
+	if like, ok := v.(*values.LikeOperatorValue); ok {
+		if pattern, ok := like.Pattern.(*values.PatternForLikeValue); ok {
+			return predicates.NewComparisonPredicate(like.Probe, predicates.Comparison{
+				Type: predicates.ComparisonLike, Operand: pattern,
+			}), nil
+		}
+	}
 	// Lift a bare value used as a predicate, mirroring Java's
 	// Expression.Utils.toUnderlyingPredicate (Expression.java:384-399)
 	// branch order. Shared by WHERE and ON (both reach here).

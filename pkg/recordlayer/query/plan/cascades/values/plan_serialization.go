@@ -292,6 +292,41 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		return &gen.PValue{SpecificValue: &gen.PValue_SubscriptValue{SubscriptValue: &gen.PSubscriptValue{
 			Index: index, Source: source,
 		}}}, nil
+	case *BooleanValue:
+		// Java's boolean literal is a LiteralValue (LiteralValue.toProto).
+		obj := &gen.PComparableObject{SpecificObject: &gen.PComparableObject_PrimitiveObject{PrimitiveObject: &gen.Value{}}}
+		if vv.Value != nil {
+			obj.GetPrimitiveObject().BoolValue = proto.Bool(*vv.Value)
+		}
+		t, err := c.TypeToProto(vv.Type())
+		if err != nil {
+			return nil, err
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_LiteralValue{LiteralValue: &gen.PLiteralValue{Value: obj, ResultType: t}}}, nil
+	case *LikeOperatorValue:
+		src, err := c.ValueToProto(vv.Probe)
+		if err != nil {
+			return nil, err
+		}
+		pattern, err := c.ValueToProto(vv.Pattern)
+		if err != nil {
+			return nil, err
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_LikeOperatorValue{LikeOperatorValue: &gen.PLikeOperatorValue{
+			SrcChild: src, PatternChild: pattern,
+		}}}, nil
+	case *PatternForLikeValue:
+		pattern, err := c.ValueToProto(vv.PatternChild)
+		if err != nil {
+			return nil, err
+		}
+		escape, err := c.ValueToProto(vv.EscapeChild)
+		if err != nil {
+			return nil, err
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_PatternForLikeValue{PatternForLikeValue: &gen.PPatternForLikeValue{
+			PatternChild: pattern, EscapeChild: escape,
+		}}}, nil
 	case *ArrayConstructorValue:
 		ac := &gen.PAbstractArrayConstructorValue{}
 		for _, e := range vv.Elements {
@@ -508,6 +543,17 @@ func (c *SerializationContext) ValueFromProto(p *gen.PValue) (Value, error) {
 		if err != nil {
 			return nil, err
 		}
+		if t.Code() == TypeCodeBoolean {
+			// A boolean literal is Go's BooleanValue, which a WHERE folds to a
+			// constant predicate.
+			switch b := v.(type) {
+			case bool:
+				return NewBooleanValue(b), nil
+			case nil:
+				return &BooleanValue{}, nil
+			}
+			return nil, fmt.Errorf("deserialize BOOLEAN literal: carrier %T", v)
+		}
 		return &ConstantValue{Value: v, Typ: t}, nil
 	case p.GetRecordConstructorValue() != nil:
 		rc := p.GetRecordConstructorValue()
@@ -555,6 +601,26 @@ func (c *SerializationContext) ValueFromProto(p *gen.PValue) (Value, error) {
 			return nil, err
 		}
 		return NewArrayConstructorValue(t, elems), nil
+	case p.GetLikeOperatorValue() != nil:
+		src, err := c.ValueFromProto(p.GetLikeOperatorValue().GetSrcChild())
+		if err != nil {
+			return nil, err
+		}
+		pattern, err := c.ValueFromProto(p.GetLikeOperatorValue().GetPatternChild())
+		if err != nil {
+			return nil, err
+		}
+		return NewLikeOperatorValue(src, pattern), nil
+	case p.GetPatternForLikeValue() != nil:
+		pattern, err := c.ValueFromProto(p.GetPatternForLikeValue().GetPatternChild())
+		if err != nil {
+			return nil, err
+		}
+		escape, err := c.ValueFromProto(p.GetPatternForLikeValue().GetEscapeChild())
+		if err != nil {
+			return nil, err
+		}
+		return NewPatternForLikeValue(pattern, escape), nil
 	case p.GetPromoteValue() != nil:
 		in, err := c.ValueFromProto(p.GetPromoteValue().GetInValue())
 		if err != nil {

@@ -177,3 +177,53 @@ func TestLiteralSerializationNullability(t *testing.T) {
 		}
 	}
 }
+
+// Boolean literals persist as Java's LiteralValue and read back as Go's
+// BooleanValue; LIKE persists as Java's PLikeOperatorValue over a
+// PPatternForLikeValue.
+func TestBooleanAndLikeMacroBodiesSerialize(t *testing.T) {
+	t.Parallel()
+	s, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("s"), NullableString)
+	if err != nil {
+		t.Fatal(err)
+	}
+	like := NewLikeOperatorValue(s, NewPatternForLikeValue(&ConstantValue{Value: "a%", Typ: NotNullString}, NewNullValue(NullType)))
+	for _, tc := range []struct {
+		body Value
+		want string
+	}{
+		{NewBooleanValue(true), `literal_value:{result_type:{primitive_type:{type_code:BOOLEANis_nullable:false}}value:{primitive_object:{bool_value:true}}}`},
+		{NewBooleanValue(false), `bool_value:false`},
+		{&BooleanValue{}, `primitive_type:{type_code:BOOLEANis_nullable:true}`},
+		{like, `like_operator_value:{src_child:{quantified_object_value:{alias:"s"`},
+		{like, `pattern_child:{pattern_for_like_value:{pattern_child:{literal_value:`},
+	} {
+		m := &MacroFunction{
+			Name: "F", Params: []QuantifiedObjectValue{s}, ParamTypes: []Type{NullableString},
+			ParamNames: []string{"S"}, Defaults: []Value{nil}, Body: tc.body,
+		}
+		p, err := m.ToProto()
+		if err != nil {
+			t.Fatalf("%T: %v", tc.body, err)
+		}
+		if compact := strings.Join(strings.Fields(prototext.Format(p)), ""); !strings.Contains(compact, tc.want) {
+			t.Errorf("serialized %T lacks %s:\n%s", tc.body, tc.want, compact)
+		}
+		back, err := MacroFunctionFromProto(p.GetUserDefinedMacroFunction())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := tc.body.(*BooleanValue); ok {
+			if got, ok := back.Body.(*BooleanValue); !ok || !got.Type().Equals(tc.body.Type()) {
+				t.Errorf("boolean literal read back as %#v", back.Body)
+			}
+		}
+		again, err := back.ToProto()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !proto.Equal(p, again) {
+			t.Errorf("round trip changed the macro:\n%s\n%s", prototext.Format(p), prototext.Format(again))
+		}
+	}
+}
