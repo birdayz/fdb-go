@@ -34,7 +34,7 @@ func TestOrderedIndexScan_SortMatchesIndex(t *testing.T) {
 	)
 	sortRef := mustOrderedScanInitial(t, sort)
 
-	rule := NewOrderedIndexScanRule()
+	rule := newOrderedIndexScanRule()
 	results := mustFireExpressionRuleWithMemo(t, rule, sortRef, ctx, nil)
 
 	if len(results) != 1 {
@@ -77,7 +77,7 @@ func TestOrderedIndexScan_MultiKeySortMatchesIndex(t *testing.T) {
 	)
 	sortRef := mustOrderedScanInitial(t, sort)
 
-	rule := NewOrderedIndexScanRule()
+	rule := newOrderedIndexScanRule()
 	results := mustFireExpressionRuleWithMemo(t, rule, sortRef, ctx, nil)
 
 	if len(results) != 1 {
@@ -112,7 +112,7 @@ func TestOrderedIndexScan_SortKeyMismatch(t *testing.T) {
 	)
 	sortRef := mustOrderedScanInitial(t, sort)
 
-	rule := NewOrderedIndexScanRule()
+	rule := newOrderedIndexScanRule()
 	results := mustFireExpressionRuleWithMemo(t, rule, sortRef, ctx, nil)
 
 	if len(results) != 0 {
@@ -154,7 +154,7 @@ func TestOrderedIndexScan_DescSortProducesReverseIndexScan(t *testing.T) {
 	)
 	sortRef := mustOrderedScanInitial(t, sort)
 
-	rule := NewOrderedIndexScanRule()
+	rule := newOrderedIndexScanRule()
 	results := mustFireExpressionRuleWithMemo(t, rule, sortRef, ctx, nil)
 
 	if len(results) != 1 {
@@ -255,7 +255,7 @@ func TestOrderedIndexScan_RejectsFanOutCandidate(t *testing.T) {
 		quantifier,
 	)
 	results := mustFireExpressionRuleWithMemo(t,
-		NewOrderedIndexScanRule(),
+		newOrderedIndexScanRule(),
 		mustOrderedScanInitial(t, sortExpr),
 		ctx,
 		nil,

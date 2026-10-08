@@ -149,7 +149,7 @@ func TestImplementStreamingAgg_IndexOrderedInput(t *testing.T) {
 	gbRef := expressions.InitialOf(gb)
 
 	// OrderedIndexScanRule replaces Sort(Scan) with an index scan.
-	mustFireExpressionRuleWithMemo(t, NewOrderedIndexScanRule(), sortRef, ctx, nil)
+	mustFireExpressionRuleWithMemo(t, newOrderedIndexScanRule(), sortRef, ctx, nil)
 
 	// Now fire streaming agg — the inner (sortRef) has an index scan
 	// member with ordering on customer_id.

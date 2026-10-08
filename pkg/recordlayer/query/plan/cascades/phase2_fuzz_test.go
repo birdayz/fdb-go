@@ -224,7 +224,7 @@ func FuzzOrderedIndexScan_NoPanic(f *testing.F) {
 		sort := mustConstruct(t, sortValue, sortErr)
 		sortRef := expressions.InitialOf(sort)
 
-		rule := NewOrderedIndexScanRule()
+		rule := newOrderedIndexScanRule()
 		mustFireExpressionRuleWithMemo(t, rule, sortRef, ctx, nil)
 	})
 }

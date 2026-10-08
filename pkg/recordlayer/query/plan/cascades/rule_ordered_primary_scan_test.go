@@ -39,7 +39,7 @@ func TestOrderedPrimaryScanRule_FiresForPrimaryKeyOrdering(t *testing.T) {
 	)
 
 	yielded := mustFireExpressionRuleWithMemo(t,
-		NewOrderedPrimaryScanRule(),
+		newOrderedPrimaryScanRule(),
 		mustOrderedScanInitial(t, sortExpr),
 		ctx,
 		nil,

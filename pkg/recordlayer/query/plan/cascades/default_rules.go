@@ -221,8 +221,6 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewPrimaryScanRule(),
 		NewImplementValuesRule(),
 		NewImplementFilterRule(),
-		NewOrderedIndexScanRule(),
-		NewOrderedPrimaryScanRule(),
 		NewImplementTypeFilterRule(),
 		NewImplementIntersectionRule(),
 		NewImplementStreamingAggregationRule(),

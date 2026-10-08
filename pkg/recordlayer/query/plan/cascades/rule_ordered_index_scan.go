@@ -9,7 +9,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// OrderedIndexScanRule matches a LogicalSort over a FullUnorderedScan
+// orderedIndexScanRule matches a LogicalSort over a FullUnorderedScan
 // (no filter in between) and produces an index scan when an index's
 // column order provides the requested sort ordering. The index scan
 // has no predicate bounds — it scans the full index but in the
@@ -18,23 +18,29 @@ import (
 //	Sort([col1 ASC, col2 ASC]) over FullUnorderedScan
 //	  → IndexScan(full-range, index on (col1, col2, ...))
 //
+// It is no planner rule (retired from the production set 2026-10-08): a sort
+// over a block never reaches a bare scan, and the data-access rules' leaf
+// climb gives a bare read Java's ordered index scan, so removing it moved no
+// corpus plan. The nested-loop join still fires it privately on a bare
+// source group (orderedFullScanAlternatives).
+//
 // This complements ImplementIndexScanRule (which requires a Filter).
 // When both a predicate and ordering are requested, PushFilterThroughSort
 // moves the filter below the sort, and ImplementIndexScanRule handles
 // the Filter(Scan) shape. This rule covers the pure ORDER BY case.
-type OrderedIndexScanRule struct {
+type orderedIndexScanRule struct {
 	matcher matching.BindingMatcher
 }
 
-func NewOrderedIndexScanRule() *OrderedIndexScanRule {
-	return &OrderedIndexScanRule{
+func newOrderedIndexScanRule() *orderedIndexScanRule {
+	return &orderedIndexScanRule{
 		matcher: NewExpressionMatcher[*expressions.LogicalSortExpression]("sort_for_ordered_index"),
 	}
 }
 
-func (r *OrderedIndexScanRule) Matcher() matching.BindingMatcher { return r.matcher }
+func (r *orderedIndexScanRule) Matcher() matching.BindingMatcher { return r.matcher }
 
-func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
+func (r *orderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 	s := matching.Get[*expressions.LogicalSortExpression](call.Bindings, r.matcher)
 	if s.IsUnsorted() {
 		return
@@ -331,13 +337,13 @@ func orderedFullScanAlternatives(
 	privateSortRef := expressions.InitialOf(logicalSort)
 	var result []expressions.RelationalExpression
 	indexResults, err := FireExpressionRuleWithMemo(
-		NewOrderedIndexScanRule(), privateSortRef, ctx, nil)
+		newOrderedIndexScanRule(), privateSortRef, ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	result = append(result, indexResults...)
 	primaryResults, err := FireExpressionRuleWithMemo(
-		NewOrderedPrimaryScanRule(), privateSortRef, ctx, nil)
+		newOrderedPrimaryScanRule(), privateSortRef, ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -345,4 +351,4 @@ func orderedFullScanAlternatives(
 	return result, nil
 }
 
-var _ ExpressionRule = (*OrderedIndexScanRule)(nil)
+var _ ExpressionRule = (*orderedIndexScanRule)(nil)

@@ -7,7 +7,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// OrderedPrimaryScanRule matches Sort over FullUnorderedScan and
+// orderedPrimaryScanRule matches Sort over FullUnorderedScan and
 // produces a primary scan when the sort keys match the PK columns.
 // For DESC, a reverse primary scan is produced.
 //
@@ -15,19 +15,19 @@ import (
 //	  → Scan(reverse=DESC)
 //
 // Complements OrderedIndexScanRule which handles secondary indexes.
-type OrderedPrimaryScanRule struct {
+type orderedPrimaryScanRule struct {
 	matcher matching.BindingMatcher
 }
 
-func NewOrderedPrimaryScanRule() *OrderedPrimaryScanRule {
-	return &OrderedPrimaryScanRule{
+func newOrderedPrimaryScanRule() *orderedPrimaryScanRule {
+	return &orderedPrimaryScanRule{
 		matcher: NewExpressionMatcher[*expressions.LogicalSortExpression]("sort_for_ordered_pk"),
 	}
 }
 
-func (r *OrderedPrimaryScanRule) Matcher() matching.BindingMatcher { return r.matcher }
+func (r *orderedPrimaryScanRule) Matcher() matching.BindingMatcher { return r.matcher }
 
-func (r *OrderedPrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
+func (r *orderedPrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 	s := matching.Get[*expressions.LogicalSortExpression](call.Bindings, r.matcher)
 	if s.IsUnsorted() {
 		return
@@ -122,4 +122,4 @@ func (r *OrderedPrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 	call.Yield(plan)
 }
 
-var _ ExpressionRule = (*OrderedPrimaryScanRule)(nil)
+var _ ExpressionRule = (*orderedPrimaryScanRule)(nil)

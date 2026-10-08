@@ -761,7 +761,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
       union legs, a fetch per entry where the legs were covering; Java plans
       the ordered SCAN | FILTER there (in-memory-sort divergence). Follow-up:
       with the climb working, the Go-only OrderedIndexScanRule /
-      OrderedPrimaryScanRule can be measured for retirement.
+      OrderedPrimaryScanRule can be measured for retirement. DONE
+      (2026-10-08): both left the production rule set (unexported; the
+      nested-loop join still fires them privately on a bare source group).
+      No corpus plan moved; fast lane, sqldriver, conformance, factory full
+      corpus and RFC-257 oracle/parity pass.
     - `w8_or_two_indexes` is done: Go built the ordered union only over two
       fetching index scans, because the merge-distinct identity proof refused
       a `Fetch(COVERING)` leg on the stale premise that Go's Fetch passes its

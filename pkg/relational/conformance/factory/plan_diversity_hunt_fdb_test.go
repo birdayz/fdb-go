@@ -61,7 +61,6 @@ var portfolio = []perturbation{
 	// --- ordering perturbations ----------------------------------------
 	{name: "ImplementSortRule", opts: disableRules("ImplementSortRule")},
 	{name: "ImplementInMemorySortRule", opts: disableRules("ImplementInMemorySortRule")},
-	{name: "no-ordered-scan", opts: disableRules("OrderedIndexScanRule", "OrderedPrimaryScanRule")},
 	// --- predicate-shape perturbations ---------------------------------
 	{name: "NormalizePredicatesRule", opts: disableRules("NormalizePredicatesRule")},
 	{name: "InComparisonToExplodeRule", opts: disableRules("InComparisonToExplodeRule")},
