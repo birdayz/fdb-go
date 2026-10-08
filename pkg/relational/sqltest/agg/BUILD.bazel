@@ -97,7 +97,6 @@ go_test(
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/executor",
-        "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
