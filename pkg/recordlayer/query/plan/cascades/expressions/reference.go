@@ -993,11 +993,9 @@ func (p *PreparedMemberEquality) PrepareCorrelations(ref *Reference, members []R
 	if old == nil || old.version != ref.memberVersion {
 		return
 	}
-	dependencies := append([]correlationDependency(nil), old.dependencies...)
-	seen := make(map[*Reference]struct{}, len(dependencies))
-	for _, dependency := range dependencies {
-		seen[dependency.reference] = struct{}{}
-	}
+	// The old snapshot's dependencies are shared until a member adds one.
+	dependencies, owned := old.dependencies, false
+	var seen map[*Reference]struct{}
 	for _, member := range members {
 		snapshot, ok := reader.expressions[member]
 		if !ok {
@@ -1022,10 +1020,20 @@ func (p *PreparedMemberEquality) PrepareCorrelations(ref *Reference, members []R
 			}
 		}
 		for _, dependency := range snapshot.dependencies {
-			if _, dup := seen[dependency.reference]; !dup {
-				seen[dependency.reference] = struct{}{}
-				dependencies = append(dependencies, dependency)
+			if seen == nil {
+				seen = make(map[*Reference]struct{}, len(dependencies)+len(snapshot.dependencies))
+				for _, known := range dependencies {
+					seen[known.reference] = struct{}{}
+				}
 			}
+			if _, dup := seen[dependency.reference]; dup {
+				continue
+			}
+			seen[dependency.reference] = struct{}{}
+			if !owned {
+				dependencies, owned = append([]correlationDependency(nil), dependencies...), true
+			}
+			dependencies = append(dependencies, dependency)
 		}
 	}
 	p.unchanged = &unchangedCorrelations{
