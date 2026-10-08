@@ -97,6 +97,9 @@ func (e *memoEquality) equalIn(memberRef *Reference, member RelationalExpression
 		e.hash(member) != e.hash(expression) {
 		return false
 	}
+	if !childGroupsCanMatch(member, expression) {
+		return false
+	}
 	memberCorrelations := e.correlations.expressionIn(memberRef, member)
 	otherCorrelations := e.correlations.expressionIn(expressionRef, expression)
 	if len(memberCorrelations) != len(otherCorrelations) {
@@ -295,4 +298,63 @@ func shapesCover(have, want []uint64) bool {
 		}
 	}
 	return true
+}
+
+// childGroupsCanMatch reports whether the children of member and expression
+// pair up, as the binding search may pair them, into groups whose signatures
+// allow containment. The search needs such a pairing; finding none here spares
+// deriving correlations and descending.
+func childGroupsCanMatch(member, expression RelationalExpression) bool {
+	left, right := member.GetQuantifiers(), expression.GetQuantifiers()
+	if len(left) == 0 || len(left) != len(right) {
+		return true
+	}
+	var buf [16]*memberSignature
+	signatures := buf[:0]
+	if 2*len(left) > len(buf) {
+		signatures = make([]*memberSignature, 0, 2*len(left))
+	}
+	for _, quantifiers := range [][]Quantifier{left, right} {
+		for _, quantifier := range quantifiers {
+			var signature *memberSignature
+			if ref := canonicalReferenceReadOnly(quantifier.rangesOver); ref != nil {
+				signature = ref.memberSignature()
+			}
+			signatures = append(signatures, signature)
+		}
+	}
+	have, want := signatures[:len(left)], signatures[len(left):]
+	if !member.ChildrenAsSet() || !expression.ChildrenAsSet() {
+		for i := range have {
+			if !signatureCovers(have[i], want[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	var used uint32
+	var pair func(int) bool
+	pair = func(i int) bool {
+		if i == len(have) {
+			return true
+		}
+		for j := range want {
+			if used&(1<<j) == 0 && signatureCovers(have[i], want[j]) {
+				used |= 1 << j
+				if pair(i + 1) {
+					return true
+				}
+				used &^= 1 << j
+			}
+		}
+		return false
+	}
+	return len(want) > 32 || pair(0)
+}
+
+func signatureCovers(have, want *memberSignature) bool {
+	if have == nil || want == nil {
+		return have == nil && want == nil
+	}
+	return have.covers(want)
 }
