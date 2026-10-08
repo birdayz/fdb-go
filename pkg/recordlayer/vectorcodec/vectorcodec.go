@@ -46,21 +46,45 @@ func Serialize(vec []float64) []byte {
 // component-at-a-time reads (e.g. computing a distance without materializing a
 // []float64). It returns the type ordinal, the payload slice (sans the leading
 // type byte), the number of bytes per component, and ok=false when the data is
-// empty or RaBitQ-quantized (which must go through the VectorQuantizer instead).
+// empty, RaBitQ-quantized (which must go through the VectorQuantizer instead),
+// or truncated so that Java's RealVector.fromBytes rejects it (javaUnderflows;
+// Deserialize reports that as an error).
 func Payload(data []byte) (typeOrdinal byte, payload []byte, stride int, ok bool) {
 	if len(data) < 1 {
 		return 0, nil, 0, false
 	}
-	switch data[0] {
-	case typeHalf:
-		return typeHalf, data[1:], 2, true
-	case typeSingle:
-		return typeSingle, data[1:], 4, true
-	case typeDouble:
-		return typeDouble, data[1:], 8, true
-	default: // RaBitQ or unknown
+	stride = componentStride(data[0])
+	if stride == 0 || javaUnderflows(data, stride) { // RaBitQ, unknown, or truncated
 		return data[0], data[1:], 0, false
 	}
+	return data[0], data[1:], stride, true
+}
+
+// componentStride is the bytes per component of a float VectorType ordinal, 0
+// for RaBitQ and unknown ordinals.
+func componentStride(typeOrdinal byte) int {
+	switch typeOrdinal {
+	case typeHalf:
+		return 2
+	case typeSingle:
+		return 4
+	case typeDouble:
+		return 8
+	}
+	return 0
+}
+
+// javaUnderflows reports whether Java's RealVector.fromBytes rejects data.
+// Each subtype's fromBytes sizes the vector from the WHOLE array, type byte
+// included — numDimensions = vectorBytes.length >> log2(stride)
+// (HalfRealVector.java:284, FloatRealVector.java:323,
+// DoubleRealVector.decodeDoubleBytes :303) — and then reads that many
+// components after the type byte. Whenever the length is a multiple of the
+// stride that is one component more than the payload holds, and the read
+// throws BufferUnderflowException. Any other trailing partial component is
+// dropped by the floor, as Go's len(payload)/stride drops it.
+func javaUnderflows(data []byte, stride int) bool {
+	return len(data)%stride == 0
 }
 
 // Type ordinals re-exported for callers that read components directly.
@@ -81,6 +105,9 @@ func Deserialize(data []byte) ([]float64, error) {
 	}
 	typeOrdinal := data[0]
 	payload := data[1:]
+	if stride := componentStride(typeOrdinal); stride != 0 && javaUnderflows(data, stride) {
+		return nil, fmt.Errorf("vectorcodec: truncated vector payload (%d bytes for %d-byte components)", len(payload), stride)
+	}
 
 	switch typeOrdinal {
 	case typeHalf:

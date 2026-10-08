@@ -53,6 +53,20 @@ func TestTupleToVector(t *testing.T) {
 		}
 	})
 
+	t.Run("truncated-bytes-errors", func(t *testing.T) {
+		t.Parallel()
+		// A DOUBLE vector with seven trailing bytes: Java's RealVector.fromBytes
+		// sizes it as length>>3 = 2 components and underflows reading the
+		// second (DoubleRealVector.java:303), failing the write
+		// (VectorIndexMaintainer.java:395). Pre-fix Go floored it to one
+		// component and indexed the truncated vector.
+		data := append(serializeVector([]float64{1}), 0, 0, 0, 0, 0, 0, 0)
+		v, err := tupleToVector(tuple.Tuple{data})
+		if err == nil {
+			t.Fatalf("truncated serialized vector: want error, got (%v, nil) — would index a truncated vector", v)
+		}
+	})
+
 	t.Run("non-numeric-errors", func(t *testing.T) {
 		t.Parallel()
 		v, err := tupleToVector(tuple.Tuple{"not a number"})

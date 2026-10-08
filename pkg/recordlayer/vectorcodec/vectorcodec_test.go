@@ -74,3 +74,50 @@ func TestDeserialize_Errors(t *testing.T) {
 		t.Error("unknown type ordinal should error")
 	}
 }
+
+// A serialized vector whose length Java's RealVector.fromBytes cannot read is
+// rejected, exactly where Java rejects it. Each Java subtype sizes the vector
+// as vectorBytes.length >> log2(stride), type byte included
+// (HalfRealVector.java:284, FloatRealVector.java:323,
+// DoubleRealVector.java:303), so a total length that is a multiple of the
+// stride reads one component past the payload (BufferUnderflowException);
+// every other trailing partial component is floored away in both. Before, Go
+// floored every case and the VECTOR index maintainer indexed a truncated
+// vector Java refuses to write.
+func TestDeserialize_TruncatedPayloadMatchesJava(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name    string
+		data    []byte
+		wantErr bool
+		wantLen int
+	}{
+		{"half one trailing byte", []byte{typeHalf, 0x3c, 0x00, 0x3c}, true, 0},
+		{"half empty", []byte{typeHalf}, false, 0},
+		{"single three trailing bytes", []byte{typeSingle, 0, 0, 0}, true, 0},
+		{"single two trailing bytes", []byte{typeSingle, 0, 0}, false, 0},
+		{"double seven trailing bytes", append(Serialize([]float64{1}), 0, 0, 0, 0, 0, 0, 0), true, 0},
+		{"double one trailing byte", []byte{typeDouble, 0}, false, 0},
+		{"double six trailing bytes", append(Serialize([]float64{1}), 0, 0, 0, 0, 0, 0), false, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := Deserialize(c.data)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("Deserialize(%x) = %v, want an error (Java underflows)", c.data, got)
+				}
+				if _, _, _, ok := Payload(c.data); ok {
+					t.Fatalf("Payload(%x) ok, want !ok (Java underflows)", c.data)
+				}
+				return
+			}
+			if err != nil || len(got) != c.wantLen {
+				t.Fatalf("Deserialize(%x) = %v, %v; want %d components (Java floors)", c.data, got, err, c.wantLen)
+			}
+			if _, _, _, ok := Payload(c.data); !ok {
+				t.Fatalf("Payload(%x) !ok, want ok", c.data)
+			}
+		})
+	}
+}
