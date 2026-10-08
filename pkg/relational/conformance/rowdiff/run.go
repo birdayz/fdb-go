@@ -361,7 +361,8 @@ func (r *engineResult) await() ([]Row, []string, error) {
 // The statements are read-only over the already-committed fixture, so their
 // answers do not depend on which connection or in which order they run; the
 // caller consumes them in statement order. Cancelling ctx stops handing out
-// statements; wait blocks until every worker is done with its connection.
+// statements and resolves the rest with ctx's error; wait blocks until every
+// worker is done with its connection.
 func executeConcurrently(ctx context.Context, c *Case, qdbs []execQuerier) (out []*engineResult, wait func()) {
 	var sqls []string
 	for _, q := range c.Queries {
@@ -389,6 +390,13 @@ func executeConcurrently(ctx context.Context, c *Case, qdbs []execQuerier) (out 
 			select {
 			case next <- i:
 			case <-ctx.Done():
+				// The caller awaits every statement in order, so the ones
+				// never handed out are resolved with the context's error
+				// rather than left open (a hang).
+				for _, r := range out[i:] {
+					r.err = ctx.Err()
+					close(r.done)
+				}
 				return
 			}
 		}

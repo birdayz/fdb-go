@@ -184,7 +184,7 @@ FoundationDB is an ordered, transactional key-value store with strict-serializab
 
 <div class="s-body">
 
-Wire compatibility is the whole point of the project. Record, index, version, continuation, and split-record formats are **byte-identical to Java Record Layer 4.12.11.0**, and the client speaks the FoundationDB **7.3** wire protocol (validated against 7.3.77; 8.0 is future work). CI enforces all of this against real FoundationDB with a Java conformance suite, a cross-backend differential, and a binding-stress tester. No mocks.
+Wire compatibility is the whole point of the project. Record, index, version, continuation, and split-record formats are **byte-identical to Java Record Layer 4.14.2.0**, and the client speaks the FoundationDB **7.3** wire protocol (validated against 7.3.77; 8.0 is future work). CI enforces all of this against real FoundationDB with a Java conformance suite, a cross-backend differential, and a binding-stress tester. No mocks.
 
 </div>
 

@@ -18,8 +18,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 ## [Unreleased]
 
 ### Compatibility
-- **Wire format:** the Java target is upgraded to `fdb-record-layer-core` 4.14.2.0 (RFC-257, in
-  progress). Records Java writes through `TransformedRecordSerializer` (compressed, encrypted) are
+- **Wire format:** the Java target is upgraded to `fdb-record-layer-core` 4.14.2.0 (RFC-257). Records Java writes through `TransformedRecordSerializer` (compressed, encrypted) are
   read and written. Stores written only by an earlier pre-release Go build are not supported:
   recreate them.
 - **SQL behaviour:** follows Java 4.14.2.0 where both engines run a query; see the PR for the
@@ -30,6 +29,14 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
 
 ### Changed
+- The Cascades planner plans about 2x faster with the same plans: memo deduplication rejects
+  candidates on group signatures before comparing them, reuses published correlation snapshots
+  instead of recomputing them, and allocates less (a 150,000-task planning run: 41 s to 17 s,
+  13.3 GB to 5.6 GB allocated).
+- Go API moves, following Java's packages: index-predicate normalization is
+  `pkg/recordlayer/indexpredicate` (was in the cascades planner), `FinalizePlan` and the plan
+  walkers are in `pkg/recordlayer/query/plan/plans`, and the R-tree is `pkg/async/rtree`
+  (Java's `async.rtree`). `pkg/recordlayer` no longer imports the planner.
 - **Breaking (storage):** the relational key space is Java's `RelationalKeyspaceProvider` layout byte for byte. The catalog store is `(NULL, NULL, 0)`; a schema's record store is `(domain, database, schema)`, where the domain is a directory of the FDB directory layer and the database and schema names are interned in the domain's interning layer. Go and Java open each other's databases and schemas in a shared cluster. Data written by earlier Go builds is not migrated: recreate it.
 - `pkg/fdbgo/fdb/directory` runs on any `fdb.WritableTransaction` (the libfdb_c backend and the simulator included; `UnsupportedBackendError` is gone) and `NewDirectoryLayerWithRandom` injects the prefix allocator's random source.
 - **Breaking:** a relational database path is `/DOMAIN/DATABASE`, as in Java, and its domain must be registered once per process before use: `sqldriver.RegisterDomainIfNotExists("FRL")` (Java's `RelationalKeyspaceProvider.instance().registerDomainIfNotExists`). The driver registers none; `frl` registers `FRL`, as Java's server and CLI do. A path outside the registered domains (including a one-segment `/name`) is INVALID_PATH (08F01) on CREATE DATABASE, on a schema's store and when connecting to a schema; a malformed path is 08F01 `invalid database path '…'` (was 22023). `/__SYS` needs no domain.

@@ -415,7 +415,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## 2. WS-F — planner scheduling, query blocks and properties
 
-- [ ] Conditional decorrelate→simplify and merge→pushdown rule chains with
+- [x] Conditional decorrelate→simplify and merge→pushdown rule chains with
   progress-driven fallback; partition-based select merge; multi-leg pushdown;
   physical REWRITING prune; full comparator configuration; per-partition yields.
   W6 step 1 rule-call observer done (2026-10-07): `Planner.SetRuleCallObserver`
@@ -546,7 +546,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [x] Explicit raw KEY/VALUE readers, ordered-bytes evaluation, extraction trie,
   covering reader/Value plan, aggregate cardinality/distinctness/entry readers
   (`c1ad5a87d` through `d819eb25e`). Plan transport remains outside this closure.
-- [ ] IN-union product limit/size, null-safe singleton candidates, zero-based
+- [x] IN-union product limit/size, null-safe singleton candidates, zero-based
   EXPLODE ordinality/distinctness, subscript typing/errors, display-only EXPLAIN
   decoding, ordered Value folding, vector-preference applicability pins.
   Vector-preference criterion pins done: Java's PlanningCostModelVectorEngineTest
@@ -1464,6 +1464,18 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   required interop/performance checks, then final migration review and PR CI.
   Fix all Medium-or-higher findings before declaring completion.
 
+## Follow-ups after the 4.14.2.0 migration (not blocking)
+
+- [ ] Two IN lists ordered by their own columns: Java plans nested in-unions
+  over both explodes; Go keeps sorted in-joins (`w8_in5x5`/`w8_in4x6`, declared
+  DIFF-PATH rfc-191). Needs Go's in-join rules to accept a select with several
+  explodes (WS-F §2, item 10).
+- [ ] CI/dev speed, next hills (measured 2026-10-08): `distinctelision` (~86 s,
+  bound by one FDB container's write rate over ~620k fixture rows); planner
+  allocation (GC is ~39% of planner CPU); split 2, vector indexes out of
+  `pkg/recordlayer` behind a maintainer registry (58 -> ~38 test targets per
+  vector change); a Bazel cache shared by both CI runners.
+
 ## Test lanes and test-speed work (committed with the temporal change)
 
 - [x] Fast/full lanes (`just test` / `just test-full`, `infra/test_lanes_test.go`,
@@ -1491,8 +1503,5 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   A fast-lane `sqldriver_fast_test` (same binary, 45 heavy tests skipped) was
   tried and reverted (2026-10-07): ~170 s on every commit hook is too slow for
   the fast lane. The test-suite speed investigation owns this now.
-  - Urgent: CI's race lane now TIMES OUT on it (1h0m16s of the 1h eternal
-    budget, run 37669344266 at a043d3564; 59m6s in run 37624319889). The
-    Build, Lint & Test job (the full suite) passed in that run. Sharding
-    (`shard_count`, plain Go tests split cleanly) or the split is the fix;
-    the paused test-speed work owns it.
+  - The race lane's timeout (1h0m16s, run 37669344266) is fixed by the split:
+    it runs `sqldriver` (the driver's own tests) in about 11 min, green.

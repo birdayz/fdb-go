@@ -1,6 +1,9 @@
 # SQL Conformance Matrix
 
-Java fdb-relational **4.12.11.0** vs Go implementation vs ANSI SQL standard.
+Java fdb-relational **4.12.11.0** vs Go implementation vs ANSI SQL standard. This matrix was
+measured against 4.12.11.0. The Java target is now 4.14.2.0: per-query parity with it is pinned by
+the Java corpus ledger (`pkg/relational/conformance/javacorpus`, 150 of Java's own yamsql files
+pass) and the JVM probes under `conformance/`, and every known difference is in DIVERGENCES.md.
 
 **Y** = works, **N** = not supported, **P** = partial, **Ext** = Go-only extension
 
