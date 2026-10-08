@@ -1,0 +1,50 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "distinctelision_test",
+    size = "large",
+    timeout = "eternal",
+    srcs = [
+        "distinct_unique_elision_cost_probe_test.go",
+        "distinct_unique_elision_paging_repro_test.go",
+        "distinct_unique_elision_single_read_version_test.go",
+        "duec_held_window_test.go",
+        "duec_race_off_test.go",
+        "duec_race_on_test.go",
+        "duec_regime_detector_test.go",
+        "duec_window_loss_reproducer_test.go",
+        "main_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    tags = [
+        "resources:memory:700",
+        "test-full",
+    ],
+    deps = [
+        "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/fdbgo/wire",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/plans",
+        "//pkg/relational/api",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/sqltest/testkit",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)
+
+# This package's test sources, for the whole-corpus census and the
+# transaction-budget census (//pkg/relational/sqltest:corpus).
+filegroup(
+    name = "corpus",
+    srcs = glob(
+        ["*_test.go"],
+        exclude = ["main_test.go"],
+    ),
+    visibility = ["//pkg/relational:__subpackages__"],
+)

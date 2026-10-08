@@ -1,0 +1,75 @@
+package sqltest
+
+// A struct member declared with a dot in its name (`"a.b" BIGINT`) reads
+// correctly through a derived table and retains its exact declared SQL name as
+// the result label. RFC-256 closes RFC-238's nested-member residual by carrying
+// the resolved attribute's inherited name through projection publication;
+// punctuation in that name is never re-parsed as qualification. The aliased
+// control still labels as told.
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
+)
+
+func TestFDB_QuotedDotNestedMemberLabel(t *testing.T) {
+	t.Parallel()
+	if testkit.ClusterFile() == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := testkit.OpenDB(t, "/FRL/testdb_qdnl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_qdnl")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE qdnl_tpl
+		CREATE TYPE AS STRUCT qs ("a.b" BIGINT)
+		CREATE TABLE tq (id BIGINT, s qs, PRIMARY KEY (id))`)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_qdnl/s1 WITH TEMPLATE qdnl_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_QDNL?cluster_file=%s&schema=S1", testkit.ClusterFile()))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tq VALUES (1, (9))")
+
+	read := func(t *testing.T, query string) (string, int64) {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			t.Fatalf("%q: %v", query, err)
+		}
+		defer rows.Close()
+		cols, err := rows.Columns()
+		if err != nil || len(cols) != 1 {
+			t.Fatalf("%q: columns=%v err=%v", query, cols, err)
+		}
+		if !rows.Next() {
+			t.Fatalf("%q: no row", query)
+		}
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("%q: scan: %v", query, err)
+		}
+		return cols[0], v
+	}
+
+	for _, spelling := range []string{
+		`SELECT tq.s."a.b" FROM tq`,
+		`SELECT x."a.b" FROM (SELECT tq.s."a.b" FROM tq) x`,
+	} {
+		label, v := read(t, spelling)
+		if v != 9 {
+			t.Fatalf("%q: value = %d, want the member's 9", spelling, v)
+		}
+		if label != "a.b" {
+			t.Fatalf("%q: label = %q, want the member's exact declared name a.b", spelling, label)
+		}
+	}
+	label, v := read(t, `SELECT x.q FROM (SELECT tq.s."a.b" AS q FROM tq) x`)
+	if v != 9 || label != "Q" {
+		t.Fatalf("aliased control: label=%q value=%d, want Q / 9", label, v)
+	}
+}

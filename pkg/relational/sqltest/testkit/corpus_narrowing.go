@@ -9,7 +9,7 @@ import (
 // integration corpus, so the census floors (whole-corpus population claims) are
 // asserted only there.
 var wholeCorpusTargets = map[string]bool{
-	"//pkg/relational/sqldriver:sqldriver_test": true,
+	"//pkg/relational/sqltest/census:census_test": true,
 }
 
 type narrowingValue string

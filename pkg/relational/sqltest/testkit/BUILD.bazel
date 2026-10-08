@@ -16,6 +16,7 @@ go_library(
         "derived_groupby_case_probe.go",
         "derived_limit_rfc128.go",
         "distinct_unique_elision_single_read_version.go",
+        "domain_registration.go",
         "domain_registration_fdb.go",
         "dotted_row_type_producer_census_gate.go",
         "dotted_witness_attribution_census_gate.go",

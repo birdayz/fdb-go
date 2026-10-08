@@ -1,0 +1,66 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "metamorphic_test",
+    size = "large",
+    timeout = "eternal",
+    srcs = [
+        "baretwin_gather_fdb_test.go",
+        "census_gate_reporting_test.go",
+        "compound_index_oracle_test.go",
+        "double_oracle_consistency_test.go",
+        "float_ordering_claim_differential_fdb_test.go",
+        "index_oracle_consistency_test.go",
+        "join_oracle_consistency_test.go",
+        "kitchen_sink_probe_test.go",
+        "leg_identity_census_fdb_test.go",
+        "main_test.go",
+        "mergesort_heap_bench_test.go",
+        "onsource_twin_plan_fdb_test.go",
+        "ordering_limit_oracle_fdb_test.go",
+        "plan_cache_bench_test.go",
+        "projection_scan_bench_test.go",
+        "quality_probes_test.go",
+        "sargability_differential_oracle_fdb_test.go",
+        "self_join_twin_leg_read_fdb_test.go",
+        "sql_querycontext_fuzz_test.go",
+        "string_oracle_consistency_test.go",
+        "w2_metamorphic_test.go",
+        "w3_5_plan_diversity_test.go",
+        "zz_d2_correlation_pins_test.go",
+        "zz_graefe_required_pins_test.go",
+        "zz_in_proj_repro_test.go",
+        "zz_join_selpred_repro_test.go",
+        "zz_sarg_comparand_guard_test.go",
+    ],
+    tags = [
+        "resources:memory:700",
+        "test-full",
+    ],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/api",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/metadata",
+        "//pkg/relational/sqltest/testkit",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)
+
+# This package's test sources, for the whole-corpus census and the
+# transaction-budget census (//pkg/relational/sqltest:corpus).
+filegroup(
+    name = "corpus",
+    srcs = glob(
+        ["*_test.go"],
+        exclude = ["main_test.go"],
+    ),
+    visibility = ["//pkg/relational:__subpackages__"],
+)

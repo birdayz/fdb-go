@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "compositepk_test",
+    size = "large",
+    timeout = "eternal",
+    srcs = [
+        "main_test.go",
+        "metamorphic_sweep_composite_pk_fdb_test.go",
+    ],
+    tags = [
+        "resources:memory:700",
+        "test-full",
+    ],
+    deps = [
+        "//pkg/relational/api",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/sqltest/testkit",
+    ],
+)
+
+# This package's test sources, for the whole-corpus census and the
+# transaction-budget census (//pkg/relational/sqltest:corpus).
+filegroup(
+    name = "corpus",
+    srcs = glob(
+        ["*_test.go"],
+        exclude = ["main_test.go"],
+    ),
+    visibility = ["//pkg/relational:__subpackages__"],
+)

@@ -1,0 +1,54 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "catalog_test",
+    size = "large",
+    timeout = "eternal",
+    srcs = [
+        "ddl_errors_probe_test.go",
+        "domain_registration_fdb_test.go",
+        "drop_schema_ifexists_conformance_probe_test.go",
+        "enum_transport_fdb_test.go",
+        "evolution_added_index_gate_fdb_test.go",
+        "large_value_split_probe_test.go",
+        "main_test.go",
+        "mt_catalog_scope_fdb_test.go",
+        "mt_ddl_scope_fdb_test.go",
+        "record_names_fdb_test.go",
+        "view_fdb_test.go",
+    ],
+    tags = [
+        "resources:memory:700",
+        "test-full",
+    ],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/api",
+        "//pkg/relational/core/ddl",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/metadata",
+        "//pkg/relational/sqldriver",
+        "//pkg/relational/sqltest/testkit",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)
+
+# This package's test sources, for the whole-corpus census and the
+# transaction-budget census (//pkg/relational/sqltest:corpus).
+filegroup(
+    name = "corpus",
+    srcs = glob(
+        ["*_test.go"],
+        exclude = ["main_test.go"],
+    ),
+    visibility = ["//pkg/relational:__subpackages__"],
+)

@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "rowdiff_test",
+    size = "large",
+    timeout = "eternal",
+    srcs = [
+        "main_test.go",
+        "rowdiff_smoke_test.go",
+        "rowdiff_tally_test.go",
+    ],
+    tags = [
+        "resources:memory:700",
+        "test-full",
+    ],
+    deps = [
+        "//pkg/relational/conformance/rowdiff",
+        "//pkg/relational/sqltest/testkit",
+    ],
+)
+
+# This package's test sources, for the whole-corpus census and the
+# transaction-budget census (//pkg/relational/sqltest:corpus).
+filegroup(
+    name = "corpus",
+    srcs = glob(
+        ["*_test.go"],
+        exclude = ["main_test.go"],
+    ),
+    visibility = ["//pkg/relational:__subpackages__"],
+)

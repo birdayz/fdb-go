@@ -1,0 +1,123 @@
+package sqltest
+
+// Probes for correlated EXISTS / NOT EXISTS variations in WHERE (the semi-join
+// machinery the EXISTS-in-ON work builds on): correlated, with extra inner
+// filter, multi-table inner, NOT EXISTS, and EXISTS combined with a regular
+// conjunct.
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"sort"
+	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
+)
+
+func TestFDB_CorrelatedExistsProbe(t *testing.T) {
+	t.Parallel()
+	if testkit.ClusterFile() == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := testkit.OpenDB(t, "/FRL/testdb_corr_exists")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_corr_exists")
+	testkit.MustExecCtx(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE corr_exists "+
+			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, a_id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, b_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX b_a_id ON b (a_id) CREATE INDEX c_b_id ON c (b_id)")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_corr_exists/s WITH TEMPLATE corr_exists")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORR_EXISTS?cluster_file=%s&schema=S", testkit.ClusterFile())
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// a: 1,2,3,4. b: a1→{v8}, a2→{v3}, a3→none, a4→{v20}. c: b for a1's b only.
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10), (3, 7), (4, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, a_id, v) VALUES (100, 1, 8), (101, 2, 3), (102, 4, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, b_id) VALUES (900, 100)")
+
+	ints := func(q string) []int64 {
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query %q: %v", q, err)
+		}
+		defer rows.Close()
+		var out []int64
+		for rows.Next() {
+			var v sql.NullInt64
+			if err := rows.Scan(&v); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			out = append(out, v.Int64)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+		return out
+	}
+	eqi := func(g, w []int64) bool {
+		if len(g) != len(w) {
+			return false
+		}
+		for i := range g {
+			if g[i] != w[i] {
+				return false
+			}
+		}
+		return true
+	}
+	check := func(name, q string, want []int64) {
+		t.Run(name, func(t *testing.T) {
+			if got := ints(q); !eqi(got, want) {
+				t.Errorf("%s = %v, want %v", name, got, want)
+			}
+		})
+	}
+
+	// correlated EXISTS: a has a b → a1,a2,a4.
+	check("correlated_exists", "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id)",
+		[]int64{1, 2, 4})
+	// SIBLING multi-EXISTS (two top-level EXISTS): PartitionSelectRule's peel for the
+	// ≥2-existential case turns [a, EXISTS(b), EXISTS(c)] into nested 2-quantifier
+	// existential selects. Correlated
+	// EXISTS(b matches a) AND uncorrelated EXISTS(c non-empty): c has a row → same as
+	// correlated_exists → a1,a2,a4.
+	check("sibling_multi_exists_corr_uncorr", "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id) AND EXISTS (SELECT 1 FROM c)",
+		[]int64{1, 2, 4})
+	// TWO CORRELATED sibling EXISTS (both single-table inners) — discriminates that
+	// BOTH existentials bind to their own outer `a` (a wrong bipartition separating one
+	// would misbind → wrong rows). EXISTS(b of a) AND EXISTS(b2 of a WHERE b2.v>5):
+	// a1(b100 v8>5 ✓), a2(b101 v3 ✗), a4(b102 v20 ✓) → {1,4}.
+	check("sibling_multi_exists_both_corr", "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id) AND EXISTS (SELECT 1 FROM b b2 WHERE b2.a_id = a.id AND b2.v > 5)",
+		[]int64{1, 4})
+	// SIBLING NOT EXISTS + EXISTS: NOT EXISTS(b of a) keeps a3; AND EXISTS(c) always
+	// true → {3}.
+	check("sibling_notexists_and_exists", "SELECT id FROM a WHERE NOT EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id) AND EXISTS (SELECT 1 FROM c)",
+		[]int64{3})
+	// Sibling multi-EXISTS where ONE inner is a MULTI-TABLE JOIN (`FROM b b2, c`):
+	// the construction-time ordinal bind resolves the join-inner's merged-row
+	// correlation through the peel (the correlated outer reference reads its slot
+	// positionally), so the row assertion is: {1} — only a1 has a b that c
+	// references.
+	check("sibling_multitable_inner", "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id) AND EXISTS (SELECT 1 FROM b b2, c WHERE b2.a_id = a.id AND c.b_id = b2.id)",
+		[]int64{1})
+	// correlated NOT EXISTS: a has no b → a3.
+	check("correlated_not_exists", "SELECT id FROM a WHERE NOT EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id)",
+		[]int64{3})
+	// EXISTS + extra inner filter: a has a b with v>5 → a1(v8), a4(v20). a2's b v3 fails.
+	check("exists_inner_filter", "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id AND b.v > 5)",
+		[]int64{1, 4})
+	// EXISTS + outer conjunct: (a has b) AND a.x>5 → a1(x5)✗, a2(x10)✓, a4(x2)✗ → a2.
+	check("exists_and_outer", "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id) AND a.x > 5",
+		[]int64{2})
+	// nested correlated EXISTS (two levels): a has a b that has a c.
+	check("nested_exists", "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.a_id = a.id AND EXISTS (SELECT 1 FROM c WHERE c.b_id = b.id))",
+		[]int64{1})
+	// multi-table inner EXISTS: a has a (b join c) chain.
+	check("multitable_inner_exists", "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b, c WHERE b.a_id = a.id AND c.b_id = b.id)",
+		[]int64{1})
+}

@@ -16,6 +16,7 @@ go_test(
     data = [
         "//pkg/relational/core/embedded:tx_budget_census_corpus",
         "//pkg/relational/sqldriver:tx_budget_census_corpus",
+        "//pkg/relational/sqltest:corpus",
     ],
     deps = [
         ":txbudgetcensus",

@@ -1,0 +1,74 @@
+package sqltest
+
+// Pins aggregate NULL semantics: COUNT(*) counts all rows including those with a
+// NULL column; COUNT(col) counts only non-NULL; SUM/AVG/MIN/MAX ignore NULLs. Over
+// an all-NULL column: COUNT(*) counts the rows, COUNT(col)=0, and SUM/AVG = NULL
+// (not 0).
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
+)
+
+func TestFDB_AggregateNullSemanticsProbe(t *testing.T) {
+	t.Parallel()
+	if testkit.ClusterFile() == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := testkit.OpenDB(t, "/FRL/testdb_ans")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ans")
+	testkit.MustExecCtx(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE ans CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ans/s WITH TEMPLATE ans")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ANS?cluster_file=%s&schema=S", testkit.ClusterFile())
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (1,10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (2)") // a NULL
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (3,30)")
+
+	agg := func(expr string) sql.NullFloat64 {
+		var v sql.NullFloat64
+		if err := db.QueryRowContext(ctx, "SELECT "+expr+" FROM t").Scan(&v); err != nil {
+			t.Fatalf("%s: %v", expr, err)
+		}
+		return v
+	}
+	val := func(name, expr string, want float64) {
+		t.Run(name, func(t *testing.T) {
+			v := agg(expr)
+			if !v.Valid || v.Float64 != want {
+				t.Errorf("%s = (valid=%v, %v), want %v", expr, v.Valid, v.Float64, want)
+			}
+		})
+	}
+	val("count_star_includes_null_row", "COUNT(*)", 3)
+	val("count_col_excludes_null", "COUNT(a)", 2)
+	val("sum_ignores_null", "SUM(a)", 40)
+	val("avg_ignores_null", "AVG(a)", 20) // 40 / 2, not / 3
+	val("min_ignores_null", "MIN(a)", 10)
+	val("max_ignores_null", "MAX(a)", 30)
+
+	// reduce to a single row whose only value is NULL.
+	testkit.MustExecCtx(t, db, ctx, "DELETE FROM t WHERE id IN (1, 3)")
+	val("count_star_over_null_row", "COUNT(*)", 1)
+	val("count_col_all_null", "COUNT(a)", 0)
+	t.Run("sum_all_null_is_null", func(t *testing.T) {
+		if v := agg("SUM(a)"); v.Valid {
+			t.Errorf("SUM(all-NULL) = %v, want NULL", v.Float64)
+		}
+	})
+	t.Run("avg_all_null_is_null", func(t *testing.T) {
+		if v := agg("AVG(a)"); v.Valid {
+			t.Errorf("AVG(all-NULL) = %v, want NULL", v.Float64)
+		}
+	})
+}

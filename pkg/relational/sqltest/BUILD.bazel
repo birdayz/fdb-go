@@ -1,0 +1,40 @@
+# The end-to-end SQL suite against a real FoundationDB, one Go package per area
+# (helpers in ./testkit). Every package's test sources, as one corpus: the
+# whole-corpus census (./census) compiles them into one binary, and the
+# transaction-budget census reads them as data. A new package must be listed here;
+# //pkg/relational/sqltest/guard fails until it is.
+filegroup(
+    name = "corpus",
+    srcs = [
+        "//pkg/relational/sqltest/agg:corpus",
+        "//pkg/relational/sqltest/agg/distinctelision:corpus",
+        "//pkg/relational/sqltest/catalog:corpus",
+        "//pkg/relational/sqltest/core:corpus",
+        "//pkg/relational/sqltest/cte:corpus",
+        "//pkg/relational/sqltest/dml:corpus",
+        "//pkg/relational/sqltest/join:corpus",
+        "//pkg/relational/sqltest/metamorphic:corpus",
+        "//pkg/relational/sqltest/metamorphic/aggregates:corpus",
+        "//pkg/relational/sqltest/metamorphic/commute:corpus",
+        "//pkg/relational/sqltest/metamorphic/compositepk:corpus",
+        "//pkg/relational/sqltest/metamorphic/direction:corpus",
+        "//pkg/relational/sqltest/metamorphic/exprequiv:corpus",
+        "//pkg/relational/sqltest/metamorphic/joins:corpus",
+        "//pkg/relational/sqltest/metamorphic/minmaxnulls:corpus",
+        "//pkg/relational/sqltest/metamorphic/norec:corpus",
+        "//pkg/relational/sqltest/metamorphic/paging:corpus",
+        "//pkg/relational/sqltest/metamorphic/parens:corpus",
+        "//pkg/relational/sqltest/metamorphic/predicates:corpus",
+        "//pkg/relational/sqltest/metamorphic/rewrites:corpus",
+        "//pkg/relational/sqltest/metamorphic/rowdiff:corpus",
+        "//pkg/relational/sqltest/metamorphic/shapeequiv:corpus",
+        "//pkg/relational/sqltest/plan:corpus",
+        "//pkg/relational/sqltest/plan/caphit:corpus",
+        "//pkg/relational/sqltest/plan/options:corpus",
+        "//pkg/relational/sqltest/planshape:corpus",
+        "//pkg/relational/sqltest/select:corpus",
+        "//pkg/relational/sqltest/subquery:corpus",
+        "//pkg/relational/sqltest/types:corpus",
+    ],
+    visibility = ["//pkg/relational:__subpackages__"],
+)
