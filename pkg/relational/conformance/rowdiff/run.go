@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
@@ -128,32 +129,39 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 	}
 	defer db.Close()
 
-	// Paging mode: pin ONE connection and give it a scanned-rows limit, so
+	// Paging mode: pin connections and give each a scanned-rows limit, so
 	// every query below internally pages (a NEW Execute per page). The pooled
-	// DB would hand out fresh unconfigured connections.
-	var qdb execQuerier = db
-	if scanLimit > 0 {
-		conn, cerr := db.Conn(ctx)
-		if cerr != nil {
-			res.Kind = OutcomeInfra
-			res.InfraErr = fmt.Errorf("pin conn: %w", cerr)
-			return res
-		}
-		defer conn.Close()
-		if rerr := conn.Raw(func(dc any) error {
-			ec, ok := dc.(*embedded.EmbeddedConnection)
-			if !ok {
-				return fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", dc)
-			}
-			ec.SetOptions(api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
-			return nil
-		}); rerr != nil {
-			res.Kind = OutcomeInfra
-			res.InfraErr = fmt.Errorf("set scan limit: %w", rerr)
-			return res
-		}
-		qdb = conn
+	// DB would hand out fresh unconfigured connections. Statements run on
+	// up to execWorkers connections at once (see executeConcurrently).
+	qdbs := make([]execQuerier, execWorkers)
+	for i := range qdbs {
+		qdbs[i] = db
 	}
+	if scanLimit > 0 {
+		for i := range qdbs {
+			conn, cerr := db.Conn(ctx)
+			if cerr != nil {
+				res.Kind = OutcomeInfra
+				res.InfraErr = fmt.Errorf("pin conn: %w", cerr)
+				return res
+			}
+			defer conn.Close()
+			if rerr := conn.Raw(func(dc any) error {
+				ec, ok := dc.(*embedded.EmbeddedConnection)
+				if !ok {
+					return fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", dc)
+				}
+				ec.SetOptions(api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
+				return nil
+			}); rerr != nil {
+				res.Kind = OutcomeInfra
+				res.InfraErr = fmt.Errorf("set scan limit: %w", rerr)
+				return res
+			}
+			qdbs[i] = conn
+		}
+	}
+	qdb := qdbs[0]
 
 	insertSQL := c.InsertSQL()
 	if _, err := qdb.ExecContext(ctx, insertSQL); err != nil {
@@ -168,6 +176,13 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 	// histogram, mismatches and their order are exactly the serial ones; the
 	// engine queries stay serial on their (possibly pinned) connection.
 	typed := planTypedConcurrently(c, ddl)
+	execCtx, cancelExec := context.WithCancel(ctx)
+	engine, wait := executeConcurrently(execCtx, c, qdbs)
+	// Registered after the connection closes above, so these run BEFORE them:
+	// an early (INFRA) return abandons the statements not yet consumed and
+	// must not close a connection one of them is still using.
+	defer wait()
+	defer cancelExec()
 
 	n := -1
 	for _, q := range c.Queries {
@@ -212,7 +227,7 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 				}
 			}
 
-			engineRows, cols, err := queryRows(ctx, qdb, sqlText)
+			engineRows, cols, err := engine[n].await()
 			if err != nil {
 				// RFC-182 §4: INFRA must never masquerade as a soundness
 				// finding. A context/transport failure aborts the seed as
@@ -316,6 +331,62 @@ func planTypedConcurrently(c *Case, ddl string) []*typedPlan {
 		}
 	}()
 	return out
+}
+
+// execWorkers is how many of a seed's statements run on the engine at once.
+const execWorkers = 4
+
+// engineResult is one statement's engine rows, filled by a worker.
+type engineResult struct {
+	done chan struct{}
+	rows []Row
+	cols []string
+	err  error
+}
+
+func (r *engineResult) await() ([]Row, []string, error) {
+	<-r.done
+	return r.rows, r.cols, r.err
+}
+
+// executeConcurrently runs every (query, projection) statement of c through
+// the engine, in RunCase's iteration order, one worker per querier in qdbs.
+// The statements are read-only over the already-committed fixture, so their
+// answers do not depend on which connection or in which order they run; the
+// caller consumes them in statement order. Cancelling ctx stops handing out
+// statements; wait blocks until every worker is done with its connection.
+func executeConcurrently(ctx context.Context, c *Case, qdbs []execQuerier) (out []*engineResult, wait func()) {
+	var sqls []string
+	for _, q := range c.Queries {
+		for _, projection := range c.ProjectionsFor(q) {
+			sqls = append(sqls, c.SQL(q, projection))
+			out = append(out, &engineResult{done: make(chan struct{})})
+		}
+	}
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for _, qdb := range qdbs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				r := out[i]
+				r.rows, r.cols, r.err = queryRows(ctx, qdb, sqls[i])
+				close(r.done)
+			}
+		}()
+	}
+	go func() {
+		defer close(next)
+		for i := range sqls {
+			select {
+			case next <- i:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, wg.Wait
 }
 
 // finalizeResult resolves the seed's single Kind with MISMATCH precedence:
