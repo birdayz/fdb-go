@@ -61,7 +61,9 @@ func (r *PushRequestedOrderingThroughSortRule) OnMatch(call *ImplementationRuleC
 		call.Fail(err)
 		return
 	}
-	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering})
+	// Go's in-memory sort consumes any child order, so the request is marked
+	// sortable: the data-access skip keeps matches that do not provide it.
+	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering.Sortable()})
 }
 
 // requestedOrderingAtInnerCurrent moves a sort's ordering values from the inner
@@ -138,7 +140,7 @@ func requestedOrderingAtInnerCurrent(
 	// whether partitions are retained. All of those decide WHICH alternatives get
 	// generated, so losing the flag costs enumeration and never correctness.
 	return properties.NewRequestedOrdering(
-		rebased, requested.GetDistinctness(), requested.IsExhaustive()), nil
+		rebased, requested.GetDistinctness(), requested.IsExhaustive()).CarrySortable(requested), nil
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughSortRule)(nil)

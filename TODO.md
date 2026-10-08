@@ -713,9 +713,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     {keys, PRESERVE} under a sort exhausts the 150000-task budget (54F02) on
     three factory OR scenarios (fc_0001884206) and
     TestPlanHarness_FixedFactorUnionJavaComparable/ordered; the metamorphic
-    ordering test and factory determinism fail too. The remaining route is a
-    Go-only mark on a request whose consumer can sort in memory, which the
-    skip honours and the union rules ignore, carried by every push rule. Rows still open in
+    ordering test and factory determinism fail too. DONE (2026-10-08) by that
+    route: a RequestedOrdering carries a Go-only `sortable` mark, set by the
+    three sort pushes and the group-by push and carried through push-down,
+    rebase, pull-up and Exhaustive (Combine keeps a sortable request beside
+    an unsortable one). PrepareMatchesAndCompensations skips a match that
+    satisfies no request unless a request is sortable or there is none
+    (Go's correlated join-inner probes are planned without one). No corpus
+    plan moves; without the mark 182 do. Pin:
+    `TestPrepareMatchesAndCompensations_SkipsAMatchSatisfyingNoRequest`
+    (both arms mutation-checked). Rows still open in
     `wsfOpenUntil` as F-7c follow-ups: none. The IN-join versus filtered scan
     rows (`w8_in25`, `w8_in_union`, `w8_tie_in`) are declared `DIFF-PATH
     in-memory-sort` (DIVERGENCES.md "an IN ordered by a key no probe

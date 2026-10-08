@@ -117,15 +117,14 @@ func PrepareMatchesAndCompensations(
 			pm,
 			translatedRequestedOrderings,
 		)
-		// No Go-only pruning (F-7c): a full index scan with no search argument
-		// is kept, as Java keeps it (a PRESERVE request is satisfied by every
-		// scan). Java also skips a match that satisfies NONE of the requested
-		// orderings (AbstractDataAccessRule.java:660-662); Go does not yet.
-		// Java has no in-memory sort, so under an ORDER BY a join leg is asked
-		// for an ordering no probe provides and Java cannot plan the query;
-		// Go sorts, and the skip would drop those legs' probes (measured: the
-		// yamsql join scenarios degrade to scans). The skip needs Go's sort
-		// extension to request PRESERVE below it first. TODO.md F-7c.
+		// Java skips a match that satisfies none of the requested orderings
+		// (AbstractDataAccessRule.java:660-662). Go keeps it when a request is
+		// sortable (its consumer sorts in memory, which Java cannot) or when
+		// the reference has no request at all (Go plans correlated join-inner
+		// probes without one).
+		if len(satisfying) == 0 && len(requestedOrderings) > 0 && !anySortable(requestedOrderings) {
+			continue
+		}
 
 		// Required-for-binding gate (Java AbstractDataAccessRule line 665):
 		// skip a match that did not bind every sargable alias the candidate
@@ -199,6 +198,17 @@ func computeTopToTopTranslationMapMaybe(
 	}
 	current := values.CurrentCorrelation()
 	return maxMatchMap.PullUpMaybe(current, current)
+}
+
+// anySortable reports whether a request in the set is consumed by an
+// in-memory sort (RequestedOrdering.IsSortable).
+func anySortable(requested []*properties.RequestedOrdering) bool {
+	for _, r := range requested {
+		if r != nil && r.IsSortable() {
+			return true
+		}
+	}
+	return false
 }
 
 // pullUpRequestedOrderingToMatchTop expresses a logical request against the
@@ -294,7 +304,7 @@ func pullUpRequestedOrderingToMatchTop(
 		pulled,
 		requested.GetDistinctness(),
 		requested.IsExhaustive(),
-	)
+	).CarrySortable(requested)
 }
 
 // MaximumCoverageMatches eliminates PartialMatches whose coverage is

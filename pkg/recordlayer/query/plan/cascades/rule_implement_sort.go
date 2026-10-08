@@ -58,7 +58,7 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 		call.Fail(err)
 		return
 	}
-	call.PushConstraint(innerRef, []*properties.RequestedOrdering{pushedOrdering})
+	call.PushConstraint(innerRef, []*properties.RequestedOrdering{pushedOrdering.Sortable()})
 
 	if requestedOrdering.IsPreserve() {
 		for _, m := range innerRef.AllMembers() {

@@ -118,7 +118,7 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 		call.Fail(err)
 		return
 	}
-	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering})
+	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering.Sortable()})
 
 	// Guard: only yield the sort if the inner group has a physical plan to sort.
 	// The plan is not baked here — the collapsed sort ranges over innerRef LIVE

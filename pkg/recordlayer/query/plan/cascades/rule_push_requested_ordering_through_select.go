@@ -228,7 +228,7 @@ func pushRequestedOrderingToSelectChildThroughOutput(
 		return properties.PreserveOrdering()
 	}
 	return properties.NewRequestedOrdering(
-		parts, pushed.GetDistinctness(), pushed.IsExhaustive())
+		parts, pushed.GetDistinctness(), pushed.IsExhaustive()).CarrySortable(pushed)
 }
 
 var (

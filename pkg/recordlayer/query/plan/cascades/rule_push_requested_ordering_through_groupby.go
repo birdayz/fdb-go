@@ -139,6 +139,11 @@ func (r *PushRequestedOrderingThroughGroupByRule) OnMatch(call *ImplementationRu
 	}
 
 	if len(synthesized) > 0 {
+		// Go's aggregation sorts its input in memory when no access provides
+		// the grouping order, so each request is marked sortable.
+		for i, req := range synthesized {
+			synthesized[i] = req.Sortable()
+		}
 		call.PushConstraint(innerRef, synthesized)
 	}
 }

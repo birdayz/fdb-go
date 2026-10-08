@@ -569,6 +569,38 @@ func TestPrepareMatchesAndCompensations_UnrestrictedScanIsKept(t *testing.T) {
 	}
 }
 
+// TestPrepareMatchesAndCompensations_SkipsAMatchSatisfyingNoRequest pins
+// Java's skip (AbstractDataAccessRule.java:660-662): a match that satisfies
+// none of the requested orderings is no access. Go keeps it when a request is
+// sortable (its consumer sorts in memory, which Java cannot) and when the
+// reference has no request at all.
+func TestPrepareMatchesAndCompensations_SkipsAMatchSatisfyingNoRequest(t *testing.T) {
+	t.Parallel()
+
+	pm := makeDataAccessTestPartialMatch("unrestricted", 0, &testPlan{name: "full_scan"})
+	byOther := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: dataAccessTestKey("NAME"), SortOrder: properties.RequestedSortOrderAscending},
+		},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+	for _, c := range []struct {
+		name      string
+		requested []*properties.RequestedOrdering
+		want      int
+	}{
+		{"unsatisfied request skips", []*properties.RequestedOrdering{byOther}, 0},
+		{"sortable request keeps", []*properties.RequestedOrdering{byOther.Sortable()}, 1},
+		{"preserve beside keeps", []*properties.RequestedOrdering{byOther, properties.PreserveOrdering()}, 1},
+		{"no request keeps", nil, 1},
+	} {
+		if got := len(PrepareMatchesAndCompensations([]PartialMatch{pm}, c.requested, EmptyPlanContext())); got != c.want {
+			t.Errorf("%s: %d accesses, want %d", c.name, got, c.want)
+		}
+	}
+}
+
 func TestPrepareMatchesAndCompensations_TranslatesRequestedOrderingAtTop(
 	t *testing.T,
 ) {
