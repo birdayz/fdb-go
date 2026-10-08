@@ -446,7 +446,11 @@ func (b *RecordMetaDataBuilder) validateIndex(idx *Index, recordTypeNames []stri
 	if sliding {
 		// The VECTOR validator's option half; its structural half is not
 		// ported (DIVERGENCES.md, "VECTOR index metadata validation").
-		if err := validateVectorIndexOptionsAtBuild(idx); err != nil {
+		factory, err := lookupIndexMaintainerFactory(idx)
+		if err != nil {
+			return err
+		}
+		if err := factory.ValidateIndexOptions(idx); err != nil {
 			return err
 		}
 	} else if err := validateIndexType(idx, b.storeRecordVersions); err != nil {

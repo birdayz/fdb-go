@@ -195,12 +195,6 @@ func maintainerAs[T any](m IndexMaintainer) (T, bool) {
 	}
 }
 
-// unwrapVectorMaintainer peels any decorators off a maintainer and returns the
-// vector maintainer underneath, if there is one.
-func unwrapVectorMaintainer(m IndexMaintainer) (*vectorIndexMaintainer, bool) {
-	return maintainerAs[*vectorIndexMaintainer](m)
-}
-
 func newSlidingWindowIndexMaintainer(
 	index *Index,
 	delegate IndexMaintainer,

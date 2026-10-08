@@ -157,28 +157,6 @@ func (c guardiannConfig) validate() error {
 	return c.constructionSearchConfig.validate()
 }
 
-// GuardiANN-only option names beyond those in vector_engine.go.
-const (
-	IndexOptionGuardiannMergeMaxEverFraction                = "guardiannMergeMaxEverFraction"
-	IndexOptionGuardiannMinChildFraction                    = "guardiannMinChildFraction"
-	IndexOptionGuardiannMaxRelativeImbalance                = "guardiannMaxRelativeImbalance"
-	IndexOptionGuardiannSplitImbalancePenalty               = "guardiannSplitImbalancePenalty"
-	IndexOptionGuardiannReplicationDistanceRatioWeight      = "guardiannReplicationDistanceRatioWeight"
-	IndexOptionGuardiannReplicationZScoreWeight             = "guardiannReplicationZScoreWeight"
-	IndexOptionGuardiannReplicationStatsMinSampleSize       = "guardiannReplicationStatsMinSampleSize"
-	IndexOptionGuardiannDeterministicRandomness             = "guardiannDeterministicRandomness"
-	IndexOptionGuardiannSampleBatchSize                     = "guardiannSampleBatchSize"
-	IndexOptionGuardiannDeleteConcurrency                   = "guardiannDeleteConcurrency"
-	IndexOptionGuardiannKMeansMaxIterations                 = "guardiannKMeansMaxIterations"
-	IndexOptionGuardiannKMeansMaxRestarts                   = "guardiannKMeansMaxRestarts"
-	IndexOptionGuardiannSplitMergeConcurrency               = "guardiannSplitMergeConcurrency"
-	IndexOptionGuardiannReassignConcurrency                 = "guardiannReassignConcurrency"
-	IndexOptionGuardiannCollapseConcurrency                 = "guardiannCollapseConcurrency"
-	IndexOptionGuardiannBounceConcurrency                   = "guardiannBounceConcurrency"
-	IndexOptionGuardiannConstructionCentroidEfRingSearch    = "guardiannConstructionCentroidEfRingSearch"
-	IndexOptionGuardiannConstructionCentroidEfOutwardSearch = "guardiannConstructionCentroidEfOutwardSearch"
-)
-
 // parseGuardiannConfig is GuardiannVectorIndexEngine.parseConfig. The shared
 // vector options (metric, dimensions, stats, RaBitQ) read their canonical
 // name or alias as the HNSW engine does.
