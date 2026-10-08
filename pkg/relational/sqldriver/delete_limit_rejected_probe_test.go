@@ -14,20 +14,22 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DeleteLimitRejectedProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dlr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dlr")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dlr")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dlr")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dlr CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dlr/s WITH TEMPLATE dlr")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DLR?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dlr/s WITH TEMPLATE dlr")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DLR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -42,7 +44,7 @@ func TestFDB_DeleteLimitRejectedProbe(t *testing.T) {
 	}
 
 	t.Run("delete_limit_rejected_no_data_loss", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (1,10),(2,20),(3,30),(4,40),(5,50)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (1,10),(2,20),(3,30),(4,40),(5,50)")
 		_, err := db.ExecContext(ctx, "DELETE FROM t WHERE a > 0 LIMIT 1")
 		if err == nil || !strings.Contains(err.Error(), "0AF00") {
 			t.Fatalf("DELETE ... LIMIT error = %v, want 0AF00 (limit is not supported)", err)

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -27,12 +29,12 @@ import (
 // distance. Bridges 9.3a/b (SQL → vector plan) and 9.3c (plan → KNN execution).
 func TestFDB_VectorSearch_QualifyE2E(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

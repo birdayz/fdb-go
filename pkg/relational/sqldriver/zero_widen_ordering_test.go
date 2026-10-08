@@ -33,21 +33,23 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ZeroWidenBreaksSuffixOrdering(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_zwo")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_zwo")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE zwo "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_zwo")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_zwo")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE zwo "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_zwo/s WITH TEMPLATE zwo")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ZWO?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_zwo/s WITH TEMPLATE zwo")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ZWO?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -56,7 +58,7 @@ func TestFDB_ZeroWidenBreaksSuffixOrdering(t *testing.T) {
 	// -0.0 sorts BEFORE +0.0, so the physical scan yields w=9 then w=1 —
 	// descending across the prefix boundary. Any claim that w is ordered is
 	// observably false on this data.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, w) VALUES (1, -0.0, 9), (2, 0.0, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v, w) VALUES (1, -0.0, 9), (2, 0.0, 1)")
 
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -108,7 +110,7 @@ func TestFDB_ZeroWidenBreaksSuffixOrdering(t *testing.T) {
 		t.Run(tc.query, func(t *testing.T) {
 			// The sort must be PRESENT. Without this the row assertions could
 			// pass on a plan that happened to emit rows in the right order.
-			if plan := explainOnConn(t, ctx, conn, tc.query); !strings.Contains(plan, "Sort") {
+			if plan := testkit.ExplainConn(t, ctx, conn, tc.query); !strings.Contains(plan, "Sort") {
 				t.Fatalf("%s\nplan = %s\nwant a sort node: a widened zero range spans two "+
 					"prefixes, so the scan cannot supply w's ordering and the sort must not "+
 					"be elided", tc.query, plan)

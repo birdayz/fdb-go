@@ -33,55 +33,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
-
-// pinExplain returns the EXPLAIN output for q.
-func pinExplain(t *testing.T, db *sql.DB, ctx context.Context, q string) string {
-	t.Helper()
-	var plan string
-	if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
-		t.Fatalf("EXPLAIN %q: %v", q, err)
-	}
-	return plan
-}
-
-// pinRows runs q and renders every row as "v1|v2|...|vN" in scan
-// order (callers sort when the query has no ORDER BY). A query error here is
-// also the guard against the ordinal model's loud internal errors
-// (OrdinalResolutionError / BakedNameContextError / OrdinalBakeError) — those
-// surface as query failures, so err==nil proves none fired.
-func pinRows(t *testing.T, db *sql.DB, ctx context.Context, q string) []string {
-	t.Helper()
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		t.Fatalf("query %q: %v", q, err)
-	}
-	defer rows.Close()
-	cols, err := rows.Columns()
-	if err != nil {
-		t.Fatalf("columns %q: %v", q, err)
-	}
-	var out []string
-	for rows.Next() {
-		vals := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			t.Fatalf("scan %q: %v", q, err)
-		}
-		parts := make([]string, len(vals))
-		for i, v := range vals {
-			parts[i] = fmt.Sprintf("%v", v)
-		}
-		out = append(out, strings.Join(parts, "|"))
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows.Err %q: %v", q, err)
-	}
-	return out
-}
 
 // TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel pins: a 2-way join
 // consumed inside a 3-way inner cluster must remain name-model — the cluster
@@ -92,41 +46,41 @@ func pinRows(t *testing.T, db *sql.DB, ctx context.Context, q string) []string {
 // 3-quantifier select for it to partition).
 func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_gpa")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gpa")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_gpa")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gpa")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gpa_tmpl "+
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, bv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, b_id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gpa/s WITH TEMPLATE gpa_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GPA?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gpa/s WITH TEMPLATE gpa_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GPA?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100), (2, 200), (3, 300)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, a_id, bv) VALUES (10, 1, 111), (11, 1, 222), (12, 2, 333)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100), (2, 200), (3, 300)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, a_id, bv) VALUES (10, 1, 111), (11, 1, 222), (12, 2, 333)")
 	// c(103) dangles (b_id=99): the inner b↔c 2-way must not leak it.
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, b_id) VALUES (100, 10), (101, 10), (102, 12), (103, 99)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, b_id) VALUES (100, 10), (101, 10), (102, 12), (103, 99)")
 
 	// Hand-computed: b10(a1)×{c100,c101}, b11(a1)×∅, b12(a2)×{c102}.
 	want := []string{"1|10|100", "1|10|101", "2|12|102"}
 
 	checkRowsAndPlan := func(t *testing.T, q string) string {
 		t.Helper()
-		got := pinRows(t, db, ctx, q)
+		got := testkit.PinRows(t, db, ctx, q)
 		sort.Strings(got)
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
-		plan := pinExplain(t, db, ctx, q)
+		plan := testkit.PinExplain(t, db, ctx, q)
 		// A 3-way inner cluster plans as a CHAIN of 2-way FlatMaps — one nested
 		// in the other. A single gated 2-way plans as ONE FlatMap (see the
 		// GroupBy pin below); the nested shape only exists where partitioning
@@ -179,10 +133,10 @@ func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 		// legs, so the spelling must produce the SAME rows as the three above —
 		// that equality is the point: a re-spelling of one cluster may not
 		// change the answer.
-		got := pinRows(t, db, ctx,
+		got := testkit.PinRows(t, db, ctx,
 			"SELECT s.aid, s.bid, c.id FROM (SELECT a.id AS aid, b.id AS bid FROM a, b WHERE a.id = b.a_id) s, c WHERE s.bid = c.b_id")
 		sort.Strings(got)
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("derived-variant rows = %v, want %v (the same cluster, re-spelled)", got, want)
 		}
 	})
@@ -213,30 +167,30 @@ func TestFDB_TwoWayJoinUnderThreeWayClusterStaysNameModel(t *testing.T) {
 // pinned rather than dropped so the difference stays visible.
 func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_gpb")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gpb")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_gpb")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gpb")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gpb_tmpl "+
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, bv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, cv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, c_id BIGINT, dw BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gpb/s WITH TEMPLATE gpb_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GPB?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gpb/s WITH TEMPLATE gpb_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GPB?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100), (2, 200)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, a_id, bv) VALUES (10, 1, 111), (11, 2, 222)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, cv) VALUES (1, 51), (3, 53)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id, c_id, dw) VALUES (1000, 1, 41), (1001, 3, 42)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100), (2, 200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, a_id, bv) VALUES (10, 1, 111), (11, 2, 222)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, cv) VALUES (1, 51), (3, 53)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id, c_id, dw) VALUES (1000, 1, 41), (1001, 3, 42)")
 
 	const evasion = "SELECT t1.aid, t1.bv, t2.cid, t2.dw " +
 		"FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1, " +
@@ -248,15 +202,15 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 	wantEvasion := []string{"1|111|1|41"}
 
 	t.Run("comma_form_correct_rows", func(t *testing.T) {
-		got := pinRows(t, db, ctx, evasion)
+		got := testkit.PinRows(t, db, ctx, evasion)
 		sort.Strings(got)
-		if !eqStrSlices(got, wantEvasion) {
+		if !testkit.EqualStrings(got, wantEvasion) {
 			t.Errorf("comma-form rows = %v, want %v", got, wantEvasion)
 		}
 	})
 	t.Run("explain_form_describes_the_plan_it_runs", func(t *testing.T) {
 		// EXPLAIN must agree with the statement: both plan, or neither does.
-		plan := pinExplain(t, db, ctx, evasion)
+		plan := testkit.PinExplain(t, db, ctx, evasion)
 		for _, source := range []string{"Scan(A", "Scan(B", "Scan(C", "Scan(D"} {
 			if !strings.Contains(plan, source) {
 				t.Errorf("EXPLAIN lost the cross-derived join's %s):\n%s", source, plan)
@@ -271,12 +225,12 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 		// same query must agree: the one row where t1.aid = t2.cid. The row
 		// COUNT is the discriminator — a dropped cross-derived predicate
 		// returns all FOUR, which is what the old decline was hiding.
-		got := pinRows(t, db, ctx,
+		got := testkit.PinRows(t, db, ctx,
 			"WITH t1 AS (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id), "+
 				"t2 AS (SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) "+
 				"SELECT t1.aid, t1.bv, t2.cid, t2.dw FROM t1, t2 WHERE t1.aid = t2.cid")
 		sort.Strings(got)
-		if !eqStrSlices(got, wantEvasion) {
+		if !testkit.EqualStrings(got, wantEvasion) {
 			t.Errorf("cte-form rows = %v, want %v (the derived spelling of the same query)", got, wantEvasion)
 		}
 	})
@@ -285,21 +239,21 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 		// hidden behind a decline: with the derived legs typed,
 		// upgradeJoinOnPredicates' scopeOK is true and the ON survives. One row,
 		// not the four a dropped ON would produce.
-		got := pinRows(t, db, ctx,
+		got := testkit.PinRows(t, db, ctx,
 			"SELECT t1.aid, t1.bv, t2.cid, t2.dw "+
 				"FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1 "+
 				"JOIN (SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) t2 "+
 				"ON t1.aid = t2.cid")
 		sort.Strings(got)
-		if !eqStrSlices(got, wantEvasion) {
+		if !testkit.EqualStrings(got, wantEvasion) {
 			t.Errorf("explicit-JOIN rows = %v, want %v — extra rows mean the ON was dropped", got, wantEvasion)
 		}
 		// c = {1,3}, s.aid = {1,2}: exactly one match.
-		got = pinRows(t, db, ctx,
+		got = testkit.PinRows(t, db, ctx,
 			"SELECT s.aid, c.id FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) s "+
 				"JOIN c ON c.id = s.aid")
 		sort.Strings(got)
-		if !eqStrSlices(got, []string{"1|1"}) {
+		if !testkit.EqualStrings(got, []string{"1|1"}) {
 			t.Errorf("derived-JOIN-table rows = %v, want [1|1] — extra rows mean the ON was dropped", got)
 		}
 	})
@@ -307,9 +261,9 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 		// Control: ONE derived-with-join consumed alone. It isolates the
 		// derived-with-join capability from the t1×t2 combination, so a failure
 		// here says the capability broke, not the cross-derived predicate.
-		got := pinRows(t, db, ctx,
+		got := testkit.PinRows(t, db, ctx,
 			"SELECT t1.aid, t1.bv FROM (SELECT a.id AS aid, b.bv AS bv FROM a JOIN b ON b.a_id = a.id) t1 WHERE t1.aid = 1")
-		if !eqStrSlices(got, []string{"1|111"}) {
+		if !testkit.EqualStrings(got, []string{"1|111"}) {
 			t.Errorf("solo derived-join rows = %v, want [1|111]", got)
 		}
 	})
@@ -324,35 +278,35 @@ func TestFDB_FourWayFlatteningEvasionStaysNameModel(t *testing.T) {
 // chain in the 3-way pin above), HAVING as a PredicatesFilter above the agg.
 func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_gbhj")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gbhj")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_gbhj")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gbhj")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gbhj_tmpl "+
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, cw BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gbhj/s WITH TEMPLATE gbhj_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GBHJ?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gbhj/s WITH TEMPLATE gbhj_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GBHJ?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100), (2, 200), (3, 300)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100), (2, 200), (3, 300)")
 	// Groups: a1 → {c100, c101} (count 2), a2 → {c102}, a3 → {c103}.
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id, cw) VALUES (100, 1, 7), (101, 1, 8), (102, 2, 9), (103, 3, 10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id, cw) VALUES (100, 1, 7), (101, 1, 8), (102, 2, 9), (103, 3, 10)")
 
 	t.Run("having_on_aggregate", func(t *testing.T) {
 		q := "SELECT a.id, COUNT(c.id) FROM a JOIN c ON c.a_id = a.id GROUP BY a.id HAVING COUNT(c.id) >= 2 ORDER BY a.id"
-		got := pinRows(t, db, ctx, q)
-		if want := []string{"1|2"}; !eqStrSlices(got, want) {
+		got := testkit.PinRows(t, db, ctx, q)
+		if want := []string{"1|2"}; !testkit.EqualStrings(got, want) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
-		plan := pinExplain(t, db, ctx, q)
+		plan := testkit.PinExplain(t, db, ctx, q)
 		// The aggregate sits over the ordinal join: StreamingAgg on the
 		// group key, directly over the SINGLE FlatMap (the gated 2-way);
 		// HAVING is the PredicatesFilter above the agg.
@@ -374,11 +328,11 @@ func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 	})
 	t.Run("having_on_group_key", func(t *testing.T) {
 		q := "SELECT a.id, COUNT(c.id) FROM a JOIN c ON c.a_id = a.id GROUP BY a.id HAVING a.id >= 2 ORDER BY a.id"
-		got := pinRows(t, db, ctx, q)
-		if want := []string{"2|1", "3|1"}; !eqStrSlices(got, want) {
+		got := testkit.PinRows(t, db, ctx, q)
+		if want := []string{"2|1", "3|1"}; !testkit.EqualStrings(got, want) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
-		plan := pinExplain(t, db, ctx, q)
+		plan := testkit.PinExplain(t, db, ctx, q)
 		for _, frag := range []string{"StreamingAgg(keys=[_current.ID#0]", "FlatMap(outer="} {
 			if !strings.Contains(plan, frag) {
 				t.Errorf("plan lost %q:\n%s", frag, plan)
@@ -389,11 +343,11 @@ func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 		// Sorting on the AGGREGATE output over the gated join (the sort key
 		// is the agg value, not a leg column).
 		q := "SELECT a.id, COUNT(c.id) FROM a JOIN c ON c.a_id = a.id GROUP BY a.id ORDER BY COUNT(c.id) DESC, a.id"
-		got := pinRows(t, db, ctx, q)
-		if want := []string{"1|2", "2|1", "3|1"}; !eqStrSlices(got, want) {
+		got := testkit.PinRows(t, db, ctx, q)
+		if want := []string{"1|2", "2|1", "3|1"}; !testkit.EqualStrings(got, want) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
-		plan := pinExplain(t, db, ctx, q)
+		plan := testkit.PinExplain(t, db, ctx, q)
 		// The sort reads the projected COUNT column of the block.
 		for _, frag := range []string{"InMemorySort([_current._1#1 DESC", "_1: _current.COUNT(C.ID)#1", "StreamingAgg(keys=[_current.ID#0]"} {
 			if !strings.Contains(plan, frag) {
@@ -408,11 +362,11 @@ func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 		// and #1. Two keys collapsing onto one ordinal is the defect this
 		// fragment catches. Row ORDER is asserted (not sorted away).
 		q := "SELECT a.id, c.id, c.cw FROM a JOIN c ON c.a_id = a.id ORDER BY a.id DESC, c.id DESC LIMIT 3"
-		got := pinRows(t, db, ctx, q)
-		if want := []string{"3|103|10", "2|102|9", "1|101|8"}; !eqStrSlices(got, want) {
+		got := testkit.PinRows(t, db, ctx, q)
+		if want := []string{"3|103|10", "2|102|9", "1|101|8"}; !testkit.EqualStrings(got, want) {
 			t.Errorf("rows = %v, want %v (in order)", got, want)
 		}
-		plan := pinExplain(t, db, ctx, q)
+		plan := testkit.PinExplain(t, db, ctx, q)
 		for _, frag := range []string{"Limit(3", "InMemorySort([_current.A.ID#0 DESC, _current.C.ID#1 DESC]", "FlatMap(outer="} {
 			if !strings.Contains(plan, frag) {
 				t.Errorf("plan lost %q:\n%s", frag, plan)
@@ -431,26 +385,26 @@ func TestFDB_GroupByHavingOverOrdinalJoin(t *testing.T) {
 // through the driver-side positional read.
 func TestFDB_DupNameStarOverOrdinalJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dupstar")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dupstar")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dupstar")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dupstar")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dupstar_tmpl "+
 			"CREATE TABLE pdup (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE qdup (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dupstar/s WITH TEMPLATE dupstar_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUPSTAR?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dupstar/s WITH TEMPLATE dupstar_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUPSTAR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO pdup (id, v) VALUES (1, 11), (2, 12)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO qdup (id, v) VALUES (1, 91), (2, 92)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO pdup (id, v) VALUES (1, 11), (2, 12)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO qdup (id, v) VALUES (1, 91), (2, 92)")
 
 	check := func(t *testing.T, q string) {
 		t.Helper()
@@ -466,7 +420,7 @@ func TestFDB_DupNameStarOverOrdinalJoin(t *testing.T) {
 		// FROM-declaration order: pdup.id, pdup.v, qdup.id, qdup.v — the
 		// duplicated bare names must COEXIST in the metadata (no dedup, no
 		// _<ordinal> mangling).
-		if !eqStrSlices(cols, []string{"ID", "V", "ID", "V"}) {
+		if !testkit.EqualStrings(cols, []string{"ID", "V", "ID", "V"}) {
 			t.Fatalf("columns = %v, want [ID V ID V]", cols)
 		}
 		var got []string
@@ -483,7 +437,7 @@ func TestFDB_DupNameStarOverOrdinalJoin(t *testing.T) {
 		// Per-leg-correct positional values: pdup.v ∈ {11,12}, qdup.v ∈
 		// {91,92}. A cross-leg swap would yield 9x in slot 2; a last-wins
 		// collision would yield the SAME v in slots 2 and 4.
-		if want := []string{"1|11|1|91", "2|12|2|92"}; !eqStrSlices(got, want) {
+		if want := []string{"1|11|1|91", "2|12|2|92"}; !testkit.EqualStrings(got, want) {
 			t.Errorf("rows = %v, want %v (in order)", got, want)
 		}
 	}
@@ -508,19 +462,19 @@ func TestFDB_DupNameStarOverOrdinalJoin(t *testing.T) {
 // pass the row checks).
 func TestFDB_CoveringIndexLegOverOrdinalJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_covleg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_covleg")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_covleg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_covleg")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE covleg_tmpl "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_covleg/s WITH TEMPLATE covleg_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COVLEG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_covleg/s WITH TEMPLATE covleg_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COVLEG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -532,12 +486,12 @@ func TestFDB_CoveringIndexLegOverOrdinalJoin(t *testing.T) {
 	// PK, no index) so the planner cannot probe A — it must drive A as the
 	// outer and probe C through c_a_id, which COVERS the query (c.a_id is
 	// the only c-column touched).
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 1), (2, 1), (3, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (100, 1), (101, 1), (102, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 1), (2, 1), (3, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (100, 1), (101, 1), (102, 2)")
 
 	const q = "SELECT a.id, c.a_id FROM a JOIN c ON c.a_id = a.x ORDER BY a.id, c.a_id"
 
-	plan := pinExplain(t, db, ctx, q)
+	plan := testkit.PinExplain(t, db, ctx, q)
 	// CANARY: the covering-leg-into-gated-join shape is UNREACHABLE today —
 	// fetch elimination pushes a Map through the fetch, which needs a Map
 	// DIRECTLY over the fetch, and join legs never have one. The
@@ -555,7 +509,7 @@ func TestFDB_CoveringIndexLegOverOrdinalJoin(t *testing.T) {
 	if !strings.Contains(plan, "IndexScan(C_A_ID") {
 		t.Fatalf("expected the c-leg to probe through C_A_ID — plan: %s", plan)
 	}
-	assertScanReadsBaseRecords(t, plan, "IndexScan(C_A_ID")
+	testkit.AssertScanReadsBaseRecords(t, plan, "IndexScan(C_A_ID")
 	if strings.Contains(plan, "COVERING") {
 		t.Fatalf("a COVERING probe reached a gated join — the canary fired: promote the row assertions to the live pin (plan: %s)", plan)
 	}
@@ -603,19 +557,19 @@ func TestFDB_CoveringIndexLegOverOrdinalJoin(t *testing.T) {
 // correlation.
 func TestFDB_PureCrossProduct(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_cross")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cross")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_cross")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cross")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE cross_tmpl "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cross/s WITH TEMPLATE cross_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CROSS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cross/s WITH TEMPLATE cross_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CROSS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -624,29 +578,29 @@ func TestFDB_PureCrossProduct(t *testing.T) {
 
 	// a(9) is the NEGATIVE row for the exists-cross pin below: its probe
 	// needs b.id=18, which is absent — an always-true EXISTS would leak it.
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2), (9)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id) VALUES (10), (11), (12)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id) VALUES (100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2), (9)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id) VALUES (10), (11), (12)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id) VALUES (100)")
 
 	// 3 × 3 × 1 = 9 cross rows; every combination present exactly once.
-	got := pinRows(t, db, ctx, "SELECT a.id, b.id, c.id FROM a, b, c")
+	got := testkit.PinRows(t, db, ctx, "SELECT a.id, b.id, c.id FROM a, b, c")
 	sort.Strings(got)
 	want := []string{
 		"1|10|100", "1|11|100", "1|12|100",
 		"2|10|100", "2|11|100", "2|12|100",
 		"9|10|100", "9|11|100", "9|12|100",
 	}
-	if !eqStrSlices(got, want) {
+	if !testkit.EqualStrings(got, want) {
 		t.Errorf("cross rows = %v, want %v", got, want)
 	}
 
 	// The EXISTS flavor: a 3-way cross body correlated only through one leg.
 	// a(1)→b.id 10 ✓, a(2)→b.id 11 ✓, a(9)→b.id 18 ✗ — the negative row
 	// proves the existential actually filters.
-	got = pinRows(t, db, ctx,
+	got = testkit.PinRows(t, db, ctx,
 		"SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b, c, a a2 WHERE b.id = 10 + a.id - 1)")
 	sort.Strings(got)
-	if !eqStrSlices(got, []string{"1", "2"}) {
+	if !testkit.EqualStrings(got, []string{"1", "2"}) {
 		t.Errorf("exists-cross rows = %v, want [1 2] (a=9 has no matching b.id=18)", got)
 	}
 }
@@ -661,32 +615,32 @@ func TestFDB_PureCrossProduct(t *testing.T) {
 // matched, left-only, right-only (NULL-extended a side).
 func TestFDB_FullJoinOverBuriedRef(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_fullburied")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fullburied")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_fullburied")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fullburied")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE fullburied_tmpl "+
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fullburied/s WITH TEMPLATE fullburied_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FULLBURIED?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fullburied/s WITH TEMPLATE fullburied_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FULLBURIED?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100), (2, 200)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, a_id) VALUES (10, 1), (11, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100), (2, 200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, a_id) VALUES (10, 1), (11, 2)")
 	// c(100)→a1 matched; c(101)→a_id 99 unmatched: the right-only FULL row
 	// NULL-extends the whole (a JOIN b) leg, so the buried a.id reads NULL.
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (100, 1), (101, 99)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (100, 1), (101, 99)")
 
-	got := pinRows(t, db, ctx,
+	got := testkit.PinRows(t, db, ctx,
 		"SELECT a.id, b.id, c.id FROM a JOIN b ON b.a_id = a.id FULL OUTER JOIN c ON c.a_id = a.id")
 	sort.Strings(got)
 	want := []string{
@@ -695,7 +649,7 @@ func TestFDB_FullJoinOverBuriedRef(t *testing.T) {
 		"<nil>|<nil>|101", // right-only: c101, buried leg NULL-extended
 	}
 	sort.Strings(want)
-	if !eqStrSlices(got, want) {
+	if !testkit.EqualStrings(got, want) {
 		t.Errorf("FULL-over-gated buried-ref rows = %v, want %v", got, want)
 	}
 }
@@ -708,34 +662,34 @@ func TestFDB_FullJoinOverBuriedRef(t *testing.T) {
 // at the unit level in the cascades package.
 func TestFDB_SecondaryIndexThroughJoinMerge(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_idxmerge")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idxmerge")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_idxmerge")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idxmerge")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE idxmerge_tmpl "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, y BIGINT, z BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, b_z BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_b_z ON c (b_z)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idxmerge/s WITH TEMPLATE idxmerge_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXMERGE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idxmerge/s WITH TEMPLATE idxmerge_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXMERGE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 10), (2, 20)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, y, z) VALUES (10, 10, 7), (20, 20, 8)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 10), (2, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, y, z) VALUES (10, 10, 7), (20, 20, 8)")
 	// c(102) dangles (b_z=9): a full-scan-shaped mistake would leak it into
 	// a cross product; the index probe never sees it.
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, b_z) VALUES (100, 7), (101, 8), (102, 9)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, b_z) VALUES (100, 7), (101, 8), (102, 9)")
 
 	const q = "SELECT a.id, c.id FROM a, b, c WHERE a.x = b.y AND b.z = c.b_z"
-	plan := pinExplain(t, db, ctx, q)
+	plan := testkit.PinExplain(t, db, ctx, q)
 	// The property is that the c-leg probes through its secondary index and
 	// reads base records — not that a `Fetch(` node renders above it. A bare
 	// `IndexScan(C_B_Z, [=])` is a fetching scan and satisfies the claim; the
@@ -743,27 +697,27 @@ func TestFDB_SecondaryIndexThroughJoinMerge(t *testing.T) {
 	if !strings.Contains(plan, "IndexScan(C_B_Z") {
 		t.Fatalf("the c-leg must probe through its secondary index inside the merge machinery — plan: %s", plan)
 	}
-	assertScanReadsBaseRecords(t, plan, "IndexScan(C_B_Z")
-	got := pinRows(t, db, ctx, q)
+	testkit.AssertScanReadsBaseRecords(t, plan, "IndexScan(C_B_Z")
+	got := testkit.PinRows(t, db, ctx, q)
 	sort.Strings(got)
-	if want := []string{"1|100", "2|101"}; !eqStrSlices(got, want) {
+	if want := []string{"1|100", "2|101"}; !testkit.EqualStrings(got, want) {
 		t.Errorf("rows = %v, want %v", got, want)
 	}
 
 	// ORDER BY variant: same probe, sort present but exactly ONE (no
 	// fused-substrate-induced double sort), rows ordered.
 	const qo = q + " ORDER BY a.id"
-	planO := pinExplain(t, db, ctx, qo)
+	planO := testkit.PinExplain(t, db, ctx, qo)
 	// Same property as the unordered variant above: the probe reads base
 	// records. Not the `Fetch(` rendering, which RFC-220 collapsed.
 	if !strings.Contains(planO, "IndexScan(C_B_Z") {
 		t.Fatalf("ORDER BY variant lost the index probe — plan: %s", planO)
 	}
-	assertScanReadsBaseRecords(t, planO, "IndexScan(C_B_Z")
+	testkit.AssertScanReadsBaseRecords(t, planO, "IndexScan(C_B_Z")
 	if strings.Count(planO, "InMemorySort") > 1 {
 		t.Fatalf("more than one sort in the ordered plan (spurious sort) — plan: %s", planO)
 	}
-	if gotO := pinRows(t, db, ctx, qo); !eqStrSlices(gotO, []string{"1|100", "2|101"}) {
+	if gotO := testkit.PinRows(t, db, ctx, qo); !testkit.EqualStrings(gotO, []string{"1|100", "2|101"}) {
 		t.Errorf("ordered rows = %v, want [1|100 2|101]", gotO)
 	}
 }
@@ -776,13 +730,13 @@ func TestFDB_SecondaryIndexThroughJoinMerge(t *testing.T) {
 // pinned in the embedded plan tests.
 func TestFDB_TopLevelLeftJoinOrdinalizes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_w4left")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_w4left")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_w4left")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_w4left")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE w4left_tmpl "+
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
@@ -791,17 +745,17 @@ func TestFDB_TopLevelLeftJoinOrdinalizes(t *testing.T) {
 			// NLJ, so the ordinalized dissolved shape is the WINNER and is
 			// actually executed (not just a memo alternative).
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_w4left/s WITH TEMPLATE w4left_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_W4LEFT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_w4left/s WITH TEMPLATE w4left_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_W4LEFT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100), (2, 200), (3, 300)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100), (2, 200), (3, 300)")
 	// c matches a=1 and a=2; a=3 is UNMATCHED → NULL-extended.
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (10, 1), (11, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (10, 1), (11, 2)")
 
 	const q = "SELECT a.id, c.id FROM a LEFT JOIN c ON c.a_id = a.id"
 	// The dissolved FlatMap (index probe) must WIN over the materialized LEFT
@@ -813,18 +767,18 @@ func TestFDB_TopLevelLeftJoinOrdinalizes(t *testing.T) {
 	// yields !AnchoredJoin + AssertOrdinalJoinSeed). EXPLAIN carries no
 	// ordinal-vs-name-model marker, so this is the strongest SQL-level shape
 	// assertion available.
-	plan := pinExplain(t, db, ctx, q)
+	plan := testkit.PinExplain(t, db, ctx, q)
 	if !strings.Contains(plan, "FlatMap(") {
 		t.Fatalf("expected the dissolved FlatMap to win, got the materialized NLJ:\n%s", plan)
 	}
 	if strings.Contains(plan, "NestedLoopJoin(LEFT OUTER") {
 		t.Fatalf("the materialized LEFT-OUTER NLJ won — the dissolved LEFT did not execute:\n%s", plan)
 	}
-	got := pinRows(t, db, ctx, q)
+	got := testkit.PinRows(t, db, ctx, q)
 	sort.Strings(got)
 	want := []string{"1|10", "2|11", "3|<nil>"}
 	sort.Strings(want)
-	if !eqStrSlices(got, want) {
+	if !testkit.EqualStrings(got, want) {
 		t.Errorf("LEFT JOIN rows = %v, want %v (a=3 NULL-extended through the ordinal null-leg build)", got, want)
 	}
 }

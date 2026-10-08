@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -95,7 +97,7 @@ func joinShapeBattery() []struct{ name, sql string } {
 // battery is then vacuous.
 func forEachBatteryJoin(t *testing.T, visit func(name, sql string, j joinResultValue)) {
 	t.Helper()
-	md := existsGatherSchemaMetadata(t)
+	md := testkit.ExistsGatherSchemaMetadata(t)
 	for _, tc := range joinShapeBattery() {
 		plan, err := embedded.PlanRecordQueryWithMetadata(tc.sql, md, nil)
 		if err != nil {

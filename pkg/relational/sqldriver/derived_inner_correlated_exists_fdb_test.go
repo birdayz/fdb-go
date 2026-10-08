@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -34,24 +36,24 @@ import (
 // for both outer rows; a derived body of {} → EXISTS false for both.
 func TestFDB_CorrelatedExistsDerivedInner(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_corr_exists_derived_inner"
-	setup := openTestDB(t, dbPath)
-	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cedi_tmpl "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cedi_tmpl "+
 		"CREATE TABLE ord (order_id BIGINT, cust_id BIGINT, PRIMARY KEY (order_id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cedi_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cedi_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO ord VALUES (1, 10), (2, 20)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO ord VALUES (1, 10), (2, 20)")
 
 	type idBool struct {
 		id int64
@@ -232,7 +234,7 @@ func TestFDB_CorrelatedExistsDerivedInner(t *testing.T) {
 		if qerr == nil {
 			t.Fatalf("expected a LOUD decline for an unplannable derived body (undefined column) — the fix must not degrade to an empty scan")
 		}
-		requireSQLSTATE(t, qerr, api.ErrCodeUndefinedColumn)
+		testkit.RequireSQLSTATE(t, qerr, api.ErrCodeUndefinedColumn)
 	})
 	t.Run("unplannable_derived_body_declines_loudly_where", func(t *testing.T) {
 		rows, qerr := db.QueryContext(ctx, "SELECT o.order_id FROM ord AS o WHERE EXISTS "+
@@ -248,7 +250,7 @@ func TestFDB_CorrelatedExistsDerivedInner(t *testing.T) {
 		}
 		// Must be the FAITHFUL 42703 (same as the projected position) — never rewritten
 		// to 0A000 by the CorrelatedExistsError classification.
-		requireSQLSTATE(t, qerr, api.ErrCodeUndefinedColumn)
+		testkit.RequireSQLSTATE(t, qerr, api.ErrCodeUndefinedColumn)
 	})
 	// Unplannable derived LEG body in WHERE position: the leg's carrier build fails in
 	// the rights loop and returns the faithful *api.Error EARLY (before the leg's own
@@ -267,7 +269,7 @@ func TestFDB_CorrelatedExistsDerivedInner(t *testing.T) {
 		if qerr == nil {
 			t.Fatalf("expected a LOUD decline for an unplannable derived LEG body in a WHERE EXISTS")
 		}
-		requireSQLSTATE(t, qerr, api.ErrCodeUndefinedColumn)
+		testkit.RequireSQLSTATE(t, qerr, api.ErrCodeUndefinedColumn)
 	})
 
 	// WHERE and ON consume the same derived body as the no-predicate fast path;

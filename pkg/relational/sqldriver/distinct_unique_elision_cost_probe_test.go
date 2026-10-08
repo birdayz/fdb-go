@@ -59,6 +59,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -459,15 +461,15 @@ func duecMeasurementWindowLost(err error) bool {
 
 func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_duec")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duec")
+	setup := testkit.OpenDB(t, "/FRL/testdb_duec")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duec")
 	// Three tables differing only in NULL density. EMAIL_PLAIN mirrors EMAIL
 	// value for value, NULL for NULL, and carries no index.
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE duec "+
 			"CREATE TABLE users (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email ON users (email) "+
@@ -483,8 +485,8 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 			"CREATE UNIQUE INDEX by_email1_s ON users1_s (email) "+
 			"CREATE TABLE users50_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email50_s ON users50_s (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duec/s WITH TEMPLATE duec")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUEC?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duec/s WITH TEMPLATE duec")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUEC?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db := duecOpenUncompressed(t, dsn)
 	db.SetMaxOpenConns(16)
 
@@ -619,7 +621,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// plus whatever the box was doing — measured at 0.858x on one run and
 	// 1.012x on another, with a median ALLOCATION ratio of exactly 1.000x,
 	// which is the signature of one plan run twice.
-	acconn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	acconn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, int64(duecPageScanLimit)).Build())
 	})
@@ -630,7 +632,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 		{"S50-R3", "SELECT DISTINCT email FROM users50 WHERE id >= 0"},
 		{"R2 half-NULL", "SELECT DISTINCT email FROM users50 WHERE email IS NOT NULL"},
 	} {
-		plan := explainPlan(t, ctx, db, ac.query)
+		plan := testkit.ExplainPlan(t, ctx, db, ac.query)
 		t.Logf("AUTO-COMMIT EXPLAIN %-13s %-52s => %s", ac.tag, ac.query, plan)
 		if strings.Contains(plan, "narrowed-by:") || strings.Contains(plan, "distinct-by:") {
 			t.Fatalf("%s drew a secondary-UNIQUE proof in AUTO-COMMIT: %s\n"+
@@ -708,7 +710,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// bound over two runs of one plan is not a weak criterion, it is a
 	// criterion about nothing, and leaving it in place at a looser number
 	// would report R3 as measured on a regime where R3 does not exist.
-	tconn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	tconn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	series := map[string]*duecSeries{}
 	order := []struct{ tag, query string }{
 		{"A", qA},
@@ -1079,7 +1081,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	budgetArmsRan, rowArmsRan := 0, 0
 
 	const duecBudgetBytes = 65536
-	bconn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	bconn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptMaxStatementMemoryBytes, duecBudgetBytes).Build())
 	})
@@ -1766,12 +1768,12 @@ func duecAssertVariants(t *testing.T, explains map[string]string) {
 // to one key.
 func TestFDB_DistinctUniqueElisionRetention(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

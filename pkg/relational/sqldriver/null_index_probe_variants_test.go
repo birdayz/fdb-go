@@ -12,23 +12,25 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_NullIndexProbeVariants(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nullidxv")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullidxv")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_nullidxv")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullidxv")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nullidxv "+
 			"CREATE TABLE t1 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_ab ON t2 (a, b) CREATE INDEX t1_a ON t1 (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullidxv/s WITH TEMPLATE nullidxv")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLIDXV?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullidxv/s WITH TEMPLATE nullidxv")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLIDXV?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -49,8 +51,8 @@ func TestFDB_NullIndexProbeVariants(t *testing.T) {
 			v2 = append(v2, fmt.Sprintf("(%d, %d, %d)", i, i, i))
 		}
 	}
-	mwjoMustExec(t, db, ctx, "INSERT INTO t1 (id, a, b) VALUES "+strings.Join(v1, ", "))
-	mwjoMustExec(t, db, ctx, "INSERT INTO t2 (id, a, b) VALUES "+strings.Join(v2, ", "))
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 (id, a, b) VALUES "+strings.Join(v1, ", "))
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t2 (id, a, b) VALUES "+strings.Join(v2, ", "))
 
 	scalar := func(q string) int64 {
 		var v int64

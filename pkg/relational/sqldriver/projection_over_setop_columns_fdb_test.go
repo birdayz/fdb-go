@@ -24,26 +24,28 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ProjectionOverSetOp_ColumnDerivation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/testdb_projsetop"
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE projsetop CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_a ON t (a) CREATE INDEX idx_b ON t (b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE projsetop")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE projsetop")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1,2,5),(2,2,5),(3,3,5),(4,2,6)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1,2,5),(2,2,5),(3,3,5),(4,2,6)")
 
 	for _, tc := range []struct {
 		name     string

@@ -3,6 +3,8 @@ package sqldriver_test
 import (
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_GroupByResultMetadata pins Java-parity for the RESULT-SET column
@@ -23,7 +25,7 @@ import (
 // contract; authored aliases remain the only way to publish an aggregate name.
 func TestFDB_GroupByResultMetadata(t *testing.T) {
 	t.Parallel()
-	db, ctx := gojDB(t, "rider2meta")
+	db, ctx := testkit.GojDB(t, "rider2meta")
 
 	// colMeta returns "NAME|TYPE" per result column, in order.
 	colMeta := func(t *testing.T, q string) []string {
@@ -74,9 +76,9 @@ func TestFDB_GroupByResultMetadata(t *testing.T) {
 		// The load-bearing pin behind the Label/Name split: the display label is
 		// bare but the row is still keyed by the qualified Name, so the grouped
 		// values are correct — never the NULLs a naive qualifier-strip would cause.
-		got := gojRead(t, ctx, db,
+		got := testkit.GojRead(t, ctx, db,
 			"SELECT d.dname, COUNT(*), MAX(e.salary) FROM emp AS e INNER JOIN dept AS d ON e.did = d.did GROUP BY d.dname ORDER BY d.dname")
-		want := []gojRow{{"eng", 2, 100}, {"sales", 1, 80}}
+		want := []testkit.GojRow{{Dname: "eng", Cnt: 2, Mx: 100}, {Dname: "sales", Cnt: 1, Mx: 80}}
 		if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 			t.Fatalf("grouped values over join: got %+v, want %+v", got, want)
 		}

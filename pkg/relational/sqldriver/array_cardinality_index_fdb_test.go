@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -54,12 +56,12 @@ import (
 // separately in TestCardinalityIndexDDL_Metadata).
 func TestFDB_ArrayCardinalityIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -104,7 +106,7 @@ func TestFDB_ArrayCardinalityIndex(t *testing.T) {
 		for i, v := range vals {
 			pvals[i] = protoreflect.ValueOfInt32(v)
 		}
-		setArrayField(m, fd, pvals...)
+		testkit.SetArrayField(m, fd, pvals...)
 	}
 	arrRec := func(d protoreflect.MessageDescriptor, id int32, arr []int32, set bool) proto.Message {
 		m := dynamicpb.NewMessage(d)
@@ -186,7 +188,7 @@ func TestFDB_ArrayCardinalityIndex(t *testing.T) {
 				// SLOT order, not sorted map keys: the sorted form re-sorted a
 				// permuted row to the identical string and had already lost any
 				// duplicate output name last-wins.
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -202,7 +204,7 @@ func TestFDB_ArrayCardinalityIndex(t *testing.T) {
 		sort.Strings(got)
 		want := append([]string(nil), wantRows...)
 		sort.Strings(want)
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("query %q rows\n got=%v\nwant=%v\nplan=%s", sql, got, want, explain)
 		}
 		for _, sub := range mustContain {
@@ -220,7 +222,7 @@ func TestFDB_ArrayCardinalityIndex(t *testing.T) {
 	assertOrderedWithExplain := func(t *testing.T, sql string, wantRows []string, mustContain []string, mustNotContain []string) {
 		t.Helper()
 		explain, got := queryOrdered(t, sql)
-		if !unnestEqualStrs(got, wantRows) {
+		if !testkit.UnnestEqualStrs(got, wantRows) {
 			t.Fatalf("ordered query %q rows\n got=%v\nwant=%v\nplan=%s", sql, got, wantRows, explain)
 		}
 		for _, sub := range mustContain {

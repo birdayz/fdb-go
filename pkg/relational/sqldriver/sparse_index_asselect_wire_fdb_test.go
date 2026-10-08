@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -32,12 +34,12 @@ import (
 // evaluable by the consumer for both.
 func TestFDB_AsSelectSparseIndex_WireEntries(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

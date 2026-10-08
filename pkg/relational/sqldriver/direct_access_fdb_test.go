@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"github.com/google/uuid"
 
 	"fdb.dev/pkg/relational/api"
@@ -21,16 +23,16 @@ import (
 func openDirectAccessDB(t *testing.T, dbPath, template string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE "+template+" "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE "+template+" "+
 		"CREATE TYPE AS STRUCT ST1(st1_a bigint, st1_b uuid) "+
 		"CREATE TABLE T4(t4_p bigint, t4_st1 st1 array, primary key(t4_p)) "+
 		"CREATE UNIQUE INDEX mv5b AS SELECT v.st1_b from t4 t, (SELECT u.st1_b from t.t4_st1 u) v "+
 		"CREATE TABLE TU(tu_p bigint, tu_k bigint, tu_u uuid, primary key(tu_p, tu_k))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+template)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+template)
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

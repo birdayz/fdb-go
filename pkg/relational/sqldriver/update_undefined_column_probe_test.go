@@ -13,26 +13,28 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_UpdateUndefinedColumnProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uuc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuc")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_uuc")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuc")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuc CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuc/s WITH TEMPLATE uuc")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUC?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuc/s WITH TEMPLATE uuc")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUC?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 10)")
 
 	t.Run("undefined_set_column_is_42703", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, "UPDATE t SET nope = 5 WHERE id = 1")

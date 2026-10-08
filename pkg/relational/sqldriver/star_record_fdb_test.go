@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -16,19 +18,19 @@ import (
 func TestFDB_StarRecordConstructor(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_starrec")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_starrec")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE starrec_tpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_starrec")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_starrec")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE starrec_tpl "+
 		"CREATE TABLE foo (id BIGINT, val BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE bar (bid BIGINT, name STRING, PRIMARY KEY (bid))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_starrec/s WITH TEMPLATE starrec_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_STARREC?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_starrec/s WITH TEMPLATE starrec_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_STARREC?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO foo VALUES (1, 10)")
-	mustExec(t, db, ctx, "INSERT INTO bar VALUES (1, 'a')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO foo VALUES (1, 10)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO bar VALUES (1, 'a')")
 
 	for q, want := range map[string]string{
 		"SELECT (*) FROM foo":                                                 "FOO={ID:1 VAL:10}",

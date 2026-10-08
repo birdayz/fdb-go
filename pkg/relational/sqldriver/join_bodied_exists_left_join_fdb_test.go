@@ -9,24 +9,26 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_JoinBodiedExistsOverLeftJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/jbexists")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/jbexists")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/jbexists")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/jbexists")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE jbexists "+
 			"CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid)) "+
 			"CREATE TABLE r (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE s (k BIGINT, PRIMARY KEY (k))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/jbexists/s WITH TEMPLATE jbexists")
-	dsn := fmt.Sprintf("fdbsql:///FRL/JBEXISTS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/jbexists/s WITH TEMPLATE jbexists")
+	dsn := fmt.Sprintf("fdbsql:///FRL/JBEXISTS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -37,10 +39,10 @@ func TestFDB_JoinBodiedExistsOverLeftJoin(t *testing.T) {
 	// r has one row keyed to q.qid=1 whose k joins s. So the EXISTS is TRUE for
 	// the matched row and FALSE for the null-extended one — which is exactly the
 	// discrimination a predicate folded below the null-extension destroys.
-	mwjoMustExec(t, db, ctx, "INSERT INTO p VALUES (1, 10), (2, 20)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO q VALUES (1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO r VALUES (1, 100)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO s VALUES (100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO p VALUES (1, 10), (2, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO q VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO r VALUES (1, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO s VALUES (100)")
 
 	scan := func(t *testing.T, query string) []string {
 		t.Helper()
@@ -159,19 +161,19 @@ func TestFDB_JoinBodiedExistsOverLeftJoin(t *testing.T) {
 // the shadowed case would lose its row.
 func TestFDB_BuriedAliasShadowingIsRejectedUpstream(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/shadowreject")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/shadowreject")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/shadowreject")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/shadowreject")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE shadowreject "+
 			"CREATE TABLE t (id BIGINT, z BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE a (k BIGINT, id BIGINT, PRIMARY KEY (k)) "+
 			"CREATE TABLE b (k BIGINT, z BIGINT, PRIMARY KEY (k))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/shadowreject/s WITH TEMPLATE shadowreject")
-	dsn := fmt.Sprintf("fdbsql:///FRL/SHADOWREJECT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/shadowreject/s WITH TEMPLATE shadowreject")
+	dsn := fmt.Sprintf("fdbsql:///FRL/SHADOWREJECT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -180,9 +182,9 @@ func TestFDB_BuriedAliasShadowingIsRejectedUpstream(t *testing.T) {
 	// a's only row has NO matching b (k=5 vs k=9), so the LEFT JOIN would
 	// null-extend b — which is what makes a wrongly-lifted ON conjunct
 	// observable, if the query were ever planned.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 100)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (5, 1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (9, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (5, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (9, 100)")
 
 	for _, tc := range []struct {
 		name string

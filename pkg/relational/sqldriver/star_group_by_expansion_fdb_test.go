@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // `SELECT *` under GROUP BY was refused wholesale, and the refusal was minted
@@ -42,18 +44,18 @@ import (
 // every source row comes back.
 func TestFDB_StarUnderGroupByExpandsBeforeItIsValidated(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_stargb")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_stargb")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE stargb_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_stargb")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_stargb")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE stargb_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_stargb/s WITH TEMPLATE stargb_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_stargb/s WITH TEMPLATE stargb_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_STARGB?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_STARGB?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -63,7 +65,7 @@ func TestFDB_StarUnderGroupByExpandsBeforeItIsValidated(t *testing.T) {
 	// real grouping from a dropped one: a GROUP BY silently ignored returns
 	// eight rows, and every one of its COL1 values is still 10 or 20, so a
 	// value-only assertion would pass with the grouping gone.
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES "+
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES "+
 		"(1, 10, 1), (2, 10, 2), (3, 10, 3), (4, 10, 4), (5, 10, 5), "+
 		"(6, 20, 6), (7, 20, 7), (8, 20, 8)")
 

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectionResultTypeProbe pins projected EXISTS over a derived source
@@ -22,28 +24,28 @@ import (
 // test that cannot fail is the dominant false positive in this tree.
 func TestFDB_ProjectionResultTypeProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_projrestype")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projrestype")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projrestype_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_projrestype")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projrestype")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projrestype_tmpl "+
 		"CREATE TABLE t1(id BIGINT, v BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projrestype/s WITH TEMPLATE projrestype_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projrestype/s WITH TEMPLATE projrestype_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJRESTYPE?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJRESTYPE?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3)")
-	mustExec(t, db, ctx, "INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)")
 
 	// requireRows asserts the query returns exactly want, as "a|b" per row in
 	// order. A control that silently started erroring must go RED here — a

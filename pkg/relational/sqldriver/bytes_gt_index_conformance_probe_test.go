@@ -18,21 +18,23 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_BytesGtIndexConformanceProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_bgt")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_bgt")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_bgt")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_bgt")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE bgt CREATE TABLE t (id BIGINT, b BYTES, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_b ON t (b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_bgt/s WITH TEMPLATE bgt")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BGT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_bgt/s WITH TEMPLATE bgt")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BGT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

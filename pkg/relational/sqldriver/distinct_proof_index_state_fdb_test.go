@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -39,7 +41,7 @@ const distinctProofWantRows = "a@example,b@example,c@example"
 // the self-inflicted outage the scoped dependency set exists to avoid.
 func assertStaleIndexDependency(t *testing.T, err error, indexName string) {
 	t.Helper()
-	assertSerializationFailure(t, err)
+	testkit.AssertSerializationFailure(t, err)
 	if !strings.Contains(err.Error(), indexName) {
 		t.Fatalf("the stale-plan refusal does not name %s: %v", indexName, err)
 	}
@@ -125,31 +127,31 @@ func TestFDB_DistinctProof_NonReadableUniqueIndexLicensesNothing(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name       string
-		transition func(*indexStatePlanningFixture, context.Context) error
+		transition func(*testkit.IndexStatePlanningFixture, context.Context) error
 	}{
-		{"write_only", func(f *indexStatePlanningFixture, ctx context.Context) error {
-			return f.setIndexState(ctx, "U_EMAIL", false)
+		{"write_only", func(f *testkit.IndexStatePlanningFixture, ctx context.Context) error {
+			return f.SetIndexState(ctx, "U_EMAIL", false)
 		}},
-		{"disabled", func(f *indexStatePlanningFixture, ctx context.Context) error {
-			return f.setIndexDisabled(ctx, "U_EMAIL")
+		{"disabled", func(f *testkit.IndexStatePlanningFixture, ctx context.Context) error {
+			return f.SetIndexDisabled(ctx, "U_EMAIL")
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
-			f := newIndexStatePlanningFixture(t)
+			f := testkit.NewIndexStatePlanningFixture(t)
 			// BEFORE planning, so the state is the one the candidate filter sees.
 			if err := tc.transition(f, ctx); err != nil {
 				t.Fatalf("take U_EMAIL %s: %v", tc.name, err)
 			}
-			logger := &syncCaptureLogger{}
-			conn := installLogger(t, f.db, logger)
+			logger := &testkit.SyncCaptureLogger{}
+			conn := testkit.InstallLogger(t, f.DB, logger)
 
 			for _, query := range []string{
 				distinctProofQuery,
 				"SELECT DISTINCT EMAIL FROM T WHERE EMAIL IS NOT NULL",
 			} {
-				explain, got := distinctEmailRun(t, ctx, conn, logger, query)
+				explain, got := testkit.DistinctEmailRun(t, ctx, conn, logger, query)
 				if strings.Join(got, ",") != distinctProofWantRows {
 					t.Fatalf("%s %q rows = %v, want %s", tc.name, query, got,
 						distinctProofWantRows)
@@ -220,13 +222,13 @@ func drainDistinctProofRows(t *testing.T, rows *sql.Rows) []string {
 func TestFDB_DistinctProof_TransitionAfterPlanningIsInvisibleInOneTransaction(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newIndexStatePlanningFixture(t)
+	f := testkit.NewIndexStatePlanningFixture(t)
 	// Fires at the end of the statement's ONLY planning call: after the plan and
 	// its proof stamp exist, before the first page produces a row.
 	logger := &nthPlanTransitionLogger{n: 1, fn: func() error {
-		return f.makeUniqueIndexPending(ctx)
+		return f.MakeUniqueIndexPending(ctx)
 	}}
-	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 		ec.SetPlanLogger(logger)
 	})
 
@@ -287,9 +289,9 @@ func TestFDB_DistinctProof_TransitionAfterPlanningIsInvisibleInOneTransaction(t 
 func TestFDB_DistinctProof_TransitionBetweenPagesIsInvisibleInOneTransaction(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newIndexStatePlanningFixture(t)
-	logger := &syncCaptureLogger{}
-	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+	f := testkit.NewIndexStatePlanningFixture(t)
+	logger := &testkit.SyncCaptureLogger{}
+	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 1).Build())
 		ec.SetPlanLogger(logger)
@@ -306,7 +308,7 @@ func TestFDB_DistinctProof_TransitionBetweenPagesIsInvisibleInOneTransaction(t *
 		t.Fatalf("query first page: %v", err)
 	}
 	defer func() { _ = rows.Close() }()
-	events := logger.snapshot()
+	events := logger.Snapshot()
 	if len(events) != 1 {
 		t.Fatalf("planning events = %d, want 1", len(events))
 	}
@@ -321,7 +323,7 @@ func TestFDB_DistinctProof_TransitionBetweenPagesIsInvisibleInOneTransaction(t *
 	}
 	// Committed by a DIFFERENT transaction, strictly between two pages of this
 	// one; every later page still reads the snapshot the statement started from.
-	if err := f.makeUniqueIndexPending(ctx); err != nil {
+	if err := f.MakeUniqueIndexPending(ctx); err != nil {
 		t.Fatalf("transition after first page: %v", err)
 	}
 
@@ -365,19 +367,19 @@ func TestFDB_DistinctProof_TransitionBetweenPagesIsInvisibleInOneTransaction(t *
 func TestFDB_DistinctProof_TransitionBetweenTransactionsReplansTheProofAway(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newIndexStatePlanningFixture(t)
-	logger := &syncCaptureLogger{}
-	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+	f := testkit.NewIndexStatePlanningFixture(t)
+	logger := &testkit.SyncCaptureLogger{}
+	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 		ec.SetPlanLogger(logger)
 	})
 
 	// Warm the connection's plan cache from inside a transaction, which is the
 	// only regime that draws the proof at all.
-	got := queryIndexStateStrings(t, ctx, conn, distinctProofQuery)
+	got := testkit.QueryIndexStateStrings(t, ctx, conn, distinctProofQuery)
 	if strings.Join(got, ",") != distinctProofWantRows {
 		t.Fatalf("warming run rows = %v, want %s", got, distinctProofWantRows)
 	}
-	warm := logger.snapshot()
+	warm := logger.Snapshot()
 	if len(warm) != 1 {
 		t.Fatalf("planning events after warming = %d, want 1", len(warm))
 	}
@@ -385,15 +387,15 @@ func TestFDB_DistinctProof_TransitionBetweenTransactionsReplansTheProofAway(t *t
 
 	// Strictly BETWEEN the two transactions: the next statement's planning reads
 	// a store state that already has it.
-	if err := f.makeUniqueIndexPending(ctx); err != nil {
+	if err := f.MakeUniqueIndexPending(ctx); err != nil {
 		t.Fatalf("transition between transactions: %v", err)
 	}
 
-	got = queryIndexStateStrings(t, ctx, conn, distinctProofQuery)
+	got = testkit.QueryIndexStateStrings(t, ctx, conn, distinctProofQuery)
 	if strings.Join(got, ",") != distinctProofWantRows {
 		t.Fatalf("post-transition rows = %v, want %s", got, distinctProofWantRows)
 	}
-	events := logger.snapshot()
+	events := logger.Snapshot()
 	if len(events) != 2 {
 		t.Fatalf("planning events = %d, want 2", len(events))
 	}
@@ -491,9 +493,9 @@ func runDistinctProofInTx(t *testing.T, ctx context.Context, conn *sql.Conn) ([]
 func TestFDB_DistinctProof_WithdrawnProofIsNeverSilentlyServed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newIndexStatePlanningFixture(t)
-	logger := &syncCaptureLogger{}
-	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+	f := testkit.NewIndexStatePlanningFixture(t)
+	logger := &testkit.SyncCaptureLogger{}
+	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 		ec.SetPlanLogger(logger)
 	})
 
@@ -506,7 +508,7 @@ func TestFDB_DistinctProof_WithdrawnProofIsNeverSilentlyServed(t *testing.T) {
 	if strings.Join(got, ",") != distinctProofWantRows {
 		t.Fatalf("warming run rows = %v, want %s", got, distinctProofWantRows)
 	}
-	warm := logger.snapshot()
+	warm := logger.Snapshot()
 	if len(warm) != 1 {
 		t.Fatalf("planning events after warming = %d, want 1", len(warm))
 	}
@@ -521,12 +523,12 @@ func TestFDB_DistinctProof_WithdrawnProofIsNeverSilentlyServed(t *testing.T) {
 
 	// Strictly BETWEEN the two transactions, so the next statement's planning and
 	// its execution both run at a read version that can see the withdrawal.
-	if err := f.makeUniqueIndexPending(ctx); err != nil {
+	if err := f.MakeUniqueIndexPending(ctx); err != nil {
 		t.Fatalf("transition between transactions: %v", err)
 	}
 
 	got, err = runDistinctProofInTx(t, ctx, conn)
-	events := logger.snapshot()
+	events := logger.Snapshot()
 	if len(events) != 2 {
 		t.Fatalf("planning events = %d, want 2", len(events))
 	}
@@ -645,9 +647,9 @@ func TestFDB_DistinctProof_UnconditionalLicenseYieldsUnstampedPlan(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
-			f := newIndexStatePlanningFixture(t)
-			logger := &syncCaptureLogger{}
-			conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+			f := testkit.NewIndexStatePlanningFixture(t)
+			logger := &testkit.SyncCaptureLogger{}
+			conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 				ec.SetOptions(api.NewOptionsBuilder().
 					Set(api.OptExecutionScannedRowsLimit, 1).Build())
 				ec.SetPlanLogger(logger)
@@ -659,7 +661,7 @@ func TestFDB_DistinctProof_UnconditionalLicenseYieldsUnstampedPlan(t *testing.T)
 			}
 			defer func() { _ = rows.Close() }()
 
-			events := logger.snapshot()
+			events := logger.Snapshot()
 			if len(events) != 1 {
 				t.Fatalf("planning events = %d, want 1", len(events))
 			}
@@ -680,7 +682,7 @@ func TestFDB_DistinctProof_UnconditionalLicenseYieldsUnstampedPlan(t *testing.T)
 					"exercises two licenses holding at once: %s", tc.license, explain)
 			}
 
-			if err := f.setIndexState(ctx, "U_EMAIL", false); err != nil {
+			if err := f.SetIndexState(ctx, "U_EMAIL", false); err != nil {
 				t.Fatalf("take U_EMAIL WRITE_ONLY mid-statement: %v", err)
 			}
 			n := 0

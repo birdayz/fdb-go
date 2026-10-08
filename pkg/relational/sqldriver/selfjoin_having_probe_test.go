@@ -10,38 +10,40 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_SelfJoinHavingProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_selfjoin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_selfjoin")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_selfjoin")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_selfjoin")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE selfjoin "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, grp BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id) CREATE INDEX a_x ON a (x)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_selfjoin/s WITH TEMPLATE selfjoin")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELFJOIN?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_selfjoin/s WITH TEMPLATE selfjoin")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELFJOIN?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x, grp) VALUES (1, 5, 100), (2, 5, 100), (3, 7, 200)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 1), (52, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x, grp) VALUES (1, 5, 100), (2, 5, 100), (3, 7, 200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 1), (52, 2)")
 
 	pairs := func(q string) []string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
 			t.Fatalf("query %q: %v", q, err)
 		}
-		return siScanRows(t, rows)
+		return testkit.ScanRowStrings(t, rows)
 	}
 	ints := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)
@@ -76,7 +78,7 @@ func TestFDB_SelfJoinHavingProbe(t *testing.T) {
 	t.Run("self_join", func(t *testing.T) {
 		got := pairs("SELECT t1.id, t2.id FROM a t1 JOIN a t2 ON t1.x = t2.x AND t1.id < t2.id")
 		want := []string{"1|2"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("self-join rows = %v, want %v", got, want)
 		}
 	})

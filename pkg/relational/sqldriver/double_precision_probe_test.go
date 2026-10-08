@@ -11,26 +11,28 @@ import (
 	"fmt"
 	"math"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DoublePrecisionProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dpp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dpp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dpp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dpp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dpp CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dpp/s WITH TEMPLATE dpp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DPP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dpp/s WITH TEMPLATE dpp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DPP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d) VALUES (1, 0.1), (2, 1.5), (3, 1.0e308)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, d) VALUES (1, 0.1), (2, 1.5), (3, 1.0e308)")
 
 	dval := func(expr string, id int) float64 {
 		var v float64

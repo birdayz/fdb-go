@@ -12,32 +12,34 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_DerivedTableProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_derived")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_derived")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_derived")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_derived")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE derived "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, grp BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_derived/s WITH TEMPLATE derived")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DERIVED?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_derived/s WITH TEMPLATE derived")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DERIVED?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x, grp) VALUES (1, 5, 100), (2, 10, 100), (3, 7, 200)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x, grp) VALUES (1, 5, 100), (2, 10, 100), (3, 7, 200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2)")
 
 	ints := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)
@@ -61,7 +63,7 @@ func TestFDB_DerivedTableProbe(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query %q: %v", q, err)
 		}
-		return siScanRows(t, rows)
+		return testkit.ScanRowStrings(t, rows)
 	}
 	eqi := func(g, w []int64) bool {
 		if len(g) != len(w) {
@@ -97,7 +99,7 @@ func TestFDB_DerivedTableProbe(t *testing.T) {
 		if err == nil {
 			t.Fatal("undefined column ZZZ over a derived table must error, got nil")
 		}
-		requireSQLSTATE(t, err, api.ErrCodeUndefinedColumn)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeUndefinedColumn)
 		if !strings.Contains(err.Error(), "Attempting to query non existing column") {
 			t.Errorf("want Java's 42703 text, got: %v", err)
 		}
@@ -105,7 +107,7 @@ func TestFDB_DerivedTableProbe(t *testing.T) {
 	t.Run("derived_join_base", func(t *testing.T) {
 		got := pairs("SELECT sub.v, c.id FROM (SELECT id AS v FROM a WHERE grp = 100) sub JOIN c ON c.a_id = sub.v")
 		want := []string{"1|50", "2|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("derived JOIN base = %v, want %v", got, want)
 		}
 	})

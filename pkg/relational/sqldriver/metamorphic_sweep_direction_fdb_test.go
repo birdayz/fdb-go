@@ -32,6 +32,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // mmdReverse returns a reversed copy, so a comparison against it reads as an
@@ -46,11 +48,11 @@ func mmdReverse(in []string) []string {
 
 func TestFDB_MetamorphicOrderDirection(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_mhdir", "mhdir",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_mhdir", "mhdir",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) "+
 			"CREATE INDEX t_c ON t (c) CREATE INDEX t_s ON t (s) ")
@@ -59,14 +61,14 @@ func TestFDB_MetamorphicOrderDirection(t *testing.T) {
 	const nRows = 120
 	var vals []string
 	for i := 1; i <= nRows; i++ {
-		vals = append(vals, mhRowLiteral(dataRand, i))
+		vals = append(vals, testkit.MhRowLiteral(dataRand, i))
 	}
 	for start := 0; start < len(vals); start += 20 {
 		end := start + 20
 		if end > len(vals) {
 			end = len(vals)
 		}
-		w.Exec("INSERT INTO t " + mhCols + " VALUES " + strings.Join(vals[start:end], ", "))
+		w.Exec("INSERT INTO t " + testkit.MhCols + " VALUES " + strings.Join(vals[start:end], ", "))
 	}
 
 	seed := int64(13)
@@ -77,7 +79,7 @@ func TestFDB_MetamorphicOrderDirection(t *testing.T) {
 	if s := os.Getenv("MHD_ITERS"); s != "" {
 		fmt.Sscan(s, &iters)
 	}
-	g := &mhGen{r: rand.New(rand.NewSource(seed))}
+	g := &testkit.MhGen{R: rand.New(rand.NewSource(seed))}
 
 	// Ordering keys, each paired with the index that can serve it. `id` is
 	// appended to every one so the order is TOTAL and the reversal is exact.
@@ -88,19 +90,19 @@ func TestFDB_MetamorphicOrderDirection(t *testing.T) {
 	t.Run("full reversal", func(t *testing.T) {
 		w := w.Sub(t)
 		for i := 0; i < iters; i++ {
-			key := g.pick(keys)
-			pred := g.pred(1)
+			key := g.Pick(keys)
+			pred := g.Pred(1)
 			ascKey := strings.ReplaceAll(key, ",", " ASC,") + " ASC, id ASC"
 			descKey := strings.ReplaceAll(key, ",", " DESC,") + " DESC, id DESC"
 
 			ascQ := fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY %s", pred, ascKey)
 			descQ := fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY %s", pred, descKey)
 
-			asc, err := mmRows(t, ctx, w.idx, ascQ)
+			asc, err := testkit.QueryRowStrings(t, ctx, w.Idx, ascQ)
 			if err != nil {
 				// Unsupported together or not at all — a direction that changes
 				// whether a query is ACCEPTED is a defect with no rows involved.
-				if _, derr := mmRows(t, ctx, w.idx, descQ); (derr == nil) != (err == nil) {
+				if _, derr := testkit.QueryRowStrings(t, ctx, w.Idx, descQ); (derr == nil) != (err == nil) {
 					t.Errorf("reversing the sort direction changed whether the query is "+
 						"ACCEPTED\n  asc : %s\n  err: %v\n  desc: %s\n  err: %v",
 						ascQ, err, descQ, derr)
@@ -108,7 +110,7 @@ func TestFDB_MetamorphicOrderDirection(t *testing.T) {
 				skipped++
 				continue
 			}
-			desc, err := mmRows(t, ctx, w.idx, descQ)
+			desc, err := testkit.QueryRowStrings(t, ctx, w.Idx, descQ)
 			if err != nil {
 				t.Errorf("the ascending form ran and the descending one failed\n"+
 					"  asc : %s\n  desc: %s\n  err : %v", ascQ, descQ, err)
@@ -118,12 +120,12 @@ func TestFDB_MetamorphicOrderDirection(t *testing.T) {
 			if len(asc) > 0 {
 				nonEmpty++
 			}
-			if !mmEqRows(desc, mmdReverse(asc)) {
+			if !testkit.EqualRows(desc, mmdReverse(asc)) {
 				t.Errorf("DESC is not the reverse of ASC\n  asc : %s\n  desc: %s\n"+
 					"  asc rows      %v\n  desc rows     %v\n  asc REVERSED  %v\n  %s\n"+
 					"  (the trailing id makes the order total, so these must be equal as "+
 					"SEQUENCES — a difference is a reverse-scan defect, not a tie)",
-					ascQ, descQ, asc, desc, mmdReverse(asc), mmFirstDiff(desc, mmdReverse(asc)))
+					ascQ, descQ, asc, desc, mmdReverse(asc), testkit.MmFirstDiff(desc, mmdReverse(asc)))
 			}
 
 			// The unindexed side must agree with the indexed one on the
@@ -139,12 +141,12 @@ func TestFDB_MetamorphicOrderDirection(t *testing.T) {
 	t.Run("descending with a limit is the ascending tail", func(t *testing.T) {
 		w := w.Sub(t)
 		for i := 0; i < iters; i++ {
-			key := g.pick(keys)
-			pred := g.pred(1)
+			key := g.Pick(keys)
+			pred := g.Pred(1)
 			ascKey := strings.ReplaceAll(key, ",", " ASC,") + " ASC, id ASC"
 			descKey := strings.ReplaceAll(key, ",", " DESC,") + " DESC, id DESC"
 
-			asc, err := mmRows(t, ctx, w.idx,
+			asc, err := testkit.QueryRowStrings(t, ctx, w.Idx,
 				fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY %s", pred, ascKey))
 			if err != nil {
 				skipped++
@@ -153,7 +155,7 @@ func TestFDB_MetamorphicOrderDirection(t *testing.T) {
 			for _, n := range []int{1, 3, 10} {
 				descQ := fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY %s LIMIT %d",
 					pred, descKey, n)
-				got, derr := mmRows(t, ctx, w.idx, descQ)
+				got, derr := testkit.QueryRowStrings(t, ctx, w.Idx, descQ)
 				if derr != nil {
 					t.Errorf("descending with LIMIT failed where the ascending form ran\n"+
 						"  q: %s\n  err: %v", descQ, derr)
@@ -166,10 +168,10 @@ func TestFDB_MetamorphicOrderDirection(t *testing.T) {
 				}
 				want := mmdReverse(tail)
 				limited++
-				if !mmEqRows(got, want) {
+				if !testkit.EqualRows(got, want) {
 					t.Errorf("DESC LIMIT %d is not the ascending tail reversed\n  q: %s\n"+
 						"  got  %v\n  want %v\n  full asc %v\n  %s", n, descQ, got, want, asc,
-						mmFirstDiff(got, want))
+						testkit.MmFirstDiff(got, want))
 				}
 			}
 		}

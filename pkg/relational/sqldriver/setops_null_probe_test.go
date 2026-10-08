@@ -12,32 +12,34 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_SetOpsNullProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_setopsnull")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_setopsnull")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_setopsnull")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_setopsnull")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE setopsnull "+
 			"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_setopsnull/s WITH TEMPLATE setopsnull")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SETOPSNULL?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_setopsnull/s WITH TEMPLATE setopsnull")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SETOPSNULL?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// a.v = 1,2,3,NULL ; b.v = 2,3,4,NULL
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, v) VALUES (1,1),(2,2),(3,3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (4)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, v) VALUES (1,2),(2,3),(3,4)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id) VALUES (4)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, v) VALUES (1,1),(2,2),(3,3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id) VALUES (4)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, v) VALUES (1,2),(2,3),(3,4)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id) VALUES (4)")
 
 	// UNION ALL: concatenation, no dedup, both NULLs preserved → 8 rows, 2 nulls.
 	t.Run("union_all_preserves_all_and_nulls", func(t *testing.T) {

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -15,7 +17,7 @@ func inlineValuesDB(t *testing.T) (*sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
 	const dbPath = "/FRL/testdb_inline_values"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, statement := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE inline_values_tmpl " +
@@ -26,7 +28,7 @@ func inlineValuesDB(t *testing.T) (*sql.DB, context.Context) {
 			t.Fatalf("%s: %v", statement, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open inline VALUES schema: %v", err)
 	}
@@ -213,7 +215,7 @@ func TestFDB_InlineValuesExactExecution(t *testing.T) {
 	}
 
 	t.Run("scalar_owner_is_not_an_array", func(t *testing.T) {
-		assertErrorCode(t, db,
+		testkit.AssertErrorCode(t, db,
 			`SELECT "val" FROM VALUES (1) AS "values" ("id"), `+
 				`"values"."id" AS "val" AT "at"`,
 			api.ErrCodeInvalidColumnReference)
@@ -224,13 +226,13 @@ func TestFDB_InlineValuesExactExecution(t *testing.T) {
 		// sources receive distinct private bindings and a column carried by both
 		// is rejected per attribute as 42702. The stricter 42712 declaration gate
 		// is reserved for a lateral unnest's shadowing AS/AT aliases.
-		assertErrorCode(t, db,
+		testkit.AssertErrorCode(t, db,
 			`SELECT "values"."id" FROM VALUES (1) AS "values" ("id"), `+
 				`VALUES (2) AS "values" ("id")`,
 			api.ErrCodeAmbiguousColumn)
 	})
 	t.Run("column_alias_width", func(t *testing.T) {
-		assertErrorCode(t, db,
+		testkit.AssertErrorCode(t, db,
 			`SELECT "id" FROM VALUES (1, 2) AS "values" ("id")`,
 			api.ErrCodeSyntaxError)
 	})

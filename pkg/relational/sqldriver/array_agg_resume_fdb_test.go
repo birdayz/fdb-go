@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -16,7 +18,7 @@ import (
 // and a group that has seen only ignored NULLs stays a present empty array.
 func TestFDB_ArrayAggRepeatedResume(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_array_agg_resume", "aaresume",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_array_agg_resume", "aaresume",
 		"CREATE TYPE AS STRUCT pt (x BIGINT, tag STRING) "+
 			"CREATE TABLE t (g BIGINT, id BIGINT, n BIGINT, p pt, PRIMARY KEY (g, id))")
 	ctx := context.Background()
@@ -24,14 +26,14 @@ func TestFDB_ArrayAggRepeatedResume(t *testing.T) {
 		"1, 1, NULL, (1, 'a')", "1, 2, NULL, (2, 'b')", "1, 3, 5, (3, 'c')",
 		"2, 4, NULL, (4, 'd')", "2, 5, NULL, (5, 'e')",
 	} {
-		mustExec(t, db, ctx, "INSERT INTO t VALUES ("+r+")")
+		testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES ("+r+")")
 	}
 	q := "SELECT g, ARRAY_AGG(n IGNORE NULLS), ARRAY_AGG(p), ARRAY_AGG(p.tag LIMIT 2), COUNT(*) FROM t GROUP BY g"
-	if plan := planExplainVia(t, ctx, db, q); !strings.Contains(plan, "StreamingAgg") || strings.Contains(plan, "Sort") {
+	if plan := testkit.ExplainVia(t, ctx, db, q); !strings.Contains(plan, "StreamingAgg") || strings.Contains(plan, "Sort") {
 		t.Fatalf("want a streaming aggregate over the primary-key scan, so each page break lands in its continuation; got\n%s", plan)
 	}
 	read := func(limit int) string {
-		conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 			if limit > 0 {
 				ec.SetOptions(api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, limit).Build())
 			}

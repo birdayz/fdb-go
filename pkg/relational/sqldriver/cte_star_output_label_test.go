@@ -27,6 +27,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
@@ -52,7 +54,7 @@ import (
 // stops being correct the moment the resolver is populated.
 func TestCTEStarBodyPublishesSQLLabels(t *testing.T) {
 	t.Parallel()
-	md := existsGatherSchemaMetadata(t)
+	md := testkit.ExistsGatherSchemaMetadata(t)
 
 	for _, tc := range []struct {
 		name string

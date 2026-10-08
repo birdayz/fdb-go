@@ -10,22 +10,24 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_KitchenSinkProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_kitchen")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_kitchen")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_kitchen")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_kitchen")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE kitchen "+
 			"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_v ON t (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_kitchen/s WITH TEMPLATE kitchen")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_KITCHEN?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_kitchen/s WITH TEMPLATE kitchen")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_KITCHEN?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -35,7 +37,7 @@ func TestFDB_KitchenSinkProbe(t *testing.T) {
 	// g=2: v 20,30      (WHERE v>10: 20,30 → cnt2 sum50)
 	// g=3: v 1,2,100    (WHERE v>10: 100 → cnt1 sum100)
 	// g=4: v 12,13,14,16 (WHERE v>10: all 4 → cnt4 sum55)
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,g,v) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,g,v) VALUES "+
 		"(1,1,5),(2,1,15),(3,1,25),(4,2,20),(5,2,30),(6,3,1),(7,3,2),(8,3,100),(9,4,12),(10,4,13),(11,4,14),(12,4,16)")
 
 	type gr struct {

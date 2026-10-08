@@ -25,6 +25,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -41,7 +43,7 @@ type inBench struct {
 // then times the query and reports rows/sec.
 func runInBench(b *testing.B, ib inBench) {
 	b.Helper()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		b.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -59,7 +61,7 @@ func runInBench(b *testing.B, ib inBench) {
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)

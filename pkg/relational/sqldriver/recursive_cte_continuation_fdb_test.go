@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -16,7 +18,7 @@ func recursiveCteContDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 	const dbPath = "/FRL/rec_cte_cont"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -27,7 +29,7 @@ func recursiveCteContDB(t *testing.T) *sql.DB {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_cte_cont_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -77,7 +79,7 @@ func readInt64Col(t *testing.T, ctx context.Context, q func(context.Context, str
 // (and before the stopgap, silently re-seeded from a raw token).
 func TestFDB_RecursiveCTE_Continuation_ResumeAcrossPages(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -102,7 +104,7 @@ func TestFDB_RecursiveCTE_Continuation_ResumeAcrossPages(t *testing.T) {
 		t.Fatalf("unpaginated recursion wrong:\n got  = %v\n want = %v", unpaged, want)
 	}
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		// A tiny per-page scan budget: every level scans the edges table,
 		// so the driver breaks pages mid-recursion and resumes via the
 		// RecursiveCursorContinuation.
@@ -128,12 +130,12 @@ func TestFDB_RecursiveCTE_Continuation_ResumeAcrossPages(t *testing.T) {
 // subtrees).
 func TestFDB_RecursiveDFS_Continuation_ResumeAcrossPages(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/rec_dfs_cont"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -144,7 +146,7 @@ func TestFDB_RecursiveDFS_Continuation_ResumeAcrossPages(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dfs_cont_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -197,7 +199,7 @@ func TestFDB_RecursiveDFS_Continuation_ResumeAcrossPages(t *testing.T) {
 			// monotonically as the limit rises (24→6, 32→5, 48→3, 64→2) and
 			// collapses to a single page at 96, so 32 is comfortably inside
 			// the multi-page region, not hugging either boundary.
-			conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+			conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 				ec.SetOptions(api.NewOptionsBuilder().
 					Set(api.OptExecutionScannedRowsLimit, 32).
 					Build())
@@ -218,12 +220,12 @@ func TestFDB_RecursiveDFS_Continuation_ResumeAcrossPages(t *testing.T) {
 // pre-guard behavior hung the statement forever).
 func TestFDB_RecursiveDFS_BelowFloorBudgetIsLoud(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/rec_dfs_floor"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -234,7 +236,7 @@ func TestFDB_RecursiveDFS_BelowFloorBudgetIsLoud(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dfs_floor_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -245,7 +247,7 @@ func TestFDB_RecursiveDFS_BelowFloorBudgetIsLoud(t *testing.T) {
 		"INSERT INTO edges VALUES (1,0),(2,1),(3,2),(4,3),(5,4),(6,5),(7,6),(8,7),(9,8),(10,9),(11,10),(12,11)"); err != nil {
 		t.Fatalf("seed edges: %v", err)
 	}
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 3).
 			Build())
@@ -285,12 +287,12 @@ func TestFDB_RecursiveDFS_BelowFloorBudgetIsLoud(t *testing.T) {
 // deterministically.
 func TestFDB_RecursiveDistinct_CycleTerminates(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/rec_dist_cont"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -301,7 +303,7 @@ func TestFDB_RecursiveDistinct_CycleTerminates(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dist_cont_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -358,12 +360,12 @@ func TestFDB_RecursiveDistinct_CycleTerminates(t *testing.T) {
 // clear test failure instead of a hang.
 func TestFDB_RecursiveCTE_CyclicPaged_HitsDepthCap(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/rec_cte_cyclic_paged"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -374,7 +376,7 @@ func TestFDB_RecursiveCTE_CyclicPaged_HitsDepthCap(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_cte_cyclic_paged_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -387,7 +389,7 @@ func TestFDB_RecursiveCTE_CyclicPaged_HitsDepthCap(t *testing.T) {
 		t.Fatalf("seed edge2: %v", err)
 	}
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 3).
 			Build())
@@ -451,12 +453,12 @@ func TestFDB_RecursiveCTE_CyclicPaged_HitsDepthCap(t *testing.T) {
 // fast.
 func TestFDB_RecursiveDistinct_DeepChain(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/rec_dist_deep"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -468,7 +470,7 @@ func TestFDB_RecursiveDistinct_DeepChain(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dist_deep_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -516,12 +518,12 @@ func TestFDB_RecursiveDistinct_DeepChain(t *testing.T) {
 // the unindexed shape end to end.
 func TestFDB_RecursiveDistinct_DeepChain_Unindexed(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/rec_dist_deep_noidx"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -532,7 +534,7 @@ func TestFDB_RecursiveDistinct_DeepChain_Unindexed(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE rec_dist_deep_noidx_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"github.com/onsi/gomega"
 )
 
@@ -18,13 +20,13 @@ import (
 // scalar subquery planning.
 func TestFDB_ScalarSubqueryCTE(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_ssq_cte")
+	setup := testkit.OpenDB(t, "/FRL/testdb_ssq_cte")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ssq_cte")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ssq_cte_tmpl "+
@@ -32,7 +34,7 @@ func TestFDB_ScalarSubqueryCTE(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_ssq_cte/s WITH TEMPLATE ssq_cte_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSQ_CTE?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSQ_CTE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -90,13 +92,13 @@ func TestFDB_ScalarSubqueryCTE(t *testing.T) {
 // so QOV-based predicates resolve correctly.
 func TestFDB_CorrelatedScalarSubqueryNoIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_corrssq_noidx")
+	setup := testkit.OpenDB(t, "/FRL/testdb_corrssq_noidx")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_corrssq_noidx")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE corrssq_noidx_tmpl "+
@@ -105,7 +107,7 @@ func TestFDB_CorrelatedScalarSubqueryNoIndex(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_corrssq_noidx/s WITH TEMPLATE corrssq_noidx_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRSSQ_NOIDX?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRSSQ_NOIDX?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -149,13 +151,13 @@ func TestFDB_CorrelatedScalarSubqueryNoIndex(t *testing.T) {
 // when an index exists on the correlation column (IndexScan path).
 func TestFDB_CorrelatedScalarSubqueryError(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_corrssq")
+	setup := testkit.OpenDB(t, "/FRL/testdb_corrssq")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_corrssq")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE corrssq_tmpl "+
@@ -165,7 +167,7 @@ func TestFDB_CorrelatedScalarSubqueryError(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_corrssq/s WITH TEMPLATE corrssq_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRSSQ?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRSSQ?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -206,7 +208,7 @@ func TestFDB_CorrelatedScalarSubqueryError(t *testing.T) {
 
 func TestFDB_ScalarCTEBodySurvivesDerivedBinding(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/scalar_cte_derived_body", "scalar_cte_derived_body",
+	db := testkit.SetupErrorDB(t, "/FRL/scalar_cte_derived_body", "scalar_cte_derived_body",
 		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (7)"); err != nil {
@@ -232,7 +234,7 @@ func TestFDB_ScalarCTEBodySurvivesDerivedBinding(t *testing.T) {
 
 func TestFDB_ScalarCTEBodyRetainsOuterCorrelation(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/scalar_cte_outer_body", "scalar_cte_outer_body",
+	db := testkit.SetupErrorDB(t, "/FRL/scalar_cte_outer_body", "scalar_cte_outer_body",
 		"CREATE TABLE outer_t (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE seed (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
@@ -269,7 +271,7 @@ func TestFDB_ScalarCTEBodyRetainsOuterCorrelation(t *testing.T) {
 
 func TestFDB_ScalarCTEBodySurvivesPromotedDerivedUnion(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/scalar_cte_derived_union", "scalar_cte_derived_union",
+	db := testkit.SetupErrorDB(t, "/FRL/scalar_cte_derived_union", "scalar_cte_derived_union",
 		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	if _, err := db.Exec("INSERT INTO t VALUES (7)"); err != nil {
 		t.Fatal(err)
@@ -299,7 +301,7 @@ func TestFDB_ScalarCTEBodySurvivesPromotedDerivedUnion(t *testing.T) {
 
 func TestFDB_ScalarCTECorrelationSurvivesPromotedDerivedUnion(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/scalar_cte_outer_union", "scalar_cte_outer_union",
+	db := testkit.SetupErrorDB(t, "/FRL/scalar_cte_outer_union", "scalar_cte_outer_union",
 		"CREATE TABLE outer_t (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE seed (id BIGINT, PRIMARY KEY (id))")
 	for _, stmt := range []string{"INSERT INTO outer_t VALUES (7), (9)", "INSERT INTO seed VALUES (1)"} {
@@ -337,7 +339,7 @@ func TestFDB_ScalarCTECorrelationSurvivesPromotedDerivedUnion(t *testing.T) {
 // is 9, so the correlated equality keeps only outer 9 (and its negation only 7).
 func TestFDB_ScalarCTEBodySurvivesCorrelatedDerivedExists(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/scalar_cte_derived_exists", "scalar_cte_derived_exists",
+	db := testkit.SetupErrorDB(t, "/FRL/scalar_cte_derived_exists", "scalar_cte_derived_exists",
 		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	if _, err := db.Exec("INSERT INTO t VALUES (7), (9)"); err != nil {
 		t.Fatal(err)
@@ -382,7 +384,7 @@ func TestFDB_ScalarCTEBodySurvivesCorrelatedDerivedExists(t *testing.T) {
 // projected consumers with 0A000.
 func TestFDB_NestedExistsConsumerAdmission(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/nested_exists_consumer", "nested_exists_consumer",
+	db := testkit.SetupErrorDB(t, "/FRL/nested_exists_consumer", "nested_exists_consumer",
 		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE flags (k BIGINT, PRIMARY KEY (k)) "+
 			"CREATE TABLE seed (id BIGINT, PRIMARY KEY (id))")

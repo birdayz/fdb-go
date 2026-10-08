@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot pins that a COMPUTED grouping
@@ -128,22 +130,22 @@ import (
 // closable sets listed apart so neither is credited with the other's work.
 func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/cgkh")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/cgkh")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cgkh_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/cgkh")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/cgkh")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cgkh_tmpl "+
 		"CREATE TYPE AS STRUCT st1(y BIGINT, z BIGINT) "+
 		"CREATE TYPE AS STRUCT st2(w BIGINT, x BIGINT) "+
 		"CREATE TYPE AS STRUCT st3(u st2, v st1) "+
 		"CREATE TYPE AS STRUCT st4(s BIGINT, t BIGINT) "+
 		"CREATE TABLE nested(id BIGINT, q st4, r st3, PRIMARY KEY(q.s, r.u.w)) "+
 		"CREATE TABLE flat(id BIGINT, c1 BIGINT, c2 BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/cgkh/s WITH TEMPLATE cgkh_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/cgkh/s WITH TEMPLATE cgkh_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/CGKH?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/CGKH?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -153,10 +155,10 @@ func TestFDB_ComputedGroupKeyRereadBindsItsOwnSlot(t *testing.T) {
 	// apart and on OPPOSITE sides of the comparand 200: reading the aggregate
 	// where the key was named flips every predicate below, so a wrong slot
 	// changes the ROW COUNT rather than coinciding with the right answer.
-	mustExec(t, db, ctx, "INSERT INTO flat VALUES "+
+	testkit.MustExec(t, db, ctx, "INSERT INTO flat VALUES "+
 		"(1, 100, 200), (2, 100, 201), (3, 100, 202), (4, 100, 203), "+
 		"(5, 140, 330), (6, 140, 329), (7, 140, 328), (8, 140, 327)")
-	mustExec(t, db, ctx, "INSERT INTO nested VALUES "+
+	testkit.MustExec(t, db, ctx, "INSERT INTO nested VALUES "+
 		"(1, (200, 1), ((5, 15), (10, 100))), "+
 		"(2, (201, 2), ((5, 15), (10, 100))), "+
 		"(3, (202, 3), ((5, 15), (10, 100))), "+

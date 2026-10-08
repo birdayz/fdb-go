@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -24,103 +24,6 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-// buildChainedUnnestMetadata constructs a RecordMetaData with a THREE-level
-// nested struct/array shape for the class-4 CHAINED lateral unnest
-// (`FROM t, t.arr AS x, x.sub AS y`). The record T4 carries:
-//
-//	ID       int64 (pk)
-//	SARR     repeated ELEM     — struct-array (the first unnest's array)
-//	SCARR    repeated int32    — SCALAR-array (a chained-owner-is-scalar decline)
-//
-//	ELEM     { SUB repeated int32; K int64; SUBSTRUCT repeated ELEM2 }
-//	ELEM2    { DEEP repeated int32; LEAF int64 }
-//
-// So a 2-chain (`T4.SARR AS x, x.SUB AS y`) unnests the struct-array element's
-// own int-array SUB; a 3-chain (`… x.SUBSTRUCT AS y, y.DEEP AS z`) descends one
-// struct level deeper — exercising chainedOwnerElementMessage's recursion. The
-// SQL schema builder cannot express message/struct columns, so the proto is
-// built dynamically (descriptorpb + protodesc.NewFile) exactly as the metadata
-// builder does; records are genuine dynamicpb messages and the chained unnest
-// runs the full Cascades path against real FDB.
-func buildChainedUnnestMetadata(t *testing.T) *recordlayer.RecordMetaData {
-	t.Helper()
-	fdp := &descriptorpb.FileDescriptorProto{
-		Name:    proto.String("chained_unnest_test.proto"),
-		Package: proto.String("fdb.test.chainedunnest"),
-		Syntax:  proto.String("proto2"),
-	}
-	rep := descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
-	opt := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
-	i32 := descriptorpb.FieldDescriptorProto_TYPE_INT32.Enum()
-	i64 := descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum()
-	msg := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum()
-
-	elem2 := &descriptorpb.DescriptorProto{
-		Name: proto.String("ELEM2"),
-		Field: []*descriptorpb.FieldDescriptorProto{
-			{Name: proto.String("DEEP"), Number: proto.Int32(1), Label: rep, Type: i32},
-			{Name: proto.String("LEAF"), Number: proto.Int32(2), Label: opt, Type: i64},
-		},
-	}
-	elem := &descriptorpb.DescriptorProto{
-		Name: proto.String("ELEM"),
-		Field: []*descriptorpb.FieldDescriptorProto{
-			{Name: proto.String("SUB"), Number: proto.Int32(1), Label: rep, Type: i32},
-			{Name: proto.String("K"), Number: proto.Int32(2), Label: opt, Type: i64},
-			{
-				Name: proto.String("SUBSTRUCT"), Number: proto.Int32(3), Label: rep, Type: msg,
-				TypeName: proto.String(".fdb.test.chainedunnest.ELEM2"),
-			},
-		},
-	}
-	t4 := &descriptorpb.DescriptorProto{
-		Name: proto.String("T4"),
-		Field: []*descriptorpb.FieldDescriptorProto{
-			{Name: proto.String("ID"), Number: proto.Int32(1), Label: opt, Type: i64},
-			{
-				Name: proto.String("SARR"), Number: proto.Int32(2), Label: rep, Type: msg,
-				TypeName: proto.String(".fdb.test.chainedunnest.ELEM"),
-			},
-			{Name: proto.String("SCARR"), Number: proto.Int32(3), Label: rep, Type: i32},
-			// A TOP-LEVEL scalar deliberately NAMED "SUB" — the SAME bare name as
-			// the ELEM element's sub-array field. The shadow-precedence pin below
-			// proves `x.SUB` reads the ELEMENT's SUB (via the two-level accessor
-			// [X, SUB]), never this outer-row column.
-			{Name: proto.String("SUB"), Number: proto.Int32(4), Label: opt, Type: i64},
-		},
-	}
-	union := &descriptorpb.DescriptorProto{
-		Name: proto.String("RecordTypeUnion"),
-		Field: []*descriptorpb.FieldDescriptorProto{
-			{
-				Name: proto.String("_T4"), Number: proto.Int32(1), Label: opt, Type: msg,
-				TypeName: proto.String(".fdb.test.chainedunnest.T4"),
-			},
-		},
-	}
-	fdp.MessageType = []*descriptorpb.DescriptorProto{elem2, elem, t4, union}
-
-	fd, err := protodesc.NewFile(fdp, nil)
-	if err != nil {
-		t.Fatalf("protodesc.NewFile: %v", err)
-	}
-	mdBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fd)
-	mdBuilder.SetSplitLongRecords(false)
-	mdBuilder.SetStoreRecordVersions(false)
-	mdBuilder.SetVersion(1)
-	mdBuilder.SetRecordCountKey(recordlayer.RecordTypeKey())
-	rt := mdBuilder.GetRecordType("T4")
-	if rt == nil {
-		t.Fatalf("record type T4 not found after SetRecords")
-	}
-	rt.SetPrimaryKey(recordlayer.Field("ID"))
-	md, err := mdBuilder.Build()
-	if err != nil {
-		t.Fatalf("build metadata: %v", err)
-	}
-	return md
-}
-
 // TestFDB_ChainedUnnest is the class-4 (chained lateral unnest) e2e proof
 // against real FDB. A chained unnest's OWNER is a PRIOR unnest's element, not a
 // table — `FROM T4, T4.SARR AS x, x.SUB AS y` unnests the struct-array element
@@ -131,24 +34,24 @@ func buildChainedUnnestMetadata(t *testing.T) *recordlayer.RecordMetaData {
 // FieldValue rooted at the owner alias.
 func TestFDB_ChainedUnnest(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
 	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 
-	md := buildChainedUnnestMetadata(t)
+	md := testkit.BuildChainedUnnestMetadata(t)
 	t4Desc := md.GetRecordType("T4").Descriptor
 	sarrFD := t4Desc.Fields().ByName("SARR")
-	elemDesc := arrayElementMessageDescriptor(sarrFD)
+	elemDesc := testkit.ArrayElementMessageDescriptor(sarrFD)
 	substructFD := elemDesc.Fields().ByName("SUBSTRUCT")
-	elem2Desc := arrayElementMessageDescriptor(substructFD)
+	elem2Desc := testkit.ArrayElementMessageDescriptor(substructFD)
 	scarrFD := t4Desc.Fields().ByName("SCARR")
 
 	// mkElem2 builds an ELEM2{DEEP:[…], LEAF:leaf} deepest-struct element.
@@ -159,7 +62,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		for _, d := range deep {
 			deepVals = append(deepVals, protoreflect.ValueOfInt32(d))
 		}
-		setArrayField(m, elem2Desc.Fields().ByName("DEEP"), deepVals...)
+		testkit.SetArrayField(m, elem2Desc.Fields().ByName("DEEP"), deepVals...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	// mkElem builds an ELEM{SUB:[…], K:k, SUBSTRUCT:[…]} mid-struct element.
@@ -170,8 +73,8 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		for _, s := range sub {
 			subVals = append(subVals, protoreflect.ValueOfInt32(s))
 		}
-		setArrayField(m, elemDesc.Fields().ByName("SUB"), subVals...)
-		setArrayField(m, substructFD, substruct...)
+		testkit.SetArrayField(m, elemDesc.Fields().ByName("SUB"), subVals...)
+		testkit.SetArrayField(m, substructFD, substruct...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkT4 := func(id int64, scarr []int32, sarr ...protoreflect.Value) proto.Message {
@@ -180,12 +83,12 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		// The shadow SUB column: a fixed sentinel 999 on every row. A shadow bug
 		// (reading the outer-row SUB instead of x.SUB) would surface 999s.
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(999))
-		setArrayField(m, sarrFD, sarr...)
+		testkit.SetArrayField(m, sarrFD, sarr...)
 		scarrVals := make([]protoreflect.Value, 0, len(scarr))
 		for _, c := range scarr {
 			scarrVals = append(scarrVals, protoreflect.ValueOfInt32(c))
 		}
-		setArrayField(m, scarrFD, scarrVals...)
+		testkit.SetArrayField(m, scarrFD, scarrVals...)
 		return m
 	}
 
@@ -259,7 +162,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
-		got := queryLabels(t, sql, md)
+		got := testkit.QueryLabels(t, sql, md)
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("columns %q\n got=%v\nwant=%v\nplan=%s", sql, got, want, plan.Explain())
 		}
@@ -291,7 +194,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		_, rows := queryRows(t, q)
 		got := make([]string, 0, len(rows))
 		for _, r := range rows {
-			got = append(got, positionalPipeSprint(r))
+			got = append(got, testkit.PositionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		// Slot order, which is the SELECT order: V.Y first, T2.ID second. The
@@ -324,7 +227,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		}
 		got := make([]string, 0, len(rows))
 		for _, r := range rows {
-			got = append(got, positionalPipeSprint(r))
+			got = append(got, testkit.PositionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		want := []string{"1|100", "1|200", "1|300", "2|400"}
@@ -339,7 +242,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		_, rows := queryRows(t, q)
 		got := make([]string, 0, len(rows))
 		for _, r := range rows {
-			got = append(got, positionalPipeSprint(r))
+			got = append(got, testkit.PositionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		want := []string{"1|11", "1|12", "1|13", "2|20"}
@@ -357,7 +260,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		// shadow probe below: "slot 0 is ID" is a claim about the projection, and
 		// an unchecked `[0]` keeps reading SOMETHING after the projection moves.
 		for _, r := range rows {
-			row := positionalPipeSprint(r)
+			row := testkit.PositionalPipeSprint(r)
 			if parts := strings.Split(row, "|"); len(parts) != 2 {
 				t.Fatalf("row %q is not the 2-column (ID, Y) projection — slot 0 is only ID at that width", row)
 			}
@@ -373,7 +276,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		_, rows := queryRows(t, q)
 		got := make([]string, 0, len(rows))
 		for _, r := range rows {
-			got = append(got, positionalPipeSprint(r))
+			got = append(got, testkit.PositionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		// id1 elem0 SUB[100,200] → O 1,2; id1 elem1 SUB[300] → O 1; id2 SUB[400] → O 1.
@@ -389,7 +292,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		_, rows := queryRows(t, q)
 		got := make([]string, 0, len(rows))
 		for _, r := range rows {
-			got = append(got, positionalPipeSprint(r))
+			got = append(got, testkit.PositionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		// id1: elem OX=1 (SUB 100,200 → OY 1,2); elem OX=2 (SUB 300 → OY 1).
@@ -419,7 +322,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		// because a name-keyed read is exactly what the shadow defeats: the outer
 		// SUB and the element SUB share a name.
 		for _, r := range rows {
-			row := positionalPipeSprint(r)
+			row := testkit.PositionalPipeSprint(r)
 			parts := strings.Split(row, "|")
 			// Width FIRST, and fatal. Guarding the 999 check behind `len == 2`
 			// makes THIS LOOP fail open: a projection-width change silently skips
@@ -442,7 +345,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		// And the element values are exactly the SUB arrays (not the outer 999).
 		got := make([]string, 0, len(rows))
 		for _, r := range rows {
-			got = append(got, positionalPipeSprint(r))
+			got = append(got, testkit.PositionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		// The WHOLE row, not just Y: the projection is (ID, Y), and rendering only
@@ -481,7 +384,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		}
 		got := make([]string, 0, len(rows))
 		for _, row := range rows {
-			got = append(got, positionalPipeSprint(row))
+			got = append(got, testkit.PositionalPipeSprint(row))
 		}
 		sort.Strings(got)
 		want := []string{"100", "200", "300", "400"}
@@ -498,7 +401,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		}
 		got := make([]string, 0, len(rows))
 		for _, row := range rows {
-			got = append(got, positionalPipeSprint(row))
+			got = append(got, testkit.PositionalPipeSprint(row))
 		}
 		sort.Strings(got)
 		want := []string{"100", "200", "300", "400"}
@@ -578,7 +481,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		_, rows := queryRows(t, q)
 		got := make([]string, 0, len(rows))
 		for _, r := range rows {
-			got = append(got, positionalPipeSprint(r))
+			got = append(got, testkit.PositionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		want := []string{"100|1", "200|1", "300|2"}
@@ -592,7 +495,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		_, one := queryRows(t, `SELECT "Y" FROM T4, T4."SARR" AS "X" AT "OX", "X"."SUB" AS "Y" WHERE T4."ID" > "OX"`)
 		single := make([]string, 0, len(one))
 		for _, r := range one {
-			single = append(single, positionalPipeSprint(r))
+			single = append(single, testkit.PositionalPipeSprint(r))
 		}
 		if fmt.Sprintf("%v", single) != fmt.Sprintf("%v", []string{"400"}) {
 			t.Fatalf("T4.ID > OX chain = %v, want [400]", single)
@@ -607,7 +510,7 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		_, rows := queryRows(t, q)
 		got := make([]string, 0, len(rows))
 		for _, r := range rows {
-			got = append(got, positionalPipeSprint(r))
+			got = append(got, testkit.PositionalPipeSprint(r))
 		}
 		sort.Strings(got)
 		// id1 elem0: SUB[100,200] × SUBSTRUCT[LEAF 1, LEAF 2] → 4 rows.

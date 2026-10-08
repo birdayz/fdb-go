@@ -11,31 +11,33 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateIndexSumMinMax(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aggidxp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggidxp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggidxp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggidxp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggidxp "+
 			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g "+
 			"CREATE INDEX sum_by_g_nn AS SELECT COUNT(v) FROM ga GROUP BY g "+
 			"CREATE INDEX min_by_g AS SELECT MIN(v) FROM ga GROUP BY g "+
 			"CREATE INDEX max_by_g AS SELECT MAX(v) FROM ga GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggidxp/s WITH TEMPLATE aggidxp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGIDXP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggidxp/s WITH TEMPLATE aggidxp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGIDXP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO ga (id,g,v) VALUES (1,1,10),(2,1,30),(3,2,5),(4,2,25),(5,2,15)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ga (id,g,v) VALUES (1,1,10),(2,1,30),(3,2,5),(4,2,25),(5,2,15)")
 
 	check := func(name, q string, want map[int64]int64) {
 		t.Run(name, func(t *testing.T) {

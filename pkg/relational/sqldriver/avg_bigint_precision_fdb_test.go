@@ -15,20 +15,22 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AvgBigintPrecisionAbove2p53(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_avgbigprec")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_avgbigprec")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_avgbigprec")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_avgbigprec")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE avgbigprec CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_avgbigprec/s WITH TEMPLATE avgbigprec")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AVGBIGPREC?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_avgbigprec/s WITH TEMPLATE avgbigprec")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AVGBIGPREC?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -36,7 +38,7 @@ func TestFDB_AvgBigintPrecisionAbove2p53(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	// 9007199254740992 = 2^53; the two +1 rows are each absorbed (rounded away)
 	// by an incremental float64 sum but preserved by the exact int64 sum.
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO t (id, v) VALUES (1, 9007199254740992), (2, 1), (3, 1)")
 
 	var f float64

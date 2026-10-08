@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -41,7 +43,7 @@ import (
 // on statistics never making a decision WORSE.
 func TestFDB_JoinOrderStatisticsCorrectionRate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -120,23 +122,23 @@ type arrangementPlan struct {
 func joinOrderArrangement(t *testing.T, ctx context.Context, i, pkRows, fkRows int) (off, on arrangementPlan) {
 	t.Helper()
 	dbPath := fmt.Sprintf("/FRL/joinorder_%d", i)
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	tmpl := fmt.Sprintf("joinorder_%d", i)
 	// SYMMETRIC: the fk side is reachable through its index, the pk side through
 	// its primary key. Both directions execute, so only row counts distinguish
 	// them — and row counts are what the planner cannot see without statistics.
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+
 			" CREATE TABLE pkside (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 			" CREATE TABLE fkside (id BIGINT, fk BIGINT, PRIMARY KEY (id))"+
 			" CREATE INDEX fkside_by_fk ON fkside (fk)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
 
-	base := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	base := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	plain := openDSN(t, base)
-	mwjoInsertRange(t, plain, ctx, "pkside", 0, pkRows-1, func(r int) string { return fmt.Sprintf("(%d, %d)", r, r) })
-	mwjoInsertRange(t, plain, ctx, "fkside", 0, fkRows-1, func(r int) string { return fmt.Sprintf("(%d, %d)", r, r%pkRows) })
+	testkit.MwjoInsertRange(t, plain, ctx, "pkside", 0, pkRows-1, func(r int) string { return fmt.Sprintf("(%d, %d)", r, r) })
+	testkit.MwjoInsertRange(t, plain, ctx, "fkside", 0, fkRows-1, func(r int) string { return fmt.Sprintf("(%d, %d)", r, r%pkRows) })
 
 	const q = "EXPLAIN SELECT pkside.v, fkside.id FROM pkside, fkside WHERE fkside.fk = pkside.id"
 	off = explainJoin(t, ctx, plain, q)

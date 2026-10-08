@@ -99,6 +99,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -204,19 +206,19 @@ func runSargabilityCase(t *testing.T, ctx context.Context, db *sql.DB, table, pr
 		q += " ORDER BY " + c.orderBy
 	}
 
-	idxConn := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
-	fullConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	idxConn := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	fullConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptDisabledPlannerRules, []string{"MatchLeafRule"}).Build())
 	})
 
-	idxPlan := explainOnConn(t, ctx, idxConn, q)
+	idxPlan := testkit.ExplainConn(t, ctx, idxConn, q)
 	if !strings.Contains(idxPlan, "IndexScan") {
 		ctr.skipped++
 		t.Logf("SKIP %s: baseline plan does not use an index (%q); SQL: %s", c.name, idxPlan, q)
 		return
 	}
-	fullPlan := explainOnConn(t, ctx, fullConn, q)
+	fullPlan := testkit.ExplainConn(t, ctx, fullConn, q)
 	if fullPlan == idxPlan || strings.Contains(fullPlan, "IndexScan") {
 		t.Fatalf("%s: DISABLED_PLANNER_RULES=[MatchLeafRule] did not force a different, index-free plan "+
 			"(index plan: %q, full-scan plan: %q) — the row comparison below would prove nothing; SQL: %s",
@@ -520,10 +522,10 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	// contract on that shape. Extend both
 	// deliberately, together, or neither.
 	const dbPath = "/FRL/testdb_sargoracle"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	ctx := context.Background()
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sargoracle "+
 			"CREATE TABLE single_col (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX single_col_k ON single_col (k) "+
@@ -539,8 +541,8 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 			"CREATE INDEX dbl_col_d ON dbl_col (d) "+
 			"CREATE TABLE flt_col (id BIGINT, f FLOAT, PRIMARY KEY (id)) "+
 			"CREATE INDEX flt_col_f ON flt_col (f)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE sargoracle")
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE sargoracle")
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -554,11 +556,11 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	seenK := map[int64]bool{}
 	for i := 0; i < 150; i++ {
 		if rng.Intn(10) == 0 {
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO single_col (id) VALUES (%d)", i))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO single_col (id) VALUES (%d)", i))
 			continue
 		}
 		v := int64(rng.Intn(101) - 40)
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO single_col (id, k) VALUES (%d, %d)", i, v))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO single_col (id, k) VALUES (%d, %d)", i, v))
 		if !seenK[v] {
 			seenK[v] = true
 			singleK.values = append(singleK.values, v)
@@ -571,7 +573,7 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	seenCK := map[int64]bool{}
 	for i := 0; i < 100; i++ {
 		v := int64(rng.Intn(31))
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO composite_pk (id1, id2, k) VALUES (%d, %d, %d)", i/10, i%10, v))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO composite_pk (id1, id2, k) VALUES (%d, %d, %d)", i/10, i%10, v))
 		if !seenCK[v] {
 			seenCK[v] = true
 			compositeK.values = append(compositeK.values, v)
@@ -612,7 +614,7 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 				idxC.values = append(idxC.values, v)
 			}
 		}
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO composite_idx (%s) VALUES (%s)", cols, vals))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO composite_idx (%s) VALUES (%s)", cols, vals))
 	}
 	sort.Slice(idxA.values, func(i, j int) bool { return idxA.values[i] < idxA.values[j] })
 	sort.Slice(idxB.values, func(i, j int) bool { return idxB.values[i] < idxB.values[j] })
@@ -625,12 +627,12 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	uIdx := 0
 	for i := 0; i < 60; i++ {
 		if rng.Intn(100) < 15 {
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO uniq_col (id) VALUES (%d)", i))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO uniq_col (id) VALUES (%d)", i))
 			continue
 		}
 		v := int64(perm[uIdx])
 		uIdx++
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO uniq_col (id, u) VALUES (%d, %d)", i, v))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO uniq_col (id, u) VALUES (%d, %d)", i, v))
 		uniqU.values = append(uniqU.values, v)
 	}
 	sort.Slice(uniqU.values, func(i, j int) bool { return uniqU.values[i] < uniqU.values[j] })
@@ -643,11 +645,11 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	seenS := map[string]bool{}
 	for i := 0; i < 100; i++ {
 		if rng.Intn(10) == 0 {
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO str_col (id) VALUES (%d)", i))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO str_col (id) VALUES (%d)", i))
 			continue
 		}
 		v := prefixes[rng.Intn(len(prefixes))] + suffixes[rng.Intn(len(suffixes))]
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO str_col (id, s) VALUES (%d, '%s')", i, v))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO str_col (id, s) VALUES (%d, '%s')", i, v))
 		if !seenS[v] {
 			seenS[v] = true
 			idxS.values = append(idxS.values, v)
@@ -682,15 +684,15 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	}
 	for i := 0; i < 150; i++ {
 		if rng.Intn(10) == 0 {
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO dbl_col (id) VALUES (%d)", 2000+i))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO dbl_col (id) VALUES (%d)", 2000+i))
 			continue
 		}
 		v := float64(rng.Intn(101)-40) + float64(rng.Intn(10))/10
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO dbl_col (id, d) VALUES (%d, %s)", 2000+i, renderFloat(v)))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO dbl_col (id, d) VALUES (%d, %s)", 2000+i, renderFloat(v)))
 		addD(v)
 	}
 	for i, sp := range []float64{0.1, 9007199254740992, -9007199254740992, math.Copysign(0, -1)} {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO dbl_col (id, d) VALUES (%d, %s)", 2500+i, renderFloat(sp)))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO dbl_col (id, d) VALUES (%d, %s)", 2500+i, renderFloat(sp)))
 		addD(sp)
 	}
 	sort.Float64s(idxD.values)
@@ -715,18 +717,18 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 	}
 	for i := 0; i < 150; i++ {
 		if rng.Intn(10) == 0 {
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id) VALUES (%d)", 3000+i))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id) VALUES (%d)", 3000+i))
 			continue
 		}
 		v := float64(rng.Intn(101)-40) + float64(rng.Intn(10))/10
 		stored := addF(v)
 		// A FLOAT column takes a FLOAT: the rendered literal is a DOUBLE, which
 		// does not promote to FLOAT, so it is cast (exactly: stored is a float32).
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id, f) VALUES (%d, CAST(%s AS FLOAT))", 3000+i, renderFloat(stored)))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id, f) VALUES (%d, CAST(%s AS FLOAT))", 3000+i, renderFloat(stored)))
 	}
 	for i, sp := range []float64{0.1, 16777216, -16777216, math.Copysign(0, -1)} {
 		stored := addF(sp)
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id, f) VALUES (%d, CAST(%s AS FLOAT))", 3500+i, renderFloat(stored)))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO flt_col (id, f) VALUES (%d, CAST(%s AS FLOAT))", 3500+i, renderFloat(stored)))
 	}
 	sort.Float64s(idxF.values)
 
@@ -737,7 +739,7 @@ func sargOracleSchema(t *testing.T) (db *sql.DB, singleK, compositeK, idxA, idxB
 // predicate x boundary, index-plan rows == full-scan-plan rows.
 func TestFDB_SargabilityDifferentialOracle(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()

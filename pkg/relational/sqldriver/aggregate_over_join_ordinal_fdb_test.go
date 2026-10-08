@@ -20,21 +20,23 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateOverJoinOrdinal(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aggjoin_ord")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggjoin_ord")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggjoin_ord")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggjoin_ord")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggjoin_ord "+
 			"CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did)) "+
 			"CREATE TABLE emp (eid BIGINT, did BIGINT, salary BIGINT, PRIMARY KEY (eid))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggjoin_ord/s WITH TEMPLATE aggjoin_ord")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGJOIN_ORD?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggjoin_ord/s WITH TEMPLATE aggjoin_ord")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGJOIN_ORD?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -42,9 +44,9 @@ func TestFDB_AggregateOverJoinOrdinal(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// dept: eng(1), sales(2) ; emp: (10,1,100),(20,1,90),(30,2,80)
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO dept (did, dname) VALUES (1, 'eng'), (2, 'sales')")
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO emp (eid, did, salary) VALUES (10, 1, 100), (20, 1, 90), (30, 2, 80)")
 
 	// strPairs collects (string,int64) rows sorted for order-independent comparison.

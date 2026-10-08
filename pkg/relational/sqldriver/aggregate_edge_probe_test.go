@@ -9,21 +9,23 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateEdgeProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_agg_edge")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_agg_edge")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_agg_edge")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_agg_edge")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE agg_edge "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, grp STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_agg_edge/s WITH TEMPLATE agg_edge")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_EDGE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_agg_edge/s WITH TEMPLATE agg_edge")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_EDGE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -31,8 +33,8 @@ func TestFDB_AggregateEdgeProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// grp A: v=10,20,NULL; grp B: v=5.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, grp) VALUES (1, 10, 'A'), (2, 20, 'A'), (4, 5, 'B')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, grp) VALUES (3, 'A')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v, grp) VALUES (1, 10, 'A'), (2, 20, 'A'), (4, 5, 'B')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, grp) VALUES (3, 'A')")
 
 	// scalarInt scans a single-row single-col nullable int aggregate.
 	scalarInt := func(q string) sql.NullInt64 {
@@ -78,7 +80,7 @@ func TestFDB_AggregateEdgeProbe(t *testing.T) {
 	})
 	t.Run("all_null_sum_is_null", func(t *testing.T) {
 		// grp with only-NULL v: insert grp C with one NULL v.
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, grp) VALUES (5, 'C')")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, grp) VALUES (5, 'C')")
 		if v := scalarInt("SELECT SUM(v) FROM t WHERE grp = 'C'"); v.Valid {
 			t.Errorf("SUM(v) all-NULL = %v, want NULL", v)
 		}

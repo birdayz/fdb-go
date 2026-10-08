@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -17,20 +19,20 @@ import (
 func TestFDB_SQLFunctions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_sqlfn")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sqlfn")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sqlfn_tpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_sqlfn")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sqlfn")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sqlfn_tpl "+
 		"CREATE TABLE t (id BIGINT, g BIGINT, s STRING, PRIMARY KEY (id)) "+
 		"CREATE FUNCTION below(IN n BIGINT, IN tag STRING DEFAULT 'x') AS SELECT id, s FROM t WHERE id < n AND s = tag "+
 		"CREATE FUNCTION all_x(IN n BIGINT DEFAULT 10) AS SELECT * FROM below(n) "+
 		"CREATE VIEW v AS SELECT id FROM below(3, 'y')")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sqlfn/s WITH TEMPLATE sqlfn_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_SQLFN?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sqlfn/s WITH TEMPLATE sqlfn_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_SQLFN?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, 1, 'x'), (2, 1, 'y'), (3, 2, 'x'), (4, 2, 'x')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, 1, 'x'), (2, 1, 'y'), (3, 2, 'x'), (4, 2, 'x')")
 
 	for q, want := range map[string]string{
 		"SELECT id FROM below(4) ORDER BY id":                                          "[1 3]",
@@ -85,21 +87,21 @@ func TestFDB_SQLFunctions(t *testing.T) {
 func TestFDB_MacroFunctions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_macro")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_macro")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE macro_tpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_macro")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_macro")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE macro_tpl "+
 		"CREATE TYPE AS STRUCT pt(x BIGINT, y BIGINT) "+
 		"CREATE TABLE t (id BIGINT, p pt, PRIMARY KEY (id)) "+
 		"CREATE FUNCTION px(IN a TYPE pt) RETURNS BIGINT AS a.x "+
 		"CREATE FUNCTION plus(IN a BIGINT, IN b BIGINT DEFAULT 10) RETURNS BIGINT RETURN a + b "+
 		"CREATE FUNCTION big(IN a BIGINT) AS SELECT id FROM t WHERE px(p) > a")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_macro/s WITH TEMPLATE macro_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_MACRO?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_macro/s WITH TEMPLATE macro_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_MACRO?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, (1, 2)), (2, (5, 6)), (3, (9, 1))")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, (1, 2)), (2, (5, 6)), (3, (9, 1))")
 
 	for q, want := range map[string]string{
 		"SELECT px(p) FROM t ORDER BY id":               "[1 5 9]",
@@ -146,19 +148,19 @@ func TestFDB_MacroFunctions(t *testing.T) {
 func TestFDB_TemporaryFunctions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_tempfn")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_tempfn")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE tempfn_tpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_tempfn")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_tempfn")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE tempfn_tpl "+
 		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE FUNCTION kept(IN n BIGINT) AS SELECT id FROM t WHERE id = n")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_tempfn/s WITH TEMPLATE tempfn_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_TEMPFN?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_tempfn/s WITH TEMPLATE tempfn_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_TEMPFN?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)")
 
 	ids := func(q interface {
 		QueryContext(context.Context, string, ...any) (*sql.Rows, error)
@@ -179,8 +181,8 @@ func TestFDB_TemporaryFunctions(t *testing.T) {
 		}
 		return fmt.Sprint(got)
 	}
-	retryTx(t, db, txRetryOpts{}, func(at txAttempt) error {
-		tx := at.tx
+	testkit.RetryTx(t, db, testkit.TxRetryOpts{}, func(at testkit.TxAttempt) error {
+		tx := at.Tx
 		for _, s := range []string{
 			"CREATE TEMPORARY FUNCTION big() ON COMMIT DROP FUNCTION AS SELECT id FROM t WHERE v > 15",
 			"CREATE TEMPORARY FUNCTION twice(IN x BIGINT) RETURNS BIGINT ON COMMIT DROP FUNCTION RETURN x + x",
@@ -232,15 +234,15 @@ func TestFDB_TemporaryFunctions(t *testing.T) {
 // rebuilding a child reference per rule firing made this call plan forever.
 func TestFDB_NestedSQLFunctionPlansThroughItsIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	db, ctx := dgcOpen(t, "/FRL/testdb_nestedfn", "nestedfn",
+	db, ctx := testkit.DgcOpen(t, "/FRL/testdb_nestedfn", "nestedfn",
 		"CREATE TABLE employees (id BIGINT, name STRING, department STRING, salary BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX dept_idx AS SELECT department, salary FROM employees ORDER BY department, salary "+
 			"CREATE FUNCTION employees_in_dept(IN dept STRING) AS SELECT id, name, salary FROM employees WHERE department = dept "+
 			"CREATE FUNCTION high_earners(IN dept STRING) AS SELECT * FROM employees_in_dept(dept) WHERE salary > 100000")
-	mwjoMustExec(t, db, ctx, "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000), "+
 		"(2, 'Bob', 'Engineering', 110000), (3, 'Carol', 'Engineering', 150000), (5, 'Eve', 'Sales', 120000)")
 
 	const q = "SELECT id FROM high_earners('Engineering')"
@@ -253,7 +255,7 @@ func TestFDB_NestedSQLFunctionPlansThroughItsIndex(t *testing.T) {
 	if !strings.Contains(plan, "IndexScan(DEPT_IDX, [=, <>]") {
 		t.Fatalf("planned %s, want both bodies' predicates in one DEPT_IDX scan", plan)
 	}
-	if got := dgcInts(t, db, ctx, q, true); !dgcEq(got, []int64{2, 3}) {
+	if got := testkit.DgcInts(t, db, ctx, q, true); !testkit.DgcEq(got, []int64{2, 3}) {
 		t.Errorf("%s = %v, want [2 3]", q, got)
 	}
 }

@@ -35,31 +35,33 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_ArrayComparison(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_arraycmp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_arraycmp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_arraycmp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_arraycmp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE arraycmp "+
 			"CREATE TABLE dummy (pk BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE TABLE t1 (pk BIGINT, arr INTEGER ARRAY, arr_nn INTEGER ARRAY NOT NULL, PRIMARY KEY (pk))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_arraycmp/s WITH TEMPLATE arraycmp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ARRAYCMP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_arraycmp/s WITH TEMPLATE arraycmp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ARRAYCMP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO dummy VALUES (1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t1 (pk, arr, arr_nn) VALUES (-1, NULL, []), (0, [], []), (1, [1], [1])")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO dummy VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 (pk, arr, arr_nn) VALUES (-1, NULL, []), (0, [], []), (1, [1], [1])")
 
 	// boolQuery runs a single-row single-column boolean projection and
 	// returns (value, isNull).

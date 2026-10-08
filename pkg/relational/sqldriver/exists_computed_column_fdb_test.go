@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExists_UnaliasedComputedColumn pins RFC-141 R4 round-9 P2:
@@ -27,19 +29,19 @@ import (
 // user-visible column name.
 func TestFDB_ProjectedExists_UnaliasedComputedColumn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_existscomputed")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_existscomputed")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ecc_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_existscomputed")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_existscomputed")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ecc_tmpl "+
 		"CREATE TABLE t (id BIGINT, ref BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_existscomputed/s WITH TEMPLATE ecc_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_existscomputed/s WITH TEMPLATE ecc_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTSCOMPUTED?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTSCOMPUTED?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -47,8 +49,8 @@ func TestFDB_ProjectedExists_UnaliasedComputedColumn(t *testing.T) {
 
 	// t.ref points at t2.id for row 1; row 2 points at a missing t2 ⇒ EXISTS
 	// true,false.
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, 100), (2, 999)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, 100), (2, 999)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100)")
 
 	columnsOf := func(t *testing.T, q string) []string {
 		t.Helper()

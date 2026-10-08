@@ -1,7 +1,6 @@
-package sqldriver_test
+package testkit
 
 import (
-	"flag"
 	"fmt"
 	"io"
 
@@ -60,7 +59,7 @@ func assertDottedRowTypeProducerCensus(w io.Writer) bool {
 	// 1487 tests passed. A floor justified only by readings taken before it
 	// existed has never been shown to pass anything.
 	floor := &values.DottedRowTypeProducerFloor{Derivations: 100, Dotted: 50}
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+	if f := corpusNarrowing(); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "dotted row-type producer census: population floors NOT checked "+
 			"(-test.run=%q narrowed the corpus). The census still reports its counts "+
 			"above; only the whole-corpus floors are withheld.\n", f.Value.String())

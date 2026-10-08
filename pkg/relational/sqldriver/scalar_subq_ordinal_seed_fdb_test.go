@@ -16,21 +16,23 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ScalarSubqueryOrdinalSeed(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ssos")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ssos")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssos "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_ssos")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ssos")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssos "+
 		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ssos/s WITH TEMPLATE ssos")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSOS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ssos/s WITH TEMPLATE ssos")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSOS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -40,8 +42,8 @@ func TestFDB_ScalarSubqueryOrdinalSeed(t *testing.T) {
 	// dept 1: exactly one emp (salary 500) — single match, so no user LIMIT is
 	// needed and the cardinality guard never fires. dept 2: no emp — the
 	// LEFT-OUTER null-fill case (the inner ordinal is nullable).
-	mwjoMustExec(t, db, ctx, "INSERT INTO dept (id, name) VALUES (1, 'eng'), (2, 'ops')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO emp (id, dept_id, salary) VALUES (10, 1, 500)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO dept (id, name) VALUES (1, 'eng'), (2, 'ops')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO emp (id, dept_id, salary) VALUES (10, 1, 500)")
 
 	// QUALIFIED outer refs (d.id, d.name) over the single-source (ordinalized) outer.
 	t.Run("qualified_outer_refs", func(t *testing.T) {
@@ -102,17 +104,17 @@ func TestFDB_ScalarSubqueryOrdinalSeed(t *testing.T) {
 // unconditionally.
 func TestFDB_ScalarSubqueryOrdinalSeed_ColumnType(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ssosct")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ssosct")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssosct "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_ssosct")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ssosct")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssosct "+
 		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, ename STRING, dsal DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ssosct/s WITH TEMPLATE ssosct")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSOSCT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ssosct/s WITH TEMPLATE ssosct")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSOSCT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -121,8 +123,8 @@ func TestFDB_ScalarSubqueryOrdinalSeed_ColumnType(t *testing.T) {
 
 	// dept 1: two emps (for a well-defined aggregate). dept 2: exactly one emp (so
 	// the non-aggregate plain-column scalar's strict-single guard never fires).
-	mwjoMustExec(t, db, ctx, "INSERT INTO dept (id, name) VALUES (1, 'eng'), (2, 'ops')")
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO dept (id, name) VALUES (1, 'eng'), (2, 'ops')")
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO emp (id, dept_id, salary, ename, dsal) VALUES (10, 1, 400, 'alice', 400.5), (11, 1, 600, 'bob', 600.5), (20, 2, 700, 'carol', 700.5)")
 
 	// colType returns the DatabaseTypeName of the col-th (0-indexed) result column
@@ -209,17 +211,17 @@ func TestFDB_ScalarSubqueryOrdinalSeed_ColumnType(t *testing.T) {
 // computed-scalar and join-inner tests.)
 func TestFDB_ScalarInnerShapeProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ssisp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ssisp")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssisp "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_ssisp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ssisp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssisp "+
 		"CREATE TABLE dept (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, ename STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ssisp/s WITH TEMPLATE ssisp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSISP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ssisp/s WITH TEMPLATE ssisp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSISP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -227,8 +229,8 @@ func TestFDB_ScalarInnerShapeProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	// dept 2 has exactly one emp so a plain-column / computed inner has a single
 	// match (no cardinality guard); dept 1 has one too for the aggregates.
-	mwjoMustExec(t, db, ctx, "INSERT INTO dept (id) VALUES (1), (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO emp (id, dept_id, salary, ename) VALUES (10, 1, 400, 'alice'), (20, 2, 700, 'carol')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO dept (id) VALUES (1), (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO emp (id, dept_id, salary, ename) VALUES (10, 1, 400, 'alice'), (20, 2, 700, 'carol')")
 
 	shapes := map[string]string{
 		"plain_column":   "(SELECT salary FROM emp e WHERE e.dept_id = d.id)",

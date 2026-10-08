@@ -24,15 +24,17 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_MetamorphicMinMaxNullSweep(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_mm_minmax", "mmmm",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_mm_minmax", "mmmm",
 		"CREATE TABLE t (id BIGINT, g BIGINT, h BIGINT, v BIGINT, s STRING, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_min_v_g AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_max_v_g AS SELECT MAX(v) FROM t GROUP BY g "+
@@ -119,22 +121,22 @@ func TestFDB_MetamorphicMinMaxNullSweep(t *testing.T) {
 	check := func(after string) {
 		t.Helper()
 		for _, q := range probes {
-			gi, ei := mmRows(t, ctx, w.idx, q)
-			gn, en := mmRows(t, ctx, w.plain, q)
+			gi, ei := testkit.QueryRowStrings(t, ctx, w.Idx, q)
+			gn, en := testkit.QueryRowStrings(t, ctx, w.Plain, q)
 			if ei != nil || en != nil {
 				t.Fatalf("probe failed after %q\n  q: %s\n  indexed: %v\n  unindexed: %v", after, q, ei, en)
 			}
 			compared++
-			if !mmEqRows(gi, gn) {
+			if !testkit.EqualRows(gi, gn) {
 				t.Fatalf("AGGREGATE DIVERGENCE after %q\n  q: %s\n  %s\n  indexed  : %v\n  unindexed: %v\n"+
-					"  reproduce with MMNULL_SEED=%d", after, q, mmFirstDiff(gi, gn), gi, gn, seed)
+					"  reproduce with MMNULL_SEED=%d", after, q, testkit.MmFirstDiff(gi, gn), gi, gn, seed)
 			}
 		}
 		// Track whether the sweep is actually reaching both arms of the repair.
 		// A run in which no group ever has a NULL minimum exercises none of it
 		// and its green means nothing; likewise a run where every minimum is
 		// NULL never reaches the resolved-value arm.
-		rows, err := mmRows(t, ctx, w.idx, "SELECT g, MIN(v) FROM t GROUP BY g")
+		rows, err := testkit.QueryRowStrings(t, ctx, w.Idx, "SELECT g, MIN(v) FROM t GROUP BY g")
 		if err != nil {
 			t.Fatalf("population probe: %v", err)
 		}

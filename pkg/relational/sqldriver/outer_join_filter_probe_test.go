@@ -13,23 +13,25 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_OuterJoinFilterProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_oj_filter")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_oj_filter")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_oj_filter")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_oj_filter")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE oj_filter "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_oj_filter/s WITH TEMPLATE oj_filter")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OJ_FILTER?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_oj_filter/s WITH TEMPLATE oj_filter")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OJ_FILTER?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -37,15 +39,15 @@ func TestFDB_OuterJoinFilterProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// a: (1,5),(2,10),(3,7); b: a1→{v8,v3}, a2→{v20}, a3→none.
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10), (3, 7)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, a_id, v) VALUES (100, 1, 8), (101, 1, 3), (102, 2, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10), (3, 7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, a_id, v) VALUES (100, 1, 8), (101, 1, 3), (102, 2, 20)")
 
 	pairs := func(q string) []string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
 			t.Fatalf("query %q: %v", q, err)
 		}
-		return siScanRows(t, rows)
+		return testkit.ScanRowStrings(t, rows)
 	}
 	cases := []struct {
 		name string
@@ -80,7 +82,7 @@ func TestFDB_OuterJoinFilterProbe(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := pairs(tc.q)
-			if !eqStrSlices(got, tc.want) {
+			if !testkit.EqualStrings(got, tc.want) {
 				t.Errorf("%s rows = %v, want %v", tc.name, got, tc.want)
 			}
 		})

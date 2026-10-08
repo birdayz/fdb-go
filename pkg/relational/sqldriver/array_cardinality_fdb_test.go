@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -49,12 +51,12 @@ import (
 // column support / Phase 2's index-DDL work.
 func TestFDB_ArrayCardinality(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -91,7 +93,7 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 		for i, v := range vals {
 			pvals[i] = protoreflect.ValueOfInt32(v)
 		}
-		setArrayField(m, fd, pvals...)
+		testkit.SetArrayField(m, fd, pvals...)
 	}
 	// tab1Rec builds a TAB1 record. arr=nil leaves the array field UNSET, the
 	// wire representation of a NULL array. A nullable array column is stored as
@@ -171,7 +173,7 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 				// SLOT order, not sorted map keys: the sorted form re-sorted a
 				// permuted row to the identical string and had already lost any
 				// duplicate output name last-wins.
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -192,7 +194,7 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 		t.Helper()
 		explain, got := query(t, sql)
 		sort.Strings(want)
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("query %q\n got=%v\nwant=%v\nplan=%s", sql, got, want, explain)
 		}
 		return explain
@@ -201,7 +203,7 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 	assertRowsOrdered := func(t *testing.T, sql string, want []string) string {
 		t.Helper()
 		explain, got := queryOrdered(t, sql)
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("ordered query %q\n got=%v\nwant=%v\nplan=%s", sql, got, want, explain)
 		}
 		return explain
@@ -265,7 +267,7 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 		want := []string{"id=1,card=0", "id=2,card=1", "id=3,card=2"}
 		gotPairs := cardPairs(t, `SELECT "ID", CARDINALITY("INT_ARR") AS "CARD" FROM TAB1_NN`)
 		sort.Strings(want)
-		if !unnestEqualStrs(gotPairs, want) {
+		if !testkit.UnnestEqualStrs(gotPairs, want) {
 			t.Fatalf("got=%v want=%v", gotPairs, want)
 		}
 	})
@@ -302,7 +304,7 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 			"id=0,card=<nil>", "id=1,card=0", "id=2,card=1", "id=3,card=2",
 		}
 		sort.Strings(want)
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("got=%v want=%v", got, want)
 		}
 	})
@@ -313,14 +315,14 @@ func TestFDB_ArrayCardinality(t *testing.T) {
 		if perr == nil {
 			t.Fatal("expected error for CARDINALITY(scalar), got nil")
 		}
-		requireSQLSTATE(t, perr, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, perr, api.ErrCodeCannotConvertType)
 	})
 	t.Run("non-array constant rejects with CANNOT_CONVERT_TYPE", func(t *testing.T) {
 		_, perr := embedded.PlanRecordQueryWithMetadata(`SELECT CARDINALITY(1) FROM DUMMY`, md, nil)
 		if perr == nil {
 			t.Fatal("expected error for CARDINALITY(1), got nil")
 		}
-		requireSQLSTATE(t, perr, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, perr, api.ErrCodeCannotConvertType)
 	})
 
 	// --- WHERE CARDINALITY(arr) = N (full-scan PredicatesFilter). ---

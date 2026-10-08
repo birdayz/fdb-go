@@ -26,6 +26,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // wantPrimaryKeyDedupBelowFetch requires the OR's union legs to be deduplicated
@@ -47,9 +49,9 @@ func wantPrimaryKeyDedupBelowFetch(t *testing.T, name, plan string) {
 //
 //	d = drivers, one row per case, carrying the two correlated values
 //	u = the probed table, whose rows are rigged by which disjuncts they satisfy
-func mmOrUnionFixture(t *testing.T, ctx context.Context, dbPath, prefix string) *mmTwin {
+func mmOrUnionFixture(t *testing.T, ctx context.Context, dbPath, prefix string) *testkit.Twin {
 	t.Helper()
-	w := mmNewTwin(t, ctx, dbPath, prefix,
+	w := testkit.NewTwin(t, ctx, dbPath, prefix,
 		"CREATE TABLE d (did BIGINT, da BIGINT, db2 BIGINT, dc BIGINT, PRIMARY KEY (did)) "+
 			"CREATE TABLE u (uid BIGINT, ua BIGINT, ub BIGINT, uc BIGINT, pad STRING, PRIMARY KEY (uid)) ",
 		"CREATE INDEX u_ua ON u (ua) "+
@@ -80,7 +82,7 @@ func mmOrUnionFixture(t *testing.T, ctx context.Context, dbPath, prefix string) 
 // probes.
 func TestFDB_OrUnionPrimaryKeyDedup_LeftJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -183,7 +185,7 @@ func TestFDB_OrUnionPrimaryKeyDedup_LeftJoin(t *testing.T) {
 // duplicates, and without these cases that regression would land silently.
 func TestFDB_OrUnionPrimaryKeyDedup_OtherShapes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -219,11 +221,11 @@ func TestFDB_OrUnionPrimaryKeyDedup_OtherShapes(t *testing.T) {
 // the overlap.
 func TestFDB_OrUnionPrimaryKeyDedup_ScaleAndMaintenance(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_orunion_scale", "orunsc",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_orunion_scale", "orunsc",
 		"CREATE TABLE d (did BIGINT, da BIGINT, db2 BIGINT, PRIMARY KEY (did)) "+
 			"CREATE TABLE u (uid BIGINT, ua BIGINT, ub BIGINT, pad STRING, PRIMARY KEY (uid)) ",
 		"CREATE INDEX u_ua ON u (ua) CREATE INDEX u_ub ON u (ub) ")
@@ -277,10 +279,10 @@ func TestFDB_OrUnionPrimaryKeyDedup_ScaleAndMaintenance(t *testing.T) {
 
 func TestFDB_UnionWithExistentialPredicate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	w := mmNewTwin(t, context.Background(), "/FRL/testdb_union_exists", "union_exists",
+	w := testkit.NewTwin(t, context.Background(), "/FRL/testdb_union_exists", "union_exists",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY(id)) ",
 		"CREATE INDEX ix_a ON t(a) CREATE INDEX ix_b ON t(b) ")
 	w.Exec("INSERT INTO t VALUES (1,0,0),(2,5,0),(3,0,7),(4,5,7),(5,0,0)")
@@ -298,10 +300,10 @@ func TestFDB_UnionWithExistentialPredicate(t *testing.T) {
 
 func TestFDB_UnionWithUnmatchedFixedFactor(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	w := mmNewTwin(t, context.Background(), "/FRL/testdb_union_fixed", "union_fixed",
+	w := testkit.NewTwin(t, context.Background(), "/FRL/testdb_union_fixed", "union_fixed",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, PRIMARY KEY(id)) ",
 		"CREATE INDEX ix_a ON t(a,d) CREATE INDEX ix_b ON t(b,d) ")
 	w.Exec("INSERT INTO t VALUES (1,1,0,10,9),(2,0,2,20,9),(3,1,2,10,9),(4,1,0,30,9),(5,0,2,NULL,9),(6,0,0,10,9),(7,1,2,10,8)")

@@ -49,56 +49,9 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
-
-// floatOrderingRows is the probe ladder: every IEEE-754 edge class, with both
-// NaN signs carrying DISTINCT payloads.
-//
-// The ids are chosen adversarially, and this is the property the whole test
-// rests on. Physically the rows come back in the order
-//
-//	70(negNaN) 10(-Inf) 20(-1.5) 30(-0.0) 40(+0.0) 50(1.5) 60(+Inf) 5(posNaN)
-//
-// while `ORDER BY e, id` demands
-//
-//	10 20 30 40 50 60 then the NaN tie class by id: 5 70
-//
-// so the two disagree on BOTH dimensions at once: where the NaN block sits
-// (physically split to the two ends, logically one block at the tail) AND the
-// tie-break inside it. Giving the negative NaN the SMALLER id — the obvious
-// choice, since it is physically first — would make the tie-break agree by
-// accident and hide half the defect from a test that is otherwise correct.
-type floatOrderingRow struct {
-	id   int64
-	seed string
-	// makeNonFinite is an UPDATE assignment expression run afterwards, or ""
-	// when the seed is already the final value.
-	//
-	// The two-step seeding is HISTORICAL, not required: INSERT … VALUES once
-	// rejected NaN and +/-Inf with 22023 while UPDATE did not, so the ladder
-	// was built around the one path that worked. Every write path now accepts
-	// them (see nonfinite_float_write_symmetry_fdb_test.go). It is kept because
-	// the arithmetic is how the ladder OBTAINS its two distinct NaN payloads —
-	// `(+Inf) + (-Inf)` is the invalid operation that yields the sign-bit-SET
-	// quiet NaN, which no literal spells.
-	makeNonFinite string
-	label         string
-}
-
-var floatOrderingRows = []floatOrderingRow{
-	{id: 10, seed: "1.0e308", makeNonFinite: "e * -10.0", label: "-Inf"},
-	{id: 20, seed: "-1.5", label: "-1.5"},
-	{id: 30, seed: "-0.0", label: "-0.0"},
-	{id: 40, seed: "0.0", label: "+0.0"},
-	{id: 50, seed: "1.5", label: "1.5"},
-	{id: 60, seed: "1.0e308", makeNonFinite: "e * 10.0", label: "+Inf"},
-	// Inf + (-Inf) yields the sign-bit-SET quiet NaN 0xfff8000000000000, which
-	// packs BEFORE -Inf — the physically first row in the table.
-	{id: 70, seed: "1.0e308", makeNonFinite: "(e * 10.0) + (e * -10.0)", label: "negNaN"},
-	// A DIFFERENT payload from the negative one (0x7ff8000000000001), so the
-	// test also covers "two distinct bit patterns are one logical value".
-	{id: 5, seed: "0.0", makeNonFinite: "CAST('NaN' AS DOUBLE)", label: "posNaN"},
-}
 
 // floatOrderingNaNIDs is the logical tie class — one value under
 // CompareFloat64, two rows, two payloads, two physical blocks.
@@ -106,123 +59,6 @@ var floatOrderingNaNIDs = map[int64]bool{70: true, 5: true}
 
 // floatOrderingLogicalASC is the full `ORDER BY e, id` answer.
 var floatOrderingLogicalASC = []int64{10, 20, 30, 40, 50, 60, 5, 70}
-
-// seedFloatOrderingLadder writes the ladder into tbl with a constant `a` so an
-// equality on the index's leading column binds and leaves the float as the
-// leading SORTED coordinate.
-func seedFloatOrderingLadder(t *testing.T, db *sql.DB, ctx context.Context, tbl string) {
-	t.Helper()
-	var vals []string
-	for _, r := range floatOrderingRows {
-		vals = append(vals, fmt.Sprintf("(%d, %s, 1)", r.id, r.seed))
-	}
-	mwjoMustExec(t, db, ctx, fmt.Sprintf(
-		"INSERT INTO %s (id, e, a) VALUES %s", tbl, strings.Join(vals, ", ")))
-	for _, r := range floatOrderingRows {
-		if r.makeNonFinite == "" {
-			continue
-		}
-		mwjoMustExec(t, db, ctx, fmt.Sprintf(
-			"UPDATE %s SET e = %s WHERE id = %d", tbl, r.makeNonFinite, r.id))
-	}
-}
-
-// assertFloatLadderStored fails loudly if the ladder did not land as intended.
-// Every assertion below is meaningless without it: if the write path silently
-// rejected the non-finite values (or started rejecting them after a guard
-// change), the test would be comparing two tables of ordinary finite doubles
-// and would pass with the defect fully present.
-func assertFloatLadderStored(t *testing.T, db *sql.DB, ctx context.Context, tbl string) {
-	t.Helper()
-	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT id, e FROM %s", tbl))
-	if err != nil {
-		t.Fatalf("ladder readback on %s: %v", tbl, err)
-	}
-	defer rows.Close()
-	got := map[int64]float64{}
-	for rows.Next() {
-		var id int64
-		var e sql.NullFloat64
-		if err := rows.Scan(&id, &e); err != nil {
-			t.Fatalf("ladder scan on %s: %v", tbl, err)
-		}
-		if !e.Valid {
-			t.Fatalf("%s id=%d stored NULL, want a float", tbl, id)
-		}
-		got[id] = e.Float64
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("ladder rows on %s: %v", tbl, err)
-	}
-	if len(got) != len(floatOrderingRows) {
-		t.Fatalf("%s has %d rows, want %d", tbl, len(got), len(floatOrderingRows))
-	}
-	check := func(id int64, ok func(float64) bool, want string) {
-		t.Helper()
-		v, present := got[id]
-		if !present {
-			t.Fatalf("%s: id %d missing", tbl, id)
-		}
-		if !ok(v) {
-			t.Fatalf("%s: id %d stored %v (bits %#016x), want %s — the ladder did not "+
-				"land, so every ordering assertion in this test is vacuous",
-				tbl, id, v, math.Float64bits(v), want)
-		}
-	}
-	check(10, func(v float64) bool { return math.IsInf(v, -1) }, "-Inf")
-	check(60, func(v float64) bool { return math.IsInf(v, +1) }, "+Inf")
-	check(30, func(v float64) bool { return v == 0 && math.Signbit(v) }, "-0.0")
-	check(40, func(v float64) bool { return v == 0 && !math.Signbit(v) }, "+0.0")
-	check(70, func(v float64) bool { return math.IsNaN(v) && math.Signbit(v) }, "a NEGATIVE NaN")
-	check(5, func(v float64) bool { return math.IsNaN(v) && !math.Signbit(v) }, "a POSITIVE NaN")
-	if math.Float64bits(got[70]) == math.Float64bits(got[5]) {
-		t.Fatalf("%s: the two NaN rows share bit pattern %#016x; the ladder must carry "+
-			"two DISTINCT payloads so 'two bit patterns, one logical value' is exercised",
-			tbl, math.Float64bits(got[70]))
-	}
-}
-
-func floatOrderingIDs(t *testing.T, db *sql.DB, ctx context.Context, q string) []int64 {
-	t.Helper()
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		t.Fatalf("query %q: %v", q, err)
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var v int64
-		if err := rows.Scan(&v); err != nil {
-			t.Fatalf("scan %q: %v", q, err)
-		}
-		out = append(out, v)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows %q: %v", q, err)
-	}
-	return out
-}
-
-func floatOrderingExplain(t *testing.T, db *sql.DB, ctx context.Context, q string) string {
-	t.Helper()
-	var plan string
-	if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
-		t.Fatalf("EXPLAIN %q: %v", q, err)
-	}
-	return plan
-}
-
-func floatOrderingSameOrder(a, b []int64) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
 
 func floatOrderingReversed(in []int64) []int64 {
 	out := make([]int64, len(in))
@@ -234,13 +70,13 @@ func floatOrderingReversed(in []int64) []int64 {
 
 func TestFDB_FloatOrderingClaim_Differential(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_focd")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_focd")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE focd "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_focd")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_focd")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE focd "+
 		// fi: the shape under test — a compound index whose leading column is
 		// equality-bound, leaving the DOUBLE as the leading sorted coordinate.
 		"CREATE TABLE fi (id BIGINT, e DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
@@ -248,18 +84,18 @@ func TestFDB_FloatOrderingClaim_Differential(t *testing.T) {
 		// no claimed scan order to elide onto and must sort with CompareFloat64.
 		"CREATE TABLE fo (id BIGINT, e DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX fi_ae ON fi (a, e)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_focd/s WITH TEMPLATE focd")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FOCD?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_focd/s WITH TEMPLATE focd")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FOCD?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	seedFloatOrderingLadder(t, db, ctx, "fi")
-	seedFloatOrderingLadder(t, db, ctx, "fo")
-	assertFloatLadderStored(t, db, ctx, "fi")
-	assertFloatLadderStored(t, db, ctx, "fo")
+	testkit.SeedFloatOrderingLadder(t, db, ctx, "fi")
+	testkit.SeedFloatOrderingLadder(t, db, ctx, "fo")
+	testkit.AssertFloatLadderStored(t, db, ctx, "fi")
+	testkit.AssertFloatLadderStored(t, db, ctx, "fo")
 
 	// differential runs the same logical query on the indexed table and on the
 	// unindexed oracle and requires: the indexed plan really uses the index,
@@ -268,24 +104,24 @@ func TestFDB_FloatOrderingClaim_Differential(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			idxQ := "SELECT id FROM fi WHERE a = 1 ORDER BY " + orderBy
 			refQ := "SELECT id FROM fo WHERE a = 1 ORDER BY " + orderBy
-			idxPlan := floatOrderingExplain(t, db, ctx, idxQ)
+			idxPlan := testkit.FloatOrderingExplain(t, db, ctx, idxQ)
 			if !strings.Contains(strings.ToUpper(idxPlan), "FI_AE") {
 				t.Fatalf("the indexed side did not take index FI_AE, so this shape never "+
 					"reaches the ordering-claim branch it exists to test and would pass "+
 					"against a copy of the oracle.\n  query: %s\n  plan:  %s", idxQ, idxPlan)
 			}
-			got := floatOrderingIDs(t, db, ctx, idxQ)
-			ref := floatOrderingIDs(t, db, ctx, refQ)
-			if !floatOrderingSameOrder(got, want) {
+			got := testkit.FloatOrderingIDs(t, db, ctx, idxQ)
+			ref := testkit.FloatOrderingIDs(t, db, ctx, refQ)
+			if !testkit.FloatOrderingSameOrder(got, want) {
 				t.Errorf("indexed path returned %v, want %v — an ordered scan of a DOUBLE "+
 					"column claimed the FDB tuple KEY order as the column's VALUE order "+
 					"(a negative NaN packs before -Inf but compares GREATEST)\n  query: %s\n  plan:  %s",
 					got, want, idxQ, idxPlan)
 			}
-			if !floatOrderingSameOrder(got, ref) {
+			if !testkit.FloatOrderingSameOrder(got, ref) {
 				t.Errorf("DIFFERENTIAL MISMATCH: indexed=%v unindexed oracle=%v\n"+
 					"  idx query: %s\n  idx plan:  %s\n  ref query: %s\n  ref plan:  %s",
-					got, ref, idxQ, idxPlan, refQ, floatOrderingExplain(t, db, ctx, refQ))
+					got, ref, idxQ, idxPlan, refQ, testkit.FloatOrderingExplain(t, db, ctx, refQ))
 			}
 		})
 	}
@@ -307,12 +143,12 @@ func TestFDB_FloatOrderingClaim_Differential(t *testing.T) {
 	t.Run("float_alone_nan_block_is_last", func(t *testing.T) {
 		idxQ := "SELECT id FROM fi WHERE a = 1 ORDER BY e"
 		refQ := "SELECT id FROM fo WHERE a = 1 ORDER BY e"
-		idxPlan := floatOrderingExplain(t, db, ctx, idxQ)
+		idxPlan := testkit.FloatOrderingExplain(t, db, ctx, idxQ)
 		if !strings.Contains(strings.ToUpper(idxPlan), "FI_AE") {
 			t.Fatalf("the indexed side did not take index FI_AE\n  query: %s\n  plan: %s", idxQ, idxPlan)
 		}
-		got := floatOrderingIDs(t, db, ctx, idxQ)
-		ref := floatOrderingIDs(t, db, ctx, refQ)
+		got := testkit.FloatOrderingIDs(t, db, ctx, idxQ)
+		ref := testkit.FloatOrderingIDs(t, db, ctx, refQ)
 		var body []int64
 		firstNaN, lastNonNaN := -1, -1
 		for i, v := range got {
@@ -326,7 +162,7 @@ func TestFDB_FloatOrderingClaim_Differential(t *testing.T) {
 			lastNonNaN = i
 		}
 		wantBody := []int64{10, 20, 30, 40, 50, 60}
-		if !floatOrderingSameOrder(body, wantBody) {
+		if !testkit.FloatOrderingSameOrder(body, wantBody) {
 			t.Errorf("non-NaN rows came back as %v, want %v\n  query: %s\n  plan: %s",
 				body, wantBody, idxQ, idxPlan)
 		}
@@ -350,10 +186,10 @@ func TestFDB_FloatOrderingClaim_Differential(t *testing.T) {
 	// goes red, the defect is wider than NaN and the analysis must be redone.
 	t.Run("negative_result_non_nan_edges_order_identically", func(t *testing.T) {
 		q := "SELECT id FROM fi WHERE a = 1 AND id <> 70 AND id <> 5 ORDER BY e, id"
-		plan := floatOrderingExplain(t, db, ctx, q)
-		got := floatOrderingIDs(t, db, ctx, q)
+		plan := testkit.FloatOrderingExplain(t, db, ctx, q)
+		got := testkit.FloatOrderingIDs(t, db, ctx, q)
 		want := []int64{10, 20, 30, 40, 50, 60}
-		if !floatOrderingSameOrder(got, want) {
+		if !testkit.FloatOrderingSameOrder(got, want) {
 			t.Fatalf("signed zeros and +/-Inf are NOT ordered identically by the tuple "+
 				"encoding and by CompareFloat64: got %v, want %v. The divergence is WIDER "+
 				"than NaN and the ordering-claim analysis must be redone.\n  plan: %s",
@@ -362,10 +198,10 @@ func TestFDB_FloatOrderingClaim_Differential(t *testing.T) {
 		// And the two signed zeros must remain two DISTINCT keys in the order
 		// -0.0 then +0.0.
 		zq := "SELECT id FROM fi WHERE a = 1 AND e >= -0.0 AND e <= 0.0 ORDER BY e, id"
-		z := floatOrderingIDs(t, db, ctx, zq)
-		if !floatOrderingSameOrder(z, []int64{30, 40}) {
+		z := testkit.FloatOrderingIDs(t, db, ctx, zq)
+		if !testkit.FloatOrderingSameOrder(z, []int64{30, 40}) {
 			t.Fatalf("signed-zero span returned %v, want [30 40] (-0.0 then +0.0, two "+
-				"distinct keys)\n  query: %s\n  plan: %s", z, zq, floatOrderingExplain(t, db, ctx, zq))
+				"distinct keys)\n  query: %s\n  plan: %s", z, zq, testkit.FloatOrderingExplain(t, db, ctx, zq))
 		}
 	})
 }
@@ -391,18 +227,18 @@ func TestFDB_FloatOrderingClaim_Differential(t *testing.T) {
 // preserves the sign. Hence the helper DOUBLE column `h`.
 func TestFDB_FloatOrderingClaim_Differential_Float32(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_focd32")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_focd32")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE focd32 "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_focd32")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_focd32")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE focd32 "+
 		"CREATE TABLE gi (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE go_ (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX gi_ag ON gi (a, g)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_focd32/s WITH TEMPLATE focd32")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FOCD32?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_focd32/s WITH TEMPLATE focd32")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FOCD32?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -412,16 +248,16 @@ func TestFDB_FloatOrderingClaim_Differential_Float32(t *testing.T) {
 	// Same adversarial id assignment as the DOUBLE ladder: the negative NaN
 	// gets the LARGER id so the tie-break disagrees with the physical order.
 	seed := func(tbl string) {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf(
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 			"INSERT INTO %s (id, g, h, a) VALUES (20, CAST(-1.5 AS FLOAT), 1.0e308, 1), (30, CAST(-0.0 AS FLOAT), 1.0e308, 1), "+
 				"(40, CAST(0.0 AS FLOAT), 1.0e308, 1), (50, CAST(1.5 AS FLOAT), 1.0e308, 1), (70, CAST(1.0 AS FLOAT), 1.0e308, 1), (5, CAST(0.0 AS FLOAT), 1.0e308, 1)", tbl))
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("UPDATE %s SET g = CAST('NaN' AS FLOAT) WHERE id = 5", tbl))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("UPDATE %s SET g = CAST('NaN' AS FLOAT) WHERE id = 5", tbl))
 		// A FLOAT column takes only a FLOAT (no DOUBLE_TO_FLOAT promotion, and
 		// CAST of a DOUBLE NaN to FLOAT is refused), so the negative NaN is
 		// computed in the FLOAT lane: 3e38*10 saturates to +Inf in float32,
 		// 3e38*-10 to -Inf, and their sum is the default quiet NaN with the
 		// sign bit SET.
-		mwjoMustExec(t, db, ctx, fmt.Sprintf(
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 			"UPDATE %s SET g = (CAST(3.0E38 AS FLOAT) * CAST(10.0 AS FLOAT)) + (CAST(3.0E38 AS FLOAT) * CAST(-10.0 AS FLOAT)) WHERE id = 70", tbl))
 	}
 	seed("gi")
@@ -455,20 +291,20 @@ func TestFDB_FloatOrderingClaim_Differential_Float32(t *testing.T) {
 
 	q := "SELECT id FROM gi WHERE a = 1 ORDER BY g, id"
 	refQ := "SELECT id FROM go_ WHERE a = 1 ORDER BY g, id"
-	plan := floatOrderingExplain(t, db, ctx, q)
+	plan := testkit.FloatOrderingExplain(t, db, ctx, q)
 	if !strings.Contains(strings.ToUpper(plan), "GI_AG") {
 		t.Fatalf("the indexed side did not take index GI_AG, so this shape never reaches "+
 			"the ordering-claim branch\n  query: %s\n  plan: %s", q, plan)
 	}
-	got := floatOrderingIDs(t, db, ctx, q)
-	ref := floatOrderingIDs(t, db, ctx, refQ)
+	got := testkit.FloatOrderingIDs(t, db, ctx, q)
+	ref := testkit.FloatOrderingIDs(t, db, ctx, refQ)
 	want := []int64{20, 30, 40, 50, 5, 70}
-	if !floatOrderingSameOrder(got, want) {
+	if !testkit.FloatOrderingSameOrder(got, want) {
 		t.Errorf("FLOAT(32) indexed path returned %v, want %v — the 32-bit tuple code "+
 			"(0x20) has the same sign-bit transform as DOUBLE (0x21) and the same "+
 			"physical/logical divergence\n  query: %s\n  plan: %s", got, want, q, plan)
 	}
-	if !floatOrderingSameOrder(got, ref) {
+	if !testkit.FloatOrderingSameOrder(got, ref) {
 		t.Errorf("FLOAT(32) DIFFERENTIAL MISMATCH: indexed=%v unindexed oracle=%v", got, ref)
 	}
 }
@@ -494,19 +330,19 @@ func TestFDB_FloatOrderingClaim_Differential_Float32(t *testing.T) {
 // alone cannot tell a working elision from a lost one.
 func TestFDB_FloatOrderingClaim_EqualityBoundFloat(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_foceq")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_foceq")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE foceq "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_foceq")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_foceq")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE foceq "+
 		// The float is the index's LEADING column, so an equality on it is the
 		// fixed prefix and the primary key is the whole sorted suffix.
 		"CREATE TABLE fq (id BIGINT, e DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE INDEX fq_e ON fq (e)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_foceq/s WITH TEMPLATE foceq")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FOCEQ?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_foceq/s WITH TEMPLATE foceq")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FOCEQ?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -523,9 +359,9 @@ func TestFDB_FloatOrderingClaim_EqualityBoundFloat(t *testing.T) {
 	// LARGER id (9) makes the physical order [9 1] disagree with `ORDER BY id`
 	// = [1 9]. Handing the -0.0 row the smaller id would make both orders agree
 	// by accident and the test would pass with the elision wrongly applied.
-	mwjoMustExec(t, db, ctx, "INSERT INTO fq (id, e) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO fq (id, e) VALUES "+
 		"(40, 2.5), (10, 2.5), (30, 2.5), (9, 0.0), (1, 0.0), (7, 1.5)")
-	mwjoMustExec(t, db, ctx, "UPDATE fq SET e = -0.0 WHERE id = 9")
+	testkit.MustExecCtx(t, db, ctx, "UPDATE fq SET e = -0.0 WHERE id = 9")
 
 	// Without this the zero half is vacuous: if the -0.0 did not land, both
 	// zero rows share a key and any order looks correct.
@@ -564,7 +400,7 @@ func TestFDB_FloatOrderingClaim_EqualityBoundFloat(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := floatOrderingExplain(t, db, ctx, tc.q)
+			plan := testkit.FloatOrderingExplain(t, db, ctx, tc.q)
 			if !strings.Contains(strings.ToUpper(plan), "FQ_E") {
 				t.Fatalf("the equality did not bind index FQ_E, so this shape never reaches "+
 					"the ordering-claim branch\n  query: %s\n  plan: %s", tc.q, plan)
@@ -575,7 +411,7 @@ func TestFDB_FloatOrderingClaim_EqualityBoundFloat(t *testing.T) {
 					"dead weight. The ordering claim terminated at a coordinate that is FIXED, "+
 					"not sorted.\n  query: %s\n  plan: %s", tc.q, plan)
 			}
-			if got := floatOrderingIDs(t, db, ctx, tc.q); !floatOrderingSameOrder(got, tc.want) {
+			if got := testkit.FloatOrderingIDs(t, db, ctx, tc.q); !testkit.FloatOrderingSameOrder(got, tc.want) {
 				t.Errorf("got %v, want %v\n  query: %s\n  plan: %s", got, tc.want, tc.q, plan)
 			}
 		})
@@ -583,10 +419,10 @@ func TestFDB_FloatOrderingClaim_EqualityBoundFloat(t *testing.T) {
 
 	t.Run("zero_equality_must_not_elide_and_rows_stay_sorted", func(t *testing.T) {
 		q := "SELECT id FROM fq WHERE e = 0.0 ORDER BY id"
-		plan := floatOrderingExplain(t, db, ctx, q)
-		got := floatOrderingIDs(t, db, ctx, q)
+		plan := testkit.FloatOrderingExplain(t, db, ctx, q)
+		got := testkit.FloatOrderingIDs(t, db, ctx, q)
 		want := []int64{1, 9}
-		if !floatOrderingSameOrder(got, want) {
+		if !testkit.FloatOrderingSameOrder(got, want) {
 			t.Errorf("got %v, want %v — `e = 0.0` spans BOTH signed zeros, which are two "+
 				"distinct adjacent keys, so the scan covers two physical prefixes and the "+
 				"primary-key suffix restarts at the boundary. Physically the rows arrive "+

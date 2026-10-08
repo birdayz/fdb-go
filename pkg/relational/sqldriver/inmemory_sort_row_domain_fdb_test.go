@@ -23,6 +23,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_InMemorySortBytesOrder: unindexed ORDER BY on a BYTES column must
@@ -33,7 +35,7 @@ func TestFDB_InMemorySortBytesOrder(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	// NO index on data — forces the in-memory sort path.
-	db := setupPlanShapeDB(t, "imsbytes",
+	db := testkit.SetupPlanShapeDB(t, "imsbytes",
 		"CREATE TABLE t (id BIGINT, data BYTES, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -54,7 +56,7 @@ func TestFDB_InMemorySortBytesOrder(t *testing.T) {
 
 	// The sort must actually be the in-memory extension (no index exists to
 	// provide the order), or this test would prove nothing about compareValues.
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	if !strings.Contains(plan, "InMemorySort") {
 		t.Fatalf("expected InMemorySort in plan, got: %s", plan)
 	}
@@ -115,7 +117,7 @@ func TestFDB_InMemorySortBytesOrder(t *testing.T) {
 func TestFDB_CoveringFloatRowDomain(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "covfloat",
+	db := testkit.SetupPlanShapeDB(t, "covfloat",
 		"CREATE TABLE t (id BIGINT, a BIGINT, f FLOAT, PRIMARY KEY (id)) "+
 			"CREATE INDEX af_idx ON t (a, f)")
 
@@ -151,7 +153,7 @@ func TestFDB_CoveringFloatRowDomain(t *testing.T) {
 		// the sort between projection and fetch and the covering merge cannot
 		// fire — the plan keeps the Fetch and never exercises the defect.)
 		const q = "SELECT f FROM (SELECT f FROM t WHERE a > 0) AS d ORDER BY f ASC"
-		plan := planExplainVia(t, ctx, db, q)
+		plan := testkit.ExplainVia(t, ctx, db, q)
 		if !strings.Contains(plan, "COVERING") {
 			t.Fatalf("expected a COVERING index scan (the defect surface), got: %s", plan)
 		}
@@ -173,7 +175,7 @@ func TestFDB_CoveringFloatRowDomain(t *testing.T) {
 		// never matched the base leg's float64 key — 6 rows.
 		const q = "SELECT DISTINCT f FROM " +
 			"(SELECT f FROM t WHERE a > 0 UNION ALL SELECT f FROM t) AS d"
-		plan := planExplainVia(t, ctx, db, q)
+		plan := testkit.ExplainVia(t, ctx, db, q)
 		if !strings.Contains(plan, "COVERING") {
 			t.Fatalf("expected a COVERING leg under the union (the defect surface), got: %s", plan)
 		}

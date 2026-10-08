@@ -47,6 +47,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func agkoMustExec(t *testing.T, db *sql.DB, ctx context.Context, stmt string) {
@@ -57,12 +59,12 @@ func agkoMustExec(t *testing.T, db *sql.DB, ctx context.Context, stmt string) {
 }
 
 func TestFDB_AggregateGroupKeyOrderingIsProvidedNotResorted(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_agg_ord_contract")
+	setup := testkit.OpenDB(t, "/FRL/testdb_agg_ord_contract")
 	agkoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_agg_ord_contract")
 	agkoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE agg_ord_contract "+
@@ -70,7 +72,7 @@ func TestFDB_AggregateGroupKeyOrderingIsProvidedNotResorted(t *testing.T) {
 			"CREATE TABLE it (k BIGINT, o_k BIGINT, v BIGINT, PRIMARY KEY (k))")
 	agkoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_agg_ord_contract/s WITH TEMPLATE agg_ord_contract")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_ORD_CONTRACT?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_ORD_CONTRACT?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -97,11 +99,11 @@ func TestFDB_AggregateGroupKeyOrderingIsProvidedNotResorted(t *testing.T) {
 		// no sort of its own, so the ORDER BY has NOTHING to ride except the
 		// ordering the aggregate advertises. Any sort at all is the regression.
 		q := "SELECT k, COUNT(*) FROM ot GROUP BY k ORDER BY k"
-		got := pinRows(t, db, ctx, q)
-		if want := []string{"1|1", "2|1", "3|1"}; !eqStrSlices(got, want) {
+		got := testkit.PinRows(t, db, ctx, q)
+		if want := []string{"1|1", "2|1", "3|1"}; !testkit.EqualStrings(got, want) {
 			t.Errorf("rows = %v, want %v (ascending by group key)", got, want)
 		}
-		plan := pinExplain(t, db, ctx, q)
+		plan := testkit.PinExplain(t, db, ctx, q)
 		if n := countSorts(plan); n != 0 {
 			t.Errorf("want ZERO InMemorySort (the aggregate provides the group-key order "+
 				"outright over a PK-ordered scan), got %d.\n"+
@@ -116,11 +118,11 @@ func TestFDB_AggregateGroupKeyOrderingIsProvidedNotResorted(t *testing.T) {
 		// join, so the group-key sort is unavoidable and the ORDER BY must reuse
 		// it rather than add its own.
 		q := "SELECT ot.k, COUNT(it.k) FROM ot JOIN it ON it.o_k = ot.k GROUP BY ot.k ORDER BY ot.k"
-		got := pinRows(t, db, ctx, q)
-		if want := []string{"1|2", "2|2", "3|2"}; !eqStrSlices(got, want) {
+		got := testkit.PinRows(t, db, ctx, q)
+		if want := []string{"1|2", "2|2", "3|2"}; !testkit.EqualStrings(got, want) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
-		plan := pinExplain(t, db, ctx, q)
+		plan := testkit.PinExplain(t, db, ctx, q)
 		if n := countSorts(plan); n != 1 {
 			t.Errorf("want exactly 1 InMemorySort (the group-key sort, reused by ORDER BY), got %d.\n%s",
 				n, plan)
@@ -134,13 +136,13 @@ func TestFDB_AggregateGroupKeyOrderingIsProvidedNotResorted(t *testing.T) {
 		// this is the shape where a name-only match would conflate the keys.
 		q := "SELECT ot.k, it.k, COUNT(*) FROM ot JOIN it ON it.o_k = ot.k " +
 			"GROUP BY ot.k, it.k ORDER BY ot.k, it.k"
-		got := pinRows(t, db, ctx, q)
+		got := testkit.PinRows(t, db, ctx, q)
 		want := []string{"1|100|1", "1|101|1", "2|200|1", "2|201|1", "3|300|1", "3|301|1"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("rows = %v, want %v — the two same-leaf group keys must stay "+
 				"independently ordered, outer key major and inner key minor", got, want)
 		}
-		plan := pinExplain(t, db, ctx, q)
+		plan := testkit.PinExplain(t, db, ctx, q)
 		if n := countSorts(plan); n != 1 {
 			t.Errorf("want exactly 1 InMemorySort (the group-key sort, reused by ORDER BY), got %d.\n"+
 				"Two same-leaf group keys are told apart in the ordering match only by the "+
@@ -153,11 +155,11 @@ func TestFDB_AggregateGroupKeyOrderingIsProvidedNotResorted(t *testing.T) {
 		// The ORDER BY key still has to pull up onto the aggregate's output slot
 		// and still has to render the same as the provided key.
 		q := "SELECT ot.k, SUM(it.v) FROM ot JOIN it ON it.o_k = ot.k GROUP BY ot.k ORDER BY ot.k"
-		got := pinRows(t, db, ctx, q)
-		if want := []string{"1|2001", "2|4001", "3|6001"}; !eqStrSlices(got, want) {
+		got := testkit.PinRows(t, db, ctx, q)
+		if want := []string{"1|2001", "2|4001", "3|6001"}; !testkit.EqualStrings(got, want) {
 			t.Errorf("rows = %v, want %v", got, want)
 		}
-		plan := pinExplain(t, db, ctx, q)
+		plan := testkit.PinExplain(t, db, ctx, q)
 		if n := countSorts(plan); n != 1 {
 			t.Errorf("want exactly 1 InMemorySort (the group-key sort, reused by ORDER BY), got %d.\n%s",
 				n, plan)

@@ -40,21 +40,23 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateGroupKeySlotCollision(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aggslotcol")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggslotcol")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE aggslotcol "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggslotcol")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggslotcol")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE aggslotcol "+
 		"CREATE TABLE t1 (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, x BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggslotcol/s WITH TEMPLATE aggslotcol")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGSLOTCOL?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggslotcol/s WITH TEMPLATE aggslotcol")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGSLOTCOL?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -63,8 +65,8 @@ func TestFDB_AggregateGroupKeySlotCollision(t *testing.T) {
 
 	// The two X columns are drawn from DISJOINT ranges, so a slot mix-up cannot
 	// be masked by coincidentally equal values: t1.x ∈ {1,2}, t2.x ∈ {10,20}.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t1 (id, x) VALUES (1, 1), (2, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t2 (id, x) VALUES (1, 10), (2, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 (id, x) VALUES (1, 1), (2, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t2 (id, x) VALUES (1, 10), (2, 20)")
 
 	// The cross join yields one row per (t1.x, t2.x) pair, so every group has
 	// COUNT 1 and the four (a,b) pairs are exactly the cross product.
@@ -154,25 +156,25 @@ func TestFDB_AggregateGroupKeySlotCollision(t *testing.T) {
 // entry for two different aggregates.
 func TestFDB_AggregateResultSlotCollision(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aggrescol")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggrescol")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE aggrescol "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggrescol")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggrescol")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE aggrescol "+
 		"CREATE TABLE t1 (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, x BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggrescol/s WITH TEMPLATE aggrescol")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGRESCOL?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggrescol/s WITH TEMPLATE aggrescol")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGRESCOL?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO t1 (id, x) VALUES (1, 1), (2, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t2 (id, x) VALUES (1, 10), (2, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 (id, x) VALUES (1, 1), (2, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t2 (id, x) VALUES (1, 10), (2, 20)")
 
 	// Cross join, grouped by t1.id. Group 1: t1.x={1,1} sum 2, t2.x={10,20} sum 30.
 	// Group 2: t1.x={2,2} sum 4, t2.x={10,20} sum 30.

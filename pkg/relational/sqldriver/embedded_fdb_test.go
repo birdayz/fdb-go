@@ -9,630 +9,20 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"math"
-	"os"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"github.com/onsi/gomega"
 
-	"fdb.dev/pkg/recordlayer/query/executor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
-	corequery "fdb.dev/pkg/relational/core/query"
 	_ "fdb.dev/pkg/relational/sqldriver"
-	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
-
-// clusterFilePath is written once in TestMain and shared across tests.
-var clusterFilePath string
-
-// RFC-048 W1 ("no unresolved reference") is now enforced STRUCTURALLY by
-// ordinal (positional) column resolution, so this binary needs no armed hook. The ordinal
-// PositionalRow is the sole runtime row and FieldValue.evaluateOrdinal is LOUD
-// on a miss (*OrdinalResolutionError), never a silent name->NULL. A reference to
-// a name absent from a complete row therefore FAILS its query outright — a
-// strictly stronger guarantee than the retired report-and-continue hook. Every
-// query in every test below is thus checked for free: a green binary IS the
-// standing E2E proof of the RFC-048 success criterion ("no production code path
-// emits an unresolved reference"). The unit-level proof of the loud-miss
-// mechanism lives in
-// pkg/recordlayer/query/plan/cascades/values/w1_unresolved_reference_test.go.
-
-func TestMain(m *testing.M) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	container, err := foundationdbtc.Run(ctx, "")
-	if err != nil {
-		// No Docker — run non-FDB tests only.
-		os.Exit(m.Run())
-	}
-	defer container.Terminate(context.Background()) //nolint:errcheck
-
-	clusterContent, err := container.ClusterFile(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ClusterFile: %v\n", err)
-		os.Exit(1)
-	}
-
-	tmp, err := os.CreateTemp("", "fdb-sqldriver-*.cluster")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "CreateTemp: %v\n", err)
-		os.Exit(1)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(clusterContent); err != nil {
-		fmt.Fprintf(os.Stderr, "WriteString: %v\n", err)
-		os.Exit(1)
-	}
-	tmp.Close()
-	clusterFilePath = tmp.Name()
-
-	os.Exit(runUnderLegIdentityCensus(m))
-}
-
-// runUnderLegIdentityCensus runs the suite under the leg-identity census and
-// then ASSERTS its invariants. This is the standing gate for CQ-61's retyping of
-// RecordTypeLeg's identity from text to a CorrelationIdentifier.
-//
-// The census answers "does any leg get STORED under one spelling and LOOKED UP
-// under another?" — the question that decides whether the leg-identity
-// comparisons being EXACT (values.SameLeg, matching Java, which never case-folds
-// an alias) binds a different row than folding would.
-//
-// The gate lives HERE, in TestMain, rather than in a test, because the question
-// is about the traffic of the WHOLE corpus and Go gives tests no ordering: only
-// after m.Run() is the population complete. It is unconditional rather than
-// env-gated because a proof nothing in CI runs is not a proof — the previous
-// env-gated form reported the real numbers only under a manual
-// LEG_IDENTITY_CENSUS=1 invocation, while the in-CI assertion it delegated to
-// saw six of the eight sites at zero.
-//
-// Enabling the counters always is affordable HERE and nowhere else: the gate
-// exists so production never pays an atomic in the per-row executor loop, and a
-// test binary is not production. The measured cost is inside the run-to-run
-// noise of this suite.
-func runUnderLegIdentityCensus(m *testing.M) int {
-	values.ResetLegIdentityCensus()
-	values.ResetDottedLegQualifierCensus()
-	values.ResetSeedWindowReaderCensus()
-	values.ResetAccessorPathCensus()
-	values.ResetFieldValueMintCensus()
-	values.ResetOrderingBridgeDottedCensus()
-	values.ResetDottedRowTypeProducerCensus()
-	values.ResetDottedWitnessAttribution()
-	values.ResetQualifierRecoveryCensus()
-	corequery.ResetUnnestLegMintCensus()
-	cascades.ResetMergeSlotTypingCensus()
-	values.SetLegIdentityCensusEnabled(true)
-	code := m.Run()
-	values.SetLegIdentityCensusEnabled(false)
-
-	values.ReportLegIdentityCensus(os.Stderr, "sqldriver real-FDB corpus")
-	// The ACCESSOR-NAME-PATH census: which arm of the one match-domain column
-	// identity carries traffic. Its DECLINE-lazy-dotted class is the field-decision
-	// ratchet's accessor_name_path entry, and zero vs non-zero there mean opposite
-	// things about where that debt actually lives.
-	values.DumpAccessorPathCensus(os.Stderr, "sqldriver real-FDB corpus")
-	// ASSERTED, not merely printed. Both of these were printed only, which made
-	// the numbers the lazy-render retirement rests on a report nothing checked —
-	// they survived in one unparsed `why` string on the field-decision ratchet, so
-	// a regression back to 4 declines and 21,865 rendered mints would have failed
-	// nothing at all.
-	if failed := assertAccessorPathCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	// The MINT census: who builds a lazy FieldValue and what they put in its
-	// Field. The consumer census says a rendered Explain label reaches the
-	// match-domain identity; this is the half that can name who wrote it.
-	values.DumpFieldValueMintCensus(os.Stderr, "sqldriver real-FDB corpus")
-	if failed := assertFieldValueMintCensus(os.Stderr); failed && code == 0 {
-		code = 1
-	}
-	values.DumpOrderingBridgeDottedCensus(os.Stderr, "sqldriver real-FDB corpus")
-	// The MERGE-SLOT TYPING census: what each slot of a positional merge ends up
-	// STATING. It is the surviving half of the retired leg-local bakeability
-	// census — the positional merge outlived the three-quantifier NLJ arm that
-	// census existed to measure, and a live path with no instrument is how the
-	// silent zero-rows defect it watches for gets back in (RFC-235).
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatMergeSlotTypingCensus())
-	// The leg-column PROVENANCE census: the executor's last live reader of a
-	// dotted leg-qualified column name, cut by whether the leg it matched by TEXT
-	// also states an IDENTITY. That is the fact the reader's retirement rests on,
-	// and it is a different fact from how often the reader fires.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", executor.FormatLegColumnProvenanceCensus())
-	// The TRANSLATOR twin of the executor's leg-column provenance census: the two
-	// readers that match a name-split qualifier against a leg table's text. They
-	// hold no correlation and cannot be re-keyed, so what this measures is whether
-	// the leg table's two spellings still agree on the one channel that has to
-	// keep working until its counterparty carries parsed segments.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedLegQualifierCensus())
-	// The seed-window READER census: the five keyed readers of an
-	// OrdinalSeedLegWindows map, plus the two decline classes that are hard zeros.
-	// Its predecessor measured whether a text key and an identity key selected the
-	// same window; that question died with the text namespace, but the five
-	// readers did not, and nothing else asserts they still run. It is here rather
-	// than in a test for the reason every census on this path is: the population
-	// is only complete after m.Run().
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatSeedWindowReaderCensus())
-	// The SELECT RESULT-VALUE MINT census: the site that BUILDS a select's result
-	// value, as against the three that flow it verbatim. The producer census
-	// above can only name the FlatMap construction that handed a value over, and
-	// three of its four sites pass sel.GetResultValue() through unchanged —
-	// exactly as Java's three constructions do
-	// (ImplementNestedLoopJoinRule.java:187,201,214). Their untyped counts are a
-	// count of couriers; this is the author.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatSelectResultMintCensus())
-	// The UNNEST LEG-MINT census: which of the five call sites of the surviving
-	// qualified-name unnest rebase the corpus reaches, and what names it mints.
-	// Reported beside the leg-column provenance census because the assertion
-	// below is a claim about BOTH populations at once — the acceptance condition
-	// booked for retiring the executor's dotted arm ("dotted hits -> 0") was
-	// booked against converting this mint, and whether that is even reachable
-	// depends on whether these two name sets meet.
-	// The DOTTED ROW-TYPE PRODUCER census: whether the GENERIC
-	// RecordConstructorValue.Type path derives a LEG.COL-shaped row, i.e. whether
-	// it is a second producer of the row a leg-table population would target.
-	// The live guard adopts a populated leg table over an empty one and refuses
-	// only two that DISAGREE, so the producer SET is what decides whether a
-	// second derivation could state different boundaries for the same row.
-	// RFC-212 §10.3 DELIVERABLE 1, gate-before-conversion: which producer named
-	// the leg-type column each dotted-arm answer comes from. Decided BY IDENTITY
-	// (owner correlation), not by name match.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedWitnessAttribution())
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatDottedRowTypeProducerCensus())
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", corequery.FormatUnnestLegMintCensus())
-	// The RFC-213 payoff census: how often a consumer that must decide on a plan's
-	// result type is handed an UNRESOLVED one and declines. Declining is invisible
-	// — it costs a proof or an optimization, never a wrong row — so the size of the
-	// loss has to be counted rather than argued.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatUnresolvedResultTypeCensus())
-
-	// THE GATES, run through the reporter so a failure carries a `--- FAIL:` line
-	// naming which one moved. They used to assert inline here, each writing prose
-	// to stderr and bumping the exit code, which produced a red package with no
-	// failure marker anywhere in its output — see census_gate_reporting_test.go
-	// for what that cost and why the gates cannot simply become test functions.
-	//
-	// Their reports are emitted together at the end rather than interleaved with
-	// the census dumps above, because the SET of gates that moved is the
-	// diagnosis, and a set is easier to read collected than scattered through
-	// thirty thousand lines of census.
-	if runCensusGates(os.Stderr, testing.Verbose(), []censusGate{
-		{"dottedWitnessAttribution", assertDottedWitnessAttributionCensus},
-		{"dottedRowTypeProducer", assertDottedRowTypeProducerCensus},
-		{"unnestLegMint", func(w io.Writer) bool {
-			return corequery.AssertUnnestLegMintCensus(w, executor.LegColumnProvenanceDottedNames())
-		}},
-		{"dottedLegQualifier", assertDottedLegQualifierCensus},
-		{"seedWindowReader", assertSeedWindowReaderCensus},
-		{"nameSplit", assertNameSplitCensus},
-		// The QUALIFIER RECOVERY census — the four DARK SPLITTERS the name-split
-		// census names in its header and does not watch. Six sites, because the
-		// parseColRef family contributes three DIFFERENT decisions with three
-		// different counterparties and one merged number could answer the
-		// conversion question for none of them.
-		{"qualifierRecovery", assertQualifierRecoveryCensus},
-		{"legIdentity", assertLegIdentityCensus},
-		{"legColumnProvenance", assertLegColumnProvenanceCensus},
-		// The MERGE-SLOT TYPING census is ASSERTED, not merely printed. Its whole
-		// claim is that Untyped stays at ZERO, and a zero from a dead counter reads
-		// identically to a zero from a clean population — the floor is what tells
-		// them apart. It is the surviving half of the retired leg-local bakeability
-		// census (RFC-235): the positional merge outlived the NLJ arm that census
-		// measured, and a live path with no instrument is how the silent zero-rows
-		// defect it watches for gets back in.
-		{"mergeSlotTyping", assertMergeSlotTypingCensus},
-		{"selectResultMint", assertSelectResultMintCensus},
-		// RFC-213: the consumers must stay REACHED. There is no zero to defend —
-		// the unresolved reads ARE the defect and their count is a measurement,
-		// not a contract — but if these sites go dark, a later "unresolved is 0"
-		// would be indistinguishable from having fixed it. Floored an order of
-		// magnitude below the measured 15,909 classified reads.
-		{"unresolvedResultType", assertUnresolvedResultTypeCensus},
-	}) && code == 0 {
-		code = 1
-	}
-	return code
-}
-
-// legColumnProvenanceFloors is the minimum population the leg-column provenance
-// census must report over the whole suite.
-//
-// RETIREMENT MEASURED, AND IT IS A DRAIN RATHER THAN A REROUTE. RFC-212 §11.3
-// retitled the producer and the dotted arm went from 2 answers to 0. The
-// statistic that separates those two readings is flatHit, which was 120 on ALL
-// FIVE of the runs enumerated below — the one number on this census that did not
-// move while the call total swung by nearly 300 — and is now 122. Exactly +2,
-// exactly the two dotted hits that disappeared, landing in the arm they must land
-// in when the name stops splitting: the FLAT lookup answers them instead. A
-// reroute would show no compensating +2 in any sibling arm.
-//
-// The drift also runs the SAFE way. The AFTER run reported 2534 calls, inside the
-// magnitude below; the BEFORE run reported 1174, an unexplained low outlier at
-// less than half the band floor — and NOT a narrowed run (no -test.run, and the
-// harness printed none of its narrowing notices). So the zero was measured on the
-// LARGER population, 2.16x the before side, which is the direction that cannot
-// manufacture a zero.
-//
-// RE-MEASURED over this corpus, 2026-08-06: dotted hits available 2 (`C.CV`,
-// `I.QTY`), unstated 0, diverged 0 — STABLE across five full-suite runs. The
-// CALL total is not stable and is quoted as a MAGNITUDE, ≈2.4–2.7k: 2394, 2474,
-// 2554, 2554, 2674 across those same five runs (flatHit 120 every time; the
-// movement is all in notDotted).
-//
-// The enumeration is kept because it is the argument. An earlier revision
-// quoted three of those values as an exhaustive list — "2554, 2554, 2674" — and
-// the next run landed outside all three; the run after that landed outside the
-// range that correction then wrote. A bounded-looking enumeration of an
-// unbounded quantity reads as a pin and decays into a wrong one, twice in a row
-// here. Quote the magnitude or quote nothing, for the reason the leg-identity
-// census states at its own population line — this site is sampled inside
-// readers that rules drive, and the memo may explore a rule once or many times
-// for one query depending on exploration order.
-//
-// PRESENCE is what holds; MULTIPLICITY is what moves. The dotted-HIT count is 2
-// in every one of the five runs while the total swings by ~12%, and that is the
-// distinction the floors below rest on: exploration order scales how often a
-// shape is visited, it does not invent or delete the shapes the corpus contains.
-//
-// The number the retirement decision rests on is the DOTTED-HIT count, and that
-// one is stable at 2.
-//
-// The previous reading in this block — "calls 52 (flatHit 40, notDotted 8),
-// dotted hits available 4" — was wrong in BOTH directions and is kept here as
-// the history it is: the call total was low by a factor of fifty (the corpus
-// grew under it) while the dotted-hit count was HIGH by two. The second error is
-// the dangerous one. This census's retirement decision rests entirely on the
-// dotted-hit population, so a stale 4 overstates the reader's remaining reach by
-// double, and nothing read the instrument to notice. The floors held throughout,
-// which is the point of flooring rather than pinning — and also why a floor is
-// no protection at all against a comment.
-//
-// Both floors are 1, not an order of magnitude below the measurement, because
-// there is no order of magnitude below 2. What is being detected here is
-// DISAPPEARANCE: the shapes that drive the dotted arm ceasing to be planned, or
-// the reader ceasing to be reached. DottedHitIdentityAvailable is floored
-// separately from Calls because the non-dotted arms carry all but 2 of the
-// calls, so the
-// denominator can look healthy while the arm the census exists for goes silent.
-// RFC-212 §11.3 RETITLED the producer, and the dotted arm now answers ZERO
-// times over the whole corpus (measured: available 2 -> 0). The
-// DottedHitIdentityAvailable FLOOR is therefore retired with the population it
-// guarded — it is unsatisfiable by construction now, and a floor that cannot be
-// met is a build break rather than a guard.
-//
-// THE DANGEROUS DIRECTION HAS FLIPPED, and that is the whole point: this
-// population was watched for COLLAPSE while the arm was live, because a zero read
-// like good news. Now zero IS the news, so growth is the alarm — a non-zero means
-// some producer is again naming a leg type's column with a dot-containing title,
-// and the arm the retitling emptied is answering again. AssertLegColumnProvenanceCensus
-// holds that at a hard zero; only the Calls floor remains, because the reader
-// itself is still live on its FLAT arm and a census reaching it zero times would
-// make that zero vacuous.
-// legColumnProvenanceFloors is EMPTY, and the emptiness is the reconciliation.
-//
-// It used to floor Calls at 100 (measured between 300 and 1500 across runs, an
-// unstable population that a tight floor would have red-flagged on churn alone),
-// so that a reader nothing reaches could not report the same shape as a reader
-// with nothing wrong. The reader is now retired: adaptLegPositional's
-// layout-permutation gather is its only driver, and the exact-ordinal seed bakes
-// against the chosen physical leg layout — Java's translateCorrelations
-// behaviour, which that gather's own note named as the thing that would end it —
-// so every leg row passes positionalMatchesLegType and the gather is skipped.
-//
-// The census asserts Calls == 0 unconditionally now, with revival as the alarm.
-var legColumnProvenanceFloors = executor.LegColumnProvenanceFloors{}
-
-// assertLegColumnProvenanceCensus checks the provenance census, dropping the
-// population floors when -test.run narrows the corpus — the same split its two
-// siblings make, for the same reason.
-func assertLegColumnProvenanceCensus(w io.Writer) bool {
-	floors := &legColumnProvenanceFloors
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		c, _ := executor.LegColumnProvenanceCensus()
-		fmt.Fprintf(w, "leg-column provenance census: population floors NOT checked "+
-			"(-test.run=%q narrowed the corpus). The partition and the divergence zero "+
-			"still run, over the population this filter actually reached: calls %d, "+
-			"dotted hits with an identity available %d. At zero they hold VACUOUSLY.\n",
-			f.Value.String(), c.Calls, c.DottedHitIdentityAvailable)
-		floors = nil
-	}
-	return executor.AssertLegColumnProvenanceCensus(w, floors)
-}
-
-// dottedLegQualifierFloors is EMPTY: the whole channel is retired.
-//
-// It used to floor the match attempts each translator dotted-leg reader made
-// over the suite — 10 for flatColumnBake (measured 106) and 1 for legQOVBake
-// (measured 4, with no order of magnitude to drop to) — because that census's
-// two hard zeros hold vacuously over an empty population.
-//
-// Both readers were arms of the NAME-model bake (query.bakeFlatRefsAgainstColumns
-// and query.bakeDottedRefsToLegQOV), which resolved a reference by splitting a
-// column name at a dot. The ordinal model resolves by baked slot and those bakes
-// are gone, so values.RecordDottedLegQualifier has no caller at all and the
-// floors are unsatisfiable. The census asserts zero attempts unconditionally
-// now, with revival as the alarm.
-var dottedLegQualifierFloors = values.DottedLegQualifierFloors{}
-
-// seedWindowReaderFloors is the minimum keyed-read count each seed-window reader
-// must report over the whole suite.
-//
-// Set an ORDER OF MAGNITUDE below the measured population, like its siblings:
-// what a floor detects is the site going DARK, not drift. The reader population
-// churns with unrelated work — a query added anywhere in this suite moves every
-// one of these numbers — and a floor pinned tight would red on that instead of
-// on the thing it is watching for.
-var seedWindowReaderFloors = func() values.SeedWindowReaderFloors {
-	var f values.SeedWindowReaderFloors
-	// RETIRED, so its alarm is GROWTH. The buried-leg EXISTS rebase measured 0
-	// over the whole suite once select partitioning followed Java's predicate
-	// placement: an existential's correlated predicates stay in the partition
-	// holding the existential and never reach the NLJ beside an ordinal-seed outer.
-	f.Retired[values.SeedWindowSiteExistentialRebase] = true
-	// Measured over the whole sqldriver suite at the RFC-257 migration tree.
-	f.Reads[values.SeedWindowSiteBoxLegRef] = 22             // measured 221
-	f.Reads[values.SeedWindowSiteBoxSurvivorQOV] = 43        // measured 431
-	f.Reads[values.SeedWindowSiteBoxSurvivorCorrelation] = 4 // measured 42
-	f.Reads[values.SeedWindowSiteGatheredGroupSlot] = 207    // measured 2077
-	// RFC-200's ACTIVATION TRIPWIRE. Measured NESTED-HIT 0 at every site: the
-	// nested reader arm is correct and unreached, so gate (a)'s four mutation
-	// directions are not writable and the branch merged with that stated.
-	//
-	// A non-zero is GOOD NEWS that requires ACTION, and it is asserted rather
-	// than printed so that activation day is a red test with a hand-over in its
-	// message instead of a number nobody diffs. See the failure text and
-	// CQ-67's reopen trigger.
-	f.NestedHitMustBeZero = true
-	return f
-}()
-
-// assertSeedWindowReaderCensus checks the seed-window reader census, dropping
-// the population floors when -test.run narrows the corpus — the same split its
-// siblings make, for the same reason.
-func assertSeedWindowReaderCensus(w io.Writer) bool {
-	floors := &seedWindowReaderFloors
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "seed-window reader census: population floors NOT checked "+
-			"(-test.run=%q narrowed the corpus). The two decline hard zeros "+
-			"(QUALIFIED-NO-IDENTITY, CHILDLESS-BAKED) and the retired sites' zeros "+
-			"still run, over whatever population this filter reached — at zero they "+
-			"hold VACUOUSLY.\n",
-			f.Value.String())
-		// A revival is visible on any population, so retirement survives narrowing.
-		floors = &values.SeedWindowReaderFloors{Retired: seedWindowReaderFloors.Retired}
-	}
-	return values.AssertSeedWindowReaderCensus(w, floors)
-}
-
-// nameSplitFloors is EMPTY: the whole channel is retired.
-//
-// It used to floor the population each splitting arm reported over the suite
-// (legQOVSegmentsOf calls 1, measured 9; flatColumnBake calls 1 and splits 1,
-// measured 2), because this census's content was a HARD ZERO on SPLIT-QUALIFIED
-// and a hard zero over an empty population is the fake-green shape every
-// instrument on this path was rebuilt to end.
-//
-// Both arms lived inside the NAME-model bake — query.legQOVSegmentsOf and
-// query.bakeFlatRefsAgainstColumns, which decided qualification by counting a
-// reference's name segments. The ordinal model decides by baked slot, both bakes
-// are gone, and values.RecordNameSplit has no caller at all. So the CALL floors
-// are unsatisfiable, and the SPLIT-QUALIFIED zero they protected is now trivially
-// structural rather than a corpus fact worth guarding. The census asserts zero
-// calls at every site unconditionally, with revival as the alarm.
-var nameSplitFloors = values.NameSplitFloors{}
-
-// assertNameSplitCensus checks the translator name-split census.
-//
-// There is NO -test.run exemption here, unlike its still-live siblings. Those
-// drop their floors under a filter because a population floor describes the
-// unfiltered suite. This channel is retired and its assertion is a REVIVAL
-// alarm — "no site was reached at all" — which is exactly as true over a
-// narrowed corpus as over the whole one. Skipping it under a filter would be
-// the one direction that fails open.
-func assertNameSplitCensus(w io.Writer) bool {
-	return values.AssertNameSplitCensus(w, &nameSplitFloors)
-}
-
-// qualifierRecoveryFloors watches collapse at the live sites reached by this
-// corpus. Derived UNNEST, projection-scope classification and the display-label
-// strip are fully retired; their stable sites forbid all calls independently of
-// these floors.
-var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
-	Calls: [6]int{
-		// recursiveRemap: no entry. The site is retired and has no caller; its
-		// revival is watched by the Split declaration below, which fires on any
-		// class but CARRIED — and a retired recorder cannot report CARRIED
-		// either, because it cannot report at all.
-		values.QualRecSiteExistsSortSplit: 4,
-		// projQualVsScan: no entry. The site is unreached over this corpus and
-		// the Split DECLARATION is what watches it. It never records CARRIED
-		// (recordProjQualVsScan classifies bare/AGREED/DIVERGED/MANUFACTURED
-		// only), so its Split floor and its Calls floor cover the identical
-		// population and one of the two would be redundant.
-	},
-	// The SPLIT floors carry the weight at the remaining live splitters.
-	Split: [6]int{
-		// recursiveRemap carries no entry because its splitting arm is
-		// structurally gone. projScopeClassify is stronger: every call is retired.
-		//
-		// projQualVsScan IS here, at 0, and the difference is the point: its
-		// recorder and its call site both still stand, and what stopped is the
-		// corpus REACHING them. That is a claim about this suite, so it is a
-		// declaration that a filter may drop — not a tree fact.
-		values.QualRecSiteProjQualVsScan:  0,
-		values.QualRecSiteExistsSortSplit: 4,
-	},
-}
-
-// qualifierRecoveryRetiredSplit names the sites whose splitting arm is gone from
-// the TREE, not merely unreached by this corpus. Their alarm is inverted — any
-// split is the arm coming back — and unlike a floor it is checked under a
-// narrowed run too, because a tree fact holds over any population.
-//
-//   - recursiveRemap: values.RecordQualifierRecovery is not called with this site
-//     anywhere in non-test sources; query.recursiveRemapValues is a retired
-//     compatibility no-op.
-var qualifierRecoveryRetiredSplit = func() (r [6]bool) {
-	r[values.QualRecSiteRecursiveRemap] = true
-	return r
-}()
-
-// assertQualifierRecoveryCensus checks the dark-splitter census, dropping the
-// population floors when -test.run narrows the corpus. The DIVERGED hard zero
-// and the witness saturation guards still run — they are defects over any
-// population — while the floors describe the unfiltered suite and are
-// meaningless under a filter.
-func assertQualifierRecoveryCensus(w io.Writer) bool {
-	floors := &qualifierRecoveryFloors
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "qualifier recovery census: population floors NOT checked "+
-			"(-test.run=%q narrowed the corpus). The DIVERGED hard zero and the witness "+
-			"saturation guards still run, over whatever population this filter reached — "+
-			"at zero the former holds VACUOUSLY.\n", f.Value.String())
-		floors = nil
-	}
-	// No AllowedDiverged: every split in this corpus comes from a production
-	// producer because its input is SQL, so a disagreement here is a defect and
-	// the zero is a BARE zero. The translator harness needs an allowlist; this
-	// one must never grow one.
-	return values.AssertQualifierRecoveryCensus(w,
-		&values.QualifierRecoveryExpectations{
-			Floors:       floors,
-			RetiredSplit: qualifierRecoveryRetiredSplit,
-			RetiredCalls: [6]bool{
-				values.QualRecSiteDerivedUnnestSource: true,
-				values.QualRecSiteProjScopeClassify:   true,
-				values.QualRecSiteDisplayLabelStrip:   true,
-			},
-		},
-		"sqldriver real-FDB corpus")
-}
-
-// assertDottedLegQualifierCensus checks the translator dotted-leg census.
-//
-// No -test.run exemption, for the same reason as assertNameSplitCensus above:
-// the channel is retired and this is its revival alarm, which holds over any
-// population.
-func assertDottedLegQualifierCensus(w io.Writer) bool {
-	return values.AssertDottedLegQualifierCensus(w, &dottedLegQualifierFloors)
-}
-
-// legIdentityFloors is the minimum population each site must report over the
-// whole suite. A site at ZERO makes every zero asserted about it vacuous, which
-// is precisely how the previous form of this gate passed while proving nothing.
-//
-// The floors are set an order of magnitude below the measured populations, and
-// that gap is doing TWO jobs. The corpus grows and shrinks with unrelated work,
-// so a floor at the measured value would fail on churn rather than on a site
-// going dark — and the populations themselves are NOT stable run to run.
-// Successive full-suite measurements of the same tree gave text-vs-identity
-// 3115 / 3270 / 3320; only rowLegsBinder (285) and buriedLegWindow (567)
-// repeated exactly. The variance is planning-side: the memo may explore a rule
-// once or many times for one query depending on exploration order, and several
-// sites sit inside rules. What the floor detects is COLLAPSE — a producer
-// stopping, a reader being routed around, a rule that no longer fires — not
-// drift, and it is set loosely enough that the observed variance cannot reach
-// it.
-//
-// FOUR OF THE EIGHT SITES ARE NO LONGER FLOORED, and the reason splits in two.
-// A floor watches for collapse; once zero is the steady state a floor is
-// unsatisfiable and the danger inverts to GROWTH, so each of the four moves to
-// the guard that matches what it now is rather than being lowered or dropped:
-//
-//   - RETIRED (legIdentityRetired, a fact about the TREE):
-//     hoistLegRefsOntoMergedRow and expressionOutputLegs. Neither site appears in
-//     any non-test source — values.RecordLegIdentity{Leg,Comparison,Conversion}
-//     is never called with either constant — so their floors of 64 and 256 were
-//     unsatisfiable rather than merely generous.
-//
-//   - DISPLACED (legIdentityDeclaredEmpty, a fact about this CORPUS):
-//     rowLegsBinder.GetCorrelationBinding and buriedLegWindow. Both readers still
-//     stand and both are still reachable. What changed is the route:
-//     frontierRowContext dispatches on pr.Layout FIRST and only falls through to
-//     the leg-name binder for a row that carries none, and under the ordinal
-//     model an admitted physical row always carries its exact layout. Their
-//     declarations are checked in the stale direction, so the day a Layout-less
-//     row reaches them again the gate says so instead of quietly re-arming a
-//     path nothing measures.
-//
-// The remaining four are floored as before. The NLJ site's total counts Cascades
-// rule FIRINGS rather than queries, so it is the most refire-sensitive; its
-// floor is the loosest for that reason.
-var legIdentityFloors = map[values.LegIdentitySite]int64{
-	values.LegSiteTextVsIdentity:         256,
-	values.LegSiteFinalizeSeedWindows:    128,
-	values.LegSiteNLJPlanAlias:           4096,
-	values.LegSiteOrdinalSlotInLegWindow: 8,
-}
-
-// legIdentityRetired names the two sites with no production caller anywhere in
-// the tree. Any traffic at either is a revival, and the check runs under a
-// -test.run filter too — a tree fact holds over the empty population a filter
-// leaves behind, and skipping it there is the one direction that fails open.
-var legIdentityRetired = map[values.LegIdentitySite]string{
-	values.LegSiteLeftOuterExistential: "hoistLegRefsOntoMergedRow's drift check was removed with the " +
-		"name-model hoist; no non-test source records at this site.",
-	values.LegSiteSelectOutputLegs: "expressionOutputLegs compared a quantifier against sourceAliases " +
-		"text; the producer is gone and no non-test source records at this site.",
-}
-
-// legIdentityDeclaredEmpty names the two readers the ordinal layout DISPLACED
-// rather than deleted. They are declarations about this corpus, not the tree —
-// the code is still reachable by a positional row carrying no exact layout —
-// and they are checked in the stale direction so the declaration cannot outlive
-// its condition.
-var legIdentityDeclaredEmpty = map[values.LegIdentitySite]string{
-	values.LegSiteRowLegsBinder: "frontierRowContext binds through pr.Layout before it reaches the " +
-		"leg-name binder, and an admitted physical row always carries one.",
-	values.LegSiteBuriedLegWindow: "the buried-window walk sits under the same layout dispatch, so a " +
-		"row with an exact layout never descends into it.",
-}
-
-// assertLegIdentityCensus checks the whole-suite census and reports whether it
-// failed.
-//
-// Only the population FLOORS are corpus-shaped, so only they are dropped when
-// -test.run narrows the run: FIVE zeros hold over ANY population, one query or
-// eighty thousand firings — fold-only, unstated, retired-verdict divergence,
-// text-vs-identity divergence and mixed instrument — and a filtered invocation
-// checks them exactly as the full suite does. The earlier form returned before all
-// of them and announced only that the floors were unchecked, so a focused run
-// reported a passing gate while five assertions had silently not run.
-//
-// The enumeration is kept HONEST deliberately. It read "four" while
-// values.AssertLegIdentityCensus ran five, and the omitted one was the
-// retired-verdict zero — the assertion that compares this site's converted answer
-// against the text predicate it replaced, i.e. the only one that measures the
-// conversion rather than the representation. An enumeration that drops the
-// headline check reads as reassurance about the wrong thing.
-func assertLegIdentityCensus(w io.Writer) bool {
-	floors := legIdentityFloors
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "leg-identity census: population floors NOT checked "+
-			"(-test.run=%q narrowed the corpus; the floors describe the whole suite). "+
-			"The fold-only, unstated, retired-verdict-divergence, text-vs-identity and "+
-			"instrument-channel zeros ARE still checked — over whatever population this "+
-			"filter reached. At zero they hold VACUOUSLY, which is exactly what the "+
-			"dropped floors exist to prevent; only the unfiltered suite makes them a "+
-			"proof.\n",
-			f.Value.String())
-		floors = nil
-	}
-	return values.AssertLegIdentityCensusWith(w, values.LegIdentityExpectations{
-		Floors:        floors,
-		Retired:       legIdentityRetired,
-		DeclaredEmpty: legIdentityDeclaredEmpty,
-	})
-}
 
 // expectRejectionOrCascadesError asserts that err is an *api.Error whose
 // message is either the legacy specific rejection message or the generic
@@ -657,25 +47,9 @@ func expectRejectionOrCascadesError(t *testing.T, err error, legacyMessages ...s
 		apiErr.Message, legacyMessages)
 }
 
-// openTestDB returns a *sql.DB wired to the test FDB container.
-// Skips the test if Docker is not available.
-func openTestDB(t *testing.T, dbPath string) *sql.DB {
-	t.Helper()
-	if clusterFilePath == "" {
-		t.Skip("FDB not available (no Docker)")
-	}
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFilePath)
-	db, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
-}
-
 func TestFDB_EmbeddedCreateDropDatabase(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_create_drop")
+	db := testkit.OpenDB(t, "/FRL/testdb_create_drop")
 	ctx := context.Background()
 
 	if _, err := db.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_create_drop"); err != nil {
@@ -688,7 +62,7 @@ func TestFDB_EmbeddedCreateDropDatabase(t *testing.T) {
 
 func TestFDB_EmbeddedCreateDatabaseIdempotencyFails(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_dup")
+	db := testkit.OpenDB(t, "/FRL/testdb_dup")
 	ctx := context.Background()
 
 	if _, err := db.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dup"); err != nil {
@@ -703,7 +77,7 @@ func TestFDB_EmbeddedCreateDatabaseIdempotencyFails(t *testing.T) {
 
 func TestFDB_EmbeddedDropDatabaseIfExists(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_drop_noexist")
+	db := testkit.OpenDB(t, "/FRL/testdb_drop_noexist")
 	ctx := context.Background()
 
 	// Drop with IF EXISTS on non-existent database should succeed.
@@ -714,7 +88,7 @@ func TestFDB_EmbeddedDropDatabaseIfExists(t *testing.T) {
 
 func TestFDB_EmbeddedCreateDropSchemaTemplate(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_schema_tmpl")
+	db := testkit.OpenDB(t, "/FRL/testdb_schema_tmpl")
 	ctx := context.Background()
 
 	if _, err := db.ExecContext(ctx,
@@ -730,7 +104,7 @@ func TestFDB_EmbeddedCreateDropSchemaTemplate(t *testing.T) {
 
 func TestFDB_EmbeddedCreateSchemaDuplicateTemplateFails(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_schema_tmpl_dup")
+	db := testkit.OpenDB(t, "/FRL/testdb_schema_tmpl_dup")
 	ctx := context.Background()
 
 	ddl := "CREATE SCHEMA TEMPLATE dup_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))"
@@ -744,7 +118,7 @@ func TestFDB_EmbeddedCreateSchemaDuplicateTemplateFails(t *testing.T) {
 
 func TestFDB_EmbeddedCreateSchemaFullFlow(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_full_flow")
+	db := testkit.OpenDB(t, "/FRL/testdb_full_flow")
 	ctx := context.Background()
 
 	if _, err := db.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_full_flow"); err != nil {
@@ -772,7 +146,7 @@ func TestFDB_EmbeddedCreateSchemaFullFlow(t *testing.T) {
 
 func TestFDB_EmbeddedPingSucceeds(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_ping")
+	db := testkit.OpenDB(t, "/FRL/testdb_ping")
 	ctx := context.Background()
 
 	if err := db.PingContext(ctx); err != nil {
@@ -782,7 +156,7 @@ func TestFDB_EmbeddedPingSucceeds(t *testing.T) {
 
 func TestFDB_EmbeddedDropSchemaTemplateIfExists(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_drop_tmpl")
+	db := testkit.OpenDB(t, "/FRL/testdb_drop_tmpl")
 	ctx := context.Background()
 
 	// Drop a non-existent template with IF EXISTS must succeed.
@@ -793,7 +167,7 @@ func TestFDB_EmbeddedDropSchemaTemplateIfExists(t *testing.T) {
 
 func TestFDB_EmbeddedDropSchemaTemplateNotExistFails(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_drop_tmpl_fail")
+	db := testkit.OpenDB(t, "/FRL/testdb_drop_tmpl_fail")
 	ctx := context.Background()
 
 	// Drop a non-existent template without IF EXISTS must fail.
@@ -805,7 +179,7 @@ func TestFDB_EmbeddedDropSchemaTemplateNotExistFails(t *testing.T) {
 
 func TestFDB_EmbeddedSelectReturnsUnsupported(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_select")
+	db := testkit.OpenDB(t, "/FRL/testdb_select")
 	ctx := context.Background()
 
 	_, err := db.ExecContext(ctx, "SELECT 1")
@@ -816,7 +190,7 @@ func TestFDB_EmbeddedSelectReturnsUnsupported(t *testing.T) {
 
 func TestFDB_EmbeddedShowDatabases(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_show_db")
+	db := testkit.OpenDB(t, "/FRL/testdb_show_db")
 	ctx := context.Background()
 
 	if _, err := db.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_show_db"); err != nil {
@@ -849,7 +223,7 @@ func TestFDB_EmbeddedShowDatabases(t *testing.T) {
 
 func TestFDB_EmbeddedShowSchemaTemplates(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_show_tmpl")
+	db := testkit.OpenDB(t, "/FRL/testdb_show_tmpl")
 	ctx := context.Background()
 
 	const ddl = "CREATE SCHEMA TEMPLATE show_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))"
@@ -885,7 +259,7 @@ func TestFDB_EmbeddedShowSchemaTemplates(t *testing.T) {
 
 func TestFDB_EmbeddedCreateSchemaTemplateWithIndex(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_tmpl_idx")
+	db := testkit.OpenDB(t, "/FRL/testdb_tmpl_idx")
 	ctx := context.Background()
 
 	ddl := "CREATE SCHEMA TEMPLATE indexed_tmpl " +
@@ -901,7 +275,7 @@ func TestFDB_EmbeddedCreateSchemaTemplateWithIndex(t *testing.T) {
 
 func TestFDB_EmbeddedCreateSchemaTemplateWithUniqueIndex(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t, "/FRL/testdb_tmpl_uniq")
+	db := testkit.OpenDB(t, "/FRL/testdb_tmpl_uniq")
 	ctx := context.Background()
 
 	ddl := "CREATE SCHEMA TEMPLATE unique_tmpl " +
@@ -917,13 +291,13 @@ func TestFDB_EmbeddedCreateSchemaTemplateWithUniqueIndex(t *testing.T) {
 
 func TestFDB_EmbeddedInsert(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	// Use a dedicated DB connection for setup DDL (no schema yet).
-	setup := openTestDB(t, "/FRL/testdb_insert")
+	setup := testkit.OpenDB(t, "/FRL/testdb_insert")
 
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_insert"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -939,7 +313,7 @@ func TestFDB_EmbeddedInsert(t *testing.T) {
 	}
 
 	// Open a new connection with the schema set via DSN.
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSERT?cluster_file=%s&schema=EMP", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSERT?cluster_file=%s&schema=EMP", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -962,12 +336,12 @@ func TestFDB_EmbeddedInsert(t *testing.T) {
 
 func TestFDB_EmbeddedInsertMultiRow(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_insert_multi")
+	setup := testkit.OpenDB(t, "/FRL/testdb_insert_multi")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_insert_multi"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -981,7 +355,7 @@ func TestFDB_EmbeddedInsertMultiRow(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSERT_MULTI?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSERT_MULTI?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1005,7 +379,7 @@ func TestFDB_EmbeddedInsertMultiRow(t *testing.T) {
 func TestFDB_EmbeddedInsertNoSchemaFails(t *testing.T) {
 	t.Parallel()
 	// No schema= in DSN — INSERT should fail with "no schema selected".
-	db := openTestDB(t, "/FRL/testdb_insert_noschema")
+	db := testkit.OpenDB(t, "/FRL/testdb_insert_noschema")
 	ctx := context.Background()
 
 	_, err := db.ExecContext(ctx, "INSERT INTO Employee (emp_id) VALUES (1)")
@@ -1016,12 +390,12 @@ func TestFDB_EmbeddedInsertNoSchemaFails(t *testing.T) {
 
 func TestFDB_EmbeddedSelectAfterInsert(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_select_insert")
+	setup := testkit.OpenDB(t, "/FRL/testdb_select_insert")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_select_insert"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -1035,7 +409,7 @@ func TestFDB_EmbeddedSelectAfterInsert(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELECT_INSERT?cluster_file=%s&schema=PEOPLE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELECT_INSERT?cluster_file=%s&schema=PEOPLE", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1085,13 +459,13 @@ func TestFDB_EmbeddedSelectAfterInsert(t *testing.T) {
 
 func TestFDB_EmbeddedDeleteByPK(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_delete_pk")
+	setup := testkit.OpenDB(t, "/FRL/testdb_delete_pk")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_delete_pk")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
@@ -1102,7 +476,7 @@ func TestFDB_EmbeddedDeleteByPK(t *testing.T) {
 		"CREATE SCHEMA /FRL/testdb_delete_pk/widgets WITH TEMPLATE del_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DELETE_PK?cluster_file=%s&schema=WIDGETS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DELETE_PK?cluster_file=%s&schema=WIDGETS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1140,13 +514,13 @@ func TestFDB_EmbeddedDeleteByPK(t *testing.T) {
 
 func TestFDB_EmbeddedUpdateWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_update_where")
+	setup := testkit.OpenDB(t, "/FRL/testdb_update_where")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_update_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
@@ -1157,7 +531,7 @@ func TestFDB_EmbeddedUpdateWhere(t *testing.T) {
 		"CREATE SCHEMA /FRL/testdb_update_where/items WITH TEMPLATE upd_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPDATE_WHERE?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPDATE_WHERE?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1204,13 +578,13 @@ func TestFDB_EmbeddedUpdateWhere(t *testing.T) {
 
 func TestFDB_EmbeddedSelectWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_select_where")
+	setup := testkit.OpenDB(t, "/FRL/testdb_select_where")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_select_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
@@ -1221,7 +595,7 @@ func TestFDB_EmbeddedSelectWhere(t *testing.T) {
 		"CREATE SCHEMA /FRL/testdb_select_where/items WITH TEMPLATE sw_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELECT_WHERE?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELECT_WHERE?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1256,13 +630,13 @@ func TestFDB_EmbeddedSelectWhere(t *testing.T) {
 
 func TestFDB_InfoSchema_Schemata(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_is_schemata")
+	setup := testkit.OpenDB(t, "/FRL/testdb_is_schemata")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_schemata")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
@@ -1277,7 +651,7 @@ func TestFDB_InfoSchema_Schemata(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	// System table queries do not require a schema in the DSN.
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_SCHEMATA?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_SCHEMATA?cluster_file=%s", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1309,13 +683,13 @@ func TestFDB_InfoSchema_Schemata(t *testing.T) {
 
 func TestFDB_InfoSchema_Tables(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_is_tables")
+	setup := testkit.OpenDB(t, "/FRL/testdb_is_tables")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_tables")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
@@ -1327,7 +701,7 @@ func TestFDB_InfoSchema_Tables(t *testing.T) {
 		"CREATE SCHEMA /FRL/testdb_is_tables/myschema WITH TEMPLATE is_tables_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_TABLES?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_TABLES?cluster_file=%s", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1362,13 +736,13 @@ func TestFDB_InfoSchema_Tables(t *testing.T) {
 
 func TestFDB_InfoSchema_Columns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_is_columns")
+	setup := testkit.OpenDB(t, "/FRL/testdb_is_columns")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_columns")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
@@ -1379,7 +753,7 @@ func TestFDB_InfoSchema_Columns(t *testing.T) {
 		"CREATE SCHEMA /FRL/testdb_is_columns/hr WITH TEMPLATE is_columns_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_COLUMNS?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_COLUMNS?cluster_file=%s", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1449,13 +823,13 @@ func TestFDB_InfoSchema_Columns(t *testing.T) {
 
 func TestFDB_ParameterizedQuery(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_paramquery")
+	setup := testkit.OpenDB(t, "/FRL/testdb_paramquery")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_paramquery")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
@@ -1466,7 +840,7 @@ func TestFDB_ParameterizedQuery(t *testing.T) {
 		"CREATE SCHEMA /FRL/testdb_paramquery/widgets WITH TEMPLATE pq_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAMQUERY?cluster_file=%s&schema=WIDGETS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAMQUERY?cluster_file=%s&schema=WIDGETS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1535,13 +909,13 @@ func TestFDB_ParameterizedQuery(t *testing.T) {
 
 func TestFDB_InfoSchema_Indexes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_is_indexes")
+	setup := testkit.OpenDB(t, "/FRL/testdb_is_indexes")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_indexes")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE is_idx_tmpl "+
@@ -1551,7 +925,7 @@ func TestFDB_InfoSchema_Indexes(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_is_indexes/catalog WITH TEMPLATE is_idx_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_INDEXES?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_INDEXES?cluster_file=%s", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1609,13 +983,13 @@ func TestFDB_InfoSchema_Indexes(t *testing.T) {
 
 func TestFDB_SelectColumnProjection(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_proj")
+	setup := testkit.OpenDB(t, "/FRL/testdb_proj")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_proj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE proj_tmpl "+
@@ -1623,7 +997,7 @@ func TestFDB_SelectColumnProjection(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_proj/store WITH TEMPLATE proj_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJ?cluster_file=%s&schema=STORE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJ?cluster_file=%s&schema=STORE", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1669,13 +1043,13 @@ func TestFDB_SelectColumnProjection(t *testing.T) {
 // FDB → SELECT. This catches the ”→' unescaping in evalConstant.
 func TestFDB_ParameterizedQueryApostrophe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_apostrophe")
+	setup := testkit.OpenDB(t, "/FRL/testdb_apostrophe")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_apostrophe")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE apos_tmpl "+
@@ -1683,7 +1057,7 @@ func TestFDB_ParameterizedQueryApostrophe(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_apostrophe/notes WITH TEMPLATE apos_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_APOSTROPHE?cluster_file=%s&schema=NOTES", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_APOSTROPHE?cluster_file=%s&schema=NOTES", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1720,13 +1094,13 @@ func TestFDB_ParameterizedQueryApostrophe(t *testing.T) {
 // a NULL pk element rather than a zero-keyed one.
 func TestFDB_InsertMissingPK(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_missing_pk")
+	setup := testkit.OpenDB(t, "/FRL/testdb_missing_pk")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_missing_pk")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE mpk_tmpl "+
@@ -1734,7 +1108,7 @@ func TestFDB_InsertMissingPK(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_missing_pk/recs WITH TEMPLATE mpk_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MISSING_PK?cluster_file=%s&schema=RECS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MISSING_PK?cluster_file=%s&schema=RECS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1756,13 +1130,13 @@ func TestFDB_InsertMissingPK(t *testing.T) {
 // SemanticException.COMPARISON_OF_INCOMPATIBLE_TYPES → DATATYPE_MISMATCH.
 func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_type_mismatch")
+	setup := testkit.OpenDB(t, "/FRL/testdb_type_mismatch")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_type_mismatch")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE tm_tmpl "+
@@ -1770,7 +1144,7 @@ func TestFDB_SelectWhereTypeMismatch(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_type_mismatch/objs WITH TEMPLATE tm_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TYPE_MISMATCH?cluster_file=%s&schema=OBJS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TYPE_MISMATCH?cluster_file=%s&schema=OBJS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1801,7 +1175,7 @@ func TestFDB_SelectOrderBy(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_orderby")
+	setup := testkit.OpenDB(t, "/FRL/testdb_orderby")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_orderby")).Error().NotTo(gomega.HaveOccurred())
 	// INDEX on val so ORDER BY val can pick a scan that satisfies the
 	// requested ordering — matches Java's Cascades RemoveSortRule
@@ -1813,7 +1187,7 @@ func TestFDB_SelectOrderBy(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_orderby/items WITH TEMPLATE ob_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1845,7 +1219,7 @@ func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_orderby_reject")
+	setup := testkit.OpenDB(t, "/FRL/testdb_orderby_reject")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_orderby_reject")).Error().NotTo(gomega.HaveOccurred())
 	// NO index on val — Go extension: in-memory sort handles this.
 	g.Expect(setup.ExecContext(ctx,
@@ -1854,7 +1228,7 @@ func TestFDB_SelectOrderByRejectionNoIndex(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_orderby_reject/items WITH TEMPLATE ob_reject_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY_REJECT?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY_REJECT?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1886,7 +1260,7 @@ func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_orderby_reject_expr")
+	setup := testkit.OpenDB(t, "/FRL/testdb_orderby_reject_expr")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_orderby_reject_expr")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_reject_expr_tmpl "+
@@ -1894,7 +1268,7 @@ func TestFDB_SelectOrderByRejectionExpression(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_orderby_reject_expr/items WITH TEMPLATE ob_reject_expr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY_REJECT_EXPR?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY_REJECT_EXPR?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1924,7 +1298,7 @@ func TestFDB_SelectOrderByDesc(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_orderby_desc")
+	setup := testkit.OpenDB(t, "/FRL/testdb_orderby_desc")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_orderby_desc")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE obdesc_tmpl "+
@@ -1933,7 +1307,7 @@ func TestFDB_SelectOrderByDesc(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_orderby_desc/items WITH TEMPLATE obdesc_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY_DESC?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY_DESC?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -1959,7 +1333,7 @@ func TestFDB_SelectOrderByMultiColumn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_ob_multi")
+	setup := testkit.OpenDB(t, "/FRL/testdb_ob_multi")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ob_multi")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_multi_tmpl "+
@@ -1968,7 +1342,7 @@ func TestFDB_SelectOrderByMultiColumn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_ob_multi/main WITH TEMPLATE ob_multi_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_MULTI?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_MULTI?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2025,7 +1399,7 @@ func TestFDB_SelectDistinctOrderBy(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_dist_orderby")
+	setup := testkit.OpenDB(t, "/FRL/testdb_dist_orderby")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dist_orderby")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dist_ob_tmpl "+
@@ -2034,7 +1408,7 @@ func TestFDB_SelectDistinctOrderBy(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_dist_orderby/main WITH TEMPLATE dist_ob_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DIST_ORDERBY?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DIST_ORDERBY?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2060,7 +1434,7 @@ func TestFDB_SelectLimit(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_limit")
+	setup := testkit.OpenDB(t, "/FRL/testdb_limit")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_limit")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE lim_tmpl "+
@@ -2068,7 +1442,7 @@ func TestFDB_SelectLimit(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_limit/items WITH TEMPLATE lim_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LIMIT?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LIMIT?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2094,7 +1468,7 @@ func TestFDB_SelectWhereAnd(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_where_and")
+	setup := testkit.OpenDB(t, "/FRL/testdb_where_and")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_and")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wa_tmpl "+
@@ -2102,7 +1476,7 @@ func TestFDB_SelectWhereAnd(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_where_and/items WITH TEMPLATE wa_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_AND?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_AND?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2129,7 +1503,7 @@ func TestFDB_SelectWhereOr(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_where_or")
+	setup := testkit.OpenDB(t, "/FRL/testdb_where_or")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_or")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wo_tmpl "+
@@ -2137,7 +1511,7 @@ func TestFDB_SelectWhereOr(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_where_or/items WITH TEMPLATE wo_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_OR?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_OR?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2164,7 +1538,7 @@ func TestFDB_SelectWhereRangeComparison(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_where_range")
+	setup := testkit.OpenDB(t, "/FRL/testdb_where_range")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_range")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wr_tmpl "+
@@ -2173,7 +1547,7 @@ func TestFDB_SelectWhereRangeComparison(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_where_range/items WITH TEMPLATE wr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_RANGE?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_RANGE?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2200,7 +1574,7 @@ func TestFDB_DeleteWhereAnd(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_del_and")
+	setup := testkit.OpenDB(t, "/FRL/testdb_del_and")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_del_and")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE da_tmpl "+
@@ -2208,7 +1582,7 @@ func TestFDB_DeleteWhereAnd(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_del_and/items WITH TEMPLATE da_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DEL_AND?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DEL_AND?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2239,7 +1613,7 @@ func TestFDB_UpdateWhereRange(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_upd_range")
+	setup := testkit.OpenDB(t, "/FRL/testdb_upd_range")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_upd_range")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ur_tmpl "+
@@ -2247,7 +1621,7 @@ func TestFDB_UpdateWhereRange(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_upd_range/items WITH TEMPLATE ur_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_RANGE?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_RANGE?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2279,7 +1653,7 @@ func TestFDB_SelectCountStar(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_count_star")
+	setup := testkit.OpenDB(t, "/FRL/testdb_count_star")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_count_star")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE cs_tmpl "+
@@ -2287,7 +1661,7 @@ func TestFDB_SelectCountStar(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_count_star/items WITH TEMPLATE cs_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COUNT_STAR?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COUNT_STAR?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2312,7 +1686,7 @@ func TestFDB_SelectWhereNot(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_where_not")
+	setup := testkit.OpenDB(t, "/FRL/testdb_where_not")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_not")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE wn_tmpl "+
@@ -2320,7 +1694,7 @@ func TestFDB_SelectWhereNot(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_where_not/items WITH TEMPLATE wn_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_NOT?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_NOT?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2348,7 +1722,7 @@ func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_ob_noproj")
+	setup := testkit.OpenDB(t, "/FRL/testdb_ob_noproj")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ob_noproj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE onp_tmpl "+
@@ -2357,7 +1731,7 @@ func TestFDB_SelectOrderByNotInProjection(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_ob_noproj/items WITH TEMPLATE onp_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_NOPROJ?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_NOPROJ?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2384,7 +1758,7 @@ func TestFDB_SelectDistinct(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_distinct")
+	setup := testkit.OpenDB(t, "/FRL/testdb_distinct")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_distinct")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dist_tmpl "+
@@ -2392,7 +1766,7 @@ func TestFDB_SelectDistinct(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_distinct/items WITH TEMPLATE dist_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTINCT?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTINCT?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2421,7 +1795,7 @@ func TestFDB_SelectWhereIn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_where_in")
+	setup := testkit.OpenDB(t, "/FRL/testdb_where_in")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_in")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE in_tmpl "+
@@ -2429,7 +1803,7 @@ func TestFDB_SelectWhereIn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_where_in/items WITH TEMPLATE in_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_IN?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_IN?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2456,7 +1830,7 @@ func TestFDB_SelectWhereNotIn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_where_not_in")
+	setup := testkit.OpenDB(t, "/FRL/testdb_where_not_in")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_not_in")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE nin_tmpl "+
@@ -2464,7 +1838,7 @@ func TestFDB_SelectWhereNotIn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_where_not_in/items WITH TEMPLATE nin_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_NOT_IN?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_NOT_IN?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2491,7 +1865,7 @@ func TestFDB_SelectWhereIsNull(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_where_is_null")
+	setup := testkit.OpenDB(t, "/FRL/testdb_where_is_null")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_is_null")).Error().NotTo(gomega.HaveOccurred())
 	// val is nullable (no NOT NULL constraint) so unset fields appear as NULL.
 	g.Expect(setup.ExecContext(ctx,
@@ -2500,7 +1874,7 @@ func TestFDB_SelectWhereIsNull(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_where_is_null/items WITH TEMPLATE isnull_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_IS_NULL?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_IS_NULL?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2571,7 +1945,7 @@ func TestFDB_SelectWhereLike(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_where_like")
+	setup := testkit.OpenDB(t, "/FRL/testdb_where_like")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_like")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE like_tmpl "+
@@ -2579,7 +1953,7 @@ func TestFDB_SelectWhereLike(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_where_like/items WITH TEMPLATE like_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_LIKE?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_LIKE?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2620,7 +1994,7 @@ func TestFDB_SelectWhereBetween(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_where_between")
+	setup := testkit.OpenDB(t, "/FRL/testdb_where_between")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_between")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE between_tmpl "+
@@ -2628,7 +2002,7 @@ func TestFDB_SelectWhereBetween(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_where_between/items WITH TEMPLATE between_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_BETWEEN?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_BETWEEN?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2669,7 +2043,7 @@ func TestFDB_SelectWhereLikeUnderscore(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_where_like_us")
+	setup := testkit.OpenDB(t, "/FRL/testdb_where_like_us")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_like_us")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE like_us_tmpl "+
@@ -2677,7 +2051,7 @@ func TestFDB_SelectWhereLikeUnderscore(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_where_like_us/items WITH TEMPLATE like_us_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_LIKE_US?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_LIKE_US?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2704,7 +2078,7 @@ func TestFDB_BeginCommit(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_begin_commit")
+	setup := testkit.OpenDB(t, "/FRL/testdb_begin_commit")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_begin_commit")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE bc_tmpl "+
@@ -2712,7 +2086,7 @@ func TestFDB_BeginCommit(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_begin_commit/items WITH TEMPLATE bc_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BEGIN_COMMIT?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BEGIN_COMMIT?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2744,7 +2118,7 @@ func TestFDB_BeginRollback(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_begin_rollback")
+	setup := testkit.OpenDB(t, "/FRL/testdb_begin_rollback")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_begin_rollback")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE br_tmpl "+
@@ -2752,7 +2126,7 @@ func TestFDB_BeginRollback(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_begin_rollback/items WITH TEMPLATE br_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BEGIN_ROLLBACK?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BEGIN_ROLLBACK?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2777,8 +2151,8 @@ func TestFDB_TxMultiStatement(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	key, clk := spikedClusterKey(t, 30*time.Second)
-	setup := openSpiked(t, key, "/FRL/testdb_tx_multi", "")
+	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
+	setup := testkit.OpenSpiked(t, key, "/FRL/testdb_tx_multi", "")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_tx_multi")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE txm_tmpl "+
@@ -2786,7 +2160,7 @@ func TestFDB_TxMultiStatement(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_tx_multi/items WITH TEMPLATE txm_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	db := openSpiked(t, key, "/FRL/testdb_tx_multi", "items")
+	db := testkit.OpenSpiked(t, key, "/FRL/testdb_tx_multi", "items")
 
 	// THREE statements plus a commit on one read version — the shape this whole
 	// class is about. Retried as a whole: the two INSERTs and the UPDATE are
@@ -2798,19 +2172,19 @@ func TestFDB_TxMultiStatement(t *testing.T) {
 	// end the test before the retry loop could classify it — the same blocker
 	// that a t.Fatalf inside a body creates.
 	var attemptsRun int
-	retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
-		if _, err := a.tx.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10)"); err != nil {
+	testkit.RetryTx(t, db, testkit.SpikeOnce(clk, &attemptsRun), func(a testkit.TxAttempt) error {
+		if _, err := a.Tx.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (1, 10)"); err != nil {
 			return err
 		}
-		if _, err := a.tx.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (2, 20)"); err != nil {
+		if _, err := a.Tx.ExecContext(ctx, "INSERT INTO Item (item_id, val) VALUES (2, 20)"); err != nil {
 			return err
 		}
-		if _, err := a.tx.ExecContext(ctx, "UPDATE Item SET val = 99 WHERE item_id = 1"); err != nil {
+		if _, err := a.Tx.ExecContext(ctx, "UPDATE Item SET val = 99 WHERE item_id = 1"); err != nil {
 			return err
 		}
-		return a.tx.Commit()
+		return a.Tx.Commit()
 	})
-	mustHaveRetried(t, attemptsRun)
+	testkit.MustHaveRetried(t, attemptsRun)
 
 	rows, err := db.QueryContext(ctx, "SELECT item_id, val FROM Item ORDER BY item_id ASC")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -2834,7 +2208,7 @@ func TestFDB_SelectWhereNullNotIn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_null_not_in")
+	setup := testkit.OpenDB(t, "/FRL/testdb_null_not_in")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_null_not_in")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE null_nin_tmpl "+
@@ -2842,7 +2216,7 @@ func TestFDB_SelectWhereNullNotIn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_null_not_in/items WITH TEMPLATE null_nin_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_NOT_IN?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_NOT_IN?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2873,7 +2247,7 @@ func TestFDB_SelectWhereConstantLeftSide(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_const_lhs")
+	setup := testkit.OpenDB(t, "/FRL/testdb_const_lhs")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_const_lhs")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE const_lhs_tmpl "+
@@ -2881,7 +2255,7 @@ func TestFDB_SelectWhereConstantLeftSide(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_const_lhs/items WITH TEMPLATE const_lhs_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONST_LHS?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONST_LHS?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2909,7 +2283,7 @@ func TestFDB_SelectColumnAlias(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_col_alias")
+	setup := testkit.OpenDB(t, "/FRL/testdb_col_alias")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_col_alias")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE alias_tmpl "+
@@ -2917,7 +2291,7 @@ func TestFDB_SelectColumnAlias(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_col_alias/items WITH TEMPLATE alias_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COL_ALIAS?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COL_ALIAS?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2946,7 +2320,7 @@ func TestFDB_SelectOrderByNonProjectedColumn(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_orderby_nonproj")
+	setup := testkit.OpenDB(t, "/FRL/testdb_orderby_nonproj")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_orderby_nonproj")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ob_nonproj_tmpl "+
@@ -2955,7 +2329,7 @@ func TestFDB_SelectOrderByNonProjectedColumn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_orderby_nonproj/items WITH TEMPLATE ob_nonproj_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY_NONPROJ?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDERBY_NONPROJ?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -2984,7 +2358,7 @@ func TestFDB_SQLCommitRollback(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_sql_txn")
+	setup := testkit.OpenDB(t, "/FRL/testdb_sql_txn")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sql_txn")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sql_txn_tmpl "+
@@ -2992,7 +2366,7 @@ func TestFDB_SQLCommitRollback(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_sql_txn/items WITH TEMPLATE sql_txn_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQL_TXN?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQL_TXN?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3042,7 +2416,7 @@ func TestFDB_InsertWithoutColumnList(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_ins_nocollist")
+	setup := testkit.OpenDB(t, "/FRL/testdb_ins_nocollist")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ins_nocollist")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE nocollist_tmpl "+
@@ -3050,7 +2424,7 @@ func TestFDB_InsertWithoutColumnList(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_ins_nocollist/items WITH TEMPLATE nocollist_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INS_NOCOLLIST?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INS_NOCOLLIST?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3075,7 +2449,7 @@ func TestFDB_UpdateSetArithmetic(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_upd_arith")
+	setup := testkit.OpenDB(t, "/FRL/testdb_upd_arith")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_upd_arith")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE upd_arith_tmpl "+
@@ -3083,7 +2457,7 @@ func TestFDB_UpdateSetArithmetic(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_upd_arith/counters WITH TEMPLATE upd_arith_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_ARITH?cluster_file=%s&schema=COUNTERS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_ARITH?cluster_file=%s&schema=COUNTERS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3113,7 +2487,7 @@ func TestFDB_UpdateInt32Overflow(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_upd_int32_ovf")
+	setup := testkit.OpenDB(t, "/FRL/testdb_upd_int32_ovf")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_upd_int32_ovf")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE upd_int32_ovf_tmpl "+
@@ -3121,7 +2495,7 @@ func TestFDB_UpdateInt32Overflow(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_upd_int32_ovf/upd_int32_ovf WITH TEMPLATE upd_int32_ovf_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_INT32_OVF?cluster_file=%s&schema=UPD_INT32_OVF", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_INT32_OVF?cluster_file=%s&schema=UPD_INT32_OVF", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3163,7 +2537,7 @@ func TestFDB_GroupByCount(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_grpby")
+	setup := testkit.OpenDB(t, "/FRL/testdb_grpby")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_grpby")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE grpby_tmpl "+
@@ -3171,7 +2545,7 @@ func TestFDB_GroupByCount(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_grpby/sales WITH TEMPLATE grpby_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GRPBY?cluster_file=%s&schema=SALES", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GRPBY?cluster_file=%s&schema=SALES", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3215,7 +2589,7 @@ func TestFDB_GroupByHaving(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_having")
+	setup := testkit.OpenDB(t, "/FRL/testdb_having")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_having")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE having_tmpl "+
@@ -3223,7 +2597,7 @@ func TestFDB_GroupByHaving(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_having/sales WITH TEMPLATE having_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVING?cluster_file=%s&schema=SALES", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVING?cluster_file=%s&schema=SALES", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3263,7 +2637,7 @@ func TestFDB_GroupByOrderBy(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_grpord")
+	setup := testkit.OpenDB(t, "/FRL/testdb_grpord")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_grpord")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE grpord_tmpl "+
@@ -3271,7 +2645,7 @@ func TestFDB_GroupByOrderBy(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_grpord/sales WITH TEMPLATE grpord_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GRPORD?cluster_file=%s&schema=SALES", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GRPORD?cluster_file=%s&schema=SALES", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3319,7 +2693,7 @@ func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_aggno")
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggno")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_aggno")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE aggno_tmpl "+
@@ -3327,7 +2701,7 @@ func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_aggno/items WITH TEMPLATE aggno_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGNO?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGNO?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3364,7 +2738,7 @@ func TestFDB_SumIntegerDivision(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_sumdiv")
+	setup := testkit.OpenDB(t, "/FRL/testdb_sumdiv")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sumdiv")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE sumdiv_tmpl "+
@@ -3372,7 +2746,7 @@ func TestFDB_SumIntegerDivision(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_sumdiv/items WITH TEMPLATE sumdiv_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUMDIV?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUMDIV?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3417,7 +2791,7 @@ func TestFDB_BareBoolProjection(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_barebool")
+	setup := testkit.OpenDB(t, "/FRL/testdb_barebool")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_barebool")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE barebool_tmpl "+
@@ -3425,7 +2799,7 @@ func TestFDB_BareBoolProjection(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_barebool/items WITH TEMPLATE barebool_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BAREBOOL?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BAREBOOL?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3516,20 +2890,20 @@ func TestFDB_BareBoolProjection(t *testing.T) {
 // double-vs-double, int-literal → double promotion, and a CTE-derived double.
 func TestFDB_DoubleColumnComparison(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_double_cmp")
+	setup := testkit.OpenDB(t, "/FRL/testdb_double_cmp")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_double_cmp")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE double_cmp_tmpl "+
 			"CREATE TABLE D (id BIGINT, d DOUBLE, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_double_cmp/items WITH TEMPLATE double_cmp_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DOUBLE_CMP?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DOUBLE_CMP?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3566,20 +2940,20 @@ func TestFDB_DoubleColumnComparison(t *testing.T) {
 // (both error before executing).
 func TestFDB_DMLBareNonBooleanWhereRejected(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_dml_nonbool")
+	setup := testkit.OpenDB(t, "/FRL/testdb_dml_nonbool")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dml_nonbool")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE dml_nonbool_tmpl "+
 			"CREATE TABLE A (id BIGINT, amount BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dml_nonbool/items WITH TEMPLATE dml_nonbool_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DML_NONBOOL?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DML_NONBOOL?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3607,7 +2981,7 @@ func TestFDB_SelectScalarExpression(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_scalar_sel")
+	setup := testkit.OpenDB(t, "/FRL/testdb_scalar_sel")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_scalar_sel")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE scalar_sel_tmpl "+
@@ -3615,7 +2989,7 @@ func TestFDB_SelectScalarExpression(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_scalar_sel/items WITH TEMPLATE scalar_sel_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SCALAR_SEL?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SCALAR_SEL?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3639,7 +3013,7 @@ func TestFDB_SelectCoalesce(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_coalesce")
+	setup := testkit.OpenDB(t, "/FRL/testdb_coalesce")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_coalesce")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE coalesce_tmpl "+
@@ -3647,7 +3021,7 @@ func TestFDB_SelectCoalesce(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_coalesce/items WITH TEMPLATE coalesce_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COALESCE?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COALESCE?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3680,7 +3054,7 @@ func TestFDB_LimitOffset(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_limit_offset")
+	setup := testkit.OpenDB(t, "/FRL/testdb_limit_offset")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_limit_offset")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE loff_tmpl CREATE TABLE Item (id BIGINT, val BIGINT, PRIMARY KEY (id))")
@@ -3688,7 +3062,7 @@ func TestFDB_LimitOffset(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_limit_offset/items WITH TEMPLATE loff_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LIMIT_OFFSET?cluster_file=%s&schema=ITEMS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LIMIT_OFFSET?cluster_file=%s&schema=ITEMS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3718,7 +3092,7 @@ func TestFDB_CaseWhen(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_case_when")
+	setup := testkit.OpenDB(t, "/FRL/testdb_case_when")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_case_when")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cw_tmpl CREATE TABLE Sale (id BIGINT, amount BIGINT, PRIMARY KEY (id))")
@@ -3726,7 +3100,7 @@ func TestFDB_CaseWhen(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_case_when/sales WITH TEMPLATE cw_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_WHEN?cluster_file=%s&schema=SALES", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_WHEN?cluster_file=%s&schema=SALES", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3766,7 +3140,7 @@ func TestFDB_StringFunctions(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_strfuncs")
+	setup := testkit.OpenDB(t, "/FRL/testdb_strfuncs")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_strfuncs")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE sf_tmpl CREATE TABLE Word (id BIGINT, label STRING, PRIMARY KEY (id))")
@@ -3774,7 +3148,7 @@ func TestFDB_StringFunctions(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_strfuncs/words WITH TEMPLATE sf_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STRFUNCS?cluster_file=%s&schema=WORDS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STRFUNCS?cluster_file=%s&schema=WORDS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3814,7 +3188,7 @@ func TestFDB_ConcatAndNullIf(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_concat")
+	setup := testkit.OpenDB(t, "/FRL/testdb_concat")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_concat")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cn_tmpl CREATE TABLE Person (id BIGINT, first STRING, last STRING, score BIGINT, PRIMARY KEY (id))")
@@ -3822,7 +3196,7 @@ func TestFDB_ConcatAndNullIf(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_concat/people WITH TEMPLATE cn_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONCAT?cluster_file=%s&schema=PEOPLE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONCAT?cluster_file=%s&schema=PEOPLE", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3856,7 +3230,7 @@ func TestFDB_UnionAll(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_union_all")
+	setup := testkit.OpenDB(t, "/FRL/testdb_union_all")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_union_all")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ua_tmpl CREATE TABLE Item (id BIGINT, label STRING, PRIMARY KEY (id))")
@@ -3864,7 +3238,7 @@ func TestFDB_UnionAll(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_union_all/store WITH TEMPLATE ua_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_ALL?cluster_file=%s&schema=STORE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_ALL?cluster_file=%s&schema=STORE", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3897,7 +3271,7 @@ func TestFDB_UnionAllDifferentColumnNames(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_union_diffcol")
+	setup := testkit.OpenDB(t, "/FRL/testdb_union_diffcol")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_union_diffcol")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE udcol_tmpl "+
@@ -3907,7 +3281,7 @@ func TestFDB_UnionAllDifferentColumnNames(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_union_diffcol/s WITH TEMPLATE udcol_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_DIFFCOL?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_DIFFCOL?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -3990,7 +3364,7 @@ func TestFDB_UnionDistinctRejected(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_union_distinct")
+	setup := testkit.OpenDB(t, "/FRL/testdb_union_distinct")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_union_distinct")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE ud_tmpl CREATE TABLE Tag (id BIGINT, tag STRING, PRIMARY KEY (id))")
@@ -3998,7 +3372,7 @@ func TestFDB_UnionDistinctRejected(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_union_distinct/tags WITH TEMPLATE ud_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_DISTINCT?cluster_file=%s&schema=TAGS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_DISTINCT?cluster_file=%s&schema=TAGS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4013,13 +3387,13 @@ func TestFDB_UnionDistinctRejected(t *testing.T) {
 
 func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_is_schemata_where")
+	setup := testkit.OpenDB(t, "/FRL/testdb_is_schemata_where")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_schemata_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE iswt_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))")
@@ -4029,7 +3403,7 @@ func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_is_schemata_where/beta WITH TEMPLATE iswt_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_SCHEMATA_WHERE?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_SCHEMATA_WHERE?cluster_file=%s", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4074,13 +3448,13 @@ func TestFDB_InfoSchema_SchemataWhere(t *testing.T) {
 // fail with an undefined-column error instead of returning the alpha row.
 func TestFDB_InfoSchema_SchemataWhere_QualifiedRef(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_is_schemata_qref")
+	setup := testkit.OpenDB(t, "/FRL/testdb_is_schemata_qref")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_schemata_qref")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE isqr_tmpl CREATE TABLE T (id BIGINT, PRIMARY KEY (id))")
@@ -4090,7 +3464,7 @@ func TestFDB_InfoSchema_SchemataWhere_QualifiedRef(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_is_schemata_qref/beta WITH TEMPLATE isqr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_SCHEMATA_QREF?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_SCHEMATA_QREF?cluster_file=%s", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4126,7 +3500,7 @@ func TestFDB_InsertSelect(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_insert_select")
+	setup := testkit.OpenDB(t, "/FRL/testdb_insert_select")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_insert_select")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE is_tmpl CREATE TABLE Src (id BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE TABLE Dst (id BIGINT, val BIGINT, PRIMARY KEY (id))")
@@ -4134,7 +3508,7 @@ func TestFDB_InsertSelect(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_insert_select/data WITH TEMPLATE is_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSERT_SELECT?cluster_file=%s&schema=DATA", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSERT_SELECT?cluster_file=%s&schema=DATA", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4167,7 +3541,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_cast_substr")
+	setup := testkit.OpenDB(t, "/FRL/testdb_cast_substr")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cast_substr")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE cast_substr_tmpl CREATE TABLE Item (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))")
@@ -4175,7 +3549,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cast_substr/shop WITH TEMPLATE cast_substr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CAST_SUBSTR?cluster_file=%s&schema=SHOP", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CAST_SUBSTR?cluster_file=%s&schema=SHOP", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4298,7 +3672,7 @@ func TestFDB_MathFunctions(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_math_funcs")
+	setup := testkit.OpenDB(t, "/FRL/testdb_math_funcs")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_math_funcs")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE mf_tmpl CREATE TABLE Num (id BIGINT, val BIGINT, PRIMARY KEY (id))")
@@ -4306,7 +3680,7 @@ func TestFDB_MathFunctions(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_math_funcs/data WITH TEMPLATE mf_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MATH_FUNCS?cluster_file=%s&schema=DATA", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MATH_FUNCS?cluster_file=%s&schema=DATA", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4381,7 +3755,7 @@ func TestFDB_IsDistinctFrom(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_is_distinct")
+	setup := testkit.OpenDB(t, "/FRL/testdb_is_distinct")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_is_distinct")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE idf_tmpl
@@ -4390,7 +3764,7 @@ func TestFDB_IsDistinctFrom(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_is_distinct/main WITH TEMPLATE idf_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_DISTINCT?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IS_DISTINCT?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4434,7 +3808,7 @@ func TestFDB_HavingCompound(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_having_compound")
+	setup := testkit.OpenDB(t, "/FRL/testdb_having_compound")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_having_compound")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE hc_tmpl CREATE TABLE Sale (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id))")
@@ -4442,7 +3816,7 @@ func TestFDB_HavingCompound(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_having_compound/sales WITH TEMPLATE hc_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVING_COMPOUND?cluster_file=%s&schema=SALES", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVING_COMPOUND?cluster_file=%s&schema=SALES", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4474,7 +3848,7 @@ func TestFDB_WhereExprComparison(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_where_expr")
+	setup := testkit.OpenDB(t, "/FRL/testdb_where_expr")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_where_expr")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE we_tmpl CREATE TABLE Product (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))")
@@ -4482,7 +3856,7 @@ func TestFDB_WhereExprComparison(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_where_expr/products WITH TEMPLATE we_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_EXPR?cluster_file=%s&schema=PRODUCTS", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_WHERE_EXPR?cluster_file=%s&schema=PRODUCTS", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4514,7 +3888,7 @@ func TestFDB_InnerJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_inner_join")
+	setup := testkit.OpenDB(t, "/FRL/testdb_inner_join")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_inner_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ij_tmpl
@@ -4524,7 +3898,7 @@ func TestFDB_InnerJoin(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_inner_join/main WITH TEMPLATE ij_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INNER_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INNER_JOIN?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4574,7 +3948,7 @@ func TestFDB_LeftJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_left_join")
+	setup := testkit.OpenDB(t, "/FRL/testdb_left_join")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_left_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE lj_tmpl
@@ -4584,7 +3958,7 @@ func TestFDB_LeftJoin(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_left_join/main WITH TEMPLATE lj_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LEFT_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LEFT_JOIN?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4633,7 +4007,7 @@ func TestFDB_JoinWhere(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_join_where")
+	setup := testkit.OpenDB(t, "/FRL/testdb_join_where")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_join_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE jw_tmpl
@@ -4643,7 +4017,7 @@ func TestFDB_JoinWhere(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_join_where/main WITH TEMPLATE jw_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_WHERE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_WHERE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4691,7 +4065,7 @@ func TestFDB_RightJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_right_join")
+	setup := testkit.OpenDB(t, "/FRL/testdb_right_join")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_right_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE rj_tmpl
@@ -4701,7 +4075,7 @@ func TestFDB_RightJoin(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_right_join/main WITH TEMPLATE rj_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RIGHT_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RIGHT_JOIN?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4752,7 +4126,7 @@ func TestFDB_CountDistinct(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_count_distinct")
+	setup := testkit.OpenDB(t, "/FRL/testdb_count_distinct")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_count_distinct")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cd_tmpl
@@ -4761,7 +4135,7 @@ func TestFDB_CountDistinct(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_count_distinct/main WITH TEMPLATE cd_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COUNT_DISTINCT?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COUNT_DISTINCT?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4796,7 +4170,7 @@ func TestFDB_GreatestLeast(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_greatest_least")
+	setup := testkit.OpenDB(t, "/FRL/testdb_greatest_least")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_greatest_least")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gl_tmpl
@@ -4805,7 +4179,7 @@ func TestFDB_GreatestLeast(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_greatest_least/main WITH TEMPLATE gl_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GREATEST_LEAST?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GREATEST_LEAST?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4861,7 +4235,7 @@ func TestFDB_SubqueryINRejected(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_subquery_in")
+	setup := testkit.OpenDB(t, "/FRL/testdb_subquery_in")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_subquery_in")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE subq_tmpl
@@ -4872,7 +4246,7 @@ func TestFDB_SubqueryINRejected(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_subquery_in/main WITH TEMPLATE subq_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQUERY_IN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQUERY_IN?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4910,7 +4284,7 @@ func TestFDB_JoinGroupBy(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_join_groupby")
+	setup := testkit.OpenDB(t, "/FRL/testdb_join_groupby")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_join_groupby")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE jgb_tmpl
@@ -4920,7 +4294,7 @@ func TestFDB_JoinGroupBy(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_join_groupby/main WITH TEMPLATE jgb_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_GROUPBY?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_GROUPBY?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -4969,7 +4343,7 @@ func TestFDB_ExistsSubquery(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_exists_subquery")
+	setup := testkit.OpenDB(t, "/FRL/testdb_exists_subquery")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_exists_subquery")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE exists_tmpl
@@ -4980,7 +4354,7 @@ func TestFDB_ExistsSubquery(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_exists_subquery/main WITH TEMPLATE exists_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_SUBQUERY?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_SUBQUERY?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5016,7 +4390,7 @@ func TestFDB_CorrelatedExistsSelfJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_corr_exists_selfjoin")
+	setup := testkit.OpenDB(t, "/FRL/testdb_corr_exists_selfjoin")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_corr_exists_selfjoin")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cesj_tmpl
@@ -5027,7 +4401,7 @@ func TestFDB_CorrelatedExistsSelfJoin(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_corr_exists_selfjoin/main WITH TEMPLATE cesj_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORR_EXISTS_SELFJOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORR_EXISTS_SELFJOIN?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5052,13 +4426,13 @@ func TestFDB_CorrelatedExistsSelfJoin(t *testing.T) {
 // projection, and ORDER BY on the CTE result.
 func TestFDB_CTE(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_cte")
+	setup := testkit.OpenDB(t, "/FRL/testdb_cte")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
@@ -5068,7 +4442,7 @@ func TestFDB_CTE(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cte/store WITH TEMPLATE cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE?cluster_file=%s&schema=STORE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE?cluster_file=%s&schema=STORE", testkit.ClusterFile())
 	db, openErr := sql.Open("fdbsql", dsn)
 	g.Expect(openErr).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5122,13 +4496,13 @@ func TestFDB_SelectWithoutFromRequiresSchema(t *testing.T) {
 	// which isn't listening, producing a 60s timeout flake. Other tests skip
 	// via openTestDB's guard; this one constructed its own DSN so we have
 	// to check here.
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 
 	// Deliberately omit schema attachment: this pins connection admission,
 	// not a grammar refusal.
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///SELECT_NO_FROM?cluster_file=%s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///SELECT_NO_FROM?cluster_file=%s", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -5154,7 +4528,7 @@ func TestFDB_ConstantProjectionFolding(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_const_proj_fold")
+	setup := testkit.OpenDB(t, "/FRL/testdb_const_proj_fold")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_const_proj_fold")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cpf_tmpl
@@ -5163,7 +4537,7 @@ func TestFDB_ConstantProjectionFolding(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_const_proj_fold/main WITH TEMPLATE cpf_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONST_PROJ_FOLD?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONST_PROJ_FOLD?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5207,7 +4581,7 @@ func TestFDB_DerivedTable(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_derived_table")
+	setup := testkit.OpenDB(t, "/FRL/testdb_derived_table")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_derived_table")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE dt_tmpl
@@ -5216,7 +4590,7 @@ func TestFDB_DerivedTable(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_derived_table/main WITH TEMPLATE dt_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DERIVED_TABLE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DERIVED_TABLE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5249,7 +4623,7 @@ func TestFDB_DerivedTableAggAlias(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_dt_agg_alias")
+	setup := testkit.OpenDB(t, "/FRL/testdb_dt_agg_alias")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dt_agg_alias")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE dta_tmpl
@@ -5258,7 +4632,7 @@ func TestFDB_DerivedTableAggAlias(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dt_agg_alias/main WITH TEMPLATE dta_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_AGG_ALIAS?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_AGG_ALIAS?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5298,7 +4672,7 @@ func TestFDB_DerivedTableSortOnlyAgg(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_dt_sortonly")
+	setup := testkit.OpenDB(t, "/FRL/testdb_dt_sortonly")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dt_sortonly")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE dts_tmpl
@@ -5307,7 +4681,7 @@ func TestFDB_DerivedTableSortOnlyAgg(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_dt_sortonly/main WITH TEMPLATE dts_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_SORTONLY?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_SORTONLY?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5336,7 +4710,7 @@ func TestFDB_CTEChaining(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_cte_chaining")
+	setup := testkit.OpenDB(t, "/FRL/testdb_cte_chaining")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cte_chaining")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE chain_tmpl
@@ -5345,7 +4719,7 @@ func TestFDB_CTEChaining(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cte_chaining/main WITH TEMPLATE chain_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_CHAINING?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_CHAINING?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5377,7 +4751,7 @@ func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_upd_del_subq")
+	setup := testkit.OpenDB(t, "/FRL/testdb_upd_del_subq")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_upd_del_subq")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE uds_tmpl
@@ -5387,7 +4761,7 @@ func TestFDB_UpdateDeleteWithSubquery(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_upd_del_subq/main WITH TEMPLATE uds_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_DEL_SUBQ?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_DEL_SUBQ?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5445,7 +4819,7 @@ func TestFDB_FunctionsInMapEval(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_fn_map")
+	setup := testkit.OpenDB(t, "/FRL/testdb_fn_map")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_fn_map")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE fn_map_tmpl
@@ -5455,7 +4829,7 @@ func TestFDB_FunctionsInMapEval(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_fn_map/main WITH TEMPLATE fn_map_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FN_MAP?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FN_MAP?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5501,7 +4875,7 @@ func TestFDB_CaseInMapEval(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_case_map")
+	setup := testkit.OpenDB(t, "/FRL/testdb_case_map")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_case_map")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE case_map_tmpl
@@ -5510,7 +4884,7 @@ func TestFDB_CaseInMapEval(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_case_map/main WITH TEMPLATE case_map_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_MAP?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_MAP?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5550,7 +4924,7 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_subq_case")
+	setup := testkit.OpenDB(t, "/FRL/testdb_subq_case")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_subq_case")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE sqc_tmpl
@@ -5560,7 +4934,7 @@ func TestFDB_SubqueryInCase(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_subq_case/main WITH TEMPLATE sqc_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQ_CASE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQ_CASE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5595,7 +4969,7 @@ func TestFDB_AggregateOnCTE(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_agg_cte")
+	setup := testkit.OpenDB(t, "/FRL/testdb_agg_cte")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_agg_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_cte_tmpl
@@ -5604,7 +4978,7 @@ func TestFDB_AggregateOnCTE(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_agg_cte/main WITH TEMPLATE agg_cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_CTE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_CTE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5661,7 +5035,7 @@ func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_join_gb_ol")
+	setup := testkit.OpenDB(t, "/FRL/testdb_join_gb_ol")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_join_gb_ol")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_gb_tmpl
@@ -5671,7 +5045,7 @@ func TestFDB_JoinGroupByOrderByLimit(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_join_gb_ol/main WITH TEMPLATE join_gb_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_GB_OL?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_GB_OL?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5720,7 +5094,7 @@ func TestFDB_CTEAggregateHaving(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_cte_agg_having")
+	setup := testkit.OpenDB(t, "/FRL/testdb_cte_agg_having")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cte_agg_having")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_agg_h_tmpl
@@ -5729,7 +5103,7 @@ func TestFDB_CTEAggregateHaving(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cte_agg_having/main WITH TEMPLATE cte_agg_h_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_AGG_HAVING?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_AGG_HAVING?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5787,7 +5161,7 @@ func TestFDB_JoinOnCTE(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_join_cte")
+	setup := testkit.OpenDB(t, "/FRL/testdb_join_cte")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_join_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_cte_tmpl
@@ -5797,7 +5171,7 @@ func TestFDB_JoinOnCTE(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_join_cte/main WITH TEMPLATE join_cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_CTE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_CTE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5839,7 +5213,7 @@ func TestFDB_MultiTableFrom(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_multi_from")
+	setup := testkit.OpenDB(t, "/FRL/testdb_multi_from")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_multi_from")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE multi_from_tmpl
@@ -5849,7 +5223,7 @@ func TestFDB_MultiTableFrom(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_multi_from/main WITH TEMPLATE multi_from_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MULTI_FROM?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MULTI_FROM?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5894,7 +5268,7 @@ func TestFDB_ThreeTableFrom(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_three_from")
+	setup := testkit.OpenDB(t, "/FRL/testdb_three_from")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_three_from")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE three_tmpl
@@ -5905,7 +5279,7 @@ func TestFDB_ThreeTableFrom(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_three_from/main WITH TEMPLATE three_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_THREE_FROM?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_THREE_FROM?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5942,7 +5316,7 @@ func TestFDB_UpdateSetWithFunction(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_upd_fn")
+	setup := testkit.OpenDB(t, "/FRL/testdb_upd_fn")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_upd_fn")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE upd_fn_tmpl
@@ -5951,7 +5325,7 @@ func TestFDB_UpdateSetWithFunction(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_upd_fn/main WITH TEMPLATE upd_fn_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_FN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UPD_FN?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -5975,7 +5349,7 @@ func TestFDB_OrderByExpression(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_ob_expr")
+	setup := testkit.OpenDB(t, "/FRL/testdb_ob_expr")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ob_expr")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ob_expr_tmpl
@@ -5984,7 +5358,7 @@ func TestFDB_OrderByExpression(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_ob_expr/main WITH TEMPLATE ob_expr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_EXPR?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_EXPR?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6036,7 +5410,7 @@ func TestFDB_OrderByExpressionInJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_ob_join")
+	setup := testkit.OpenDB(t, "/FRL/testdb_ob_join")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ob_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ob_join_tmpl
@@ -6046,7 +5420,7 @@ func TestFDB_OrderByExpressionInJoin(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_ob_join/main WITH TEMPLATE ob_join_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_JOIN?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6094,7 +5468,7 @@ func TestFDB_LtrimRtrim(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_ltrim")
+	setup := testkit.OpenDB(t, "/FRL/testdb_ltrim")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ltrim")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ltrim_tmpl
@@ -6103,7 +5477,7 @@ func TestFDB_LtrimRtrim(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_ltrim/main WITH TEMPLATE ltrim_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LTRIM?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LTRIM?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6131,7 +5505,7 @@ func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_cte_join_ob")
+	setup := testkit.OpenDB(t, "/FRL/testdb_cte_join_ob")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cte_join_ob")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_join_ob_tmpl
@@ -6141,7 +5515,7 @@ func TestFDB_CTEWithJoinAndOrderByExpr(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cte_join_ob/main WITH TEMPLATE cte_join_ob_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_JOIN_OB?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_JOIN_OB?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6191,7 +5565,7 @@ func TestFDB_UpdateDeleteWithExists(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_ud_exists")
+	setup := testkit.OpenDB(t, "/FRL/testdb_ud_exists")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ud_exists")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ud_exists_tmpl
@@ -6201,7 +5575,7 @@ func TestFDB_UpdateDeleteWithExists(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_ud_exists/main WITH TEMPLATE ud_exists_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UD_EXISTS?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UD_EXISTS?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6253,7 +5627,7 @@ func TestFDB_NestedStringFunctions(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_nested_fn_case")
+	setup := testkit.OpenDB(t, "/FRL/testdb_nested_fn_case")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_nested_fn_case")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE nfc_tmpl
@@ -6262,7 +5636,7 @@ func TestFDB_NestedStringFunctions(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_nested_fn_case/main WITH TEMPLATE nfc_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTED_FN_CASE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTED_FN_CASE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6305,7 +5679,7 @@ func TestFDB_FunctionWrappingCase(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_fn_wrap_case")
+	setup := testkit.OpenDB(t, "/FRL/testdb_fn_wrap_case")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_fn_wrap_case")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE fn_wc_tmpl
@@ -6314,7 +5688,7 @@ func TestFDB_FunctionWrappingCase(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_fn_wrap_case/main WITH TEMPLATE fn_wc_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FN_WRAP_CASE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FN_WRAP_CASE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6335,7 +5709,7 @@ func TestFDB_AggregateOrderByStrict(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_agg_ob_strict")
+	setup := testkit.OpenDB(t, "/FRL/testdb_agg_ob_strict")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_agg_ob_strict")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_ob_strict_tmpl
@@ -6344,7 +5718,7 @@ func TestFDB_AggregateOrderByStrict(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_agg_ob_strict/main WITH TEMPLATE agg_ob_strict_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_OB_STRICT?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_OB_STRICT?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6386,7 +5760,7 @@ func TestFDB_OrderByArithmeticOnAggregateErrors(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_ob_agg_err")
+	setup := testkit.OpenDB(t, "/FRL/testdb_ob_agg_err")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ob_agg_err")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ob_agg_err_tmpl
@@ -6395,7 +5769,7 @@ func TestFDB_OrderByArithmeticOnAggregateErrors(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_ob_agg_err/main WITH TEMPLATE ob_agg_err_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_AGG_ERR?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OB_AGG_ERR?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6435,7 +5809,7 @@ func TestFDB_SelfJoin(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_self_join")
+	setup := testkit.OpenDB(t, "/FRL/testdb_self_join")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_self_join")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE self_join_tmpl
@@ -6444,7 +5818,7 @@ func TestFDB_SelfJoin(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_self_join/main WITH TEMPLATE self_join_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELF_JOIN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELF_JOIN?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6482,7 +5856,7 @@ func TestFDB_CaseInWhere(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_case_where")
+	setup := testkit.OpenDB(t, "/FRL/testdb_case_where")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_case_where")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE case_where_tmpl
@@ -6491,7 +5865,7 @@ func TestFDB_CaseInWhere(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_case_where/main WITH TEMPLATE case_where_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_WHERE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_WHERE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6541,7 +5915,7 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_insert_multi_expr")
+	setup := testkit.OpenDB(t, "/FRL/testdb_insert_multi_expr")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_insert_multi_expr")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ins_multi_expr_tmpl
@@ -6550,7 +5924,7 @@ func TestFDB_InsertMultiRowWithExpressions(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_insert_multi_expr/main WITH TEMPLATE ins_multi_expr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSERT_MULTI_EXPR?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSERT_MULTI_EXPR?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6602,7 +5976,7 @@ func TestFDB_EmptyResultEdgeCases(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_empty_edge")
+	setup := testkit.OpenDB(t, "/FRL/testdb_empty_edge")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_empty_edge")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE empty_edge_tmpl
@@ -6611,7 +5985,7 @@ func TestFDB_EmptyResultEdgeCases(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_empty_edge/main WITH TEMPLATE empty_edge_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EMPTY_EDGE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EMPTY_EDGE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6661,7 +6035,7 @@ func TestFDB_InsertSelectFromCTE(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_ins_sel_cte")
+	setup := testkit.OpenDB(t, "/FRL/testdb_ins_sel_cte")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ins_sel_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE ins_sel_cte_tmpl
@@ -6671,7 +6045,7 @@ func TestFDB_InsertSelectFromCTE(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_ins_sel_cte/main WITH TEMPLATE ins_sel_cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INS_SEL_CTE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INS_SEL_CTE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6708,7 +6082,7 @@ func TestFDB_LeftRight(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_left_right")
+	setup := testkit.OpenDB(t, "/FRL/testdb_left_right")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_left_right")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE lr_tmpl
@@ -6717,7 +6091,7 @@ func TestFDB_LeftRight(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_left_right/main WITH TEMPLATE lr_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LEFT_RIGHT?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LEFT_RIGHT?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6748,7 +6122,7 @@ func TestFDB_ReversePosition(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_str_more")
+	setup := testkit.OpenDB(t, "/FRL/testdb_str_more")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_str_more")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE str_more_tmpl
@@ -6757,7 +6131,7 @@ func TestFDB_ReversePosition(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_str_more/main WITH TEMPLATE str_more_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STR_MORE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STR_MORE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6786,7 +6160,7 @@ func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_math_fn")
+	setup := testkit.OpenDB(t, "/FRL/testdb_math_fn")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_math_fn")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE math_fn_tmpl
@@ -6795,7 +6169,7 @@ func TestFDB_MathFunctionsTranscendental(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_math_fn/main WITH TEMPLATE math_fn_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MATH_FN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MATH_FN?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6855,7 +6229,7 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_param_subq")
+	setup := testkit.OpenDB(t, "/FRL/testdb_param_subq")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_param_subq")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE param_subq_tmpl
@@ -6865,7 +6239,7 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_param_subq/main WITH TEMPLATE param_subq_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAM_SUBQ?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAM_SUBQ?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6895,7 +6269,7 @@ func TestFDB_PiFunctionWithoutFrom(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_pi")
+	setup := testkit.OpenDB(t, "/FRL/testdb_pi")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_pi"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -6906,7 +6280,7 @@ func TestFDB_PiFunctionWithoutFrom(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PI?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PI?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -6925,7 +6299,7 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_case_where_cte")
+	setup := testkit.OpenDB(t, "/FRL/testdb_case_where_cte")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_case_where_cte")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE case_where_cte_tmpl
@@ -6934,7 +6308,7 @@ func TestFDB_CaseInWhereOnCTE(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_case_where_cte/main WITH TEMPLATE case_where_cte_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_WHERE_CTE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_WHERE_CTE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -6973,7 +6347,7 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_null_prop")
+	setup := testkit.OpenDB(t, "/FRL/testdb_null_prop")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_null_prop")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_prop_tmpl
@@ -6982,7 +6356,7 @@ func TestFDB_NullPropagationInFunctions(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_null_prop/main WITH TEMPLATE null_prop_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_PROP?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_PROP?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7028,7 +6402,7 @@ func TestFDB_NullCompareInCTEAndBetween(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_null_cte_bet")
+	setup := testkit.OpenDB(t, "/FRL/testdb_null_cte_bet")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_null_cte_bet")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_cte_bet_tmpl
@@ -7037,7 +6411,7 @@ func TestFDB_NullCompareInCTEAndBetween(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_null_cte_bet/main WITH TEMPLATE null_cte_bet_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_CTE_BET?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_CTE_BET?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7064,7 +6438,7 @@ func TestFDB_SimpleCaseWorks(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_simple_case_works")
+	setup := testkit.OpenDB(t, "/FRL/testdb_simple_case_works")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_simple_case_works")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE sc_scw_tmpl
@@ -7073,7 +6447,7 @@ func TestFDB_SimpleCaseWorks(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_simple_case_works/main WITH TEMPLATE sc_scw_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SIMPLE_CASE_WORKS?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SIMPLE_CASE_WORKS?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7114,7 +6488,7 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_error_paths")
+	setup := testkit.OpenDB(t, "/FRL/testdb_error_paths")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_error_paths")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE err_tmpl
@@ -7123,7 +6497,7 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_error_paths/main WITH TEMPLATE err_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ERROR_PATHS?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ERROR_PATHS?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7284,7 +6658,7 @@ func TestFDB_GroupByCountStarOrdering(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_gb_cs_order")
+	setup := testkit.OpenDB(t, "/FRL/testdb_gb_cs_order")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gb_cs_order")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_cs_order_tmpl
@@ -7293,7 +6667,7 @@ func TestFDB_GroupByCountStarOrdering(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_gb_cs_order/main WITH TEMPLATE gb_cs_order_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GB_CS_ORDER?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GB_CS_ORDER?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7328,7 +6702,7 @@ func TestFDB_GroupByOrderByGroupKey(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_gb_orderkey")
+	setup := testkit.OpenDB(t, "/FRL/testdb_gb_orderkey")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gb_orderkey")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_orderkey_tmpl
@@ -7338,7 +6712,7 @@ func TestFDB_GroupByOrderByGroupKey(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_gb_orderkey/main WITH TEMPLATE gb_orderkey_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GB_ORDERKEY?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GB_ORDERKEY?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7388,7 +6762,7 @@ func TestFDB_JoinWithNullKey(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_join_null")
+	setup := testkit.OpenDB(t, "/FRL/testdb_join_null")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_join_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE join_null_tmpl
@@ -7398,7 +6772,7 @@ func TestFDB_JoinWithNullKey(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_join_null/main WITH TEMPLATE join_null_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_NULL?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOIN_NULL?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7435,7 +6809,7 @@ func TestFDB_NullHandlingSanityPack(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_null_sanity")
+	setup := testkit.OpenDB(t, "/FRL/testdb_null_sanity")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_null_sanity")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE null_sanity_tmpl
@@ -7444,7 +6818,7 @@ func TestFDB_NullHandlingSanityPack(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_null_sanity/main WITH TEMPLATE null_sanity_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_SANITY?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_SANITY?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7505,7 +6879,7 @@ func TestFDB_DistinctAggregates(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_distinct_agg")
+	setup := testkit.OpenDB(t, "/FRL/testdb_distinct_agg")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_distinct_agg")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE distinct_agg_tmpl
@@ -7514,7 +6888,7 @@ func TestFDB_DistinctAggregates(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_distinct_agg/main WITH TEMPLATE distinct_agg_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTINCT_AGG?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTINCT_AGG?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7562,7 +6936,7 @@ func TestFDB_SubqueryInNullRowRejected(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_subq_null")
+	setup := testkit.OpenDB(t, "/FRL/testdb_subq_null")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_subq_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE subq_null_tmpl
@@ -7572,7 +6946,7 @@ func TestFDB_SubqueryInNullRowRejected(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_subq_null/main WITH TEMPLATE subq_null_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQ_NULL?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQ_NULL?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7611,7 +6985,7 @@ func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_cd_typetag")
+	setup := testkit.OpenDB(t, "/FRL/testdb_cd_typetag")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cd_typetag")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cd_typetag_tmpl
@@ -7620,7 +6994,7 @@ func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cd_typetag/main WITH TEMPLATE cd_typetag_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CD_TYPETAG?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CD_TYPETAG?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7653,7 +7027,7 @@ func TestFDB_GroupByNullVsNilString(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_gb_nil")
+	setup := testkit.OpenDB(t, "/FRL/testdb_gb_nil")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_gb_nil")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE gb_nil_tmpl
@@ -7662,7 +7036,7 @@ func TestFDB_GroupByNullVsNilString(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_gb_nil/main WITH TEMPLATE gb_nil_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GB_NIL?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GB_NIL?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7709,7 +7083,7 @@ func TestFDB_OrderByNullOrdering(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_order_null")
+	setup := testkit.OpenDB(t, "/FRL/testdb_order_null")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_order_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE order_null_tmpl
@@ -7719,7 +7093,7 @@ func TestFDB_OrderByNullOrdering(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_order_null/main WITH TEMPLATE order_null_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDER_NULL?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ORDER_NULL?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7768,7 +7142,7 @@ func TestFDB_CTEScopeIsolation(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_cte_scope")
+	setup := testkit.OpenDB(t, "/FRL/testdb_cte_scope")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cte_scope")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE cte_scope_tmpl
@@ -7777,7 +7151,7 @@ func TestFDB_CTEScopeIsolation(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cte_scope/main WITH TEMPLATE cte_scope_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_SCOPE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_SCOPE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7807,7 +7181,7 @@ func TestFDB_MediumAuditFixes(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_medium_audit")
+	setup := testkit.OpenDB(t, "/FRL/testdb_medium_audit")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_medium_audit")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE medium_tmpl
@@ -7816,7 +7190,7 @@ func TestFDB_MediumAuditFixes(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_medium_audit/main WITH TEMPLATE medium_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MEDIUM_AUDIT?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MEDIUM_AUDIT?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -7887,7 +7261,7 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_not_unknown")
+	setup := testkit.OpenDB(t, "/FRL/testdb_not_unknown")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_not_unknown")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE not_unknown_tmpl
@@ -7896,7 +7270,7 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_not_unknown/main WITH TEMPLATE not_unknown_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NOT_UNKNOWN?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NOT_UNKNOWN?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8011,7 +7385,7 @@ func TestFDB_AggregateNullSemantics(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_agg_null")
+	setup := testkit.OpenDB(t, "/FRL/testdb_agg_null")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_agg_null")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE agg_null_tmpl
@@ -8020,7 +7394,7 @@ func TestFDB_AggregateNullSemantics(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_agg_null/main WITH TEMPLATE agg_null_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_NULL?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_NULL?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8104,7 +7478,7 @@ func TestFDB_ArithmeticUnifiedSemantics(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_arith_unified")
+	setup := testkit.OpenDB(t, "/FRL/testdb_arith_unified")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_arith_unified")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE arith_tmpl
@@ -8113,7 +7487,7 @@ func TestFDB_ArithmeticUnifiedSemantics(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_arith_unified/main WITH TEMPLATE arith_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ARITH_UNIFIED?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ARITH_UNIFIED?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8173,7 +7547,7 @@ func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_mixedtype_eq")
+	setup := testkit.OpenDB(t, "/FRL/testdb_mixedtype_eq")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_mixedtype_eq")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE mixedtype_tmpl
@@ -8182,7 +7556,7 @@ func TestFDB_MixedTypeEqualityNoStringCoerce(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_mixedtype_eq/main WITH TEMPLATE mixedtype_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MIXEDTYPE_EQ?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MIXEDTYPE_EQ?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8226,7 +7600,7 @@ func TestFDB_IntegerRangeEnforcement(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_int_range")
+	setup := testkit.OpenDB(t, "/FRL/testdb_int_range")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_int_range")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE int_range_tmpl
@@ -8235,7 +7609,7 @@ func TestFDB_IntegerRangeEnforcement(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_int_range/main WITH TEMPLATE int_range_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INT_RANGE?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INT_RANGE?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8255,13 +7629,13 @@ func TestFDB_IntegerRangeEnforcement(t *testing.T) {
 
 func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_col_types")
+	setup := testkit.OpenDB(t, "/FRL/testdb_col_types")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_col_types")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
@@ -8271,7 +7645,7 @@ func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_col_types/main WITH TEMPLATE col_types_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COL_TYPES?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COL_TYPES?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8339,13 +7713,13 @@ func TestFDB_ColumnTypeScanTypeAndNullable(t *testing.T) {
 // descriptorRefinesFlowed family guard).
 func TestFDB_DerivedAliasColumnTypeShadow(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_alias_shadow")
+	setup := testkit.OpenDB(t, "/FRL/testdb_alias_shadow")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_alias_shadow")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
@@ -8355,7 +7729,7 @@ func TestFDB_DerivedAliasColumnTypeShadow(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_alias_shadow/main WITH TEMPLATE alias_shadow_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ALIAS_SHADOW?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ALIAS_SHADOW?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8386,7 +7760,7 @@ func TestFDB_CTEChainedColumnAliases(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_cte_chain_alias")
+	setup := testkit.OpenDB(t, "/FRL/testdb_cte_chain_alias")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_cte_chain_alias")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE chain_alias_tmpl
@@ -8395,7 +7769,7 @@ func TestFDB_CTEChainedColumnAliases(t *testing.T) {
 	_, err = setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_cte_chain_alias/main WITH TEMPLATE chain_alias_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_CHAIN_ALIAS?cluster_file=%s&schema=MAIN", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CTE_CHAIN_ALIAS?cluster_file=%s&schema=MAIN", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -8438,12 +7812,12 @@ func TestFDB_CTEChainedColumnAliases(t *testing.T) {
 
 func TestFDB_SchemaQualifiedSelect(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_sqtselect")
+	setup := testkit.OpenDB(t, "/FRL/testdb_sqtselect")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sqtselect"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -8457,7 +7831,7 @@ func TestFDB_SchemaQualifiedSelect(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTSELECT?cluster_file=%s&schema=SQT", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTSELECT?cluster_file=%s&schema=SQT", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8474,8 +7848,8 @@ func TestFDB_SchemaQualifiedSelect(t *testing.T) {
 	// The schema's name is no qualifier: in FROM it is no table, and Java's
 	// correlated reading then refuses the path.
 	_, err = db.QueryContext(ctx, "SELECT id, val FROM sqt.Items ORDER BY id")
-	requireSQLSTATE(t, err, api.ErrCodeUndefinedColumn)
-	requireErrContains(t, err, "Unknown reference SQT.ITEMS")
+	testkit.RequireSQLSTATE(t, err, api.ErrCodeUndefinedColumn)
+	testkit.RequireErrContains(t, err, "Unknown reference SQT.ITEMS")
 
 	// Query using the template-qualified name: sqt_tmpl.Items
 	rows, err := db.QueryContext(ctx, "SELECT id, val FROM sqt_tmpl.Items ORDER BY id")
@@ -8509,12 +7883,12 @@ func TestFDB_SchemaQualifiedSelect(t *testing.T) {
 
 func TestFDB_SchemaQualifiedInsert(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_sqtins")
+	setup := testkit.OpenDB(t, "/FRL/testdb_sqtins")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sqtins"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -8528,7 +7902,7 @@ func TestFDB_SchemaQualifiedInsert(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTINS?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTINS?cluster_file=%s&schema=S1", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8537,8 +7911,8 @@ func TestFDB_SchemaQualifiedInsert(t *testing.T) {
 
 	// The schema's name is no qualifier: a statement's target refuses it.
 	_, err = db.ExecContext(ctx, "INSERT INTO s1.T VALUES (43)")
-	requireSQLSTATE(t, err, api.ErrCodeUndefinedDatabase)
-	requireErrContains(t, err, "Unknown schema template S1")
+	testkit.RequireSQLSTATE(t, err, api.ErrCodeUndefinedDatabase)
+	testkit.RequireErrContains(t, err, "Unknown schema template S1")
 
 	// INSERT using the template-qualified name
 	res, err := db.ExecContext(ctx, "INSERT INTO sqti_tmpl.T VALUES (42)")
@@ -8562,12 +7936,12 @@ func TestFDB_SchemaQualifiedInsert(t *testing.T) {
 
 func TestFDB_SchemaQualifiedUpdate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_sqtupd")
+	setup := testkit.OpenDB(t, "/FRL/testdb_sqtupd")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sqtupd"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -8581,7 +7955,7 @@ func TestFDB_SchemaQualifiedUpdate(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTUPD?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTUPD?cluster_file=%s&schema=S1", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8593,7 +7967,7 @@ func TestFDB_SchemaQualifiedUpdate(t *testing.T) {
 	}
 
 	_, err = db.ExecContext(ctx, "UPDATE s1.T SET val = 300 WHERE id = 1")
-	requireSQLSTATE(t, err, api.ErrCodeUndefinedDatabase)
+	testkit.RequireSQLSTATE(t, err, api.ErrCodeUndefinedDatabase)
 
 	// UPDATE using the template-qualified name; the target is then named by the
 	// whole identifier, so it qualifies the WHERE's column.
@@ -8617,12 +7991,12 @@ func TestFDB_SchemaQualifiedUpdate(t *testing.T) {
 
 func TestFDB_SchemaQualifiedDelete(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_sqtdel")
+	setup := testkit.OpenDB(t, "/FRL/testdb_sqtdel")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sqtdel"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -8636,7 +8010,7 @@ func TestFDB_SchemaQualifiedDelete(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTDEL?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTDEL?cluster_file=%s&schema=S1", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8651,7 +8025,7 @@ func TestFDB_SchemaQualifiedDelete(t *testing.T) {
 	}
 
 	_, err = db.ExecContext(ctx, "DELETE FROM s1.T WHERE id = 1")
-	requireSQLSTATE(t, err, api.ErrCodeUndefinedDatabase)
+	testkit.RequireSQLSTATE(t, err, api.ErrCodeUndefinedDatabase)
 
 	// DELETE using the template-qualified name
 	res, err := db.ExecContext(ctx, "DELETE FROM sqtd_tmpl.T WHERE id = 1")
@@ -8674,12 +8048,12 @@ func TestFDB_SchemaQualifiedDelete(t *testing.T) {
 
 func TestFDB_SchemaQualifiedWrongSchema(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_sqtwrong")
+	setup := testkit.OpenDB(t, "/FRL/testdb_sqtwrong")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sqtwrong"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -8693,7 +8067,7 @@ func TestFDB_SchemaQualifiedWrongSchema(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTWRONG?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTWRONG?cluster_file=%s&schema=S1", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8706,28 +8080,28 @@ func TestFDB_SchemaQualifiedWrongSchema(t *testing.T) {
 	// schema, S1, is such a qualifier too.
 	for _, qualifier := range []string{"wrongschema", "s1"} {
 		_, err = db.QueryContext(ctx, "SELECT id FROM "+qualifier+".T")
-		requireSQLSTATE(t, err, api.ErrCodeUndefinedColumn)
-		requireErrContains(t, err, "Unknown reference")
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeUndefinedColumn)
+		testkit.RequireErrContains(t, err, "Unknown reference")
 		for _, stmt := range []string{
 			"INSERT INTO " + qualifier + ".T VALUES (1)",
 			"UPDATE " + qualifier + ".T SET id = 1 WHERE id = 1",
 			"DELETE FROM " + qualifier + ".T WHERE id = 1",
 		} {
 			_, err = db.ExecContext(ctx, stmt)
-			requireSQLSTATE(t, err, api.ErrCodeUndefinedDatabase)
-			requireErrContains(t, err, "Unknown schema template")
+			testkit.RequireSQLSTATE(t, err, api.ErrCodeUndefinedDatabase)
+			testkit.RequireErrContains(t, err, "Unknown schema template")
 		}
 	}
 }
 
 func TestFDB_SchemaQualifiedCaseInsensitive(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_sqtcase")
+	setup := testkit.OpenDB(t, "/FRL/testdb_sqtcase")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_sqtcase"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -8741,7 +8115,7 @@ func TestFDB_SchemaQualifiedCaseInsensitive(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTCASE?cluster_file=%s&schema=MYSCHEMA", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SQTCASE?cluster_file=%s&schema=MYSCHEMA", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8771,18 +8145,18 @@ func TestFDB_SchemaQualifiedCaseInsensitive(t *testing.T) {
 	}
 	for _, q := range []string{`SELECT id FROM "sqtc_tmpl".Items`, "SELECT id FROM MYSCHEMA.Items", "SELECT id FROM myschema.Items"} {
 		_, err := db.QueryContext(ctx, q)
-		requireSQLSTATE(t, err, api.ErrCodeUndefinedColumn)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeUndefinedColumn)
 	}
 }
 
 func TestFDB_DateTimestampColumns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_datetime")
+	setup := testkit.OpenDB(t, "/FRL/testdb_datetime")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_datetime")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -8798,7 +8172,7 @@ func TestFDB_DateTimestampColumns(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DATETIME?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DATETIME?cluster_file=%s&schema=S1", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8886,12 +8260,12 @@ func TestFDB_DateTimestampColumns(t *testing.T) {
 
 func TestFDB_DateTimestampComparison(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_dtcmp")
+	setup := testkit.OpenDB(t, "/FRL/testdb_dtcmp")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dtcmp")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -8907,7 +8281,7 @@ func TestFDB_DateTimestampComparison(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DTCMP?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DTCMP?cluster_file=%s&schema=S1", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8945,12 +8319,12 @@ func TestFDB_DateTimestampComparison(t *testing.T) {
 
 func TestFDB_DateTimestampInsertWithLiteral(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_dtinsert")
+	setup := testkit.OpenDB(t, "/FRL/testdb_dtinsert")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dtinsert")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -8966,7 +8340,7 @@ func TestFDB_DateTimestampInsertWithLiteral(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DTINSERT?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DTINSERT?cluster_file=%s&schema=S1", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -8998,12 +8372,12 @@ func TestFDB_DateTimestampInsertWithLiteral(t *testing.T) {
 
 func TestFDB_DateTimestampCast(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_dtcast")
+	setup := testkit.OpenDB(t, "/FRL/testdb_dtcast")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dtcast")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -9019,7 +8393,7 @@ func TestFDB_DateTimestampCast(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DTCAST?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DTCAST?cluster_file=%s&schema=S1", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9054,12 +8428,12 @@ func TestFDB_DateTimestampCast(t *testing.T) {
 
 func TestFDB_DatePartFunctionsOnStoredColumns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_dateparts")
+	setup := testkit.OpenDB(t, "/FRL/testdb_dateparts")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dateparts")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -9075,7 +8449,7 @@ func TestFDB_DatePartFunctionsOnStoredColumns(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DATEPARTS?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DATEPARTS?cluster_file=%s&schema=S1", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9146,12 +8520,12 @@ func TestFDB_DatePartFunctionsOnStoredColumns(t *testing.T) {
 
 func TestFDB_ArrayColumnDDL(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_array_col")
+	setup := testkit.OpenDB(t, "/FRL/testdb_array_col")
 
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_array_col"); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -9167,7 +8541,7 @@ func TestFDB_ArrayColumnDDL(t *testing.T) {
 	}
 
 	// Open a new connection with the schema set via DSN.
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ARRAY_COL?cluster_file=%s&schema=STORE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ARRAY_COL?cluster_file=%s&schema=STORE", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9199,12 +8573,12 @@ func TestFDB_ArrayColumnDDL(t *testing.T) {
 
 func TestFDB_DateTimestampEdgeCases(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_dt_edge")
+	setup := testkit.OpenDB(t, "/FRL/testdb_dt_edge")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dt_edge")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -9220,7 +8594,7 @@ func TestFDB_DateTimestampEdgeCases(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_EDGE?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_EDGE?cluster_file=%s&schema=S1", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9385,12 +8759,12 @@ func TestFDB_DateTimestampEdgeCases(t *testing.T) {
 
 func TestFDB_DateTimestampParameterBinding(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_dt_params")
+	setup := testkit.OpenDB(t, "/FRL/testdb_dt_params")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dt_params")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -9406,7 +8780,7 @@ func TestFDB_DateTimestampParameterBinding(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_PARAMS?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_PARAMS?cluster_file=%s&schema=S1", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9443,12 +8817,12 @@ func TestFDB_DateTimestampParameterBinding(t *testing.T) {
 
 func TestFDB_DateTimestampIndexScan(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_dt_idx")
+	setup := testkit.OpenDB(t, "/FRL/testdb_dt_idx")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_dt_idx")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -9465,7 +8839,7 @@ func TestFDB_DateTimestampIndexScan(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_IDX?cluster_file=%s&schema=S1", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DT_IDX?cluster_file=%s&schema=S1", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9526,13 +8900,13 @@ func TestFDB_DateTimestampIndexScan(t *testing.T) {
 
 func TestFDB_BytesINList(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
-	setup := openTestDB(t, "/FRL/testdb_bytes_in")
+	setup := testkit.OpenDB(t, "/FRL/testdb_bytes_in")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_bytes_in")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx,
@@ -9543,7 +8917,7 @@ func TestFDB_BytesINList(t *testing.T) {
 		"CREATE SCHEMA /FRL/testdb_bytes_in/store WITH TEMPLATE bytes_in_tmpl")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BYTES_IN?cluster_file=%s&schema=STORE", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BYTES_IN?cluster_file=%s&schema=STORE", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -9616,12 +8990,12 @@ func expectUnsupportedInThisContext(t *testing.T, err error) {
 // subquery/EXISTS arms were severed in RFC-145 Phase 1).
 func TestFDB_RFC145_SeveredArms_InfoSchemaWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_rfc145_is_where")
+	setup := testkit.OpenDB(t, "/FRL/testdb_rfc145_is_where")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_rfc145_is_where")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -9635,7 +9009,7 @@ func TestFDB_RFC145_SeveredArms_InfoSchemaWhere(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC145_IS_WHERE?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC145_IS_WHERE?cluster_file=%s", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9660,12 +9034,12 @@ func TestFDB_RFC145_SeveredArms_InfoSchemaWhere(t *testing.T) {
 // expression atom, so this never had a cross-engine reference.)
 func TestFDB_RFC145_SeveredArms_InsertValues(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_rfc145_insert")
+	setup := testkit.OpenDB(t, "/FRL/testdb_rfc145_insert")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_rfc145_insert")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -9680,7 +9054,7 @@ func TestFDB_RFC145_SeveredArms_InsertValues(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC145_INSERT?cluster_file=%s&schema=DATA", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC145_INSERT?cluster_file=%s&schema=DATA", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9718,12 +9092,12 @@ func TestFDB_RFC145_SeveredArms_InsertValues(t *testing.T) {
 // interpreter.
 func TestFDB_RFC145_InfoSchemaUnsupportedShapes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_rfc145_is_shapes")
+	setup := testkit.OpenDB(t, "/FRL/testdb_rfc145_is_shapes")
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_rfc145_is_shapes")
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -9737,7 +9111,7 @@ func TestFDB_RFC145_InfoSchemaUnsupportedShapes(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC145_IS_SHAPES?cluster_file=%s", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC145_IS_SHAPES?cluster_file=%s", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -9824,14 +9198,14 @@ func queryToStringRows(t *testing.T, db *sql.DB, ctx context.Context, query stri
 // "ID", "ALPHA_BY_NAME"), exactly as the existing TestFDB_InfoSchema_* tests.
 func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	g := gomega.NewWithT(t)
 
 	const dbID = "/FRL/TESTDB_RFC145_SWEEP" // the spelling CREATE DATABASE stores
-	setup := openTestDB(t, dbID)
+	setup := testkit.OpenDB(t, dbID)
 	mustExec := func(sqlText string) {
 		t.Helper()
 		if _, err := setup.ExecContext(ctx, sqlText); err != nil {
@@ -9848,7 +9222,7 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 	mustExec("CREATE SCHEMA " + dbID + "/sch1 WITH TEMPLATE rfc145sweep_tmpl")
 	mustExec("CREATE SCHEMA " + dbID + "/sch2 WITH TEMPLATE rfc145sweep_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbID), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbID), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -9908,144 +9282,4 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 	}
 	g.Expect(q(`SELECT INDEX_NAME FROM "INFORMATION_SCHEMA"."INDEXES" WHERE TABLE_CATALOG = '`+dbID+`' AND TABLE_SCHEMA = 'SCH1' AND TABLE_NAME = 'ALPHA' ORDER BY INDEX_NAME`)).
 		To(gomega.ContainElement([]string{"ALPHA_BY_NAME"}), "INDEXES Alpha contains ALPHA_BY_NAME")
-}
-
-// orientationGateFloors is RFC-200 step 3d”s live/latent discriminator.
-//
-// MEASURED over this corpus: calls 438 (not-a-seed 96, tiled-by-2 342,
-// tiled-by-other 0); of the tiled-by-2, unverifiable 84, matched 197, declined
-// 61; and 72 firings where the MAP count differs from the TILE count — of which
-// DECLINED zero.
-//
-// That last pair is the whole explanation for why 3d' moved no plan. 72 firings
-// that the old map-count gate skipped are now checked, and every one of them
-// matches; the 61 declines were all firings the old gate already checked and
-// already declined. So the step changes no decision on this corpus while making
-// 72 previously-unanswerable firings answerable.
-//
-// Floored an order of magnitude below, like every population floor on this path:
-// what a floor detects here is the shape going DARK, not drift.
-// RE-MEASURED at RFC-226, because §1c relaxed this exact gate's type comparison
-// and a bound nobody re-read after changing the thing it watches is not a bound.
-// Current corpus: calls 506 (not-a-seed 102, tiled-by-2 404, tiled-by-other 0);
-// unverifiable 104, matched 232, declined 68; MapCountDiffers 92, of which
-// DECLINED 0.
-//
-// WHAT THIS CHANGE MOVES: NOTHING, on the pre-existing corpus. Established by
-// the only control that answers that question — the PRE-CHANGE baseline, not a
-// mutation of the branch:
-//
-//	master aba271454        calls 496  unverifiable 104  matched 224  DECLINED 66
-//	branch, probe file OUT  calls 496  unverifiable 104  matched 224  DECLINED 66
-//	branch, probe file IN   calls 506  unverifiable 104  matched 232  DECLINED 68
-//
-// The middle row is the whole answer: with this branch's engine changes applied
-// and ONLY its new test queries removed, the census is bit-identical to master.
-// So the +10 calls / +8 matched / +2 declined are NEW FIRINGS contributed by
-// projection_result_type_probe_fdb_test.go's two WHERE-EXISTS queries — not
-// existing firings that flipped INTO declining, which is the reading the census
-// alone cannot rule out and which would have been a real alarm.
-//
-// A PRIOR REVISION OF THIS COMMENT GOT THAT WRONG, and the error is kept visible
-// because the reasoning was seductive: it isolated §1c's arm by MUTATING THE
-// BRANCH (removing the unstated-field arm of recordFieldsMatch — calls 504,
-// matched 230, declined 68) and concluded "Declined does not move at all". That
-// measures what §1c's ARM does, not what this CHANGE does, and it swept the
-// whole 61 -> 68 drift into "corpus growth". Only 61 -> 66 is growth; 66 -> 68
-// is this branch. The unverifiable claim survives intact — master already reads
-// 104, so 84 -> 104 is growth.
-//
-// ON THE CEILING, stated precisely because the loose phrasing gives away the
-// stronger claim: DeclinedCeiling is not "200, unchanged". Master aba271454 has
-// flatMapProducerFloors gates the FlatMap result-value producer census.
-//
-// The floors are ORDER-OF-MAGNITUDE below the measurement, like every other
-// per-site floor on this path: they exist to catch a site going dark, not to
-// re-bless a corpus count that moves whenever a test file is added.
-//
-// The FlatMap PRODUCER census that used to sit beside this one is retired with
-// the three-quantifier NLJ arm it measured (RFC-235): its whole subject was the
-// declined-leg residue that arm produced, and there is no residue without the
-// arm. What it established still holds and is recorded in RFC-235 rather than
-// here — the refusal was on SHAPE, not on missing types.
-//
-// The untyped-QOV mints those sites emit are a SEPARATE live Java divergence
-// (CQ-96) and are floored below so they stay counted.
-//
-// TWO OF THOSE THREE ARE COURIERS, NOT AUTHORS, and the mint census beside this
-// one is what says so: implementExistentialSelect and yieldExistsFlatMap flow
-// sel.GetResultValue() verbatim (Java's three constructions do the same,
-// ImplementNestedLoopJoinRule.java:187,201,214), and 1086 of their untyped
-// traffic is minted by the SQL translator. These floors keep the traffic
-// counted; selectResultMintFloors is where the divergence itself is booked.
-
-// selectResultMintFloors gates the select result-value MINT census.
-//
-// This is the site that BUILT the untyped QuantifiedObjectValue Java cannot
-// express. The producer census beside it reported that population at
-// implementExistentialSelect and yieldExistsFlatMap — both of which flow
-// sel.GetResultValue() verbatim and build nothing, exactly as Java's three
-// RecordQueryFlatMapPlan constructions do
-// (ImplementNestedLoopJoinRule.java:187,201,214). Booking the divergence against
-// a courier is what this census corrected.
-//
-// Java's own guarantee is structural: a simple select's result value is
-// overQuantifier.getFlowedObjectValue() (GraphExpansion.java:401),
-// QuantifiedObjectValue.of has no untyped overload
-// (QuantifiedObjectValue.java:187), and Quantifier.getFlowedObjectType is a
-// Verify.verify plus requireNonNull (Quantifier.java:801-810).
-//
-// GO NOW HAS THE SAME GUARANTEE, and the floor that kept the gap counted is
-// therefore gone. Measured over the whole real-FDB corpus:
-//
-//	translator buildExistsSelect(MINT)  calls 1006 | typedQOV 1006 | UNTYPED 0
-//
-// Every mint is TYPED, where every mint used to be untyped. The untyped floor
-// (100, an order of magnitude below a measured 1086) is unsatisfiable against a
-// population the constructor makes unrepresentable, so the census asserts the
-// zero unconditionally instead, with the alarm pointing at revival.
-//
-// THE TOTAL IS NOT DETERMINISTIC AND THE RATIO IS. Consecutive full-suite runs
-// measured 1086, 1004 and 1006 — these are RULE FIRINGS, and the memo explores a
-// rule a different number of times per query run to run, exactly as the FlatMap
-// producer census's own totals move. What did not move is the ratio: 100%
-// untyped before, 100% typed after. So the call floor is calibrated an order of
-// magnitude below the smallest observation, and anyone re-measuring should
-// expect a different digit and check the RATIO.
-var selectResultMintFloors = func() values.SelectResultMintFloors {
-	var f values.SelectResultMintFloors
-	f.Calls = [values.SelectResultMintSiteCount]int{100}
-	return f
-}()
-
-func assertSelectResultMintCensus(w io.Writer) bool {
-	floors := &selectResultMintFloors
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "select mint census: per-site floors NOT checked "+
-			"(-test.run=%q narrowed the corpus). The partition still runs — it holds "+
-			"over ANY population.\n", f.Value.String())
-		floors = nil
-	}
-	return values.AssertSelectResultMintCensus(w, floors)
-}
-
-// mergeSlotTypingFloor is the measured population of positional-merge slots the
-// real-FDB corpus builds (22,354 on the run this was derived from; the total
-// moves with rule firings, ~22.4k), floored well below it so an ordinary corpus
-// edit does not trip the guard while a collapse still does.
-const mergeSlotTypingFloor = 2000
-
-// assertMergeSlotTypingCensus checks the merge-slot typing census against its
-// partition identity, its floor, and its hard zero.
-//
-// It is dropped under -test.run for the same reason its siblings are: a narrowed
-// corpus measures a subset, and a subset cannot satisfy a whole-suite floor.
-func assertMergeSlotTypingCensus(w io.Writer) bool {
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "merge-slot typing census: floor NOT checked (-test.run=%q narrowed the "+
-			"corpus). The partition identity and the Untyped zero still run — both hold over any "+
-			"population.\n", f.Value.String())
-		return cascades.AssertMergeSlotTypingCensus(w, cascades.MergeSlotTypingCensus(), 0)
-	}
-	return cascades.AssertMergeSlotTypingCensus(w, cascades.MergeSlotTypingCensus(), mergeSlotTypingFloor)
 }

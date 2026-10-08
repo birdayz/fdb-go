@@ -50,7 +50,8 @@
   },
   "SA5011": {
     "exclude_files": {
-      "_test\\.go$": "t.Fatal guards are not understood by SA5011"
+      "_test\\.go$": "t.Fatal guards are not understood by SA5011",
+      "pkg/relational/sqltest/testkit/": "test helpers outside _test.go files; t.Fatal guards are not understood by SA5011"
     }
   },
   "SA9004": {

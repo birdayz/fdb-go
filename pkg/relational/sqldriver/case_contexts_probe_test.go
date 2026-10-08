@@ -11,33 +11,35 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CaseContextsProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_case_ctx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_case_ctx")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_case_ctx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_case_ctx")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE case_ctx "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, w BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_case_ctx/s WITH TEMPLATE case_ctx")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_CTX?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_case_ctx/s WITH TEMPLATE case_ctx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_CTX?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10), (3, 7)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, a_id) VALUES (100, 1), (200, 2), (300, 3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id, w) VALUES (50, 1, 5), (51, 2, 99), (52, 3, 7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10), (3, 7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, a_id) VALUES (100, 1), (200, 2), (300, 3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id, w) VALUES (50, 1, 5), (51, 2, 99), (52, 3, 7)")
 
 	scanInts := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

@@ -1,7 +1,6 @@
-package sqldriver_test
+package testkit
 
 import (
-	"flag"
 	"fmt"
 	"io"
 
@@ -100,7 +99,7 @@ func assertUnresolvedResultTypeCensus(w io.Writer) bool {
 	// that the consumers are still reached, so a future zero cannot be confused
 	// with the instrument going dark.
 	floors := &cascades.UnresolvedResultTypeFloors{MinReads: 48, MinSites: 2}
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+	if f := corpusNarrowing(); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "unresolved-result-type census: reached-consumers floors NOT checked "+
 			"(-test.run=%q narrowed the corpus; they describe the whole suite). "+
 			"The census still reports its counts above; there is no hard zero here to run "+

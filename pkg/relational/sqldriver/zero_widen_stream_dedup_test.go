@@ -26,27 +26,29 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ZeroWidenStreamingDedup(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_zwsd")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_zwsd")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE zwsd "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_zwsd")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_zwsd")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE zwsd "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_zwsd/s WITH TEMPLATE zwsd")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ZWSD?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_zwsd/s WITH TEMPLATE zwsd")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ZWSD?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, w) VALUES (1, -0.0, 5), (2, -0.0, 9), (3, 0.0, 5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v, w) VALUES (1, -0.0, 5), (2, -0.0, 9), (3, 0.0, 5)")
 
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -87,7 +89,7 @@ func TestFDB_ZeroWidenStreamingDedup(t *testing.T) {
 		t.Run(tc.query, func(t *testing.T) {
 			// The plan must NOT rely on adjacency over the raw widened scan: it
 			// either sorts first or uses the hash Distinct.
-			plan := explainOnConn(t, ctx, conn, tc.query)
+			plan := testkit.ExplainConn(t, ctx, conn, tc.query)
 			if strings.Contains(plan, "IndexScan(T_VW") &&
 				!strings.Contains(plan, "Sort") && !strings.Contains(plan, "Distinct(") {
 				t.Fatalf("%s\nplan = %s\nthis dedups by adjacency directly over a widened zero "+

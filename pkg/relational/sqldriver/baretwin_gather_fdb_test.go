@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -36,12 +38,12 @@ import (
 //
 // A=(1,100,[7,8]); B=(1,200); C=(1,55). A,B share K; C has a distinct M.
 func TestFDB_BareTwinGather(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +74,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	a := dynamicpb.NewMessage(aDesc)
 	a.Set(aDesc.Fields().ByName("AID"), protoreflect.ValueOfInt64(1))
 	a.Set(aDesc.Fields().ByName("K"), protoreflect.ValueOfInt64(100))
-	setArrayField(a, aDesc.Fields().ByName("ARR"),
+	testkit.SetArrayField(a, aDesc.Fields().ByName("ARR"),
 		protoreflect.ValueOfInt32(7), protoreflect.ValueOfInt32(8))
 
 	bDesc := md.GetRecordType("B").Descriptor
@@ -113,7 +115,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 			if sErr != nil {
 				return nil, sErr
 			}
-			evalCtx, bindErr := prebindScalarSubqueries(ctx, store, subs)
+			evalCtx, bindErr := testkit.PrebindScalarSubqueries(ctx, store, subs)
 			if bindErr != nil {
 				return nil, bindErr
 			}
@@ -127,7 +129,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -252,7 +254,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 		if err == nil {
 			t.Fatalf("bare ambiguous K must error at plan time")
 		}
-		requireSQLSTATE(t, err, api.ErrCodeAmbiguousColumn)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeAmbiguousColumn)
 	})
 
 	// NON-AMBIGUOUS gather (A,C — distinct names) keeps its RAW seed: no wrap, plan

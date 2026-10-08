@@ -18,23 +18,25 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateIndexMinMax_NullGroupAndCurrentExtremum(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aggidx_ng")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggidx_ng")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggidx_ng")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggidx_ng")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggidxng "+
 			"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX min_by_g AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX max_by_g AS SELECT MAX(v) FROM t GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggidx_ng/s WITH TEMPLATE aggidxng")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGIDX_NG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggidx_ng/s WITH TEMPLATE aggidxng")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGIDX_NG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -42,7 +44,7 @@ func TestFDB_AggregateIndexMinMax_NullGroupAndCurrentExtremum(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// g=1 has a value; g=2 is all-NULL.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,g,v) VALUES (1,1,10),(2,2,NULL),(3,2,NULL)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,g,v) VALUES (1,1,10),(2,2,NULL),(3,2,NULL)")
 
 	// queryGroups runs q (asserting it uses the aggregate index) and returns
 	// group -> (aggregate, isNull).
@@ -105,12 +107,12 @@ func TestFDB_AggregateIndexMinMax_NullGroupAndCurrentExtremum(t *testing.T) {
 	// Facet (b): current-max semantics. Add a higher value to g=1, then delete it;
 	// the index must return the remaining (lower) max, not the stale-high one.
 	t.Run("current_max_after_delete", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id,g,v) VALUES (4,1,99)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,g,v) VALUES (4,1,99)")
 		got := queryGroups(t, "SELECT g, MAX(v) FROM t GROUP BY g")
 		if a := got[1]; a.isNull || a.val != 99 {
 			t.Fatalf("MAX g=1 after insert 99 => %+v, want 99", a)
 		}
-		mwjoMustExec(t, db, ctx, "DELETE FROM t WHERE id = 4")
+		testkit.MustExecCtx(t, db, ctx, "DELETE FROM t WHERE id = 4")
 		got = queryGroups(t, "SELECT g, MAX(v) FROM t GROUP BY g")
 		if a := got[1]; a.isNull || a.val != 10 {
 			t.Errorf("MAX g=1 after deleting the max row => %+v, want 10 (max_ever_long would wrongly return 99)", a)

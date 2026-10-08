@@ -32,17 +32,19 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_IndexedFloatSargProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ifs")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ifs")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ifs "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_ifs")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ifs")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE ifs "+
 		"CREATE TABLE noidx (id BIGINT, f FLOAT, PRIMARY KEY (id)) "+
 		"CREATE TABLE withidx (id BIGINT, f FLOAT, PRIMARY KEY (id)) "+
 		"CREATE TABLE dblidx (id BIGINT, f DOUBLE, PRIMARY KEY (id)) "+
@@ -50,20 +52,20 @@ func TestFDB_IndexedFloatSargProbe(t *testing.T) {
 		"CREATE INDEX wi_f ON withidx (f) "+
 		"CREATE INDEX di_f ON dblidx (f) "+
 		"CREATE INDEX bnd_f ON bnd (f)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ifs/s WITH TEMPLATE ifs")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IFS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ifs/s WITH TEMPLATE ifs")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IFS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO noidx (id, f) VALUES (1,CAST(1.5 AS FLOAT)),(2,CAST(2.5 AS FLOAT)),(3,CAST(0.5 AS FLOAT))")
-	mwjoMustExec(t, db, ctx, "INSERT INTO withidx (id, f) VALUES (1,CAST(1.5 AS FLOAT)),(2,CAST(2.5 AS FLOAT)),(3,CAST(0.5 AS FLOAT)),(4,CAST(1.0 AS FLOAT))")
-	mwjoMustExec(t, db, ctx, "INSERT INTO dblidx (id, f) VALUES (1,1.5),(2,2.5),(3,0.5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO noidx (id, f) VALUES (1,CAST(1.5 AS FLOAT)),(2,CAST(2.5 AS FLOAT)),(3,CAST(0.5 AS FLOAT))")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO withidx (id, f) VALUES (1,CAST(1.5 AS FLOAT)),(2,CAST(2.5 AS FLOAT)),(3,CAST(0.5 AS FLOAT)),(4,CAST(1.0 AS FLOAT))")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO dblidx (id, f) VALUES (1,1.5),(2,2.5),(3,0.5)")
 	// id 10: stores 0.1 (rounds to float32(0.1) at insert, a REAL value
 	// strictly > the double literal 0.1). id 11: clearly below. id 12:
 	// clearly above.
-	mwjoMustExec(t, db, ctx, "INSERT INTO bnd (id, f) VALUES (10, CAST(0.1 AS FLOAT)), (11, CAST(0.05 AS FLOAT)), (12, CAST(0.2 AS FLOAT))")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO bnd (id, f) VALUES (10, CAST(0.1 AS FLOAT)), (11, CAST(0.05 AS FLOAT)), (12, CAST(0.2 AS FLOAT))")
 
 	ids := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

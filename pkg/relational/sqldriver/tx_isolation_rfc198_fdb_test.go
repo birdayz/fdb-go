@@ -30,16 +30,18 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func rfc198SetupDB(t *testing.T, dbPath, tmpl string) *sql.DB {
 	t.Helper()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	return rfc198SetupDBOn(t, clusterFilePath, dbPath, tmpl)
+	return rfc198SetupDBOn(t, testkit.ClusterFile(), dbPath, tmpl)
 }
 
 // rfc198SetupDBOn is rfc198SetupDB against a named backend key, so a test can
@@ -53,10 +55,10 @@ func rfc198SetupDBOn(t *testing.T, key, dbPath, tmpl string) *sql.DB {
 		t.Fatalf("sql.Open setup: %v", err)
 	}
 	t.Cleanup(func() { _ = setup.Close() })
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+" CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), key))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -84,13 +86,13 @@ func rfc198SetupDBOn(t *testing.T, key, dbPath, tmpl string) *sql.DB {
 // set are disjoint.
 func TestFDB_RFC198_LostUpdateBecomes40001(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	key, clk := spikedClusterKey(t, 30*time.Second)
+	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
 	db := rfc198SetupDBOn(t, key, "/FRL/testdb_rfc198_lostupd", "rfc198lu")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
 	// THE WHOLE INTERLEAVING IS RETRYABLE — T1's read, T2's committed write, and
 	// T1's own write-then-commit. It has to be all three: the conflict this test
@@ -109,12 +111,12 @@ func TestFDB_RFC198_LostUpdateBecomes40001(t *testing.T) {
 	// satisfies the assertion.
 	var commitErr error
 	var attemptsRun int
-	retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+	testkit.RetryTx(t, db, testkit.SpikeOnce(clk, &attemptsRun), func(a testkit.TxAttempt) error {
 		// T1 reads the row. This is the read that must contribute a read conflict
 		// range — and it is the FIRST read, so it is also what takes T1's read
 		// version, BEFORE T2 commits.
 		var v int64
-		if err := a.tx.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&v); err != nil {
+		if err := a.Tx.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&v); err != nil {
 			return err
 		}
 		if v != 100 {
@@ -130,10 +132,10 @@ func TestFDB_RFC198_LostUpdateBecomes40001(t *testing.T) {
 		// T1 writes the row (its scan still reads at its own read version) and
 		// commits. The commit must fail with 40001 — this is the serialization
 		// the connection promises (BeginTx accepts LevelSerializable).
-		if _, err := a.tx.ExecContext(ctx, "UPDATE t SET v = 101 WHERE id = 1"); err != nil {
+		if _, err := a.Tx.ExecContext(ctx, "UPDATE t SET v = 101 WHERE id = 1"); err != nil {
 			return err
 		}
-		commitErr = a.tx.Commit()
+		commitErr = a.Tx.Commit()
 		if api.IsTransactionTimeLimit(commitErr) {
 			// T1's window expired rather than conflicting. Retry the whole
 			// interleaving; asserting on this would be asserting a conflict that
@@ -142,7 +144,7 @@ func TestFDB_RFC198_LostUpdateBecomes40001(t *testing.T) {
 		}
 		return nil
 	})
-	mustHaveRetried(t, attemptsRun)
+	testkit.MustHaveRetried(t, attemptsRun)
 
 	if commitErr == nil {
 		t.Fatalf("T1 COMMIT succeeded after T2 committed a conflicting write: " +
@@ -192,14 +194,14 @@ func TestFDB_RFC198_LostUpdateBecomes40001(t *testing.T) {
 // makes snapshot-vs-serializable a TESTED decision rather than a prose one.
 func TestFDB_RFC198_ReadConflictFromSelectAlone(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	key, clk := spikedClusterKey(t, 30*time.Second)
+	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
 	db := rfc198SetupDBOn(t, key, "/FRL/testdb_rfc198_skew", "rfc198skew")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (2, 200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (2, 200)")
 
 	// Retried as ONE interleaving, for the same reason as the lost-update shape
 	// above and with the same extra classification on the commit error: a T1
@@ -209,10 +211,10 @@ func TestFDB_RFC198_ReadConflictFromSelectAlone(t *testing.T) {
 	// range at all.
 	var commitErr error
 	var attemptsRun int
-	retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+	testkit.RetryTx(t, db, testkit.SpikeOnce(clk, &attemptsRun), func(a testkit.TxAttempt) error {
 		// T1 reads row 1 — the ONLY touch of row 1 in this transaction.
 		var v int64
-		if err := a.tx.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&v); err != nil {
+		if err := a.Tx.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&v); err != nil {
 			return err
 		}
 		if v != 100 {
@@ -226,16 +228,16 @@ func TestFDB_RFC198_ReadConflictFromSelectAlone(t *testing.T) {
 
 		// T1 writes row 2 (never row 1) and commits: serializable in-tx reads
 		// make this fail 40001; snapshot reads would let it commit.
-		if _, err := a.tx.ExecContext(ctx, "UPDATE t SET v = 201 WHERE id = 2"); err != nil {
+		if _, err := a.Tx.ExecContext(ctx, "UPDATE t SET v = 201 WHERE id = 2"); err != nil {
 			return err
 		}
-		commitErr = a.tx.Commit()
+		commitErr = a.Tx.Commit()
 		if api.IsTransactionTimeLimit(commitErr) {
 			return commitErr
 		}
 		return nil
 	})
-	mustHaveRetried(t, attemptsRun)
+	testkit.MustHaveRetried(t, attemptsRun)
 
 	if commitErr == nil {
 		t.Fatalf("T1 COMMIT succeeded: the in-tx SELECT of row 1 added no read conflict " +
@@ -272,14 +274,14 @@ func TestFDB_RFC198_ReadConflictFromSelectAlone(t *testing.T) {
 // close/reset_session.
 func TestFDB_RFC198_ResultSetDiesWithItsTransaction(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	db := rfc198SetupDB(t, "/FRL/testdb_rfc198_doors", "rfc198doors")
 	const rows = 20
 	for i := 0; i < rows; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", i, i))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", i, i))
 	}
 
 	doors := []struct {

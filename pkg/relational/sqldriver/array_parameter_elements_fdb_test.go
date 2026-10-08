@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // An ARRAY parameter of every element type binds and stores
@@ -13,14 +15,14 @@ import (
 func TestFDB_ArrayParameterElements(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_array_params")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_array_params")
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE array_params_tpl
+	setup := testkit.OpenDB(t, "/FRL/testdb_array_params")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_array_params")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE array_params_tpl
 		CREATE TABLE a (pk BIGINT, bigint_array BIGINT ARRAY, integer_array INTEGER ARRAY,
 			double_array DOUBLE ARRAY, float_array FLOAT ARRAY, string_array STRING ARRAY,
 			boolean_array BOOLEAN ARRAY, bytes_array BYTES ARRAY, PRIMARY KEY (pk))`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_array_params/s WITH TEMPLATE array_params_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_ARRAY_PARAMS?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_array_params/s WITH TEMPLATE array_params_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_ARRAY_PARAMS?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

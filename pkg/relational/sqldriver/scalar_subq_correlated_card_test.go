@@ -23,21 +23,23 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ScalarSubqCorrelatedCardinality(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_sscc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sscc")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sscc "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_sscc")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sscc")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE sscc "+
 		"CREATE TABLE dept (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sscc/s WITH TEMPLATE sscc")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSCC?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sscc/s WITH TEMPLATE sscc")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSCC?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -47,8 +49,8 @@ func TestFDB_ScalarSubqCorrelatedCardinality(t *testing.T) {
 	// dept 1: two emps (multi-match) — the cardinality-violation case.
 	// dept 2: exactly one emp — the single-value case.
 	// dept 3: no emps — the empty→NULL case.
-	mwjoMustExec(t, db, ctx, "INSERT INTO dept (id) VALUES (1), (2), (3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO emp (id, dept_id, salary) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO dept (id) VALUES (1), (2), (3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO emp (id, dept_id, salary) VALUES "+
 		"(10, 1, 100), (11, 1, 200), (20, 2, 500)")
 
 	// correlated multi-row → 21000. A dept with two matching emps must ERROR,
@@ -132,26 +134,26 @@ func TestFDB_ScalarSubqCorrelatedCardinality(t *testing.T) {
 // The multi-match case must STILL raise 21000 with the index present.
 func TestFDB_ScalarSubqCorrelatedCardinality_SurvivesPushdown(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_sscp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sscp")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sscp "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_sscp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sscp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE sscp "+
 		"CREATE TABLE dept (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX emp_dept ON emp (dept_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sscp/s WITH TEMPLATE sscp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSCP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sscp/s WITH TEMPLATE sscp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSCP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO dept (id) VALUES (1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO emp (id, dept_id, salary) VALUES (10, 1, 100), (11, 1, 200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO dept (id) VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO emp (id, dept_id, salary) VALUES (10, 1, 100), (11, 1, 200)")
 
 	q := "SELECT (SELECT salary FROM emp e WHERE e.dept_id = d.id) FROM dept d WHERE d.id = 1"
 

@@ -46,17 +46,19 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"github.com/onsi/gomega"
 )
 
 func TestFDB_ParenthesizedOperandFlattens(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_paren_flatten", "parenflat",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_paren_flatten", "parenflat",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, f BOOLEAN, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_b ON t (b) ")
 	//  id=1: a=1  b=10  s='x'   f=true
@@ -281,13 +283,13 @@ func TestFDB_ParenthesizedOperandFlattens(t *testing.T) {
 // be "unwrap every paren" and every test above would still pass.
 func TestFDB_ParenthesizedOperandDoesNotOverFlatten(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/FRL/testdb_paren_noflat", "parennoflat",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_paren_noflat", "parennoflat",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1, 1, 10), (2, 2, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1, 1, 10), (2, 2, 20)")
 
 	t.Run("a two-element arm stays a STRUCT", func(t *testing.T) {
 		g := gomega.NewWithT(t)
@@ -330,8 +332,8 @@ func TestFDB_ParenthesizedOperandDoesNotOverFlatten(t *testing.T) {
 	// that they succeed, sameness means the same rows.
 	t.Run("a COLUMN item behaves the same in BOTH spellings", func(t *testing.T) {
 		g := gomega.NewWithT(t)
-		bare, bareErr := mmRows(t, ctx, db, "SELECT id FROM t WHERE b IN (a, 20) ORDER BY id")
-		par, parErr := mmRows(t, ctx, db, "SELECT id FROM t WHERE b IN ((a), 20) ORDER BY id")
+		bare, bareErr := testkit.QueryRowStrings(t, ctx, db, "SELECT id FROM t WHERE b IN (a, 20) ORDER BY id")
+		par, parErr := testkit.QueryRowStrings(t, ctx, db, "SELECT id FROM t WHERE b IN ((a), 20) ORDER BY id")
 		g.Expect(bareErr).NotTo(gomega.HaveOccurred(), "the bare spelling must plan")
 		g.Expect(parErr).NotTo(gomega.HaveOccurred(),
 			"the parenthesized spelling must plan too — if only this one fails, the flatten "+

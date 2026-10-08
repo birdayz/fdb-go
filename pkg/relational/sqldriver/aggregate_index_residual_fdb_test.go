@@ -19,13 +19,15 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_AggregateIndexResidual(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -35,7 +37,7 @@ func TestFDB_AggregateIndexResidual(t *testing.T) {
 		"CREATE INDEX t_cntv_abc AS SELECT COUNT(v) FROM t GROUP BY a, b, c " +
 		"CREATE INDEX t_cnt_abc AS SELECT COUNT(*) FROM t GROUP BY a, b, c " +
 		"CREATE INDEX t_cnt_d_a AS SELECT COUNT(*) FROM t GROUP BY d, a "
-	w := mmNewTwin(t, ctx, "/FRL/testdb_aggresidual", "aggresidual", table, indexes)
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_aggresidual", "aggresidual", table, indexes)
 
 	as := []string{"'x'", "'y'", "'z'", "NULL"}
 	bs := []string{"'p'", "'q'", "NULL"}
@@ -108,13 +110,13 @@ func TestFDB_AggregateIndexResidual(t *testing.T) {
 		t.Helper()
 		for _, r := range reads {
 			q := r.sql
-			gi, ei := mmRows(t, ctx, w.idx, q)
-			gn, en := mmRows(t, ctx, w.plain, q)
+			gi, ei := testkit.QueryRowStrings(t, ctx, w.Idx, q)
+			gn, en := testkit.QueryRowStrings(t, ctx, w.Plain, q)
 			if ei != nil || en != nil {
 				t.Errorf("%s: query failed\n  q: %s\n  indexed:   %v\n  unindexed: %v", stage, q, ei, en)
 				continue
 			}
-			if !mmAggregateIndexRowsAgree(gi, gn, mmTrailingAggregates(q)) {
+			if !testkit.MmAggregateIndexRowsAgree(gi, gn, testkit.MmTrailingAggregates(q)) {
 				t.Errorf("%s: the residual-filtered aggregate index disagrees with the unindexed twin\n  q: %s\n  indexed  : %v\n  unindexed: %v\n  plan: %s",
 					stage, q, gi, gn, w.Explain(q))
 			}
@@ -156,13 +158,13 @@ func residualFilterIn(plan plans.RecordQueryPlan) bool {
 
 func TestFDB_BitmapAggregateIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const table = `CREATE TABLE t (id BIGINT, category STRING, PRIMARY KEY(id)) `
 	const indexes = `CREATE INDEX bm AS SELECT bitmap_construct_agg(bitmap_bit_position(id)), category, bitmap_bucket_offset(id) FROM t GROUP BY category, bitmap_bucket_offset(id)`
-	w := mmNewTwin(t, ctx, "/FRL/testdb_bitmapagg", "bitmapagg", table, indexes)
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_bitmapagg", "bitmapagg", table, indexes)
 	w.Exec("INSERT INTO t VALUES (1, 'a'), (2, 'a'), (10001, 'a'), (3, 'b')")
 	queries := []string{
 		`SELECT category, bitmap_bucket_offset(id), bitmap_construct_agg(bitmap_bit_position(id)) FROM t GROUP BY category, bitmap_bucket_offset(id) ORDER BY category, bitmap_bucket_offset(id)`,
@@ -174,9 +176,9 @@ func TestFDB_BitmapAggregateIndex(t *testing.T) {
 			if plan := w.Explain(q); !strings.Contains(plan, "AggregateIndex") || strings.Contains(plan, "StreamingAgg") {
 				t.Fatalf("not index-backed: %s", plan)
 			}
-			gi, ei := mmRows(t, ctx, w.idx, q)
-			gn, en := mmRows(t, ctx, w.plain, q)
-			if ei != nil || en != nil || !mmEqRows(gi, gn) {
+			gi, ei := testkit.QueryRowStrings(t, ctx, w.Idx, q)
+			gn, en := testkit.QueryRowStrings(t, ctx, w.Plain, q)
+			if ei != nil || en != nil || !testkit.EqualRows(gi, gn) {
 				t.Fatalf("bitmap index differs from streaming: %v/%v, errors %v/%v", gi, gn, ei, en)
 			}
 		}
@@ -196,7 +198,7 @@ func TestFDB_BitmapAggregateIndex(t *testing.T) {
 // over the same leaves stays off the index and agrees too.
 func TestFDB_AggregateIndexNestedLeafGrouping(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -206,7 +208,7 @@ func TestFDB_AggregateIndexNestedLeafGrouping(t *testing.T) {
 		"CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM t_s GROUP BY home.city, home.zip, cat " +
 		"CREATE INDEX sum_home_cat_nn AS SELECT COUNT(v) FROM t_s GROUP BY home.city, home.zip, cat " +
 		"CREATE INDEX cnt_home_office AS SELECT COUNT(*) FROM t_s GROUP BY home.city, office.city "
-	w := mmNewTwin(t, ctx, "/FRL/testdb_aggnested", "aggnested", table, indexes)
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_aggnested", "aggnested", table, indexes)
 
 	cities := []string{"'a'", "'b'", "NULL"}
 	cats := []string{"'x'", "'y'"}
@@ -259,8 +261,8 @@ func TestFDB_AggregateIndexNestedLeafGrouping(t *testing.T) {
 	sweep := func(stage string) {
 		t.Helper()
 		for _, q := range append(append([]string(nil), served...), unserved...) {
-			gi, ei := mmRows(t, ctx, w.idx, q)
-			gn, en := mmRows(t, ctx, w.plain, q)
+			gi, ei := testkit.QueryRowStrings(t, ctx, w.Idx, q)
+			gn, en := testkit.QueryRowStrings(t, ctx, w.Plain, q)
 			if ei != nil || en != nil {
 				t.Errorf("%s: query failed\n  q: %s\n  indexed:   %v\n  unindexed: %v", stage, q, ei, en)
 				continue
@@ -268,7 +270,7 @@ func TestFDB_AggregateIndexNestedLeafGrouping(t *testing.T) {
 			if len(gn) == 0 {
 				t.Errorf("%s: the unindexed twin answers no rows, so agreement proves nothing\n  q: %s", stage, q)
 			}
-			if !mmAggregateIndexRowsAgree(gi, gn, mmTrailingAggregates(q)) {
+			if !testkit.MmAggregateIndexRowsAgree(gi, gn, testkit.MmTrailingAggregates(q)) {
 				t.Errorf("%s: the nested-leaf aggregate index disagrees with the unindexed twin\n  q: %s\n  indexed  : %v\n  unindexed: %v\n  plan: %s",
 					stage, q, gi, gn, w.Explain(q))
 			}

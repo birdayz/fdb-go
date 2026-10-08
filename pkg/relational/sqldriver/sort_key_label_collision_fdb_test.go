@@ -17,26 +17,28 @@ import (
 	"reflect"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_SortKeyLabelCollision_ImmediateStrip(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_sklc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sklc")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_sklc")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sklc")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sklc CREATE TABLE scores (id BIGINT, player STRING, score BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sklc/s WITH TEMPLATE sklc")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_SKLC?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sklc/s WITH TEMPLATE sklc")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_SKLC?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO scores VALUES (1,'zed',10),(2,'amy',90),(3,'moe',50)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO scores VALUES (1,'zed',10),(2,'amy',90),(3,'moe',50)")
 
 	sums := func(t *testing.T, q string) []string {
 		t.Helper()

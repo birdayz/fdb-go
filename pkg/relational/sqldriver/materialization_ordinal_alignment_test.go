@@ -23,26 +23,28 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_MaterializationOrdinalAlignment(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "matbattery",
+	db := testkit.SetupPlanShapeDB(t, "matbattery",
 		"CREATE TABLE orders (oid BIGINT, cust BIGINT, status STRING, amt BIGINT, PRIMARY KEY (oid)) "+
 			"CREATE INDEX status_idx ON orders (status) "+
 			"CREATE INDEX cust_idx ON orders (cust) "+
 			"CREATE TABLE cust (cid BIGINT, name STRING, region STRING, PRIMARY KEY (cid)) "+
 			"CREATE TABLE line (lid BIGINT, oid BIGINT, sku STRING, qty BIGINT, PRIMARY KEY (lid))")
 
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO cust (cid, name, region) VALUES (1,'alice','west'),(2,'bob','east'),(3,'carol','west')")
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO orders (oid, cust, status, amt) VALUES "+
 			"(10,1,'shipped',100),(11,1,'pending',50),(12,2,'shipped',200),(13,3,'shipped',30),(14,2,'pending',70)")
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO line (lid, oid, sku, qty) VALUES (100,10,'x',2),(101,10,'y',1),(102,12,'x',5),(103,14,'z',3)")
 
 	// runQ drives the query and Scans EVERY column of EVERY row — the act of

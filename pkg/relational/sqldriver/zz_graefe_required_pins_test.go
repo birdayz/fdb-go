@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // idCount is one (group-key, count) row of a GROUP BY result.
@@ -53,36 +55,36 @@ func queryIDCounts(t *testing.T, db *sql.DB, ctx context.Context, q string) []id
 // residual's outer alias IS probe-bound → kept on the leg). Must be 2 rows.
 func TestFDB_MultiOuterResidual_NotDroppedToUnboundLeg(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_multiresid")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_multiresid")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_multiresid")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_multiresid")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE multiresid_tmpl "+
 			"CREATE TABLE o (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t (id BIGINT, fk BIGINT, xb BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE bb (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_multiresid/s WITH TEMPLATE multiresid_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_multiresid/s WITH TEMPLATE multiresid_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MULTIRESID?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MULTIRESID?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO o VALUES (1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO o VALUES (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO bb VALUES (1, 100)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO bb VALUES (2, 200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO o VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO o VALUES (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO bb VALUES (1, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO bb VALUES (2, 200)")
 	// t10: fk=1→o1, xb=100→bb(v=100)  MATCH (o.id=1)
 	// t11: fk=2→o2, xb=200→bb(v=200)  MATCH (o.id=2)
 	// t12: fk=1→o1, xb=999→no bb       no match
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (10, 1, 100)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (11, 2, 200)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (12, 1, 999)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (10, 1, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (11, 2, 200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (12, 1, 999)")
 
 	const q = "SELECT o.id FROM o, t, bb WHERE t.fk = o.id AND t.xb = bb.v"
 	got := queryIDs(t, db, ctx, q)
@@ -103,33 +105,33 @@ func TestFDB_MultiOuterResidual_NotDroppedToUnboundLeg(t *testing.T) {
 // non-k=5 rows (→ 3). Asserts the exact (id, count) pairs.
 func TestFDB_GroupByCount_ResidualNotDropped(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_gbcount")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gbcount")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_gbcount")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gbcount")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gbcount_tmpl "+
 			"CREATE TABLE o (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t (id BIGINT, fk BIGINT, k BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gbcount/s WITH TEMPLATE gbcount_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gbcount/s WITH TEMPLATE gbcount_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GBCOUNT?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GBCOUNT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO o VALUES (1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO o VALUES (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO o VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO o VALUES (2)")
 	// o1: three rows, only one with k=5
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (10, 1, 5)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (11, 1, 7)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (12, 1, 9)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (10, 1, 5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (11, 1, 7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (12, 1, 9)")
 	// o2: one row with k=5
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (13, 2, 5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (13, 2, 5)")
 
 	const q = "SELECT o.id, COUNT(*) FROM o, t WHERE t.fk = o.id AND t.k = 5 GROUP BY o.id"
 	got := queryIDCounts(t, db, ctx, q)

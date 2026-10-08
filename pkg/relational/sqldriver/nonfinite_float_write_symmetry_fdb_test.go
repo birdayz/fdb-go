@@ -53,6 +53,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -117,24 +119,24 @@ func nonFiniteMatches(name string, v float64) bool {
 
 func TestFDB_NonFiniteFloatWrite_IsSyntaxIndependent(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nffw")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nffw")
+	setup := testkit.OpenDB(t, "/FRL/testdb_nffw")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nffw")
 	// The DOUBLE and FLOAT targets are separate tables with exactly two columns
 	// each, because INSERT … SELECT with an explicit column list is rejected
 	// outright (0AF00) and would mask the value question behind a syntax one.
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nffw "+
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE nffw "+
 		"CREATE TABLE td (id BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE TABLE tg (id BIGINT, g FLOAT, PRIMARY KEY (id)) "+
 		// src and srcg feed the INSERT … SELECT path, so that path carries a
 		// value read out of a column rather than a re-parsed literal.
 		"CREATE TABLE src (id BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE TABLE srcg (id BIGINT, g FLOAT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nffw/s WITH TEMPLATE nffw")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NFFW?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nffw/s WITH TEMPLATE nffw")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NFFW?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

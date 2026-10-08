@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_AggregateIndexMin_NonNumericExtremaAreRejected is a NEGATIVE result,
@@ -47,22 +49,22 @@ import (
 // restriction rather than assuming it.
 func TestFDB_AggregateIndexMin_NonNumericExtremaAreRejected(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_min_nonnum")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_min_nonnum")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE minnn "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_min_nonnum")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_min_nonnum")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE minnn "+
 		"CREATE TABLE t (id BIGINT, g BIGINT, s STRING, b BYTES, PRIMARY KEY (id)) ")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_min_nonnum/s WITH TEMPLATE minnn")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MIN_NONNUM?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_min_nonnum/s WITH TEMPLATE minnn")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MIN_NONNUM?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, g, s, b) VALUES (1, 1, '', NULL), (2, 1, NULL, NULL)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, g, s, b) VALUES (1, 1, '', NULL), (2, 1, NULL, NULL)")
 
 	for _, q := range []string{
 		"SELECT g, MIN(s) FROM t GROUP BY g",
@@ -70,7 +72,7 @@ func TestFDB_AggregateIndexMin_NonNumericExtremaAreRejected(t *testing.T) {
 		"SELECT g, MIN(b) FROM t GROUP BY g",
 		"SELECT MIN(s) FROM t",
 	} {
-		if _, err := mmRows(t, ctx, db, q); err == nil {
+		if _, err := testkit.QueryRowStrings(t, ctx, db, q); err == nil {
 			t.Errorf("%q is now ACCEPTED. A non-numeric extremum can hold the EMPTY string or EMPTY "+
 				"bytes, whose tuple encodings (0x02, 0x01) sit immediately above NULL's 0x00 — the "+
 				"one place the permuted-MIN null repair's seek boundary can be off by one. Write "+
@@ -87,11 +89,11 @@ func TestFDB_AggregateIndexMin_NonNumericExtremaAreRejected(t *testing.T) {
 // keying off "is this element nil" could confuse with the value being NULL.
 func TestFDB_AggregateIndexMin_NullGroupKey(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_min_nullkey", "minnk",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_min_nullkey", "minnk",
 		"CREATE TABLE t (id BIGINT, g BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_min_v_g AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_min_v_gh AS SELECT MIN(v) FROM t GROUP BY g, h ")
@@ -123,11 +125,11 @@ func TestFDB_AggregateIndexMin_NullGroupKey(t *testing.T) {
 // read count.
 func TestFDB_AggregateIndexMin_LongNullRuns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_min_longnull", "minln",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_min_longnull", "minln",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_min_v_g AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_max_v_g AS SELECT MAX(v) FROM t GROUP BY g ")
@@ -177,11 +179,11 @@ func TestFDB_AggregateIndexMin_LongNullRuns(t *testing.T) {
 // mistakes for the largest.
 func TestFDB_AggregateIndexMin_ValueExtremes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_min_extremes", "minex",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_min_extremes", "minex",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, d DOUBLE, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_min_v AS SELECT MIN(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_max_v AS SELECT MAX(v) FROM t GROUP BY g "+

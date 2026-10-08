@@ -1,4 +1,4 @@
-package sqldriver_test
+package testkit
 
 // The shared retry every explicit-transaction test needs, and the seam that
 // forces the condition it retries.
@@ -60,7 +60,7 @@ type txBeginner interface {
 
 // txRetryOpts configures retryTx. The zero value is usable: three attempts, no
 // hooks.
-type txRetryOpts struct {
+type TxRetryOpts struct {
 	// Attempts bounds the retry. Bounded on purpose: an explicit transaction
 	// whose work genuinely cannot fit in FDB's five-second window fails every
 	// attempt, and looping forever converts a legible failure into a hang.
@@ -81,9 +81,9 @@ type txRetryOpts struct {
 // txAttempt is what retryTx hands each attempt. The attempt number is exposed
 // because a test that injects a one-shot spike must be able to assert the spike
 // actually pre-empted something — a retry that never fired proves nothing.
-type txAttempt struct {
-	tx  *sql.Tx
-	num int
+type TxAttempt struct {
+	Tx  *sql.Tx
+	Num int
 }
 
 // retryTx runs body inside an explicit transaction, restarting the WHOLE
@@ -110,7 +110,7 @@ type txAttempt struct {
 // ASSERTIONS INSIDE body MUST STILL FATAL. Only DRIVER errors are returned for
 // the retry to classify; a failed assertion is a verdict, not a transient, and
 // returning it would hand a real bug to the retry loop to paper over.
-func retryTx(t *testing.T, b txBeginner, o txRetryOpts, body func(txAttempt) error) {
+func RetryTx(t *testing.T, b txBeginner, o TxRetryOpts, body func(TxAttempt) error) {
 	t.Helper()
 	attempts := o.Attempts
 	if attempts == 0 {
@@ -125,7 +125,7 @@ func retryTx(t *testing.T, b txBeginner, o txRetryOpts, body func(txAttempt) err
 		if err != nil {
 			t.Fatalf("begin (attempt %d): %v", i, err)
 		}
-		err = body(txAttempt{tx: tx, num: i})
+		err = body(TxAttempt{Tx: tx, Num: i})
 		_ = tx.Rollback()
 		if err == nil {
 			return
@@ -153,8 +153,8 @@ func retryTx(t *testing.T, b txBeginner, o txRetryOpts, body func(txAttempt) err
 // because both end red; a spike lasting exactly one attempt reddens only when
 // the retry is absent. It is the same lifetime as the chaos harness's
 // InjectOnce.
-func spikeOnce(clk *lateClock, ranAttempt *int) txRetryOpts {
-	return txRetryOpts{
+func SpikeOnce(clk *lateClock, ranAttempt *int) TxRetryOpts {
+	return TxRetryOpts{
 		Attempts: 3,
 		OnRetry:  func(int, error) { clk.Disarm() },
 		BeforeAttempt: func(i int) {
@@ -169,7 +169,7 @@ func spikeOnce(clk *lateClock, ranAttempt *int) txRetryOpts {
 // attempt. Without it a converted test degrades silently into one that never
 // exercises the retry — green, and proving nothing about the condition it was
 // converted for.
-func mustHaveRetried(t *testing.T, attemptsRun int) {
+func MustHaveRetried(t *testing.T, attemptsRun int) {
 	t.Helper()
 	if attemptsRun < 2 {
 		t.Fatalf("the transaction succeeded on attempt %d, so the injected spike never "+
@@ -194,14 +194,14 @@ func mustHaveRetried(t *testing.T, attemptsRun int) {
 // Autocommit is unaffected by the spike, which is what makes this safe to arm
 // for a whole test: preflightTxBudget runs under `if r.tx != nil`, so DDL and
 // seed statements issued outside an explicit transaction never meet it.
-func spikedClusterKey(t *testing.T, lateBy time.Duration) (string, *lateClock) {
+func SpikedClusterKey(t *testing.T, lateBy time.Duration) (string, *lateClock) {
 	t.Helper()
 	fdb.MustAPIVersion(730)
 	rawDB, err := fdb.OpenDatabase(clusterFilePath)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	clk := newLateClock(lateBy)
+	clk := NewLateClock(lateBy)
 	rlDB := recordlayer.NewFDBDatabase(rawDB).SetEnv(&dst.Env{Clock: clk})
 	key := "spikeclock://" + t.Name()
 	t.Cleanup(sqldriver.RegisterBackend(key, rlDB))
@@ -210,7 +210,7 @@ func spikedClusterKey(t *testing.T, lateBy time.Duration) (string, *lateClock) {
 
 // spikedDSN is the DSN form the converted tests use, so the cluster_file key is
 // the ONLY difference from the handle they opened before conversion.
-func spikedDSN(key, dbPath, schema string) string {
+func SpikedDSN(key, dbPath, schema string) string {
 	if schema == "" {
 		return fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), key)
 	}
@@ -218,9 +218,9 @@ func spikedDSN(key, dbPath, schema string) string {
 }
 
 // openSpiked opens a handle on a spiked backend and closes it with the test.
-func openSpiked(t *testing.T, key, dbPath, schema string) *sql.DB {
+func OpenSpiked(t *testing.T, key, dbPath, schema string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("fdbsql", spikedDSN(key, dbPath, schema))
+	db, err := sql.Open("fdbsql", SpikedDSN(key, dbPath, schema))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

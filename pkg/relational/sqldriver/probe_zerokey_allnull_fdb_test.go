@@ -20,17 +20,19 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ProbeZeroKeyAllNullGroup(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_zkan")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_zkan")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_zkan")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_zkan")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE zkan "+
 			"CREATE TABLE ai (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE TABLE ao (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
@@ -39,8 +41,8 @@ func TestFDB_ProbeZeroKeyAllNullGroup(t *testing.T) {
 			"CREATE INDEX ai_cntv_g AS SELECT COUNT(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_min_g AS SELECT MIN(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_max_g AS SELECT MAX(v) FROM ai GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_zkan/s WITH TEMPLATE zkan")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ZKAN?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_zkan/s WITH TEMPLATE zkan")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ZKAN?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -52,15 +54,15 @@ func TestFDB_ProbeZeroKeyAllNullGroup(t *testing.T) {
 	// g=12 : control, never disturbed, all-NULL from the start (ABSENT case).
 	// g=13 : control, live non-zero.
 	for _, tbl := range []string{"ai", "ao"} {
-		mwjoMustExec(t, db, ctx, "INSERT INTO "+tbl+" (pk,g,v) VALUES "+
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO "+tbl+" (pk,g,v) VALUES "+
 			"(1,10,7),(2,10,NULL),"+
 			"(3,11,9),(4,11,NULL),"+
 			"(5,12,NULL),(6,12,NULL),"+
 			"(7,13,3),(8,13,4)")
 	}
 	for _, tbl := range []string{"ai", "ao"} {
-		mwjoMustExec(t, db, ctx, "UPDATE "+tbl+" SET v = NULL WHERE pk = 1")
-		mwjoMustExec(t, db, ctx, "DELETE FROM "+tbl+" WHERE pk = 3")
+		testkit.MustExecCtx(t, db, ctx, "UPDATE "+tbl+" SET v = NULL WHERE pk = 1")
+		testkit.MustExecCtx(t, db, ctx, "DELETE FROM "+tbl+" WHERE pk = 3")
 	}
 
 	rowsOf := func(t *testing.T, q string) []string {

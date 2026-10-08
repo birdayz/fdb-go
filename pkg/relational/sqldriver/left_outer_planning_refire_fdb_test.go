@@ -31,6 +31,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_EnclosedLeftOuter_PlanningRefire pins that an enclosed correlated LEFT
@@ -40,30 +42,30 @@ import (
 // full-scan NestedLoopJoin.
 func TestFDB_EnclosedLeftOuter_PlanningRefire(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_elopr"
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE elopr "+
 			"CREATE TABLE a (id BIGINT, flag BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE elopr")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE elopr")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1, 0), (2, 0)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (10, 1), (11, 2)") // both A rows have a B match
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1)")         // only A=1 has a C match
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1, 0), (2, 0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (10, 1), (11, 2)") // both A rows have a B match
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (100, 1)")         // only A=1 has a C match
 
 	// The LEFT OUTER (a LEFT JOIN c) is the ENCLOSED leg of the enclosing INNER
 	// join to b, so it surfaces as a 2-quantifier LEFT-OUTER sub-select only during

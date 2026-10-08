@@ -12,28 +12,30 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_TemporalUuidTypesProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_tut")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_tut")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_tut")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_tut")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE tut CREATE TABLE t (id BIGINT, ts TIMESTAMP, d DATE, u UUID, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_tut/s WITH TEMPLATE tut")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TUT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_tut/s WITH TEMPLATE tut")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TUT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, ts, d) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, ts, d) VALUES "+
 		"(1,'2024-01-15 10:30:00','2024-01-15'),(2,'2024-03-20 08:00:00','2024-03-20'),(3,'2023-12-01 12:00:00','2023-12-01')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, u) VALUES (5, '550e8400-e29b-41d4-a716-446655440000')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, u) VALUES (5, '550e8400-e29b-41d4-a716-446655440000')")
 
 	ids := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_QualifiedNestedAccessorShapeMatrix maps which SQL shapes route a
@@ -31,13 +33,13 @@ import (
 // co=200). Member CO is 300/200, member SK is 10/20, the root is neither.
 func TestFDB_QualifiedNestedAccessorShapeMatrix(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	const dbPath = "/FRL/testdb_qual_nested_matrix"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -54,7 +56,7 @@ func TestFDB_QualifiedNestedAccessorShapeMatrix(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -121,7 +123,7 @@ func TestFDB_QualifiedNestedAccessorShapeMatrix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := runShape(t, ctx, db, tc.sql)
+			got := testkit.RunShape(t, ctx, db, tc.sql)
 			if got != tc.want {
 				t.Fatalf("query %q\n   got: %s\n  want: %s\n"+
 					"  (a column named N, or a cell that is a struct rather than "+
@@ -130,42 +132,4 @@ func TestFDB_QualifiedNestedAccessorShapeMatrix(t *testing.T) {
 			}
 		})
 	}
-}
-
-// runShape renders a query's column names and rows as one comparable string,
-// scanning into `any` so a struct-valued cell is REPORTED rather than converted
-// into a scan error. That is deliberate: scanning into int64 turns the defect
-// into a type complaint, and the point of this matrix is to show what a client
-// that does not demand a type silently receives.
-func runShape(t *testing.T, ctx context.Context, db *sql.DB, q string) string {
-	t.Helper()
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		return "ERROR: " + err.Error()
-	}
-	defer rows.Close()
-	cols, err := rows.Columns()
-	if err != nil {
-		return "ERROR(columns): " + err.Error()
-	}
-	var out []string
-	for rows.Next() {
-		vals := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			return "ERROR(scan): " + err.Error()
-		}
-		cells := make([]string, len(vals))
-		for i, v := range vals {
-			cells[i] = fmt.Sprint(v)
-		}
-		out = append(out, strings.Join(cells, " "))
-	}
-	if err := rows.Err(); err != nil {
-		return "ERROR(iterate): " + err.Error()
-	}
-	return strings.Join(cols, ",") + "|" + strings.Join(out, ";")
 }

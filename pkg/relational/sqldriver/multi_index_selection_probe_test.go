@@ -11,29 +11,31 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_MultiIndexSelectionProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_multiidx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_multiidx")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_multiidx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_multiidx")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE multiidx "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a) CREATE INDEX t_b ON t (b) CREATE INDEX t_ac ON t (a, c)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_multiidx/s WITH TEMPLATE multiidx")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MULTIIDX?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_multiidx/s WITH TEMPLATE multiidx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MULTIIDX?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// id : (a,b,c)
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a,b,c) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,a,b,c) VALUES "+
 		"(1,1,2,3),(2,1,2,9),(3,1,7,3),(4,5,2,3),(5,5,5,5),(6,1,2,3)")
 
 	ids := func(q string) []int64 {

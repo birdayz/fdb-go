@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"github.com/onsi/gomega"
 )
 
@@ -26,14 +28,14 @@ import (
 // the deepest descendant (id=8) is only reached if every level advances.
 func TestFDB_RecursiveCTERekeyGate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
 	dbPath := "/FRL/rcte_rekey_gate"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_rekey_tmpl "+
@@ -41,7 +43,7 @@ func TestFDB_RecursiveCTERekeyGate(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_rekey_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -120,14 +122,14 @@ func TestFDB_RecursiveCTERekeyGate(t *testing.T) {
 // contract), so reader and writer cannot drift.
 func TestFDB_RecursiveCTEComputedColumn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
 	dbPath := "/FRL/rcte_computed_col"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_computed_tmpl "+
@@ -135,7 +137,7 @@ func TestFDB_RecursiveCTEComputedColumn(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_computed_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
@@ -173,14 +175,14 @@ func TestFDB_RecursiveCTEComputedColumn(t *testing.T) {
 // (`id`, `v`) and the main query reads the list's names.
 func TestFDB_RecursiveCTEStarSeedAliases(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
 	dbPath := "/FRL/rcte_star_seed"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_star_tmpl "+
@@ -188,7 +190,7 @@ func TestFDB_RecursiveCTEStarSeedAliases(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_star_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

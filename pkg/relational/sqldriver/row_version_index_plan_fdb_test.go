@@ -13,17 +13,19 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_RowVersionIndexPlans(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_rvip")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvip")
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE rvip_tpl
+	setup := testkit.OpenDB(t, "/FRL/testdb_rvip")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvip")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE rvip_tpl
 		CREATE TABLE t3(id BIGINT, col1 BIGINT, col2 STRING, PRIMARY KEY(id))
 		CREATE INDEX t3_version AS SELECT "__ROW_VERSION" FROM t3
 		CREATE INDEX t3_col1_version AS SELECT col1, "__ROW_VERSION" FROM t3 ORDER BY col1, "__ROW_VERSION"
@@ -31,9 +33,9 @@ func TestFDB_RowVersionIndexPlans(t *testing.T) {
 		CREATE INDEX t2_version AS SELECT "__ROW_VERSION" FROM t2
 		CREATE INDEX t2_col1_version AS SELECT col1, "__ROW_VERSION" FROM t2 ORDER BY col1, "__ROW_VERSION"
 		WITH OPTIONS(store_row_versions=true)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvip/s1 WITH TEMPLATE rvip_tpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvip/s1 WITH TEMPLATE rvip_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RVIP?cluster_file=%s&schema=S1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RVIP?cluster_file=%s&schema=S1", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -41,12 +43,12 @@ func TestFDB_RowVersionIndexPlans(t *testing.T) {
 
 	// The carrier's insert order: odd ids first, even ids second — the
 	// version order (insert order) differs from the id order.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t3 VALUES (1, 10, 'aa'), (3, 10, 'ac'), (5, 10, 'ae')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t3 VALUES (2, 20, 'ab'), (4, 20, 'ad'), (6, 20, 'af')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t2 VALUES (1, 10, 'aa'), (3, 10, 'ac'), (5, 10, 'ae')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t2 VALUES (2, 20, 'ab'), (4, 20, 'ad'), (6, 20, 'af')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t3 VALUES (1, 10, 'aa'), (3, 10, 'ac'), (5, 10, 'ae')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t3 VALUES (2, 20, 'ab'), (4, 20, 'ad'), (6, 20, 'af')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t2 VALUES (1, 10, 'aa'), (3, 10, 'ac'), (5, 10, 'ae')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t2 VALUES (2, 20, 'ab'), (4, 20, 'ad'), (6, 20, 'af')")
 
-	explain := mwjoExplainer(t, db, ctx)
+	explain := testkit.Explainer(t, db, ctx)
 
 	// scanIDs runs the query and returns the ID column values in order.
 	scanIDs := func(t *testing.T, query string) []int64 {

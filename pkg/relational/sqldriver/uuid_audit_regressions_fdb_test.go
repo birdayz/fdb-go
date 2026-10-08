@@ -17,6 +17,8 @@ import (
 	"sort"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -27,24 +29,24 @@ import (
 // UUID group key force a RecordQueryMultiIntersectionOnValuesPlan.
 func TestFDB_UUIDMultiAggregateIntersection(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uuidmiagg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidmiagg")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_uuidmiagg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidmiagg")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidmiagg "+
 			"CREATE TABLE t (id BIGINT, g UUID, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM t GROUP BY g "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(price) FROM t GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidmiagg/s WITH TEMPLATE uuidmiagg")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDMIAGG?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidmiagg/s WITH TEMPLATE uuidmiagg")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDMIAGG?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, fmt.Sprintf(
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 		"INSERT INTO t (id, g, price) VALUES (1,'%s',10),(2,'%s',20),(3,'%s',5),(4,'%s',7)",
 		uuidV1, uuidV1, uuidV2, uuidV3))
 
@@ -65,27 +67,27 @@ func TestFDB_UUIDMultiAggregateIntersection(t *testing.T) {
 // ConvertToProtoValue), which had no UUID arm and rejected the write with 22000.
 func TestFDB_UUIDWritePathUpdateAndInsertSelect(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uuidwrite")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidwrite")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_uuidwrite")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidwrite")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidwrite "+
 			"CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, v UUID, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidwrite/s WITH TEMPLATE uuidwrite")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDWRITE?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidwrite/s WITH TEMPLATE uuidwrite")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDWRITE?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (1, '%s')", uuidV1))
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (1, '%s')", uuidV1))
 
 	// UPDATE SET v = '<string literal>'.
 	t.Run("update_set_string", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("UPDATE t SET v = '%s' WHERE id = 1", uuidV2))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("UPDATE t SET v = '%s' WHERE id = 1", uuidV2))
 		var got string
 		if err := db.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&got); err != nil {
 			t.Fatalf("SELECT after UPDATE: %v", err)
@@ -100,7 +102,7 @@ func TestFDB_UUIDWritePathUpdateAndInsertSelect(t *testing.T) {
 	// separate pre-existing 0AF00 "column ordering for insert with select"
 	// limitation orthogonal to UUID.
 	t.Run("insert_select", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO t2 SELECT id, v FROM t WHERE id = 1")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t2 SELECT id, v FROM t WHERE id = 1")
 		var got string
 		if err := db.QueryRowContext(ctx, "SELECT v FROM t2 WHERE id = 1").Scan(&got); err != nil {
 			t.Fatalf("SELECT from t2: %v", err)
@@ -115,21 +117,21 @@ func TestFDB_UUIDWritePathUpdateAndInsertSelect(t *testing.T) {
 // not a Go array literal ("[85 14 …]").
 func TestFDB_UUIDScalarFunctionRender(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uuidscalar")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidscalar")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_uuidscalar")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidscalar")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidscalar CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidscalar/s WITH TEMPLATE uuidscalar")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDSCALAR?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidscalar/s WITH TEMPLATE uuidscalar")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDSCALAR?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (1, '%s')", uuidV1))
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (1, '%s')", uuidV1))
 
 	var got string
 	if err := db.QueryRowContext(ctx, "SELECT CONCAT(v, '-x') FROM t WHERE id = 1").Scan(&got); err != nil {
@@ -146,16 +148,16 @@ func TestFDB_UUIDScalarFunctionRender(t *testing.T) {
 // budget so the sort/aggregate buffer straddles a page.
 func TestFDB_UUIDPaginatedSortAndGroupBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uuidpage")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidpage")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_uuidpage")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidpage")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidpage CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidpage/s WITH TEMPLATE uuidpage")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDPAGE?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidpage/s WITH TEMPLATE uuidpage")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDPAGE?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -166,14 +168,14 @@ func TestFDB_UUIDPaginatedSortAndGroupBy(t *testing.T) {
 	// [16]byte via the continuation's UUID tag, materialized to the canonical
 	// string). The aggregate group KEY deliberately stays a JSON-safe %T:%v
 	// string, not raw tuple.UUID bytes (see computeGroupKey).
-	mwjoMustExec(t, db, ctx, fmt.Sprintf(
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 		"INSERT INTO t (id, v) VALUES (1,'%s'),(2,'%s'),(3,'%s'),(4,'%s'),(5,'%s'),(6,'%s'),(7,'%s')",
 		uuidV3, uuidV1, uuidV2, uuidV1, uuidV3, uuidV2, uuidV1))
 
 	// Pin the connection with a tiny per-page scanned-rows budget so the
 	// in-memory sort / streaming aggregate pages mid-buffer and must serialize
 	// a partial buffer holding UUID keys.
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 2).
 			Build())

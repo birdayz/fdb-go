@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_JoinMerge_OuterColumn_NotDropped is the E2E regression sentinel for
@@ -27,14 +29,14 @@ import (
 // lower join's OUTER table; and a WHERE filter on the outer-only column.
 func TestFDB_JoinMerge_OuterColumn_NotDropped(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_jm_outer")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_jm_outer")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_jm_outer")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_jm_outer")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE jm_outer_tmpl "+
 			// a <- b <- c chain. apay/cpay are OUTER-only payload columns (not join
 			// keys), the exact shape field pull-up (composeFieldOverConstructor) must not mis-resolve.
@@ -44,9 +46,9 @@ func TestFDB_JoinMerge_OuterColumn_NotDropped(t *testing.T) {
 			"CREATE INDEX b_by_a ON b (b_aid) "+
 			"CREATE INDEX c_by_b ON c (c_bid) "+
 			"CREATE INDEX c_by_a ON c (c_aid)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_jm_outer/s WITH TEMPLATE jm_outer_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_jm_outer/s WITH TEMPLATE jm_outer_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JM_OUTER?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JM_OUTER?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -54,12 +56,12 @@ func TestFDB_JoinMerge_OuterColumn_NotDropped(t *testing.T) {
 	defer db.Close()
 
 	// a:2 rows; b links each to a; c links each to b AND back to a (spanning FK).
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1, 'apay1')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (2, 'apay2')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (10, 1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (11, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 10, 1, 'cpay1')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (101, 11, 2, 'cpay2')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1, 'apay1')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (2, 'apay2')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (10, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (11, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (100, 10, 1, 'cpay1')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (101, 11, 2, 'cpay2')")
 
 	chain := "b.b_aid = a.aid AND c.c_bid = b.bid"
 

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -37,19 +39,19 @@ import (
 // CC scans the same table (IDs 1, 2, 11).
 func TestFDB_StarBodyCTEJoinLeg(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
 	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 
-	md := buildChainedUnnestMetadata(t)
+	md := testkit.BuildChainedUnnestMetadata(t)
 	if err := saveStarCTERows(ctx, db, ks, md); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +78,7 @@ func TestFDB_StarBodyCTEJoinLeg(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -151,7 +153,7 @@ func TestFDB_StarBodyCTEJoinLeg(t *testing.T) {
 			if _, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil); perr != nil {
 				t.Fatalf("plan %q: %v", q, perr)
 			}
-			if got := fmt.Sprintf("%v", queryLabels(t, q, md)); got != "[ID X]" {
+			if got := fmt.Sprintf("%v", testkit.QueryLabels(t, q, md)); got != "[ID X]" {
 				t.Fatalf("driver labels = %s, want [ID X] (the name model's labels)\n  sql: %s", got, q)
 			}
 		}
@@ -202,19 +204,19 @@ func TestFDB_StarBodyCTEJoinLeg(t *testing.T) {
 // Chained rows (ID,Y): (1,1),(1,2),(1,3),(2,4) — × 3 CC rows for the parent join.
 func TestFDB_ChainedStarBodyCTE(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
 	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 
-	md := buildChainedUnnestMetadata(t)
+	md := testkit.BuildChainedUnnestMetadata(t)
 	if err := saveStarCTERows(ctx, db, ks, md); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +243,7 @@ func TestFDB_ChainedStarBodyCTE(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -302,7 +304,7 @@ func TestFDB_ChainedStarBodyCTE(t *testing.T) {
 // name-keyed fallback for either decision. Planning-only.
 func TestStarBodyCTEPlanSweep(t *testing.T) {
 	t.Parallel()
-	md := buildChainedUnnestMetadata(t)
+	md := testkit.BuildChainedUnnestMetadata(t)
 	count := func(sql string) (int, error) {
 		_, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
 		return 0, err
@@ -355,14 +357,14 @@ func saveStarCTERows(ctx context.Context, db *recordlayer.FDBDatabase, ks subspa
 	t4Desc := md.GetRecordType("T4").Descriptor
 	scarrFD := t4Desc.Fields().ByName("SCARR")
 	sarrFD := t4Desc.Fields().ByName("SARR")
-	elemDesc := arrayElementMessageDescriptor(sarrFD)
+	elemDesc := testkit.ArrayElementMessageDescriptor(sarrFD)
 	mkElem := func(sub ...int32) protoreflect.Value {
 		m := dynamicpb.NewMessage(elemDesc)
 		vals := make([]protoreflect.Value, 0, len(sub))
 		for _, s := range sub {
 			vals = append(vals, protoreflect.ValueOfInt32(s))
 		}
-		setArrayField(m, elemDesc.Fields().ByName("SUB"), vals...)
+		testkit.SetArrayField(m, elemDesc.Fields().ByName("SUB"), vals...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkT4 := func(id, sub int64, scarr []int32, sarr ...protoreflect.Value) proto.Message {
@@ -373,8 +375,8 @@ func saveStarCTERows(ctx context.Context, db *recordlayer.FDBDatabase, ks subspa
 		for _, s := range scarr {
 			vals = append(vals, protoreflect.ValueOfInt32(s))
 		}
-		setArrayField(m, scarrFD, vals...)
-		setArrayField(m, sarrFD, sarr...)
+		testkit.SetArrayField(m, scarrFD, vals...)
+		testkit.SetArrayField(m, sarrFD, sarr...)
 		return m
 	}
 	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

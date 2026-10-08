@@ -13,16 +13,18 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DerivedComputedProjectionColumnNames(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/derivedcomputed"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	must := func(q string) {
 		if _, err := setup.ExecContext(ctx, q); err != nil {
 			t.Fatalf("setup: %v\n  %s", err, q)
@@ -32,7 +34,7 @@ func TestFDB_DerivedComputedProjectionColumnNames(t *testing.T) {
 	must("CREATE SCHEMA TEMPLATE derivedcomputed_tmpl" +
 		" CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 	must("CREATE SCHEMA " + dbPath + "/main WITH TEMPLATE derivedcomputed_tmpl")
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

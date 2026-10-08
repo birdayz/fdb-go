@@ -13,17 +13,19 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ExistsInOn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_exists_on")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_on")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_exists_on")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_on")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exists_on "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
@@ -31,8 +33,8 @@ func TestFDB_ExistsInOn(t *testing.T) {
 			"CREATE TABLE d (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_on/s WITH TEMPLATE exists_on")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ON?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_on/s WITH TEMPLATE exists_on")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ON?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -45,10 +47,10 @@ func TestFDB_ExistsInOn(t *testing.T) {
 	// These give DISTINCT survivors ([1|50] vs [2|51]) so the correlation leg is
 	// an actually-tested dimension. (d.id=51 does not affect EXISTS(d.id=a.id)
 	// since a∈{1,2}.)
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, a_id) VALUES (10, 1), (20, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id) VALUES (1), (51)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, a_id) VALUES (10, 1), (20, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id) VALUES (1), (51)")
 
 	// INNER join, correlated EXISTS in ON: a=2's match is filtered out
 	// (EXISTS(d.id=2) is false), a=1 survives.
@@ -58,9 +60,9 @@ func TestFDB_ExistsInOn(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query: %v", err)
 		}
-		got := siScanRows(t, rows)
+		got := testkit.ScanRowStrings(t, rows)
 		want := []string{"1|50"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("INNER EXISTS-in-ON rows = %v, want %v", got, want)
 		}
 	})
@@ -74,9 +76,9 @@ func TestFDB_ExistsInOn(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query: %v", err)
 		}
-		got := siScanRows(t, rows)
+		got := testkit.ScanRowStrings(t, rows)
 		want := []string{"2|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("INNER right-leg-correlated EXISTS-in-ON rows = %v, want %v", got, want)
 		}
 	})
@@ -88,9 +90,9 @@ func TestFDB_ExistsInOn(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query: %v", err)
 		}
-		got := siScanRows(t, rows)
+		got := testkit.ScanRowStrings(t, rows)
 		want := []string{"2|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("INNER NOT-EXISTS-in-ON rows = %v, want %v", got, want)
 		}
 	})
@@ -103,9 +105,9 @@ func TestFDB_ExistsInOn(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query: %v", err)
 		}
-		got := siScanRows(t, rows)
+		got := testkit.ScanRowStrings(t, rows)
 		want := []string{"1|50", "1|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("INNER sole-EXISTS-in-ON rows = %v, want %v", got, want)
 		}
 	})
@@ -113,7 +115,7 @@ func TestFDB_ExistsInOn(t *testing.T) {
 	// OUTER EXISTS-in-ON is deferred (RFC-154 §5.2b) — must reject cleanly,
 	// never silently null-extend wrongly.
 	t.Run("left_exists_in_on_rejected", func(t *testing.T) {
-		assertUnsupported(t, db, ctx,
+		testkit.AssertUnsupported(t, db, ctx,
 			"SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
 				"LEFT JOIN c ON c.a_id = a.id AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id)")
 	})
@@ -127,7 +129,7 @@ func TestFDB_ExistsInOn(t *testing.T) {
 			if qErr != nil {
 				t.Fatal(qErr)
 			}
-			if got := siScanRows(t, rows); !eqStrSlices(got, []string{"1|50"}) {
+			if got := testkit.ScanRowStrings(t, rows); !testkit.EqualStrings(got, []string{"1|50"}) {
 				t.Fatalf("ON/WHERE disjunction rows=%v, want [1|50]", got)
 			}
 		}

@@ -1,4 +1,4 @@
-package sqldriver_test
+package testkit
 
 import (
 	"fmt"
@@ -13,7 +13,7 @@ import (
 // stored wrapped, Java's wire shape). Element values for struct arrays must
 // be built from arrayElementMessageDescriptor(fd), not fd.Message(), because
 // fd.Message() is the wrapper for nullable struct arrays.
-func setArrayField(m *dynamicpb.Message, fd protoreflect.FieldDescriptor, vals ...protoreflect.Value) {
+func SetArrayField(m *dynamicpb.Message, fd protoreflect.FieldDescriptor, vals ...protoreflect.Value) {
 	_, wrapped, ok := values.EffectiveListField(fd)
 	if !ok {
 		panic(fmt.Sprintf("setArrayField: %s is not an array-shaped field", fd.FullName()))
@@ -35,7 +35,7 @@ func setArrayField(m *dynamicpb.Message, fd protoreflect.FieldDescriptor, vals .
 
 // arrayElementMessageDescriptor returns the element MESSAGE descriptor of a
 // struct-array column (through the NullableArrayWrapper when present).
-func arrayElementMessageDescriptor(fd protoreflect.FieldDescriptor) protoreflect.MessageDescriptor {
+func ArrayElementMessageDescriptor(fd protoreflect.FieldDescriptor) protoreflect.MessageDescriptor {
 	inner, _, ok := values.EffectiveListField(fd)
 	if !ok {
 		panic(fmt.Sprintf("arrayElementMessageDescriptor: %s is not an array-shaped field", fd.FullName()))

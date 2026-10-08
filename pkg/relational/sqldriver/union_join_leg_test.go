@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_UnionJoinLeg is the review regression (RFC-077 7.6): a CTE/derived-table
@@ -22,30 +24,30 @@ import (
 // mismatched-alias UNGROUPED-AGGREGATE union join returns correct rows (RFC-080).
 func TestFDB_UnionJoinLeg(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_union_join")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_union_join")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_union_join")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_union_join")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE union_join_tmpl "+
 			"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_union_join/s WITH TEMPLATE union_join_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_union_join/s WITH TEMPLATE union_join_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_JOIN?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_JOIN?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1, 10), (2, 20)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (3, 30)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (1, 100), (2, 200), (3, 300)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1, 10), (2, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (3, 30)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (1, 100), (2, 200), (3, 300)")
 
 	// (1) Same-named branches: u.id = {1,2,3}; join c on id → w {100,200,300}.
 	assertInt64Set(t, db, ctx,

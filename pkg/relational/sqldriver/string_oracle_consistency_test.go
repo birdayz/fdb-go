@@ -13,22 +13,24 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_StringOracleConsistency(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_stroracle")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_stroracle")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_stroracle")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_stroracle")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE stroracle "+
 			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_s ON t (s)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_stroracle/s WITH TEMPLATE stroracle")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STRORACLE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_stroracle/s WITH TEMPLATE stroracle")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STRORACLE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -49,10 +51,10 @@ func TestFDB_StringOracleConsistency(t *testing.T) {
 		switch rng.Intn(12) {
 		case 0:
 			r.isNull = true
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", r.id))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", r.id))
 		case 1:
 			r.s = "" // empty string
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, s) VALUES (%d, '')", r.id))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, s) VALUES (%d, '')", r.id))
 		default:
 			ln := 1 + rng.Intn(4)
 			var sb strings.Builder
@@ -60,7 +62,7 @@ func TestFDB_StringOracleConsistency(t *testing.T) {
 				sb.WriteByte(letters[rng.Intn(len(letters))])
 			}
 			r.s = sb.String()
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, s) VALUES (%d, '%s')", r.id, r.s))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, s) VALUES (%d, '%s')", r.id, r.s))
 		}
 		model = append(model, r)
 	}

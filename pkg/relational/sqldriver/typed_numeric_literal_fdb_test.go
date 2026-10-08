@@ -28,21 +28,23 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_TypedNumericLiterals(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_typedlit")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_typedlit")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_typedlit")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_typedlit")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE typedlit "+
 			"CREATE TABLE b (b1 INTEGER, b2 STRING, b3 BIGINT, PRIMARY KEY (b1))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_typedlit/s WITH TEMPLATE typedlit")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TYPEDLIT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_typedlit/s WITH TEMPLATE typedlit")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TYPEDLIT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -50,7 +52,7 @@ func TestFDB_TypedNumericLiterals(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// literal-tests.yamsql's own setup shape: suffixed literals in INSERT.
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (1I, 'a', 2L), (3i, 'b', 4l), (5, 'c', 6)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (1I, 'a', 2L), (3i, 'b', 4l), (5, 'c', 6)")
 
 	row := func(t *testing.T, q string, dest ...any) {
 		t.Helper()

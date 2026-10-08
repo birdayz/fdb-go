@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // A NESTED path in the ON clause of an OUTER third leg — `m.n.sk = r.n.sk` over
@@ -64,25 +66,25 @@ import (
 // if it is widened.
 func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_omlnon")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_omlnon")
+	setup := testkit.OpenDB(t, "/FRL/testdb_omlnon")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_omlnon")
 	// `d` makes a DEPTH-3 descent (`m.n.d.dk`) expressible. Depth is not a
 	// separate mechanism — FuseNestedSuffix loops over the whole suffix and
 	// legRef is arity-blind — but "structurally covered" is not a measurement,
 	// and an arity cap re-introduced at any value >= 3 would pass every depth-2
 	// arm below and fail only this one.
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE omlnon_tmpl "+
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE omlnon_tmpl "+
 		"CREATE TYPE AS STRUCT dst (dk BIGINT) "+
 		"CREATE TYPE AS STRUCT gst (sk BIGINT, co BIGINT, d dst) "+
 		"CREATE TABLE nt(id BIGINT, sk BIGINT, n gst, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_omlnon/s WITH TEMPLATE omlnon_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_omlnon/s WITH TEMPLATE omlnon_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_OMLNON?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_OMLNON?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -95,7 +97,7 @@ func TestFDB_OuterMultilegNestedOnPredicate(t *testing.T) {
 	// n.d.dk repeats the same 1,1,2 pattern one level deeper, so a depth-3
 	// descent that stopped short at `n.d` (a struct) would match nothing and be
 	// visible as [1 2 3] rather than [1 1 2 2 3].
-	mustExec(t, db, ctx, "INSERT INTO nt VALUES "+
+	testkit.MustExec(t, db, ctx, "INSERT INTO nt VALUES "+
 		"(1, 10, (1, 7, (1))), (2, 20, (1, 8, (1))), (3, 30, (2, 9, (2)))")
 
 	run := func(q string) ([]string, error) {

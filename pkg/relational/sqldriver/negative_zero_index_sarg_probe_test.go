@@ -48,25 +48,27 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nzsarg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nzsarg")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzsarg "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_nzsarg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nzsarg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzsarg "+
 		"CREATE TABLE d (id BIGINT, v DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE INDEX d_v ON d (v) "+
 		"CREATE TABLE f (id BIGINT, v FLOAT, PRIMARY KEY (id)) "+
 		"CREATE INDEX f_v ON f (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nzsarg/s WITH TEMPLATE nzsarg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NZSARG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nzsarg/s WITH TEMPLATE nzsarg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NZSARG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -76,11 +78,11 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 	// id 1 stores NEGATIVE zero; id 2 is a clear positive control so a
 	// non-zero-boundary query still returns something; id 3 is NULL so the
 	// SARG's null-boundary handling around a zero comparand is also exercised.
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id, v) VALUES (1, -0.0), (2, 5.0), (3, NULL)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO f (id, v) VALUES (1, CAST(-0.0 AS FLOAT)), (2, CAST(5.0 AS FLOAT)), (3, NULL)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id, v) VALUES (1, -0.0), (2, 5.0), (3, NULL)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO f (id, v) VALUES (1, CAST(-0.0 AS FLOAT)), (2, CAST(5.0 AS FLOAT)), (3, NULL)")
 
-	idxConn := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
-	fullConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	idxConn := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	fullConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptDisabledPlannerRules, []string{"MatchLeafRule"}).Build())
 	})
@@ -114,7 +116,7 @@ func TestFDB_NegativeZeroIndexSargProbe(t *testing.T) {
 	}
 	requireIndexPlan := func(q string) {
 		t.Helper()
-		plan := explainOnConn(t, ctx, idxConn, q)
+		plan := testkit.ExplainConn(t, ctx, idxConn, q)
 		if !strings.Contains(plan, "IndexScan") {
 			t.Fatalf("%q: expected an IndexScan plan on the index-eligible connection (else this "+
 				"sentinel proves nothing about the SARG path), got: %s", q, plan)

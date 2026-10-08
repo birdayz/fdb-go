@@ -12,22 +12,24 @@ import (
 	"math/rand"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CompoundIndexOracle(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_cmpidxora")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cmpidxora")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_cmpidxora")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cmpidxora")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE cmpidxora "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_ab ON t (a, b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cmpidxora/s WITH TEMPLATE cmpidxora")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CMPIDXORA?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cmpidxora/s WITH TEMPLATE cmpidxora")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CMPIDXORA?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -65,7 +67,7 @@ func TestFDB_CompoundIndexOracle(t *testing.T) {
 			cols += ", b"
 			vals += fmt.Sprintf(", %d", r.b)
 		}
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (%s) VALUES (%s)", cols, vals))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (%s) VALUES (%s)", cols, vals))
 	}
 
 	sqlIDs := func(where string) []int64 {

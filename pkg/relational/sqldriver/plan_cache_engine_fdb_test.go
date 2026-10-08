@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
@@ -15,12 +17,12 @@ import (
 func TestFDB_PlanCacheIsEngineWide(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/FRL/testdb_plan_cache_engine", "plan_cache_engine",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_plan_cache_engine", "plan_cache_engine",
 		"CREATE TABLE T (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX t_v ON T (v)")
 
 	var shared [2]*embedded.RelationalPlanCache
 	for i := range shared {
-		conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) { shared[i] = ec.SharedPlanCache() })
+		conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) { shared[i] = ec.SharedPlanCache() })
 		rows, err := conn.QueryContext(ctx, "SELECT id FROM T WHERE v = 7")
 		if err != nil {
 			t.Fatalf("query on connection %d: %v", i, err)
@@ -48,13 +50,13 @@ func TestFDB_PlanCacheIsEngineWide(t *testing.T) {
 func TestFDB_PlanCacheKeysTemporaryFunctions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/FRL/testdb_plan_cache_tempfn", "plan_cache_tempfn",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_plan_cache_tempfn", "plan_cache_tempfn",
 		"CREATE TABLE T1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO T1 VALUES (10, 1), (30, 2), (50, 3)"); err != nil {
 		t.Fatal(err)
 	}
 	var cache *embedded.RelationalPlanCache
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) { cache = ec.SharedPlanCache() })
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) { cache = ec.SharedPlanCache() })
 	run := func(bound int) []int64 {
 		t.Helper()
 		tx, err := conn.BeginTx(ctx, nil)
@@ -104,12 +106,12 @@ func TestFDB_PlanCacheKeysTemporaryFunctions(t *testing.T) {
 func TestFDB_StoredQueriesWarmThePlanCache(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/FRL/testdb_stored_query_warm", "stored_query_warm",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_stored_query_warm", "stored_query_warm",
 		"CREATE TABLE T (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX t_v ON T (v) "+
 			"CREATE STORED QUERY q1 AS SELECT id FROM T WHERE v = 7 "+
 			"CREATE STORED QUERY q2 DECLARE FUNCTION f(IN x BIGINT) AS (SELECT id FROM T WHERE id = x) AS SELECT * FROM f(1)")
 	var cache *embedded.RelationalPlanCache
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) { cache = ec.SharedPlanCache() })
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) { cache = ec.SharedPlanCache() })
 	if _, err := conn.ExecContext(ctx, "INSERT INTO T VALUES (1, 7), (2, 8)"); err != nil {
 		t.Fatal(err)
 	}

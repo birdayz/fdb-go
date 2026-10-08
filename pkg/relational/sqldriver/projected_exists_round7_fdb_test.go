@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExists_Round7 pins a COMPUTED, non-selected ORDER BY
@@ -15,19 +17,19 @@ import (
 // real.
 func TestFDB_ProjectedExists_Round7(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_projexists_r7")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r7")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r7_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_projexists_r7")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r7")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r7_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r7/s WITH TEMPLATE projexists_r7_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r7/s WITH TEMPLATE projexists_r7_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R7?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R7?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -35,8 +37,8 @@ func TestFDB_ProjectedExists_Round7(t *testing.T) {
 
 	// col1 DESCENDS as id ascends, so a real `ORDER BY col1 + 1` differs from id order — a
 	// no-op (silently-dropped) sort would visibly fail.
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 30), (2, 20), (3, 10)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (101, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 30), (2, 20), (3, 10)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (101, 3)")
 
 	t.Run("computed_nonselected_orderby_sorts", func(t *testing.T) {
 		q := "SELECT id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS has_t2 " +

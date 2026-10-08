@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -37,7 +39,7 @@ import (
 // hanging the suite.
 func TestFDB_LeftJoin_Continuation_Converged(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -63,7 +65,7 @@ func TestFDB_LeftJoin_Continuation_Converged(t *testing.T) {
 	// Same query under a 1-scanned-row budget → the driver paginates and resumes
 	// via the FlatMap/DefaultOnEmpty continuation internally. maxRows caps the read
 	// so a never-advancing continuation fails loudly instead of looping forever.
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 1).
 			Build())
@@ -86,7 +88,7 @@ func leftJoinContDB(t *testing.T, tag string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 	dbPath := "/FRL/leftjoin_cont_" + tag
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -100,7 +102,7 @@ func leftJoinContDB(t *testing.T, tag string) *sql.DB {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

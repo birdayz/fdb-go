@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin locates a live
@@ -44,29 +46,29 @@ import (
 // insufficient, not that order is unchecked.
 func TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_unqual_pe")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_unqual_pe")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE unqual_pe_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_unqual_pe")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_unqual_pe")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE unqual_pe_tmpl "+
 		"CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t1(id BIGINT, n nst, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_unqual_pe/s WITH TEMPLATE unqual_pe_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_unqual_pe/s WITH TEMPLATE unqual_pe_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UNQUAL_PE?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UNQUAL_PE?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (50, 1)), (2, (40, 2)), (3, (30, 3))")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3)")
-	mustExec(t, db, ctx, "INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (50, 1)), (2, (40, 2)), (3, (30, 3))")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)")
 
 	const exists = "EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h"
 	const join = " FROM t1 JOIN t3 ON t3.t1_id = t1.id"

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -18,7 +20,7 @@ func ogsDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
 	dbPath := "/FRL/ogs_" + tag
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -33,7 +35,7 @@ func ogsDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -167,7 +169,7 @@ func TestFDB_OrderedGroupedScalarSubquery_NullsOrdering(t *testing.T) {
 func TestFDB_OrderedGroupedScalarSubquery_ExplainSort(t *testing.T) {
 	t.Parallel()
 	db, ctx := ogsDB(t, "explain")
-	plan := planExplainVia(t, ctx, db, "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status LIMIT 1) FROM customers c WHERE c.id = 1")
+	plan := testkit.ExplainVia(t, ctx, db, "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status LIMIT 1) FROM customers c WHERE c.id = 1")
 	if !strings.Contains(plan, "Sort") {
 		t.Errorf("expected a Sort in the inner plan, got: %s", plan)
 	}

@@ -10,28 +10,30 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ResolutionEdgeProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_resedgep")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_resedgep")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_resedgep")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_resedgep")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE resedgep "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_resedgep/s WITH TEMPLATE resedgep")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RESEDGEP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_resedgep/s WITH TEMPLATE resedgep")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RESEDGEP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// a: id1=30, id2=10, id3=20
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a,b) VALUES (1,30,1),(2,10,2),(3,20,3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,a,b) VALUES (1,30,1),(2,10,2),(3,20,3)")
 
 	orderedIDs := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

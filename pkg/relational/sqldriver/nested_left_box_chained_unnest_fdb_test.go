@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -46,24 +48,24 @@ import (
 //	A=110 → B null, C null
 func TestFDB_NestedLeftBoxChained(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
 	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 
-	md := buildChainedUnnestMetadata(t)
+	md := testkit.BuildChainedUnnestMetadata(t)
 	t4Desc := md.GetRecordType("T4").Descriptor
 	sarrFD := t4Desc.Fields().ByName("SARR")
-	elemDesc := arrayElementMessageDescriptor(sarrFD)
+	elemDesc := testkit.ArrayElementMessageDescriptor(sarrFD)
 	substructFD := elemDesc.Fields().ByName("SUBSTRUCT")
-	elem2Desc := arrayElementMessageDescriptor(substructFD)
+	elem2Desc := testkit.ArrayElementMessageDescriptor(substructFD)
 	scarrFD := t4Desc.Fields().ByName("SCARR")
 
 	mkElem2 := func(deep ...int32) protoreflect.Value {
@@ -73,7 +75,7 @@ func TestFDB_NestedLeftBoxChained(t *testing.T) {
 		for _, d := range deep {
 			vals = append(vals, protoreflect.ValueOfInt32(d))
 		}
-		setArrayField(m, elem2Desc.Fields().ByName("DEEP"), vals...)
+		testkit.SetArrayField(m, elem2Desc.Fields().ByName("DEEP"), vals...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkElem := func(sub []int32, substruct ...protoreflect.Value) protoreflect.Value {
@@ -83,20 +85,20 @@ func TestFDB_NestedLeftBoxChained(t *testing.T) {
 		for _, s := range sub {
 			vals = append(vals, protoreflect.ValueOfInt32(s))
 		}
-		setArrayField(m, elemDesc.Fields().ByName("SUB"), vals...)
-		setArrayField(m, substructFD, substruct...)
+		testkit.SetArrayField(m, elemDesc.Fields().ByName("SUB"), vals...)
+		testkit.SetArrayField(m, substructFD, substruct...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkT4 := func(id int64, scarr []int32, sarr ...protoreflect.Value) proto.Message {
 		m := dynamicpb.NewMessage(t4Desc)
 		m.Set(t4Desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(5))
-		setArrayField(m, sarrFD, sarr...)
+		testkit.SetArrayField(m, sarrFD, sarr...)
 		vals := make([]protoreflect.Value, 0, len(scarr))
 		for _, s := range scarr {
 			vals = append(vals, protoreflect.ValueOfInt32(s))
 		}
-		setArrayField(m, scarrFD, vals...)
+		testkit.SetArrayField(m, scarrFD, vals...)
 		return m
 	}
 
@@ -144,7 +146,7 @@ func TestFDB_NestedLeftBoxChained(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})

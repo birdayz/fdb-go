@@ -12,22 +12,24 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DMLUpdateDeleteProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dml")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dml")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dml")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dml")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dml "+
 			"CREATE TABLE t (id BIGINT, grp BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_v ON t (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dml/s WITH TEMPLATE dml")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DML?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dml/s WITH TEMPLATE dml")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DML?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -35,8 +37,8 @@ func TestFDB_DMLUpdateDeleteProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	reset := func() {
-		mwjoMustExec(t, db, ctx, "DELETE FROM t")
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, grp, v) VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40), (5, 3, 50)")
+		testkit.MustExecCtx(t, db, ctx, "DELETE FROM t")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, grp, v) VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40), (5, 3, 50)")
 	}
 	idsWhere := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)
@@ -67,7 +69,7 @@ func TestFDB_DMLUpdateDeleteProbe(t *testing.T) {
 
 	t.Run("update_targeted_leaves_others", func(t *testing.T) {
 		reset()
-		mwjoMustExec(t, db, ctx, "UPDATE t SET v = 999 WHERE id = 3")
+		testkit.MustExecCtx(t, db, ctx, "UPDATE t SET v = 999 WHERE id = 3")
 		if got := idsWhere("SELECT id FROM t WHERE v = 999"); !eq(got, []int64{3}) {
 			t.Errorf("after UPDATE id=3: v=999 rows = %v, want [3]", got)
 		}
@@ -83,7 +85,7 @@ func TestFDB_DMLUpdateDeleteProbe(t *testing.T) {
 	t.Run("update_index_entry_maintained", func(t *testing.T) {
 		reset()
 		// Move id=1 from v=10 to v=35; the t_v index probe must find it at 35, not 10.
-		mwjoMustExec(t, db, ctx, "UPDATE t SET v = 35 WHERE id = 1")
+		testkit.MustExecCtx(t, db, ctx, "UPDATE t SET v = 35 WHERE id = 1")
 		if got := idsWhere("SELECT id FROM t WHERE v = 35"); !eq(got, []int64{1}) {
 			t.Errorf("index probe v=35 = %v, want [1] (stale index entry?)", got)
 		}
@@ -98,7 +100,7 @@ func TestFDB_DMLUpdateDeleteProbe(t *testing.T) {
 
 	t.Run("update_by_group_multiple_rows", func(t *testing.T) {
 		reset()
-		mwjoMustExec(t, db, ctx, "UPDATE t SET v = 0 WHERE grp = 2")
+		testkit.MustExecCtx(t, db, ctx, "UPDATE t SET v = 0 WHERE grp = 2")
 		if got := idsWhere("SELECT id FROM t WHERE v = 0"); !eq(got, []int64{3, 4}) {
 			t.Errorf("UPDATE grp=2 SET v=0: v=0 rows = %v, want [3 4]", got)
 		}
@@ -106,7 +108,7 @@ func TestFDB_DMLUpdateDeleteProbe(t *testing.T) {
 
 	t.Run("delete_targeted", func(t *testing.T) {
 		reset()
-		mwjoMustExec(t, db, ctx, "DELETE FROM t WHERE grp = 1")
+		testkit.MustExecCtx(t, db, ctx, "DELETE FROM t WHERE grp = 1")
 		if got := idsWhere("SELECT id FROM t"); !eq(got, []int64{3, 4, 5}) {
 			t.Errorf("after DELETE grp=1: remaining = %v, want [3 4 5]", got)
 		}
@@ -118,7 +120,7 @@ func TestFDB_DMLUpdateDeleteProbe(t *testing.T) {
 
 	t.Run("update_no_match_noop", func(t *testing.T) {
 		reset()
-		mwjoMustExec(t, db, ctx, "UPDATE t SET v = 1 WHERE id = 999")
+		testkit.MustExecCtx(t, db, ctx, "UPDATE t SET v = 1 WHERE id = 999")
 		if got := idsWhere("SELECT id FROM t WHERE v = 1"); len(got) != 0 {
 			t.Errorf("no-match UPDATE changed rows: %v", got)
 		}
@@ -129,7 +131,7 @@ func TestFDB_DMLUpdateDeleteProbe(t *testing.T) {
 
 	t.Run("delete_no_match_noop", func(t *testing.T) {
 		reset()
-		mwjoMustExec(t, db, ctx, "DELETE FROM t WHERE v > 10000")
+		testkit.MustExecCtx(t, db, ctx, "DELETE FROM t WHERE v > 10000")
 		if got := idsWhere("SELECT id FROM t"); !eq(got, []int64{1, 2, 3, 4, 5}) {
 			t.Errorf("no-match DELETE removed rows: %v", got)
 		}
@@ -137,7 +139,7 @@ func TestFDB_DMLUpdateDeleteProbe(t *testing.T) {
 
 	t.Run("delete_all", func(t *testing.T) {
 		reset()
-		mwjoMustExec(t, db, ctx, "DELETE FROM t")
+		testkit.MustExecCtx(t, db, ctx, "DELETE FROM t")
 		if got := idsWhere("SELECT id FROM t"); len(got) != 0 {
 			t.Errorf("DELETE all left %v", got)
 		}

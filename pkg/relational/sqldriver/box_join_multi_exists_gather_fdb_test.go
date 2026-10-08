@@ -16,14 +16,14 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
-	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
-	"fdb.dev/pkg/relational/core/metadata"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -31,18 +31,18 @@ import (
 
 func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
 	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
-	md := existsGatherSchemaMetadata(t)
+	md := testkit.ExistsGatherSchemaMetadata(t)
 
 	mkA := func(aid, k int64, vals ...int32) proto.Message {
 		d := md.GetRecordType("A").Descriptor
@@ -53,7 +53,7 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 		for i, v := range vals {
 			pvals[i] = protoreflect.ValueOfInt32(v)
 		}
-		setArrayField(m, d.Fields().ByName("ARR"), pvals...)
+		testkit.SetArrayField(m, d.Fields().ByName("ARR"), pvals...)
 		return m
 	}
 	mk1 := func(table, f string, v int64) proto.Message {
@@ -110,7 +110,7 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 			for _, r := range rows {
 				// POSITIONAL, in slot order -- the map rendering this replaced printed the
 				// row by NAME, so permuting (Fields, Slots) together was invisible.
-				out = append(out, positionalPipeSprint(r))
+				out = append(out, testkit.PositionalPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -235,7 +235,7 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 			if sErr != nil {
 				return nil, sErr
 			}
-			evalCtx, bindErr := prebindScalarSubqueries(ctx, store, subs)
+			evalCtx, bindErr := testkit.PrebindScalarSubqueries(ctx, store, subs)
 			if bindErr != nil {
 				return nil, bindErr
 			}
@@ -251,7 +251,7 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 			for _, r := range rows {
 				// POSITIONAL, in slot order -- the map rendering this replaced printed the
 				// row by NAME, so permuting (Fields, Slots) together was invisible.
-				out = append(out, positionalPipeSprint(r))
+				out = append(out, testkit.PositionalPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -382,42 +382,12 @@ func TestFDB_BoxJoinMultiExistsGather(t *testing.T) {
 		"7")
 }
 
-// existsGatherSchemaMetadata builds the A/B/EE/EEV schema shared by the row cert (FDB
-// execution) and the plan-only sweep below. A(AID=1,K=100,ARR=[7,8]);
-// B(BID=2,K=110) — A.K/B.K dup-named, the leg a qualified EXISTS correlation
-// must disambiguate; EE(CK) is the leg-correlation table, EEV(VK) the element
-// one.
-func existsGatherSchemaMetadata(tb testing.TB) *recordlayer.RecordMetaData {
-	tb.Helper()
-	b := metadata.NewSchemaTemplateBuilder().SetName("s3s0")
-	b.AddTable("A", []metadata.ColumnSpec{
-		metadata.NewColumnSpec("AID", api.NewLongType(false), 1),
-		metadata.NewColumnSpec("K", api.NewLongType(true), 2),
-		metadata.NewColumnSpec("ARR", api.NewArrayType(api.NewIntegerType(false), true), 3),
-	}, []string{"AID"})
-	b.AddTable("B", []metadata.ColumnSpec{
-		metadata.NewColumnSpec("BID", api.NewLongType(false), 1),
-		metadata.NewColumnSpec("K", api.NewLongType(true), 2),
-	}, []string{"BID"})
-	b.AddTable("EE", []metadata.ColumnSpec{
-		metadata.NewColumnSpec("CK", api.NewLongType(false), 1),
-	}, []string{"CK"})
-	b.AddTable("EEV", []metadata.ColumnSpec{
-		metadata.NewColumnSpec("VK", api.NewLongType(false), 1),
-	}, []string{"VK"})
-	tmpl, err := b.Build()
-	if err != nil {
-		tb.Fatal(err)
-	}
-	return tmpl.Underlying()
-}
-
 // TestBoxJoinMultiExistsPlanSweep is a plan-only sweep: every admitted
 // box+EXISTS shape below must keep PLANNING cleanly. Planning-only, so it needs
 // no FDB / Docker.
 func TestBoxJoinMultiExistsPlanSweep(t *testing.T) {
 	t.Parallel()
-	md := existsGatherSchemaMetadata(t)
+	md := testkit.ExistsGatherSchemaMetadata(t)
 	const from = `FROM A LEFT JOIN B ON A."AID" = B."BID", A."ARR" AS "X"`
 	countProducers := func(sql string) int {
 		if _, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil); err != nil {

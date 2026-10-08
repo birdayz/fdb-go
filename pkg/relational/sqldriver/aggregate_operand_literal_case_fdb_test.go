@@ -32,15 +32,17 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateOperandDistinguishesLiteralCase(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_agg_literal_case")
+	setup := testkit.OpenDB(t, "/FRL/testdb_agg_literal_case")
 	exec := func(db *sql.DB, stmt string) {
 		t.Helper()
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -52,7 +54,7 @@ func TestFDB_AggregateOperandDistinguishesLiteralCase(t *testing.T) {
 		`CREATE TABLE sales (id BIGINT, "Region" STRING, "Amount" BIGINT, plain BIGINT, PRIMARY KEY (id))`)
 	exec(setup, "CREATE SCHEMA /FRL/testdb_agg_literal_case/s WITH TEMPLATE agg_literal_case")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_LITERAL_CASE?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_LITERAL_CASE?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -174,12 +176,12 @@ func TestFDB_AggregateOperandDistinguishesLiteralCase(t *testing.T) {
 // a loud error. Correct-or-loud is only correct if "loud" stays reserved for
 // actually-wrong states.
 func TestFDB_AggregateOperandResolvesThroughADerivedTable(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_agg_derived_strip")
+	setup := testkit.OpenDB(t, "/FRL/testdb_agg_derived_strip")
 	exec := func(db *sql.DB, stmt string) {
 		t.Helper()
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -191,7 +193,7 @@ func TestFDB_AggregateOperandResolvesThroughADerivedTable(t *testing.T) {
 		`CREATE TABLE sales (id BIGINT, "Region" STRING, "Amount" BIGINT, plain BIGINT, PRIMARY KEY (id))`)
 	exec(setup, "CREATE SCHEMA /FRL/testdb_agg_derived_strip/s WITH TEMPLATE agg_derived_strip")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_DERIVED_STRIP?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_DERIVED_STRIP?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

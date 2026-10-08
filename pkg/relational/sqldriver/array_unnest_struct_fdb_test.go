@@ -6,6 +6,8 @@ import (
 	"sort"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -182,12 +184,12 @@ func structPair(v any) string {
 // non-resolution would pin a limitation as if desired. Neither is done here.
 func TestFDB_ArrayUnnestStruct(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -197,7 +199,7 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 	md := buildStructArrayMetadata(t)
 	tsDesc := md.GetRecordType("TS").Descriptor
 	itemsFD := tsDesc.Fields().ByName("ITEMS")
-	sitemDesc := arrayElementMessageDescriptor(itemsFD)
+	sitemDesc := testkit.ArrayElementMessageDescriptor(itemsFD)
 
 	mkItem := func(sku string, qty int64) protoreflect.Value {
 		im := dynamicpb.NewMessage(sitemDesc)
@@ -209,7 +211,7 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 		m := dynamicpb.NewMessage(tsDesc)
 		m.Set(tsDesc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(tsDesc.Fields().ByName("NAME"), protoreflect.ValueOfString(name))
-		setArrayField(m, itemsFD, items...)
+		testkit.SetArrayField(m, itemsFD, items...)
 		return m
 	}
 
@@ -278,7 +280,7 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
-		got := queryLabels(t, sql, md)
+		got := testkit.QueryLabels(t, sql, md)
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("columns %q\n got=%v\nwant=%v\nplan=%s", sql, got, want, plan.Explain())
 		}
@@ -292,7 +294,7 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 		for _, r := range rows {
 			// The element datum is the WHOLE struct (SKU+QTY together) — both
 			// fields present in a single column value. One column, so slot 0.
-			got = append(got, structPair(positionalSlots(r)[0]))
+			got = append(got, structPair(testkit.PositionalSlots(r)[0]))
 		}
 		sort.Strings(got)
 		want := []string{"a:10", "b:20", "c:30"}
@@ -307,7 +309,7 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 		got := make([]string, 0, len(rows))
 		// Slots by POSITION, matching the projection (ID, X).
 		for _, r := range rows {
-			s := positionalSlots(r)
+			s := testkit.PositionalSlots(r)
 			got = append(got, fmt.Sprintf("%v|%s", s[0], structPair(s[1])))
 		}
 		sort.Strings(got)
@@ -333,7 +335,7 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 		got := make([]string, 0, len(rows))
 		// Slots by POSITION, matching the projection (ID, X, O).
 		for _, r := range rows {
-			s := positionalSlots(r)
+			s := testkit.PositionalSlots(r)
 			got = append(got, fmt.Sprintf("%v|%s|%v", s[0], structPair(s[1]), s[2]))
 		}
 		sort.Strings(got)

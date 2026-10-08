@@ -33,20 +33,22 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateGroupKeyQualifierAndAliasBinding(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aggkname")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggkname")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE aggkname "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggkname")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggkname")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE aggkname "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggkname/s WITH TEMPLATE aggkname")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGKNAME?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggkname/s WITH TEMPLATE aggkname")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGKNAME?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -54,7 +56,7 @@ func TestFDB_AggregateGroupKeyQualifierAndAliasBinding(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// a has 2 distinct values (10, 11); b has 3 (20, 30, 40); id has 3.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1, 10, 20), (2, 10, 30), (3, 11, 40)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1, 10, 20), (2, 10, 30), (3, 11, 40)")
 
 	cases := []struct {
 		query string

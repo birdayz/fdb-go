@@ -12,6 +12,8 @@ import (
 	"reflect"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -30,7 +32,7 @@ import (
 
 func TestFDB_AggregateIndexSignedZeroRangeSet(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	for _, width := range []string{"DOUBLE", "FLOAT"} {
@@ -44,7 +46,7 @@ func runAggregateSignedZeroRangeSet(t *testing.T, width string) {
 	t.Helper()
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -185,7 +187,7 @@ func runAggregateSignedZeroRangeSet(t *testing.T, width string) {
 				// Reading them by name would resolve each one regardless of which
 				// slot it actually occupies, so a permuted row — a mis-bound window
 				// — would type-assert cleanly and answer correctly here.
-				slots := positionalSlots(result)
+				slots := testkit.PositionalSlots(result)
 				if len(slots) != 3 {
 					return nil, fmt.Errorf("aggregate row has %d slots, want 3 (G, W, SUM(VAL))", len(slots))
 				}

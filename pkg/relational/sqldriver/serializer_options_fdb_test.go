@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/keystoretest"
 	"fdb.dev/pkg/relational/api"
@@ -27,7 +29,7 @@ import (
 // check would give. Java's serialization-options.yamsql measures the reads.
 func TestFDB_WritesOverARowTheConnectionCannotRead(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/TEST/SER_NO_KEY", "SER_NO_KEY", `create table t(id bigint, s string, primary key(id))`)
+	db := testkit.SetupErrorDB(t, "/TEST/SER_NO_KEY", "SER_NO_KEY", `create table t(id bigint, s string, primary key(id))`)
 	ctx := context.Background()
 
 	keyStore := filepath.Join(t.TempDir(), "keys.p12")
@@ -100,10 +102,10 @@ func TestFDB_WritesOverARowTheConnectionCannotRead(t *testing.T) {
 // store.)
 func TestFDB_FleetBuildsAnEncryptedTenantThroughItsSerializer(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	const dbPath = "/FRL/testdb_fleet_encrypted"
 	const tmplName = "FLEETENC"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -117,23 +119,23 @@ func TestFDB_FleetBuildsAnEncryptedTenantThroughItsSerializer(t *testing.T) {
 	if err := keystoretest.WritePKCS12(keyStore, "fleetpass", "fleetpass", []keystoretest.Entry{{Alias: "k", Key: key}}); err != nil {
 		t.Fatal(err)
 	}
-	h.mustRun(t, "bootstrap", func(txn api.Transaction) error {
-		if err := h.cat.Initialize(txn); err != nil {
+	h.MustRun(t, "bootstrap", func(txn api.Transaction) error {
+		if err := h.Cat.Initialize(txn); err != nil {
 			return err
 		}
-		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.cat).Execute(txn); err != nil {
+		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.Cat).Execute(txn); err != nil {
 			return err
 		}
-		if err := ddl.NewSaveSchemaTemplateConstantAction(fleetTemplate(t, tmplName, 1, false), h.cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+		if err := ddl.NewSaveSchemaTemplateConstantAction(testkit.FleetTemplate(t, tmplName, 1, false), h.Cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
 			return err
 		}
-		return ddl.NewCreateSchemaConstantAction(dbPath, "S1", tmplName, h.cat, h.ks).Execute(txn)
+		return ddl.NewCreateSchemaConstantAction(dbPath, "S1", tmplName, h.Cat, h.Ks).Execute(txn)
 	})
 	// A connection encrypting as the tenant's does; a fresh one reads the
 	// template the schema is bound to when it opens.
 	encrypting := func() *sql.Conn {
 		t.Helper()
-		conn, err := fleetOpen(t, dbPath, "S1").Conn(ctx)
+		conn, err := testkit.FleetOpen(t, dbPath, "S1").Conn(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -168,35 +170,35 @@ func TestFDB_FleetBuildsAnEncryptedTenantThroughItsSerializer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := migrateFleet(t, h, dbPath, tmplName, fleet.Options{}); err != nil {
+	if _, err := testkit.MigrateFleet(t, h, dbPath, tmplName, fleet.Options{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
 	// The fan-out returns its tally and the targets' errors joined.
-	bare, err := fleet.BuildAll(ctx, h.db, h.cat, h.ks, dbPath, fleet.BuildOptions{Limit: 5})
+	bare, err := fleet.BuildAll(ctx, h.DB, h.Cat, h.Ks, dbPath, fleet.BuildOptions{Limit: 5})
 	if bare.Failed != 1 || bare.Built != 0 || err == nil || !strings.Contains(err.Error(), "this serializer cannot decrypt") {
 		t.Fatalf("without the serializer: %+v, %v; want the one target failed \"this serializer cannot decrypt\"", bare, err)
 	}
-	targets := fleetTargets(t, h, dbPath)
+	targets := testkit.FleetTargets(t, h, dbPath)
 	if len(targets) != 1 {
 		t.Fatalf("targets: %v", targets)
 	}
-	md, err := fleet.PinnedMetadata(ctx, h.db, h.cat, targets[0])
+	md, err := fleet.PinnedMetadata(ctx, h.DB, h.Cat, targets[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	ss, err := h.ks.SchemaSubspaceIn(ctx, h.db, targets[0].DatabaseID, targets[0].SchemaName)
+	ss, err := h.Ks.SchemaSubspaceIn(ctx, h.DB, targets[0].DatabaseID, targets[0].SchemaName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pending, err := fleet.PendingIndexes(ctx, h.db, md, ss, ser); err != nil || len(pending) != 1 || pending[0].Name != "T_BY_C" {
-		t.Fatalf("after the failed build: pending %v, %v; want [T_BY_C] still pending", fleetIndexNames(pending), err)
+	if pending, err := fleet.PendingIndexes(ctx, h.DB, md, ss, ser); err != nil || len(pending) != 1 || pending[0].Name != "T_BY_C" {
+		t.Fatalf("after the failed build: pending %v, %v; want [T_BY_C] still pending", testkit.FleetIndexNames(pending), err)
 	}
-	built, err := fleet.BuildAll(ctx, h.db, h.cat, h.ks, dbPath, fleet.BuildOptions{Options: fleet.Options{Serializer: ser}, Limit: 5})
+	built, err := fleet.BuildAll(ctx, h.DB, h.Cat, h.Ks, dbPath, fleet.BuildOptions{Options: fleet.Options{Serializer: ser}, Limit: 5})
 	if err != nil || built.Built != 1 || built.Failed != 0 {
 		t.Fatalf("with the serializer: %+v, %v; want the target built", built, err)
 	}
-	stats, err := fleet.CollectAllStatistics(ctx, h.db, h.cat, h.ks, dbPath, fleet.StatisticsOptions{Options: fleet.Options{Serializer: ser}})
+	stats, err := fleet.CollectAllStatistics(ctx, h.DB, h.Cat, h.Ks, dbPath, fleet.StatisticsOptions{Options: fleet.Options{Serializer: ser}})
 	if err != nil || stats.Collected != 1 || stats.Failed != 0 {
 		t.Fatalf("statistics with the serializer: %+v, %v; want the target collected", stats, err)
 	}

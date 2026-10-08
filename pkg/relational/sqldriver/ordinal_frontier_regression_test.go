@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_NoSpuriousSort is an ordering-propagation pin: ordinal (positional)
@@ -19,12 +21,12 @@ import (
 // index-ordered scan.
 func TestFDB_NoSpuriousSort(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "r173sort",
+	db := testkit.SetupPlanShapeDB(t, "r173sort",
 		"CREATE TABLE items (id BIGINT, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_price ON items (price)")
 	for _, it := range []struct{ id, price int }{
@@ -39,7 +41,7 @@ func TestFDB_NoSpuriousSort(t *testing.T) {
 	// idx_price and must be pulled up THROUGH the projection (whose output column
 	// identities are now ordinal). No InMemorySort may appear.
 	q := "SELECT id, price FROM items ORDER BY price"
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "IndexScan") {
 		t.Fatalf("expected IndexScan (index provides ORDER BY ordering), got: %s", plan)
@@ -48,7 +50,7 @@ func TestFDB_NoSpuriousSort(t *testing.T) {
 		t.Fatalf("spurious-sort regression: index-ordered single-table ORDER BY gained an InMemorySort: %s", plan)
 	}
 
-	got := collectRows(t, db, q)
+	got := testkit.CollectRows(t, db, q)
 	wantPrice := []int64{25, 50, 150, 200, 500}
 	if len(got) != len(wantPrice) {
 		t.Fatalf("want %d rows, got %d: %v", len(wantPrice), len(got), got)
@@ -68,12 +70,12 @@ func TestFDB_NoSpuriousSort(t *testing.T) {
 // grouped rows.
 func TestFDB_GroupByHavingOrderBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "r173grp",
+	db := testkit.SetupPlanShapeDB(t, "r173grp",
 		"CREATE TABLE items (id BIGINT, category STRING, price BIGINT, PRIMARY KEY (id))")
 	for _, it := range []struct {
 		id       int
@@ -97,7 +99,7 @@ func TestFDB_GroupByHavingOrderBy(t *testing.T) {
 	// single-table frontier, resolved by ordinal. books(2), electronics(3) pass
 	// HAVING; clothing(1) is filtered out.
 	q := "SELECT category, COUNT(*) FROM items GROUP BY category HAVING COUNT(*) >= 2 ORDER BY category"
-	got := collectRows(t, db, q)
+	got := testkit.CollectRows(t, db, q)
 	want := []struct {
 		cat string
 		cnt int64
@@ -116,7 +118,7 @@ func TestFDB_GroupByHavingOrderBy(t *testing.T) {
 
 	// SUM aggregate with GROUP BY + ORDER BY on the grouped key over the frontier.
 	q2 := "SELECT category, SUM(price) FROM items GROUP BY category ORDER BY category"
-	got2 := collectRows(t, db, q2)
+	got2 := testkit.CollectRows(t, db, q2)
 	want2 := []struct {
 		cat string
 		sum int64

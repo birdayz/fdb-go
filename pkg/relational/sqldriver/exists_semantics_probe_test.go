@@ -11,32 +11,34 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ExistsSemanticsProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_exists")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_exists")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE existstpl "+
 			"CREATE TABLE parent (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE child (id BIGINT, pid BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX child_pid ON child (pid)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists/s WITH TEMPLATE existstpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists/s WITH TEMPLATE existstpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO parent (id) VALUES (1), (2), (3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO parent (id) VALUES (1), (2), (3)")
 	// children for p1 (x2), p2 (x1); none for p3. Plus orphan pid=99 and NULL pid.
-	mwjoMustExec(t, db, ctx, "INSERT INTO child (id, pid) VALUES (10,1),(11,1),(12,2),(13,99)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO child (id) VALUES (14)") // pid NULL
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO child (id, pid) VALUES (10,1),(11,1),(12,2),(13,99)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO child (id) VALUES (14)") // pid NULL
 
 	ids := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

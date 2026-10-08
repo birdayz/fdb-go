@@ -10,26 +10,28 @@ import (
 	"fmt"
 	"math"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AvgFractionalProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_avgfracp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_avgfracp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_avgfracp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_avgfracp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE avgfracp CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_avgfracp/s WITH TEMPLATE avgfracp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AVGFRACP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_avgfracp/s WITH TEMPLATE avgfracp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AVGFRACP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 1), (2, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 1), (2, 2)")
 
 	t.Run("avg_int_is_fractional_double", func(t *testing.T) {
 		var f float64
@@ -52,7 +54,7 @@ func TestFDB_AvgFractionalProbe(t *testing.T) {
 		}
 	})
 	t.Run("avg_whole_result", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (3, 3)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (3, 3)")
 		var f float64
 		if err := db.QueryRowContext(ctx, "SELECT AVG(v) FROM t").Scan(&f); err != nil {
 			t.Fatalf("scan: %v", err)

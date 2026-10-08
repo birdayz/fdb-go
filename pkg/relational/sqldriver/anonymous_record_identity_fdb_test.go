@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/internal/queryfixtures"
 )
@@ -25,21 +27,21 @@ import (
 // api.Struct; the top-level control beside them.
 func TestFDB_AnonymousRecordsThroughADerivedRowKeepDistinctIdentities(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_anonrec")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_anonrec")
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE anonrec_tpl
+	setup := testkit.OpenDB(t, "/FRL/testdb_anonrec")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_anonrec")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE anonrec_tpl
 		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_anonrec/s1 WITH TEMPLATE anonrec_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_ANONREC?cluster_file=%s&schema=S1", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_anonrec/s1 WITH TEMPLATE anonrec_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_ANONREC?cluster_file=%s&schema=S1", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1, 1)")
 
 	const body = `SELECT (1 AS lat, 2 AS lon) AS s, (3 AS z) AS q FROM t`
 	for _, query := range []string{
@@ -93,21 +95,21 @@ func TestFDB_AnonymousRecordsThroughADerivedRowKeepDistinctIdentities(t *testing
 // the bridge while the same literal at top level kept RECORD.
 func TestFDB_ADeclaredRecordNameSurvivesTheBridge(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_namedrec")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_namedrec")
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE namedrec_tpl
+	setup := testkit.OpenDB(t, "/FRL/testdb_namedrec")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_namedrec")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE namedrec_tpl
 		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_namedrec/s1 WITH TEMPLATE namedrec_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NAMEDREC?cluster_file=%s&schema=S1", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_namedrec/s1 WITH TEMPLATE namedrec_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NAMEDREC?cluster_file=%s&schema=S1", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1, 1)")
 
 	for _, tc := range []struct {
 		query      string
@@ -171,21 +173,21 @@ func TestFDB_ADeclaredRecordNameSurvivesTheBridge(t *testing.T) {
 // them are structs.
 func TestFDB_OneDeclaredNameOverTwoShapesIsRefused(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_samename")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_samename")
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE samename_tpl
+	setup := testkit.OpenDB(t, "/FRL/testdb_samename")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_samename")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE samename_tpl
 		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_samename/s1 WITH TEMPLATE samename_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_SAMENAME?cluster_file=%s&schema=S1", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_samename/s1 WITH TEMPLATE samename_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_SAMENAME?cluster_file=%s&schema=S1", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1, 1)")
 
 	for _, query := range []string{
 		`SELECT [STRUCT foo (1 AS p)], [STRUCT foo (2 AS p, 3 AS q)] FROM t`,
@@ -253,28 +255,28 @@ const duplicateNameJoinQuery = queryfixtures.DuplicateNameJoinQuery
 // join still returns both distinct ID slots, including both null-extended sides.
 func TestFDB_ADuplicateNameJoinPreservesComputedStructs(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dupjoin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dupjoin")
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE dupjoin_tpl
+	setup := testkit.OpenDB(t, "/FRL/testdb_dupjoin")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dupjoin")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE dupjoin_tpl
 		CREATE TYPE AS STRUCT st_s (p BIGINT)
 		CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id))
 		CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id))
 		CREATE TABLE c_md (id BIGINT, PRIMARY KEY (id))
 		CREATE TABLE s_md (id BIGINT, r st_s, PRIMARY KEY (id))`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dupjoin/s1 WITH TEMPLATE dupjoin_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DUPJOIN?cluster_file=%s&schema=S1", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dupjoin/s1 WITH TEMPLATE dupjoin_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DUPJOIN?cluster_file=%s&schema=S1", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO a_md VALUES (1, 'x'), (2, 'y')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b_md VALUES (1, 10), (2, 20)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c_md VALUES (1), (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO s_md VALUES (1, (7))")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a_md VALUES (1, 'x'), (2, 'y')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b_md VALUES (1, 10), (2, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c_md VALUES (1), (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO s_md VALUES (1, (7))")
 
 	for _, query := range []string{witnessWithRepeatedID, controlWithoutRepeatedID, wrapperKeptRepeatedID} {
 		computed, stored := computedAndStoredRow(t, db, ctx, query)

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExists_Round4 pins two silent-wrong
@@ -27,19 +29,19 @@ import (
 //	        for real.
 func TestFDB_ProjectedExists_Round4(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_projexists_r4")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r4")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r4_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_projexists_r4")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r4")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r4_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, val BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r4/s WITH TEMPLATE projexists_r4_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r4/s WITH TEMPLATE projexists_r4_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R4?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R4?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -49,8 +51,8 @@ func TestFDB_ProjectedExists_Round4(t *testing.T) {
 	// DESC yields ids 5,4,3,2,1 — distinct from any id-order default; a no-op
 	// sort would visibly fail). t2 references t1 ids {1,3,5}; each t2 row carries
 	// a val (used for the correlated-scalar case).
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1, 11), (200, 3, 33), (300, 5, 55)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1, 11), (200, 3, 33), (300, 5, 55)")
 
 	requireSortOverFlatMap := func(t *testing.T, q string) {
 		t.Helper()

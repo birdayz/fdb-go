@@ -23,21 +23,23 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateOverProjectingDerivedSource(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aggproj_ord")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggproj_ord")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggproj_ord")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggproj_ord")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggproj_ord "+
 			"CREATE TABLE t1 (id BIGINT, y BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggproj_ord/s WITH TEMPLATE aggproj_ord")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGPROJ_ORD?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggproj_ord/s WITH TEMPLATE aggproj_ord")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGPROJ_ORD?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -48,8 +50,8 @@ func TestFDB_AggregateOverProjectingDerivedSource(t *testing.T) {
 	// (y,b) ∈ {(10,100),(10,200),(20,100),(20,200)}. Projected to (y, L=b),
 	// GROUP BY L: group b=100 → {y=10,y=20} MAX(y)=20, MIN(y)=10, COUNT=2, SUM=30;
 	// group b=200 → identical. Two groups.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t1 (id, y) VALUES (1, 10), (2, 20)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t2 (id, b) VALUES (1, 100), (2, 200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 (id, y) VALUES (1, 10), (2, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t2 (id, b) VALUES (1, 100), (2, 200)")
 
 	pairs := func(t *testing.T, q string) string {
 		rows, err := db.QueryContext(ctx, q)

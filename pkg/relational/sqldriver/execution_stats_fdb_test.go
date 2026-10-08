@@ -29,6 +29,8 @@ import (
 	"sync"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -87,7 +89,7 @@ const execStatsGroups = 5
 // index on (g) is what makes the selectivity dimension testable at all.
 func setupExecStatsDB(t *testing.T, name string) *sql.DB {
 	t.Helper()
-	db := setupErrorTestDB(t, "/FRL/testdb_"+name, name,
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_"+name, name,
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON t (g)")
 	ctx := context.Background()
@@ -105,7 +107,7 @@ func setupExecStatsDB(t *testing.T, name string) *sql.DB {
 func pinStatsConn(t *testing.T, db *sql.DB, extra func(*embedded.EmbeddedConnection)) (*sql.Conn, *statsCapture) {
 	t.Helper()
 	cap := &statsCapture{}
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetExecutionStatsLogger(cap)
 		if extra != nil {
 			extra(ec)
@@ -208,7 +210,7 @@ func TestFDB_ExecutionStats_IndexEqualityIsSelective(t *testing.T) {
 	ctx := context.Background()
 
 	const q = "SELECT id FROM t WHERE g = 3"
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	if !strings.Contains(strings.ToLower(plan), "t_g") {
 		t.Fatalf("plan %q does not use the t_g index; the selectivity claim would be untestable", plan)
 	}
@@ -572,7 +574,7 @@ func TestFDB_ExecutionStats_NilLoggerIsSilentAndHarmless(t *testing.T) {
 
 	// And the error path, whose statsErr staging runs whether or not a logger
 	// is present.
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 2).Build())
 		ec.SetFailOnScanLimitReached(true)

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -22,7 +24,7 @@ import (
 // never-advancing continuation.
 func TestFDB_UnorderedUnion_Continuation_ResumeAcrossPages(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -32,7 +34,7 @@ func TestFDB_UnorderedUnion_Continuation_ResumeAcrossPages(t *testing.T) {
 	// UNORDERED union (a plain per-PK UNION ALL merges ordered).
 	const q = "SELECT g, COUNT(*) AS cnt FROM a GROUP BY g UNION ALL SELECT g, COUNT(*) AS cnt FROM b GROUP BY g"
 
-	if plan := planExplainVia(t, ctx, db, q); !strings.Contains(plan, "UnorderedUnion") {
+	if plan := testkit.ExplainVia(t, ctx, db, q); !strings.Contains(plan, "UnorderedUnion") {
 		t.Fatalf("aggregate UNION ALL must plan as UnorderedUnion (this test pins its continuation), got: %s", plan)
 	}
 
@@ -44,7 +46,7 @@ func TestFDB_UnorderedUnion_Continuation_ResumeAcrossPages(t *testing.T) {
 		t.Fatalf("unpaginated aggregate UNION ALL wrong:\n got  = %v\n want = %v", unpaged, want)
 	}
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 1).
 			Build())
@@ -65,7 +67,7 @@ func uuContDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 	const dbPath = "/FRL/uu_cont"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -77,7 +79,7 @@ func uuContDB(t *testing.T) *sql.DB {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE uu_cont_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

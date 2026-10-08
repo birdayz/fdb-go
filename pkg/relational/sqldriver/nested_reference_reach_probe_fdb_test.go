@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_NestedReferenceReachProbe records the MEASURED reach of two reference
@@ -48,13 +50,13 @@ import (
 // Each arm names, in its failure message, what gets RE-ARMED if it changes.
 func TestFDB_NestedReferenceReachProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	const dbPath = "/FRL/testdb_nested_reach_probe"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -70,7 +72,7 @@ func TestFDB_NestedReferenceReachProbe(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -140,7 +142,7 @@ func TestFDB_NestedReferenceReachProbe(t *testing.T) {
 		tc := cases[i]
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := runShape(t, ctx, db, tc.sql)
+			got := testkit.RunShape(t, ctx, db, tc.sql)
 			if got != tc.want {
 				t.Fatalf("query %q\n   got: %s\n  want: %s\n  RE-ARMED IF THIS CHANGES: %s",
 					tc.sql, got, tc.want, tc.rearms)

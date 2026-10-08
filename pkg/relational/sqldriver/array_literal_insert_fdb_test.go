@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -25,7 +27,7 @@ func arrayInsertDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
 	dbPath := "/FRL/arrins_" + tag
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -40,7 +42,7 @@ func arrayInsertDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -123,19 +125,19 @@ func TestFDB_ArrayLiteralInsertValues(t *testing.T) {
 		// Java: no STRING→INT promotion edge → SemanticException
 		// INCOMPATIBLE_TYPE → CANNOT_CONVERT_TYPE (SQLSTATE 22000).
 		_, err := db.ExecContext(ctx, "INSERT INTO t_int VALUES (90, ['a', 'b'])")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 
 	t.Run("scalar_into_array_column_rejected_22000", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, "INSERT INTO t_int VALUES (91, 5)")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 
 	t.Run("null_element_rejected", func(t *testing.T) {
 		// Java 4.14.2.0 refuses a NULL array element before planning:
 		// RelationalException 0A000 "An ARRAY value cannot have NULL elements".
 		_, err := db.ExecContext(ctx, "INSERT INTO t_int VALUES (92, [10, NULL, 30])")
-		requireSQLSTATE(t, err, api.ErrCodeUnsupportedOperation)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeUnsupportedOperation)
 	})
 
 	t.Run("empty_array", func(t *testing.T) {
@@ -236,12 +238,12 @@ func TestFDB_ArrayLiteralInsertWireBytes(t *testing.T) {
 	desc := md.GetRecordType("T_INT").Descriptor
 
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	rlDB := recordlayer.NewFDBDatabase(rawDB)
-	ss := relationalStoreSubspace(t, "/FRL/ARRINS_WIRE", "MAIN") // CREATE DATABASE /FRL/arrins_wire stored it folded
+	ss := testkit.RelationalStoreSubspace(t, "/FRL/ARRINS_WIRE", "MAIN") // CREATE DATABASE /FRL/arrins_wire stored it folded
 
 	var storedBytes []byte
 	_, err = rlDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -275,7 +277,7 @@ func TestFDB_ArrayLiteralInsertWireBytes(t *testing.T) {
 	// via setArrayField).
 	golden := dynamicpb.NewMessage(desc)
 	golden.Set(desc.Fields().ByName("PK"), protoreflect.ValueOfInt64(7))
-	setArrayField(golden, desc.Fields().ByName("X"),
+	testkit.SetArrayField(golden, desc.Fields().ByName("X"),
 		protoreflect.ValueOfInt32(10), protoreflect.ValueOfInt32(20), protoreflect.ValueOfInt32(30))
 	goldenBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(golden)
 	if err != nil {

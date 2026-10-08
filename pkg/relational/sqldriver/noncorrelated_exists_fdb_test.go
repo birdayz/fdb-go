@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"reflect"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_NonCorrelatedExistsEmptySubquery pins that a non-correlated
@@ -15,7 +17,7 @@ import (
 func TestFDB_NonCorrelatedExistsEmptySubquery(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/diag_nce")
+	setup := testkit.OpenDB(t, "/FRL/diag_nce")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/diag_nce"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -27,7 +29,7 @@ func TestFDB_NonCorrelatedExistsEmptySubquery(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/diag_nce/main WITH TEMPLATE diag_nce_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql:///FRL/DIAG_NCE?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql:///FRL/DIAG_NCE?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

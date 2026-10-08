@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_NestedSortKeyThroughTheProjectedExistsFold is the earning test for the
@@ -46,30 +48,30 @@ import (
 // [1 2 3] rather than hidden behind a tie.
 func TestFDB_NestedSortKeyThroughTheProjectedExistsFold(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_nsk_fold")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nsk_fold")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nsk_fold_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_nsk_fold")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nsk_fold")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nsk_fold_tmpl "+
 		"CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t1(id BIGINT, n nst, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nsk_fold/s WITH TEMPLATE nsk_fold_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nsk_fold/s WITH TEMPLATE nsk_fold_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NSK_FOLD?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NSK_FOLD?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
 	// n.sk runs OPPOSITE to id, so the two orderings are distinguishable.
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (50, 1)), (2, (40, 2)), (3, (30, 3))")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3)")
-	mustExec(t, db, ctx, "INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (50, 1)), (2, (40, 2)), (3, (30, 3))")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)")
 
 	firstCol := func(t *testing.T, q string) []int64 {
 		t.Helper()
@@ -469,21 +471,21 @@ func TestFDB_NestedSortKeyThroughTheProjectedExistsFold(t *testing.T) {
 // would otherwise make a broken engine look right.
 func TestFDB_NestedCorrelationThroughAJoinsMergedRow(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_nested_corr")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nested_corr")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nested_corr_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_nested_corr")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nested_corr")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nested_corr_tmpl "+
 		"CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t1(id BIGINT, n nst, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nested_corr/s WITH TEMPLATE nested_corr_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nested_corr/s WITH TEMPLATE nested_corr_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTED_CORR?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTED_CORR?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -508,11 +510,11 @@ func TestFDB_NestedCorrelationThroughAJoinsMergedRow(t *testing.T) {
 	// is a stronger mutation than a real defect would be: a producer that emits
 	// the wrong member emits it one way. With the `co` pair present, each
 	// direction reds on the arm that owns its member.
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (50, 1)), (2, (40, 2)), (3, (30, 3))")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 30), (200, 50), (300, 2)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (50, 1)), (2, (40, 2)), (3, (30, 3))")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 30), (200, 50), (300, 2)")
 	// One t3 row per t1 row: the join is row-preserving, so it CANNOT change the
 	// answer. That is what licenses comparing the two sides directly.
-	mustExec(t, db, ctx, "INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)")
 
 	ids := func(t *testing.T, q string) []int64 {
 		t.Helper()

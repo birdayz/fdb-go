@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"github.com/onsi/gomega"
 )
 
@@ -16,14 +18,14 @@ import (
 // the seed's names (a.parent); only the main query sees the list's names.
 func TestFDB_RecursiveCTERename(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
 	dbPath := "/FRL/rcte_rename"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	g.Expect(setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcte_rename_tmpl "+
@@ -31,7 +33,7 @@ func TestFDB_RecursiveCTERename(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE rcte_rename_tmpl", dbPath))).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

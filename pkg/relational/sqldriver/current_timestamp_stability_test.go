@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -61,7 +63,7 @@ const minStraddleExecs = 3
 // per statement in every execution.
 func TestFDB_CurrentTimestamp_StatementStable_Select(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_cts_select", "cts_select",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_cts_select", "cts_select",
 		"CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -127,7 +129,7 @@ func TestFDB_CurrentTimestamp_StatementStable_Select(t *testing.T) {
 // boundary between the two operand evaluations).
 func TestFDB_CurrentTimestamp_StatementStable_Where(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_cts_where", "cts_where",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_cts_where", "cts_where",
 		"CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -193,11 +195,11 @@ func seedCurrentTimestampItems(t *testing.T, db *sql.DB, total int, onRetry func
 			}
 			fmt.Fprintf(&sb, "(%d)", lo+i)
 		}
-		retryTx(t, db, txRetryOpts{OnRetry: onRetry}, func(a txAttempt) error {
-			if _, err := a.tx.ExecContext(ctx, sb.String()); err != nil {
+		testkit.RetryTx(t, db, testkit.TxRetryOpts{OnRetry: onRetry}, func(a testkit.TxAttempt) error {
+			if _, err := a.Tx.ExecContext(ctx, sb.String()); err != nil {
 				return fmt.Errorf("seed INSERT batch at %d: %w", lo, err)
 			}
-			return a.tx.Commit()
+			return a.Tx.Commit()
 		})
 	}
 }
@@ -211,7 +213,7 @@ func TestCurrentTimestampSeedRetriesExpiredTransaction(t *testing.T) {
 	backend.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 	key := "sim://" + t.Name()
 	t.Cleanup(sqldriver.RegisterBackend(key, backend))
-	setup := openSpiked(t, key, "/FRL/timestamp_seed", "")
+	setup := testkit.OpenSpiked(t, key, "/FRL/timestamp_seed", "")
 	ctx := context.Background()
 	for _, ddl := range []string{
 		"CREATE DATABASE /FRL/timestamp_seed",
@@ -222,7 +224,7 @@ func TestCurrentTimestampSeedRetriesExpiredTransaction(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	db := openSpiked(t, key, "/FRL/timestamp_seed", "s")
+	db := testkit.OpenSpiked(t, key, "/FRL/timestamp_seed", "s")
 	db.SetMaxOpenConns(1)
 	// Initialize the query connection before arming the DML fault. Catalog
 	// bootstrap has its own idempotent transaction and must not consume it.

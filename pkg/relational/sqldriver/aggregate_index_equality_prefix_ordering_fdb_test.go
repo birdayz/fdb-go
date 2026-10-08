@@ -19,13 +19,15 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_AggregateIndexEqualityPrefixOrdering(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -34,7 +36,7 @@ func TestFDB_AggregateIndexEqualityPrefixOrdering(t *testing.T) {
 		"CREATE INDEX t_max_b_a AS SELECT MAX(pk2) FROM t GROUP BY b, a " +
 		"CREATE INDEX t_cnt_pk1_a AS SELECT COUNT(*) FROM t GROUP BY pk1, a " +
 		"CREATE INDEX t_cnt_d_a AS SELECT COUNT(*) FROM t GROUP BY d, a "
-	w := mmNewTwin(t, ctx, "/FRL/testdb_aggprefixord", "aggprefixord", table, indexes)
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_aggprefixord", "aggprefixord", table, indexes)
 
 	var rows []string
 	for pk1 := int64(0); pk1 < 6; pk1++ {
@@ -91,8 +93,8 @@ func TestFDB_AggregateIndexEqualityPrefixOrdering(t *testing.T) {
 	sweep := func(stage string) {
 		t.Helper()
 		for _, q := range reads {
-			gi, ei := mmRows(t, ctx, w.idx, q)
-			gn, en := mmRows(t, ctx, w.plain, q)
+			gi, ei := testkit.QueryRowStrings(t, ctx, w.Idx, q)
+			gn, en := testkit.QueryRowStrings(t, ctx, w.Plain, q)
 			if ei != nil || en != nil {
 				t.Errorf("%s: query failed\n  q: %s\n  indexed:   %v\n  unindexed: %v", stage, q, ei, en)
 				continue
@@ -110,22 +112,22 @@ func TestFDB_AggregateIndexEqualityPrefixOrdering(t *testing.T) {
 						t.Fatalf("unparsed LIMIT in %s", q)
 					}
 				}
-				fi, fe := mmRows(t, ctx, w.idx, full)
+				fi, fe := testkit.QueryRowStrings(t, ctx, w.Idx, full)
 				if fe != nil {
 					t.Errorf("%s: query failed\n  q: %s\n  indexed: %v", stage, full, fe)
 					continue
 				}
 				want := fi[min(window[1], len(fi)):min(window[1]+window[0], len(fi))]
-				if !mmEqRows(gi, want) {
+				if !testkit.EqualRows(gi, want) {
 					t.Errorf("%s: the LIMIT window is not the unlimited read's\n  q: %s\n  got:  %v\n  want: %v", stage, q, gi, want)
 				}
 				gi = fi
-				if gn, en = mmRows(t, ctx, w.plain, full); en != nil {
+				if gn, en = testkit.QueryRowStrings(t, ctx, w.Plain, full); en != nil {
 					t.Errorf("%s: query failed\n  q: %s\n  unindexed: %v", stage, full, en)
 					continue
 				}
 			}
-			if !mmAggregateIndexRowsAgree(gi, gn, mmTrailingAggregates(q)) {
+			if !testkit.MmAggregateIndexRowsAgree(gi, gn, testkit.MmTrailingAggregates(q)) {
 				t.Errorf("%s: the aggregate index's group order disagrees with the sorted oracle\n  q: %s\n  indexed  : %v\n  unindexed: %v\n  plan: %s",
 					stage, full, gi, gn, w.Explain(q))
 			}

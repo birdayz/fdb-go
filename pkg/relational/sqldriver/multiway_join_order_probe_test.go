@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_MultiwayJoinOrder_Probe is the acceptance test for RFC-042:
@@ -28,38 +30,38 @@ import (
 // qualifies QOV-child FieldValues so the join returns rows at scale.
 func TestFDB_MultiwayJoinOrder_Probe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_mwjo")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mwjo")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_mwjo")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mwjo")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE mwjo_tmpl "+
 			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_by_t1 ON t2 (t1_id) "+
 			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mwjo/s WITH TEMPLATE mwjo_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mwjo/s WITH TEMPLATE mwjo_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MWJO?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MWJO?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO t1 VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 VALUES (1)")
 	for i := 1; i <= 20; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t2 VALUES (%d, 1)", i))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t2 VALUES (%d, 1)", i))
 	}
 	for i := 1; i <= 200; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t3 VALUES (%d, %d)", i, (i%20)+1))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t3 VALUES (%d, %d)", i, (i%20)+1))
 	}
 
-	planExplain := mwjoExplainer(t, db, ctx)
+	planExplain := testkit.Explainer(t, db, ctx)
 
 	qBigFirst := "SELECT t1.id FROM t3, t2, t1 WHERE t3.t2_id = t2.id AND t2.t1_id = t1.id"
 	qSmallFirst := "SELECT t1.id FROM t1, t2, t3 WHERE t3.t2_id = t2.id AND t2.t1_id = t1.id"
@@ -140,35 +142,35 @@ func TestFDB_MultiwayJoinOrder_Probe(t *testing.T) {
 // join, whichever way the planner nests it.
 func TestFDB_NestedJoinUnqualifiedProjection(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_nestproj")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nestproj")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_nestproj")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nestproj")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nestproj_tmpl "+
 			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_by_t1 ON t2 (t1_id) "+
 			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nestproj/s WITH TEMPLATE nestproj_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nestproj/s WITH TEMPLATE nestproj_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTPROJ?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTPROJ?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO t1 VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 VALUES (1)")
 	for i := 1; i <= 5; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t2 VALUES (%d, 1)", i))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t2 VALUES (%d, 1)", i))
 	}
 	for i := 1; i <= 30; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t3 VALUES (%d, %d)", i, (i%5)+1))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t3 VALUES (%d, %d)", i, (i%5)+1))
 	}
 
 	// t1_id is unique to t2, t2_id unique to t3 — both projected UNQUALIFIED, both

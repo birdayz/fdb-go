@@ -52,6 +52,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func aosrMustExec(t *testing.T, db *sql.DB, ctx context.Context, stmt string) {
@@ -62,12 +64,12 @@ func aosrMustExec(t *testing.T, db *sql.DB, ctx context.Context, stmt string) {
 }
 
 func TestFDB_AggregateOutputSlotIsRecordedAtComposition(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_agg_slot_recorded")
+	setup := testkit.OpenDB(t, "/FRL/testdb_agg_slot_recorded")
 	aosrMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_agg_slot_recorded")
 	aosrMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE agg_slot_recorded "+
@@ -75,7 +77,7 @@ func TestFDB_AggregateOutputSlotIsRecordedAtComposition(t *testing.T) {
 			"CREATE TABLE it (k BIGINT, o_k BIGINT, v BIGINT, PRIMARY KEY (k))")
 	aosrMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_agg_slot_recorded/s WITH TEMPLATE agg_slot_recorded")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_SLOT_RECORDED?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_AGG_SLOT_RECORDED?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

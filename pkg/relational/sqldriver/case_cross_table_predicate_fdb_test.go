@@ -15,30 +15,32 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CaseCrossTablePredicate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_case_xtab")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_case_xtab")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_case_xtab")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_case_xtab")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE case_xtab "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, y BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_case_xtab/s WITH TEMPLATE case_xtab")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_XTAB?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_case_xtab/s WITH TEMPLATE case_xtab")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_XTAB?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, y) VALUES (50, 5), (51, 99)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, y) VALUES (50, 5), (51, 99)")
 
 	cases := []struct {
 		name string
@@ -77,8 +79,8 @@ func TestFDB_CaseCrossTablePredicate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("query %q: %v", tc.q, err)
 			}
-			got := siScanRows(t, rows)
-			if !eqStrSlices(got, tc.want) {
+			got := testkit.ScanRowStrings(t, rows)
+			if !testkit.EqualStrings(got, tc.want) {
 				t.Errorf("%s rows = %v, want %v", tc.name, got, tc.want)
 			}
 		})

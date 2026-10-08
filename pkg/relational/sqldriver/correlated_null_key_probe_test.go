@@ -16,23 +16,25 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CorrelatedNullKeyJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_corrnull")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_corrnull")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_corrnull")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_corrnull")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE corrnull "+
 			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX a_k ON a (k) CREATE INDEX b_k ON b (k)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_corrnull/s WITH TEMPLATE corrnull")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRNULL?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_corrnull/s WITH TEMPLATE corrnull")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRNULL?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -56,8 +58,8 @@ func TestFDB_CorrelatedNullKeyJoin(t *testing.T) {
 			bVals = append(bVals, fmt.Sprintf("(%d, %d)", i, i))
 		}
 	}
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, k) VALUES "+strings.Join(aVals, ", "))
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, k) VALUES "+strings.Join(bVals, ", "))
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, k) VALUES "+strings.Join(aVals, ", "))
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, k) VALUES "+strings.Join(bVals, ", "))
 
 	scalar := func(q string) int64 {
 		var v int64

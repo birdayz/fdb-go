@@ -11,27 +11,29 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ScalarMathProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_smathp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_smathp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_smathp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_smathp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE smathp "+
 			"CREATE TABLE t (id BIGINT, n BIGINT, d DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_smathp/s WITH TEMPLATE smathp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SMATHP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_smathp/s WITH TEMPLATE smathp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SMATHP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, n, d) VALUES (1, -7, 2.5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, n, d) VALUES (1, -7, 2.5)")
 
 	f := func(expr string) float64 {
 		var v float64

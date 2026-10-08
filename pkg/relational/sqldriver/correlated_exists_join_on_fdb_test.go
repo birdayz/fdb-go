@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -40,30 +42,30 @@ import (
 // guards) would drop that preserved row and answer false.
 func TestFDB_CorrelatedExistsJoinOnEnforced(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_corr_exists_join_on"
-	setup := openTestDB(t, dbPath)
-	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cejo_tmpl "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cejo_tmpl "+
 		"CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid)) "+
 		"CREATE TABLE e (eid BIGINT, fid BIGINT, PRIMARY KEY (eid)) "+
 		"CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cejo_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cejo_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO p VALUES (1, 10), (2, 20), (3, 30)")
-	mustExec(t, db, ctx, "INSERT INTO q VALUES (1), (2)")
-	mustExec(t, db, ctx, "INSERT INTO e VALUES (1, 99), (2, 88)")
-	mustExec(t, db, ctx, "INSERT INTO f VALUES (88)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO p VALUES (1, 10), (2, 20), (3, 30)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO q VALUES (1), (2)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO e VALUES (1, 99), (2, 88)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO f VALUES (88)")
 
 	type idBool struct {
 		v int64
@@ -239,30 +241,30 @@ func TestFDB_CorrelatedExistsJoinOnEnforced(t *testing.T) {
 // misplaced ON.
 func TestFDB_CorrelatedExistsInnerThenOuterJoinLevel(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_corr_exists_mixed_join"
-	setup := openTestDB(t, dbPath)
-	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cemj_tmpl "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cemj_tmpl "+
 		"CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE e (eid BIGINT, fid BIGINT, PRIMARY KEY (eid)) "+
 		"CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid)) "+
 		"CREATE TABLE g (gid BIGINT, PRIMARY KEY (gid))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cemj_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cemj_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO p VALUES (5, 50), (7, 70)")
-	mustExec(t, db, ctx, "INSERT INTO e VALUES (1, 100)")
-	mustExec(t, db, ctx, "INSERT INTO f VALUES (200)")
-	mustExec(t, db, ctx, "INSERT INTO g VALUES (5)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO p VALUES (5, 50), (7, 70)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO e VALUES (1, 100)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO f VALUES (200)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO g VALUES (5)")
 
 	type idBool struct {
 		v int64
@@ -331,30 +333,30 @@ func TestFDB_CorrelatedExistsInnerThenOuterJoinLevel(t *testing.T) {
 //	p: (1, 10)
 func TestFDB_CorrelatedExistsOnCorrelationBeforeRightFull(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_corr_exists_on_before_rf"
-	setup := openTestDB(t, dbPath)
-	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cebrf_tmpl "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cebrf_tmpl "+
 		"CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE e (eid BIGINT, fid BIGINT, PRIMARY KEY (eid)) "+
 		"CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid)) "+
 		"CREATE TABLE g (gid BIGINT, PRIMARY KEY (gid))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cebrf_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cebrf_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO p VALUES (1, 10)")
-	mustExec(t, db, ctx, "INSERT INTO e VALUES (1, 100)")
-	mustExec(t, db, ctx, "INSERT INTO f VALUES (200)")
-	mustExec(t, db, ctx, "INSERT INTO g VALUES (5)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO p VALUES (1, 10)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO e VALUES (1, 100)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO f VALUES (200)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO g VALUES (5)")
 
 	projected := func(t *testing.T, sqlText string) (int64, bool) {
 		t.Helper()
@@ -419,30 +421,30 @@ func TestFDB_CorrelatedExistsOnCorrelationBeforeRightFull(t *testing.T) {
 // tree and returned EXISTS true whenever h matched — a silent-wrong answer.
 func TestFDB_CorrelatedExistsNestedSubqueryInOnDeclines(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_corr_exists_nested_on"
-	setup := openTestDB(t, dbPath)
-	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cenon_tmpl "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cenon_tmpl "+
 		"CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE e (eid BIGINT, PRIMARY KEY (eid)) "+
 		"CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid)) "+
 		"CREATE TABLE h (hid BIGINT, PRIMARY KEY (hid))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cenon_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cenon_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
 	// e is intentionally EMPTY (the silent-wrong case); h matches p.id=1.
-	mustExec(t, db, ctx, "INSERT INTO p VALUES (1, 10), (2, 20)")
-	mustExec(t, db, ctx, "INSERT INTO f VALUES (200)")
-	mustExec(t, db, ctx, "INSERT INTO h VALUES (1)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO p VALUES (1, 10), (2, 20)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO f VALUES (200)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO h VALUES (1)")
 
 	requireDecline := func(t *testing.T, sqlText string) {
 		t.Helper()
@@ -456,7 +458,7 @@ func TestFDB_CorrelatedExistsNestedSubqueryInOnDeclines(t *testing.T) {
 		if qerr == nil {
 			t.Fatalf("expected a clean decline (0A000), got no error for %q", sqlText)
 		}
-		requireSQLSTATE(t, qerr, api.ErrCodeUnsupportedOperation)
+		testkit.RequireSQLSTATE(t, qerr, api.ErrCodeUnsupportedOperation)
 	}
 
 	// Nested EXISTS inside the JOIN ON.
@@ -506,24 +508,24 @@ func TestFDB_CorrelatedExistsNestedSubqueryInOnDeclines(t *testing.T) {
 // every outer row. Java 4.12.11.0 returns [[1 true] [2 true]].
 func TestFDB_CorrelatedExistsCteInnerNoWhereNoOn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_corr_exists_cte_inner"
-	setup := openTestDB(t, dbPath)
-	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cecte_tmpl "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cecte_tmpl "+
 		"CREATE TABLE ord (order_id BIGINT, cust_id BIGINT, PRIMARY KEY (order_id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cecte_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cecte_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO ord VALUES (1, 10), (2, 20)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO ord VALUES (1, 10), (2, 20)")
 
 	type idBool struct {
 		id int64
@@ -566,26 +568,26 @@ func TestFDB_CorrelatedExistsCteInnerNoWhereNoOn(t *testing.T) {
 // SELECT-list ref o.order_id. Java 4.12.11.0 semantics.
 func TestFDB_CorrelatedExistsCteInnerWithPredicate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_corr_exists_cte_pred"
-	setup := openTestDB(t, dbPath)
-	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cectp_tmpl "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cectp_tmpl "+
 		"CREATE TABLE ord (order_id BIGINT, cust_id BIGINT, PRIMARY KEY (order_id)) "+
 		"CREATE TABLE t (tid BIGINT, PRIMARY KEY (tid))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cectp_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cectp_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO ord VALUES (1, 10), (2, 20)")
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (100)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO ord VALUES (1, 10), (2, 20)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (100)")
 
 	type idBool struct {
 		id int64
@@ -665,30 +667,30 @@ func TestFDB_CorrelatedExistsCteInnerWithPredicate(t *testing.T) {
 // as inner, and returned EXISTS true for every outer row.
 func TestFDB_CorrelatedExistsOnReferencesLaterInnerAlias(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_corr_exists_later_alias"
-	setup := openTestDB(t, dbPath)
-	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cela_tmpl "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cela_tmpl "+
 		"CREATE TABLE base (pk BIGINT, pval BIGINT, PRIMARY KEY (pk)) "+
 		"CREATE TABLE other (oid BIGINT, PRIMARY KEY (oid)) "+
 		"CREATE TABLE e (eid BIGINT, PRIMARY KEY (eid)) "+
 		"CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cela_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cela_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO base VALUES (1, 10), (2, 20)")
-	mustExec(t, db, ctx, "INSERT INTO other VALUES (99)")
-	mustExec(t, db, ctx, "INSERT INTO e VALUES (1)")
-	mustExec(t, db, ctx, "INSERT INTO f VALUES (1)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO base VALUES (1, 10), (2, 20)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO other VALUES (99)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO e VALUES (1)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO f VALUES (1)")
 
 	// e = {1}: the ON p.pk = e.eid holds only for outer p.pk = 1. A capture by
 	// the later inner p (pk 1 and 2) would answer true for both rows.
@@ -726,28 +728,28 @@ func TestFDB_CorrelatedExistsOnReferencesLaterInnerAlias(t *testing.T) {
 // a projected EXISTS's ON wrongly reported 0A000 instead of 42703.
 func TestFDB_CorrelatedExistsOnErrorCodeConsistency(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_corr_exists_errcode"
-	setup := openTestDB(t, dbPath)
-	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ceec_tmpl "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ceec_tmpl "+
 		"CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE e (eid BIGINT, PRIMARY KEY (eid)) "+
 		"CREATE TABLE f (fid BIGINT, PRIMARY KEY (fid))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE ceec_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE ceec_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO p VALUES (1, 10)")
-	mustExec(t, db, ctx, "INSERT INTO e VALUES (1)")
-	mustExec(t, db, ctx, "INSERT INTO f VALUES (1)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO p VALUES (1, 10)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO e VALUES (1)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO f VALUES (1)")
 
 	getErr := func(t *testing.T, sqlText string) error {
 		t.Helper()
@@ -766,21 +768,21 @@ func TestFDB_CorrelatedExistsOnErrorCodeConsistency(t *testing.T) {
 
 	// GENUINE missing column in the ON (f.nope) -> 42703 in BOTH forms.
 	t.Run("projected_genuine_missing_column_42703", func(t *testing.T) {
-		requireSQLSTATE(t, getErr(t, "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON f.nope = e.eid WHERE e.eid = p.id) FROM p"),
+		testkit.RequireSQLSTATE(t, getErr(t, "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON f.nope = e.eid WHERE e.eid = p.id) FROM p"),
 			api.ErrCodeUndefinedColumn)
 	})
 	t.Run("where_genuine_missing_column_42703", func(t *testing.T) {
-		requireSQLSTATE(t, getErr(t, "SELECT p.v FROM p WHERE EXISTS (SELECT 1 FROM e JOIN f ON f.nope = e.eid WHERE e.eid = p.id)"),
+		testkit.RequireSQLSTATE(t, getErr(t, "SELECT p.v FROM p WHERE EXISTS (SELECT 1 FROM e JOIN f ON f.nope = e.eid WHERE e.eid = p.id)"),
 			api.ErrCodeUndefinedColumn)
 	})
 
 	// DELIBERATE decline (nested subquery in the ON) -> 0A000 in BOTH forms.
 	t.Run("projected_deliberate_decline_0A000", func(t *testing.T) {
-		requireSQLSTATE(t, getErr(t, "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON EXISTS (SELECT 1 FROM f AS g WHERE g.fid = p.id)) FROM p"),
+		testkit.RequireSQLSTATE(t, getErr(t, "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON EXISTS (SELECT 1 FROM f AS g WHERE g.fid = p.id)) FROM p"),
 			api.ErrCodeUnsupportedOperation)
 	})
 	t.Run("where_deliberate_decline_0A000", func(t *testing.T) {
-		requireSQLSTATE(t, getErr(t, "SELECT p.v FROM p WHERE EXISTS (SELECT 1 FROM e JOIN f ON EXISTS (SELECT 1 FROM f AS g WHERE g.fid = p.id))"),
+		testkit.RequireSQLSTATE(t, getErr(t, "SELECT p.v FROM p WHERE EXISTS (SELECT 1 FROM e JOIN f ON EXISTS (SELECT 1 FROM f AS g WHERE g.fid = p.id))"),
 			api.ErrCodeUnsupportedOperation)
 	})
 
@@ -807,7 +809,7 @@ func TestFDB_CorrelatedExistsOnErrorCodeConsistency(t *testing.T) {
 	// the ON is never silently dropped. (The 0AF00-vs-0A000 nuance is two flavors of
 	// "unsupported"; the point is it's a clean decline, never a wrong answer.)
 	t.Run("in_subquery_in_on_declines_cleanly", func(t *testing.T) {
-		requireSQLSTATE(t, getErr(t, "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON e.eid IN "+
+		testkit.RequireSQLSTATE(t, getErr(t, "SELECT p.v, EXISTS (SELECT 1 FROM e JOIN f ON e.eid IN "+
 			"(SELECT g.fid FROM f AS g WHERE g.fid = f.fid) WHERE e.eid = p.id) FROM p"),
 			api.ErrCodeUnsupportedQuery)
 	})
@@ -815,7 +817,7 @@ func TestFDB_CorrelatedExistsOnErrorCodeConsistency(t *testing.T) {
 	// DISTINCT aggregate rejection belongs to the query-capability boundary and
 	// reports 0AF00 through the shared full scalar-query path, never 42703.
 	t.Run("wrapped_unsupported_cause_scalar_0AF00", func(t *testing.T) {
-		requireSQLSTATE(t, getErr(t, "SELECT p.v, (SELECT COUNT(DISTINCT f.fid) FROM f WHERE f.fid = p.id) FROM p"),
+		testkit.RequireSQLSTATE(t, getErr(t, "SELECT p.v, (SELECT COUNT(DISTINCT f.fid) FROM f WHERE f.fid = p.id) FROM p"),
 			api.ErrCodeUnsupportedQuery)
 	})
 }

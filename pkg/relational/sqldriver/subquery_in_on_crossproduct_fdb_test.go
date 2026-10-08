@@ -15,104 +15,21 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
-	"sort"
-	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
-
-func siCanon(a, c sql.NullInt64) string {
-	render := func(v sql.NullInt64) string {
-		if !v.Valid {
-			return "NULL"
-		}
-		return fmt.Sprintf("%d", v.Int64)
-	}
-	return render(a) + "|" + render(c)
-}
-
-func siScanRows(t *testing.T, rows *sql.Rows) []string {
-	t.Helper()
-	var got []string
-	for rows.Next() {
-		var a, c sql.NullInt64
-		if err := rows.Scan(&a, &c); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		got = append(got, siCanon(a, c))
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows.Err: %v", err)
-	}
-	sort.Strings(got)
-	return got
-}
-
-// siRenderRow renders the row the cursor is currently positioned on, whatever
-// its arity and column types, as "v1|v2|...|vN".
-func siRenderRow(t *testing.T, rows *sql.Rows) string {
-	t.Helper()
-	cols, err := rows.Columns()
-	if err != nil {
-		return fmt.Sprintf("<columns: %v>", err)
-	}
-	vals := make([]any, len(cols))
-	ptrs := make([]any, len(cols))
-	for i := range vals {
-		ptrs[i] = &vals[i]
-	}
-	if err := rows.Scan(ptrs...); err != nil {
-		return fmt.Sprintf("<scan: %v>", err)
-	}
-	parts := make([]string, len(vals))
-	for i, v := range vals {
-		parts[i] = fmt.Sprintf("%v", v)
-	}
-	return strings.Join(parts, "|")
-}
-
-// assertUnsupported runs q and asserts it fails cleanly with
-// ErrCodeUnsupportedQuery (0AF00) — NOT a silently-wrong cross product, and
-// for EXPLAIN not a rendered plan for a query the engine cannot run.
-func assertUnsupported(t *testing.T, db *sql.DB, ctx context.Context, q string) {
-	t.Helper()
-	rows, err := db.QueryContext(ctx, q)
-	if err == nil {
-		// Some drivers defer the error to the first Next()/Scan.
-		defer rows.Close()
-		if rows.Next() {
-			// Render whatever shape came back — callers pass both data queries
-			// (where a row means a silent cross product) and EXPLAIN (where a
-			// row means a plan was rendered for a query that cannot run), and a
-			// fixed 2-int scan would print NULL|NULL for the latter.
-			t.Fatalf("expected clean rejection, but got a row back: first=%s", siRenderRow(t, rows))
-		}
-		err = rows.Err()
-		if err == nil {
-			t.Fatalf("expected clean rejection (0AF00), got no error and no rows")
-		}
-	}
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("error is not *api.Error: %T %v", err, err)
-	}
-	if apiErr.Code != api.ErrCodeUnsupportedQuery {
-		t.Fatalf("error code = %s, want %s (0AF00 UNSUPPORTED_QUERY)", apiErr.Code, api.ErrCodeUnsupportedQuery)
-	}
-}
 
 func TestFDB_SubqueryInOn_RejectedCleanly(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_subq_on")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_subq_on")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_subq_on")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_subq_on")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE subq_on "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
@@ -120,35 +37,35 @@ func TestFDB_SubqueryInOn_RejectedCleanly(t *testing.T) {
 			"CREATE TABLE d (id BIGINT, b_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_subq_on/s WITH TEMPLATE subq_on")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQ_ON?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_subq_on/s WITH TEMPLATE subq_on")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQ_ON?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, a_id) VALUES (10, 1), (20, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id, w) VALUES (50, 1, 999), (51, 2, 888)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id, b_id) VALUES (1, 999), (2, 888)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, a_id) VALUES (10, 1), (20, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id, w) VALUES (50, 1, 999), (51, 2, 888)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id, b_id) VALUES (1, 999), (2, 888)")
 
 	// --- The bug: subquery in ON must be rejected cleanly, never a cross product.
 
 	t.Run("left_in_subquery_on", func(t *testing.T) {
-		assertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
+		testkit.AssertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
 			"LEFT JOIN c ON c.a_id = a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id = a.id + 999)")
 	})
 	t.Run("left_scalar_subquery_on", func(t *testing.T) {
-		assertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
+		testkit.AssertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
 			"LEFT JOIN c ON c.a_id = a.id AND c.w > (SELECT MAX(d.b_id) FROM d WHERE d.id = a.id + 999)")
 	})
 	t.Run("inner_in_subquery_on", func(t *testing.T) {
-		assertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
+		testkit.AssertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
 			"JOIN c ON c.a_id = a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id = a.id + 999)")
 	})
 	t.Run("sole_in_subquery_on", func(t *testing.T) {
-		assertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
+		testkit.AssertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
 			"LEFT JOIN c ON c.w IN (SELECT d.b_id FROM d WHERE d.id = a.id)")
 	})
 
@@ -160,9 +77,9 @@ func TestFDB_SubqueryInOn_RejectedCleanly(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query: %v", err)
 		}
-		got := siScanRows(t, rows)
+		got := testkit.ScanRowStrings(t, rows)
 		want := []string{"1|NULL", "2|NULL"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("constant-conjunct LEFT JOIN rows = %v, want %v", got, want)
 		}
 	})
@@ -171,9 +88,9 @@ func TestFDB_SubqueryInOn_RejectedCleanly(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query: %v", err)
 		}
-		got := siScanRows(t, rows)
+		got := testkit.ScanRowStrings(t, rows)
 		want := []string{"1|50", "2|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("single-eq LEFT JOIN rows = %v, want %v", got, want)
 		}
 	})
@@ -185,22 +102,10 @@ func TestFDB_SubqueryInOn_RejectedCleanly(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query: %v", err)
 		}
-		got := siScanRows(t, rows)
+		got := testkit.ScanRowStrings(t, rows)
 		want := []string{"1|50", "2|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("IN-value-list LEFT JOIN rows = %v, want %v", got, want)
 		}
 	})
-}
-
-func eqStrSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

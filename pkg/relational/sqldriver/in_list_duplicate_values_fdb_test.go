@@ -21,14 +21,16 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // mmInListFixture pads the probed table so an index probe beats a full scan and
 // the IN actually plans as one probe per element — on a handful of rows the
 // planner picks a scan with a residual filter and no probe is repeated at all.
-func mmInListFixture(t *testing.T, ctx context.Context, dbPath, prefix string) *mmTwin {
+func mmInListFixture(t *testing.T, ctx context.Context, dbPath, prefix string) *testkit.Twin {
 	t.Helper()
-	w := mmNewTwin(t, ctx, dbPath, prefix,
+	w := testkit.NewTwin(t, ctx, dbPath, prefix,
 		"CREATE TABLE t (id BIGINT, a BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) ")
 	var rows []string
@@ -50,7 +52,7 @@ func mmInListFixture(t *testing.T, ctx context.Context, dbPath, prefix string) *
 
 func TestFDB_InListRepeatedValueSelect(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -89,8 +91,8 @@ func TestFDB_InListRepeatedValueSelect(t *testing.T) {
 		"SELECT COUNT(*) FROM t WHERE a NOT IN (10, NULL)",
 		"SELECT id FROM t WHERE a IN (NULL) ORDER BY id",
 	} {
-		_, ei := mmRows(t, ctx, w.idx, q)
-		_, en := mmRows(t, ctx, w.plain, q)
+		_, ei := testkit.QueryRowStrings(t, ctx, w.Idx, q)
+		_, en := testkit.QueryRowStrings(t, ctx, w.Plain, q)
 		if ei == nil || en == nil {
 			t.Errorf("a NULL element in an IN list is now ACCEPTED (indexed err %v, unindexed err %v). "+
 				"Three-valued IN semantics are now reachable and need pinning: `x IN (v, NULL)` is "+
@@ -109,7 +111,7 @@ func TestFDB_InListRepeatedValueSelect(t *testing.T) {
 // asked for, and a DELETE that visits a row twice must not fail the second time.
 func TestFDB_InListRepeatedValueDML(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()

@@ -53,6 +53,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"github.com/onsi/gomega"
 )
 
@@ -64,7 +66,7 @@ func setupCrossLegNullBornDB(t *testing.T, g *gomega.WithT) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_xleg_nullborn"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, `CREATE SCHEMA TEMPLATE xleg_nullborn_tmpl
@@ -74,7 +76,7 @@ func setupCrossLegNullBornDB(t *testing.T, g *gomega.WithT) *sql.DB {
 	_, err = setup.ExecContext(ctx, fmt.Sprintf(
 		"CREATE SCHEMA %s/main WITH TEMPLATE xleg_nullborn_tmpl", dbPath))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	t.Cleanup(func() { db.Close() })
@@ -94,7 +96,7 @@ func setupCrossLegNullBornDB(t *testing.T, g *gomega.WithT) *sql.DB {
 // upgrade has nothing to flip. See the file-top comment for what re-arms it.
 func TestFDB_CrossLegAgreementGate_NullBornNotCovered(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)

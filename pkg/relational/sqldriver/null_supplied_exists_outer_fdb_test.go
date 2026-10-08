@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ExistsOverANullSuppliedRowKeepsTheRow: an EXISTS correlated to the
@@ -13,17 +15,17 @@ import (
 // (null-extended) record, and it must flow on as one rather than vanish.
 func TestFDB_ExistsOverANullSuppliedRowKeepsTheRow(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	db, ctx := dgcOpen(t, "/FRL/testdb_nsexists", "nsexists",
+	db, ctx := testkit.DgcOpen(t, "/FRL/testdb_nsexists", "nsexists",
 		"CREATE TABLE w (id BIGINT, f BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE h (id BIGINT, f BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id)) "+
 			"CREATE TABLE q (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX hf AS SELECT f FROM h")
-	mwjoMustExec(t, db, ctx, "INSERT INTO w VALUES (1, 10), (2, 20), (3, 30)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO h VALUES (1, 10, [1]), (2, 20, [2])")
-	mwjoMustExec(t, db, ctx, "INSERT INTO q VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO w VALUES (1, 10), (2, 20), (3, 30)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO h VALUES (1, 10, [1]), (2, 20, [2])")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO q VALUES (1)")
 
 	for _, tc := range []struct{ sql, want string }{
 		{
@@ -76,23 +78,23 @@ func TestFDB_ExistsOverANullSuppliedRowKeepsTheRow(t *testing.T) {
 // NOT NULL element column.
 func TestFDB_ExistsOverScalarElementsFindingNoneUnderAJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	db, ctx := dgcOpen(t, "/FRL/testdb_scalarexists", "scalarexists",
+	db, ctx := testkit.DgcOpen(t, "/FRL/testdb_scalarexists", "scalarexists",
 		"CREATE TABLE t3 (id BIGINT, col2 BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t4 (id BIGINT, col2 BIGINT, col4 BIGINT ARRAY, PRIMARY KEY (id)) "+
 			"CREATE INDEX t4_col2 AS SELECT col2 FROM t4")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t3 VALUES (3, 1), (4, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t4 VALUES (5, 1, [1]), (7, 2, [1, 2]), (15, 1, [1, 2, 3])")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t3 VALUES (3, 1), (4, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t4 VALUES (5, 1, [1]), (7, 2, [1, 2]), (15, 1, [1, 2, 3])")
 
 	const q = "SELECT t4.id FROM t3, t4 WHERE t4.col2 = t3.col2 AND EXISTS (SELECT 1 FROM t4.col4 x WHERE x = 2)"
-	got := dgcInts(t, db, ctx, q, true)
-	if !dgcEq(got, []int64{7, 15}) {
+	got := testkit.DgcInts(t, db, ctx, q, true)
+	if !testkit.DgcEq(got, []int64{7, 15}) {
 		t.Errorf("%s = %v, want [7 15]", q, got)
 	}
 	const notExists = "SELECT t4.id FROM t3, t4 WHERE t4.col2 = t3.col2 AND NOT EXISTS (SELECT 1 FROM t4.col4 x WHERE x = 2)"
-	if got := dgcInts(t, db, ctx, notExists, true); !dgcEq(got, []int64{5}) {
+	if got := testkit.DgcInts(t, db, ctx, notExists, true); !testkit.DgcEq(got, []int64{5}) {
 		t.Errorf("%s = %v, want [5]", notExists, got)
 	}
 }

@@ -9,22 +9,24 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_OrderByNullsLast(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nullsorder")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullsorder")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_nullsorder")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullsorder")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nullsorder "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_ab ON t(a, b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullsorder/s WITH TEMPLATE nullsorder")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLSORDER?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullsorder/s WITH TEMPLATE nullsorder")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLSORDER?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -34,7 +36,7 @@ func TestFDB_OrderByNullsLast(t *testing.T) {
 	// a=5 group: b ∈ {NULL,10,20}. a=9 group: b ∈ {1,NULL} — a SECOND group with a
 	// NULL so the multi-key case below genuinely varies the leading key AND tests
 	// NULLS-last within each group (not collapsed to single-key by an a= filter).
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a,b) VALUES (1,5,NULL),(2,5,10),(3,5,20),(4,9,1),(5,9,NULL)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,a,b) VALUES (1,5,NULL),(2,5,10),(3,5,20),(4,9,1),(5,9,NULL)")
 
 	order := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

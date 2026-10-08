@@ -3,12 +3,10 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
-	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // capHitDB creates an isolated db+schema whose ORDERS table carries the same
@@ -19,7 +17,7 @@ func capHitDB(t *testing.T, tag string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 	dbPath := "/FRL/capacity_" + tag
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -36,52 +34,12 @@ func capHitDB(t *testing.T, tag string) *sql.DB {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	return db
-}
-
-// assertPlannerCapHit pins the properties that distinguish an exhausted
-// planning budget from every other planner failure: the cap sentinel survives
-// as a cause, the SQLSTATE is the class-54 program-limit code (Go-only — Java's
-// SQL layer never enables these caps, so there is no Java code to port), the
-// user-visible message is an actionable "too complex" verdict rather than
-// either "could not plan query" or the internal sentinel's wording, and the
-// budget numbers reach the caller.
-func assertPlannerCapHit(t *testing.T, err error) {
-	t.Helper()
-	if err == nil {
-		t.Fatal("planning converged within the task cap; this statement no longer exercises " +
-			"the cap — widen the join rather than deleting this test")
-	}
-	if !errors.Is(err, cascades.ErrPlannerCapHit) {
-		t.Fatalf("planning failed for a different reason than the task cap: %v", err)
-	}
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("want *api.Error, got %T (%v)", err, err)
-	}
-	if apiErr.Code != api.ErrCodePlanComplexityLimitReached {
-		t.Fatalf("code = %q, want %q", apiErr.Code, api.ErrCodePlanComplexityLimitReached)
-	}
-	// The user gets an actionable verdict, not the internal sentinel's wording
-	// (which names a planner config field). The sentinel stays in the cause,
-	// which is what the errors.Is check above rides on.
-	if !strings.Contains(apiErr.Message, "too complex to plan") {
-		t.Fatalf("message = %q, want the user-facing budget verdict", apiErr.Message)
-	}
-	if strings.Contains(apiErr.Message, "MaxTasks") {
-		t.Fatalf("message leaks the planner config field name: %q", apiErr.Message)
-	}
-	if _, ok := apiErr.Context["max_task_count"]; !ok {
-		t.Fatalf("budget context did not survive to the driver: %v", apiErr.Context)
-	}
-	if _, ok := apiErr.Context["task_count"]; !ok {
-		t.Fatalf("budget context did not survive to the driver: %v", apiErr.Context)
-	}
 }
 
 // sevenWayJoinExists is a WHERE-existential over a seven-way self-join. Join
@@ -124,7 +82,7 @@ func TestFDB_PlannerCapHit_DMLPathSQLSTATE(t *testing.T) {
 			t.Parallel()
 			db := capHitDB(t, "dml_"+tc.name)
 			_, err := db.ExecContext(context.Background(), tc.sql)
-			assertPlannerCapHit(t, err)
+			testkit.AssertPlannerCapHit(t, err)
 		})
 	}
 }
@@ -145,5 +103,5 @@ func TestFDB_PlannerCapHit_SelectPathSQLSTATE(t *testing.T) {
 	if rows != nil {
 		rows.Close()
 	}
-	assertPlannerCapHit(t, err)
+	testkit.AssertPlannerCapHit(t, err)
 }

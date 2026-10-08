@@ -32,15 +32,17 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_MetamorphicRewriteEquivalenceSweep(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_rewrites", "rw",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_rewrites", "rw",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) "+
 			"CREATE INDEX t_c ON t (c) CREATE INDEX t_s ON t (s) ")
@@ -49,14 +51,14 @@ func TestFDB_MetamorphicRewriteEquivalenceSweep(t *testing.T) {
 	const nRows = 160
 	var vals []string
 	for i := 1; i <= nRows; i++ {
-		vals = append(vals, mhRowLiteral(dataRand, i))
+		vals = append(vals, testkit.MhRowLiteral(dataRand, i))
 	}
 	for start := 0; start < len(vals); start += 20 {
 		end := start + 20
 		if end > len(vals) {
 			end = len(vals)
 		}
-		w.Exec("INSERT INTO t " + mhCols + " VALUES " + strings.Join(vals[start:end], ", "))
+		w.Exec("INSERT INTO t " + testkit.MhCols + " VALUES " + strings.Join(vals[start:end], ", "))
 	}
 
 	seed := int64(1)
@@ -68,7 +70,7 @@ func TestFDB_MetamorphicRewriteEquivalenceSweep(t *testing.T) {
 		fmt.Sscan(s, &iters)
 	}
 	r := rand.New(rand.NewSource(seed))
-	g := &mhGen{r: r}
+	g := &testkit.MhGen{R: r}
 
 	okByRule := map[string]int{}
 	errByRule := map[string]int{}
@@ -78,10 +80,10 @@ func TestFDB_MetamorphicRewriteEquivalenceSweep(t *testing.T) {
 	// translator defect, cross-schema disagreement is an access-path one.
 	equiv := func(rule, qa, qb string) {
 		t.Helper()
-		ia, ea := mmRows(t, ctx, w.idx, qa)
-		ib, eb := mmRows(t, ctx, w.idx, qb)
-		na, ena := mmRows(t, ctx, w.plain, qa)
-		nb, enb := mmRows(t, ctx, w.plain, qb)
+		ia, ea := testkit.QueryRowStrings(t, ctx, w.Idx, qa)
+		ib, eb := testkit.QueryRowStrings(t, ctx, w.Idx, qb)
+		na, ena := testkit.QueryRowStrings(t, ctx, w.Plain, qa)
+		nb, enb := testkit.QueryRowStrings(t, ctx, w.Plain, qb)
 		if ea != nil || eb != nil || ena != nil || enb != nil {
 			errByRule[rule]++
 			if errByRule[rule] <= 1 {
@@ -90,20 +92,20 @@ func TestFDB_MetamorphicRewriteEquivalenceSweep(t *testing.T) {
 			return
 		}
 		okByRule[rule]++
-		if !mmEqRows(ia, ib) {
+		if !testkit.EqualRows(ia, ib) {
 			t.Errorf("REWRITE MISMATCH [%s] on the INDEXED schema (seed=%d)\n  A: %s\n  B: %s\n"+
-				"  A gives %v\n  B gives %v\n  %s", rule, seed, qa, qb, mmHeadRows(ia), mmHeadRows(ib),
-				mmFirstDiff(ia, ib))
+				"  A gives %v\n  B gives %v\n  %s", rule, seed, qa, qb, testkit.MmHeadRows(ia), testkit.MmHeadRows(ib),
+				testkit.MmFirstDiff(ia, ib))
 		}
-		if !mmEqRows(na, nb) {
+		if !testkit.EqualRows(na, nb) {
 			t.Errorf("REWRITE MISMATCH [%s] on the UNINDEXED schema (seed=%d)\n  A: %s\n  B: %s\n"+
 				"  A gives %v\n  B gives %v\n"+
 				"With no index in play this is a translator or evaluation defect rather than an "+
-				"access-path one.", rule, seed, qa, qb, mmHeadRows(na), mmHeadRows(nb))
+				"access-path one.", rule, seed, qa, qb, testkit.MmHeadRows(na), testkit.MmHeadRows(nb))
 		}
-		if !mmEqRows(ia, na) {
+		if !testkit.EqualRows(ia, na) {
 			t.Errorf("TWIN MISMATCH [%s] (seed=%d)\n  q: %s\n  indexed %v\n  unindexed %v",
-				rule, seed, qa, mmHeadRows(ia), mmHeadRows(na))
+				rule, seed, qa, testkit.MmHeadRows(ia), testkit.MmHeadRows(na))
 		}
 	}
 
@@ -115,9 +117,9 @@ func TestFDB_MetamorphicRewriteEquivalenceSweep(t *testing.T) {
 	}
 
 	for i := 0; i < iters; i++ {
-		p := g.pred(2)
-		q := g.pred(1)
-		lit1, lit2 := mhIntLits[r.Intn(len(mhIntLits))], mhIntLits[r.Intn(len(mhIntLits))]
+		p := g.Pred(2)
+		q := g.Pred(1)
+		lit1, lit2 := testkit.MhIntLits[r.Intn(len(testkit.MhIntLits))], testkit.MhIntLits[r.Intn(len(testkit.MhIntLits))]
 
 		// Parenthesization must not change meaning — the family the searched-CASE
 		// defect belonged to.
@@ -186,12 +188,4 @@ func TestFDB_MetamorphicRewriteEquivalenceSweep(t *testing.T) {
 		}
 	}
 	t.Logf("seed=%d iters=%d total-pairs=%d", seed, iters, total)
-}
-
-// mmHeadRows truncates a row list for a failure message.
-func mmHeadRows(rows []string) []string {
-	if len(rows) <= 20 {
-		return rows
-	}
-	return append(append([]string{}, rows[:20]...), fmt.Sprintf("...(+%d more)", len(rows)-20))
 }

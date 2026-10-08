@@ -3,13 +3,14 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"math"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"fdb.dev/pkg/relational/api"
 )
@@ -18,13 +19,13 @@ import (
 // complex query patterns.
 func qualityProbeDB(t *testing.T, suffix string) *sql.DB {
 	t.Helper()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	// A subtest's name has a '/', and a database path is exactly /DOMAIN/DB.
 	dbPath := fmt.Sprintf("/FRL/qp_%s_%s", suffix, strings.ReplaceAll(t.Name(), "/", "_"))
-	db := openTestDB(t, dbPath)
+	db := testkit.OpenDB(t, dbPath)
 
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -45,7 +46,7 @@ func qualityProbeDB(t *testing.T, suffix string) *sql.DB {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	sdb, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -76,39 +77,6 @@ func qualityProbeDB(t *testing.T, suffix string) *sql.DB {
 		}
 	}
 	return sdb
-}
-
-// collectRows runs a query and returns rows as [][]any.
-func collectRows(t *testing.T, db *sql.DB, query string) [][]any {
-	t.Helper()
-	ctx := context.Background()
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		t.Fatalf("query %q: %v", query, err)
-	}
-	defer rows.Close()
-
-	cols, err := rows.Columns()
-	if err != nil {
-		t.Fatalf("columns: %v", err)
-	}
-
-	var result [][]any
-	for rows.Next() {
-		dest := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range dest {
-			ptrs[i] = &dest[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		result = append(result, dest)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows.Err: %v", err)
-	}
-	return result
 }
 
 // assertScalarAggRows checks a (name, scalar-aggregate-value) result set in
@@ -152,37 +120,6 @@ func assertScalarAggRows(t *testing.T, rows [][]any, want []struct {
 	}
 }
 
-func expectError(t *testing.T, db *sql.DB, query string) error {
-	t.Helper()
-	ctx := context.Background()
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	t.Fatalf("expected error for %q, got success", query)
-	return nil
-}
-
-// requireSQLSTATE unwraps err to *api.Error and asserts that the SQLSTATE
-// code matches want. Use after expectError for Java-conformance tests where
-// the exact SQLSTATE is known.
-func requireSQLSTATE(t *testing.T, err error, want api.ErrorCode) {
-	t.Helper()
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("expected *api.Error, got %T: %v", err, err)
-	}
-	if apiErr.Code != want {
-		t.Errorf("SQLSTATE: got %s, want %s (err: %v)", apiErr.Code, want, err)
-	}
-}
-
 func TestFDB_QualityProbe_JoinGroupByHavingOrderBy(t *testing.T) {
 	t.Parallel()
 	db := qualityProbeDB(t, "jgho")
@@ -195,7 +132,7 @@ func TestFDB_QualityProbe_JoinGroupByHavingOrderBy(t *testing.T) {
 			GROUP BY c.name
 			HAVING SUM(o.amount) > 60
 			ORDER BY SUM(o.amount) DESC`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
 		}
@@ -213,7 +150,7 @@ func TestFDB_QualityProbe_JoinGroupByHavingOrderBy(t *testing.T) {
 			WHERE c.id = o.customer_id
 			GROUP BY c.name
 			ORDER BY c.name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 4 {
 			t.Fatalf("want 4 rows, got %d: %v", len(rows), rows)
 		}
@@ -249,7 +186,7 @@ func TestFDB_QualityProbe_JoinGroupByHavingOrderBy(t *testing.T) {
 			FROM customers c, orders o, items i
 			WHERE c.id = o.customer_id AND o.id = i.order_id AND c.name = 'Alice'
 			ORDER BY i.qty DESC`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d: %v", len(rows), rows)
 		}
@@ -271,7 +208,7 @@ func TestFDB_QualityProbe_SelfJoin(t *testing.T) {
 			FROM customers a, customers b
 			WHERE a.region = b.region AND a.id < b.id
 			ORDER BY a.name, b.name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row (Alice-Charlie in WEST), got %d: %v", len(rows), rows)
 		}
@@ -293,7 +230,7 @@ func TestFDB_QualityProbe_LeftJoinNulls(t *testing.T) {
 		query := `SELECT c.name, o.amount
 			FROM customers c LEFT JOIN orders o ON c.id = o.customer_id
 			WHERE c.name = 'Diana'`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d: %v", len(rows), rows)
 		}
@@ -307,7 +244,7 @@ func TestFDB_QualityProbe_LeftJoinNulls(t *testing.T) {
 			FROM customers c LEFT JOIN orders o ON c.id = o.customer_id
 			GROUP BY c.name
 			ORDER BY c.name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 4 {
 			t.Fatalf("want 4 rows, got %d: %v", len(rows), rows)
 		}
@@ -333,7 +270,7 @@ func TestFDB_QualityProbe_UnionOrderByLimit(t *testing.T) {
 			UNION ALL
 			SELECT status, 'order' FROM orders WHERE status = 'shipped'
 			ORDER BY name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 5 {
 			t.Fatalf("want 5 rows, got %d: %v", len(rows), rows)
 		}
@@ -341,14 +278,14 @@ func TestFDB_QualityProbe_UnionOrderByLimit(t *testing.T) {
 
 	t.Run("union_distinct_rejected", func(t *testing.T) {
 		// Go aligns with Java: UNION DISTINCT is not supported.
-		err := expectError(t, db, `SELECT region FROM customers WHERE region IS NOT NULL
+		err := testkit.ExpectError(t, db, `SELECT region FROM customers WHERE region IS NOT NULL
 			UNION
 			SELECT region FROM customers WHERE region IS NOT NULL
 			ORDER BY region`)
 		if err == nil {
 			t.Fatal("expected UNION DISTINCT rejection")
 		}
-		requireSQLSTATE(t, err, api.ErrCodeUnsupportedQuery)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeUnsupportedQuery)
 	})
 
 	t.Run("union_all_with_limit", func(t *testing.T) {
@@ -357,7 +294,7 @@ func TestFDB_QualityProbe_UnionOrderByLimit(t *testing.T) {
 			SELECT name FROM customers
 			ORDER BY name
 			LIMIT 3`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows (LIMIT), got %d: %v", len(rows), rows)
 		}
@@ -372,7 +309,7 @@ func TestFDB_QualityProbe_CaseWhenInVariousPositions(t *testing.T) {
 		query := `SELECT name,
 			CASE WHEN active = true THEN 'active' ELSE 'inactive' END
 			FROM customers ORDER BY name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 4 {
 			t.Fatalf("want 4 rows, got %d", len(rows))
 		}
@@ -393,7 +330,7 @@ func TestFDB_QualityProbe_CaseWhenInVariousPositions(t *testing.T) {
 		query := `SELECT name FROM customers
 			WHERE CASE WHEN region = 'WEST' THEN true ELSE false END = true
 			ORDER BY name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows (Alice, Charlie), got %d: %v", len(rows), rows)
 		}
@@ -402,7 +339,7 @@ func TestFDB_QualityProbe_CaseWhenInVariousPositions(t *testing.T) {
 	t.Run("case_in_order_by", func(t *testing.T) {
 		query := `SELECT name FROM customers
 			ORDER BY CASE WHEN region = 'WEST' THEN 1 WHEN region = 'EAST' THEN 2 ELSE 3 END, name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d", len(rows))
 		}
@@ -418,7 +355,7 @@ func TestFDB_QualityProbe_CaseWhenInVariousPositions(t *testing.T) {
 			FROM customers
 			GROUP BY CASE WHEN active = true THEN 'active' ELSE 'inactive' END
 			ORDER BY COUNT(*) DESC`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
 		}
@@ -439,7 +376,7 @@ func TestFDB_QualityProbe_CorrelatedExists(t *testing.T) {
 		query := `SELECT name FROM customers c
 			WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped')
 			ORDER BY name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		// Alice (order 10), Bob (order 12), Charlie (order 14)
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d: %v", len(rows), rows)
@@ -450,7 +387,7 @@ func TestFDB_QualityProbe_CorrelatedExists(t *testing.T) {
 		query := `SELECT name FROM customers c
 			WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped')
 			ORDER BY name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		// Diana (only pending)
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d: %v", len(rows), rows)
@@ -466,7 +403,7 @@ func TestFDB_QualityProbe_CorrelatedExists(t *testing.T) {
 			WHERE c.region = 'WEST'
 			AND EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)
 			ORDER BY name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		// Alice (WEST, has orders), Charlie (WEST, has orders)
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
@@ -480,7 +417,7 @@ func TestFDB_QualityProbe_ScalarSubquery(t *testing.T) {
 
 	t.Run("uncorrelated_scalar_subquery", func(t *testing.T) {
 		query := `SELECT name, (SELECT COUNT(*) FROM orders) FROM customers ORDER BY name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d", len(rows))
 		}
@@ -494,7 +431,7 @@ func TestFDB_QualityProbe_ScalarSubquery(t *testing.T) {
 	})
 
 	t.Run("correlated_scalar_subquery_count", func(t *testing.T) {
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id)
 			FROM customers c ORDER BY name`)
 		if len(rows) != 4 {
@@ -533,7 +470,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	t.Run("non_aggregate_with_limit", func(t *testing.T) {
 		// Shape 1: non-aggregate correlated scalar subquery.
 		// Get the highest-amount order status per customer.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT status FROM orders o WHERE o.customer_id = c.id ORDER BY o.amount DESC LIMIT 1)
 			FROM customers c ORDER BY name`)
 		if len(rows) != 4 {
@@ -564,7 +501,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	t.Run("non_aggregate_implicit_limit", func(t *testing.T) {
 		// Shape 1 variant: no explicit LIMIT — the strict scalar barrier checks
 		// at-most-one. Charlie has exactly one order, so its value is returned.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT status FROM orders o WHERE o.customer_id = c.id)
 			FROM customers c WHERE c.id = 3`)
 		if len(rows) != 1 {
@@ -580,7 +517,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	t.Run("aggregate_with_join", func(t *testing.T) {
 		// Shape 2: aggregate correlated scalar subquery with JOIN in inner.
 		// Count items per customer (through orders→items join).
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o JOIN items i ON i.order_id = o.id WHERE o.customer_id = c.id)
 			FROM customers c ORDER BY name`)
 		if len(rows) != 4 {
@@ -614,7 +551,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	t.Run("scalar_in_coalesce", func(t *testing.T) {
 		// Regression test for replaceScalarSubqueryRef deep-walk:
 		// ScalarSubqueryValue nested inside COALESCE must be replaced.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			COALESCE((SELECT status FROM orders o WHERE o.customer_id = c.id ORDER BY o.id ASC LIMIT 1), 'none')
 			FROM customers c ORDER BY name`)
 		if len(rows) != 4 {
@@ -632,7 +569,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// Aggregate + GROUP BY on a correlation-determined key (o.customer_id
 		// = c.id) => exactly one group per outer row => deterministic. SUM
 		// over the group.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id)
 			FROM customers c ORDER BY name`)
 		if len(rows) != 4 {
@@ -675,7 +612,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// The load-bearing GROUP BY semantic: zero matching rows => zero
 		// groups => NULL scalar (the LEFT-OUTER NULL-on-empty default).
 		// Diana has only a 'pending' order, so 0 'shipped' => NULL.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped' GROUP BY o.customer_id)
 			FROM customers c ORDER BY name`)
 		want := []struct {
@@ -708,7 +645,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// scalar aggregate emits one row even on empty input => Diana => 0
 		// (not NULL). Pins that the NULL above comes from grouping, not from
 		// the filter.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped')
 			FROM customers c WHERE c.id = 4`)
 		if len(rows) != 1 {
@@ -722,7 +659,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	t.Run("having_reduces_to_one_group", func(t *testing.T) {
 		// HAVING filters the per-customer group. Customers with >1 order get
 		// the count; the rest get NULL (group filtered out => zero groups).
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 1)
 			FROM customers c ORDER BY name`)
 		want := []struct {
@@ -753,7 +690,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	t.Run("having_without_group_by", func(t *testing.T) {
 		// HAVING with no GROUP BY: the whole filtered set is one group. If the
 		// HAVING is false the single group drops => NULL.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id HAVING COUNT(*) > 1)
 			FROM customers c ORDER BY name`)
 		want := []any{int64(2), int64(2), nil, nil} // Alice, Bob, Charlie, Diana
@@ -773,7 +710,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	t.Run("non_aggregate_group_by", func(t *testing.T) {
 		// Non-aggregate GROUP BY (DISTINCT-of-key). Charlie has a single order
 		// => single status group => deterministic.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT status FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
 			FROM customers c WHERE c.id = 3`)
 		if len(rows) != 1 {
@@ -788,7 +725,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// EXPLAIN proof: the inner GROUP BY produces a streaming aggregation,
 		// not a silently-dropped GROUP BY. Without this, the feature could
 		// "pass" by ignoring the GROUP BY entirely.
-		plan := planExplainVia(t, context.Background(), db, `SELECT name,
+		plan := testkit.ExplainVia(t, context.Background(), db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id)
 			FROM customers c`)
 		if !strings.Contains(plan, "StreamingAgg") {
@@ -800,28 +737,28 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// GROUP BY a non-correlation key may yield multiple groups. A scalar
 		// subquery cannot choose one arbitrarily: the second group is a runtime
 		// cardinality violation.
-		err := expectError(t, db, `SELECT name,
+		err := testkit.ExpectError(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
 			FROM customers c WHERE c.id = 1`)
-		requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("group_by_non_key_projection_rejected", func(t *testing.T) {
 		// SELECT amount ... GROUP BY status: amount is neither grouped nor
 		// aggregated => 42803 (grouping error), via validateGroupByProjection.
-		err := expectError(t, db, `SELECT name,
+		err := testkit.ExpectError(t, db, `SELECT name,
 			(SELECT amount FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
 			FROM customers c ORDER BY name`)
 		if err == nil {
 			t.Fatal("expected 42803 for non-grouped non-aggregated projection")
 		}
-		requireSQLSTATE(t, err, api.ErrCodeGroupingError)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeGroupingError)
 	})
 
 	t.Run("multi_column_with_group_by_rejected", func(t *testing.T) {
 		// SELECT status, COUNT(*) ... GROUP BY status: two output columns
 		// violates the scalar one-column rule.
-		err := expectError(t, db, `SELECT name,
+		err := testkit.ExpectError(t, db, `SELECT name,
 			(SELECT status, COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
 			FROM customers c ORDER BY name`)
 		if err == nil {
@@ -836,7 +773,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// An expression GROUP BY key (groupByExprs non-nil) resolves via
 		// WalkExpressionForProjection. Charlie has one order so the single
 		// group is deterministic.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.amount + 1)
 			FROM customers c WHERE c.id = 3`)
 		if len(rows) != 1 || rows[0][1] != int64(1) {
@@ -849,7 +786,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// expression GROUP BY key that fails to resolve must error, not fall
 		// back to an unresolvable raw FieldValue that groups every row under a
 		// null key.
-		err := expectError(t, db, `SELECT name,
+		err := testkit.ExpectError(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.nosuchcol + 1)
 			FROM customers c`)
 		if err == nil {
@@ -872,7 +809,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		//   Diana:  pending=NULL (amount null)
 		check := func(dir string, want []any) {
 			t.Helper()
-			rows := collectRows(t, db, fmt.Sprintf(`SELECT name,
+			rows := testkit.CollectRows(t, db, fmt.Sprintf(`SELECT name,
 				(SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.status %s LIMIT 1)
 				FROM customers c ORDER BY name`, dir))
 			if len(rows) != 4 {
@@ -903,7 +840,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// join rows expose both bare and alias-qualified keys, so the bare
 		// FieldValue resolves — pins that the hasJoins resolution is correct
 		// for unqualified keys too (the case Finding 2 asked to confirm).
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT SUM(i.price) FROM orders o JOIN items i ON i.order_id = o.id WHERE o.customer_id = c.id GROUP BY customer_id)
 			FROM customers c ORDER BY name`)
 		want := []struct {
@@ -937,7 +874,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// of group-key AND operand resolution (merged rows carry qualified
 		// keys). SUM(i.price) per customer through orders->items, grouped by
 		// the correlation key.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT SUM(i.price) FROM orders o JOIN items i ON i.order_id = o.id WHERE o.customer_id = c.id GROUP BY o.customer_id)
 			FROM customers c ORDER BY name`)
 		if len(rows) != 4 {
@@ -978,7 +915,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// Aggregate over an EXPRESSION argument (not a bare column) + GROUP BY:
 		// exercises the aggExpr resolution path (resolver.WalkExpression). A
 		// resolution failure on this path must reject, not degrade to SUM(*).
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id)
 			FROM customers c ORDER BY name`)
 		if len(rows) != 4 {
@@ -1019,7 +956,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// Review P1: HAVING references COUNT(*) while the projection is SUM —
 		// both aggregates must be computed. Single group per customer
 		// (correlation key) => deterministic.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 1)
 			FROM customers c ORDER BY name`)
 		want := []struct {
@@ -1056,13 +993,13 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// HAVING rewrite resolves by, so COUNT(1)≡COUNT(*) works in BOTH
 		// directions (the reverse was a prior silent-wrong). Charlie (1 order)
 		// => COUNT=1 > 0 => kept = 1.
-		fwd := collectRows(t, db, `SELECT name,
+		fwd := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT COUNT(1) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 0)
 			FROM customers c WHERE c.id = 3`)
 		if len(fwd) != 1 || fwd[0][1] != int64(1) {
 			t.Fatalf("COUNT(1) + HAVING COUNT(*): want Charlie=1, got %v", fwd)
 		}
-		rev := collectRows(t, db, `SELECT name,
+		rev := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(1) > 0)
 			FROM customers c WHERE c.id = 3`)
 		if len(rev) != 1 || rev[0][1] != int64(1) {
@@ -1073,7 +1010,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	t.Run("count_distinct_constant_rejected", func(t *testing.T) {
 		// COUNT(DISTINCT 1) is NOT COUNT(*) (it is 1), and DISTINCT aggregates
 		// are unsupported here — rejected explicitly, never reused as COUNT(*).
-		err := expectError(t, db, `SELECT name,
+		err := testkit.ExpectError(t, db, `SELECT name,
 			(SELECT COUNT(DISTINCT 1) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING COUNT(*) > 0)
 			FROM customers c`)
 		if err == nil {
@@ -1087,7 +1024,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// now materialise under their canonical names, so HAVING resolves the
 		// right slot. HAVING SUM(amount*3) > 700: Alice 901.5>700 keep => 601.00;
 		// Bob 375.75 drop; Charlie 900>700 keep => 600.00; Diana NULL.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(o.amount * 3) > 700)
 			FROM customers c ORDER BY name`)
 		want := []struct {
@@ -1127,7 +1064,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// EVERY group is silently dropped. Correct: HAVING SUM(amount*1.5)>400
 		// keeps Alice (450.75) and Charlie (450.00); Bob (187.875) and Diana
 		// (NULL) drop. Projected SUM(amount*2): Alice 601.00, Charlie 600.00.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(o.amount * 1.5) > 400)
 			FROM customers c ORDER BY name`)
 		assertScalarAggRows(t, rows, []struct {
@@ -1149,7 +1086,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// HAVING SUM((amount+10)*2)>600 keeps Alice (641.00) and Charlie
 		// (620.00); Bob (290.50) and Diana (NULL) drop. Projected SUM(amount*2):
 		// Alice 601.00, Charlie 600.00.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT SUM(o.amount * 2) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM((o.amount + 10) * 2) > 600)
 			FROM customers c ORDER BY name`)
 		assertScalarAggRows(t, rows, []struct {
@@ -1167,7 +1104,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// The full correlated query path keeps each expression aggregate bound to
 		// its own join leg. Every non-empty join group passes SUM(price*3)>0;
 		// Diana has no joined row and therefore produces scalar NULL.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT SUM(i.price * 2) FROM orders o JOIN items i ON i.order_id = o.id WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(i.price * 3) > 0)
 			FROM customers c ORDER BY name`)
 		assertScalarAggRows(t, rows, []struct {
@@ -1184,7 +1121,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	t.Run("post_aggregate_expression", func(t *testing.T) {
 		// A post-aggregation expression evaluates over the native aggregate row;
 		// NULL SUM remains NULL through addition.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT SUM(o.amount) + 1 FROM orders o WHERE o.customer_id = c.id)
 			FROM customers c ORDER BY name`)
 		assertScalarAggRows(t, rows, []struct {
@@ -1202,7 +1139,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// Review P2: a non-existent GROUP BY column (aggregate-only projection,
 		// so validateGroupByProjection does not catch it) must error, not
 		// silently group every row under a null key.
-		err := expectError(t, db, `SELECT name,
+		err := testkit.ExpectError(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.no_such_col)
 			FROM customers c`)
 		if err == nil {
@@ -1213,7 +1150,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	t.Run("duplicate_alias_multi_column_rejected", func(t *testing.T) {
 		// Review P2: two visible SELECT items sharing an alias are still two
 		// output columns — reject on item count, not distinct name count.
-		err := expectError(t, db, `SELECT name,
+		err := testkit.ExpectError(t, db, `SELECT name,
 			(SELECT o.status AS x, COUNT(*) AS x FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
 			FROM customers c`)
 		if err == nil {
@@ -1228,7 +1165,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// Review P2: a QUALIFIED group-key projection (`SELECT o.status`) must
 		// resolve, not double-prefix into O.O.STATUS => NULL. Charlie has one
 		// order so the single group is deterministic.
-		rows := collectRows(t, db, `SELECT name,
+		rows := testkit.CollectRows(t, db, `SELECT name,
 			(SELECT o.status FROM orders o WHERE o.customer_id = c.id GROUP BY o.status)
 			FROM customers c WHERE c.id = 3`)
 		if len(rows) != 1 {
@@ -1244,7 +1181,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		// grouping scope and has no subquery planner on the HAVING resolver —
 		// must reject cleanly, not return wrong rows (mirrors the top-level
 		// translateAggregate HavingExistsSubqueries guard).
-		err := expectError(t, db, `SELECT name,
+		err := testkit.ExpectError(t, db, `SELECT name,
 			(SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING EXISTS (SELECT 1 FROM items i WHERE i.order_id = o.id))
 			FROM customers c ORDER BY name`)
 		if err == nil {
@@ -1261,7 +1198,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 			FROM customers c ORDER BY name`
 		var first [][]any
 		for i := 0; i < 10; i++ {
-			rows := collectRows(t, db, q)
+			rows := testkit.CollectRows(t, db, q)
 			if i == 0 {
 				first = rows
 				continue
@@ -1273,7 +1210,7 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 	})
 
 	t.Run("multi_column_rejected", func(t *testing.T) {
-		err := expectError(t, db, `SELECT name,
+		err := testkit.ExpectError(t, db, `SELECT name,
 			(SELECT status, amount FROM orders o WHERE o.customer_id = c.id LIMIT 1)
 			FROM customers c ORDER BY name`)
 		if err == nil {
@@ -1293,7 +1230,7 @@ func TestFDB_QualityProbe_UpdateDeleteComplex(t *testing.T) {
 		if err != nil {
 			t.Fatalf("UPDATE with CASE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT id, status FROM orders WHERE customer_id = 1 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, status FROM orders WHERE customer_id = 1 ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
 		}
@@ -1315,7 +1252,7 @@ func TestFDB_QualityProbe_UpdateDeleteComplex(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT id FROM items ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM items ORDER BY id")
 		// Should delete items 104 (qty=10) and 105 (price=null)
 		for _, r := range rows {
 			id := r[0].(int64)
@@ -1332,7 +1269,7 @@ func TestFDB_QualityProbe_NullEdgeCases(t *testing.T) {
 
 	t.Run("null_in_group_by", func(t *testing.T) {
 		query := `SELECT region, COUNT(*) FROM customers GROUP BY region ORDER BY region`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		// EAST=1, WEST=2, NULL=1
 		if len(rows) != 3 {
 			t.Fatalf("want 3 groups (EAST, WEST, NULL), got %d: %v", len(rows), rows)
@@ -1355,7 +1292,7 @@ func TestFDB_QualityProbe_NullEdgeCases(t *testing.T) {
 
 	t.Run("null_in_order_by", func(t *testing.T) {
 		query := `SELECT name, region FROM customers ORDER BY region, name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d", len(rows))
 		}
@@ -1375,7 +1312,7 @@ func TestFDB_QualityProbe_NullEdgeCases(t *testing.T) {
 
 	t.Run("null_arithmetic", func(t *testing.T) {
 		query := `SELECT amount + 10 FROM orders WHERE id = 15`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
 		}
@@ -1387,7 +1324,7 @@ func TestFDB_QualityProbe_NullEdgeCases(t *testing.T) {
 	t.Run("null_comparison", func(t *testing.T) {
 		// WHERE NULL = NULL should return 0 rows (UNKNOWN)
 		query := `SELECT id FROM orders WHERE amount = amount AND id = 15`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		// order 15 has NULL amount, so amount = amount is UNKNOWN
 		if len(rows) != 0 {
 			t.Fatalf("NULL = NULL in WHERE should filter, got %d rows: %v", len(rows), rows)
@@ -1398,7 +1335,7 @@ func TestFDB_QualityProbe_NullEdgeCases(t *testing.T) {
 		// COALESCE(NULL_double_col, -1): returns the first non-null.
 		// The literal -1 is parsed as int64, so the result is int64.
 		query := `SELECT COALESCE(amount, -1) FROM orders WHERE id = 15`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
 		}
@@ -1419,12 +1356,12 @@ func TestFDB_QualityProbe_NullEdgeCases(t *testing.T) {
 
 func TestFDB_QualityProbe_TypeCoercionEdge(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := fmt.Sprintf("/FRL/qp_tce_%s", t.Name())
-	db := openTestDB(t, dbPath)
+	db := testkit.OpenDB(t, dbPath)
 
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -1440,7 +1377,7 @@ func TestFDB_QualityProbe_TypeCoercionEdge(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	sdb, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1461,7 +1398,7 @@ func TestFDB_QualityProbe_TypeCoercionEdge(t *testing.T) {
 
 	t.Run("int_double_comparison", func(t *testing.T) {
 		query := `SELECT id FROM nums WHERE i > d ORDER BY id`
-		rows := collectRows(t, sdb, query)
+		rows := testkit.CollectRows(t, sdb, query)
 		// id=3: i=-1 > d=-0.0? -1 > -0.0 = -1 > 0 = false. Actually -0.0 == 0.0 in IEEE 754.
 		// So: id=1: 10 > 10.5? No. id=2: 0 > 0.0? No. id=3: -1 > -0.0? No.
 		// id=4: MaxInt64 > MaxFloat64? No (MaxFloat64 is much larger).
@@ -1472,7 +1409,7 @@ func TestFDB_QualityProbe_TypeCoercionEdge(t *testing.T) {
 
 	t.Run("int_double_equality_boundary", func(t *testing.T) {
 		query := `SELECT id FROM nums WHERE i = d ORDER BY id`
-		rows := collectRows(t, sdb, query)
+		rows := testkit.CollectRows(t, sdb, query)
 		// id=2: 0 = 0.0 -> true; id=3: -1 = -0.0 -> -1 = 0.0 -> false
 		if len(rows) != 1 || rows[0][0].(int64) != 2 {
 			t.Errorf("want [2], got %v", rows)
@@ -1480,24 +1417,24 @@ func TestFDB_QualityProbe_TypeCoercionEdge(t *testing.T) {
 	})
 
 	t.Run("division_by_zero_int", func(t *testing.T) {
-		err := expectError(t, sdb, "SELECT i / 0 FROM nums WHERE id = 1")
+		err := testkit.ExpectError(t, sdb, "SELECT i / 0 FROM nums WHERE id = 1")
 		if err == nil {
 			t.Fatal("expected division by zero error")
 		}
-		requireSQLSTATE(t, err, api.ErrCodeDivisionByZero)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeDivisionByZero)
 	})
 
 	t.Run("cast_edge_cases", func(t *testing.T) {
 		// CAST(NULL AS BIGINT) -> NULL
 		query := `SELECT CAST(null AS BIGINT) FROM nums WHERE id = 1`
-		rows := collectRows(t, sdb, query)
+		rows := testkit.CollectRows(t, sdb, query)
 		if len(rows) != 1 || rows[0][0] != nil {
 			t.Errorf("CAST(null AS BIGINT): want nil, got %v", rows)
 		}
 
 		// CAST(true AS STRING) -> 'true'
 		query = `SELECT CAST(b AS STRING) FROM nums WHERE id = 1`
-		rows = collectRows(t, sdb, query)
+		rows = testkit.CollectRows(t, sdb, query)
 		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "true" {
 			t.Errorf("CAST(true AS STRING): want 'true', got %v", rows[0][0])
 		}
@@ -1505,7 +1442,7 @@ func TestFDB_QualityProbe_TypeCoercionEdge(t *testing.T) {
 
 	t.Run("between_with_nulls", func(t *testing.T) {
 		query := `SELECT id FROM nums WHERE i BETWEEN -5 AND 5 ORDER BY id`
-		rows := collectRows(t, sdb, query)
+		rows := testkit.CollectRows(t, sdb, query)
 		// id=2 (0), id=3 (-1)
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
@@ -1514,7 +1451,7 @@ func TestFDB_QualityProbe_TypeCoercionEdge(t *testing.T) {
 
 	t.Run("is_distinct_from_null", func(t *testing.T) {
 		query := `SELECT id FROM nums WHERE s IS DISTINCT FROM null ORDER BY id`
-		rows := collectRows(t, sdb, query)
+		rows := testkit.CollectRows(t, sdb, query)
 		// ids 1, 2, 3 have non-null s; id 4 has null s
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d: %v", len(rows), rows)
@@ -1531,14 +1468,14 @@ func TestFDB_QualityProbe_CTEAdvanced(t *testing.T) {
 			SELECT id, name FROM customers WHERE active = true
 		)
 		SELECT name FROM active_customers ORDER BY name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("cte_with_join", func(t *testing.T) {
-		rows := collectRows(t, db, `WITH shipped AS (
+		rows := testkit.CollectRows(t, db, `WITH shipped AS (
 			SELECT customer_id, SUM(amount) AS total
 			FROM orders WHERE status = 'shipped'
 			GROUP BY customer_id
@@ -1564,7 +1501,7 @@ func TestFDB_QualityProbe_CTEAdvanced(t *testing.T) {
 		SELECT w.name, e.name
 		FROM west w, east e
 		ORDER BY w.name`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		// WEST: Alice, Charlie; EAST: Bob → cross product: 2 rows
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
@@ -1578,7 +1515,7 @@ func TestFDB_QualityProbe_DistinctEdgeCases(t *testing.T) {
 
 	t.Run("distinct_with_null", func(t *testing.T) {
 		query := `SELECT DISTINCT region FROM customers ORDER BY region`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		// EAST, WEST, NULL
 		if len(rows) != 3 {
 			t.Fatalf("want 3 distinct regions, got %d: %v", len(rows), rows)
@@ -1587,7 +1524,7 @@ func TestFDB_QualityProbe_DistinctEdgeCases(t *testing.T) {
 
 	t.Run("distinct_multi_column", func(t *testing.T) {
 		query := `SELECT DISTINCT region, active FROM customers ORDER BY region`
-		rows := collectRows(t, db, query)
+		rows := testkit.CollectRows(t, db, query)
 		// (EAST, true), (WEST, true), (WEST, false), (NULL, true) = 4
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d: %v", len(rows), rows)
@@ -1597,12 +1534,12 @@ func TestFDB_QualityProbe_DistinctEdgeCases(t *testing.T) {
 
 func TestFDB_QualityProbe_InsertSelect(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := fmt.Sprintf("/FRL/qp_is_%s", t.Name())
-	db := openTestDB(t, dbPath)
+	db := testkit.OpenDB(t, dbPath)
 
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -1619,7 +1556,7 @@ func TestFDB_QualityProbe_InsertSelect(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	sdb, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1639,7 +1576,7 @@ func TestFDB_QualityProbe_InsertSelect(t *testing.T) {
 		if err != nil {
 			t.Fatalf("INSERT ... SELECT: %v", err)
 		}
-		rows := collectRows(t, sdb, "SELECT id, val FROM dst ORDER BY id")
+		rows := testkit.CollectRows(t, sdb, "SELECT id, val FROM dst ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -1654,7 +1591,7 @@ func TestFDB_QualityProbe_UnionLimitOffset(t *testing.T) {
 	db := qualityProbeDB(t, "ulo")
 
 	t.Run("union_all_large_limit_with_offset", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM customers UNION ALL SELECT id FROM orders ORDER BY id LIMIT 100 OFFSET 3")
 		// 4 customers + 6 orders = 10 total, skip 3 → 7
 		if len(rows) != 7 {
@@ -1663,7 +1600,7 @@ func TestFDB_QualityProbe_UnionLimitOffset(t *testing.T) {
 	})
 
 	t.Run("union_all_limit_offset", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM customers UNION ALL SELECT id FROM orders ORDER BY id LIMIT 3 OFFSET 2")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
@@ -1679,7 +1616,7 @@ func TestFDB_QualityProbe_UnionLimitOffset(t *testing.T) {
 	})
 
 	t.Run("union_all_limit_only", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM customers UNION ALL SELECT id FROM orders LIMIT 5")
 		if len(rows) != 5 {
 			t.Fatalf("want 5 rows, got %d", len(rows))
@@ -1687,7 +1624,7 @@ func TestFDB_QualityProbe_UnionLimitOffset(t *testing.T) {
 	})
 
 	t.Run("union_all_order_limit_desc", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM customers UNION ALL SELECT id FROM orders ORDER BY id DESC LIMIT 3")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
@@ -1708,7 +1645,7 @@ func TestFDB_QualityProbe_AggregateEdgeCases(t *testing.T) {
 	db := qualityProbeDB(t, "aec")
 
 	t.Run("count_star_vs_count_col", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT COUNT(*), COUNT(amount) FROM orders")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
@@ -1725,7 +1662,7 @@ func TestFDB_QualityProbe_AggregateEdgeCases(t *testing.T) {
 	})
 
 	t.Run("sum_null_column", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT SUM(amount) FROM orders WHERE customer_id = 4")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
@@ -1736,7 +1673,7 @@ func TestFDB_QualityProbe_AggregateEdgeCases(t *testing.T) {
 	})
 
 	t.Run("avg_with_nulls", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT AVG(amount) FROM orders")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
@@ -1752,7 +1689,7 @@ func TestFDB_QualityProbe_AggregateEdgeCases(t *testing.T) {
 	})
 
 	t.Run("min_max_with_nulls", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT MIN(amount), MAX(amount) FROM orders")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
@@ -1771,7 +1708,7 @@ func TestFDB_QualityProbe_AggregateEdgeCases(t *testing.T) {
 	})
 
 	t.Run("aggregate_empty_result", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT COUNT(*), SUM(amount), AVG(amount), MIN(amount), MAX(amount) FROM orders WHERE 1 = 0")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row for aggregate over empty set, got %d", len(rows))
@@ -1788,7 +1725,7 @@ func TestFDB_QualityProbe_AggregateEdgeCases(t *testing.T) {
 	})
 
 	t.Run("group_by_with_having_count", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT customer_id, COUNT(*) as cnt FROM orders
 			 GROUP BY customer_id HAVING COUNT(*) >= 2 ORDER BY customer_id`)
 		if len(rows) != 2 {
@@ -1810,7 +1747,7 @@ func TestFDB_QualityProbe_SubqueryInWhere(t *testing.T) {
 
 	t.Run("in_subquery", func(t *testing.T) {
 		// IN (subquery) not yet supported by Cascades planner
-		err := expectError(t, db,
+		err := testkit.ExpectError(t, db,
 			`SELECT name FROM customers
 			 WHERE id IN (SELECT customer_id FROM orders WHERE status = 'shipped')
 			 ORDER BY name`)
@@ -1821,7 +1758,7 @@ func TestFDB_QualityProbe_SubqueryInWhere(t *testing.T) {
 	})
 
 	t.Run("not_in_subquery", func(t *testing.T) {
-		err := expectError(t, db,
+		err := testkit.ExpectError(t, db,
 			`SELECT name FROM customers
 			 WHERE id NOT IN (SELECT customer_id FROM orders WHERE status = 'shipped')
 			 ORDER BY name`)
@@ -1832,7 +1769,7 @@ func TestFDB_QualityProbe_SubqueryInWhere(t *testing.T) {
 	})
 
 	t.Run("exists_with_and", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name FROM customers c
 			 WHERE c.active = true
 			 AND EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped')
@@ -1853,7 +1790,7 @@ func TestFDB_QualityProbe_DerivedTable(t *testing.T) {
 	db := qualityProbeDB(t, "dt")
 
 	t.Run("subquery_in_from", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT sq.cid, sq.total FROM
 			 (SELECT customer_id AS cid, SUM(amount) AS total
 			  FROM orders GROUP BY customer_id) sq
@@ -1870,7 +1807,7 @@ func TestFDB_QualityProbe_DerivedTable(t *testing.T) {
 	})
 
 	t.Run("subquery_in_from_with_join", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, sub.order_count FROM customers c,
 			 (SELECT customer_id, COUNT(*) AS order_count FROM orders GROUP BY customer_id) sub
 			 WHERE c.id = sub.customer_id AND sub.order_count > 1
@@ -1890,7 +1827,7 @@ func TestFDB_QualityProbe_BetweenAndIn(t *testing.T) {
 	db := qualityProbeDB(t, "bai")
 
 	t.Run("between_numeric", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM orders WHERE amount BETWEEN 50.00 AND 100.50 ORDER BY id")
 		ids := make([]int64, len(rows))
 		for i, r := range rows {
@@ -1903,7 +1840,7 @@ func TestFDB_QualityProbe_BetweenAndIn(t *testing.T) {
 	})
 
 	t.Run("not_between", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM orders WHERE amount NOT BETWEEN 50.00 AND 100.50 ORDER BY id")
 		ids := make([]int64, len(rows))
 		for i, r := range rows {
@@ -1916,7 +1853,7 @@ func TestFDB_QualityProbe_BetweenAndIn(t *testing.T) {
 	})
 
 	t.Run("in_list_numeric", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM customers WHERE id IN (1, 3) ORDER BY name")
 		names := make([]string, len(rows))
 		for i, r := range rows {
@@ -1928,7 +1865,7 @@ func TestFDB_QualityProbe_BetweenAndIn(t *testing.T) {
 	})
 
 	t.Run("in_list_string", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM orders WHERE status IN ('shipped', 'pending') ORDER BY id")
 		if len(rows) != 5 {
 			t.Fatalf("want 5 orders (3 shipped + 2 pending), got %d", len(rows))
@@ -1936,7 +1873,7 @@ func TestFDB_QualityProbe_BetweenAndIn(t *testing.T) {
 	})
 
 	t.Run("like_pattern", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM customers WHERE name LIKE 'A%' ORDER BY name")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
@@ -1947,7 +1884,7 @@ func TestFDB_QualityProbe_BetweenAndIn(t *testing.T) {
 	})
 
 	t.Run("like_underscore", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM customers WHERE name LIKE '_ob'")
 		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "Bob" {
 			t.Errorf("want Bob, got %v", rows)
@@ -1960,7 +1897,7 @@ func TestFDB_QualityProbe_CastExpressions(t *testing.T) {
 	db := qualityProbeDB(t, "ce")
 
 	t.Run("cast_int_to_string", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT CAST(id AS STRING) FROM customers WHERE id = 1")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
@@ -1972,7 +1909,7 @@ func TestFDB_QualityProbe_CastExpressions(t *testing.T) {
 	})
 
 	t.Run("cast_string_to_int_from_table", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT CAST(name AS STRING), CAST(id AS STRING) FROM customers WHERE id = 1")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
@@ -1983,7 +1920,7 @@ func TestFDB_QualityProbe_CastExpressions(t *testing.T) {
 	})
 
 	t.Run("cast_float_to_int", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT CAST(amount AS BIGINT) FROM orders WHERE id = 10")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
@@ -1996,7 +1933,7 @@ func TestFDB_QualityProbe_CastExpressions(t *testing.T) {
 	})
 
 	t.Run("cast_null_preserves_null", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT CAST(amount AS STRING) FROM orders WHERE id = 15")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
@@ -2007,7 +1944,7 @@ func TestFDB_QualityProbe_CastExpressions(t *testing.T) {
 	})
 
 	t.Run("cast_double_to_string", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT CAST(amount AS STRING) FROM orders WHERE id = 10")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
@@ -2024,7 +1961,7 @@ func TestFDB_QualityProbe_MultipleOrderBy(t *testing.T) {
 	db := qualityProbeDB(t, "mob")
 
 	t.Run("order_by_two_cols", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT region, name FROM customers ORDER BY region, name")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 rows, got %d", len(rows))
@@ -2043,7 +1980,7 @@ func TestFDB_QualityProbe_MultipleOrderBy(t *testing.T) {
 	})
 
 	t.Run("order_by_asc_desc_mix", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT customer_id, amount FROM orders WHERE amount IS NOT NULL ORDER BY customer_id ASC, amount DESC")
 		if len(rows) != 5 {
 			t.Fatalf("want 5 non-null rows, got %d", len(rows))
@@ -2069,7 +2006,7 @@ func TestFDB_QualityProbe_IsNullIsNotNull(t *testing.T) {
 	db := qualityProbeDB(t, "ininn")
 
 	t.Run("is_null", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM orders WHERE amount IS NULL")
 		if len(rows) != 1 || rows[0][0].(int64) != 15 {
 			t.Errorf("want [15], got %v", rows)
@@ -2077,7 +2014,7 @@ func TestFDB_QualityProbe_IsNullIsNotNull(t *testing.T) {
 	})
 
 	t.Run("is_not_null", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM orders WHERE amount IS NOT NULL ORDER BY id")
 		if len(rows) != 5 {
 			t.Fatalf("want 5, got %d", len(rows))
@@ -2085,7 +2022,7 @@ func TestFDB_QualityProbe_IsNullIsNotNull(t *testing.T) {
 	})
 
 	t.Run("null_region_filter", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM customers WHERE region IS NULL")
 		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "Diana" {
 			t.Errorf("want Diana, got %v", rows)
@@ -2099,7 +2036,7 @@ func TestFDB_QualityProbe_CompoundPredicates(t *testing.T) {
 
 	t.Run("and_or_precedence", func(t *testing.T) {
 		// WHERE a AND b OR c should parse as (a AND b) OR c
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT name FROM customers
 			 WHERE active = true AND region = 'WEST' OR region = 'EAST'
 			 ORDER BY name`)
@@ -2115,7 +2052,7 @@ func TestFDB_QualityProbe_CompoundPredicates(t *testing.T) {
 	})
 
 	t.Run("parenthesized_or", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT name FROM customers
 			 WHERE active = true AND (region = 'WEST' OR region = 'EAST')
 			 ORDER BY name`)
@@ -2130,7 +2067,7 @@ func TestFDB_QualityProbe_CompoundPredicates(t *testing.T) {
 	})
 
 	t.Run("not_predicate", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM customers WHERE NOT active = true ORDER BY name")
 		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "Charlie" {
 			t.Errorf("want [Charlie], got %v", rows)
@@ -2143,7 +2080,7 @@ func TestFDB_QualityProbe_JoinPredicateEdgeCases(t *testing.T) {
 	db := qualityProbeDB(t, "jpec")
 
 	t.Run("join_with_or_predicate", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, o.id FROM customers c, orders o
 			 WHERE c.id = o.customer_id AND (o.status = 'shipped' OR o.status = 'pending')
 			 ORDER BY o.id`)
@@ -2154,7 +2091,7 @@ func TestFDB_QualityProbe_JoinPredicateEdgeCases(t *testing.T) {
 	})
 
 	t.Run("join_with_not_equal", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, o.status FROM customers c, orders o
 			 WHERE c.id = o.customer_id AND o.status <> 'cancelled'
 			 ORDER BY c.name, o.id`)
@@ -2165,7 +2102,7 @@ func TestFDB_QualityProbe_JoinPredicateEdgeCases(t *testing.T) {
 	})
 
 	t.Run("join_with_between_on_join_col", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, o.amount FROM customers c, orders o
 			 WHERE c.id = o.customer_id AND o.amount BETWEEN 50.00 AND 200.00
 			 ORDER BY o.amount`)
@@ -2176,7 +2113,7 @@ func TestFDB_QualityProbe_JoinPredicateEdgeCases(t *testing.T) {
 	})
 
 	t.Run("left_join_with_null_inner", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, o.status FROM customers c
 			 LEFT JOIN orders o ON c.id = o.customer_id AND o.status = 'shipped'
 			 ORDER BY c.name`)
@@ -2192,7 +2129,7 @@ func TestFDB_QualityProbe_JoinPredicateEdgeCases(t *testing.T) {
 	})
 
 	t.Run("cross_join_count", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT COUNT(*) FROM customers c, orders o`)
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
@@ -2210,7 +2147,7 @@ func TestFDB_QualityProbe_NestedAggregation(t *testing.T) {
 	db := qualityProbeDB(t, "nagg")
 
 	t.Run("group_by_expression", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT status, SUM(amount), COUNT(*), MIN(amount), MAX(amount)
 			 FROM orders
 			 GROUP BY status
@@ -2245,7 +2182,7 @@ func TestFDB_QualityProbe_NestedAggregation(t *testing.T) {
 	})
 
 	t.Run("group_by_multiple_keys", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT customer_id, status, COUNT(*) FROM orders
 			 GROUP BY customer_id, status
 			 ORDER BY customer_id, status`)
@@ -2256,7 +2193,7 @@ func TestFDB_QualityProbe_NestedAggregation(t *testing.T) {
 	})
 
 	t.Run("having_with_multiple_aggregates", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT customer_id, SUM(amount), COUNT(*) FROM orders
 			 GROUP BY customer_id
 			 HAVING SUM(amount) > 100 AND COUNT(*) >= 2
@@ -2270,12 +2207,12 @@ func TestFDB_QualityProbe_NestedAggregation(t *testing.T) {
 
 func TestFDB_QualityProbe_UpdateWithSubquery(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := fmt.Sprintf("/FRL/qp_uws_%s", t.Name())
-	db := openTestDB(t, dbPath)
+	db := testkit.OpenDB(t, dbPath)
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -2291,7 +2228,7 @@ func TestFDB_QualityProbe_UpdateWithSubquery(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	sdb, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2318,7 +2255,7 @@ func TestFDB_QualityProbe_UpdateWithSubquery(t *testing.T) {
 			t.Logf("DELETE with EXISTS: %v (known limitation)", err)
 			return
 		}
-		rows := collectRows(t, sdb, "SELECT id FROM t1 ORDER BY id")
+		rows := testkit.CollectRows(t, sdb, "SELECT id FROM t1 ORDER BY id")
 		// Should delete rows 1,2,3 (matched in t2), leaving 4,5
 		if len(rows) != 2 {
 			t.Fatalf("want 2 remaining rows, got %d", len(rows))
@@ -2334,7 +2271,7 @@ func TestFDB_QualityProbe_ArithmeticExpressions(t *testing.T) {
 	db := qualityProbeDB(t, "arith")
 
 	t.Run("arithmetic_in_select", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id, qty * price AS total FROM items WHERE id = 100")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
@@ -2347,7 +2284,7 @@ func TestFDB_QualityProbe_ArithmeticExpressions(t *testing.T) {
 	})
 
 	t.Run("arithmetic_in_where", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM items WHERE qty * price > 100 ORDER BY id")
 		// items: 100: 2*25.25=50.50, 101: 1*50=50, 102: 5*25.25=126.25, 103: 1*50.25=50.25, 104: 10*30=300
 		// > 100: 102 (126.25), 104 (300)
@@ -2360,7 +2297,7 @@ func TestFDB_QualityProbe_ArithmeticExpressions(t *testing.T) {
 	})
 
 	t.Run("arithmetic_null_propagation", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id, qty * price FROM items WHERE id = 105")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
@@ -2372,7 +2309,7 @@ func TestFDB_QualityProbe_ArithmeticExpressions(t *testing.T) {
 	})
 
 	t.Run("arithmetic_addition_subtraction", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id, amount + 10, amount - 10 FROM orders WHERE id = 10")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
@@ -2388,7 +2325,7 @@ func TestFDB_QualityProbe_ArithmeticExpressions(t *testing.T) {
 	})
 
 	t.Run("integer_division", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id, qty / 2 FROM items WHERE id = 100")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
@@ -2401,7 +2338,7 @@ func TestFDB_QualityProbe_ArithmeticExpressions(t *testing.T) {
 	})
 
 	t.Run("modulo", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id, qty % 3 FROM items WHERE id = 102")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
@@ -2419,7 +2356,7 @@ func TestFDB_QualityProbe_NestedCASE(t *testing.T) {
 	db := qualityProbeDB(t, "nc")
 
 	t.Run("nested_case_when", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT name,
 				CASE
 					WHEN active = true THEN
@@ -2449,7 +2386,7 @@ func TestFDB_QualityProbe_NestedCASE(t *testing.T) {
 	})
 
 	t.Run("case_with_null_comparison", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT id,
 				CASE WHEN amount IS NULL THEN 'no-amount'
 				     WHEN amount > 200 THEN 'high'
@@ -2484,7 +2421,7 @@ func TestFDB_QualityProbe_LeftJoinWhereVsOn(t *testing.T) {
 
 	t.Run("left_join_where_on_outer", func(t *testing.T) {
 		// WHERE on outer table: should filter AFTER join, not during
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, o.status FROM customers c
 			 LEFT JOIN orders o ON c.id = o.customer_id
 			 WHERE c.active = true
@@ -2511,7 +2448,7 @@ func TestFDB_QualityProbe_LeftJoinWhereVsOn(t *testing.T) {
 
 	t.Run("left_join_where_on_inner", func(t *testing.T) {
 		// WHERE on inner table effectively converts to INNER JOIN
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, o.status FROM customers c
 			 LEFT JOIN orders o ON c.id = o.customer_id
 			 WHERE o.status = 'shipped'
@@ -2531,7 +2468,7 @@ func TestFDB_QualityProbe_LeftJoinWhereVsOn(t *testing.T) {
 
 	t.Run("left_join_on_filter_vs_where_filter", func(t *testing.T) {
 		// ON clause filter: unmatched outer rows get NULLs
-		rowsOn := collectRows(t, db,
+		rowsOn := testkit.CollectRows(t, db,
 			`SELECT c.name, o.status FROM customers c
 			 LEFT JOIN orders o ON c.id = o.customer_id AND o.status = 'shipped'
 			 ORDER BY c.name`)
@@ -2541,7 +2478,7 @@ func TestFDB_QualityProbe_LeftJoinWhereVsOn(t *testing.T) {
 		}
 
 		// WHERE clause filter: NULL rows filtered out
-		rowsWhere := collectRows(t, db,
+		rowsWhere := testkit.CollectRows(t, db,
 			`SELECT c.name, o.status FROM customers c
 			 LEFT JOIN orders o ON c.id = o.customer_id
 			 WHERE o.status = 'shipped'
@@ -2564,7 +2501,7 @@ func TestFDB_QualityProbe_OrderByAlias(t *testing.T) {
 	db := qualityProbeDB(t, "oba")
 
 	t.Run("order_by_alias", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT name AS n, region AS r FROM customers ORDER BY n`)
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d", len(rows))
@@ -2576,7 +2513,7 @@ func TestFDB_QualityProbe_OrderByAlias(t *testing.T) {
 	})
 
 	t.Run("order_by_expression", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT id, qty * price AS total FROM items
 			 WHERE price IS NOT NULL
 			 ORDER BY qty * price DESC`)
@@ -2591,7 +2528,7 @@ func TestFDB_QualityProbe_OrderByAlias(t *testing.T) {
 	})
 
 	t.Run("order_by_column_number", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name, region FROM customers ORDER BY 2, 1")
 		// region order: NULL, EAST, WEST, WEST → then by name within WEST
 		if len(rows) != 4 {
@@ -2605,7 +2542,7 @@ func TestFDB_QualityProbe_GroupByWithNulls(t *testing.T) {
 	db := qualityProbeDB(t, "gbn")
 
 	t.Run("group_by_nullable_column", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT region, COUNT(*) FROM customers GROUP BY region ORDER BY region`)
 		// NULL: 1, EAST: 1, WEST: 2
 		if len(rows) != 3 {
@@ -2632,7 +2569,7 @@ func TestFDB_QualityProbe_GroupByWithNulls(t *testing.T) {
 	})
 
 	t.Run("group_by_multiple_with_null", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT active, region, COUNT(*) FROM customers
 			 GROUP BY active, region
 			 ORDER BY active, region`)
@@ -2645,12 +2582,12 @@ func TestFDB_QualityProbe_GroupByWithNulls(t *testing.T) {
 
 func TestFDB_QualityProbe_MultiTableInsertDelete(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := fmt.Sprintf("/FRL/qp_mtid_%s", t.Name())
-	db := openTestDB(t, dbPath)
+	db := testkit.OpenDB(t, dbPath)
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -2664,7 +2601,7 @@ func TestFDB_QualityProbe_MultiTableInsertDelete(t *testing.T) {
 		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	sdb, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2683,7 +2620,7 @@ func TestFDB_QualityProbe_MultiTableInsertDelete(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
-		rows := collectRows(t, sdb, "SELECT COUNT(*) FROM t")
+		rows := testkit.CollectRows(t, sdb, "SELECT COUNT(*) FROM t")
 		cnt := rows[0][0].(int64)
 		if cnt != 8 {
 			t.Errorf("want 8 remaining, got %d", cnt)
@@ -2695,11 +2632,11 @@ func TestFDB_QualityProbe_MultiTableInsertDelete(t *testing.T) {
 		if err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, sdb, "SELECT val FROM t WHERE id = 1")
+		rows := testkit.CollectRows(t, sdb, "SELECT val FROM t WHERE id = 1")
 		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "updated" {
 			t.Errorf("want 'updated', got %v", rows)
 		}
-		rows = collectRows(t, sdb, "SELECT COUNT(*) FROM t WHERE val = 'updated'")
+		rows = testkit.CollectRows(t, sdb, "SELECT COUNT(*) FROM t WHERE val = 'updated'")
 		if rows[0][0].(int64) != 3 {
 			t.Errorf("want 3 updated rows, got %v", rows[0][0])
 		}
@@ -2711,7 +2648,7 @@ func TestFDB_QualityProbe_CoalesceAndGreatest(t *testing.T) {
 	db := qualityProbeDB(t, "cg")
 
 	t.Run("coalesce_multiple_args", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id, COALESCE(amount, 0) FROM orders ORDER BY id")
 		if len(rows) != 6 {
 			t.Fatalf("want 6, got %d", len(rows))
@@ -2737,7 +2674,7 @@ func TestFDB_QualityProbe_CoalesceAndGreatest(t *testing.T) {
 	})
 
 	t.Run("greatest_least", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id, GREATEST(qty, 3), LEAST(qty, 3) FROM items WHERE price IS NOT NULL ORDER BY id")
 		if len(rows) < 4 {
 			t.Fatalf("want at least 4, got %d", len(rows))
@@ -2761,7 +2698,7 @@ func TestFDB_QualityProbe_StringLiteralEdges(t *testing.T) {
 	db := qualityProbeDB(t, "sle")
 
 	t.Run("empty_string_comparison", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM customers WHERE name <> ''")
 		// All 4 customers have non-empty names
 		if len(rows) != 4 {
@@ -2770,7 +2707,7 @@ func TestFDB_QualityProbe_StringLiteralEdges(t *testing.T) {
 	})
 
 	t.Run("like_percent_only", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM customers WHERE name LIKE '%'")
 		if len(rows) != 4 {
 			t.Fatalf("LIKE '%%' should match all, got %d", len(rows))
@@ -2778,7 +2715,7 @@ func TestFDB_QualityProbe_StringLiteralEdges(t *testing.T) {
 	})
 
 	t.Run("case_sensitive_comparison", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM customers WHERE name = 'alice'")
 		// Should not match 'Alice' (case-sensitive)
 		if len(rows) != 0 {
@@ -2792,7 +2729,7 @@ func TestFDB_QualityProbe_LimitZero(t *testing.T) {
 	db := qualityProbeDB(t, "lz")
 
 	t.Run("limit_zero", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM customers LIMIT 0")
 		if len(rows) != 0 {
 			t.Errorf("LIMIT 0 should return 0 rows, got %d", len(rows))
@@ -2800,7 +2737,7 @@ func TestFDB_QualityProbe_LimitZero(t *testing.T) {
 	})
 
 	t.Run("limit_one", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM customers ORDER BY id LIMIT 1")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
@@ -2811,7 +2748,7 @@ func TestFDB_QualityProbe_LimitZero(t *testing.T) {
 	})
 
 	t.Run("limit_exceeds_rows", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM customers LIMIT 100")
 		if len(rows) != 4 {
 			t.Errorf("LIMIT 100 with 4 rows should return 4, got %d", len(rows))
@@ -2824,7 +2761,7 @@ func TestFDB_QualityProbe_ComplexSubqueryPatterns(t *testing.T) {
 	db := qualityProbeDB(t, "csp")
 
 	t.Run("correlated_not_exists", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name FROM customers c
 			 WHERE NOT EXISTS (
 			   SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'cancelled'
@@ -2840,7 +2777,7 @@ func TestFDB_QualityProbe_ComplexSubqueryPatterns(t *testing.T) {
 	})
 
 	t.Run("correlated_exists_with_filter", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name FROM customers c
 			 WHERE EXISTS (
 			   SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped'
@@ -2859,7 +2796,7 @@ func TestFDB_QualityProbe_ComplexSubqueryPatterns(t *testing.T) {
 		// Active customers: Alice(1), Bob(2), Diana(4)
 		// Shipped orders: 10(cust 1), 12(cust 2), 14(cust 3)
 		// Active + shipped: Alice(10), Bob(12) = 2 rows
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`WITH active_customers AS (
 			   SELECT id, name FROM customers WHERE active = true
 			 )
@@ -2893,7 +2830,7 @@ func TestFDB_QualityProbe_ComplexSubqueryPatterns(t *testing.T) {
 		// TestFDB_ProjectionResultTypeProbe does not cover: the column schema
 		// comes from the WITH registry while the alias and correlation come from
 		// this reference.
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`WITH active AS (
 			   SELECT id, name FROM customers WHERE active = true
 			 )
@@ -2912,7 +2849,7 @@ func TestFDB_QualityProbe_ComplexSubqueryPatterns(t *testing.T) {
 	})
 
 	t.Run("multi_table_count", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT COUNT(*) FROM customers c, orders o
 			 WHERE o.customer_id = c.id`)
 		if len(rows) != 1 || rows[0][0].(int64) != 6 {

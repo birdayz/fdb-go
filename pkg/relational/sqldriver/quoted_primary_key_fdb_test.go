@@ -4,13 +4,15 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // A quoted lowercase primary-key column is scanned by key and answers the
 // target's rows (WS-F oracle w13_quoted_pk_*).
 func TestFDB_QuotedPrimaryKeyColumnScan(t *testing.T) {
 	t.Parallel()
-	db := setupPlanShapeDB(t, "qpk", `CREATE TABLE "footab" ("id" BIGINT, v BIGINT, PRIMARY KEY ("id"))`)
+	db := testkit.SetupPlanShapeDB(t, "qpk", `CREATE TABLE "footab" ("id" BIGINT, v BIGINT, PRIMARY KEY ("id"))`)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, `INSERT INTO "footab" VALUES (1, 10), (2, 20), (3, 30)`); err != nil {
 		t.Fatal(err)
@@ -61,7 +63,7 @@ func TestFDB_QuotedPrimaryKeyColumnScan(t *testing.T) {
 // vector index and answer the nearest rows.
 func TestFDB_QuotedVectorColumnsScan(t *testing.T) {
 	t.Parallel()
-	db := setupPlanShapeDB(t, "qvec", `CREATE TABLE "vt" ("zone" BIGINT, "id" BIGINT, "emb" VECTOR(3, FLOAT), PRIMARY KEY ("zone", "id")) `+
+	db := testkit.SetupPlanShapeDB(t, "qvec", `CREATE TABLE "vt" ("zone" BIGINT, "id" BIGINT, "emb" VECTOR(3, FLOAT), PRIMARY KEY ("zone", "id")) `+
 		`CREATE VECTOR INDEX vi USING HNSW ON "vt" ("emb") PARTITION BY ("zone")`)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, `INSERT INTO "vt" VALUES (1, 1, CAST([1.0, 0.0, 0.0] AS VECTOR(3, FLOAT))), (1, 2, CAST([0.0, 1.0, 0.0] AS VECTOR(3, FLOAT))), `+

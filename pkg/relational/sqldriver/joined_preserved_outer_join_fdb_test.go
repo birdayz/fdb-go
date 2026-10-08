@@ -11,6 +11,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_JoinedPreservedSide_LeftOuterRows seeds A⋈B and a partially-matching C, then
@@ -19,30 +21,30 @@ import (
 // joined-preserved probe plan executes the LEFT-OUTER semantics correctly.
 func TestFDB_JoinedPreservedSide_LeftOuterRows(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_jps")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_jps")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_jps")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_jps")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE jps "+
 			"CREATE TABLE a (id BIGINT, flag BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_jps/s WITH TEMPLATE jps")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JPS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_jps/s WITH TEMPLATE jps")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JPS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1, 0), (2, 0)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (10, 1), (11, 2)") // each A has a B match
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1)")         // only A=1 has a C match
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1, 0), (2, 0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (10, 1), (11, 2)") // each A has a B match
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (100, 1)")         // only A=1 has a C match
 
 	rows, err := db.QueryContext(ctx,
 		"SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id LEFT JOIN c ON c.a_id = a.id ORDER BY a.id")

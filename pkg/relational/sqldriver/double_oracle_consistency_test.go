@@ -13,22 +13,24 @@ import (
 	"math/rand"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DoubleOracleConsistency(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dbloracle")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dbloracle")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dbloracle")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dbloracle")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dbloracle "+
 			"CREATE TABLE t (id BIGINT, k DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_k ON t (k)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dbloracle/s WITH TEMPLATE dbloracle")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DBLORACLE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dbloracle/s WITH TEMPLATE dbloracle")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DBLORACLE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -48,10 +50,10 @@ func TestFDB_DoubleOracleConsistency(t *testing.T) {
 		r := row{id: int64(i)}
 		if rng.Intn(10) == 0 {
 			r.isNull = true
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", r.id))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", r.id))
 		} else {
 			r.k = choices[rng.Intn(len(choices))]
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, k) VALUES (%d, %g)", r.id, r.k))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, k) VALUES (%d, %g)", r.id, r.k))
 		}
 		model = append(model, r)
 	}

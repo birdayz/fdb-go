@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExists_OrderByLimit pins RFC-141 Phase 2 P1: a projected
@@ -30,19 +32,19 @@ import (
 // row in the requested order. Before the fold fix: false for matching rows.
 func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_projexists_ob")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_ob")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_ob_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_projexists_ob")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_ob")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_ob_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_ob/s WITH TEMPLATE projexists_ob_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_ob/s WITH TEMPLATE projexists_ob_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_OB?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_OB?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -51,8 +53,8 @@ func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 	// t1: ids 1..5. t2 references t1 ids {1,3,5} → those rows match, 2 and 4 do
 	// not. The match set is interleaved so a constant-false bug (or a
 	// constant-true bug) is impossible to pass by coincidence.
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3), (300, 5)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3), (300, 5)")
 
 	type idBool struct {
 		id int64
@@ -238,26 +240,26 @@ func TestFDB_ProjectedExists_OrderByLimit(t *testing.T) {
 // wire impact (the scalar is pre-evaluated, not stored).
 func TestFDB_ProjectedExists_ScalarSubquery(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_projexists_sc")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_sc")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_sc_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_projexists_sc")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_sc")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_sc_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_sc/s WITH TEMPLATE projexists_sc_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_sc/s WITH TEMPLATE projexists_sc_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_SC?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_SC?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 1), (300, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 1), (300, 3)")
 
 	type row struct {
 		id    int64

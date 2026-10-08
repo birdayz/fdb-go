@@ -23,18 +23,20 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_DmlDryRun(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dryrun")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dryrun")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dryrun")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dryrun")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dryrun CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 
 	// newDB creates an ISOLATED schema (its own table instance) seeded with
@@ -42,13 +44,13 @@ func TestFDB_DmlDryRun(t *testing.T) {
 	// creation runs sequentially (no catalog write-contention), letting the subtest body
 	// run in parallel against private state.
 	newDB := func(t *testing.T, schema string) *sql.DB {
-		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dryrun/"+schema+" WITH TEMPLATE dryrun")
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DRYRUN?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
+		testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dryrun/"+schema+" WITH TEMPLATE dryrun")
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DRYRUN?cluster_file=%s&schema=%s", testkit.ClusterFile(), strings.ToUpper(schema)))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}
 		t.Cleanup(func() { db.Close() })
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (1,10),(2,20),(3,30)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (1,10),(2,20),(3,30)")
 		return db
 	}
 	countOf := func(db *sql.DB) int {
@@ -215,7 +217,7 @@ func TestFDB_DmlDryRun(t *testing.T) {
 		if c := countOf(db); c != 3 {
 			t.Fatalf("after the DRY_RUN INSERT, count = %d, want 3 (nothing stored)", c)
 		}
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (5, 50)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (5, 50)")
 		if c := countOf(db); c != 4 {
 			t.Fatalf("the next borrower's INSERT stored nothing (count %d, want 4): DRY_RUN outlived the borrow", c)
 		}
@@ -227,9 +229,9 @@ func TestFDB_DmlDryRun(t *testing.T) {
 
 	// DRY_RUN from the DSN is the connector's option: every borrow previews.
 	t.Run("dsn_dry_run_persists_across_borrows", func(t *testing.T) {
-		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dryrun/s_dsn WITH TEMPLATE dryrun")
+		testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dryrun/s_dsn WITH TEMPLATE dryrun")
 		t.Parallel()
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DRYRUN?cluster_file=%s&schema=S_DSN&dry_run=true", clusterFilePath))
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DRYRUN?cluster_file=%s&schema=S_DSN&dry_run=true", testkit.ClusterFile()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -369,20 +371,20 @@ func TestFDB_DmlDryRun(t *testing.T) {
 // Java-faithful boundary so it cannot silently drift into a divergence.
 func TestFDB_DmlDryRun_MatchesJavaLightweightValidation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dryrun_lw")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dryrun_lw")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dryrun_lw")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dryrun_lw")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dryrun_lw"+
 			" CREATE TABLE emp (id BIGINT, email STRING, PRIMARY KEY (id))"+
 			" CREATE UNIQUE INDEX by_email ON emp (email)")
 
 	newDB := func(t *testing.T, schema string) *sql.DB {
-		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dryrun_lw/"+schema+" WITH TEMPLATE dryrun_lw")
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DRYRUN_LW?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
+		testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dryrun_lw/"+schema+" WITH TEMPLATE dryrun_lw")
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DRYRUN_LW?cluster_file=%s&schema=%s", testkit.ClusterFile(), strings.ToUpper(schema)))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}
@@ -401,7 +403,7 @@ func TestFDB_DmlDryRun_MatchesJavaLightweightValidation(t *testing.T) {
 	t.Run("secondary_unique_conflict_not_caught_matches_java", func(t *testing.T) {
 		db := newDB(t, "s_uniq")
 		t.Parallel()
-		mwjoMustExec(t, db, ctx, "INSERT INTO emp VALUES (1, 'a@x.com')")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO emp VALUES (1, 'a@x.com')")
 		res, err := db.ExecContext(ctx, "INSERT INTO emp VALUES (2, 'a@x.com') OPTIONS (DRY RUN)")
 		if err != nil {
 			t.Fatalf("DRY RUN INSERT w/ unique conflict = %v; want success (Java's dry-run skips secondary-index validation, FDBRecordStore.java:578)", err)

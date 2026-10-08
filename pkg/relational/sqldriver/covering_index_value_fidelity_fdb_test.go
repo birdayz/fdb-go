@@ -30,6 +30,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // mmMustRows runs q and fails rather than returning an error: it is the ORACLE
@@ -37,7 +39,7 @@ import (
 // silently returning nil would make the comparison vacuous.
 func mmMustRows(t *testing.T, ctx context.Context, db *sql.DB, q string) []string {
 	t.Helper()
-	rows, err := mmRows(t, ctx, db, q)
+	rows, err := testkit.QueryRowStrings(t, ctx, db, q)
 	if err != nil {
 		t.Fatalf("oracle query failed, so there is nothing to compare against\n  q: %s\n  err: %v", q, err)
 	}
@@ -46,7 +48,7 @@ func mmMustRows(t *testing.T, ctx context.Context, db *sql.DB, q string) []strin
 
 func TestFDB_CoveringIndexValueFidelityByType(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -76,7 +78,7 @@ func TestFDB_CoveringIndexValueFidelityByType(t *testing.T) {
 		t.Run(tc.ddlType, func(t *testing.T) {
 			t.Parallel()
 			tag := strings.ToLower(tc.ddlType)
-			w := mmNewTwin(t, ctx, "/FRL/testdb_covfid_"+tag, "covfid"+tag,
+			w := testkit.NewTwin(t, ctx, "/FRL/testdb_covfid_"+tag, "covfid"+tag,
 				fmt.Sprintf("CREATE TABLE t (id BIGINT, cv %s, pad STRING, PRIMARY KEY (id)) ", tc.ddlType),
 				"CREATE INDEX t_cv ON t (cv) ")
 
@@ -111,7 +113,7 @@ func TestFDB_CoveringIndexValueFidelityByType(t *testing.T) {
 				plan := w.Explain(coveredQ)
 				isSignedZero := lit == "0.0" || lit == "-0.0"
 				if isSignedZero {
-					w.Want("signed-zero read of "+lit, coveredQ, mmMustRows(t, ctx, w.plain, coveredQ))
+					w.Want("signed-zero read of "+lit, coveredQ, mmMustRows(t, ctx, w.Plain, coveredQ))
 					if !strings.Contains(plan, "COVERING") {
 						continue
 					}
@@ -123,12 +125,12 @@ func TestFDB_CoveringIndexValueFidelityByType(t *testing.T) {
 				}
 
 				// Both readings agree with the unindexed oracle …
-				w.Want("covered read of "+lit, coveredQ, mmMustRows(t, ctx, w.plain, coveredQ))
-				w.Want("fetched read of "+lit, fetchedQ, mmMustRows(t, ctx, w.plain, fetchedQ))
+				w.Want("covered read of "+lit, coveredQ, mmMustRows(t, ctx, w.Plain, coveredQ))
+				w.Want("fetched read of "+lit, fetchedQ, mmMustRows(t, ctx, w.Plain, fetchedQ))
 
 				// … and, decisively, with each other.
-				fromEntry := mmMustRows(t, ctx, w.idx, coveredQ)
-				fromRecord := mmMustRows(t, ctx, w.idx, fetchedQ)
+				fromEntry := mmMustRows(t, ctx, w.Idx, coveredQ)
+				fromRecord := mmMustRows(t, ctx, w.Idx, fetchedQ)
 				if len(fromEntry) != len(fromRecord) {
 					t.Errorf("covered and fetched reads of %s returned different row counts (%d vs %d)",
 						lit, len(fromEntry), len(fromRecord))
@@ -152,19 +154,19 @@ func TestFDB_CoveringIndexValueFidelityByType(t *testing.T) {
 
 			// The NULL row, whose covered read has no value to decode at all.
 			nullQ := "SELECT id, cv FROM t WHERE cv IS NULL ORDER BY id"
-			w.Want("covered IS NULL", nullQ, mmMustRows(t, ctx, w.plain, nullQ))
+			w.Want("covered IS NULL", nullQ, mmMustRows(t, ctx, w.Plain, nullQ))
 
 			// A range covering every stored value, so the entry decode is
 			// exercised in one scan rather than one probe per literal — a
 			// different range shape reaching the same decoder.
 			rangeQ := "SELECT id, cv FROM t WHERE cv IS NOT NULL ORDER BY cv, id"
-			w.Want("every value in one scan", rangeQ, mmMustRows(t, ctx, w.plain, rangeQ))
+			w.Want("every value in one scan", rangeQ, mmMustRows(t, ctx, w.Plain, rangeQ))
 
 			// Extrema go through the index ordering rather than the row decode,
 			// cross-checking the same values by a third route.
 			mq := "SELECT MIN(cv), MAX(cv) FROM t"
-			if _, err := mmRows(t, ctx, w.plain, mq); err == nil {
-				w.Want("extrema", mq, mmMustRows(t, ctx, w.plain, mq))
+			if _, err := testkit.QueryRowStrings(t, ctx, w.Plain, mq); err == nil {
+				w.Want("extrema", mq, mmMustRows(t, ctx, w.Plain, mq))
 			}
 		})
 	}

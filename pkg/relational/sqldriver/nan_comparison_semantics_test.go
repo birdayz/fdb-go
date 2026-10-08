@@ -32,27 +32,29 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_NaNComparisonSemantics(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nansem")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nansem")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nansem "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_nansem")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nansem")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE nansem "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, z DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nansem/s WITH TEMPLATE nansem")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NANSEM?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nansem/s WITH TEMPLATE nansem")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NANSEM?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// z = 0 everywhere: v/z is NaN for rows 1-2 (0.0/0.0) and +Inf for row 3.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, z) VALUES (1, 0.0, 0.0), (2, 0.0, 0.0), (3, 5.0, 0.0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v, z) VALUES (1, 0.0, 0.0), (2, 0.0, 0.0), (3, 5.0, 0.0)")
 
 	conn, err := db.Conn(ctx)
 	if err != nil {

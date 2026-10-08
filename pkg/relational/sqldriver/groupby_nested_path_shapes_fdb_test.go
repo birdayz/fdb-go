@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_GroupByNestedPathKeyShapes is the SHAPE coverage for a GROUP BY key
@@ -51,12 +53,12 @@ import (
 // match"; the plan shape itself is pinned in the acceptance file.
 func TestFDB_GroupByNestedPathKeyShapes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/gnpr"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -76,7 +78,7 @@ func TestFDB_GroupByNestedPathKeyShapes(t *testing.T) {
 		"CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE gnpr_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

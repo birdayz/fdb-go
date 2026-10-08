@@ -17,7 +17,6 @@ package sqldriver_test
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -25,15 +24,12 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
-	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/fleet"
-	"fdb.dev/pkg/relational/core/keyspace"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // fleetRowsPerSchema is above zero on purpose: a relational template carries no
@@ -43,105 +39,38 @@ import (
 // nothing for the fan-out to build.
 const fleetRowsPerSchema = 60
 
-type fleetHarness struct {
-	db  *recordlayer.FDBDatabase
-	cat *catalog.RecordLayerStoreCatalog
-	ks  *keyspace.RelationalKeyspace
-}
-
-func newFleetHarness(t *testing.T) *fleetHarness {
-	t.Helper()
-	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	// Root keyspace, as the sqldriver DSN resolves it. Tests stay isolated by
-	// using a UNIQUE database path each, never by rooting the keyspace
-	// elsewhere — the driver would not find a relocated store.
-	ks := keyspace.New(subspace.Sub())
-	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
-	if err != nil {
-		t.Fatalf("catalog: %v", err)
-	}
-	return &fleetHarness{db: recordlayer.NewFDBDatabase(rawDB), cat: cat, ks: ks}
-}
-
-func (h *fleetHarness) mustRun(t *testing.T, what string, fn func(txn api.Transaction) error) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if _, err := h.db.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-		return nil, fn(catalog.NewFDBTransaction(rctx))
-	}); err != nil {
-		t.Fatalf("%s: %v", what, err)
-	}
-}
-
-// fleetTemplate builds template `name` at `version` over one table T(PK,C,V),
-// optionally carrying a value index on C. v1 has no index; v2 adds it, which
-// is the migration every test below performs.
-func fleetTemplate(t *testing.T, name string, version int, withIndex bool) *metadata.RecordLayerSchemaTemplate {
-	t.Helper()
-	b := metadata.NewSchemaTemplateBuilder().SetName(name).SetVersion(version)
-	b.AddTable("T", []metadata.ColumnSpec{
-		metadata.NewColumnSpec("PK", api.NewLongType(false), 1),
-		metadata.NewColumnSpec("C", api.NewLongType(true), 2),
-		metadata.NewColumnSpec("V", api.NewLongType(true), 3),
-	}, []string{"PK"})
-	if withIndex {
-		b.AddIndex("T", "T_BY_C", []string{"C"}, false)
-	}
-	tmpl, err := b.Build()
-	if err != nil {
-		t.Fatalf("build template %s@%d: %v", name, version, err)
-	}
-	return tmpl
-}
-
 // fleetSetup creates one database holding len(schemas) schemas, all bound to
 // the SAME template at version 1, each filled with fleetRowsPerSchema rows.
 // This is the multi-tenant fixture: one template, many tenants.
-func fleetSetup(t *testing.T, h *fleetHarness, dbPath, tmplName string, schemas []string) {
+func fleetSetup(t *testing.T, h *testkit.FleetHarness, dbPath, tmplName string, schemas []string) {
 	t.Helper()
 	ctx := context.Background()
-	tmpl1 := fleetTemplate(t, tmplName, 1, false)
-	h.mustRun(t, "bootstrap", func(txn api.Transaction) error {
-		if err := h.cat.Initialize(txn); err != nil {
+	tmpl1 := testkit.FleetTemplate(t, tmplName, 1, false)
+	h.MustRun(t, "bootstrap", func(txn api.Transaction) error {
+		if err := h.Cat.Initialize(txn); err != nil {
 			return err
 		}
-		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.cat).Execute(txn); err != nil {
+		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.Cat).Execute(txn); err != nil {
 			return err
 		}
-		if err := ddl.NewSaveSchemaTemplateConstantAction(tmpl1, h.cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+		if err := ddl.NewSaveSchemaTemplateConstantAction(tmpl1, h.Cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
 			return err
 		}
 		for _, s := range schemas {
-			if err := ddl.NewCreateSchemaConstantAction(dbPath, s, tmplName, h.cat, h.ks).Execute(txn); err != nil {
+			if err := ddl.NewCreateSchemaConstantAction(dbPath, s, tmplName, h.Cat, h.Ks).Execute(txn); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
 	for _, s := range schemas {
-		db := fleetOpen(t, dbPath, s)
+		db := testkit.FleetOpen(t, dbPath, s)
 		var vals []string
 		for i := 1; i <= fleetRowsPerSchema; i++ {
 			vals = append(vals, fmt.Sprintf("(%d,%d,%d)", i, i%10, i*10))
 		}
-		mwjoMustExec(t, db, ctx, "INSERT INTO T (PK,C,V) VALUES "+strings.Join(vals, ","))
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO T (PK,C,V) VALUES "+strings.Join(vals, ","))
 	}
-}
-
-func fleetOpen(t *testing.T, dbPath, schemaName string) *sql.DB {
-	t.Helper()
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schemaName)
-	db, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
 }
 
 // fleetTrace collects progress events. Fan-out runs targets concurrently, so
@@ -165,41 +94,6 @@ func (tr *fleetTrace) outcome(target string) fleet.Outcome {
 	return tr.ev[target].Outcome
 }
 
-// fleetTargets lists the fan-out targets for one database. Narrowed to the
-// test's own database on purpose: the catalog subspace is shared by every test
-// in this package, so an unfiltered listing would race with concurrent tests.
-func fleetTargets(t *testing.T, h *fleetHarness, dbPath string) []fleet.Target {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	targets, err := fleet.ListTargets(ctx, h.db, h.cat, dbPath)
-	if err != nil {
-		t.Fatalf("ListTargets(%s): %v", dbPath, err)
-	}
-	return targets
-}
-
-// fleetVersions maps schema name -> bound TEMPLATE_VERSION, read back from the
-// catalog. This is the migration observable.
-func fleetVersions(t *testing.T, h *fleetHarness, dbPath string) map[string]int {
-	t.Helper()
-	out := map[string]int{}
-	for _, tg := range fleetTargets(t, h, dbPath) {
-		out[tg.SchemaName] = tg.TemplateVersion
-	}
-	return out
-}
-
-// migrateFleet is the shared arrange step: save template v2 (adding the index)
-// and rebind every schema, one transaction per schema.
-func migrateFleet(t *testing.T, h *fleetHarness, dbPath, tmplName string, opts fleet.Options) (fleet.Result, error) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	tmpl2 := fleetTemplate(t, tmplName, 2, true)
-	return fleet.MigrateTemplate(ctx, h.db, h.cat, h.ks, dbPath, tmpl2, opts)
-}
-
 // TestFDB_FleetMigrateRebindsEveryTenantWithPerSchemaVersionBump is migration
 // mode: one template save, then a per-schema transaction each. The assertion
 // is per-schema — every tenant individually advanced v1 -> v2 — because a
@@ -207,10 +101,10 @@ func migrateFleet(t *testing.T, h *fleetHarness, dbPath, tmplName string, opts f
 // the failure this design has to rule out.
 func TestFDB_FleetMigrateRebindsEveryTenantWithPerSchemaVersionBump(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	const dbPath = "/FRL/testdb_fleet_migrate"
 	const tmplName = "FLEETMIGRATE"
 	schemas := []string{"S1", "S2", "S3"}
@@ -218,7 +112,7 @@ func TestFDB_FleetMigrateRebindsEveryTenantWithPerSchemaVersionBump(t *testing.T
 
 	// Pre-state: every tenant is on v1. Without this the version assertions
 	// below could pass on a fleet that was never on an older version.
-	before := fleetVersions(t, h, dbPath)
+	before := testkit.FleetVersions(t, h, dbPath)
 	for _, s := range schemas {
 		if before[s] != 1 {
 			t.Fatalf("pre-state: schema %s bound to template version %d, want 1 (got %v)", s, before[s], before)
@@ -226,7 +120,7 @@ func TestFDB_FleetMigrateRebindsEveryTenantWithPerSchemaVersionBump(t *testing.T
 	}
 
 	trace := newFleetTrace()
-	res, err := migrateFleet(t, h, dbPath, tmplName, fleet.Options{Progress: trace.record})
+	res, err := testkit.MigrateFleet(t, h, dbPath, tmplName, fleet.Options{Progress: trace.record})
 	if err != nil {
 		t.Fatalf("MigrateTemplate: %v", err)
 	}
@@ -234,7 +128,7 @@ func TestFDB_FleetMigrateRebindsEveryTenantWithPerSchemaVersionBump(t *testing.T
 		t.Fatalf("migrate tally = %+v, want Migrated=%d Failed=0 Skipped=0", res, len(schemas))
 	}
 
-	after := fleetVersions(t, h, dbPath)
+	after := testkit.FleetVersions(t, h, dbPath)
 	for _, s := range schemas {
 		if after[s] != 2 {
 			t.Errorf("schema %s bound to template version %d after migration, want 2.\n"+
@@ -258,16 +152,16 @@ func TestFDB_FleetMigrateRebindsEveryTenantWithPerSchemaVersionBump(t *testing.T
 // none.
 func TestFDB_FleetMigrateResumeSkipsAlreadyMigratedTenants(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	const dbPath = "/FRL/testdb_fleet_resume"
 	const tmplName = "FLEETRESUME"
 	schemas := []string{"S1", "S2", "S3"}
 	fleetSetup(t, h, dbPath, tmplName, schemas)
 
-	first, err := migrateFleet(t, h, dbPath, tmplName, fleet.Options{})
+	first, err := testkit.MigrateFleet(t, h, dbPath, tmplName, fleet.Options{})
 	if err != nil {
 		t.Fatalf("first migrate: %v", err)
 	}
@@ -280,8 +174,8 @@ func TestFDB_FleetMigrateResumeSkipsAlreadyMigratedTenants(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	trace := newFleetTrace()
-	second, err := fleet.Migrate(ctx, h.db, h.cat, h.ks,
-		fleetTargets(t, h, dbPath), 2, fleet.Options{Progress: trace.record})
+	second, err := fleet.Migrate(ctx, h.DB, h.Cat, h.Ks,
+		testkit.FleetTargets(t, h, dbPath), 2, fleet.Options{Progress: trace.record})
 	if err != nil {
 		t.Fatalf("second migrate: %v", err)
 	}
@@ -308,16 +202,16 @@ func TestFDB_FleetMigrateResumeSkipsAlreadyMigratedTenants(t *testing.T) {
 // atomicity for idempotence.
 func TestFDB_FleetMigrateTemplateIsResumableAsAWhole(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	const dbPath = "/FRL/testdb_fleet_rerun"
 	const tmplName = "FLEETRERUN"
 	schemas := []string{"S1", "S2", "S3"}
 	fleetSetup(t, h, dbPath, tmplName, schemas)
 
-	first, err := migrateFleet(t, h, dbPath, tmplName, fleet.Options{})
+	first, err := testkit.MigrateFleet(t, h, dbPath, tmplName, fleet.Options{})
 	if err != nil {
 		t.Fatalf("first MigrateTemplate: %v", err)
 	}
@@ -327,7 +221,7 @@ func TestFDB_FleetMigrateTemplateIsResumableAsAWhole(t *testing.T) {
 
 	// Same call, same template, same version — the shape a retry takes.
 	trace := newFleetTrace()
-	second, err := migrateFleet(t, h, dbPath, tmplName, fleet.Options{Progress: trace.record})
+	second, err := testkit.MigrateFleet(t, h, dbPath, tmplName, fleet.Options{Progress: trace.record})
 	if err != nil {
 		t.Fatalf("re-running MigrateTemplate failed: %v\n"+
 			"An interrupted migration is recovered by running it again. If the template save "+
@@ -349,15 +243,15 @@ func TestFDB_FleetMigrateTemplateIsResumableAsAWhole(t *testing.T) {
 // them to READABLE.
 func TestFDB_FleetBuildIndexesAcrossEveryTenant(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	const dbPath = "/FRL/testdb_fleet_build"
 	const tmplName = "FLEETBUILD"
 	schemas := []string{"S1", "S2", "S3"}
 	fleetSetup(t, h, dbPath, tmplName, schemas)
-	if _, err := migrateFleet(t, h, dbPath, tmplName, fleet.Options{}); err != nil {
+	if _, err := testkit.MigrateFleet(t, h, dbPath, tmplName, fleet.Options{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -367,29 +261,29 @@ func TestFDB_FleetBuildIndexesAcrossEveryTenant(t *testing.T) {
 	// Pre-state: the index really is pending on every tenant. Without this the
 	// build assertions would also pass on a fleet where the index had been
 	// rebuilt inline at store open and there was nothing to build.
-	targets := fleetTargets(t, h, dbPath)
+	targets := testkit.FleetTargets(t, h, dbPath)
 	for _, tg := range targets {
-		md, err := fleet.PinnedMetadata(ctx, h.db, h.cat, tg)
+		md, err := fleet.PinnedMetadata(ctx, h.DB, h.Cat, tg)
 		if err != nil {
 			t.Fatalf("pinned metadata %s: %v", tg, err)
 		}
-		ss, err := h.ks.SchemaSubspaceIn(ctx, h.db, tg.DatabaseID, tg.SchemaName)
+		ss, err := h.Ks.SchemaSubspaceIn(ctx, h.DB, tg.DatabaseID, tg.SchemaName)
 		if err != nil {
 			t.Fatalf("subspace %s: %v", tg, err)
 		}
-		pending, err := fleet.PendingIndexes(ctx, h.db, md, ss, nil)
+		pending, err := fleet.PendingIndexes(ctx, h.DB, md, ss, nil)
 		if err != nil {
 			t.Fatalf("pending indexes %s: %v", tg, err)
 		}
 		if len(pending) != 1 || pending[0].Name != "T_BY_C" {
 			t.Fatalf("pre-state: tenant %s has pending indexes %v, want exactly [T_BY_C].\n"+
 				"If the index is already readable the store was rebuilt inline and this test "+
-				"proves nothing about the fan-out.", tg, fleetIndexNames(pending))
+				"proves nothing about the fan-out.", tg, testkit.FleetIndexNames(pending))
 		}
 	}
 
 	trace := newFleetTrace()
-	res, err := fleet.BuildAll(ctx, h.db, h.cat, h.ks, dbPath, fleet.BuildOptions{
+	res, err := fleet.BuildAll(ctx, h.DB, h.Cat, h.Ks, dbPath, fleet.BuildOptions{
 		Options: fleet.Options{Progress: trace.record},
 		Limit:   20,
 	})
@@ -410,7 +304,7 @@ func TestFDB_FleetBuildIndexesAcrossEveryTenant(t *testing.T) {
 	}
 
 	// Post-state: nothing is pending anywhere, and a re-run says so.
-	again, err := fleet.BuildAll(ctx, h.db, h.cat, h.ks, dbPath, fleet.BuildOptions{})
+	again, err := fleet.BuildAll(ctx, h.DB, h.Cat, h.Ks, dbPath, fleet.BuildOptions{})
 	if err != nil {
 		t.Fatalf("second BuildAll: %v", err)
 	}
@@ -421,7 +315,7 @@ func TestFDB_FleetBuildIndexesAcrossEveryTenant(t *testing.T) {
 
 	// The index is actually usable by the planner on every tenant.
 	for _, s := range schemas {
-		db := fleetOpen(t, dbPath, s)
+		db := testkit.FleetOpen(t, dbPath, s)
 		var n int
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM T WHERE C = 3").Scan(&n); err != nil {
 			t.Errorf("schema %s query after build: %v", s, err)
@@ -431,14 +325,6 @@ func TestFDB_FleetBuildIndexesAcrossEveryTenant(t *testing.T) {
 			t.Errorf("schema %s: got %d rows with C=3, want %d", s, n, want)
 		}
 	}
-}
-
-func fleetIndexNames(idx []*recordlayer.Index) []string {
-	out := make([]string, 0, len(idx))
-	for _, i := range idx {
-		out = append(out, i.Name)
-	}
-	return out
 }
 
 // TestFDB_FleetBuildIsolatesAPoisonedTenant is the failure-isolation property.
@@ -451,34 +337,34 @@ func fleetIndexNames(idx []*recordlayer.Index) []string {
 // that never got its index.
 func TestFDB_FleetBuildIsolatesAPoisonedTenant(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	const dbPath = "/FRL/testdb_fleet_poison"
 	const tmplName = "FLEETPOISON"
 	schemas := []string{"S1", "S2", "S3"}
 	const poisoned = "S2"
 	fleetSetup(t, h, dbPath, tmplName, schemas)
-	if _, err := migrateFleet(t, h, dbPath, tmplName, fleet.Options{}); err != nil {
+	if _, err := testkit.MigrateFleet(t, h, dbPath, tmplName, fleet.Options{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	targets := fleetTargets(t, h, dbPath)
+	targets := testkit.FleetTargets(t, h, dbPath)
 	if len(targets) != len(schemas) {
 		t.Fatalf("expected %d targets before poisoning, got %d", len(schemas), len(targets))
 	}
 
 	// Poison: delete the schema row, leaving the target list stale. Metadata
 	// resolution for that tenant now fails.
-	h.mustRun(t, "poison", func(txn api.Transaction) error {
-		return h.cat.DeleteSchema(txn, dbPath, poisoned)
+	h.MustRun(t, "poison", func(txn api.Transaction) error {
+		return h.Cat.DeleteSchema(txn, dbPath, poisoned)
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	trace := newFleetTrace()
-	res, err := fleet.BuildIndexes(ctx, h.db, h.cat, h.ks, targets, fleet.BuildOptions{
+	res, err := fleet.BuildIndexes(ctx, h.DB, h.Cat, h.Ks, targets, fleet.BuildOptions{
 		Options: fleet.Options{Progress: trace.record, Concurrency: 3},
 		Limit:   20,
 	})
@@ -529,10 +415,10 @@ func TestFDB_FleetBuildIsolatesAPoisonedTenant(t *testing.T) {
 // catalog back as an ordinary fan-out target.
 func TestFDB_FleetRefusesTheCatalogItself(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	const dbPath = "/FRL/testdb_fleet_guard"
 	const tmplName = "FLEETGUARD"
 	fleetSetup(t, h, dbPath, tmplName, []string{"S1"})
@@ -541,7 +427,7 @@ func TestFDB_FleetRefusesTheCatalogItself(t *testing.T) {
 	defer cancel()
 
 	// Reachability: the system database really does enumerate the catalog.
-	sysTargets, err := fleet.ListTargets(ctx, h.db, h.cat, catalog.SysDatabaseID)
+	sysTargets, err := fleet.ListTargets(ctx, h.DB, h.Cat, catalog.SysDatabaseID)
 	if err != nil {
 		t.Fatalf("ListTargets(%s): %v", catalog.SysDatabaseID, err)
 	}
@@ -560,10 +446,10 @@ func TestFDB_FleetRefusesTheCatalogItself(t *testing.T) {
 	}
 
 	// Both modes must refuse it.
-	migRes, migErr := fleet.Migrate(ctx, h.db, h.cat, h.ks, []fleet.Target{*catalogTarget}, 99, fleet.Options{})
+	migRes, migErr := fleet.Migrate(ctx, h.DB, h.Cat, h.Ks, []fleet.Target{*catalogTarget}, 99, fleet.Options{})
 	assertCatalogRefused(t, "Migrate", migRes, migErr)
 
-	buildRes, buildErr := fleet.BuildIndexes(ctx, h.db, h.cat, h.ks,
+	buildRes, buildErr := fleet.BuildIndexes(ctx, h.DB, h.Cat, h.Ks,
 		[]fleet.Target{*catalogTarget}, fleet.BuildOptions{})
 	assertCatalogRefused(t, "BuildIndexes", buildRes, buildErr)
 }
@@ -604,10 +490,10 @@ func assertCatalogRefused(t *testing.T, what string, res fleet.Result, err error
 // transaction before it commits.
 func TestFDB_FleetMigrateRefusesARebindThatDidNotAdvance(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	const dbPath = "/FRL/testdb_fleet_noadvance"
 	const tmplName = "FLEETNOADVANCE"
 	schemas := []string{"S1", "S2", "S3"}
@@ -618,8 +504,8 @@ func TestFDB_FleetMigrateRefusesARebindThatDidNotAdvance(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	trace := newFleetTrace()
-	res, err := fleet.Migrate(ctx, h.db, h.cat, h.ks,
-		fleetTargets(t, h, dbPath), 2, fleet.Options{Progress: trace.record})
+	res, err := fleet.Migrate(ctx, h.DB, h.Cat, h.Ks,
+		testkit.FleetTargets(t, h, dbPath), 2, fleet.Options{Progress: trace.record})
 
 	if err == nil {
 		t.Fatalf("Migrate reported success with target version 2 that was never saved (%+v).\n"+
@@ -637,7 +523,7 @@ func TestFDB_FleetMigrateRefusesARebindThatDidNotAdvance(t *testing.T) {
 	}
 	// The catalog is untouched: the assertion fires inside the transaction, so
 	// nothing commits.
-	for s, v := range fleetVersions(t, h, dbPath) {
+	for s, v := range testkit.FleetVersions(t, h, dbPath) {
 		if v != 1 {
 			t.Errorf("schema %s is bound to version %d after a rejected rebind, want 1 — "+
 				"the assertion must abort the transaction, not report after committing", s, v)
@@ -657,52 +543,52 @@ func TestFDB_FleetMigrateRefusesARebindThatDidNotAdvance(t *testing.T) {
 // The tenants that most need the pass are exactly the ones it drops.
 func TestFDB_FleetMigrateToLatestResolvesVersionPerTemplate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	const dbPath = "/FRL/testdb_fleet_mixed"
 	const tmplAhead = "FLEETMIXEDAHEAD"   // reaches v2
 	const tmplBehind = "FLEETMIXEDBEHIND" // stays at v1
 
 	// Two templates in ONE database: S1/S2 on the one that will advance, S3 on
 	// the one that will not.
-	tmplA1 := fleetTemplate(t, tmplAhead, 1, false)
-	tmplB1 := fleetTemplate(t, tmplBehind, 1, false)
-	h.mustRun(t, "bootstrap mixed", func(txn api.Transaction) error {
-		if err := h.cat.Initialize(txn); err != nil {
+	tmplA1 := testkit.FleetTemplate(t, tmplAhead, 1, false)
+	tmplB1 := testkit.FleetTemplate(t, tmplBehind, 1, false)
+	h.MustRun(t, "bootstrap mixed", func(txn api.Transaction) error {
+		if err := h.Cat.Initialize(txn); err != nil {
 			return err
 		}
-		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.cat).Execute(txn); err != nil {
+		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.Cat).Execute(txn); err != nil {
 			return err
 		}
-		if err := ddl.NewSaveSchemaTemplateConstantAction(tmplA1, h.cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+		if err := ddl.NewSaveSchemaTemplateConstantAction(tmplA1, h.Cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
 			return err
 		}
-		if err := ddl.NewSaveSchemaTemplateConstantAction(tmplB1, h.cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+		if err := ddl.NewSaveSchemaTemplateConstantAction(tmplB1, h.Cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
 			return err
 		}
 		for _, s := range []string{"S1", "S2"} {
-			if err := ddl.NewCreateSchemaConstantAction(dbPath, s, tmplAhead, h.cat, h.ks).Execute(txn); err != nil {
+			if err := ddl.NewCreateSchemaConstantAction(dbPath, s, tmplAhead, h.Cat, h.Ks).Execute(txn); err != nil {
 				return err
 			}
 		}
-		return ddl.NewCreateSchemaConstantAction(dbPath, "S3", tmplBehind, h.cat, h.ks).Execute(txn)
+		return ddl.NewCreateSchemaConstantAction(dbPath, "S3", tmplBehind, h.Cat, h.Ks).Execute(txn)
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	// Only the AHEAD template gets a v2.
-	if _, err := fleet.SaveTemplate(ctx, h.db, h.cat, fleetTemplate(t, tmplAhead, 2, true)); err != nil {
+	if _, err := fleet.SaveTemplate(ctx, h.DB, h.Cat, testkit.FleetTemplate(t, tmplAhead, 2, true)); err != nil {
 		t.Fatalf("save %s@2: %v", tmplAhead, err)
 	}
 
 	// Pre-state: the destinations really do differ. Without this the test would
 	// also pass on a fleet where both templates sat at the same version, which
 	// is precisely the case that cannot express the defect.
-	targets := fleetTargets(t, h, dbPath)
-	latest, err := fleet.LatestVersions(ctx, h.db, h.cat, targets)
+	targets := testkit.FleetTargets(t, h, dbPath)
+	latest, err := fleet.LatestVersions(ctx, h.DB, h.Cat, targets)
 	if err != nil {
 		t.Fatalf("LatestVersions: %v", err)
 	}
@@ -713,7 +599,7 @@ func TestFDB_FleetMigrateToLatestResolvesVersionPerTemplate(t *testing.T) {
 	}
 
 	trace := newFleetTrace()
-	res, err := fleet.MigrateToLatest(ctx, h.db, h.cat, h.ks, targets,
+	res, err := fleet.MigrateToLatest(ctx, h.DB, h.Cat, h.Ks, targets,
 		fleet.Options{Progress: trace.record})
 	if err != nil {
 		t.Fatalf("MigrateToLatest on a mixed-template database failed: %v\n"+
@@ -733,7 +619,7 @@ func TestFDB_FleetMigrateToLatestResolvesVersionPerTemplate(t *testing.T) {
 		t.Errorf("S3 (bound to %s, already at its latest v1) outcome = %q, want %q",
 			tmplBehind, got, fleet.OutcomeSkipped)
 	}
-	after := fleetVersions(t, h, dbPath)
+	after := testkit.FleetVersions(t, h, dbPath)
 	if after["S1"] != 2 || after["S2"] != 2 {
 		t.Errorf("versions after = %v, want S1=S2=2", after)
 	}

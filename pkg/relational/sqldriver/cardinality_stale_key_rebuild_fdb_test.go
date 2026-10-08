@@ -45,6 +45,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -152,7 +154,7 @@ func cq90Rec(desc protoreflect.MessageDescriptor, id int32, arr []int32) proto.M
 	for i, v := range arr {
 		pvals[i] = protoreflect.ValueOfInt32(v)
 	}
-	setArrayField(m, fd, pvals...)
+	testkit.SetArrayField(m, fd, pvals...)
 	return m
 }
 
@@ -383,11 +385,11 @@ func TestFDB_CardinalityStaleKeyBytes(t *testing.T) {
 // three records only rebuilds inline because the COUNT index can be ASKED.
 func TestFDB_CardinalityStaleNullKeyRebuiltInline(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -534,11 +536,11 @@ func cq90BumpEveryIndexVersion(t *testing.T, md *recordlayer.RecordMetaData) *re
 // bumped more than they had to.
 func TestFDB_CardinalityWholeSchemaBumpDisablesEvenTinyStore(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -612,11 +614,11 @@ func TestFDB_CardinalityWholeSchemaBumpDisablesEvenTinyStore(t *testing.T) {
 // situation Java's javadoc describes, and the only shape in which this gate matters.
 func TestFDB_CardinalityUniquePendingBlockedByFormatVersion(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -725,11 +727,11 @@ func TestFDB_CardinalityUniquePendingBlockedByFormatVersion(t *testing.T) {
 // MaxInt64, so the threshold is genuinely what decides here.
 func TestFDB_CardinalityStaleNullKeyDisabledThenOnlineIndexer(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -899,11 +901,11 @@ func TestFDB_CardinalityStaleNullKeyDisabledThenOnlineIndexer(t *testing.T) {
 // into a silent one, and would sail past an assertion that only checked rows.
 func TestFDB_CardinalityStaleNullKeyRebuildSurfacesUniquenessViolation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -1067,11 +1069,11 @@ func TestFDB_CardinalityStaleNullKeyRebuildSurfacesUniquenessViolation(t *testin
 // OnlineIndexer would never be reached.
 func TestFDB_CardinalityUniquePendingPolicyBothSides(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

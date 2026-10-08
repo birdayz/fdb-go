@@ -38,54 +38,14 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
-	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/ddl"
-	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/core/metadata"
 )
-
-// evolHarness wires a catalog over the same keyspace the sqldriver uses, so a
-// template evolved here is the template the driver plans against. The evolution
-// path itself is catalog-level (SaveSchemaTemplate at a higher version, then
-// RepairSchema to rebind) because the SQL surface has no statement that rebinds
-// a live schema — CREATE SCHEMA TEMPLATE only writes the template.
-type evolHarness struct {
-	db  *recordlayer.FDBDatabase
-	cat *catalog.RecordLayerStoreCatalog
-	ks  *keyspace.RelationalKeyspace
-}
-
-func newEvolHarness(t *testing.T) *evolHarness {
-	t.Helper()
-	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	ks := keyspace.New(subspace.Sub())
-	cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
-	if err != nil {
-		t.Fatalf("catalog: %v", err)
-	}
-	return &evolHarness{db: recordlayer.NewFDBDatabase(rawDB), cat: cat, ks: ks}
-}
-
-func (h *evolHarness) mustRun(t *testing.T, what string, fn func(txn api.Transaction) error) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if _, err := h.db.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-		return nil, fn(catalog.NewFDBTransaction(rctx))
-	}); err != nil {
-		t.Fatalf("%s: %v", what, err)
-	}
-}
 
 // evolTemplate builds template `name` at `version` over one table T(PK,C,V),
 // optionally carrying a value index on C and/or a grouped SUM index.
@@ -114,24 +74,24 @@ func evolTemplate(t *testing.T, name string, version int, withValueIndex, withAg
 // evolSetup creates database + schema at template version 1 (no indexes),
 // fills it with `rows` records, and returns an *sql.DB bound to it. Row i has
 // PK=i, C=i%10, V=i*10.
-func evolSetup(t *testing.T, h *evolHarness, dbPath, schemaName, tmplName string, rows int) *sql.DB {
+func evolSetup(t *testing.T, h *testkit.EvolHarness, dbPath, schemaName, tmplName string, rows int) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 	tmpl1 := evolTemplate(t, tmplName, 1, false, false)
-	h.mustRun(t, "bootstrap", func(txn api.Transaction) error {
-		if err := h.cat.Initialize(txn); err != nil {
+	h.MustRun(t, "bootstrap", func(txn api.Transaction) error {
+		if err := h.Cat.Initialize(txn); err != nil {
 			return err
 		}
-		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.cat).Execute(txn); err != nil {
+		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.Cat).Execute(txn); err != nil {
 			return err
 		}
-		if err := ddl.NewSaveSchemaTemplateConstantAction(tmpl1, h.cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+		if err := ddl.NewSaveSchemaTemplateConstantAction(tmpl1, h.Cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
 			return err
 		}
-		return ddl.NewCreateSchemaConstantAction(dbPath, schemaName, tmplName, h.cat, h.ks).Execute(txn)
+		return ddl.NewCreateSchemaConstantAction(dbPath, schemaName, tmplName, h.Cat, h.Ks).Execute(txn)
 	})
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schemaName)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, testkit.ClusterFile(), schemaName)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -142,45 +102,9 @@ func evolSetup(t *testing.T, h *evolHarness, dbPath, schemaName, tmplName string
 		for i := base + 1; i <= base+50 && i <= rows; i++ {
 			vals = append(vals, fmt.Sprintf("(%d,%d,%d)", i, i%10, i*10))
 		}
-		mwjoMustExec(t, db, ctx, "INSERT INTO T (PK,C,V) VALUES "+strings.Join(vals, ","))
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO T (PK,C,V) VALUES "+strings.Join(vals, ","))
 	}
 	return db
-}
-
-// evolReopen returns a FRESH *sql.DB, so the query below plans against the
-// evolved metadata with nothing cached from before the rebind.
-func evolReopen(t *testing.T, dbPath, schemaName string) *sql.DB {
-	t.Helper()
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schemaName)
-	db, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
-}
-
-// evolIndexStates reads the schema's index-state subspace exactly as the
-// planner does (recordlayer.LoadIndexStates, the same call fetchReadableIndexes
-// makes). An empty map is "every index readable" as far as the planner knows.
-func evolIndexStates(t *testing.T, dbPath, schemaName string) map[string]recordlayer.IndexState {
-	t.Helper()
-	rawDB, dbErr := fdb.OpenDatabase(clusterFilePath)
-	if dbErr != nil {
-		t.Fatalf("open db: %v", dbErr)
-	}
-	ss, err := keyspace.New(subspace.Sub()).LookupSchemaSubspace(context.Background(),
-		recordlayer.NewFDBDatabase(rawDB), dbPath, strings.ToUpper(schemaName))
-	if err != nil {
-		t.Fatalf("schema subspace: %v", err)
-	}
-	res, err := rawDB.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
-		return recordlayer.LoadIndexStates(rtx, ss)
-	})
-	if err != nil {
-		t.Fatalf("load index states: %v", err)
-	}
-	return res.(map[string]recordlayer.IndexState)
 }
 
 // evolQueryPairs runs q and returns its rows as "[a b]" strings.
@@ -224,11 +148,11 @@ func evolExplain(t *testing.T, db *sql.DB, ctx context.Context, q string) string
 // "the planner was right to be optimistic" from "the threshold never applied".
 func TestFDB_EvolutionAddedValueIndexAnsweredBeforeReconciliation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	h := newEvolHarness(t)
+	h := testkit.NewEvolHarness(t)
 
 	const dbPath = "/FRL/testdb_evolvalue"
 	const schemaName = "S"
@@ -254,23 +178,23 @@ func TestFDB_EvolutionAddedValueIndexAnsweredBeforeReconciliation(t *testing.T) 
 	// Evolve: add the value index. Nothing here opens the data store, so no
 	// index state is written and the store header still records version 1.
 	tmpl2 := evolTemplate(t, tmplName, 2, true, false)
-	h.mustRun(t, "evolve", func(txn api.Transaction) error {
-		if err := ddl.NewSaveSchemaTemplateConstantAction(tmpl2, h.cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+	h.MustRun(t, "evolve", func(txn api.Transaction) error {
+		if err := ddl.NewSaveSchemaTemplateConstantAction(tmpl2, h.Cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
 			return err
 		}
-		return h.cat.RepairSchema(txn, dbPath, schemaName)
+		return h.Cat.RepairSchema(txn, dbPath, schemaName)
 	})
 
 	// The premise: the planner's view of index state is EMPTY, so T_BY_C reads
 	// as readable to fetchReadableIndexes even though it holds no entries.
-	if states := evolIndexStates(t, dbPath, schemaName); len(states) != 0 {
+	if states := testkit.EvolIndexStates(t, dbPath, schemaName); len(states) != 0 {
 		t.Fatalf("an evolution-added index already has a stored state (%v).\n"+
 			"This test exists because it does NOT: reconciliation happens at store open, "+
 			"which is after planning. If something now writes the state earlier, the window "+
 			"this test guards has moved and the test must be rewritten to find it.", states)
 	}
 
-	db2 := evolReopen(t, dbPath, schemaName)
+	db2 := testkit.EvolReopen(t, dbPath, schemaName)
 	plan := evolExplain(t, db2, ctx, q)
 
 	got, err = evolQueryPairs(t, db2, ctx, q)
@@ -321,7 +245,7 @@ func TestFDB_EvolutionAddedValueIndexAnsweredBeforeReconciliation(t *testing.T) 
 // what a mismatch means.
 func evolRequireState(t *testing.T, dbPath, schemaName, index string, want recordlayer.IndexState, why string) {
 	t.Helper()
-	states := evolIndexStates(t, dbPath, schemaName)
+	states := testkit.EvolIndexStates(t, dbPath, schemaName)
 	got, stored := states[index]
 	if !stored {
 		// Absent means READABLE: only the exceptions are written down.
@@ -343,11 +267,11 @@ func evolRequireState(t *testing.T, dbPath, schemaName, index string, want recor
 // and not the other passes there while leaving this wide open.
 func TestFDB_EvolutionAddedAggregateIndexAnsweredBeforeReconciliation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	h := newEvolHarness(t)
+	h := testkit.NewEvolHarness(t)
 
 	const dbPath = "/FRL/testdb_evolagg"
 	const schemaName = "S"
@@ -369,19 +293,19 @@ func TestFDB_EvolutionAddedAggregateIndexAnsweredBeforeReconciliation(t *testing
 	}
 
 	tmpl2 := evolTemplate(t, tmplName, 2, false, true)
-	h.mustRun(t, "evolve", func(txn api.Transaction) error {
-		if err := ddl.NewSaveSchemaTemplateConstantAction(tmpl2, h.cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+	h.MustRun(t, "evolve", func(txn api.Transaction) error {
+		if err := ddl.NewSaveSchemaTemplateConstantAction(tmpl2, h.Cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
 			return err
 		}
-		return h.cat.RepairSchema(txn, dbPath, schemaName)
+		return h.Cat.RepairSchema(txn, dbPath, schemaName)
 	})
 
-	if states := evolIndexStates(t, dbPath, schemaName); len(states) != 0 {
+	if states := testkit.EvolIndexStates(t, dbPath, schemaName); len(states) != 0 {
 		t.Fatalf("an evolution-added aggregate index already has a stored state (%v); "+
 			"the pre-reconciliation window this test guards has moved", states)
 	}
 
-	db2 := evolReopen(t, dbPath, schemaName)
+	db2 := testkit.EvolReopen(t, dbPath, schemaName)
 	plan := evolExplain(t, db2, ctx, q)
 
 	got, err = evolQueryPairs(t, db2, ctx, q)
@@ -437,11 +361,11 @@ func TestFDB_EvolutionAddedAggregateIndexAnsweredBeforeReconciliation(t *testing
 // answer the rows loaded afterwards — the index is used, not fallen back from.
 func TestFDB_EvolutionAddedAggregateIndexOnEmptyStoreStillBuildsInline(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	h := newEvolHarness(t)
+	h := testkit.NewEvolHarness(t)
 
 	const dbPath = "/FRL/testdb_evolaggempty"
 	const schemaName = "S"
@@ -453,14 +377,14 @@ func TestFDB_EvolutionAddedAggregateIndexOnEmptyStoreStillBuildsInline(t *testin
 	_ = db
 
 	tmpl2 := evolTemplate(t, tmplName, 2, false, true)
-	h.mustRun(t, "evolve", func(txn api.Transaction) error {
-		if err := ddl.NewSaveSchemaTemplateConstantAction(tmpl2, h.cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+	h.MustRun(t, "evolve", func(txn api.Transaction) error {
+		if err := ddl.NewSaveSchemaTemplateConstantAction(tmpl2, h.Cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
 			return err
 		}
-		return h.cat.RepairSchema(txn, dbPath, schemaName)
+		return h.Cat.RepairSchema(txn, dbPath, schemaName)
 	})
 
-	if states := evolIndexStates(t, dbPath, schemaName); len(states) != 0 {
+	if states := testkit.EvolIndexStates(t, dbPath, schemaName); len(states) != 0 {
 		t.Fatalf("an evolution-added aggregate index already has a stored state (%v); "+
 			"the pre-reconciliation window this test guards has moved", states)
 	}
@@ -468,12 +392,12 @@ func TestFDB_EvolutionAddedAggregateIndexOnEmptyStoreStillBuildsInline(t *testin
 	// Load the rows AFTER the evolution. Reconciliation happens on the store
 	// open this INSERT performs; the index is built inline over an empty store
 	// and then maintained by the writes.
-	db2 := evolReopen(t, dbPath, schemaName)
+	db2 := testkit.EvolReopen(t, dbPath, schemaName)
 	var vals []string
 	for i := 1; i <= 20; i++ {
 		vals = append(vals, fmt.Sprintf("(%d,%d,%d)", i, i%10, i*10))
 	}
-	mwjoMustExec(t, db2, ctx, "INSERT INTO T (PK,C,V) VALUES "+strings.Join(vals, ","))
+	testkit.MustExecCtx(t, db2, ctx, "INSERT INTO T (PK,C,V) VALUES "+strings.Join(vals, ","))
 
 	// C = PK%10 over PK 1..20: each group holds two rows. Group g (1..9) has
 	// PKs g and g+10, so SUM(V) = 10*(2g+10) = 20g+100; group 0 has PKs 10 and

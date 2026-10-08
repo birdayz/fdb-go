@@ -34,6 +34,8 @@ import (
 	"sort"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -48,18 +50,18 @@ import (
 
 func TestFDB_CommaJoin3ProjectedExistsWithEquijoins(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
 	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
-	md := existsGatherSchemaMetadata(t)
+	md := testkit.ExistsGatherSchemaMetadata(t)
 
 	mkA := func(aid, k int64) proto.Message {
 		d := md.GetRecordType("A").Descriptor
@@ -130,7 +132,7 @@ func TestFDB_CommaJoin3ProjectedExistsWithEquijoins(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalSprint(r))
+				out = append(out, testkit.PositionalSprint(r))
 			}
 			return nil, nil
 		})

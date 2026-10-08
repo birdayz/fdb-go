@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // GROUP BY over a whole STRUCT is SUPPORTED — Java answers it by flattening
@@ -25,12 +27,12 @@ import (
 // crash if the flattening were disabled — that is the mutation contract.
 func TestFDB_StructGrouping(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/structgroup")
+	setup := testkit.OpenDB(t, "/FRL/structgroup")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/structgroup"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -44,7 +46,7 @@ func TestFDB_StructGrouping(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/structgroup/s WITH TEMPLATE sgr_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql:///FRL/STRUCTGROUP?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/STRUCTGROUP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

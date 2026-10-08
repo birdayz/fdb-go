@@ -1,4 +1,4 @@
-package sqldriver_test
+package testkit
 
 import (
 	"strings"
@@ -10,7 +10,7 @@ import (
 
 // queryLabels are the labels the driver reports for sql's result columns,
 // upper-cased for comparison.
-func queryLabels(t *testing.T, sql string, md *recordlayer.RecordMetaData) []string {
+func QueryLabels(t *testing.T, sql string, md *recordlayer.RecordMetaData) []string {
 	t.Helper()
 	labels, err := embedded.ResultColumnLabelsForQuery(sql, md)
 	if err != nil {

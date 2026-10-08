@@ -11,26 +11,28 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DerivedTableScopeProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dtsc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dtsc")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dtsc")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dtsc")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dtsc CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dtsc/s WITH TEMPLATE dtsc")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DTSC?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dtsc/s WITH TEMPLATE dtsc")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DTSC?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1,10,100),(2,20,200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1,10,100),(2,20,200)")
 
 	t.Run("projected_column_visible", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx, "SELECT a FROM (SELECT a FROM t) d")

@@ -2,22 +2,16 @@ package sqldriver_test
 
 import (
 	"context"
-	"database/sql"
-	"errors"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
-	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
-	relkeyspace "fdb.dev/pkg/relational/core/keyspace"
-	"fdb.dev/pkg/relational/core/metadata"
 )
 
 // dependentOnUEmail is answered from U_EMAIL, so the plan DEPENDS on that index.
@@ -25,113 +19,6 @@ import (
 // dependency check a primary-key scan does not depend on U_EMAIL at all, and
 // asserting 40001 from one would be asserting the bug this scoping removed.
 const dependentOnUEmail = "SELECT EMAIL FROM T WHERE EMAIL > 'a'"
-
-const indexStatePlanningDDL = "CREATE TABLE T (" +
-	"ID BIGINT, EMAIL STRING, PAD BIGINT, PRIMARY KEY (ID)) " +
-	"CREATE UNIQUE INDEX U_EMAIL ON T (EMAIL) " +
-	"CREATE INDEX IDX_PAD ON T (PAD)"
-
-type indexStatePlanningFixture struct {
-	db  *sql.DB
-	rdb *recordlayer.FDBDatabase
-	md  *recordlayer.RecordMetaData
-	ss  subspace.Subspace
-}
-
-// newIndexStatePlanningFixture builds a schema with one secondary UNIQUE index
-// and a second, byte-identical metadata handle reached OUTSIDE the SQL layer.
-// The out-of-band handle is what lets a test drive an index through a state
-// transition mid-statement, which is not expressible in SQL.
-func newIndexStatePlanningFixture(t *testing.T) *indexStatePlanningFixture {
-	t.Helper()
-	if clusterFilePath == "" {
-		t.Skip("FDB not available (no Docker)")
-	}
-	dbPath := "/FRL/idxstate_" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_"))
-	schemaName := "idxstate_" + strings.ToLower(strings.ReplaceAll(t.Name(), "/", "_"))
-	db := setupErrorTestDB(t, dbPath, schemaName, indexStatePlanningDDL)
-
-	b := metadata.NewSchemaTemplateBuilder().SetName(schemaName + "_tmpl")
-	b.AddTable("T", []metadata.ColumnSpec{
-		metadata.NewColumnSpec("ID", api.NewLongType(true), 1),
-		metadata.NewColumnSpec("EMAIL", api.NewStringType(true), 2),
-		metadata.NewColumnSpec("PAD", api.NewLongType(true), 3),
-	}, []string{"ID"})
-	b.AddIndex("T", "U_EMAIL", []string{"EMAIL"}, true)
-	b.AddIndex("T", "IDX_PAD", []string{"PAD"}, false)
-	tmpl, err := b.Build()
-	if err != nil {
-		t.Fatalf("build matching metadata: %v", err)
-	}
-
-	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
-	if err != nil {
-		t.Fatalf("open raw FDB: %v", err)
-	}
-	t.Cleanup(rawDB.Close)
-	rdb := recordlayer.NewFDBDatabase(rawDB)
-	// DDL stores the database path and the schema under their CANONICAL
-	// (upper-cased) names, so the out-of-band handle must ask for the same
-	// subspace the driver wrote.
-	ks := relkeyspace.New(subspace.Sub())
-	ss, err := ks.LookupSchemaSubspace(context.Background(), rdb, strings.ToUpper(dbPath), strings.ToUpper(schemaName))
-	if err != nil {
-		t.Fatalf("schema subspace: %v", err)
-	}
-
-	ctx := context.Background()
-	for id, email := range []string{"a@example", "b@example", "c@example"} {
-		if _, err := db.ExecContext(ctx, fmt.Sprintf(
-			"INSERT INTO T (ID, EMAIL, PAD) VALUES (%d, '%s', %d)", id+1, email, (id+1)*10)); err != nil {
-			t.Fatalf("seed row %d: %v", id+1, err)
-		}
-	}
-	return &indexStatePlanningFixture{db: db, rdb: rdb, md: tmpl.Underlying(), ss: ss}
-}
-
-// makeUniqueIndexPending drives U_EMAIL from READABLE to
-// READABLE_UNIQUE_PENDING: the state that is SCANNABLE but whose declared
-// uniqueness the data contradicts (IndexState.java:59-66). It is the sharpest
-// transition available, because a check written against scannability rather
-// than Java's isReadable would not notice it.
-func (f *indexStatePlanningFixture) makeUniqueIndexPending(ctx context.Context) error {
-	_, err := f.rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-		store, openErr := recordlayer.NewStoreBuilder().
-			SetContext(rctx).
-			SetMetaDataProvider(f.md).
-			SetSubspace(f.ss).
-			SetStoreStateCache(recordlayer.PassThroughStoreStateCache()).
-			Open()
-		if openErr != nil {
-			return nil, openErr
-		}
-		if _, stateErr := store.MarkIndexWriteOnly("U_EMAIL"); stateErr != nil {
-			return nil, stateErr
-		}
-		idx := f.md.GetIndex("U_EMAIL")
-		if idx == nil {
-			return nil, errors.New("U_EMAIL missing from matching metadata")
-		}
-		if violationErr := store.AddUniquenessViolation(
-			idx, tuple.Tuple{"phantom@example"}, tuple.Tuple{int64(999)},
-		); violationErr != nil {
-			return nil, violationErr
-		}
-		if _, rangeErr := recordlayer.NewIndexingRangeSet(f.ss, idx).
-			InsertRange(rctx.Transaction(), nil, nil, false); rangeErr != nil {
-			return nil, rangeErr
-		}
-		if _, stateErr := store.MarkIndexReadableOrUniquePending("U_EMAIL"); stateErr != nil {
-			return nil, stateErr
-		}
-		if got := store.GetIndexState("U_EMAIL"); got != recordlayer.IndexStateReadableUniquePending {
-			return nil, fmt.Errorf("U_EMAIL state = %s, want READABLE_UNIQUE_PENDING", got)
-		}
-		return nil, nil
-	})
-	return err
-}
 
 // transitionPlanLogger runs fn exactly once, at the moment planning completes,
 // which is the only hook that lands strictly between "the plan was built" and
@@ -159,59 +46,6 @@ func (l *transitionPlanLogger) err() error {
 	return l.transErr
 }
 
-// queryIndexStateStrings runs query INSIDE AN EXPLICIT TRANSACTION, which is the
-// only regime in which a secondary-UNIQUE proof is drawn at all.
-//
-// The proof is a statement about the store at one instant, so it is licensed
-// only where the whole result comes from a single read version; in auto-commit
-// each page takes a fresh one and the proof is withheld. Every arm reached
-// through this helper — the affirmative ones that require `narrowed-by:U_EMAIL`
-// and the refusals that require its ABSENCE — therefore has to run in a
-// transaction. The refusals are the reason it matters most: in auto-commit no
-// index proves anything, so "a READABLE_UNIQUE_PENDING index licensed nothing"
-// would hold for a reason that has nothing to do with the index's state.
-func queryIndexStateStrings(t *testing.T, ctx context.Context, conn *sql.Conn, query string) []string {
-	t.Helper()
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("begin for %q: %v", query, err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, query)
-	if err != nil {
-		t.Fatalf("query %q: %v", query, err)
-	}
-	defer func() { _ = rows.Close() }()
-	var got []string
-	for rows.Next() {
-		var value string
-		if err := rows.Scan(&value); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		got = append(got, value)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows: %v", err)
-	}
-	sort.Strings(got)
-	return got
-}
-
-func assertSerializationFailure(t *testing.T, err error) {
-	t.Helper()
-	if err == nil {
-		t.Fatal("expected stale-plan serialization failure, got nil")
-	}
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("stale-plan error = %T %v, want *api.Error", err, err)
-	}
-	if apiErr.Code != api.ErrCodeSerializationFailure {
-		t.Fatalf("stale-plan SQLSTATE = %s, want %s (full: %v)",
-			apiErr.Code, api.ErrCodeSerializationFailure, err)
-	}
-}
-
 // An auto-commit statement's pages are SEPARATE transactions, so an index-state
 // transition landing between two of them is invisible to anything checked once
 // per statement — a plan-cache key included. The second page must refuse rather
@@ -219,8 +53,8 @@ func assertSerializationFailure(t *testing.T, err error) {
 func TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newIndexStatePlanningFixture(t)
-	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+	f := testkit.NewIndexStatePlanningFixture(t)
+	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 1).Build())
 	})
@@ -230,7 +64,7 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001(t *testing.T) {
 		t.Fatalf("query first page: %v", err)
 	}
 	defer func() { _ = rows.Close() }()
-	if err := f.makeUniqueIndexPending(ctx); err != nil {
+	if err := f.MakeUniqueIndexPending(ctx); err != nil {
 		t.Fatalf("transition after first page: %v", err)
 	}
 	if !rows.Next() {
@@ -243,7 +77,7 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001(t *testing.T) {
 	if rows.Next() {
 		t.Fatal("second page returned a row from a stale plan")
 	}
-	assertSerializationFailure(t, rows.Err())
+	testkit.AssertSerializationFailure(t, rows.Err())
 }
 
 // A statement planned BEFORE the transition and first executed after it must
@@ -251,9 +85,9 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001(t *testing.T) {
 func TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageFails40001(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newIndexStatePlanningFixture(t)
-	logger := &transitionPlanLogger{fn: func() error { return f.makeUniqueIndexPending(ctx) }}
-	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+	f := testkit.NewIndexStatePlanningFixture(t)
+	logger := &transitionPlanLogger{fn: func() error { return f.MakeUniqueIndexPending(ctx) }}
+	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 		ec.SetPlanLogger(logger)
 	})
 
@@ -264,7 +98,7 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageFails40001(t *t
 	if transitionErr := logger.err(); transitionErr != nil {
 		t.Fatalf("logger state transition: %v", transitionErr)
 	}
-	assertSerializationFailure(t, err)
+	testkit.AssertSerializationFailure(t, err)
 }
 
 // A statement planned and executed with NO transition must not be disturbed.
@@ -272,8 +106,8 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageFails40001(t *t
 func TestFDB_IndexStatePlanning_StableStateExecutesNormally(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newIndexStatePlanningFixture(t)
-	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+	f := testkit.NewIndexStatePlanningFixture(t)
+	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 1).Build())
 	})
@@ -296,26 +130,6 @@ func TestFDB_IndexStatePlanning_StableStateExecutesNormally(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("rows = %v, want 3 ids across 3 pages", got)
 	}
-}
-
-// distinctEmailRun plans and runs one query on the logger-equipped conn and
-// returns the plan text the planner actually chose alongside the rows, so an
-// assertion can name both the shape and the answer. The plan is read from the
-// planning event rather than from EXPLAIN because EXPLAIN is a second planning
-// call: reading the event pins the plan that produced THESE rows.
-func distinctEmailRun(
-	t *testing.T, ctx context.Context, conn *sql.Conn,
-	logger *syncCaptureLogger, query string,
-) (string, []string) {
-	t.Helper()
-	before := len(logger.snapshot())
-	got := queryIndexStateStrings(t, ctx, conn, query)
-	events := logger.snapshot()
-	if len(events) != before+1 {
-		t.Fatalf("planning events for %q = %d, want exactly one more than %d",
-			query, len(events), before)
-	}
-	return events[len(events)-1].PlanExplain, got
 }
 
 // THE SQL-PATH WITNESS for a secondary UNIQUE index used as a distinctness
@@ -350,9 +164,9 @@ func distinctEmailRun(
 func TestFDB_IndexStatePlanning_SecondaryUniqueIndexProvesDistinctnessOnlyWhileReadable(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newIndexStatePlanningFixture(t)
-	logger := &syncCaptureLogger{}
-	conn := installLogger(t, f.db, logger)
+	f := testkit.NewIndexStatePlanningFixture(t)
+	logger := &testkit.SyncCaptureLogger{}
+	conn := testkit.InstallLogger(t, f.DB, logger)
 
 	// The primary-key range keeps the bare query's base-record scan (and with
 	// it the hash distinct the narrowing applies to): without it PREFER_INDEX
@@ -364,7 +178,7 @@ func TestFDB_IndexStatePlanning_SecondaryUniqueIndexProvesDistinctnessOnlyWhileR
 	)
 
 	// READABLE, unfiltered: the operator SURVIVES, narrowed by U_EMAIL.
-	explain, got := distinctEmailRun(t, ctx, conn, logger, bare)
+	explain, got := testkit.DistinctEmailRun(t, ctx, conn, logger, bare)
 	if strings.Join(got, ",") != wantRows {
 		t.Fatalf("readable/unfiltered rows = %v, want %s", got, wantRows)
 	}
@@ -381,7 +195,7 @@ func TestFDB_IndexStatePlanning_SecondaryUniqueIndexProvesDistinctnessOnlyWhileR
 	}
 
 	// READABLE, NULL-rejecting: the operator is GONE, licensed by U_EMAIL.
-	explain, got = distinctEmailRun(t, ctx, conn, logger, nullRejected)
+	explain, got = testkit.DistinctEmailRun(t, ctx, conn, logger, nullRejected)
 	if strings.Join(got, ",") != wantRows {
 		t.Fatalf("readable/null-rejected rows = %v, want %s", got, wantRows)
 	}
@@ -401,11 +215,11 @@ func TestFDB_IndexStatePlanning_SecondaryUniqueIndexProvesDistinctnessOnlyWhileR
 	// structurally cannot make — it plans in the unknown index state, where the
 	// secondary-UNIQUE arm never fires at all, so it pins the fail-closed
 	// default rather than the candidate filter.
-	if err := f.makeUniqueIndexPending(ctx); err != nil {
+	if err := f.MakeUniqueIndexPending(ctx); err != nil {
 		t.Fatalf("transition U_EMAIL to READABLE_UNIQUE_PENDING: %v", err)
 	}
 	for _, query := range []string{bare, nullRejected} {
-		explain, got = distinctEmailRun(t, ctx, conn, logger, query)
+		explain, got = testkit.DistinctEmailRun(t, ctx, conn, logger, query)
 		if strings.Join(got, ",") != wantRows {
 			t.Fatalf("pending %q rows = %v, want %s", query, got, wantRows)
 		}
@@ -421,19 +235,6 @@ func TestFDB_IndexStatePlanning_SecondaryUniqueIndexProvesDistinctnessOnlyWhileR
 				"scan.", query, explain)
 		}
 	}
-}
-
-// writeGhostIndexState plants a state key for an index name the METADATA does
-// not have. This is not a contrived state: an index-state key outlives the
-// index whose name it holds whenever metadata is evolved to drop an index
-// without vacuuming its state key, and nothing in the read path removes it.
-func (f *indexStatePlanningFixture) writeGhostIndexState(ctx context.Context, name string) error {
-	_, err := f.rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-		key := f.ss.Sub(recordlayer.IndexStateSpaceKey).Pack(tuple.Tuple{name})
-		rctx.Transaction().Set(key, tuple.Tuple{int64(recordlayer.IndexStateWriteOnly)}.Pack())
-		return nil, nil
-	})
-	return err
 }
 
 // A signature compared across two DOMAINS is not a weaker version of a
@@ -453,13 +254,13 @@ func (f *indexStatePlanningFixture) writeGhostIndexState(ctx context.Context, na
 func TestFDB_IndexStatePlanning_StrayIndexStateKeyIsInert(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newIndexStatePlanningFixture(t)
-	if err := f.writeGhostIndexState(ctx, "IDX_DROPPED_LONG_AGO"); err != nil {
+	f := testkit.NewIndexStatePlanningFixture(t)
+	if err := f.WriteGhostIndexState(ctx, "IDX_DROPPED_LONG_AGO"); err != nil {
 		t.Fatalf("plant stray index-state key: %v", err)
 	}
 	// One row per page, so the armed-check below spans real page boundaries
 	// rather than finding every row already buffered from a single fetch.
-	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 1).Build())
 	})
@@ -468,7 +269,7 @@ func TestFDB_IndexStatePlanning_StrayIndexStateKeyIsInert(t *testing.T) {
 	// misses the plan cache and the second hits it, and both re-derive the
 	// signature, so one attempt could pass by luck where three cannot.
 	for i := 0; i < 3; i++ {
-		got := queryIndexStateStrings(t, ctx, conn, "SELECT EMAIL FROM T")
+		got := testkit.QueryIndexStateStrings(t, ctx, conn, "SELECT EMAIL FROM T")
 		if strings.Join(got, ",") != "a@example,b@example,c@example" {
 			t.Fatalf("attempt %d returned %v", i, got)
 		}
@@ -482,12 +283,12 @@ func TestFDB_IndexStatePlanning_StrayIndexStateKeyIsInert(t *testing.T) {
 		t.Fatalf("query before transition: %v", err)
 	}
 	defer func() { _ = rows.Close() }()
-	if err := f.makeUniqueIndexPending(ctx); err != nil {
+	if err := f.MakeUniqueIndexPending(ctx); err != nil {
 		t.Fatalf("transition: %v", err)
 	}
 	for rows.Next() {
 	}
-	assertSerializationFailure(t, rows.Err())
+	testkit.AssertSerializationFailure(t, rows.Err())
 }
 
 // The planning-path store open FAILS CLOSED: a store that cannot be opened is
@@ -503,11 +304,11 @@ func TestFDB_IndexStatePlanning_StrayIndexStateKeyIsInert(t *testing.T) {
 func TestFDB_IndexStatePlanning_MissingStoreFailsClosed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newIndexStatePlanningFixture(t)
-	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {})
+	f := testkit.NewIndexStatePlanningFixture(t)
+	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {})
 
-	if _, err := f.rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-		return nil, recordlayer.DeleteStore(rctx, f.ss)
+	if _, err := f.RDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		return nil, recordlayer.DeleteStore(rctx, f.Ss)
 	}); err != nil {
 		t.Fatalf("clear the schema's store subspace: %v", err)
 	}
@@ -544,12 +345,12 @@ func TestFDB_IndexStatePlanning_MissingStoreFailsClosed(t *testing.T) {
 func TestFDB_IndexStatePlanning_FailedStoreOpenStillLogsOnePlanEvent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newIndexStatePlanningFixture(t)
-	logger := &syncCaptureLogger{}
-	conn := installLogger(t, f.db, logger)
+	f := testkit.NewIndexStatePlanningFixture(t)
+	logger := &testkit.SyncCaptureLogger{}
+	conn := testkit.InstallLogger(t, f.DB, logger)
 
-	if _, err := f.rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-		return nil, recordlayer.DeleteStore(rctx, f.ss)
+	if _, err := f.RDB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		return nil, recordlayer.DeleteStore(rctx, f.Ss)
 	}); err != nil {
 		t.Fatalf("clear the schema's store subspace: %v", err)
 	}
@@ -563,7 +364,7 @@ func TestFDB_IndexStatePlanning_FailedStoreOpenStillLogsOnePlanEvent(t *testing.
 			"longer reach the planning failure it exists to observe")
 	}
 
-	events := logger.snapshot()
+	events := logger.Snapshot()
 	if len(events) != 1 {
 		t.Fatalf("planning events = %d, want exactly 1 for one Plan() call", len(events))
 	}
@@ -571,67 +372,6 @@ func TestFDB_IndexStatePlanning_FailedStoreOpenStillLogsOnePlanEvent(t *testing.
 		t.Fatalf("the logged event reported success for a planning call that "+
 			"failed with: %v", queryErr)
 	}
-}
-
-// setIndexState drives any index of the fixture's schema to a state, out of
-// band, so a test can move an index the SQL layer is not looking at.
-func (f *indexStatePlanningFixture) setIndexState(
-	ctx context.Context, name string, readable bool,
-) error {
-	_, err := f.rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-		store, openErr := recordlayer.NewStoreBuilder().
-			SetContext(rctx).
-			SetMetaDataProvider(f.md).
-			SetSubspace(f.ss).
-			SetStoreStateCache(recordlayer.PassThroughStoreStateCache()).
-			Open()
-		if openErr != nil {
-			return nil, openErr
-		}
-		if readable {
-			// An index cannot be marked readable with unbuilt ranges; a real
-			// build writes the range set, so the test does too.
-			idx := f.md.GetIndex(name)
-			if idx == nil {
-				return nil, fmt.Errorf("%s missing from matching metadata", name)
-			}
-			if _, rangeErr := recordlayer.NewIndexingRangeSet(f.ss, idx).
-				InsertRange(rctx.Transaction(), nil, nil, false); rangeErr != nil {
-				return nil, rangeErr
-			}
-			_, stateErr := store.MarkIndexReadable(name)
-			return nil, stateErr
-		}
-		_, stateErr := store.MarkIndexWriteOnly(name)
-		return nil, stateErr
-	})
-	return err
-}
-
-// setIndexDisabled drives an index to DISABLED, the state setIndexState cannot
-// reach. DISABLED and WRITE_ONLY are both non-READABLE but they are not the same
-// state — DISABLED additionally clears the index data — and a check written
-// against "not readable" must hold for both.
-func (f *indexStatePlanningFixture) setIndexDisabled(ctx context.Context, name string) error {
-	_, err := f.rdb.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
-		store, openErr := recordlayer.NewStoreBuilder().
-			SetContext(rctx).
-			SetMetaDataProvider(f.md).
-			SetSubspace(f.ss).
-			SetStoreStateCache(recordlayer.PassThroughStoreStateCache()).
-			Open()
-		if openErr != nil {
-			return nil, openErr
-		}
-		if _, stateErr := store.MarkIndexDisabled(name); stateErr != nil {
-			return nil, stateErr
-		}
-		if got := store.GetIndexState(name); got != recordlayer.IndexStateDisabled {
-			return nil, fmt.Errorf("%s state = %s, want DISABLED", name, got)
-		}
-		return nil, nil
-	})
-	return err
 }
 
 // planIndexScans reports the index names a logged plan scans, so a test can
@@ -665,9 +405,9 @@ func TestFDB_IndexStatePlanning_OnlyDependenciesInvalidate(t *testing.T) {
 	t.Run("unrelated index transition keeps pages flowing", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
-		f := newIndexStatePlanningFixture(t)
-		logger := &syncCaptureLogger{}
-		conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+		f := testkit.NewIndexStatePlanningFixture(t)
+		logger := &testkit.SyncCaptureLogger{}
+		conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 			ec.SetOptions(api.NewOptionsBuilder().
 				Set(api.OptExecutionScannedRowsLimit, 1).Build())
 			ec.SetPlanLogger(logger)
@@ -678,7 +418,7 @@ func TestFDB_IndexStatePlanning_OnlyDependenciesInvalidate(t *testing.T) {
 			t.Fatalf("query: %v", err)
 		}
 		defer func() { _ = rows.Close() }()
-		if err := f.setIndexState(ctx, "IDX_PAD", false); err != nil {
+		if err := f.SetIndexState(ctx, "IDX_PAD", false); err != nil {
 			t.Fatalf("take IDX_PAD WRITE_ONLY mid-statement: %v", err)
 		}
 		n := 0
@@ -691,7 +431,7 @@ func TestFDB_IndexStatePlanning_OnlyDependenciesInvalidate(t *testing.T) {
 		if n != 3 {
 			t.Fatalf("rows = %d, want 3 across separate pages", n)
 		}
-		events := logger.snapshot()
+		events := logger.Snapshot()
 		if len(events) != 1 {
 			t.Fatalf("planning events = %d, want 1", len(events))
 		}
@@ -709,8 +449,8 @@ func TestFDB_IndexStatePlanning_OnlyDependenciesInvalidate(t *testing.T) {
 	t.Run("dependent index transition still fires", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
-		f := newIndexStatePlanningFixture(t)
-		conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+		f := testkit.NewIndexStatePlanningFixture(t)
+		conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 			ec.SetOptions(api.NewOptionsBuilder().
 				Set(api.OptExecutionScannedRowsLimit, 1).Build())
 		})
@@ -719,12 +459,12 @@ func TestFDB_IndexStatePlanning_OnlyDependenciesInvalidate(t *testing.T) {
 			t.Fatalf("query: %v", err)
 		}
 		defer func() { _ = rows.Close() }()
-		if err := f.setIndexState(ctx, "U_EMAIL", false); err != nil {
+		if err := f.SetIndexState(ctx, "U_EMAIL", false); err != nil {
 			t.Fatalf("take U_EMAIL WRITE_ONLY mid-statement: %v", err)
 		}
 		for rows.Next() {
 		}
-		assertSerializationFailure(t, rows.Err())
+		testkit.AssertSerializationFailure(t, rows.Err())
 	})
 }
 
@@ -740,12 +480,12 @@ func TestFDB_IndexStatePlanning_OnlyDependenciesInvalidate(t *testing.T) {
 func TestFDB_IndexStatePlanning_IndexBecomingReadableDoesNotInvalidate(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	f := newIndexStatePlanningFixture(t)
+	f := testkit.NewIndexStatePlanningFixture(t)
 	// Excluded BEFORE planning, so no plan can depend on it.
-	if err := f.setIndexState(ctx, "IDX_PAD", false); err != nil {
+	if err := f.SetIndexState(ctx, "IDX_PAD", false); err != nil {
 		t.Fatalf("take IDX_PAD WRITE_ONLY before planning: %v", err)
 	}
-	conn := pinEmbeddedConn(t, f.db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 1).Build())
 	})
@@ -755,7 +495,7 @@ func TestFDB_IndexStatePlanning_IndexBecomingReadableDoesNotInvalidate(t *testin
 		t.Fatalf("query: %v", err)
 	}
 	defer func() { _ = rows.Close() }()
-	if err := f.setIndexState(ctx, "IDX_PAD", true); err != nil {
+	if err := f.SetIndexState(ctx, "IDX_PAD", true); err != nil {
 		t.Fatalf("make IDX_PAD readable mid-statement: %v", err)
 	}
 	n := 0

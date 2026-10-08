@@ -11,28 +11,30 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_InListLimitReturnsRows(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_inlimit")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inlimit")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_inlimit")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inlimit")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inlimit "+
 			"CREATE TABLE orders (id BIGINT, customer_id BIGINT, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_customer ON orders(customer_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inlimit/s WITH TEMPLATE inlimit")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INLIMIT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inlimit/s WITH TEMPLATE inlimit")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INLIMIT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO orders (id,customer_id,amount) VALUES (1,2,100),(2,3,200),(3,1,300),(4,4,400),(5,0,500)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO orders (id,customer_id,amount) VALUES (1,2,100),(2,3,200),(3,1,300),(4,4,400),(5,0,500)")
 
 	count := func(q string) int {
 		rows, err := db.QueryContext(ctx, q)

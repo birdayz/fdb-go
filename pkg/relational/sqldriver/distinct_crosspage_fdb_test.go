@@ -18,13 +18,15 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_SelectDistinct_CrossPageDedup(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_distinct_xpage", "distinctxpage",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_distinct_xpage", "distinctxpage",
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON t (g)")
 	ctx := context.Background()
@@ -33,7 +35,7 @@ func TestFDB_SelectDistinct_CrossPageDedup(t *testing.T) {
 	// straddles multiple page boundaries — the fresh-per-page hash-set loses
 	// its dedup state at each break and re-admits.
 	const scanLimit = 2
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 	})
@@ -58,7 +60,7 @@ func TestFDB_SelectDistinct_CrossPageDedup(t *testing.T) {
 	// (no in-memory sort), which feeds the distinct g-ordered rows — the
 	// precondition for the streaming path. A Sort here would mean the input was
 	// unordered and the streaming path never engaged.
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	if strings.Contains(plan, "Sort") {
 		t.Fatalf("DISTINCT input must be ordered by the t_g index (no in-memory sort) to exercise "+
 			"the streaming path; got plan:\n%s", plan)
@@ -128,12 +130,12 @@ func TestFDB_SelectDistinct_CrossPageDedup(t *testing.T) {
 // whole scan — worst case for the fresh-per-page set.
 func TestFDB_SelectDistinct_CrossPageDedup_Unordered(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_distinct_unord", "distinctunord",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_distinct_unord", "distinctunord",
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
 	const scanLimit = 2
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 	})
@@ -189,12 +191,12 @@ func TestFDB_SelectDistinct_CrossPageDedup_Unordered(t *testing.T) {
 // continuation.
 func TestFDB_SelectDistinct_HashUnderLimit_CrossPage(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_distinct_hlim", "distincthlim",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_distinct_hlim", "distincthlim",
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
 	const scanLimit = 2
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 	})
@@ -244,11 +246,11 @@ func TestFDB_SelectDistinct_HashUnderLimit_CrossPage(t *testing.T) {
 // many distinct values forces the boundedSet charge to breach.
 func TestFDB_SelectDistinct_BudgetLoudFail(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_distinct_budget", "distinctbudget",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_distinct_budget", "distinctbudget",
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		// Tiny budget: a few hundred distinct keys cannot fit.
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptMaxStatementMemoryBytes, 256).Build())
@@ -289,13 +291,13 @@ func TestFDB_SelectDistinct_BudgetLoudFail(t *testing.T) {
 // the cascades package.)
 func TestFDB_SelectDistinct_CrossPageDedup_WithFilter(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_distinct_xpage_filt", "distinctxpagefilt",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_distinct_xpage_filt", "distinctxpagefilt",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON t (g)")
 	ctx := context.Background()
 
 	const scanLimit = 2
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 	})

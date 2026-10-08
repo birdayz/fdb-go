@@ -14,29 +14,31 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_InsertTypeCoercionProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_inscoerce")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inscoerce")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_inscoerce")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inscoerce")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inscoerce "+
 			"CREATE TABLE t (id BIGINT, d DOUBLE, n BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_d ON t (d) CREATE INDEX t_n ON t (n)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inscoerce/s WITH TEMPLATE inscoerce")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSCOERCE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inscoerce/s WITH TEMPLATE inscoerce")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSCOERCE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// int literal 5 WIDENED into DOUBLE column d; int 5 into BIGINT n (same type).
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d, n) VALUES (1, 5, 5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, d, n) VALUES (1, 5, 5)")
 
 	t.Run("double_col_reads_back_as_double", func(t *testing.T) {
 		var d float64
@@ -80,7 +82,7 @@ func TestFDB_InsertTypeCoercionProbe(t *testing.T) {
 	// UPDATE cross-type widening: set DOUBLE d to an int literal; the index must
 	// reflect the widened double value.
 	t.Run("update_int_into_double_col", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "UPDATE t SET d = 9 WHERE id = 1") // int 9 widened into DOUBLE
+		testkit.MustExecCtx(t, db, ctx, "UPDATE t SET d = 9 WHERE id = 1") // int 9 widened into DOUBLE
 		var id sql.NullInt64
 		err := db.QueryRowContext(ctx, "SELECT id FROM t WHERE d = 9.0").Scan(&id)
 		if err == sql.ErrNoRows {

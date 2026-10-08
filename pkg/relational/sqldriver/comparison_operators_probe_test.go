@@ -12,27 +12,29 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ComparisonOperatorsProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_cmpops")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cmpops")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_cmpops")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cmpops")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE cmpops CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cmpops/s WITH TEMPLATE cmpops")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CMPOPS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cmpops/s WITH TEMPLATE cmpops")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CMPOPS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 5), (2, 10)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (3)") // a NULL
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 5), (2, 10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (3)") // a NULL
 
 	ids := func(where string) []int64 {
 		rows, err := db.QueryContext(ctx, "SELECT id FROM t WHERE "+where)

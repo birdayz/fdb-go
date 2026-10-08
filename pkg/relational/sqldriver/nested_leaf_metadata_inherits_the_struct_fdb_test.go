@@ -46,24 +46,26 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_NestedArrayLeafDoesNotInheritTheStructRootsMetadata(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nlmeta")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nlmeta")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_nlmeta")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nlmeta")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nlmeta "+
 			"CREATE TYPE AS STRUCT elt (q BIGINT, r STRING) "+
 			"CREATE TYPE AS STRUCT sarr (vals BIGINT ARRAY, label STRING, bin BYTES, structs elt ARRAY) "+
 			"CREATE TABLE t (id BIGINT, s sarr, top BIGINT ARRAY, topbin BYTES, "+
 			"topstructs elt ARRAY, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nlmeta/s WITH TEMPLATE nlmeta")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NLMETA?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nlmeta/s WITH TEMPLATE nlmeta")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NLMETA?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

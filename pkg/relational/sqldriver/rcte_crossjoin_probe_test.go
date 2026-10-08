@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_RecursiveCTECrossJoin reproduces recursive_cte.yaml test 20:
@@ -15,13 +17,13 @@ import (
 // `descendants.id`.
 func TestFDB_RecursiveCTECrossJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := "/FRL/rcte_crossjoin"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -35,7 +37,7 @@ func TestFDB_RecursiveCTECrossJoin(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -107,7 +109,7 @@ func TestFDB_RecursiveCTECrossJoin(t *testing.T) {
 			fmt.Sprintf("CREATE SCHEMA %s/e WITH TEMPLATE rcte_edge_tmpl", dbPath)); err != nil {
 			t.Fatalf("CREATE SCHEMA: %v", err)
 		}
-		edgeDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=E", strings.ToUpper(dbPath), clusterFilePath)
+		edgeDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=E", strings.ToUpper(dbPath), testkit.ClusterFile())
 		edb, err := sql.Open("fdbsql", edgeDSN)
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)

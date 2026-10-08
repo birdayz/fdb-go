@@ -19,23 +19,25 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_InUnionMergeKeyMustIdentifyRows(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const ddl = "CREATE TABLE t (pk1 BIGINT, pk2 BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (pk1, pk2)) " +
 		"CREATE INDEX t_asb ON t (a, s, b, pk1, pk2)"
-	setup := openTestDB(t, "/FRL/testdb_iupd")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_iupd")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE iupd "+ddl)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_iupd/s WITH TEMPLATE iupd")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IUPD?cluster_file=%s&schema=S", clusterFilePath)
+	setup := testkit.OpenDB(t, "/FRL/testdb_iupd")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_iupd")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE iupd "+ddl)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_iupd/s WITH TEMPLATE iupd")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IUPD?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -43,10 +45,10 @@ func TestFDB_InUnionMergeKeyMustIdentifyRows(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	// (x, 1) is shared by two a = 1 records and one a = 2 record; a = 3 is
 	// outside the IN list.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 1, 1, 1, 'x'), (1, 2, 1, 1, 'x'), "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1, 1, 1, 1, 'x'), (1, 2, 1, 1, 'x'), "+
 		"(2, 1, 2, 1, 'x'), (2, 2, 2, 2, 'y'), (3, 1, 3, 1, 'x'), (4, 1, 1, 3, 'y')")
 
-	explain := mwjoExplainer(t, db, ctx)
+	explain := testkit.Explainer(t, db, ctx)
 	paged, err := db.Conn(ctx)
 	if err != nil {
 		t.Fatalf("db.Conn: %v", err)
@@ -98,18 +100,18 @@ func TestFDB_InUnionMergeKeyMustIdentifyRows(t *testing.T) {
 		if c.planLacks != "" && strings.Contains(plan, c.planLacks) {
 			t.Errorf("%s\n  plan %s merges on a key that ties distinct records", c.sql, plan)
 		}
-		got, err := mmRows(t, ctx, db, c.sql)
+		got, err := testkit.QueryRowStrings(t, ctx, db, c.sql)
 		if err != nil {
 			t.Fatalf("%s: %v", c.sql, err)
 		}
-		if !mmEqRows(got, c.want) {
+		if !testkit.EqualRows(got, c.want) {
 			t.Errorf("%s\n  plan: %s\n  got  %v\n  want %v", c.sql, plan, got, c.want)
 		}
-		gotPaged, err := mhcpkRowsOnConn(ctx, paged, c.sql)
+		gotPaged, err := testkit.MhcpkRowsOnConn(ctx, paged, c.sql)
 		if err != nil {
 			t.Fatalf("%s (paged): %v", c.sql, err)
 		}
-		if !mmEqRows(gotPaged, c.want) {
+		if !testkit.EqualRows(gotPaged, c.want) {
 			t.Errorf("%s (paged)\n  plan: %s\n  got  %v\n  want %v", c.sql, plan, gotPaged, c.want)
 		}
 	}

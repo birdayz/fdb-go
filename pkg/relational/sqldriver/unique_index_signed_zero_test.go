@@ -30,28 +30,30 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_UniqueIndexSignedZero(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uiz")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uiz")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uiz "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_uiz")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uiz")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE uiz "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE UNIQUE INDEX t_v ON t (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uiz/s WITH TEMPLATE uiz")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UIZ?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uiz/s WITH TEMPLATE uiz")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UIZ?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, w) VALUES (1, -0.0, 5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v, w) VALUES (1, -0.0, 5)")
 	// The load-bearing insert: a UNIQUE index must accept the OTHER signed zero,
 	// because they are different keys. If this ever starts failing, uniqueness
 	// has moved to IEEE equality and the DISTINCT-elision reasoning below has to
@@ -62,7 +64,7 @@ func TestFDB_UniqueIndexSignedZero(t *testing.T) {
 			"if this changed deliberately, DISTINCT elision over a unique index needs "+
 			"rechecking because it assumes one row per value", err)
 	}
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, w) VALUES (3, 5.0, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v, w) VALUES (3, 5.0, 1)")
 
 	conn, err := db.Conn(ctx)
 	if err != nil {

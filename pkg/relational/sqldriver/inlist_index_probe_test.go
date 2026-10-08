@@ -10,27 +10,29 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_InListIndexProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ilip")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ilip")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_ilip")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ilip")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ilip CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ilip/s WITH TEMPLATE ilip")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ILIP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ilip/s WITH TEMPLATE ilip")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ILIP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (1,10),(2,20),(3,30),(4,40),(5,20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (1,10),(2,20),(3,30),(4,40),(5,20)")
 
 	ids := func(where string) []int64 {
 		rows, err := db.QueryContext(ctx, "SELECT id FROM t WHERE "+where)

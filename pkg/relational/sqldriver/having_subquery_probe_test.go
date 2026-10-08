@@ -12,20 +12,22 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_HavingSubqueryProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_havsubp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_havsubp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_havsubp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_havsubp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE havsubp CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_havsubp/s WITH TEMPLATE havsubp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVSUBP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_havsubp/s WITH TEMPLATE havsubp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVSUBP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -33,7 +35,7 @@ func TestFDB_HavingSubqueryProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	// AVG(v) over all = (10+20+30+1+2+3)/6 = 11 ; MAX(v) = 30
 	// g1 sum30, g2 sum30, g3 sum6
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,g,v) VALUES (1,1,10),(2,1,20),(3,2,30),(4,3,1),(5,3,2),(6,3,3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,g,v) VALUES (1,1,10),(2,1,20),(3,2,30),(4,3,1),(5,3,2),(6,3,3)")
 
 	groups := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

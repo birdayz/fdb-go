@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -19,18 +21,18 @@ import (
 
 func TestFDB_UnnestExistsGather(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
 	ks := subspace.FromBytes(tuple.Tuple{t.Name(), t.TempDir()}.Pack())
-	md := existsGatherSchemaMetadata(t)
+	md := testkit.ExistsGatherSchemaMetadata(t)
 
 	mkA := func(aid, k int64, vals ...int32) proto.Message {
 		d := md.GetRecordType("A").Descriptor
@@ -41,7 +43,7 @@ func TestFDB_UnnestExistsGather(t *testing.T) {
 		for _, v := range vals {
 			elems = append(elems, protoreflect.ValueOfInt32(v))
 		}
-		setArrayField(m, d.Fields().ByName("ARR"), elems...)
+		testkit.SetArrayField(m, d.Fields().ByName("ARR"), elems...)
 		return m
 	}
 	mk1 := func(table, f string, v int64) proto.Message {
@@ -96,7 +98,7 @@ func TestFDB_UnnestExistsGather(t *testing.T) {
 			for _, r := range rows {
 				// POSITIONAL, in slot order -- the map rendering this replaced printed the
 				// row by NAME, so permuting (Fields, Slots) together was invisible.
-				out = append(out, positionalPipeSprint(r))
+				out = append(out, testkit.PositionalPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -323,7 +325,7 @@ func TestFDB_UnnestExistsGather(t *testing.T) {
 // to fall back to, so a regression is a LOUD plan error). Planning-only.
 func TestUnnestExistsGatherCensus(t *testing.T) {
 	t.Parallel()
-	md := existsGatherSchemaMetadata(t)
+	md := testkit.ExistsGatherSchemaMetadata(t)
 	const from = `FROM A, B, A."ARR" AS "X"`
 	countProducers := func(sql string) int {
 		if _, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil); err != nil {

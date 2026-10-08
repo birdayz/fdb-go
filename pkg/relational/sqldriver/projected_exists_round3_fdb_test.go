@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExists_Round3 pins the three round-3 projected-EXISTS fixes
@@ -18,20 +20,20 @@ import (
 // never a "happens to pass" coincidence.
 func TestFDB_ProjectedExists_Round3(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_projexists_r3")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r3")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r3_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_projexists_r3")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r3")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r3_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r3/s WITH TEMPLATE projexists_r3_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r3/s WITH TEMPLATE projexists_r3_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R3?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R3?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -39,9 +41,9 @@ func TestFDB_ProjectedExists_Round3(t *testing.T) {
 
 	// t1: ids 1..5. t2 references t1 ids {1,3,5} (those rows "have a t2").
 	// t3 references t1 ids {2,3} (used for the multi-existential guard case).
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3), (300, 5)")
-	mustExec(t, db, ctx, "INSERT INTO t3 VALUES (1000, 2), (2000, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3), (300, 5)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t3 VALUES (1000, 2), (2000, 3)")
 
 	requireExistentialFlatMap := func(t *testing.T, q string) {
 		t.Helper()

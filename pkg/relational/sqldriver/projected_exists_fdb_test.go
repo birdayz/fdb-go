@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExists ports Java 4.12's exists-in-select.yamsql scenarios
@@ -20,28 +22,28 @@ import (
 // reads the inner binding (bound non-null ⇒ true, NULL ⇒ false).
 func TestFDB_ProjectedExists(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_projexists")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_projexists")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t2_id BIGINT, label STRING, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists/s WITH TEMPLATE projexists_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists/s WITH TEMPLATE projexists_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 1), (300, 3)")
-	mustExec(t, db, ctx, "INSERT INTO t3 VALUES (1000, 100, 'a'), (2000, 100, 'b'), (3000, 300, 'c')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 1), (300, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t3 VALUES (1000, 100, 'a'), (2000, 100, 'b'), (3000, 300, 'c')")
 
 	// requireExistentialFlatMap asserts the existential FlatMap fired — a
 	// FlatMap whose inner is a FirstOrDefault (the one-row existential inner).
@@ -205,14 +207,4 @@ func TestFDB_ProjectedExists(t *testing.T) {
 	// master; ImplementNestedLoopJoinRule.implementExistentialSelect handles a
 	// single existential (2 quantifiers) only. It is a separate, larger
 	// extension tracked in TODO.md (RFC-141 follow-up), not a Phase 2 regression.
-}
-
-func mustExec(t *testing.T, db interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}, ctx context.Context, q string,
-) {
-	t.Helper()
-	if _, err := db.ExecContext(ctx, q); err != nil {
-		t.Fatalf("exec %q: %v", q, err)
-	}
 }

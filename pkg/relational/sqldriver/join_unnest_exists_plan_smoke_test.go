@@ -3,6 +3,8 @@ package sqldriver_test
 import (
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
@@ -25,7 +27,7 @@ import (
 // another entry in the list below.
 func TestJoinUnnestExistsPlanSmoke(t *testing.T) {
 	t.Parallel()
-	md := existsGatherSchemaMetadata(t)
+	md := testkit.ExistsGatherSchemaMetadata(t)
 	count := func(sql string) (int, error) {
 		_, err := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
 		return 0, err

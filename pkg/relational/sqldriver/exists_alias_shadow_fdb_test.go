@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ExistsAliasShadow pins RFC-141 R4 round-9 P1: a WHERE-EXISTS (and
@@ -36,25 +38,25 @@ import (
 // the outer and the outer binding was clobbered.
 func TestFDB_ExistsAliasShadow(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_existsaliasshadow")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_existsaliasshadow")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE eas_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_existsaliasshadow")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_existsaliasshadow")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE eas_tmpl "+
 		"CREATE TABLE t (id BIGINT, sk BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_existsaliasshadow/s WITH TEMPLATE eas_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_existsaliasshadow/s WITH TEMPLATE eas_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTSALIASSHADOW?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTSALIASSHADOW?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
 	// ids 1,2,3; sk mirrors id so a correlated self-subquery can discriminate.
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)")
 
 	queryIDs := func(t *testing.T, q string) []int64 {
 		t.Helper()

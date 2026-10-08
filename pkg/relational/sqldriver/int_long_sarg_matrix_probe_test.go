@@ -38,24 +38,26 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_IntLongSargMatrix(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ilsarg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ilsarg")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_ilsarg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ilsarg")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ilsarg "+
 			"CREATE TABLE ti (id BIGINT, v INTEGER, PRIMARY KEY (id)) "+
 			"CREATE TABLE tl (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE drv (id BIGINT, ki INTEGER, kl BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX ti_v ON ti (v) CREATE INDEX tl_v ON tl (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ilsarg/s WITH TEMPLATE ilsarg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ILSARG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ilsarg/s WITH TEMPLATE ilsarg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ILSARG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -64,11 +66,11 @@ func TestFDB_IntLongSargMatrix(t *testing.T) {
 
 	// v ∈ {10, 20, 30} in both the INTEGER and the BIGINT table, so every
 	// cell of the matrix has the same expected answer for a given operator.
-	mwjoMustExec(t, db, ctx, "INSERT INTO ti (id, v) VALUES (1, 10), (2, 20), (3, 30)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tl (id, v) VALUES (1, 10), (2, 20), (3, 30)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ti (id, v) VALUES (1, 10), (2, 20), (3, 30)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tl (id, v) VALUES (1, 10), (2, 20), (3, 30)")
 	// One driving row whose INTEGER and BIGINT keys both hold 20, so a
 	// correlated probe from drv into ti/tl selects the same single row.
-	mwjoMustExec(t, db, ctx, "INSERT INTO drv (id, ki, kl) VALUES (100, 20, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO drv (id, ki, kl) VALUES (100, 20, 20)")
 
 	explain := func(t *testing.T, q string) string {
 		t.Helper()
@@ -141,7 +143,7 @@ func TestFDB_IntLongSargMatrix(t *testing.T) {
 		if !strings.Contains(plan, wantIndex) {
 			t.Errorf("expected %s probe\n  query: %s\n  plan:  %s\n%s", wantIndex, q, plan, onFail)
 		}
-		if got := ids(t, q); !eqStrSlices(got, want) {
+		if got := ids(t, q); !testkit.EqualStrings(got, want) {
 			t.Errorf("rows = %v, want %v\n  query: %s", got, want, q)
 		}
 	}

@@ -20,6 +20,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // Distinct, clearly byte-ordered UUIDs: u1 < u2 < u3 (unsigned big-endian, the
@@ -33,24 +35,24 @@ const (
 
 func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uuidrt")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidrt")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_uuidrt")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidrt")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidrt "+
 			"CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_v ON t (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidrt/s WITH TEMPLATE uuidrt")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDRT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidrt/s WITH TEMPLATE uuidrt")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDRT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, fmt.Sprintf(
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 		"INSERT INTO t (id, v) VALUES (1, '%s'), (2, '%s'), (3, '%s')", uuidV1, uuidV2, uuidV3))
 
 	ids := func(q string, args ...any) []int64 {
@@ -194,8 +196,8 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 	// DISTINCT dedups by the neutral [16]byte value and materializes canonical
 	// strings. Insert a duplicate of u1 (id=4) and confirm the distinct set.
 	t.Run("distinct", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (4, '%s')", uuidV1))
-		t.Cleanup(func() { mwjoMustExec(t, db, ctx, "DELETE FROM t WHERE id = 4") })
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (4, '%s')", uuidV1))
+		t.Cleanup(func() { testkit.MustExecCtx(t, db, ctx, "DELETE FROM t WHERE id = 4") })
 		rows, err := db.QueryContext(ctx, "SELECT DISTINCT v FROM t ORDER BY v")
 		if err != nil {
 			t.Fatalf("DISTINCT v: %v", err)
@@ -218,8 +220,8 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 	// GROUP BY a UUID column: the group key is the neutral [16]byte, and the
 	// projected key materializes to the canonical string.
 	t.Run("group_by", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (5, '%s')", uuidV1))
-		t.Cleanup(func() { mwjoMustExec(t, db, ctx, "DELETE FROM t WHERE id = 5") })
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (5, '%s')", uuidV1))
+		t.Cleanup(func() { testkit.MustExecCtx(t, db, ctx, "DELETE FROM t WHERE id = 5") })
 		rows, err := db.QueryContext(ctx, "SELECT v, COUNT(*) FROM t GROUP BY v")
 		if err != nil {
 			t.Fatalf("GROUP BY v: %v", err)
@@ -300,23 +302,23 @@ func TestFDB_UUIDIndexableRoundTrip(t *testing.T) {
 // are inserted OUT of byte order.
 func TestFDB_UUIDNonIndexedSort(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uuidsort")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidsort")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_uuidsort")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidsort")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidsort CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidsort/s WITH TEMPLATE uuidsort")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDSORT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidsort/s WITH TEMPLATE uuidsort")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDSORT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// Insert OUT of byte order (u3, u1, u2) and with a duplicate of u1.
-	mwjoMustExec(t, db, ctx, fmt.Sprintf(
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 		"INSERT INTO t (id, v) VALUES (1, '%s'), (2, '%s'), (3, '%s'), (4, '%s')",
 		uuidV3, uuidV1, uuidV2, uuidV1))
 
@@ -371,23 +373,23 @@ func TestFDB_UUIDNonIndexedSort(t *testing.T) {
 // and equality-by-PK both round-trip.
 func TestFDB_UUIDPrimaryKey(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uuidpk")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidpk")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_uuidpk")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidpk")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidpk "+
 			"CREATE TABLE t (k UUID, n BIGINT, PRIMARY KEY (k))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidpk/s WITH TEMPLATE uuidpk")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDPK?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidpk/s WITH TEMPLATE uuidpk")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDPK?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, fmt.Sprintf(
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 		"INSERT INTO t (k, n) VALUES ('%s', 10), ('%s', 20)", uuidV1, uuidV3))
 
 	t.Run("pk_equality", func(t *testing.T) {
@@ -418,27 +420,27 @@ func TestFDB_UUIDPrimaryKey(t *testing.T) {
 // packs the outer's [16]byte as a tuple.UUID.
 func TestFDB_UUIDInlJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uuidjoin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidjoin")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_uuidjoin")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuidjoin")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uuidjoin "+
 			"CREATE TABLE a (id BIGINT, v UUID, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, v UUID, label STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_v ON b (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidjoin/s WITH TEMPLATE uuidjoin")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDJOIN?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuidjoin/s WITH TEMPLATE uuidjoin")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UUIDJOIN?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, fmt.Sprintf(
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 		"INSERT INTO a (id, v) VALUES (1, '%s'), (2, '%s')", uuidV1, uuidV2))
-	mwjoMustExec(t, db, ctx, fmt.Sprintf(
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 		"INSERT INTO b (id, v, label) VALUES (10, '%s', 'x'), (20, '%s', 'y'), (30, '%s', 'z')",
 		uuidV1, uuidV2, uuidV3))
 

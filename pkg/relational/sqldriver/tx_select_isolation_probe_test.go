@@ -16,11 +16,13 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_TxSelectIsolationProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -29,14 +31,14 @@ func TestFDB_TxSelectIsolationProbe(t *testing.T) {
 	// the whole test is safe: preflightTxBudget runs under `if r.tx != nil`, so
 	// the DDL and the seed INSERT — all autocommit — never meet it, and the two
 	// single-statement subtests below never open a second read page.
-	key, clk := spikedClusterKey(t, 30*time.Second)
-	setup := openSpiked(t, key, "/FRL/testdb_txiso", "")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txiso")
-	mwjoMustExec(t, setup, ctx,
+	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
+	setup := testkit.OpenSpiked(t, key, "/FRL/testdb_txiso", "")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txiso")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE txiso CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txiso/s WITH TEMPLATE txiso")
-	db := openSpiked(t, key, "/FRL/testdb_txiso", "s")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txiso/s WITH TEMPLATE txiso")
+	db := testkit.OpenSpiked(t, key, "/FRL/testdb_txiso", "s")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
 	t.Run("read_your_writes_in_explicit_tx", func(t *testing.T) {
 		// TWO statements on one read version, so the transaction carries the
@@ -48,14 +50,14 @@ func TestFDB_TxSelectIsolationProbe(t *testing.T) {
 		// this transaction actually wrote rather than a leftover from a dead one.
 		var v int64
 		var attemptsRun int
-		retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+		testkit.RetryTx(t, db, testkit.SpikeOnce(clk, &attemptsRun), func(a testkit.TxAttempt) error {
 			v = 0
-			if _, err := a.tx.ExecContext(ctx, "UPDATE t SET v = 777 WHERE id = 1"); err != nil {
+			if _, err := a.Tx.ExecContext(ctx, "UPDATE t SET v = 777 WHERE id = 1"); err != nil {
 				return err
 			}
-			return a.tx.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&v)
+			return a.Tx.QueryRowContext(ctx, "SELECT v FROM t WHERE id = 1").Scan(&v)
 		})
-		mustHaveRetried(t, attemptsRun)
+		testkit.MustHaveRetried(t, attemptsRun)
 		if v != 777 {
 			t.Errorf("in-tx SELECT after UPDATE v=%d, want 777: a SELECT inside an explicit "+
 				"transaction must read through that transaction (read-your-writes, RFC-198 "+

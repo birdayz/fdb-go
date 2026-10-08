@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_EverAggregatesAreServedFromTheirIndexes: a query over min_ever(…) or
@@ -24,7 +26,7 @@ func TestFDB_EverAggregatesAreServedFromTheirIndexes(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	db := setupPlanShapeDB(t, "everindexquery",
+	db := testkit.SetupPlanShapeDB(t, "everindexquery",
 		"CREATE TABLE t2 (id BIGINT, col1 BIGINT, col2 BIGINT, col3 BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX mv4 AS SELECT min_ever(col3) FROM t2 GROUP BY col1, col2 "+
 			"CREATE INDEX mv5 AS SELECT max_ever(col3) FROM t2 GROUP BY col1, col2 "+
@@ -65,7 +67,7 @@ func TestFDB_EverAggregatesAreServedFromTheirIndexes(t *testing.T) {
 	}
 	check := func(t *testing.T, q string, want ...string) {
 		t.Helper()
-		if plan := planExplainVia(t, ctx, db, q); !strings.Contains(plan, "AggregateIndex") {
+		if plan := testkit.ExplainVia(t, ctx, db, q); !strings.Contains(plan, "AggregateIndex") {
 			t.Errorf("%s is not served by its _EVER index: %s", q, plan)
 		}
 		if got := rowsOf(t, q); strings.Join(got, "|") != strings.Join(want, "|") {
@@ -78,7 +80,7 @@ func TestFDB_EverAggregatesAreServedFromTheirIndexes(t *testing.T) {
 	check(t, "SELECT max_ever(col3) FROM t2", "<nil>")
 	check(t, "SELECT col1, col2, min_ever(col3) FROM t2 GROUP BY col1, col2")
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO t2 VALUES (1, 1, 1, 100), (2, 1, 1, 1), (3, 1, 2, 2), "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t2 VALUES (1, 1, 1, 100), (2, 1, 1, 1), (3, 1, 2, 2), "+
 		"(4, 1, 2, 200), (5, 2, 1, 200), (6, 2, 1, 3), (7, 2, 1, 400)")
 	check(t, "SELECT min_ever(col3) FROM t2", "1")
 	check(t, "SELECT max_ever(col3) FROM t2", "400")
@@ -91,9 +93,9 @@ func TestFDB_EverAggregatesAreServedFromTheirIndexes(t *testing.T) {
 
 	// The extremum is the index's: deleting the rows that set it does not lower
 	// it, and deleting every row leaves the ungrouped entry in place.
-	mwjoMustExec(t, db, ctx, "DELETE FROM t2 WHERE id = 7")
+	testkit.MustExecCtx(t, db, ctx, "DELETE FROM t2 WHERE id = 7")
 	check(t, "SELECT max_ever(col3) FROM t2", "400")
-	mwjoMustExec(t, db, ctx, "DELETE FROM t2")
+	testkit.MustExecCtx(t, db, ctx, "DELETE FROM t2")
 	check(t, "SELECT min_ever(col3) FROM t2", "1")
 	check(t, "SELECT col1, col2, max_ever(col3) FROM t2 GROUP BY col1, col2 ORDER BY col1, col2",
 		"1 1 100", "1 2 200", "2 1 400")

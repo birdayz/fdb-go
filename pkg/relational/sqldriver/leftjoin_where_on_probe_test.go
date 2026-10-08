@@ -11,30 +11,32 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_LeftJoinWhereOnProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ljwo")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ljwo")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ljwo "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_ljwo")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ljwo")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE ljwo "+
 		"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE b (id BIGINT, a_id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX b_aid ON b (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ljwo/s WITH TEMPLATE ljwo")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LJWO?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ljwo/s WITH TEMPLATE ljwo")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LJWO?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// a: 1, 2 ; b: (1, a_id=1, x=5). a=2 has no matching b.
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, a_id, x) VALUES (1, 1, 5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, a_id, x) VALUES (1, 1, 5)")
 
 	// returns a.id values (with the b.x, NULL-aware)
 	rowsOf := func(q string) []string {

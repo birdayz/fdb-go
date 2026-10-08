@@ -13,52 +13,20 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
-
-func mhEqRows(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// mhHead truncates a row list so one systemic divergence cannot bury the rest
-// of the report under thousands of rows.
-func mhHead(rows []string) []string {
-	if len(rows) <= 25 {
-		return rows
-	}
-	return append(append([]string{}, rows[:25]...), fmt.Sprintf("...(+%d more)", len(rows)-25))
-}
-
-func mhFirstDiff(a, b []string) string {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	for i := 0; i < n; i++ {
-		if a[i] != b[i] {
-			return fmt.Sprintf("row %d: idx=%q noidx=%q", i, a[i], b[i])
-		}
-	}
-	return fmt.Sprintf("common prefix equal; lengths %d vs %d", len(a), len(b))
-}
 
 func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_mh2")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mh2")
+	setup := testkit.OpenDB(t, "/FRL/testdb_mh2")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mh2")
 	table := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) "
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh2_idx "+table+
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh2_idx "+table+
 		"CREATE INDEX t_a ON t (a) "+
 		"CREATE INDEX t_ab ON t (a, b) "+
 		"CREATE INDEX t_c ON t (c) "+
@@ -71,12 +39,12 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 		// keep a per-record entry and stay exact.
 		"CREATE INDEX t_min_b_a AS SELECT MIN(b) FROM t GROUP BY a "+
 		"CREATE INDEX t_max_b_a AS SELECT MAX(b) FROM t GROUP BY a")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh2_noidx "+table)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh2/si WITH TEMPLATE mh2_idx")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh2/sn WITH TEMPLATE mh2_noidx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh2_noidx "+table)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh2/si WITH TEMPLATE mh2_idx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh2/sn WITH TEMPLATE mh2_noidx")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MH2?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
+		dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MH2?cluster_file=%s&schema=%s", testkit.ClusterFile(), strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s: %v", schema, err)
@@ -113,14 +81,14 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 	stateInSync := func(after string) {
 		t.Helper()
 		const q = "SELECT id, a, b, c, s, f FROM t ORDER BY id"
-		gi, ei := mhScanStrings(ctx, idb, q)
-		gn, en := mhScanStrings(ctx, ndb, q)
+		gi, ei := testkit.MhScanStrings(ctx, idb, q)
+		gn, en := testkit.MhScanStrings(ctx, ndb, q)
 		if ei != nil || en != nil {
 			t.Fatalf("state read failed after %q: %v / %v", after, ei, en)
 		}
-		if !mhEqRows(gi, gn) {
+		if !testkit.MhEqRows(gi, gn) {
 			t.Fatalf("STATE-DIVERGENCE after %q\n  %s\n  idx  (%d rows): %v\n  noidx(%d rows): %v",
-				after, mhFirstDiff(gi, gn), len(gi), mhHead(gi), len(gn), mhHead(gn))
+				after, testkit.MhFirstDiff(gi, gn), len(gi), testkit.MhHead(gi), len(gn), testkit.MhHead(gn))
 		}
 	}
 
@@ -128,14 +96,14 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 	const nRows = 120
 	var vals []string
 	for i := 1; i <= nRows; i++ {
-		vals = append(vals, mhRowLiteral(dataRand, i))
+		vals = append(vals, testkit.MhRowLiteral(dataRand, i))
 	}
 	for start := 0; start < len(vals); start += 20 {
 		end := start + 20
 		if end > len(vals) {
 			end = len(vals)
 		}
-		exec("INSERT INTO t " + mhCols + " VALUES " + strings.Join(vals[start:end], ", "))
+		exec("INSERT INTO t " + testkit.MhCols + " VALUES " + strings.Join(vals[start:end], ", "))
 	}
 
 	seed := int64(1)
@@ -147,7 +115,7 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 		fmt.Sscan(s, &iters)
 	}
 	r := rand.New(rand.NewSource(seed))
-	g := &mhGen{r: r}
+	g := &testkit.MhGen{R: r}
 
 	// okByTag / errByTag exist so a green cannot come from an empty population:
 	// a tag whose every query errors on BOTH sides compares nothing.
@@ -155,8 +123,8 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 	errByTag := map[string]int{}
 	compare := func(tag, q string) bool {
 		t.Helper()
-		gi, ei := mhScanStrings(ctx, idb, q)
-		gn, en := mhScanStrings(ctx, ndb, q)
+		gi, ei := testkit.MhScanStrings(ctx, idb, q)
+		gn, en := testkit.MhScanStrings(ctx, ndb, q)
 		switch {
 		case ei != nil && en != nil:
 			errByTag[tag]++
@@ -168,9 +136,9 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 			t.Errorf("%s ERROR-ASYMMETRY seed=%d\n  q: %s\n  idx err:   %v\n  noidx err: %v", tag, seed, q, ei, en)
 			return false
 		}
-		if !mhEqRows(gi, gn) {
+		if !testkit.MhEqRows(gi, gn) {
 			t.Errorf("%s ROW-DIFF seed=%d\n  q: %s\n  %s\n  idx  (%d): %v\n  noidx(%d): %v",
-				tag, seed, q, mhFirstDiff(gi, gn), len(gi), gi, len(gn), gn)
+				tag, seed, q, testkit.MhFirstDiff(gi, gn), len(gi), gi, len(gn), gn)
 			return false
 		}
 		okByTag[tag]++
@@ -198,7 +166,7 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 	compared := 0
 	mutations := 0
 	for i := 0; i < iters; i++ {
-		p := g.pred(2)
+		p := g.Pred(2)
 
 		// (1) total ORDER BY, with and without LIMIT/OFFSET.
 		ok := orderKeys[r.Intn(len(orderKeys))]
@@ -243,11 +211,11 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 			}
 			switch col {
 			case "a", "b":
-				return mhIntLits[r.Intn(len(mhIntLits))]
+				return testkit.MhIntLits[r.Intn(len(testkit.MhIntLits))]
 			case "c":
-				return mhDblLits[r.Intn(len(mhDblLits))]
+				return testkit.MhDblLits[r.Intn(len(testkit.MhDblLits))]
 			case "s":
-				return mhStrLits[r.Intn(len(mhStrLits))]
+				return testkit.MhStrLits[r.Intn(len(testkit.MhStrLits))]
 			default:
 				return []string{"true", "false"}[r.Intn(2)]
 			}
@@ -255,7 +223,7 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 		var stmt string
 		switch r.Intn(8) {
 		case 0:
-			stmt = fmt.Sprintf("INSERT INTO t %s VALUES %s", mhCols, mhRowLiteral(r, int(nextID)))
+			stmt = fmt.Sprintf("INSERT INTO t %s VALUES %s", testkit.MhCols, testkit.MhRowLiteral(r, int(nextID)))
 			nextID++
 		case 1:
 			col := []string{"a", "b", "c", "s", "f"}[r.Intn(5)]
@@ -265,9 +233,9 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 		case 3:
 			// Re-key an indexed column through a scan of that same column.
 			col := []string{"a", "b", "c", "s"}[r.Intn(4)]
-			stmt = fmt.Sprintf("UPDATE t SET %s = %s WHERE %s", col, randVal(col), g.pred(1))
+			stmt = fmt.Sprintf("UPDATE t SET %s = %s WHERE %s", col, randVal(col), g.Pred(1))
 		case 4:
-			stmt = fmt.Sprintf("DELETE FROM t WHERE %s", g.pred(1))
+			stmt = fmt.Sprintf("DELETE FROM t WHERE %s", g.Pred(1))
 		}
 		if stmt != "" {
 			mutations++

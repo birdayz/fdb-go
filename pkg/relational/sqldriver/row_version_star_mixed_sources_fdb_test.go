@@ -29,31 +29,33 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_RowVersionBareStar_MixedSourcesAndQuotedAliases(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_rvstar")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvstar")
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE rvstar_tpl
+	setup := testkit.OpenDB(t, "/FRL/testdb_rvstar")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvstar")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE rvstar_tpl
 		CREATE TABLE t3(id BIGINT, a BIGINT, PRIMARY KEY(id))
 		CREATE TABLE t4(id BIGINT, b BIGINT, PRIMARY KEY(id))
 		CREATE TABLE t5(id BIGINT, arr BIGINT ARRAY, PRIMARY KEY(id))
 		WITH OPTIONS(store_row_versions=true)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvstar/s1 WITH TEMPLATE rvstar_tpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvstar/s1 WITH TEMPLATE rvstar_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RVSTAR?cluster_file=%s&schema=S1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RVSTAR?cluster_file=%s&schema=S1", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t3 VALUES (1, 10)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t4 VALUES (1, 20)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t5 VALUES (1, [7, 8])")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t3 VALUES (1, 10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t4 VALUES (1, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t5 VALUES (1, [7, 8])")
 
 	cases := []struct {
 		name string

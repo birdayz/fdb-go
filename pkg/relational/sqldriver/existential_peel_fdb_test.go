@@ -12,34 +12,36 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ExistentialPeelShapes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_exist_peel")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exist_peel")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_exist_peel")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exist_peel")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exist_peel "+
 			"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exist_peel/s WITH TEMPLATE exist_peel")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXIST_PEEL?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exist_peel/s WITH TEMPLATE exist_peel")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXIST_PEEL?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1, 1), (2, 2), (3, 3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (101, 2), (102, null)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2), (52, 1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id) VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1, 1), (2, 2), (3, 3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (101, 2), (102, null)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2), (52, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id) VALUES (1)")
 
 	// scan runs q and returns each row rendered as a |-joined string, so a
 	// scenario can state its expectation without knowing the column count.

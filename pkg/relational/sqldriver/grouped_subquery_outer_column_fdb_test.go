@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_GroupedSubqueryProjectsAnOuterColumn: a grouped block nested in
@@ -40,14 +42,14 @@ import (
 // worked before: an outer read in the WHERE alone.
 func TestFDB_GroupedSubqueryProjectsAnOuterColumn(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_grouped_outer_column", "groupedoutercol", `
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_grouped_outer_column", "groupedoutercol", `
 		create table a(ida integer, x integer, primary key(ida))
 		create table b(idb integer, q integer, r integer, primary key(idb))
 		create index ib as select q from b`)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	mwjoMustExec(t, db, ctx, "INSERT INTO A VALUES (1, 1), (2, 2), (3, 3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO B VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO A VALUES (1, 1), (2, 2), (3, 3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO B VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)")
 
 	// For outer x, the groups are the q above 10*x: x=1 → q 20, 30; x=2 → q 30;
 	// x=3 → none.

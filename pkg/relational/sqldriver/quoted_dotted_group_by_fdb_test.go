@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // A quoted column name holding dots and starting with its table's name is
@@ -11,7 +13,7 @@ import (
 // output-slot binding (Java valid-identifiers.yamsql).
 func TestFDB_QuotedDottedColumnGroupBy(t *testing.T) {
 	t.Parallel()
-	db := setupPlanShapeDB(t, "qdgb", `create table "foo.tableA"("foo.tableA.A1" bigint, "foo.tableA.A2" bigint, "foo.tableA.A3" bigint, primary key("foo.tableA.A1")) `+
+	db := testkit.SetupPlanShapeDB(t, "qdgb", `create table "foo.tableA"("foo.tableA.A1" bigint, "foo.tableA.A2" bigint, "foo.tableA.A3" bigint, primary key("foo.tableA.A1")) `+
 		`create index "foo.tableA.idx2" as select sum("foo.tableA.A1") FROM "foo.tableA" group by "foo.tableA.A2"`)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, `insert into "foo.tableA" values (1, 10, 1), (2, 10, 2), (3, 20, 2)`); err != nil {

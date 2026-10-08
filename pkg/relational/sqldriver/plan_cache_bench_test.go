@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // benchSeq provides unique database paths across benchmark invocations
@@ -23,7 +25,7 @@ var benchSeq atomic.Int64
 // Compare with BenchmarkFDB_PlanCacheMiss (which defeats the cache each
 // iteration) to see the raw planning overhead that the cache eliminates.
 func BenchmarkFDB_PlanCacheHit(b *testing.B) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		b.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -40,7 +42,7 @@ func BenchmarkFDB_PlanCacheHit(b *testing.B) {
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)
@@ -84,7 +86,7 @@ func BenchmarkFDB_PlanCacheHit(b *testing.B) {
 // This forces the full Cascades planning pipeline on every iteration, giving a
 // baseline to compare against BenchmarkFDB_PlanCacheHit.
 func BenchmarkFDB_PlanCacheMiss(b *testing.B) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		b.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -101,7 +103,7 @@ func BenchmarkFDB_PlanCacheMiss(b *testing.B) {
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)
@@ -134,10 +136,10 @@ func BenchmarkFDB_PlanCacheMiss(b *testing.B) {
 // openBenchDB is the benchmark equivalent of openTestDB.
 func openBenchDB(b *testing.B, dbPath string) *sql.DB {
 	b.Helper()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		b.Skip("FDB not available (no Docker)")
 	}
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)
@@ -156,7 +158,7 @@ func execOrFail(b *testing.B, db *sql.DB, ctx context.Context, sql string) {
 // BenchmarkFDB_TimestampInsert measures INSERT throughput into a table with a
 // TIMESTAMP column and a secondary index on that column.
 func BenchmarkFDB_TimestampInsert(b *testing.B) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		b.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -174,7 +176,7 @@ func BenchmarkFDB_TimestampInsert(b *testing.B) {
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)
@@ -196,7 +198,7 @@ func BenchmarkFDB_TimestampInsert(b *testing.B) {
 // range predicate on a pre-populated table with a secondary index on the
 // timestamp column.
 func BenchmarkFDB_TimestampRangeScan(b *testing.B) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		b.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -214,7 +216,7 @@ func BenchmarkFDB_TimestampRangeScan(b *testing.B) {
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)
@@ -250,7 +252,7 @@ func BenchmarkFDB_TimestampRangeScan(b *testing.B) {
 // and Orders) with a secondary index on the foreign key column. The join is
 // filtered to a single customer, returning 5 matching orders per iteration.
 func BenchmarkFDB_JoinQuery(b *testing.B) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		b.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -269,7 +271,7 @@ func BenchmarkFDB_JoinQuery(b *testing.B) {
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)
@@ -311,7 +313,7 @@ func BenchmarkFDB_JoinQuery(b *testing.B) {
 // SUM(amount) aggregates over a secondary-indexed category column. The table
 // contains 100 rows spread across 5 categories.
 func BenchmarkFDB_AggregateGroupBy(b *testing.B) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		b.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -329,7 +331,7 @@ func BenchmarkFDB_AggregateGroupBy(b *testing.B) {
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)
@@ -368,7 +370,7 @@ func BenchmarkFDB_AggregateGroupBy(b *testing.B) {
 // 1..100 and a secondary index on price; the query selects all products with
 // price > 50.
 func BenchmarkFDB_IndexScanRange(b *testing.B) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		b.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -386,7 +388,7 @@ func BenchmarkFDB_IndexScanRange(b *testing.B) {
 	execOrFail(b, setup, ctx,
 		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl))
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)

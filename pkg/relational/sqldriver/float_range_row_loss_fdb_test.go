@@ -71,6 +71,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // floatRangeShape is one predicate and the ids it must select.
@@ -135,13 +137,13 @@ func floatRangeSorted(in []int64) []int64 {
 
 func TestFDB_FloatRangePredicate_IsExactThroughSQL(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_frrl")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_frrl")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE frrl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_frrl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_frrl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE frrl "+
 		// fi: indexed on (a, e), so an equality on `a` binds the index and
 		// leaves `e` as the coordinate the range predicate compiles onto.
 		"CREATE TABLE fi (id BIGINT, e DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
@@ -149,21 +151,21 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL(t *testing.T) {
 		// residual filter evaluated row by row and never becomes a key range.
 		"CREATE TABLE fo (id BIGINT, e DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX fi_ae ON fi (a, e)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_frrl/s WITH TEMPLATE frrl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FRRL?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_frrl/s WITH TEMPLATE frrl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FRRL?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	seedFloatOrderingLadder(t, db, ctx, "fi")
-	seedFloatOrderingLadder(t, db, ctx, "fo")
+	testkit.SeedFloatOrderingLadder(t, db, ctx, "fi")
+	testkit.SeedFloatOrderingLadder(t, db, ctx, "fo")
 	// Without this the whole file is vacuous: if the write path ever rejects
 	// the non-finite values, both tables hold ordinary finite doubles and every
 	// assertion below passes with the defect fully present.
-	assertFloatLadderStored(t, db, ctx, "fi")
-	assertFloatLadderStored(t, db, ctx, "fo")
+	testkit.AssertFloatLadderStored(t, db, ctx, "fi")
+	testkit.AssertFloatLadderStored(t, db, ctx, "fo")
 
 	for _, shape := range floatRangeShapes {
 		t.Run(strings.NewReplacer(" ", "_", ">", "gt", "<", "lt", "=", "eq", ".", "_").Replace(shape.pred), func(t *testing.T) {
@@ -172,25 +174,25 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL(t *testing.T) {
 			// already-fixed) ordering-claim question into the failure message.
 			idxQ := fmt.Sprintf("SELECT id FROM fi WHERE a = 1 AND %s ORDER BY id", shape.pred)
 			refQ := fmt.Sprintf("SELECT id FROM fo WHERE a = 1 AND %s ORDER BY id", shape.pred)
-			idxPlan := floatOrderingExplain(t, db, ctx, idxQ)
+			idxPlan := testkit.FloatOrderingExplain(t, db, ctx, idxQ)
 			if !strings.Contains(strings.ToUpper(idxPlan), "FI_AE") {
 				t.Fatalf("the indexed side did not take index FI_AE, so the predicate never "+
 					"compiled to a key range and this shape proves nothing.\n  query: %s\n  plan:  %s",
 					idxQ, idxPlan)
 			}
-			got := floatOrderingIDs(t, db, ctx, idxQ)
-			ref := floatOrderingIDs(t, db, ctx, refQ)
+			got := testkit.FloatOrderingIDs(t, db, ctx, idxQ)
+			ref := testkit.FloatOrderingIDs(t, db, ctx, refQ)
 			want := floatRangeSorted(shape.want)
-			if !floatOrderingSameOrder(got, want) {
+			if !testkit.FloatOrderingSameOrder(got, want) {
 				t.Errorf("indexed scan of %q returned %v, want %v — %s\n  query: %s\n  plan:  %s",
 					shape.pred, got, want, shape.why, idxQ, idxPlan)
 			}
-			if !floatOrderingSameOrder(ref, want) {
+			if !testkit.FloatOrderingSameOrder(ref, want) {
 				t.Errorf("the UNINDEXED oracle for %q returned %v, want %v — the residual "+
 					"predicate comparator disagrees with the expectation, so the differential "+
 					"below is measuring the wrong thing\n  query: %s", shape.pred, ref, want, refQ)
 			}
-			if !floatOrderingSameOrder(got, ref) {
+			if !testkit.FloatOrderingSameOrder(got, ref) {
 				t.Errorf("DIFFERENTIAL MISMATCH on %q: indexed=%v unindexed oracle=%v\n"+
 					"  idx query: %s\n  idx plan:  %s", shape.pred, got, ref, idxQ, idxPlan)
 			}
@@ -204,10 +206,10 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL(t *testing.T) {
 	// that only ever scans ascending cannot tell them apart.
 	t.Run("descending_scan_keeps_the_whole_row_set", func(t *testing.T) {
 		q := "SELECT id FROM fi WHERE a = 1 AND e > -2.0 ORDER BY e DESC, id DESC"
-		plan := floatOrderingExplain(t, db, ctx, q)
-		got := floatOrderingIDs(t, db, ctx, q)
+		plan := testkit.FloatOrderingExplain(t, db, ctx, q)
+		got := testkit.FloatOrderingIDs(t, db, ctx, q)
 		want := floatRangeSorted([]int64{5, 20, 30, 40, 50, 60, 70})
-		if !floatOrderingSameOrder(floatRangeSorted(got), want) {
+		if !testkit.FloatOrderingSameOrder(floatRangeSorted(got), want) {
 			t.Errorf("descending scan returned the row SET %v, want %v\n  query: %s\n  plan: %s",
 				floatRangeSorted(got), want, q, plan)
 		}
@@ -239,18 +241,18 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL(t *testing.T) {
 // the obvious `g * -1.0` route yields a POSITIVE NaN and does not work).
 func TestFDB_FloatRangePredicate_IsExactThroughSQL_Float32(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_frrl32")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_frrl32")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE frrl32 "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_frrl32")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_frrl32")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE frrl32 "+
 		"CREATE TABLE gi (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE go_ (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX gi_ag ON gi (a, g)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_frrl32/s WITH TEMPLATE frrl32")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FRRL32?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_frrl32/s WITH TEMPLATE frrl32")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FRRL32?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -262,11 +264,11 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL_Float32(t *testing.T) {
 	// the FLOAT lane: 3e38*10 saturates to +Inf in float32, 3e38*-10 to -Inf,
 	// and their sum is the default quiet NaN with the sign bit SET.
 	for _, tbl := range []string{"gi", "go_"} {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf(
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 			"INSERT INTO %s (id, g, h, a) VALUES (20, CAST(-1.5 AS FLOAT), 1.0e308, 1), (30, CAST(-0.0 AS FLOAT), 1.0e308, 1), "+
 				"(40, CAST(0.0 AS FLOAT), 1.0e308, 1), (50, CAST(1.5 AS FLOAT), 1.0e308, 1), (70, CAST(1.0 AS FLOAT), 1.0e308, 1), (5, CAST(0.0 AS FLOAT), 1.0e308, 1)", tbl))
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("UPDATE %s SET g = CAST('NaN' AS FLOAT) WHERE id = 5", tbl))
-		mwjoMustExec(t, db, ctx, fmt.Sprintf(
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("UPDATE %s SET g = CAST('NaN' AS FLOAT) WHERE id = 5", tbl))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 			"UPDATE %s SET g = (CAST(3.0E38 AS FLOAT) * CAST(10.0 AS FLOAT)) + (CAST(3.0E38 AS FLOAT) * CAST(-10.0 AS FLOAT)) WHERE id = 70", tbl))
 
 		// Vacuity guard: without a stored NEGATIVE NaN the physically-first
@@ -304,18 +306,18 @@ func TestFDB_FloatRangePredicate_IsExactThroughSQL_Float32(t *testing.T) {
 		t.Run(strings.NewReplacer(" ", "_", ">", "gt", "<", "lt", ".", "_").Replace(shape.pred), func(t *testing.T) {
 			idxQ := fmt.Sprintf("SELECT id FROM gi WHERE a = 1 AND %s ORDER BY id", shape.pred)
 			refQ := fmt.Sprintf("SELECT id FROM go_ WHERE a = 1 AND %s ORDER BY id", shape.pred)
-			idxPlan := floatOrderingExplain(t, db, ctx, idxQ)
+			idxPlan := testkit.FloatOrderingExplain(t, db, ctx, idxQ)
 			if !strings.Contains(strings.ToUpper(idxPlan), "GI_AG") {
 				t.Fatalf("the indexed side did not take index GI_AG\n  query: %s\n  plan: %s", idxQ, idxPlan)
 			}
-			got := floatOrderingIDs(t, db, ctx, idxQ)
-			ref := floatOrderingIDs(t, db, ctx, refQ)
+			got := testkit.FloatOrderingIDs(t, db, ctx, idxQ)
+			ref := testkit.FloatOrderingIDs(t, db, ctx, refQ)
 			want := floatRangeSorted(shape.want)
-			if !floatOrderingSameOrder(got, want) {
+			if !testkit.FloatOrderingSameOrder(got, want) {
 				t.Errorf("FLOAT (32-bit) indexed scan of %q returned %v, want %v — %s\n  plan: %s",
 					shape.pred, got, want, shape.why, idxPlan)
 			}
-			if !floatOrderingSameOrder(got, ref) {
+			if !testkit.FloatOrderingSameOrder(got, ref) {
 				t.Errorf("FLOAT (32-bit) DIFFERENTIAL MISMATCH on %q: indexed=%v oracle=%v\n  plan: %s",
 					shape.pred, got, ref, idxPlan)
 			}

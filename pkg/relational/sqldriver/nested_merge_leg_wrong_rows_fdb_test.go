@@ -74,6 +74,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // twoSourceFoldWant is the TWO-source control's answer, stated independently of
@@ -102,12 +104,12 @@ var nestedMergeWant = []string{"901|true", "902|false"}
 
 func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nested_merge_leg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nested_merge_leg")
+	setup := testkit.OpenDB(t, "/FRL/testdb_nested_merge_leg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nested_merge_leg")
 	// Widths 3 / 2 / 4 — all DISTINCT — and K declared in BOTH ta and tc. See the
 	// header for why each is load-bearing.
 	//
@@ -117,24 +119,24 @@ func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 	// address pinned on a JOIN KEY is pinned by name and not by value: a window
 	// misreading TB.BID as TA.AID or TC.CID returns identical rows. Giving TB a
 	// BV column (301-302) means all four asserted addresses discriminate.
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nested_merge_leg "+
 			"CREATE TABLE ta (aid BIGINT, k BIGINT, av BIGINT, PRIMARY KEY (aid)) "+
 			"CREATE TABLE tb (bid BIGINT, bv BIGINT, PRIMARY KEY (bid)) "+
 			"CREATE TABLE tc (cid BIGINT, k BIGINT, cv BIGINT, cw BIGINT, PRIMARY KEY (cid)) "+
 			"CREATE TABLE tp (pid BIGINT, owner BIGINT, PRIMARY KEY (pid))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nested_merge_leg/s WITH TEMPLATE nested_merge_leg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTED_MERGE_LEG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nested_merge_leg/s WITH TEMPLATE nested_merge_leg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTED_MERGE_LEG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO ta (aid, k, av) VALUES (1, 101, 201), (2, 102, 202)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tb (bid, bv) VALUES (1, 301), (2, 302)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tc (cid, k, cv, cw) VALUES (1, 901, 951, 971), (2, 902, 952, 972)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tp (pid, owner) VALUES (401, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ta (aid, k, av) VALUES (1, 101, 201), (2, 102, 202)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tb (bid, bv) VALUES (1, 301), (2, 302)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tc (cid, k, cv, cw) VALUES (1, 901, 951, 971), (2, 902, 952, 972)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tp (pid, owner) VALUES (401, 1)")
 
 	// scanPairs reads (value, flag) rows as "value|flag", so a wrong COLUMN and a
 	// wrong EXISTS answer are both visible in one comparison.
@@ -256,31 +258,31 @@ func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 // entire cross product and its multiplicities, not just the source read by EXISTS.
 func TestFDB_PredicateFreeCommaJoinProjectedExists(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nested_merge_nopred")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nested_merge_nopred")
+	setup := testkit.OpenDB(t, "/FRL/testdb_nested_merge_nopred")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nested_merge_nopred")
 	// The SAME shape as the probe above, so the only difference between the two
 	// tests is the presence of the join predicates.
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nested_merge_nopred "+
 			"CREATE TABLE ta (aid BIGINT, k BIGINT, av BIGINT, PRIMARY KEY (aid)) "+
 			"CREATE TABLE tb (bid BIGINT, bv BIGINT, PRIMARY KEY (bid)) "+
 			"CREATE TABLE tc (cid BIGINT, k BIGINT, cv BIGINT, cw BIGINT, PRIMARY KEY (cid)) "+
 			"CREATE TABLE tp (pid BIGINT, owner BIGINT, PRIMARY KEY (pid))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nested_merge_nopred/s WITH TEMPLATE nested_merge_nopred")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTED_MERGE_NOPRED?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nested_merge_nopred/s WITH TEMPLATE nested_merge_nopred")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTED_MERGE_NOPRED?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO ta (aid, k, av) VALUES (1, 101, 201)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tb (bid, bv) VALUES (1, 301)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tc (cid, k, cv, cw) VALUES (1, 901, 951, 971)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tp (pid, owner) VALUES (401, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ta (aid, k, av) VALUES (1, 101, 201)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tb (bid, bv) VALUES (1, 301)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tc (cid, k, cv, cw) VALUES (1, 901, 951, 971)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tp (pid, owner) VALUES (401, 1)")
 
 	const query = `SELECT tc.k, EXISTS (SELECT 1 FROM tp WHERE tp.owner = ta.aid) FROM ta, tb, tc`
 	check := func(want ...string) {
@@ -310,12 +312,12 @@ func TestFDB_PredicateFreeCommaJoinProjectedExists(t *testing.T) {
 	}
 	// The original one-row reproducer also pins TC.K's nonzero ordinal.
 	check("901=true")
-	mwjoMustExec(t, db, ctx, "INSERT INTO ta (aid, k, av) VALUES (2, 102, 202)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tb (bid, bv) VALUES (2, 302)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tc (cid, k, cv, cw) VALUES (2, 902, 952, 972)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ta (aid, k, av) VALUES (2, 102, 202)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tb (bid, bv) VALUES (2, 302)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tc (cid, k, cv, cw) VALUES (2, 902, 952, 972)")
 	// TA determines truth, TC the value, and unused TB still doubles each pair.
 	check("901=true", "901=true", "902=true", "902=true", "901=false", "901=false", "902=false", "902=false")
-	mwjoMustExec(t, db, ctx, "DELETE FROM tp")
+	testkit.MustExecCtx(t, db, ctx, "DELETE FROM tp")
 	check("901=false", "901=false", "901=false", "901=false", "902=false", "902=false", "902=false", "902=false")
 }
 

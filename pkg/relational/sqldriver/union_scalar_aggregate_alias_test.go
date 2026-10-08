@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_UnionScalarAggregateAlias is the RFC-080/RFC-078 end-to-end
@@ -15,26 +17,26 @@ import (
 // coverage lives later in this file.
 func TestFDB_UnionScalarAggregateAlias(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	// `withidx` has an ungrouped COUNT(*) index, which serves its scalar COUNT(*)
 	// as Java's does.
-	db := setupPlanShapeDB(t, "usaa",
+	db := testkit.SetupPlanShapeDB(t, "usaa",
 		"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE withidx (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_withidx AS SELECT COUNT(*) FROM withidx")
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1, 10), (2, 20)")     // count=2, sum=30
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (3, 30)")              // count=1, sum=30
-	mwjoMustExec(t, db, ctx, "INSERT INTO withidx VALUES (1, 1), (2, 2)") // count=2
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1, 10), (2, 20)")     // count=2, sum=30
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (3, 30)")              // count=1, sum=30
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO withidx VALUES (1, 1), (2, 2)") // count=2
 
 	// The scalar COUNT(*) over withidx reads its ungrouped index, and as a bare
 	// union branch it resolves by the first branch's name like a streaming one.
-	if plan := planExplainVia(t, ctx, db, "SELECT COUNT(*) AS x FROM withidx"); !strings.Contains(plan, "AggregateIndex(COUNT, CNT_WITHIDX") {
+	if plan := testkit.ExplainVia(t, ctx, db, "SELECT COUNT(*) AS x FROM withidx"); !strings.Contains(plan, "AggregateIndex(COUNT, CNT_WITHIDX") {
 		t.Fatalf("ungrouped scalar COUNT(*) must read its ungrouped COUNT(*) index, got: %s", plan)
 	}
 	assertInt64Set(t, db, ctx,
@@ -86,12 +88,12 @@ func TestFDB_UnionScalarAggregateAlias(t *testing.T) {
 // union's columns, NOT a standalone derived table in FROM. So this uses the join form.
 func TestFDB_UnionGroupedAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ugag",
+	db := testkit.SetupPlanShapeDB(t, "ugag",
 		"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g "+
@@ -101,14 +103,14 @@ func TestFDB_UnionGroupedAggregate(t *testing.T) {
 			"CREATE INDEX sum_by_h AS SELECT SUM(v) FROM gb GROUP BY h "+
 			"CREATE INDEX sum_by_h_nn AS SELECT COUNT(v) FROM gb GROUP BY h "+
 			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, db, ctx, "INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
 
 	// The single-aggregate grouped branch DOES plan as AggregateIndex — the
 	// realization whose row the translator's normalization projection reads by
 	// ordinal; pinned so the case below exercises that plan and not StreamingAgg.
-	if plan := planExplainVia(t, ctx, db, "SELECT g, COUNT(*) FROM ga GROUP BY g"); !strings.Contains(plan, "AggregateIndex") {
+	if plan := testkit.ExplainVia(t, ctx, db, "SELECT g, COUNT(*) FROM ga GROUP BY g"); !strings.Contains(plan, "AggregateIndex") {
 		t.Fatalf("grouped aggregate must plan as AggregateIndex (RFC-081 premise), got: %s", plan)
 	}
 
@@ -129,7 +131,7 @@ func TestFDB_UnionGroupedAggregate(t *testing.T) {
 	miQuery := "WITH u AS (SELECT g, COUNT(*), SUM(v) FROM ga WHERE g = 100 GROUP BY g " +
 		"UNION ALL SELECT h, COUNT(*), SUM(v) FROM gb WHERE h = 100 GROUP BY h) " +
 		"SELECT c.w FROM u, c WHERE u.g = c.id"
-	if plan := planExplainVia(t, ctx, db, miQuery); !strings.Contains(plan, "MultiIntersection(") {
+	if plan := testkit.ExplainVia(t, ctx, db, miQuery); !strings.Contains(plan, "MultiIntersection(") {
 		t.Fatalf("filtered grouped multi-aggregate branch must plan as the multi-aggregate merge (exercises the MI arm), got: %s", plan)
 	}
 	assertInt64Set(t, db, ctx, miQuery, []int64{1, 1})
@@ -141,30 +143,30 @@ func TestFDB_UnionGroupedAggregate(t *testing.T) {
 // no longer diverge from the logical COUNT(1) label.
 func TestFDB_UnionGroupedCountConstant(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ugcc",
+	db := testkit.SetupPlanShapeDB(t, "ugcc",
 		"CREATE TABLE ga (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g "+
 			"CREATE TABLE gb (id BIGINT, h BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_h AS SELECT COUNT(*) FROM gb GROUP BY h "+
 			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, db, ctx, "INSERT INTO ga VALUES (1, 100), (2, 100), (3, 200)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100), (20, 300)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ga VALUES (1, 100), (2, 100), (3, 200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO gb VALUES (10, 100), (20, 300)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
 
 	// COUNT(1) still matches the count-star index; correctness therefore proves
 	// the Project boundary, rather than accidentally avoiding the divergent
 	// physical realization.
-	if plan := planExplainVia(t, ctx, db, "SELECT g, COUNT(1) FROM ga GROUP BY g"); !strings.Contains(plan, "AggregateIndex") {
+	if plan := testkit.ExplainVia(t, ctx, db, "SELECT g, COUNT(1) FROM ga GROUP BY g"); !strings.Contains(plan, "AggregateIndex") {
 		t.Fatalf("grouped COUNT(1) must match the count-star AggregateIndex (premise), got: %s", plan)
 	}
 	cc := "WITH u(k,n) AS (SELECT g, COUNT(1) FROM ga GROUP BY g UNION ALL SELECT h, COUNT(1) FROM gb GROUP BY h) " +
 		"SELECT u.k,u.n,c.w FROM u, c WHERE u.k = c.id ORDER BY u.k,u.n DESC"
-	if got, want := collectRows(t, db, cc), [][]any{
+	if got, want := testkit.CollectRows(t, db, cc), [][]any{
 		{int64(100), int64(2), int64(1)},
 		{int64(100), int64(1), int64(1)},
 		{int64(200), int64(1), int64(2)},
@@ -185,22 +187,22 @@ func TestFDB_UnionGroupedCountConstant(t *testing.T) {
 // while each exact output Project reads the native SUM(V) slot by ordinal.
 func TestFDB_UnionQualifiedAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uqag",
+	db := testkit.SetupPlanShapeDB(t, "uqag",
 		"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE gb (id BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, db, ctx, "INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
 
 	qual := "WITH u(k,n) AS (SELECT g, SUM(ga.v) FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) FROM gb GROUP BY h) " +
 		"SELECT u.k,u.n,c.w FROM u, c WHERE u.k = c.id ORDER BY u.k,u.n DESC"
-	if got, want := collectRows(t, db, qual), [][]any{
+	if got, want := testkit.CollectRows(t, db, qual), [][]any{
 		{int64(100), int64(12), int64(1)},
 		{int64(100), int64(1), int64(1)},
 		{int64(200), int64(9), int64(2)},

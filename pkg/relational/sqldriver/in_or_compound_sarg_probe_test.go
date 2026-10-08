@@ -11,29 +11,31 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_InOrCompoundSargProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_insarg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_insarg")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_insarg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_insarg")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE insarg "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_insarg/s WITH TEMPLATE insarg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSARG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_insarg/s WITH TEMPLATE insarg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSARG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// id : (a,b) = (1,100) (2,200) (3,300) (4,400) (5,500) (3,310) (1,110)
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a,b) VALUES (1,1,100),(2,2,200),(3,3,300),(4,4,400),(5,5,500),(6,3,310),(7,1,110)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,a,b) VALUES (1,1,100),(2,2,200),(3,3,300),(4,4,400),(5,5,500),(6,3,310),(7,1,110)")
 
 	ids := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

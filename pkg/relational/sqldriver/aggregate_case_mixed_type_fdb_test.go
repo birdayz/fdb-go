@@ -12,21 +12,23 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateMinMax_MixedTypeCaseOperand(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aggmixed")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggmixed")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggmixed")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggmixed")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggmixed "+
 			"CREATE TABLE mixed (id BIGINT, g BIGINT, flag BIGINT, d DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggmixed/s WITH TEMPLATE aggmixed")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGMIXED?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggmixed/s WITH TEMPLATE aggmixed")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGMIXED?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -38,7 +40,7 @@ func TestFDB_AggregateMinMax_MixedTypeCaseOperand(t *testing.T) {
 	// Group 2: THEN (float64 2.5) arrives FIRST, ELSE (int64 0) second — the
 	// pre-fix SILENT-DROP order (asInt64(float64) failed, MIN stayed 2.5).
 	// The base-record scan is PK-ordered, so id order IS arrival order.
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO mixed (id, g, flag, d) VALUES "+
 			"(1, 1, 0, 9.9), (2, 1, 1, 1.5), "+
 			"(3, 2, 1, 2.5), (4, 2, 0, 9.9)")

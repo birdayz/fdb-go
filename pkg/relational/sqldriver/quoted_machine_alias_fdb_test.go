@@ -19,29 +19,31 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_QuotedMachineShapedAliases(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_qmsa")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_qmsa")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_qmsa")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_qmsa")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE qmsa CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 			" CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))"+
 			" CREATE TABLE sink (sid BIGINT, PRIMARY KEY (sid))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_qmsa/s WITH TEMPLATE qmsa")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_QMSA?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_qmsa/s WITH TEMPLATE qmsa")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_QMSA?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO p VALUES (1, 10), (2, 20)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO q VALUES (5), (7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO p VALUES (1, 10), (2, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO q VALUES (5), (7)")
 
 	ints := func(t *testing.T, q string) []int64 {
 		t.Helper()

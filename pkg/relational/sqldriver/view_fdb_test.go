@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -14,9 +16,9 @@ import (
 func TestFDB_Views(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_views")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_views")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE views_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_views")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_views")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE views_tmpl "+
 		"CREATE TABLE T (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE VIEW V1 AS SELECT id, v FROM T WHERE g > 0 "+
 		"CREATE VIEW V2 AS SELECT id FROM V1 WHERE v < 10 "+
@@ -24,13 +26,13 @@ func TestFDB_Views(t *testing.T) {
 		`CREATE INDEX "q_idx" ON "q_view" ("k") `+
 		"CREATE VIEW AGG AS SELECT g, MAX_EVER(v) AS m FROM T GROUP BY g "+
 		"CREATE INDEX AGG_IDX ON AGG (m, g)")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_views/s WITH TEMPLATE views_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_VIEWS?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_views/s WITH TEMPLATE views_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_VIEWS?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO T VALUES (1, 1, 5), (2, 0, 5), (3, 1, 50), (4, 2, 7)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO T VALUES (1, 1, 5), (2, 0, 5), (3, 1, 50), (4, 2, 7)")
 
 	for q, want := range map[string]string{
 		"SELECT id FROM V1 ORDER BY id":                                "[1 3 4]",

@@ -11,16 +11,18 @@ import (
 	"errors"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_StatementOptions_PlanCache(t *testing.T) {
 	t.Parallel()
-	_, db := setupCascadesTestDB(t)
+	_, db := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
-	logger := &syncCaptureLogger{}
-	conn := installLogger(t, db, logger)
+	logger := &testkit.SyncCaptureLogger{}
+	conn := testkit.InstallLogger(t, db, logger)
 
 	run := func(q string) []byte {
 		t.Helper()
@@ -31,7 +33,7 @@ func TestFDB_StatementOptions_PlanCache(t *testing.T) {
 		return out
 	}
 	lastCache := func() embedded.PlanCacheEvent {
-		events := logger.snapshot()
+		events := logger.Snapshot()
 		return events[len(events)-1].Cache
 	}
 
@@ -74,7 +76,7 @@ func TestFDB_StatementOptions_PlanCache(t *testing.T) {
 
 func TestFDB_StatementOptions_Placement(t *testing.T) {
 	t.Parallel()
-	_, db := setupCascadesTestDB(t)
+	_, db := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 	for _, q := range []string{
 		"SELECT item_id FROM (SELECT item_id FROM Item OPTIONS (NOCACHE)) AS X",
@@ -98,7 +100,7 @@ func TestFDB_StatementOptions_Placement(t *testing.T) {
 // does.
 func TestFDB_StatementOptions_SnapshotRead(t *testing.T) {
 	t.Parallel()
-	_, db := setupCascadesTestDB(t)
+	_, db := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	attempt := func(opts string, id int) error {
@@ -144,7 +146,7 @@ func TestFDB_StatementOptions_SnapshotRead(t *testing.T) {
 // options.
 func TestFDB_StatementOptions_SnapshotRefusedOnDML(t *testing.T) {
 	t.Parallel()
-	_, db := setupCascadesTestDB(t)
+	_, db := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 	unsupported := func(err error) bool {
 		var apiErr *api.Error
@@ -154,7 +156,7 @@ func TestFDB_StatementOptions_SnapshotRefusedOnDML(t *testing.T) {
 		t.Fatalf("INSERT with SNAPSHOT: want 0A000, got %v", err)
 	}
 
-	snap := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	snap := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptIsolationLevelSnapshot, true).Build())
 	})
 	if _, err := snap.ExecContext(ctx, "UPDATE Item SET price = 2 WHERE item_id = 1"); !unsupported(err) {
@@ -165,7 +167,7 @@ func TestFDB_StatementOptions_SnapshotRefusedOnDML(t *testing.T) {
 		t.Fatalf("SELECT on a SNAPSHOT connection: %v", err)
 	}
 
-	dry := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	dry := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptDryRun, true).Build())
 	})
 	if _, err := dry.ExecContext(ctx, "INSERT INTO Item VALUES (501, 'x', 1)"); err != nil {
@@ -182,9 +184,9 @@ func TestFDB_StatementOptions_SnapshotRefusedOnDML(t *testing.T) {
 // measured in the WS-E oracle's snapshot_connection_* rows).
 func TestFDB_StatementOptions_SnapshotAdmitsOnlyReads(t *testing.T) {
 	t.Parallel()
-	_, db := setupCascadesTestDB(t)
+	_, db := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
-	snap := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	snap := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptIsolationLevelSnapshot, true).Build())
 	})
 	for _, q := range []string{

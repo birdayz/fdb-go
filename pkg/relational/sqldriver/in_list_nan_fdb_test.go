@@ -5,25 +5,27 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // An IN list deduplicates by SQL `=`, under which every NaN equals every NaN.
 func TestFDB_InListNaN(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_in_nan")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_nan")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE in_nan_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_in_nan")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_nan")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE in_nan_tmpl "+
 		"CREATE TABLE F (id BIGINT, f DOUBLE, PRIMARY KEY (id)) CREATE INDEX F_F ON F (f) "+
 		"CREATE TABLE G (id BIGINT, f DOUBLE, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_nan/s WITH TEMPLATE in_nan_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_NAN?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_nan/s WITH TEMPLATE in_nan_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_NAN?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 	for _, tbl := range []string{"F", "G"} {
-		mustExec(t, db, ctx, "INSERT INTO "+tbl+" VALUES (1, 0.0), (3, 1.5), (4, CAST('NaN' AS DOUBLE))")
+		testkit.MustExec(t, db, ctx, "INSERT INTO "+tbl+" VALUES (1, 0.0), (3, 1.5), (4, CAST('NaN' AS DOUBLE))")
 	}
 	for _, tbl := range []string{"F", "G"} {
 		for q, want := range map[string]string{

@@ -17,26 +17,28 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ArithPrecedenceProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_arithprec")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_arithprec")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_arithprec")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_arithprec")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE arithprec CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_arithprec/s WITH TEMPLATE arithprec")
-	dsn := "fdbsql:///FRL/TESTDB_ARITHPREC?cluster_file=" + clusterFilePath + "&schema=S"
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_arithprec/s WITH TEMPLATE arithprec")
+	dsn := "fdbsql:///FRL/TESTDB_ARITHPREC?cluster_file=" + testkit.ClusterFile() + "&schema=S"
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 3)")
 
 	scalar := func(expr string) int64 {
 		var v int64

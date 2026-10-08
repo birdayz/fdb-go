@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -15,17 +17,17 @@ import (
 func TestFDB_UUIDJavaStringForms(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uuid_forms")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuid_forms")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uuid_forms_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_uuid_forms")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uuid_forms")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uuid_forms_tmpl "+
 		"CREATE TABLE U (id BIGINT, u UUID, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuid_forms/s WITH TEMPLATE uuid_forms_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUID_FORMS?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uuid_forms/s WITH TEMPLATE uuid_forms_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UUID_FORMS?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO U VALUES (0, '123e4567-e89b-12d3-a456-426614174000')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO U VALUES (0, '123e4567-e89b-12d3-a456-426614174000')")
 
 	id := int64(0)
 	for in, want := range map[string]string{

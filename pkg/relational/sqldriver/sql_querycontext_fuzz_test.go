@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // FuzzSQL_QueryContext closes the execution half of the P0.3-F gap: an arbitrary
@@ -21,13 +23,13 @@ import (
 // the seed corpus runs in CI while active fuzzing is opt-in. The db/sql boundary
 // recover remains the production backstop; this narrows, the recover guarantees.
 func FuzzSQL_QueryContext(f *testing.F) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		f.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/fuzz_qctx"
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFilePath))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		f.Fatalf("open setup conn: %v", err)
 	}
@@ -40,7 +42,7 @@ func FuzzSQL_QueryContext(f *testing.F) {
 		"CREATE TABLE t (id BIGINT, name STRING, amount BIGINT, PRIMARY KEY (id))")
 	_, _ = setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE fuzz_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		f.Fatalf("open query conn: %v", err)
 	}

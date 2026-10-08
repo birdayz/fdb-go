@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -17,22 +19,22 @@ import (
 // one yields its value, and multiple rows raise the scalar cardinality error.
 func TestFDB_ScalarDerivedSources(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_scalar_derived_decline"
-	setup := openTestDB(t, dbPath)
-	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sdd_tmpl "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sdd_tmpl "+
 		"CREATE TABLE ord (order_id BIGINT, cust_id BIGINT, PRIMARY KEY (order_id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE sdd_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE sdd_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mustExec(t, db, ctx, "INSERT INTO ord VALUES (1, 10), (2, 20)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO ord VALUES (1, 10), (2, 20)")
 
 	queryRows := func(t *testing.T, q string) []string {
 		t.Helper()
@@ -119,6 +121,6 @@ func TestFDB_ScalarDerivedSources(t *testing.T) {
 			qerr = rows.Err()
 			rows.Close()
 		}
-		requireSQLSTATE(t, qerr, api.ErrCodeCardinalityViolation)
+		testkit.RequireSQLSTATE(t, qerr, api.ErrCodeCardinalityViolation)
 	})
 }

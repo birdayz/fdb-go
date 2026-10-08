@@ -12,26 +12,28 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_PipeOperatorProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_pipeop")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pipeop")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_pipeop")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pipeop")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE pipeop CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pipeop/s WITH TEMPLATE pipeop")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PIPEOP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pipeop/s WITH TEMPLATE pipeop")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PIPEOP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b, s) VALUES (1, 1, 2, 'x')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b, s) VALUES (1, 1, 2, 'x')")
 
 	t.Run("pipe_is_logical_or", func(t *testing.T) {
 		var v bool

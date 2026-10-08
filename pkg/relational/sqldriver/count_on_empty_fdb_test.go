@@ -3,6 +3,8 @@ package sqldriver_test
 import (
 	"context"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // An ungrouped COUNT is COALESCE(count, 0) (Java's adjustCountOnEmpty), NOT
@@ -10,7 +12,7 @@ import (
 // HAVING-only aggregate query may project constants.
 func TestFDB_CountOnEmpty(t *testing.T) {
 	t.Parallel()
-	db := setupPlanShapeDB(t, "cnt", `CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id)) CREATE TABLE e (id BIGINT, g BIGINT, PRIMARY KEY (id))`)
+	db := testkit.SetupPlanShapeDB(t, "cnt", `CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id)) CREATE TABLE e (id BIGINT, g BIGINT, PRIMARY KEY (id))`)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, `INSERT INTO t VALUES (1, 1), (2, 1), (3, 2)`); err != nil {
 		t.Fatal(err)

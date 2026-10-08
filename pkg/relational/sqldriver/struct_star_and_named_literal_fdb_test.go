@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -27,12 +29,12 @@ import (
 //     (RecordConstructorValue.java:485-487, Type.java:2221-2223).
 func TestFDB_StructStarAndNamedLiteral(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/structstar")
+	setup := testkit.OpenDB(t, "/FRL/structstar")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/structstar"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -46,7 +48,7 @@ func TestFDB_StructStarAndNamedLiteral(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/structstar/s WITH TEMPLATE ss_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/STRUCTSTAR?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/STRUCTSTAR?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -37,12 +39,12 @@ import (
 // applicable) AND the exact rows.
 func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -286,7 +288,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		for i, v := range vals {
 			pvals[i] = protoreflect.ValueOfInt32(v)
 		}
-		setArrayField(m, fd, pvals...)
+		testkit.SetArrayField(m, fd, pvals...)
 	}
 	setStrArrD := func(m *dynamicpb.Message, d protoreflect.MessageDescriptor, name string, vals []string) {
 		fd := d.Fields().ByName(protoreflect.Name(name))
@@ -294,7 +296,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		for i, v := range vals {
 			pvals[i] = protoreflect.ValueOfString(v)
 		}
-		setArrayField(m, fd, pvals...)
+		testkit.SetArrayField(m, fd, pvals...)
 	}
 	setStrArr := func(m *dynamicpb.Message, name string, vals []string) {
 		setStrArrD(m, desc, name, vals)
@@ -633,7 +635,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				// SLOT order, not sorted map keys: the sorted form re-sorted a
 				// permuted row to the identical string and had already lost any
 				// duplicate output name last-wins.
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -655,7 +657,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		t.Helper()
 		explain, got := query(t, sql)
 		sort.Strings(want)
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("query %q\n got=%v\nwant=%v\nplan=%s", sql, got, want, explain)
 		}
 		return explain
@@ -666,7 +668,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	assertRowsOrdered := func(t *testing.T, sql string, want []string) string {
 		t.Helper()
 		explain, got := queryOrdered(t, sql)
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("ordered query %q\n got=%v\nwant=%v\nplan=%s", sql, got, want, explain)
 		}
 		return explain
@@ -686,7 +688,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
-		got := queryLabels(t, sql, md)
+		got := testkit.QueryLabels(t, sql, md)
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("columns %q\n got=%v\nwant=%v\nplan=%s", sql, got, want, plan.Explain())
 		}
@@ -875,7 +877,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		}
 		sort.Strings(got)
 		want := []string{"1:2", "2:2", "2:3", "2:4"}
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("computed ordinal\n got=%v\nwant=%v", got, want)
 		}
 	})
@@ -1789,7 +1791,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				// SLOT order, not sorted map keys: the sorted form re-sorted a
 				// permuted row to the identical string and had already lost any
 				// duplicate output name last-wins.
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -1802,7 +1804,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	assertOrderedRows := func(t *testing.T, sql string, want []string) string {
 		t.Helper()
 		explain, got := orderedQuery(t, sql)
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("query %q\n got=%v\nwant=%v\nplan=%s", sql, got, want, explain)
 		}
 		return explain
@@ -2227,7 +2229,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			}
 			for _, r := range rows {
 				m, _ := executor.RowValue(r).(map[string]any)
-				got = append(got, unnestSprint(m["X"]))
+				got = append(got, testkit.UnnestSprint(m["X"]))
 			}
 			return nil, nil
 		})
@@ -2236,7 +2238,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		}
 		sort.Strings(got)
 		want := []string{"10", "11", "12"}
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Errorf("multi-table-inner element conjunct returned WRONG rows silently: %v (want the loud decline or exactly %v)", got, want)
 		}
 	})
@@ -2893,7 +2895,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				// SLOT order, not sorted map keys: the sorted form re-sorted a
 				// permuted row to the identical string and had already lost any
 				// duplicate output name last-wins.
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -2908,7 +2910,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		t.Helper()
 		explain, got := querySchema(t, sql, schemaName)
 		sort.Strings(want)
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("query %q (schema %s)\n got=%v\nwant=%v\nplan=%s", sql, schemaName, got, want, explain)
 		}
 		return explain
@@ -4168,7 +4170,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			if !strings.Contains(plan.Explain(), "FlatMap(outer=Scan(WSRC), inner=Explode(field") {
 				t.Fatalf("multi-source SELECT * %q must gather positionally (FlatMap-over-Explode over WSRC); plan=%s", sql, plan.Explain())
 			}
-			if got := queryLabels(t, sql, md); fmt.Sprintf("%v", got) != fmt.Sprintf("%v", wantCols) {
+			if got := testkit.QueryLabels(t, sql, md); fmt.Sprintf("%v", got) != fmt.Sprintf("%v", wantCols) {
 				t.Fatalf("star columns %q\n got=%v\nwant=%v\nplan=%s", sql, got, wantCols, plan.Explain())
 			}
 			defs := embedded.ResultColumnDefsForPlan(plan)
@@ -4193,7 +4195,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 						if vErr != nil {
 							return nil, vErr
 						}
-						parts[i] = unnestSprint(v)
+						parts[i] = testkit.UnnestSprint(v)
 					}
 					got = append(got, strings.Join(parts, "|"))
 				}
@@ -4204,7 +4206,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			}
 			sort.Strings(got)
 			sort.Strings(wantRows)
-			if !unnestEqualStrs(got, wantRows) {
+			if !testkit.UnnestEqualStrs(got, wantRows) {
 				t.Fatalf("star rows %q\n got=%v\nwant=%v\nplan=%s", sql, got, wantRows, plan.Explain())
 			}
 		}
@@ -4497,7 +4499,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if len(aliased) == 0 {
 			t.Fatal("aliased WITH-CTE unnest returned zero rows — the range alias was falsely rejected")
 		}
-		if !unnestEqualStrs(aliased, unaliased) {
+		if !testkit.UnnestEqualStrs(aliased, unaliased) {
 			t.Fatalf("aliased WITH-CTE unnest rows %v != unaliased control %v — the range alias must be transparent", aliased, unaliased)
 		}
 	})
@@ -4518,7 +4520,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		if len(hidden) == 0 {
 			t.Fatal("hidden-body scope leak: the resolver crossed into the derived body and mis-resolved the owner")
 		}
-		if !unnestEqualStrs(hidden, plain) {
+		if !testkit.UnnestEqualStrs(hidden, plain) {
 			t.Fatalf("hidden-body D=%v != no-shadow control=%v — a same-aliased body scan must be out of scope", hidden, plain)
 		}
 	})
@@ -4574,7 +4576,7 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 	}
 	colLabelsOf := func(t *testing.T, sql string) []string {
 		t.Helper()
-		return queryLabels(t, sql, md)
+		return testkit.QueryLabels(t, sql, md)
 	}
 
 	// atProjType plans `sql` and returns the planned VALUE for the projection
@@ -4732,7 +4734,7 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 		if perr != nil {
 			t.Fatalf("plan %q: %v", sql, perr)
 		}
-		return queryLabels(t, sql, md),
+		return testkit.QueryLabels(t, sql, md),
 			embedded.ResultColumnNullabilityForPlan(plan)
 	}
 
@@ -4786,7 +4788,7 @@ func assertRejected(t *testing.T, md *recordlayer.RecordMetaData, sql string, wa
 	if err == nil {
 		t.Fatalf("query %q: expected rejection %v, got nil", sql, want)
 	}
-	apiErr := asAPIError(err)
+	apiErr := testkit.AsAPIError(err)
 	if apiErr == nil || apiErr.Code != want {
 		t.Fatalf("query %q: err = %v (%T), want code %v", sql, err, err, want)
 	}
@@ -4882,144 +4884,6 @@ func unnestSortHasCurrentOrdinal(plan plans.RecordQueryPlan, ordinal int) bool {
 	return found
 }
 
-func unnestSprint(v any) string {
-	switch x := v.(type) {
-	case nil:
-		return "<nil>"
-	case string:
-		return x
-	case *executor.PositionalRow:
-		return unnestOrdinalRecordSprint(x)
-	}
-	// A SLICE slot is rendered element-wise rather than handed to fmt whole.
-	//
-	// fmt.Sprint flattens a composite to one blob — `[]any{"a  b"}` becomes
-	// `[a  b]` — and at that point unnestCollapseSpaces cannot tell a prototext
-	// separator from a string's OWN double space, so it rewrites the DATA. That
-	// is reachable here: SARR and STRARR are STRING arrays, and `SELECT *` puts
-	// the whole array in a slot. Rendering element-wise reproduces fmt's exact
-	// slice form ("[" + elements joined by one space + "]") while routing each
-	// element back through this function, so a nested string stays verbatim and
-	// a nested message is still collapsed.
-	//
-	// A Stringer/error is excluded because fmt would call its String method
-	// rather than walk it, and reproducing fmt means deferring to that too.
-	switch v.(type) {
-	case fmt.Stringer, error:
-	default:
-		if rv := reflect.ValueOf(v); rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
-			parts := make([]string, rv.Len())
-			for i := range parts {
-				parts[i] = unnestSprint(rv.Index(i).Interface())
-			}
-			return "[" + strings.Join(parts, " ") + "]"
-		}
-	}
-	return unnestCollapseSpaces(fmt.Sprint(v))
-}
-
-// unnestOrdinalRecordSprint is the structural counterpart of protobuf's text
-// rendering for a record-valued UNNEST element. The executor deliberately
-// keeps such an element as an exact PositionalRow so chained FieldValues can
-// continue to read it by ordinal; test rendering must not leak that Go
-// transport's pointer-bearing fmt form. It renders from the immutable
-// RecordType + slots, preserving field and repeated-element order.
-func unnestOrdinalRecordSprint(row *executor.PositionalRow) string {
-	if row == nil {
-		return "<nil>"
-	}
-	if row.Type == nil || len(row.Type.Fields) != len(row.Slots) {
-		return fmt.Sprintf("<MALFORMED ORDINAL RECORD: type=%v slots=%d>", row.Type, len(row.Slots))
-	}
-	parts := make([]string, 0, len(row.Slots))
-	for i, field := range row.Type.Fields {
-		value := row.Slots[i]
-		if value == nil {
-			continue
-		}
-		if arrayType, ok := field.FieldType.(*values.ArrayType); ok {
-			rv := reflect.ValueOf(value)
-			if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
-				parts = append(parts, field.Name+":"+unnestSprint(value))
-				continue
-			}
-			for j := 0; j < rv.Len(); j++ {
-				element := rv.Index(j).Interface()
-				if arrayType.ElementType != nil && arrayType.ElementType.Code() == values.TypeCodeRecord {
-					parts = append(parts, field.Name+":{"+unnestSprint(element)+"}")
-				} else {
-					parts = append(parts, field.Name+":"+unnestSprint(element))
-				}
-			}
-			continue
-		}
-		if field.FieldType != nil && field.FieldType.Code() == values.TypeCodeRecord {
-			parts = append(parts, field.Name+":{"+unnestSprint(value)+"}")
-			continue
-		}
-		parts = append(parts, field.Name+":"+unnestSprint(value))
-	}
-	return strings.Join(parts, " ")
-}
-
-// unnestCollapseSpaces makes the non-string rendering STABLE ACROSS BUILDS.
-//
-// A row slot can hold a protobuf message (an unnested struct element, a nested
-// repeated field), and fmt renders those through prototext, whose whitespace is
-// deliberately unstable: google.golang.org/protobuf/internal/detrand varies the
-// separator width so that callers cannot depend on the exact bytes. The seed is
-// derived from the binary, so the output is stable WITHIN one test binary and
-// flips the moment anything changes the binary — an expectation written against
-// it passes locally and fails on the next unrelated edit.
-//
-// That instability is why the duplicate-name star row in
-// buried_chained_rotation_fdb_test.go could only be pinned by COUNT: its slots
-// are messages, so no literal could survive a rebuild.
-//
-// WHAT IT CANNOT DISTINGUISH, stated rather than assumed. This collapse operates
-// on a RENDERED string, so a double space that came from the DATA is
-// indistinguishable from one prototext inserted. unnestSprint keeps that reach as
-// small as it can: a top-level string slot is returned raw, and a slice slot is
-// rendered element-wise so its string elements are raw too (both pinned in
-// TestUnnestSprintIsStableAcrossBuilds). What remains is a string nested inside a
-// value fmt renders as ONE blob — a proto message's own string field, a struct
-// field. Its spacing IS collapsed. An earlier version of this note claimed no
-// real text was ever touched; that was false for composites, and this is the
-// honest boundary.
-func unnestCollapseSpaces(s string) string {
-	if !strings.Contains(s, "  ") {
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	prevSpace := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == ' ' {
-			if prevSpace {
-				continue
-			}
-			prevSpace = true
-		} else {
-			prevSpace = false
-		}
-		b.WriteByte(c)
-	}
-	return b.String()
-}
-
-func unnestEqualStrs(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 // TestFDB_ArrayUnnestDMLNonDefaultSchema drives the REAL live DML path (planDML
 // in cascades_generator.go, g.c.sess.Schema) under a NON-DEFAULT session schema
 // `main`, pinning that a schema-qualified comma source inside a DML SELECT/WHERE
@@ -5040,12 +4904,12 @@ func unnestEqualStrs(a, b []string) bool {
 // correct rows. RFC-142.
 func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/ajt_dml_nds"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -5065,7 +4929,7 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 	}
 	// Session schema = `main`, the NON-default schema, over the template
 	// AJT_DML_NDS_TMPL.
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -5186,7 +5050,7 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 		if err == nil {
 			t.Fatalf("DELETE WHERE EXISTS AT-on-table: expected rejection, got nil")
 		}
-		requireSQLSTATE(t, err, api.ErrCodeWrongObjectType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeWrongObjectType)
 	})
 
 	t.Run("INSERT...SELECT with AT-on-table in the SELECT body is WRONG_OBJECT_TYPE", func(t *testing.T) {
@@ -5200,7 +5064,7 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 		if err == nil {
 			t.Fatalf("INSERT...SELECT AT-on-table: expected rejection, got nil")
 		}
-		requireSQLSTATE(t, err, api.ErrCodeWrongObjectType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeWrongObjectType)
 	})
 
 	t.Run("control: DELETE WHERE EXISTS with a genuine subquery affects rows", func(t *testing.T) {
@@ -5320,12 +5184,12 @@ func TestFDB_ArrayUnnestDMLNonDefaultSchema(t *testing.T) {
 // TestFDB_ArrayUnnestDMLDuplicateAlias drives repeated lateral display aliases through DML.
 func TestFDB_ArrayUnnestDMLDuplicateAlias(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/ajt_dml_dupalias"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -5343,7 +5207,7 @@ func TestFDB_ArrayUnnestDMLDuplicateAlias(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE ajt_dml_dupalias_tmpl"); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=S")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=S")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -5367,7 +5231,7 @@ func TestFDB_ArrayUnnestDMLDuplicateAlias(t *testing.T) {
 		if err == nil {
 			t.Fatalf("INSERT...SELECT duplicate unnest alias: expected rejection, got nil (the later U AS V silently overwrote the unnest V)")
 		}
-		requireSQLSTATE(t, err, api.ErrCodeAmbiguousColumn)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeAmbiguousColumn)
 		// DST must be untouched (the INSERT was rejected at plan time, never executed).
 		var cnt int64
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM DST").Scan(&cnt); err != nil {

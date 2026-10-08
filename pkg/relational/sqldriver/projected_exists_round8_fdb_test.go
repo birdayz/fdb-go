@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExists_Round8 pins the two round-8 regressions, both
@@ -30,28 +32,28 @@ import (
 //	   not change any visible column's public label.
 func TestFDB_ProjectedExists_Round8(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_projexists_r8")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r8")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r8_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_projexists_r8")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r8")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r8_tmpl "+
 		"CREATE TABLE t1(id BIGINT, sk BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r8/s WITH TEMPLATE projexists_r8_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r8/s WITH TEMPLATE projexists_r8_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R8?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R8?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
 	// t1.id 1..5; sk DESCENDS as id ascends so ORDER BY t1.sk differs from id order.
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 50), (2, 40), (3, 30), (4, 20), (5, 10)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 50), (2, 40), (3, 30), (4, 20), (5, 10)")
 	// t2 rows reference t1 ids {1,3,5} so the EXISTS boolean alternates.
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (10, 1), (30, 3), (50, 5)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (10, 1), (30, 3), (50, 5)")
 
 	// ════════════════════════════════════════════════════════════════════════
 	// P1: explicit alias == bare leaf, over a JOIN. Both the column metadata AND

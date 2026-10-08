@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -18,7 +20,7 @@ var scalarZeroFixtureID atomic.Uint64
 func TestFDB_ScalarMathSignedZero(t *testing.T) {
 	t.Parallel()
 	name := fmt.Sprintf("scalarzero_%d", scalarZeroFixtureID.Add(1))
-	db := setupErrorTestDB(t, "/FRL/testdb_"+name, name,
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_"+name, name,
 		"CREATE TABLE t (id BIGINT, z DOUBLE, f FLOAT, d DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE TABLE p (id BIGINT, v DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE TABLE q (id BIGINT, n BIGINT, PRIMARY KEY (id)) "+
@@ -28,9 +30,9 @@ func TestFDB_ScalarMathSignedZero(t *testing.T) {
 	// The setup deadline is canceled before parallel children resume. Each
 	// child owns its deadline so waiting for a test slot cannot consume it.
 	defer cancel()
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, -0.0, CAST(-0.0 AS FLOAT), -0.25), (2, 0.0, CAST(0.0 AS FLOAT), 0.0)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO q VALUES (9, 7)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO ints VALUES (1, 5), (2, 6), (3, 5), (4, NULL), (5, 7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1, -0.0, CAST(-0.0 AS FLOAT), -0.25), (2, 0.0, CAST(0.0 AS FLOAT), 0.0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO q VALUES (9, 7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ints VALUES (1, 5), (2, 6), (3, 5), (4, NULL), (5, 7)")
 	var z, f float64
 	if err := db.QueryRowContext(ctx, "SELECT z, f FROM t WHERE id = 1").Scan(&z, &f); err != nil {
 		t.Fatal(err)

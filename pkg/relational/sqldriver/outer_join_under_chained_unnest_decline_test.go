@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
@@ -15,7 +17,7 @@ import (
 // behavior. Planning-only.
 func TestOuterJoinUnderChainedUnnestDeclines(t *testing.T) {
 	t.Parallel()
-	md := buildChainedUnnestMetadata(t)
+	md := testkit.BuildChainedUnnestMetadata(t)
 
 	nested := `FROM T4 AS "A" LEFT JOIN T4 AS "B" ON "A"."ID" + 10 = "B"."ID" LEFT JOIN T4 AS "C" ON "C"."ID" = "A"."ID" + 90`
 	rejects := []struct{ name, sql, wantErr string }{

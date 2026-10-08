@@ -9,27 +9,29 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_LimitOffsetPagingProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_paging")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_paging")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_paging")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_paging")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE paging CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_paging/s WITH TEMPLATE paging")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PAGING?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_paging/s WITH TEMPLATE paging")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PAGING?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	for i := 1; i <= 10; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", i))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", i))
 	}
 
 	page := func(q string) []int64 {

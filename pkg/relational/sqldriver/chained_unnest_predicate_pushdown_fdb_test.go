@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -47,22 +49,22 @@ import (
 // coarse decline: that would regress this shape to silent-`[]` and the pin would fail.
 func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
 	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 
-	md := buildChainedUnnestMetadata(t)
+	md := testkit.BuildChainedUnnestMetadata(t)
 	t4Desc := md.GetRecordType("T4").Descriptor
 	sarrFD := t4Desc.Fields().ByName("SARR")
-	elemDesc := arrayElementMessageDescriptor(sarrFD)
+	elemDesc := testkit.ArrayElementMessageDescriptor(sarrFD)
 
 	mkElem := func(k int64, sub ...int32) protoreflect.Value {
 		m := dynamicpb.NewMessage(elemDesc)
@@ -71,14 +73,14 @@ func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 		for _, s := range sub {
 			subVals = append(subVals, protoreflect.ValueOfInt32(s))
 		}
-		setArrayField(m, elemDesc.Fields().ByName("SUB"), subVals...)
+		testkit.SetArrayField(m, elemDesc.Fields().ByName("SUB"), subVals...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkT4 := func(id int64, sarr ...protoreflect.Value) proto.Message {
 		m := dynamicpb.NewMessage(t4Desc)
 		m.Set(t4Desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(777)) // outer shadow of the element SUB
-		setArrayField(m, sarrFD, sarr...)
+		testkit.SetArrayField(m, sarrFD, sarr...)
 		return m
 	}
 
@@ -125,7 +127,7 @@ func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})

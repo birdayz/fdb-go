@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/conformance/rowdiff"
 )
 
@@ -224,13 +226,13 @@ func coverageFloor(lane string, walked, requested uint64, floor uint64) string {
 
 func TestFDB_RowDiff_Smoke(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/testdb_rowdiff"
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
 
 	// Layer 1: directed template seeds — plan-family hard gate + row diff.
 	for _, tpl := range rowdiff.Templates() {
@@ -240,7 +242,7 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 			if err := rowdiff.CheckTemplateFamily(tpl); err != nil {
 				t.Errorf("family gate: %v", err)
 			}
-			res := rowdiff.RunCase(ctx, setup, dbPath, clusterFilePath, tpl.Case, "tpl"+tpl.Name, 0)
+			res := rowdiff.RunCase(ctx, setup, dbPath, testkit.ClusterFile(), tpl.Case, "tpl"+tpl.Name, 0)
 			reportRowdiff(t, res)
 		})
 	}
@@ -252,7 +254,7 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 		seedStart, seedCount := rowdiffSeedRange(t)
 		runRowdiffSweep(t, "random_seeds", seedStart, seedCount, rowdiffSweepLimits(t),
 			func(seed uint64) *rowdiff.SeedResult {
-				return rowdiff.RunSeed(ctx, setup, dbPath, clusterFilePath, seed)
+				return rowdiff.RunSeed(ctx, setup, dbPath, testkit.ClusterFile(), seed)
 			})
 	})
 }
@@ -358,13 +360,13 @@ func runRowdiffSweep(t *testing.T, lane string, seedStart, seedCount uint64, lim
 // mid-result straddles across DISTINCT / GROUP BY / ORDER BY / joins.
 func TestFDB_RowDiff_Paging(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/testdb_rowdiff_pg"
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
 
 	seedStart, seedCount := rowdiffSeedRange(t)
 	scanLimit := 4
@@ -378,7 +380,7 @@ func TestFDB_RowDiff_Paging(t *testing.T) {
 	t.Logf("rowdiff PAGED: scanLimit=%d", scanLimit)
 	runRowdiffSweep(t, "paging", seedStart, seedCount, rowdiffSweepLimits(t),
 		func(seed uint64) *rowdiff.SeedResult {
-			return rowdiff.RunSeedPaged(ctx, setup, dbPath, clusterFilePath, seed, scanLimit)
+			return rowdiff.RunSeedPaged(ctx, setup, dbPath, testkit.ClusterFile(), seed, scanLimit)
 		})
 }
 

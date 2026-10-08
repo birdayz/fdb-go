@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
@@ -47,40 +49,40 @@ func carryTemplate(t *testing.T, name string, version int, body string) *metadat
 
 // carrySetup stores v1 of `name` from body, binds each schema of dbPath to it,
 // and writes rows(schema) into each (statements run in order).
-func carrySetup(t *testing.T, h *fleetHarness, dbPath, name, body string, schemas []string, rows func(schema string) []string) {
+func carrySetup(t *testing.T, h *testkit.FleetHarness, dbPath, name, body string, schemas []string, rows func(schema string) []string) {
 	t.Helper()
-	h.mustRun(t, "bootstrap", func(txn api.Transaction) error {
-		if err := h.cat.Initialize(txn); err != nil {
+	h.MustRun(t, "bootstrap", func(txn api.Transaction) error {
+		if err := h.Cat.Initialize(txn); err != nil {
 			return err
 		}
-		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.cat).Execute(txn); err != nil {
+		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.Cat).Execute(txn); err != nil {
 			return err
 		}
-		if err := ddl.NewSaveSchemaTemplateConstantAction(carryTemplate(t, name, 1, body), h.cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+		if err := ddl.NewSaveSchemaTemplateConstantAction(carryTemplate(t, name, 1, body), h.Cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
 			return err
 		}
 		for _, s := range schemas {
-			if err := ddl.NewCreateSchemaConstantAction(dbPath, s, name, h.cat, h.ks).Execute(txn); err != nil {
+			if err := ddl.NewCreateSchemaConstantAction(dbPath, s, name, h.Cat, h.Ks).Execute(txn); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
 	for _, s := range schemas {
-		db := fleetOpen(t, dbPath, s)
+		db := testkit.FleetOpen(t, dbPath, s)
 		for _, stmt := range rows(s) {
-			mwjoMustExec(t, db, context.Background(), stmt)
+			testkit.MustExecCtx(t, db, context.Background(), stmt)
 		}
 	}
 }
 
 // carrySave saves a new version through fleet.SaveTemplate and returns the
 // stored proto of it.
-func carrySave(t *testing.T, h *fleetHarness, tmpl api.SchemaTemplate) (*gen.MetaData, error) {
+func carrySave(t *testing.T, h *testkit.FleetHarness, tmpl api.SchemaTemplate) (*gen.MetaData, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	stored, err := fleet.SaveTemplate(ctx, h.db, h.cat, tmpl)
+	stored, err := fleet.SaveTemplate(ctx, h.DB, h.Cat, tmpl)
 	if err != nil {
 		return nil, err
 	}
@@ -88,20 +90,20 @@ func carrySave(t *testing.T, h *fleetHarness, tmpl api.SchemaTemplate) (*gen.Met
 		t.Fatalf("SaveTemplate returned version %d, want %d", stored.Version(), tmpl.Version())
 	}
 	var p *gen.MetaData
-	h.mustRun(t, "load stored", func(txn api.Transaction) error {
+	h.MustRun(t, "load stored", func(txn api.Transaction) error {
 		var lerr error
-		p, lerr = h.cat.SchemaTemplateCatalog().LoadTemplateProto(txn, tmpl.MetadataName(), tmpl.Version())
+		p, lerr = h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, tmpl.MetadataName(), tmpl.Version())
 		return lerr
 	})
 	return p, nil
 }
 
 // carryMigrate rebinds every schema of dbPath bound to `name` to `version`.
-func carryMigrate(t *testing.T, h *fleetHarness, dbPath, name string, version int) {
+func carryMigrate(t *testing.T, h *testkit.FleetHarness, dbPath, name string, version int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	res, err := fleet.Migrate(ctx, h.db, h.cat, h.ks, fleet.FilterByTemplate(fleetTargets(t, h, dbPath), name), version, fleet.Options{})
+	res, err := fleet.Migrate(ctx, h.DB, h.Cat, h.Ks, fleet.FilterByTemplate(testkit.FleetTargets(t, h, dbPath), name), version, fleet.Options{})
 	if err != nil {
 		t.Fatalf("migrate to %d: %v", version, err)
 	}
@@ -147,7 +149,7 @@ func carryUnionNumber(p *gen.MetaData, typeName string) int32 {
 
 func carryQuery(t *testing.T, dbPath, schema, q string) string {
 	t.Helper()
-	db := evolReopen(t, dbPath, schema)
+	db := testkit.EvolReopen(t, dbPath, schema)
 	rows, err := db.QueryContext(context.Background(), q)
 	if err != nil {
 		t.Fatalf("%s: %v", q, err)
@@ -198,16 +200,16 @@ func carryInsert(table string, n int, row func(i int) string) []string {
 // rebind is admitted, the old rows read back and the new table is writable.
 func TestFDB_Carry_AddedTableKeepsTheStoredNumbering(t *testing.T) {
 	t.Parallel()
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	dbPath := "/FRL/carry_table_" + t.Name()[len(t.Name())-8:]
 	v1 := "CREATE TABLE b(id BIGINT, x BIGINT, PRIMARY KEY(id))"
 	carrySetup(t, h, dbPath, "CARRY_TABLE", v1, []string{"S"}, func(string) []string {
 		return []string{"INSERT INTO b VALUES (1, 10), (2, 20)"}
 	})
 	var stored1 *gen.MetaData
-	h.mustRun(t, "load v1", func(txn api.Transaction) error {
+	h.MustRun(t, "load v1", func(txn api.Transaction) error {
 		var err error
-		stored1, err = h.cat.SchemaTemplateCatalog().LoadTemplateProto(txn, "CARRY_TABLE", 1)
+		stored1, err = h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, "CARRY_TABLE", 1)
 		return err
 	})
 	fresh := carryTemplate(t, "CARRY_TABLE", 2, "CREATE TABLE a(id BIGINT, y BIGINT, PRIMARY KEY(id)) "+v1)
@@ -239,7 +241,7 @@ func TestFDB_Carry_AddedTableKeepsTheStoredNumbering(t *testing.T) {
 	if got := carryQuery(t, dbPath, "S", "SELECT id, x FROM b ORDER BY id"); got != "1 10;2 20" {
 		t.Errorf("b after the rebind: %s", got)
 	}
-	mwjoMustExec(t, fleetOpen(t, dbPath, "S"), context.Background(), "INSERT INTO a VALUES (1, 7)")
+	testkit.MustExecCtx(t, testkit.FleetOpen(t, dbPath, "S"), context.Background(), "INSERT INTO a VALUES (1, 7)")
 	if got := carryQuery(t, dbPath, "S", "SELECT id, y FROM a"); got != "1 7" {
 		t.Errorf("a: %s", got)
 	}
@@ -263,7 +265,7 @@ func TestFDB_Carry_ChangedIndexIsRebuiltOnOpen(t *testing.T) {
 	}{{"an empty tenant", 0}, {"a tenant with rows", 30}} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			h := newFleetHarness(t)
+			h := testkit.NewFleetHarness(t)
 			dbPath := fmt.Sprintf("/FRL/carry_changed_%d", c.rows)
 			body := func(cols string) string {
 				return "CREATE TABLE t(id BIGINT, c BIGINT, v BIGINT, PRIMARY KEY(id)) CREATE INDEX ix AS SELECT " + cols + " FROM t ORDER BY " + cols
@@ -272,9 +274,9 @@ func TestFDB_Carry_ChangedIndexIsRebuiltOnOpen(t *testing.T) {
 			row := func(i int) string { return fmt.Sprintf("(%d, %d, %d)", i, i%7, i) }
 			carrySetup(t, h, dbPath, name, body("c"), []string{"S"}, func(string) []string { return carryInsert("t", c.rows, row) })
 			var stored1 *gen.MetaData
-			h.mustRun(t, "load v1", func(txn api.Transaction) error {
+			h.MustRun(t, "load v1", func(txn api.Transaction) error {
 				var err error
-				stored1, err = h.cat.SchemaTemplateCatalog().LoadTemplateProto(txn, name, 1)
+				stored1, err = h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, name, 1)
 				return err
 			})
 			stored2, err := carrySave(t, h, carryTemplate(t, name, 2, body("c, v")))
@@ -292,12 +294,12 @@ func TestFDB_Carry_ChangedIndexIsRebuiltOnOpen(t *testing.T) {
 			q := "SELECT id FROM t WHERE c = 3 AND v = 10"
 			if c.rows == 0 {
 				// The first statement opens the store under v2: the inline rebuild.
-				mwjoMustExec(t, fleetOpen(t, dbPath, "S"), context.Background(), strings.Join(carryInsert("t", 30, row), ""))
+				testkit.MustExecCtx(t, testkit.FleetOpen(t, dbPath, "S"), context.Background(), strings.Join(carryInsert("t", 30, row), ""))
 			} else {
 				if got := carryQuery(t, dbPath, "S", q); got != "10" {
 					t.Errorf("%s: %s", q, got)
 				}
-				if states := evolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateDisabled {
+				if states := testkit.EvolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateDisabled {
 					t.Fatalf("IX is %v on a tenant with rows, want DISABLED", states["IX"])
 				}
 				if plan := carryExplain(t, dbPath, "S", q); strings.Contains(plan, "IX") {
@@ -308,7 +310,7 @@ func TestFDB_Carry_ChangedIndexIsRebuiltOnOpen(t *testing.T) {
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
-				res, err := fleet.BuildAll(ctx, h.db, h.cat, h.ks, dbPath, fleet.BuildOptions{})
+				res, err := fleet.BuildAll(ctx, h.DB, h.Cat, h.Ks, dbPath, fleet.BuildOptions{})
 				if err != nil || res.Failed > 0 || res.Built == 0 {
 					t.Fatalf("online build: %v %+v", err, res)
 				}
@@ -316,7 +318,7 @@ func TestFDB_Carry_ChangedIndexIsRebuiltOnOpen(t *testing.T) {
 			if got := carryQuery(t, dbPath, "S", q); got != "10" {
 				t.Errorf("%s: %s", q, got)
 			}
-			if states := evolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateReadable {
+			if states := testkit.EvolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateReadable {
 				t.Errorf("IX is %v, want READABLE", states["IX"])
 			}
 			if plan := carryExplain(t, dbPath, "S", q); !strings.Contains(plan, "IX") {
@@ -333,7 +335,7 @@ func TestFDB_Carry_ChangedIndexIsRebuiltOnOpen(t *testing.T) {
 // version, the rebind admitted, the index's data cleared on open.
 func TestFDB_Carry_DroppedIndexBecomesAFormerIndex(t *testing.T) {
 	t.Parallel()
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	dbPath := "/FRL/carry_dropped"
 	table := "CREATE TABLE t(id BIGINT, c BIGINT, PRIMARY KEY(id))"
 	carrySetup(t, h, dbPath, "CARRY_DROPPED", table+" CREATE INDEX ix AS SELECT c FROM t ORDER BY c", []string{"S"}, func(string) []string {
@@ -361,15 +363,15 @@ func TestFDB_Carry_DroppedIndexBecomesAFormerIndex(t *testing.T) {
 
 // carryIndexEntries counts the entries of index `index` in the schema's store,
 // under the subspace key v1 stored for it (its name).
-func carryIndexEntries(t *testing.T, h *fleetHarness, dbPath, schema, index string) int {
+func carryIndexEntries(t *testing.T, h *testkit.FleetHarness, dbPath, schema, index string) int {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	ss, err := h.ks.SchemaSubspaceIn(ctx, h.db, dbPath, schema)
+	ss, err := h.Ks.SchemaSubspaceIn(ctx, h.DB, dbPath, schema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := h.db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+	n, err := h.DB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		begin, end := ss.Sub(int64(recordlayer.IndexKey), index).FDBRangeKeys()
 		kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
 		return len(kvs), err
@@ -384,7 +386,7 @@ func carryIndexEntries(t *testing.T, h *fleetHarness, dbPath, schema, index stri
 // rows read back.
 func TestFDB_Carry_ATenantOnAnOlderVersionRebindsToTheLatest(t *testing.T) {
 	t.Parallel()
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	dbPath := "/FRL/carry_older"
 	table := "CREATE TABLE t(id BIGINT, c BIGINT, v BIGINT, PRIMARY KEY(id))"
 	carrySetup(t, h, dbPath, "CARRY_OLDER", table, []string{"A", "B"}, func(s string) []string {
@@ -394,7 +396,7 @@ func TestFDB_Carry_ATenantOnAnOlderVersionRebindsToTheLatest(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	res, err := fleet.Migrate(ctx, h.db, h.cat, h.ks, fleet.FilterByTemplate(fleetTargetsNamed(t, h, dbPath, "A"), "CARRY_OLDER"), 2, fleet.Options{})
+	res, err := fleet.Migrate(ctx, h.DB, h.Cat, h.Ks, fleet.FilterByTemplate(fleetTargetsNamed(t, h, dbPath, "A"), "CARRY_OLDER"), 2, fleet.Options{})
 	if err != nil || res.Failed > 0 || res.Migrated != 1 {
 		t.Fatalf("migrate A to 2: %v %+v", err, res)
 	}
@@ -402,7 +404,7 @@ func TestFDB_Carry_ATenantOnAnOlderVersionRebindsToTheLatest(t *testing.T) {
 		table+" CREATE INDEX ic AS SELECT c FROM t ORDER BY c CREATE INDEX iv AS SELECT v FROM t ORDER BY v")); err != nil {
 		t.Fatal(err)
 	}
-	if got := fleetVersions(t, h, dbPath); got["A"] != 2 || got["B"] != 1 {
+	if got := testkit.FleetVersions(t, h, dbPath); got["A"] != 2 || got["B"] != 1 {
 		t.Fatalf("bound versions %v, want A at 2 and B at 1", got)
 	}
 	carryMigrate(t, h, dbPath, "CARRY_OLDER", 3)
@@ -413,10 +415,10 @@ func TestFDB_Carry_ATenantOnAnOlderVersionRebindsToTheLatest(t *testing.T) {
 	}
 }
 
-func fleetTargetsNamed(t *testing.T, h *fleetHarness, dbPath, schema string) []fleet.Target {
+func fleetTargetsNamed(t *testing.T, h *testkit.FleetHarness, dbPath, schema string) []fleet.Target {
 	t.Helper()
 	var out []fleet.Target
-	for _, tg := range fleetTargets(t, h, dbPath) {
+	for _, tg := range testkit.FleetTargets(t, h, dbPath) {
 		if tg.SchemaName == schema {
 			out = append(out, tg)
 		}
@@ -429,7 +431,7 @@ func fleetTargetsNamed(t *testing.T, h *fleetHarness, dbPath, schema string) []f
 // must), rebuilt on open, and holding exactly the rows the new predicate admits.
 func TestFDB_Carry_PredicateChangeIsAChangedIndex(t *testing.T) {
 	t.Parallel()
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	dbPath := "/FRL/carry_predicate"
 	body := func(bound int) string {
 		return fmt.Sprintf("CREATE TABLE t(id BIGINT, c BIGINT, PRIMARY KEY(id)) CREATE INDEX ix AS SELECT c FROM t WHERE c > %d ORDER BY c", bound)
@@ -441,9 +443,9 @@ func TestFDB_Carry_PredicateChangeIsAChangedIndex(t *testing.T) {
 		t.Fatalf("IX under WHERE c > 1 holds %d entries, want 9", n)
 	}
 	var stored1 *gen.MetaData
-	h.mustRun(t, "load v1", func(txn api.Transaction) error {
+	h.MustRun(t, "load v1", func(txn api.Transaction) error {
 		var err error
-		stored1, err = h.cat.SchemaTemplateCatalog().LoadTemplateProto(txn, "CARRY_PREDICATE", 1)
+		stored1, err = h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, "CARRY_PREDICATE", 1)
 		return err
 	})
 	stored2, err := carrySave(t, h, carryTemplate(t, "CARRY_PREDICATE", 2, body(2)))
@@ -460,12 +462,12 @@ func TestFDB_Carry_PredicateChangeIsAChangedIndex(t *testing.T) {
 	if got := carryQuery(t, dbPath, "S", "SELECT count(*) FROM t"); got != "10" {
 		t.Errorf("rows: %s", got)
 	}
-	if states := evolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateDisabled {
+	if states := testkit.EvolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateDisabled {
 		t.Fatalf("IX is %v after the rebind, want DISABLED (CHANGED)", states["IX"])
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	if res, err := fleet.BuildAll(ctx, h.db, h.cat, h.ks, dbPath, fleet.BuildOptions{}); err != nil || res.Failed > 0 || res.Built == 0 {
+	if res, err := fleet.BuildAll(ctx, h.DB, h.Cat, h.Ks, dbPath, fleet.BuildOptions{}); err != nil || res.Failed > 0 || res.Built == 0 {
 		t.Fatalf("online build: %v %+v", err, res)
 	}
 	if n := carryIndexEntries(t, h, dbPath, "S", "IX"); n != 8 {
@@ -478,16 +480,16 @@ func TestFDB_Carry_PredicateChangeIsAChangedIndex(t *testing.T) {
 // the index stays READABLE (it would be left DISABLED if it were rebuilt).
 func TestFDB_Carry_EquivalentIndexIsNotRebuilt(t *testing.T) {
 	t.Parallel()
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	dbPath := "/FRL/carry_equivalent"
 	body := "CREATE TABLE t(id BIGINT, c BIGINT, PRIMARY KEY(id)) CREATE INDEX ix AS SELECT c FROM t ORDER BY c"
 	carrySetup(t, h, dbPath, "CARRY_EQUIVALENT", body, []string{"S"}, func(string) []string {
 		return carryInsert("t", 260, func(i int) string { return fmt.Sprintf("(%d, %d)", i, i%5) })
 	})
 	var stored1 *gen.MetaData
-	h.mustRun(t, "load v1", func(txn api.Transaction) error {
+	h.MustRun(t, "load v1", func(txn api.Transaction) error {
 		var err error
-		stored1, err = h.cat.SchemaTemplateCatalog().LoadTemplateProto(txn, "CARRY_EQUIVALENT", 1)
+		stored1, err = h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, "CARRY_EQUIVALENT", 1)
 		return err
 	})
 	stored2, err := carrySave(t, h, carryTemplate(t, "CARRY_EQUIVALENT", 2, body))
@@ -502,7 +504,7 @@ func TestFDB_Carry_EquivalentIndexIsNotRebuilt(t *testing.T) {
 	if got := carryQuery(t, dbPath, "S", q); got != "52" {
 		t.Errorf("%s: %s", q, got)
 	}
-	if states := evolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateReadable {
+	if states := testkit.EvolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateReadable {
 		t.Errorf("IX is %v after the rebind, want READABLE (not rebuilt)", states["IX"])
 	}
 }
@@ -511,7 +513,7 @@ func TestFDB_Carry_EquivalentIndexIsNotRebuilt(t *testing.T) {
 // former index's subspace key, so the save is refused, naming both.
 func TestFDB_Carry_ReAddingADroppedNameIsRefused(t *testing.T) {
 	t.Parallel()
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	dbPath := "/FRL/carry_readd"
 	table := "CREATE TABLE t(id BIGINT, c BIGINT, v BIGINT, PRIMARY KEY(id))"
 	carrySetup(t, h, dbPath, "CARRY_READD", table+" CREATE INDEX ix AS SELECT c FROM t ORDER BY c", []string{"S"}, func(string) []string { return nil })
@@ -539,7 +541,7 @@ func TestFDB_Carry_OptionOnlyChangeIsRebuilt(t *testing.T) {
 	}{{"an empty tenant", 0}, {"a tenant with rows", 30}} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			h := newFleetHarness(t)
+			h := testkit.NewFleetHarness(t)
 			dbPath := fmt.Sprintf("/FRL/carry_option_%d", c.rows)
 			name := fmt.Sprintf("CARRY_OPTION_%d", c.rows)
 			body := func(unique string) string {
@@ -548,9 +550,9 @@ func TestFDB_Carry_OptionOnlyChangeIsRebuilt(t *testing.T) {
 			row := func(i int) string { return fmt.Sprintf("(%d, %d)", i, 100+i) }
 			carrySetup(t, h, dbPath, name, body(""), []string{"S"}, func(string) []string { return carryInsert("t", c.rows, row) })
 			var stored1 *gen.MetaData
-			h.mustRun(t, "load v1", func(txn api.Transaction) error {
+			h.MustRun(t, "load v1", func(txn api.Transaction) error {
 				var err error
-				stored1, err = h.cat.SchemaTemplateCatalog().LoadTemplateProto(txn, name, 1)
+				stored1, err = h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, name, 1)
 				return err
 			})
 			stored2, err := carrySave(t, h, carryTemplate(t, name, 2, body("UNIQUE ")))
@@ -568,30 +570,30 @@ func TestFDB_Carry_OptionOnlyChangeIsRebuilt(t *testing.T) {
 					before.GetAddedVersion(), before.GetSubspaceKey(), stored1.GetVersion())
 			}
 			carryMigrate(t, h, dbPath, name, 2)
-			db := fleetOpen(t, dbPath, "S")
+			db := testkit.FleetOpen(t, dbPath, "S")
 			if c.rows == 0 {
 				// The first statement opens the store under v2: the inline rebuild.
-				mwjoMustExec(t, db, context.Background(), strings.Join(carryInsert("t", 30, row), ""))
+				testkit.MustExecCtx(t, db, context.Background(), strings.Join(carryInsert("t", 30, row), ""))
 			} else {
 				_ = carryQuery(t, dbPath, "S", "SELECT id FROM t WHERE c = 103")
-				if states := evolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateDisabled {
+				if states := testkit.EvolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateDisabled {
 					t.Fatalf("IX is %v on a tenant with rows, want DISABLED", states["IX"])
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
-				res, err := fleet.BuildAll(ctx, h.db, h.cat, h.ks, dbPath, fleet.BuildOptions{})
+				res, err := fleet.BuildAll(ctx, h.DB, h.Cat, h.Ks, dbPath, fleet.BuildOptions{})
 				if err != nil || res.Failed > 0 || res.Built == 0 {
 					t.Fatalf("online build: %v %+v", err, res)
 				}
 			}
-			if states := evolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateReadable {
+			if states := testkit.EvolIndexStates(t, dbPath, "S"); states["IX"] != recordlayer.IndexStateReadable {
 				t.Fatalf("IX is %v, want READABLE", states["IX"])
 			}
 			if n := carryIndexEntries(t, h, dbPath, "S", "IX"); n != 30 {
 				t.Errorf("IX holds %d entries, want 30", n)
 			}
 			// The rebuilt index enforces the option v2 added.
-			_, err = fleetOpen(t, dbPath, "S").ExecContext(context.Background(), "INSERT INTO t VALUES (99, 103)")
+			_, err = testkit.FleetOpen(t, dbPath, "S").ExecContext(context.Background(), "INSERT INTO t VALUES (99, 103)")
 			if err == nil || !strings.Contains(err.Error(), "23505") {
 				t.Fatalf("a duplicate c under the UNIQUE v2: %v, want 23505", err)
 			}
@@ -605,7 +607,7 @@ func TestFDB_Carry_OptionOnlyChangeIsRebuilt(t *testing.T) {
 // it.
 func TestFDB_Carry_LongValueBitmapKeyIsRebuiltWithItsRows(t *testing.T) {
 	t.Parallel()
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	const dbPath, name = "/FRL/carry_bitmap_long", "CARRY_BITMAP_LONG"
 	body := "CREATE TABLE t(id BIGINT, v BIGINT, PRIMARY KEY(id)) " +
 		"CREATE INDEX agg_bucket AS SELECT bitmap_bucket_offset(id) FROM t ORDER BY bitmap_bucket_offset(id)"
@@ -646,17 +648,17 @@ func TestFDB_Carry_LongValueBitmapKeyIsRebuiltWithItsRows(t *testing.T) {
 	}
 	// Written raw: this build refuses to save such a key (42F59), which a build
 	// before F2 stored.
-	h.mustRun(t, "bootstrap", func(txn api.Transaction) error {
-		if err := h.cat.Initialize(txn); err != nil {
+	h.MustRun(t, "bootstrap", func(txn api.Transaction) error {
+		if err := h.Cat.Initialize(txn); err != nil {
 			return err
 		}
-		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.cat).Execute(txn); err != nil {
+		if err := ddl.NewCreateDatabaseConstantAction(dbPath, h.Cat).Execute(txn); err != nil {
 			return err
 		}
 		return nil
 	})
-	if _, err := h.db.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
-		store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetSubspace(h.ks.CatalogSubspace()).SetMetaDataProvider(catalogMD).Open()
+	if _, err := h.DB.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetSubspace(h.Ks.CatalogSubspace()).SetMetaDataProvider(catalogMD).Open()
 		if err != nil {
 			return nil, err
 		}
@@ -665,10 +667,10 @@ func TestFDB_Carry_LongValueBitmapKeyIsRebuiltWithItsRows(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("store v1: %v", err)
 	}
-	h.mustRun(t, "create schema", func(txn api.Transaction) error {
-		return ddl.NewCreateSchemaConstantAction(dbPath, "S", name, h.cat, h.ks).Execute(txn)
+	h.MustRun(t, "create schema", func(txn api.Transaction) error {
+		return ddl.NewCreateSchemaConstantAction(dbPath, "S", name, h.Cat, h.Ks).Execute(txn)
 	})
-	mwjoMustExec(t, fleetOpen(t, dbPath, "S"), context.Background(),
+	testkit.MustExecCtx(t, testkit.FleetOpen(t, dbPath, "S"), context.Background(),
 		"INSERT INTO t VALUES (1, 1), (3, 1), (10005, 2), (20000, 3), (9999, 4)")
 	const read = "SELECT bitmap_bucket_offset(id) FROM t ORDER BY bitmap_bucket_offset(id)"
 	const want = "0;0;0;10000;20000"
@@ -693,7 +695,7 @@ func TestFDB_Carry_LongValueBitmapKeyIsRebuiltWithItsRows(t *testing.T) {
 	if got := carryQuery(t, dbPath, "S", read); got != want {
 		t.Fatalf("under v2: %s = %s, want %s", read, got, want)
 	}
-	if states := evolIndexStates(t, dbPath, "S"); states["AGG_BUCKET"] != recordlayer.IndexStateDisabled {
+	if states := testkit.EvolIndexStates(t, dbPath, "S"); states["AGG_BUCKET"] != recordlayer.IndexStateDisabled {
 		t.Fatalf("AGG_BUCKET is %v on opening a populated store under v2, want DISABLED", states["AGG_BUCKET"])
 	}
 	if plan := carryExplain(t, dbPath, "S", read); strings.Contains(plan, "AGG_BUCKET") {
@@ -701,10 +703,10 @@ func TestFDB_Carry_LongValueBitmapKeyIsRebuiltWithItsRows(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	if res, err := fleet.BuildAll(ctx, h.db, h.cat, h.ks, dbPath, fleet.BuildOptions{}); err != nil || res.Failed > 0 || res.Built == 0 {
+	if res, err := fleet.BuildAll(ctx, h.DB, h.Cat, h.Ks, dbPath, fleet.BuildOptions{}); err != nil || res.Failed > 0 || res.Built == 0 {
 		t.Fatalf("online build: %v %+v", err, res)
 	}
-	if states := evolIndexStates(t, dbPath, "S"); states["AGG_BUCKET"] != recordlayer.IndexStateReadable {
+	if states := testkit.EvolIndexStates(t, dbPath, "S"); states["AGG_BUCKET"] != recordlayer.IndexStateReadable {
 		t.Fatalf("AGG_BUCKET is %v after the online build, want READABLE", states["AGG_BUCKET"])
 	}
 	if n := carryIndexEntries(t, h, dbPath, "S", "AGG_BUCKET"); n != 5 {

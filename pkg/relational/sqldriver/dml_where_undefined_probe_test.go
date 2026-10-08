@@ -15,27 +15,29 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DmlWhereUndefinedProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dwu")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dwu")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dwu")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dwu")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dwu CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 
 	newDB := func(t *testing.T, schema string) *sql.DB {
-		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dwu/"+schema+" WITH TEMPLATE dwu")
-		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DWU?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema)))
+		testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dwu/"+schema+" WITH TEMPLATE dwu")
+		db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DWU?cluster_file=%s&schema=%s", testkit.ClusterFile(), strings.ToUpper(schema)))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}
 		t.Cleanup(func() { db.Close() })
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 10)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 10)")
 		return db
 	}
 
@@ -111,7 +113,7 @@ func TestFDB_DmlWhereUndefinedProbe(t *testing.T) {
 	t.Run("valid_where_delete_works", func(t *testing.T) {
 		db := newDB(t, "s_vwd")
 		t.Parallel()
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (2, 20)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (2, 20)")
 		if _, err := db.ExecContext(ctx, "DELETE FROM t WHERE a = 20"); err != nil {
 			t.Fatalf("valid DELETE WHERE: %v", err)
 		}

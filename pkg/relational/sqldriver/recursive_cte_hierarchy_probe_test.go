@@ -10,30 +10,32 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_RecursiveCTEHierarchy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_rctehier")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rctehier")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_rctehier")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rctehier")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rctehier "+
 			"CREATE TABLE emp (id BIGINT, mgr BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX emp_mgr ON emp (mgr)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rctehier/s WITH TEMPLATE rctehier")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RCTEHIER?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rctehier/s WITH TEMPLATE rctehier")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RCTEHIER?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// tree: 1 -> {2,3}; 2 -> {4}; 4 -> {5}; 3 is a leaf.
-	mwjoMustExec(t, db, ctx, "INSERT INTO emp (id, mgr) VALUES (2,1),(3,1),(4,2),(5,4)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO emp (id) VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO emp (id, mgr) VALUES (2,1),(3,1),(4,2),(5,4)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO emp (id) VALUES (1)")
 
 	traverse := func(rootID int64) []int64 {
 		q := fmt.Sprintf("WITH RECURSIVE reports AS ("+

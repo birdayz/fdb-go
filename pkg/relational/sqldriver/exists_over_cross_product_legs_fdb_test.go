@@ -3,10 +3,10 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ExistsOverLegsOfACrossProduct pins a WHERE EXISTS whose conjuncts
@@ -23,7 +23,7 @@ func TestFDB_ExistsOverLegsOfACrossProduct(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/exists_over_cross_product_legs"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE exists_over_cross_product_legs_tmpl" +
@@ -36,7 +36,7 @@ func TestFDB_ExistsOverLegsOfACrossProduct(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -97,41 +97,9 @@ func TestFDB_ExistsOverLegsOfACrossProduct(t *testing.T) {
 		},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {
-			if got := sortedRowStrings(t, db, ctx, tc.sql); strings.Join(got, " ") != strings.Join(tc.want, " ") {
+			if got := testkit.SortedRowStrings(t, db, ctx, tc.sql); strings.Join(got, " ") != strings.Join(tc.want, " ") {
 				t.Fatalf("rows = %v, want %v", got, tc.want)
 			}
 		})
 	}
-}
-
-// sortedRowStrings runs q and returns each row rendered by fmt, sorted, so an
-// expected multiset of rows compares as one string.
-func sortedRowStrings(t *testing.T, db *sql.DB, ctx context.Context, q string) []string {
-	t.Helper()
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		t.Fatalf("query: %v", err)
-	}
-	defer rows.Close()
-	cols, err := rows.Columns()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for rows.Next() {
-		cells := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range cells {
-			ptrs[i] = &cells[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		got = append(got, fmt.Sprint(cells))
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows: %v", err)
-	}
-	sort.Strings(got)
-	return got
 }

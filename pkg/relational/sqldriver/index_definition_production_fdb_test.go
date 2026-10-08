@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 
@@ -33,14 +35,14 @@ import (
 //   - a permuted aggregate index stores its options as [unique, permutedSize].
 func TestFDB_IndexDefinitionProductionPathStoresTargetShapes(t *testing.T) {
 	t.Parallel()
-	setup := openTestDB(t, "/__SYS")
+	setup := testkit.OpenDB(t, "/__SYS")
 	ctx := context.Background()
 	suffix := make([]byte, 6)
 	if _, err := rand.Read(suffix); err != nil {
 		t.Fatal(err)
 	}
 	name := "WSJPROD_" + strings.ToUpper(hex.EncodeToString(suffix))
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE "+name+" "+
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE "+name+" "+
 		"CREATE TYPE AS STRUCT sc (x BIGINT, y BIGINT) "+
 		"CREATE TABLE t (id BIGINT, s sc, ts BIGINT, d BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX nested_then_top AS SELECT s.x, ts FROM t ORDER BY s.x, ts "+
@@ -49,10 +51,10 @@ func TestFDB_IndexDefinitionProductionPathStoresTargetShapes(t *testing.T) {
 		"CREATE INDEX mx AS SELECT max(v) FROM t GROUP BY g")
 	t.Cleanup(func() { _, _ = setup.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS "+name) })
 
-	h := newEvolHarness(t)
+	h := testkit.NewEvolHarness(t)
 	var md *gen.MetaData
-	h.mustRun(t, "load the stored template", func(txn api.Transaction) error {
-		tmpl, err := h.cat.SchemaTemplateCatalog().LoadSchemaTemplate(txn, name)
+	h.MustRun(t, "load the stored template", func(txn api.Transaction) error {
+		tmpl, err := h.Cat.SchemaTemplateCatalog().LoadSchemaTemplate(txn, name)
 		if err != nil {
 			return err
 		}
@@ -106,7 +108,7 @@ func TestFDB_IndexDefinitionProductionPathStoresTargetShapes(t *testing.T) {
 // indexes, index options and a vector index.
 func TestFDB_ExecutedTemplateIsTheToolingPathsTemplate(t *testing.T) {
 	t.Parallel()
-	setup := openTestDB(t, "/__SYS")
+	setup := testkit.OpenDB(t, "/__SYS")
 	ctx := context.Background()
 	suffix := make([]byte, 6)
 	if _, err := rand.Read(suffix); err != nil {
@@ -139,12 +141,12 @@ func TestFDB_ExecutedTemplateIsTheToolingPathsTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mwjoMustExec(t, setup, ctx, ddl)
+	testkit.MustExecCtx(t, setup, ctx, ddl)
 	t.Cleanup(func() { _, _ = setup.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS "+name) })
 
-	h := newEvolHarness(t)
-	h.mustRun(t, "load the stored template's bytes", func(txn api.Transaction) error {
-		stored, err := h.cat.SchemaTemplateCatalog().LoadTemplateProto(txn, name, built.Version())
+	h := testkit.NewEvolHarness(t)
+	h.MustRun(t, "load the stored template's bytes", func(txn api.Transaction) error {
+		stored, err := h.Cat.SchemaTemplateCatalog().LoadTemplateProto(txn, name, built.Version())
 		if err != nil {
 			return err
 		}

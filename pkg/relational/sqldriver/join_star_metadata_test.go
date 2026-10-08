@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -46,7 +48,7 @@ func TestStarMetadataUserColumnNamedOrdinal(t *testing.T) {
 	if defs := embedded.ResultColumnDefsForPlan(plan); len(defs) != 4 {
 		t.Fatalf("got %d columns, want 4: %+v", len(defs), defs)
 	}
-	if got := fmt.Sprintf("%v", queryLabels(t, q, md)); got != "[PID _0 QID QV]" {
+	if got := fmt.Sprintf("%v", testkit.QueryLabels(t, q, md)); got != "[PID _0 QID QV]" {
 		t.Fatalf("labels = %s, want [PID _0 QID QV]", got)
 	}
 }
@@ -145,7 +147,7 @@ func TestStarMetadataStructElementType(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("plan: %v", perr)
 	}
-	labels := queryLabels(t, `SELECT * FROM WS, WX, WS."SITEMS" AS "EL"`, md)
+	labels := testkit.QueryLabels(t, `SELECT * FROM WS, WX, WS."SITEMS" AS "EL"`, md)
 	types := embedded.ResultColumnTypesForPlan(plan)
 	if fmt.Sprintf("%v", labels) != "[WID SITEMS XID SKU]" {
 		t.Fatalf("labels = %v, want [WID SITEMS XID SKU]", labels)
@@ -305,7 +307,7 @@ func TestStarMetadataTwinLayoutTypesTheUnnestedLeg(t *testing.T) {
 			if perr != nil {
 				t.Fatalf("plan: %v", perr)
 			}
-			labels := queryLabels(t, tc.sql, md)
+			labels := testkit.QueryLabels(t, tc.sql, md)
 			types := embedded.ResultColumnTypesForPlan(plan)
 			wantLabels := fmt.Sprintf("[ID SITEMS ID SITEMS %s]", tc.wantLabel)
 			if fmt.Sprintf("%v", labels) != wantLabels {
@@ -348,7 +350,7 @@ func TestStarMetadataPlainThreeWayKeepsFromOrder(t *testing.T) {
 		t.Fatalf("got %d columns, want 6: %+v\nplan: %s", len(defs), defs, plan.Explain())
 	}
 	want := "[TAID K TBID K TCID K]"
-	if got := fmt.Sprintf("%v", queryLabels(t, `SELECT * FROM TA, TB, TC`, md)); got != want {
+	if got := fmt.Sprintf("%v", testkit.QueryLabels(t, `SELECT * FROM TA, TB, TC`, md)); got != want {
 		t.Fatalf("column labels = %s, want %s (FROM order)", got, want)
 	}
 }
@@ -379,7 +381,7 @@ func TestStarMetadataFourWayInterleavedLegsKeepFromOrder(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("plan: %v", perr)
 	}
-	labels := queryLabels(t, `SELECT * FROM TA, TB, TC, TA`, md)
+	labels := testkit.QueryLabels(t, `SELECT * FROM TA, TB, TC, TA`, md)
 	want := []string{"TAID", "K", "TBID", "K", "TCID", "K", "TAID", "K"}
 	if fmt.Sprintf("%v", labels) != fmt.Sprintf("%v", want) {
 		t.Fatalf("column labels = %v, want %v (FROM order)\nplan: %s", labels, want, plan.Explain())

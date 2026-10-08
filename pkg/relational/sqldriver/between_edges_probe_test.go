@@ -10,26 +10,28 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_BetweenEdgesProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_betw")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_betw")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_betw")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_betw")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE betw CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_betw/s WITH TEMPLATE betw")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BETW?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_betw/s WITH TEMPLATE betw")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BETW?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1,5),(2,10),(3,15),(4,20),(5,25)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1,5),(2,10),(3,15),(4,20),(5,25)")
 
 	vs := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

@@ -31,13 +31,15 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // mmOrEdgeFixture is a driver row plus a probed table with four indexed
 // columns, so a conjunction of two disjunctions has four legs to enumerate.
-func mmOrEdgeFixture(t *testing.T, ctx context.Context, dbPath, prefix string) *mmTwin {
+func mmOrEdgeFixture(t *testing.T, ctx context.Context, dbPath, prefix string) *testkit.Twin {
 	t.Helper()
-	w := mmNewTwin(t, ctx, dbPath, prefix,
+	w := testkit.NewTwin(t, ctx, dbPath, prefix,
 		"CREATE TABLE d (did BIGINT, da BIGINT, db2 BIGINT, dc BIGINT, dd BIGINT, PRIMARY KEY (did)) "+
 			"CREATE TABLE u (uid BIGINT, ua BIGINT, ub BIGINT, uc BIGINT, ud BIGINT, PRIMARY KEY (uid)) ",
 		"CREATE INDEX u_ua ON u (ua) "+
@@ -74,7 +76,7 @@ func mmOrEdgeFixture(t *testing.T, ctx context.Context, dbPath, prefix string) *
 // this is the test that would notice it collapsing the wrong number of copies.
 func TestFDB_OrUnionPrimaryKeyDedup_ConjunctionOfDisjunctions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -118,7 +120,7 @@ func TestFDB_OrUnionPrimaryKeyDedup_ConjunctionOfDisjunctions(t *testing.T) {
 // assertion that matters either side of it is that the answer is stable.
 func TestFDB_OrUnionPrimaryKeyDedup_ConjunctLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -150,7 +152,7 @@ func TestFDB_OrUnionPrimaryKeyDedup_ConjunctLimit(t *testing.T) {
 // to leave untested.
 func TestFDB_OrUnionPrimaryKeyDedup_LegShapes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()

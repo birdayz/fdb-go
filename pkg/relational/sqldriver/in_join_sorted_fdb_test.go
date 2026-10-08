@@ -15,13 +15,15 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_SortedInJoinDeliversTheOrder(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -29,22 +31,22 @@ func TestFDB_SortedInJoinDeliversTheOrder(t *testing.T) {
 		"CREATE INDEX i5 AS SELECT col1 FROM t5 ORDER BY col1 " +
 		"CREATE TABLE tbl (id BIGINT, k BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id, k)) " +
 		"CREATE INDEX ia ON tbl (a)"
-	setup := openTestDB(t, "/FRL/testdb_isj")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_isj")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE isj "+ddl)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_isj/s WITH TEMPLATE isj")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ISJ?cluster_file=%s&schema=S", clusterFilePath)
+	setup := testkit.OpenDB(t, "/FRL/testdb_isj")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_isj")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE isj "+ddl)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_isj/s WITH TEMPLATE isj")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ISJ?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t5 VALUES (1, 20, 1), (2, 10, NULL), (3, 20, 3), "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t5 VALUES (1, 20, 1), (2, 10, NULL), (3, 20, 3), "+
 		"(4, NULL, NULL), (5, 10, 5), (6, 30, 6), (7, 10, 7)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO tbl VALUES (1, 1, 10, 100), (1, 2, 20, 200), (2, 1, 30, 300), "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tbl VALUES (1, 1, 10, 100), (1, 2, 20, 200), (2, 1, 30, 300), "+
 		"(3, 5, 40, 400), (4, 1, 50, 500), (5, 1, 20, 600)")
 
-	explain := mwjoExplainer(t, db, ctx)
+	explain := testkit.Explainer(t, db, ctx)
 	paged, err := db.Conn(ctx)
 	if err != nil {
 		t.Fatalf("db.Conn: %v", err)
@@ -97,18 +99,18 @@ func TestFDB_SortedInJoinDeliversTheOrder(t *testing.T) {
 		if !strings.Contains(plan, c.plan) || strings.Contains(plan, "InMemorySort") {
 			t.Errorf("%s\n  plan %s: a sorted InJoin delivers the order without a sort", c.sql, plan)
 		}
-		got, err := mmRows(t, ctx, db, c.sql)
+		got, err := testkit.QueryRowStrings(t, ctx, db, c.sql)
 		if err != nil {
 			t.Fatalf("%s: %v", c.sql, err)
 		}
-		if !mmEqRows(got, c.want) {
+		if !testkit.EqualRows(got, c.want) {
 			t.Errorf("%s\n  plan: %s\n  got  %v\n  want %v", c.sql, plan, got, c.want)
 		}
-		gotPaged, err := mhcpkRowsOnConn(ctx, paged, c.sql)
+		gotPaged, err := testkit.MhcpkRowsOnConn(ctx, paged, c.sql)
 		if err != nil {
 			t.Fatalf("%s (paged): %v", c.sql, err)
 		}
-		if !mmEqRows(gotPaged, c.want) {
+		if !testkit.EqualRows(gotPaged, c.want) {
 			t.Errorf("%s (paged)\n  got  %v\n  want %v", c.sql, gotPaged, c.want)
 		}
 	}

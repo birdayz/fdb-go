@@ -31,6 +31,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // aggFloatGroup is one row of `SELECT d, SUM(a) ... GROUP BY d`.
@@ -63,20 +65,20 @@ func (g aggFloatGroup) String() string {
 //     test so a red here means what this test says it means.
 func aggFloatLadder(t *testing.T, db *sql.DB, ctx context.Context, tbl string) {
 	t.Helper()
-	mwjoMustExec(t, db, ctx, fmt.Sprintf(
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 		"INSERT INTO %s (id, d, a) VALUES "+
 			"(10, 1.0e308, 1), (20, -1.5, 2), (30, -0.0, 3), (40, 0.0, 4), "+
 			"(50, 1.5, 5), (60, 1.0e308, 6), (70, 1.0e308, 7), (5, 0.0, 8), "+
 			"(80, 1.0e308, 9)", tbl))
 	// -Inf, +Inf, and the sign-bit-SET quiet NaN that an invalid operation
 	// (+Inf added to -Inf) yields — the physically FIRST row in the table.
-	mwjoMustExec(t, db, ctx, fmt.Sprintf("UPDATE %s SET d = d * -10.0 WHERE id = 10", tbl))
-	mwjoMustExec(t, db, ctx, fmt.Sprintf("UPDATE %s SET d = d * 10.0 WHERE id = 60", tbl))
-	mwjoMustExec(t, db, ctx, fmt.Sprintf("UPDATE %s SET d = (d * 10.0) + (d * -10.0) WHERE id = 70", tbl))
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("UPDATE %s SET d = d * -10.0 WHERE id = 10", tbl))
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("UPDATE %s SET d = d * 10.0 WHERE id = 60", tbl))
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("UPDATE %s SET d = (d * 10.0) + (d * -10.0) WHERE id = 70", tbl))
 	// A DIFFERENT NaN payload, and positive, so "two bit patterns, one logical
 	// value" is exercised and the two NaNs land in the two disjoint physical
 	// blocks at opposite ends of the key space.
-	mwjoMustExec(t, db, ctx, fmt.Sprintf("UPDATE %s SET d = CAST('NaN' AS DOUBLE) WHERE id = 5", tbl))
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("UPDATE %s SET d = CAST('NaN' AS DOUBLE) WHERE id = 5", tbl))
 }
 
 // assertAggFloatLadderStored fails loudly if the ladder did not land. Every
@@ -202,13 +204,13 @@ func sortedAggFloatGroups(in []aggFloatGroup) []aggFloatGroup {
 // producer against an unindexed oracle holding identical rows.
 func TestFDB_FloatOrderingClaim_Aggregate_Differential(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_focagg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_focagg")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE focagg "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_focagg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_focagg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE focagg "+
 		// ai: an ORDINARY index over (d, a) — the streaming-aggregation shape.
 		"CREATE TABLE ai (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		// ag: an AGGREGATE index grouped by d — the aggregate-index shape.
@@ -218,8 +220,8 @@ func TestFDB_FloatOrderingClaim_Aggregate_Differential(t *testing.T) {
 		"CREATE TABLE ao (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX ai_da ON ai (d, a) "+
 		"CREATE INDEX sum_by_d AS SELECT SUM(a) FROM ag GROUP BY d")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_focagg/s WITH TEMPLATE focagg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FOCAGG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_focagg/s WITH TEMPLATE focagg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FOCAGG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

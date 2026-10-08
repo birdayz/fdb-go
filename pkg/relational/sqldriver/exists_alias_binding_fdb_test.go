@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ExistsAboveJoin_AliasBinding pins RFC-141 Phase 2 P1a: a
@@ -40,20 +42,20 @@ import (
 // semi-join.
 func TestFDB_ExistsAboveJoin_AliasBinding(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_existsabovejoin")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_existsabovejoin")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE eaj_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_existsabovejoin")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_existsabovejoin")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE eaj_tmpl "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, fname STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE dept (id BIGINT, dname STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE proj (pid BIGINT, owner_id BIGINT, dept_ref BIGINT, pname STRING, PRIMARY KEY (pid))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_existsabovejoin/s WITH TEMPLATE eaj_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_existsabovejoin/s WITH TEMPLATE eaj_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTSABOVEJOIN?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTSABOVEJOIN?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -64,14 +66,14 @@ func TestFDB_ExistsAboveJoin_AliasBinding(t *testing.T) {
 	// wins bare `id` instead of the qualified leg key) gives a DETECTABLY wrong
 	// answer for the right-leg correlation subtest below.
 	// emp: 1/Alice@d10, 2/Bob@d10, 3/Carol@d20, 4/Dave@d20
-	mustExec(t, db, ctx, "INSERT INTO emp VALUES (1, 10, 'Alice'), (2, 10, 'Bob'), (3, 20, 'Carol'), (4, 20, 'Dave')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO emp VALUES (1, 10, 'Alice'), (2, 10, 'Bob'), (3, 20, 'Carol'), (4, 20, 'Dave')")
 	// dept: 10/Eng, 20/Sales
-	mustExec(t, db, ctx, "INSERT INTO dept VALUES (10, 'Eng'), (20, 'Sales')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO dept VALUES (10, 'Eng'), (20, 'Sales')")
 	// proj: owner_id ties to emp.id (1,3 own projects); dept_ref ties to
 	// dept.id and references ONLY dept 10 (never dept 20). The disjoint id
 	// ranges make a wrong-leg bare-key resolution detectable: dept_ref ∈ {10}
 	// can only ever match d.id, never the bare emp.id ∈ {1,3}.
-	mustExec(t, db, ctx, "INSERT INTO proj VALUES (100, 1, 10, 'P1'), (200, 1, 10, 'P2'), (300, 3, 10, 'P3')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO proj VALUES (100, 1, 10, 'P1'), (200, 1, 10, 'P2'), (300, 3, 10, 'P3')")
 
 	// requireChainedFlatMapExists asserts the plan is Java's shape for a
 	// WHERE-EXISTS over a two-table join: a CHAIN of FlatMaps, each binding one
@@ -244,31 +246,31 @@ func equalStrings(a, b []string) bool {
 // the fast path fires (a single-row correlated PK probe under FirstOrDefault).
 func TestFDB_ProjectedExists_FastPath_AliasBinding(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_projexistsfast")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexistsfast")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pef_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_projexistsfast")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexistsfast")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pef_tmpl "+
 		"CREATE TABLE t1(id BIGINT, ref BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, payload STRING, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, sec BIGINT, payload STRING, PRIMARY KEY(id)) "+
 		"CREATE INDEX t3_sec ON t3 (sec)")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexistsfast/s WITH TEMPLATE pef_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexistsfast/s WITH TEMPLATE pef_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTSFAST?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTSFAST?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
 	// t1.ref points at t2.id for rows 1 and 3; row 2 points at a missing t2.
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 100), (2, 999), (3, 300)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 'a'), (300, 'c')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 100), (2, 999), (3, 300)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 'a'), (300, 'c')")
 	// t3 secondary index target rows.
-	mustExec(t, db, ctx, "INSERT INTO t3 VALUES (1000, 100, 'x'), (3000, 300, 'z')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t3 VALUES (1000, 100, 'x'), (3000, 300, 'z')")
 
 	type idBool struct {
 		id int64

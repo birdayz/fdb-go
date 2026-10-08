@@ -9,28 +9,30 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_OrderByMixedDirProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_omd")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_omd")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE omd "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_omd")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_omd")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE omd "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_ab ON t (a, b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_omd/s WITH TEMPLATE omd")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OMD?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_omd/s WITH TEMPLATE omd")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OMD?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// a=1: b in {10,20}; a=2: b in {5,15}
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1,1,10),(2,1,20),(3,2,5),(4,2,15)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1,1,10),(2,1,20),(3,2,5),(4,2,15)")
 
 	ids := func(orderBy string) []int64 {
 		rows, err := db.QueryContext(ctx, "SELECT id FROM t ORDER BY "+orderBy)

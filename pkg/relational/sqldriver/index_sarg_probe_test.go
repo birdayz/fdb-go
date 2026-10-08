@@ -10,22 +10,24 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_IndexSargProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_idx_sarg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idx_sarg")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_idx_sarg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idx_sarg")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE idx_sarg "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) CREATE INDEX t_s ON t (s)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idx_sarg/s WITH TEMPLATE idx_sarg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDX_SARG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idx_sarg/s WITH TEMPLATE idx_sarg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDX_SARG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -33,7 +35,7 @@ func TestFDB_IndexSargProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// id: a, b, s
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b, s) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b, s) VALUES "+
 		"(1, 1, 10, 'a'), (2, 3, 20, 'c'), (3, 5, 2, 'e'), (4, 6, 8, 'e'), (5, 7, 30, 'm'), (6, 9, 40, 'z')")
 
 	ints := func(q string, keepOrder bool) []int64 {

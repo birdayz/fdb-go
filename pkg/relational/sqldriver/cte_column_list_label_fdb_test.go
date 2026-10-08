@@ -28,11 +28,13 @@ package sqldriver_test
 import (
 	"context"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CTEColumnListDoesNotOverwriteTheMainQueryLabel(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	for _, tc := range []struct {

@@ -19,6 +19,8 @@ import (
 	"sort"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -34,12 +36,12 @@ import (
 )
 
 func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -65,7 +67,7 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 		for _, v := range arr {
 			vals = append(vals, protoreflect.ValueOfInt32(v))
 		}
-		setArrayField(m, desc.Fields().ByName("ARR"), vals...)
+		testkit.SetArrayField(m, desc.Fields().ByName("ARR"), vals...)
 		return m
 	}
 	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -117,7 +119,7 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 				// SLOT order, not sorted map keys: the sorted form re-sorted a
 				// permuted row to the identical string and had already lost any
 				// duplicate output name last-wins.
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -133,7 +135,7 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 	t.Run("pushed_where_on_ordinal_slot", func(t *testing.T) {
 		got := query(t, `SELECT "E", "O" FROM T, T."ARR" AS "E" AT "O" WHERE "O" = 2`)
 		want := []string{"E=202|O=2"}
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("got=%v want=%v", got, want)
 		}
 	})
@@ -141,7 +143,7 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 	t.Run("pushed_where_on_element_slot", func(t *testing.T) {
 		got := query(t, `SELECT "ID", "V", "AT" FROM T, T."ARR" AS "V" AT "AT" WHERE "V" > 201`)
 		want := []string{"ID=2|V=202|AT=2", "ID=2|V=203|AT=3"}
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("got=%v want=%v", got, want)
 		}
 	})
@@ -150,7 +152,7 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 	t.Run("computed_where_on_ordinal_slot", func(t *testing.T) {
 		got := query(t, `SELECT "ID", "AT" FROM T, T."ARR" AT "AT" WHERE "AT" + 1 = 3`)
 		want := []string{"ID=2|AT=2"}
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("got=%v want=%v", got, want)
 		}
 	})
@@ -159,7 +161,7 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 	t.Run("at_only_pushed_where_on_ordinal", func(t *testing.T) {
 		got := query(t, `SELECT "ID", "AT" FROM T, T."ARR" AT "AT" WHERE "AT" = 1`)
 		want := []string{"ID=1|AT=1", "ID=2|AT=1"}
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("got=%v want=%v", got, want)
 		}
 	})
@@ -170,7 +172,7 @@ func TestFDB_UnnestOrdinalityBoxOrdinal(t *testing.T) {
 		want := []string{
 			"ID=1|V=101|AT=1", "ID=2|V=201|AT=1", "ID=2|V=202|AT=2", "ID=2|V=203|AT=3",
 		}
-		if !unnestEqualStrs(got, want) {
+		if !testkit.UnnestEqualStrs(got, want) {
 			t.Fatalf("got=%v want=%v", got, want)
 		}
 	})

@@ -9,44 +9,46 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_BoolValueFuncsProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_boolvf")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_boolvf")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_boolvf")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_boolvf")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE boolvf "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, y BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_boolvf/s WITH TEMPLATE boolvf")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BOOLVF?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_boolvf/s WITH TEMPLATE boolvf")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BOOLVF?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, y) VALUES (50, 5), (51, 10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, y) VALUES (50, 5), (51, 10)")
 
 	pairs := func(q string) []string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
 			return []string{"ERR:" + err.Error()}
 		}
-		return siScanRows(t, rows)
+		return testkit.ScanRowStrings(t, rows)
 	}
 
 	// COALESCE as a cross-table comparison operand: COALESCE(a.x, 0) = c.y.
 	t.Run("coalesce_cross_table", func(t *testing.T) {
 		got := pairs("SELECT a.id, c.id FROM a JOIN c ON COALESCE(a.x, 0) = c.y")
 		want := []string{"1|50", "2|51"} // a1.x=5=c50.y; a2.x=10=c51.y
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("COALESCE cross-table = %v, want %v", got, want)
 		}
 	})
@@ -56,7 +58,7 @@ func TestFDB_BoolValueFuncsProbe(t *testing.T) {
 	t.Run("nullif_cross_table", func(t *testing.T) {
 		got := pairs("SELECT a.id, c.id FROM a JOIN c ON NULLIF(a.x, 5) = c.y")
 		want := []string{"2|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("NULLIF cross-table = %v, want %v", got, want)
 		}
 	})
@@ -65,7 +67,7 @@ func TestFDB_BoolValueFuncsProbe(t *testing.T) {
 	t.Run("arith_cross_table", func(t *testing.T) {
 		got := pairs("SELECT a.id, c.id FROM a JOIN c ON a.x + 0 = c.y")
 		want := []string{"1|50", "2|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("arith cross-table = %v, want %v", got, want)
 		}
 	})

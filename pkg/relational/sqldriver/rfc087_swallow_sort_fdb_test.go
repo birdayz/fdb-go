@@ -14,6 +14,8 @@ import (
 	"context"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -24,7 +26,7 @@ import (
 // panic/goroutine crash or a non-api error.
 func TestFDB_RFC087_WhereConstTypeMismatch_NoCrash(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_rfc087_swallow", "swallow",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc087_swallow", "swallow",
 		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO t (id) VALUES (1), (2)"); err != nil {
@@ -49,7 +51,7 @@ func TestFDB_RFC087_WhereConstTypeMismatch_NoCrash(t *testing.T) {
 
 	// Reaching this point at all proves the query did not panic / crash.
 	if err != nil {
-		if asAPIError(err) == nil {
+		if testkit.AsAPIError(err) == nil {
 			t.Fatalf("WHERE 5='abc': non-api error %v (%T) — want a clean api.Error or 0 rows, never a crash", err, err)
 		}
 		t.Logf("WHERE 5='abc' returned a clean api.Error (no crash): %v", err)
@@ -66,7 +68,7 @@ func TestFDB_RFC087_WhereConstTypeMismatch_NoCrash(t *testing.T) {
 // single-row sort never invokes the Less func).
 func TestFDB_RFC087_ComputedSortKeyOverflow_22003(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_rfc087_sortovf", "sortovf",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc087_sortovf", "sortovf",
 		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx,
@@ -93,7 +95,7 @@ func TestFDB_RFC087_ComputedSortKeyOverflow_22003(t *testing.T) {
 	if err == nil {
 		t.Fatal("ORDER BY v * 1000000000000: expected 22003 overflow error, got nil")
 	}
-	got := asAPIError(err)
+	got := testkit.AsAPIError(err)
 	if got == nil {
 		t.Fatalf("ORDER BY overflow: non-api error %v (%T) — want a clean 22003", err, err)
 	}

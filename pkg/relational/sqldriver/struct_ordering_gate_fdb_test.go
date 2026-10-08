@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // ORDER BY over a whole STRUCT must fail at PLAN TIME, not leak a raw internal
@@ -29,12 +31,12 @@ import (
 // plan survives and Go fails the same way Java does.
 func TestFDB_StructOrderingGate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/structordergate")
+	setup := testkit.OpenDB(t, "/FRL/structordergate")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/structordergate"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -47,7 +49,7 @@ func TestFDB_StructOrderingGate(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/structordergate/s WITH TEMPLATE sog_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql:///FRL/STRUCTORDERGATE?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/STRUCTORDERGATE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

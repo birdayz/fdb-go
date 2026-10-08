@@ -31,6 +31,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"github.com/onsi/gomega"
 )
 
@@ -40,7 +42,7 @@ func setupOuterParityDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_ojp_" + suffix
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	tmpl := "ojp_tmpl_" + suffix
@@ -57,7 +59,7 @@ func setupOuterParityDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/main WITH TEMPLATE %s", dbPath, tmpl))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	t.Cleanup(func() { db.Close() })
@@ -225,7 +227,7 @@ func row(cells ...ojCell) []ojCell { return cells }
 // TestFDB_OuterParity_Left ports the Java `left-outer-join` block (L1..L39).
 func TestFDB_OuterParity_Left(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
@@ -472,7 +474,7 @@ func TestFDB_OuterParity_Left(t *testing.T) {
 // null-producing side with a scalar COUNT subquery as the preserved side.
 func TestFDB_OuterParity_Left_OrderByCountSubquery(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
@@ -493,7 +495,7 @@ func TestFDB_OuterParity_Left_OrderByCountSubquery(t *testing.T) {
 // TestFDB_OuterParity_Right ports the Java `right-outer-join` block (R1..R13).
 func TestFDB_OuterParity_Right(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
@@ -593,7 +595,7 @@ func TestFDB_OuterParity_Right(t *testing.T) {
 // (Full FULL-OUTER row/plan coverage lives in full_outer_join_fdb_test.go.)
 func TestFDB_OuterParity_FullIsGoExtension(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
@@ -623,7 +625,7 @@ func TestFDB_OuterParity_FullIsGoExtension(t *testing.T) {
 // LEFT JOIN emits NULL for Dave's (unmatched) dept.id.
 func TestFDB_OuterParity_NullSupplyingNullability(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
@@ -691,7 +693,7 @@ func TestFDB_OuterParity_NullSupplyingNullability(t *testing.T) {
 // through the write path instead of a rejection.
 func TestFDB_OuterParity_InsertSelectFromOuterJoinNotNull(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
@@ -723,7 +725,7 @@ func setupBoolDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_bool_" + suffix
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	tmpl := "bool_tmpl_" + suffix
@@ -733,7 +735,7 @@ func setupBoolDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/main WITH TEMPLATE %s", dbPath, tmpl))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	t.Cleanup(func() { db.Close() })
@@ -750,7 +752,7 @@ func setupBoolDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 // all rows (NULL is not TRUE in a filter).
 func TestFDB_OuterParity_BooleanWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
@@ -797,7 +799,7 @@ func TestFDB_OuterParity_BooleanWhere(t *testing.T) {
 // and ON <boolcol> (the outer row's boolean column as the join condition).
 func TestFDB_OuterParity_BooleanOn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
@@ -858,7 +860,7 @@ func TestFDB_OuterParity_BooleanOn(t *testing.T) {
 // comparison node, Java folds it to a constant) is a benign divergence.
 func TestFDB_OuterParity_NullConstantFolding(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)

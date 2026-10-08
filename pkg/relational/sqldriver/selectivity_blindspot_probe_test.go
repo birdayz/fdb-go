@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -42,7 +44,7 @@ import (
 // distinctness statistic is added there is a number to compare against.
 func TestFDB_SelectivityBlindSpotWithCollectedStatistics(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -51,18 +53,18 @@ func TestFDB_SelectivityBlindSpotWithCollectedStatistics(t *testing.T) {
 	const loDistinct = 2
 
 	dbPath := "/FRL/selblind"
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE selblind"+
 			" CREATE TABLE t (id BIGINT, hi BIGINT, lo BIGINT, PRIMARY KEY (id))"+
 			" CREATE INDEX t_by_hi ON t (hi)"+
 			" CREATE INDEX t_by_lo ON t (lo)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE selblind")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE selblind")
 
-	base := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	base := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db := openDSN(t, base+"&planner_statistics=true")
-	mwjoInsertRange(t, db, ctx, "t", 0, rows-1, func(i int) string {
+	testkit.MwjoInsertRange(t, db, ctx, "t", 0, rows-1, func(i int) string {
 		return fmt.Sprintf("(%d, %d, %d)", i, i, i%loDistinct)
 	})
 

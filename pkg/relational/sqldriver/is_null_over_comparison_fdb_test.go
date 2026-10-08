@@ -36,22 +36,24 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_IsNullOverComparison(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_isnullcmp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_isnullcmp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_isnullcmp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_isnullcmp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE isnullcmp "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, f BOOLEAN, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_isnullcmp/s WITH TEMPLATE isnullcmp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ISNULLCMP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_isnullcmp/s WITH TEMPLATE isnullcmp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ISNULLCMP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -59,7 +61,7 @@ func TestFDB_IsNullOverComparison(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// a: 1, 5, NULL, 9, NULL   → `a > 3` is FALSE, TRUE, UNKNOWN, TRUE, UNKNOWN
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b, s, f) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b, s, f) VALUES "+
 		"(1, 1, 10, 'x', TRUE), (2, 5, 20, 'y', FALSE), (3, NULL, 30, NULL, NULL), (4, 9, 40, 'z', TRUE), (5, NULL, 50, 'w', FALSE)")
 
 	ids := func(q string) []int64 {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
@@ -27,13 +29,13 @@ import (
 // Rows are written through the record-layer API (dynamicpb): struct DML is
 // Phase 2 and fails closed, so SQL INSERT cannot seed this shape yet.
 func TestFDB_StructMultiSegmentUnnest(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	t.Parallel()
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +102,7 @@ func TestFDB_StructMultiSegmentUnnest(t *testing.T) {
 		if sErr != nil {
 			return nil, sErr
 		}
-		evalCtx, bindErr := prebindScalarSubqueries(ctx, store, subs)
+		evalCtx, bindErr := testkit.PrebindScalarSubqueries(ctx, store, subs)
 		if bindErr != nil {
 			return nil, bindErr
 		}
@@ -114,7 +116,7 @@ func TestFDB_StructMultiSegmentUnnest(t *testing.T) {
 			return nil, rErr
 		}
 		for _, r := range rows {
-			got = append(got, positionalNamedPipeSprint(r))
+			got = append(got, testkit.PositionalNamedPipeSprint(r))
 		}
 		return nil, nil
 	})

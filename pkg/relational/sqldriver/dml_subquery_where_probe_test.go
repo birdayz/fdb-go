@@ -13,22 +13,24 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_DmlSubqueryWhereProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dswp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dswp")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE dswp "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_dswp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dswp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE dswp "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE ref (id BIGINT, flag BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dswp/s WITH TEMPLATE dswp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DSWP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dswp/s WITH TEMPLATE dswp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DSWP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -41,8 +43,8 @@ func TestFDB_DmlSubqueryWhereProbe(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "DELETE FROM ref"); err != nil {
 			t.Fatalf("reset ref: %v", err)
 		}
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (1,10),(2,20),(3,30)")
-		mwjoMustExec(t, db, ctx, "INSERT INTO ref (id, flag) VALUES (1,1),(3,1)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (1,10),(2,20),(3,30)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO ref (id, flag) VALUES (1,1),(3,1)")
 	}
 	remainingIDs := func() []int64 {
 		rows, err := db.QueryContext(ctx, "SELECT id FROM t")
@@ -134,14 +136,14 @@ func TestFDB_DmlSubqueryWhereProbe(t *testing.T) {
 	t.Run("delete_where_scalar_missing_table", func(t *testing.T) {
 		reset()
 		_, err := db.ExecContext(ctx, "DELETE FROM t WHERE id = (SELECT MAX(id) FROM nosuchtable)")
-		requireSQLSTATE(t, err, api.ErrCodeUndefinedTable)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeUndefinedTable)
 		if got := remainingIDs(); !eq(got, []int64{1, 2, 3}) {
 			t.Errorf("missing table must delete nothing; remaining = %v, want [1 2 3]", got)
 		}
 	})
 	t.Run("delete_where_scalar_subquery_threshold", func(t *testing.T) {
 		reset()
-		mwjoMustExec(t, db, ctx, "INSERT INTO ref (id, flag) VALUES (25, 0)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO ref (id, flag) VALUES (25, 0)")
 		res, err := db.ExecContext(ctx, "DELETE FROM t WHERE a > (SELECT MAX(id) FROM ref)")
 		if err != nil {
 			t.Fatalf("delete: %v", err)
@@ -155,7 +157,7 @@ func TestFDB_DmlSubqueryWhereProbe(t *testing.T) {
 	})
 	t.Run("update_where_scalar_subquery_threshold", func(t *testing.T) {
 		reset()
-		mwjoMustExec(t, db, ctx, "INSERT INTO ref (id, flag) VALUES (25, 0)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO ref (id, flag) VALUES (25, 0)")
 		res, err := db.ExecContext(ctx, "UPDATE t SET a = 99 WHERE a < (SELECT MAX(id) FROM ref)")
 		if err != nil {
 			t.Fatalf("update: %v", err)

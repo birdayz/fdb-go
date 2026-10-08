@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // A GROUP BY over a nullable indexed column streams off the value index and
@@ -12,9 +14,9 @@ import (
 func TestFDB_NullableGroupByOverIndexKeepsTheNullGroup(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/FRL/nullgrp_idx", "NULLGRP_IDX",
+	db := testkit.SetupErrorDB(t, "/FRL/nullgrp_idx", "NULLGRP_IDX",
 		"CREATE TABLE products (id BIGINT, category INTEGER, price INTEGER, name STRING, PRIMARY KEY (id)) CREATE INDEX idx_cat ON products (category)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO products VALUES (1, 1, 10, 'a'), (2, NULL, 5, 'b'), (3, 1, 2, 'c')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO products VALUES (1, 1, 10, 'a'), (2, NULL, 5, 'b'), (3, 1, 2, 'c')")
 	const q = "SELECT category, SUM(price) AS total FROM products GROUP BY category ORDER BY category"
 	var plan string
 	if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {

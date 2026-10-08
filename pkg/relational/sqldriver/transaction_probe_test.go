@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_TransactionProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -23,17 +25,17 @@ func TestFDB_TransactionProbe(t *testing.T) {
 	// window between statements, so they are not exposed and must not be spiked —
 	// they have no retry and a pre-emption would simply fail them. Only
 	// multi_statement_atomic_rollback arms it, for its own transaction.
-	key, clk := spikedClusterKey(t, 30*time.Second)
+	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
 	clk.Disarm()
-	setup := openSpiked(t, key, "/FRL/testdb_txnprobe", "")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txnprobe")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenSpiked(t, key, "/FRL/testdb_txnprobe", "")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txnprobe")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE txnprobe "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txnprobe/s WITH TEMPLATE txnprobe")
-	dsn := spikedDSN(key, "/FRL/testdb_txnprobe", "s")
-	db := openSpiked(t, key, "/FRL/testdb_txnprobe", "s")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 10)")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txnprobe/s WITH TEMPLATE txnprobe")
+	dsn := testkit.SpikedDSN(key, "/FRL/testdb_txnprobe", "s")
+	db := testkit.OpenSpiked(t, key, "/FRL/testdb_txnprobe", "s")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 10)")
 
 	count := func() int64 {
 		var c int64
@@ -87,16 +89,16 @@ func TestFDB_TransactionProbe(t *testing.T) {
 		before := count()
 		clk.Rearm()
 		var attemptsRun int
-		retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+		testkit.RetryTx(t, db, testkit.SpikeOnce(clk, &attemptsRun), func(a testkit.TxAttempt) error {
 			for i := int64(200); i < 205; i++ {
-				if _, err := a.tx.ExecContext(ctx,
+				if _, err := a.Tx.ExecContext(ctx,
 					fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", i, i*10)); err != nil {
 					return err
 				}
 			}
 			return nil
 		})
-		mustHaveRetried(t, attemptsRun)
+		testkit.MustHaveRetried(t, attemptsRun)
 		// retryTx rolled the successful attempt back, which is the property under
 		// test: all five inserts must vanish together.
 		if got := count(); got != before {

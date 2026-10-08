@@ -12,28 +12,30 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DerivedStarRowVersionsWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dsrv")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dsrv")
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE dsrv_tpl
+	setup := testkit.OpenDB(t, "/FRL/testdb_dsrv")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dsrv")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE dsrv_tpl
 		CREATE TABLE aa (id BIGINT, y BIGINT, PRIMARY KEY (id))
 		CREATE TABLE bb (id BIGINT, z BIGINT, PRIMARY KEY (id))
 		WITH OPTIONS(store_row_versions=true)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dsrv/s1 WITH TEMPLATE dsrv_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DSRV?cluster_file=%s&schema=S1", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dsrv/s1 WITH TEMPLATE dsrv_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DSRV?cluster_file=%s&schema=S1", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO aa VALUES (1, 20), (2, 10)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO bb VALUES (1, 3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO aa VALUES (1, 20), (2, 10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO bb VALUES (1, 3)")
 
 	readY := func(t *testing.T, query string) ([]int64, error) {
 		t.Helper()
@@ -74,22 +76,22 @@ func TestFDB_DerivedStarRowVersionsWhere(t *testing.T) {
 // shadow-preferred answer.
 func TestFDB_DerivedStarRowVersionsUnnestCTE(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dsrvu")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dsrvu")
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE dsrvu_tpl
+	setup := testkit.OpenDB(t, "/FRL/testdb_dsrvu")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dsrvu")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE dsrvu_tpl
 		CREATE TABLE things (id BIGINT, x BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
 		WITH OPTIONS(store_row_versions=true)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dsrvu/s1 WITH TEMPLATE dsrvu_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DSRVU?cluster_file=%s&schema=S1", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dsrvu/s1 WITH TEMPLATE dsrvu_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DSRVU?cluster_file=%s&schema=S1", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO things VALUES (1, 5, [7, 8])")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO things VALUES (1, 5, [7, 8])")
 
 	const cte = "WITH d AS (SELECT * FROM things, things.arr AS x) SELECT d.x FROM d"
 	rows, err := db.QueryContext(ctx, cte)

@@ -11,29 +11,31 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_MultiColIndexGapProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_mcgap")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mcgap")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_mcgap")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mcgap")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE mcgap "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_abc ON t (a, b, c)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mcgap/s WITH TEMPLATE mcgap")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MCGAP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mcgap/s WITH TEMPLATE mcgap")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MCGAP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// id1 (1,2,10) id2 (1,2,20) id3 (1,3,5) id4 (2,2,10)
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a,b,c) VALUES (1,1,2,10),(2,1,2,20),(3,1,3,5),(4,2,2,10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,a,b,c) VALUES (1,1,2,10),(2,1,2,20),(3,1,3,5),(4,2,2,10)")
 
 	ids := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

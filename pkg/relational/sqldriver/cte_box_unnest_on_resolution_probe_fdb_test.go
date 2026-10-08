@@ -29,6 +29,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -44,12 +46,12 @@ import (
 
 func TestFDB_CTEBoxUnnestOnResolutionProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +87,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe(t *testing.T) {
 		for _, v := range vals {
 			arrVals = append(arrVals, protoreflect.ValueOfInt32(v))
 		}
-		setArrayField(m, d.Fields().ByName("ARR"), arrVals...)
+		testkit.SetArrayField(m, d.Fields().ByName("ARR"), arrVals...)
 		return m
 	}
 	mk2 := func(table, f1, f2 string, v1, v2 int64) proto.Message {
@@ -129,7 +131,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe(t *testing.T) {
 			if sErr != nil {
 				return nil, sErr
 			}
-			evalCtx, bindErr := prebindScalarSubqueries(ctx, store, subs)
+			evalCtx, bindErr := testkit.PrebindScalarSubqueries(ctx, store, subs)
 			if bindErr != nil {
 				return nil, bindErr
 			}
@@ -147,7 +149,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe(t *testing.T) {
 				// the row map's keys, so permuting (Fields, Slots) together rendered
 				// identically -- blind in the one dimension a mis-bound leg window
 				// moves.
-				out = append(out, positionalPipeSprint(r))
+				out = append(out, testkit.PositionalPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -325,12 +327,12 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe(t *testing.T) {
 // trigger or is the enclosed CTE box unnest broken generally?).
 func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +375,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		for _, v := range vals {
 			arrVals = append(arrVals, protoreflect.ValueOfInt32(v))
 		}
-		setArrayField(m, d.Fields().ByName("ARR"), arrVals...)
+		testkit.SetArrayField(m, d.Fields().ByName("ARR"), arrVals...)
 		return m
 	}
 	mk2 := func(table, f1, f2 string, v1, v2 int64) proto.Message {
@@ -422,7 +424,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 			if sErr != nil {
 				return nil, sErr
 			}
-			evalCtx, bindErr := prebindScalarSubqueries(ctx, store, subs)
+			evalCtx, bindErr := testkit.PrebindScalarSubqueries(ctx, store, subs)
 			if bindErr != nil {
 				return nil, bindErr
 			}
@@ -440,7 +442,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 				// the row map's keys, so permuting (Fields, Slots) together rendered
 				// identically -- blind in the one dimension a mis-bound leg window
 				// moves.
-				out = append(out, positionalPipeSprint(r))
+				out = append(out, testkit.PositionalPipeSprint(r))
 			}
 			return nil, nil
 		})

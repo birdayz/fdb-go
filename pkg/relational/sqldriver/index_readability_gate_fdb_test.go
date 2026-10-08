@@ -24,6 +24,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -35,13 +37,13 @@ import (
 func setIndexStateRaw(t *testing.T, dbPath, schema, indexName string, state recordlayer.IndexState) {
 	t.Helper()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	// The names CREATE DATABASE / CREATE SCHEMA stored: unquoted, folded (a
 	// database path whole).
-	ss := relationalStoreSubspace(t, strings.ToUpper(dbPath), strings.ToUpper(schema)).Sub(recordlayer.IndexStateSpaceKey)
+	ss := testkit.RelationalStoreSubspace(t, strings.ToUpper(dbPath), strings.ToUpper(schema)).Sub(recordlayer.IndexStateSpaceKey)
 	key := ss.Pack(tuple.Tuple{indexName})
 	if _, err := rawDB.Transact(func(tr fdb.WritableTransaction) (any, error) {
 		if state == recordlayer.IndexStateReadable {
@@ -65,24 +67,24 @@ func setIndexStateRaw(t *testing.T, dbPath, schema, indexName string, state reco
 //     execution error for a wrong answer, which is worse).
 func TestFDB_NonReadableIndexIsNotAMatchCandidate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_idxread")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idxread")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_idxread")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idxread")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE idxread "+
 			"CREATE TABLE t (pk BIGINT, c BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE INDEX t_by_c ON t(c)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idxread/s WITH TEMPLATE idxread")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXREAD?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idxread/s WITH TEMPLATE idxread")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXREAD?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (pk,c,v) VALUES (1,10,100),(2,20,200),(3,10,300)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (pk,c,v) VALUES (1,10,100),(2,20,200),(3,10,300)")
 
 	// Every statement below runs on ONE pinned connection, and that is
 	// load-bearing rather than tidiness. The plan cache lives on the
@@ -231,24 +233,24 @@ func TestFDB_NonReadableIndexIsNotAMatchCandidate(t *testing.T) {
 // aggregate hole wide open.
 func TestFDB_NonReadableAggregateIndexFallsBackToStreamingAggregation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_idxreadagg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idxreadagg")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_idxreadagg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idxreadagg")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE idxreadagg "+
 			"CREATE TABLE t (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE INDEX t_cnt_g AS SELECT COUNT(*) FROM t GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idxreadagg/s WITH TEMPLATE idxreadagg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXREADAGG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idxreadagg/s WITH TEMPLATE idxreadagg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXREADAGG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (pk,g,v) VALUES (1,1,10),(2,1,20),(3,2,30)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (pk,g,v) VALUES (1,1,10),(2,1,20),(3,2,30)")
 
 	const q = "SELECT g, COUNT(*) FROM t GROUP BY g"
 	const wantRows = "[1 2] [2 1]"

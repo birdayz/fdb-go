@@ -25,31 +25,33 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_DuplicateGroupBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dupgroupby")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dupgroupby")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dupgroupby")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dupgroupby")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dupgroupby "+
 			"CREATE TABLE t1 (id BIGINT, category STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, category STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dupgroupby/s WITH TEMPLATE dupgroupby")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUPGROUPBY?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dupgroupby/s WITH TEMPLATE dupgroupby")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUPGROUPBY?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t2 VALUES (7, 'a')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t2 VALUES (7, 'a')")
 
 	t.Run("duplicates reject 42702", func(t *testing.T) {
 		t.Parallel()

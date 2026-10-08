@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -43,12 +45,12 @@ import (
 //
 // Box (A FULL C): A.K=100/ARR[7,8]; A.K=300/ARR[9]; A.K=NULL(padded)/ARR[55].
 func TestFDB_CrossLegDuplicateColumnBoxUnnest(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +95,7 @@ func TestFDB_CrossLegDuplicateColumnBoxUnnest(t *testing.T) {
 		for _, v := range vals {
 			arrVals = append(arrVals, protoreflect.ValueOfInt32(v))
 		}
-		setArrayField(m, d.Fields().ByName("ARR"), arrVals...)
+		testkit.SetArrayField(m, d.Fields().ByName("ARR"), arrVals...)
 		return m
 	}
 
@@ -141,7 +143,7 @@ func TestFDB_CrossLegDuplicateColumnBoxUnnest(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})

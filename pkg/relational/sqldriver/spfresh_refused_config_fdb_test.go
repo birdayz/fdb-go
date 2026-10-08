@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -20,7 +22,7 @@ import (
 // a metric that does not parse) is not reachable from SQL.
 func TestFDB_SPFreshRefusedConfigurationIsA42000(t *testing.T) {
 	t.Parallel()
-	h := newFleetHarness(t)
+	h := testkit.NewFleetHarness(t)
 	suffix := strings.ReplaceAll(t.Name(), "_", "")
 	dbPath := "/FRL/SPFREFUSED" + strings.ToUpper(suffix)
 	name := "SPFREFUSED_T"
@@ -33,7 +35,7 @@ func TestFDB_SPFreshRefusedConfigurationIsA42000(t *testing.T) {
 	// maintainer's reader. The query reaches the refusal without a row: Go's
 	// INSERT does not take a vector value from SQL yet (TODO.md, "Go's INSERT
 	// VALUES does not take a vector").
-	db := fleetOpen(t, dbPath, "S")
+	db := testkit.FleetOpen(t, dbPath, "S")
 	rows, err := db.QueryContext(context.Background(), `SELECT ID FROM DOCS
 		QUALIFY ROW_NUMBER() OVER (ORDER BY euclidean_distance(EMBEDDING, [1.0, 0.0, 0.0])) <= 3`)
 	if err == nil {

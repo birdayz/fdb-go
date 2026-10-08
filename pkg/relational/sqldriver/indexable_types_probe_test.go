@@ -13,16 +13,18 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_IndexableTypesProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := openTestDB(t, "/FRL/testdb_idxty")
-	mwjoMustExec(t, db, ctx, "CREATE DATABASE /FRL/testdb_idxty")
+	db := testkit.OpenDB(t, "/FRL/testdb_idxty")
+	testkit.MustExecCtx(t, db, ctx, "CREATE DATABASE /FRL/testdb_idxty")
 
 	indexable := func(name, ty string) {
 		t.Run(name, func(t *testing.T) {
@@ -49,15 +51,15 @@ func TestFDB_IndexableTypesProbe(t *testing.T) {
 	// end-to-end sentinel: index a UUID column and read the row back by UUID.
 	t.Run("uuid_indexable_and_roundtrips", func(t *testing.T) {
 		const u = "550e8400-e29b-41d4-a716-446655440000"
-		mwjoMustExec(t, db, ctx,
+		testkit.MustExecCtx(t, db, ctx,
 			"CREATE SCHEMA TEMPLATE idxty_uuid CREATE TABLE t (id BIGINT, v UUID, PRIMARY KEY (id)) CREATE INDEX t_v ON t (v)")
-		mwjoMustExec(t, db, ctx, "CREATE SCHEMA /FRL/testdb_idxty/suuid WITH TEMPLATE idxty_uuid")
-		udb, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXTY?cluster_file=%s&schema=SUUID", clusterFilePath))
+		testkit.MustExecCtx(t, db, ctx, "CREATE SCHEMA /FRL/testdb_idxty/suuid WITH TEMPLATE idxty_uuid")
+		udb, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXTY?cluster_file=%s&schema=SUUID", testkit.ClusterFile()))
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
 		}
 		t.Cleanup(func() { udb.Close() })
-		mwjoMustExec(t, udb, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (1, '%s')", u))
+		testkit.MustExecCtx(t, udb, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (1, '%s')", u))
 		// Query by UUID via the index and read the value back — the whole point
 		// of the read side (string probe → tuple.UUID → 0x30 entry → canonical
 		// string out).

@@ -36,6 +36,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // aggWidthDB creates a database + schema from the given table DDL and returns
@@ -43,7 +45,7 @@ import (
 func aggWidthDB(t *testing.T, ctx context.Context, tag, tables string) *sql.DB {
 	t.Helper()
 	dbPath := fmt.Sprintf("/FRL/aggwidth_%s", tag)
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -57,7 +59,7 @@ func aggWidthDB(t *testing.T, ctx context.Context, tag, tables string) *sql.DB {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 	db, err := sql.Open("fdbsql", fmt.Sprintf(
-		"fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath))
+		"fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -103,7 +105,7 @@ func sumOutcome(t *testing.T, ctx context.Context, db *sql.DB, q string) string 
 // columns comes out on the wrong side.
 func TestFDB_AggregateOperandWidthIsPositional(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -150,7 +152,7 @@ func TestFDB_AggregateOperandWidthIsPositional(t *testing.T) {
 // than index the foreign layout — either way a wrong narrowing never happens.
 func TestFDB_AggregateOperandWidthDeclinesForeignLayout(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -218,7 +220,7 @@ func sumErrText(t *testing.T, ctx context.Context, db *sql.DB, q string) string 
 // "long overflow".
 func TestFDB_AggregateOperandWidthJoinLegRaises(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -255,7 +257,7 @@ func TestFDB_AggregateOperandWidthJoinLegRaises(t *testing.T) {
 // this sum silently.
 func TestFDB_AggregateOperandWidthNegativeOverflow(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -291,7 +293,7 @@ func TestFDB_AggregateOperandWidthNegativeOverflow(t *testing.T) {
 // and the standalone path.
 func TestFDB_AggregateOperandWidthInt32BoundaryExact(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -340,7 +342,7 @@ func TestFDB_AggregateOperandWidthInt32BoundaryExact(t *testing.T) {
 // int32-checked lane.
 func TestFDB_AggregateOperandWidthBigintBothPaths(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -397,7 +399,7 @@ func TestFDB_AggregateOperandWidthBigintBothPaths(t *testing.T) {
 // NumericAggregationValue) and must answer.
 func TestFDB_AggregateOperandWidthAvgCountControls(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -454,7 +456,7 @@ func TestFDB_AggregateOperandWidthAvgCountControls(t *testing.T) {
 // typing landed, Go silently answered 8000000000 there.
 func TestFDB_AggregateOperandWidthDerivedAndUnionInputs(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()

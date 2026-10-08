@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -29,7 +31,7 @@ import (
 //     with Java's counts.
 func TestFDB_DMLOnDottedNames(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/TEST/DML_DOTTED", "S",
+	db := testkit.SetupErrorDB(t, "/TEST/DML_DOTTED", "S",
 		`create table "foo.tableA"("foo.tableA.A1" bigint, "foo.tableA.A2" bigint, "foo.tableA.A3" bigint, primary key("foo.tableA.A1")) `+
 			`create table tb(b1 bigint, "b.2" bigint, primary key(b1))`)
 	ctx := context.Background()

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
@@ -138,7 +140,7 @@ func TestUnnestLegMintNameArmSearchSpace(t *testing.T) {
 		{"buried_collide", `SELECT "X" FROM A, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM A, EE WHERE A."K" = EE."CK" AND A."K" > 3)`},
 	}
 
-	md := existsGatherSchemaMetadata(t)
+	md := testkit.ExistsGatherSchemaMetadata(t)
 	for _, tc := range plans {
 		if _, err := embedded.PlanRecordQueryWithMetadata(tc.sql, md, nil); err != nil {
 			t.Errorf("%s: expected a plan, got %v\n  sql: %s", tc.name, err, tc.sql)
@@ -149,7 +151,7 @@ func TestUnnestLegMintNameArmSearchSpace(t *testing.T) {
 	// TestOuterJoinUnderChainedUnnestDeclines); what matters here is that the
 	// admitted chained shapes PLAN — i.e. carry an RC seed — so the
 	// `!ordinalSeed` name arm is not the one they take.
-	cmd := buildChainedUnnestMetadata(t)
+	cmd := testkit.BuildChainedUnnestMetadata(t)
 	chainPlans := []struct{ name, sql string }{
 		{"chain_nonpushable", `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" > "Y"`},
 		{"chain_pushable", `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE T4."ID" > 3`},

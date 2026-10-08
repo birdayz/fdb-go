@@ -44,6 +44,8 @@ import (
 	"database/sql"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -51,7 +53,7 @@ import (
 // into a single-column BIGINT PK succeeds and stores tuple null.
 func TestFDB_NullPK_ExplicitNull_SingleColumn(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_nullpk_single", "nullpk_single",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_nullpk_single", "nullpk_single",
 		"CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -76,7 +78,7 @@ func TestFDB_NullPK_ExplicitNull_SingleColumn(t *testing.T) {
 	if err == nil {
 		t.Fatal("second NULL-PK INSERT did not collide — the first NULL was not stored under the null key")
 	}
-	if got := asAPIError(err); got == nil || got.Code != api.ErrCodeUniqueConstraintViolation {
+	if got := testkit.AsAPIError(err); got == nil || got.Code != api.ErrCodeUniqueConstraintViolation {
 		t.Fatalf("second NULL-PK INSERT error = %v, want SQLSTATE %s", err, api.ErrCodeUniqueConstraintViolation)
 	}
 
@@ -126,7 +128,7 @@ func TestFDB_NullPK_ExplicitNull_SingleColumn(t *testing.T) {
 // live: `insert into B values (1, 2), (3, null), (null, 4), (null, null)`.
 func TestFDB_NullPK_CompositePartialNull(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_nullpk_comp", "nullpk_comp",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_nullpk_comp", "nullpk_comp",
 		"CREATE TABLE B (b1 BIGINT, b2 DOUBLE, PRIMARY KEY (b1, b2))")
 	ctx := context.Background()
 
@@ -181,7 +183,7 @@ func TestFDB_NullPK_CompositePartialNull(t *testing.T) {
 // inserts-updates-deletes.yamsql:133-135).
 func TestFDB_NullPK_OmittedColumn(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_nullpk_omit", "nullpk_omit",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_nullpk_omit", "nullpk_omit",
 		"CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 

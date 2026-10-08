@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -23,11 +25,11 @@ import (
 func TestFDB_VectorIndexEnginePreference(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_vec_pref")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_vec_pref")
+	setup := testkit.OpenDB(t, "/FRL/testdb_vec_pref")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_vec_pref")
 	g := "options (metric = %s, primary_cluster_min = 1, primary_cluster_max = 100, collapse_min_duplicates = 50)"
 	guardiann := fmt.Sprintf(g, "euclidean_metric")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE vec_pref_tpl "+
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE vec_pref_tpl "+
 		"create table documents(zone string, docId string, bookshelf string, title string, embedding vector(3, half), primary key (zone, docId)) "+
 		"create view documentsView as select embedding, zone, bookshelf, docId, title from documents "+
 		"create vector index documentsHnswIndex using hnsw on documentsView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric) "+
@@ -47,8 +49,8 @@ func TestFDB_VectorIndexEnginePreference(t *testing.T) {
 		"create view mixedMetricsView as select embedding, zone, bookshelf, docId from mixedMetrics "+
 		"create vector index mixedMetricsHnswEuclideanIndex using hnsw on mixedMetricsView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric) "+
 		"create vector index mixedMetricsGuardiannCosineIndex using guardiann on mixedMetricsView(embedding) partition by(zone, bookshelf) "+fmt.Sprintf(g, "cosine_metric"))
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_vec_pref/s WITH TEMPLATE vec_pref_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_VEC_PREF?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_vec_pref/s WITH TEMPLATE vec_pref_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_VEC_PREF?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -100,7 +102,7 @@ func TestFDB_VectorIndexEnginePreference(t *testing.T) {
 		{api.VectorIndexPreferGuardiann, only("mixedMetrics"), []string{"MIXEDMETRICSHNSWEUCLIDEANINDEX"}, "m1,m2"},
 		{api.VectorIndexPreferGuardiann, covering, []string{"DOCUMENTSBYTITLE"}, "d1"},
 	} {
-		conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 			ec.SetOptions(api.NewOptionsBuilder().Set(api.OptVectorIndexEnginePreference, c.pref).Build())
 		})
 		var plan string

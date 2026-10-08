@@ -14,27 +14,29 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_UpdateConstraintEnforcementProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uce")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uce")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uce "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_uce")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uce")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE uce "+
 		"CREATE TABLE t (id BIGINT, email STRING, nn BIGINT, PRIMARY KEY (id)) "+
 		"CREATE UNIQUE INDEX t_email ON t (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uce/s WITH TEMPLATE uce")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UCE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uce/s WITH TEMPLATE uce")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UCE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, email, nn) VALUES (1,'a@x',10),(2,'b@x',20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, email, nn) VALUES (1,'a@x',10),(2,'b@x',20)")
 
 	t.Run("update_to_duplicate_unique_rejected_23505_no_mutation", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, "UPDATE t SET email = 'a@x' WHERE id = 2")

@@ -11,20 +11,22 @@ import (
 	"fmt"
 	"math"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ParamStringEdgeProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_paramedge")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_paramedge")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_paramedge")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_paramedge")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE paramedge CREATE TABLE t (id BIGINT, n BIGINT, s STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_paramedge/s WITH TEMPLATE paramedge")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAMEDGE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_paramedge/s WITH TEMPLATE paramedge")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAMEDGE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

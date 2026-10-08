@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
@@ -32,7 +34,7 @@ func TestFDB_QueuedVectorIndexIsWriteOnlyToSQL(t *testing.T) {
 		"CREATE VECTOR INDEX docsIdx USING GUARDIANN ON docs (embedding) " +
 		"OPTIONS (metric = euclidean_metric, primary_cluster_min = 2, primary_cluster_max = 10, collapse_min_duplicates = 5)"
 	const dbPath, schemaName = "/FRL/testdb_queued_state", "queued_state"
-	db := setupErrorTestDB(t, dbPath, schemaName, ddl)
+	db := testkit.SetupErrorDB(t, dbPath, schemaName, ddl)
 
 	tmpl, err := embedded.BuildSchemaTemplateFromDDLNamed(ddl, strings.ToUpper(schemaName)+"_TMPL")
 	if err != nil {
@@ -40,7 +42,7 @@ func TestFDB_QueuedVectorIndexIsWriteOnlyToSQL(t *testing.T) {
 	}
 	md := tmpl.Underlying()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open raw FDB: %v", err)
 	}
@@ -116,7 +118,7 @@ func TestFDB_QueuedVectorIndexIsWriteOnlyToSQL(t *testing.T) {
 	// serves it, and the query is unplannable (0AF00), not answered from it.
 	var plan string
 	err = db.QueryRowContext(ctx, "EXPLAIN "+knn).Scan(&plan)
-	if apiErr := asAPIError(err); apiErr == nil || apiErr.Code != api.ErrCodeUnsupportedQuery {
+	if apiErr := testkit.AsAPIError(err); apiErr == nil || apiErr.Code != api.ErrCodeUnsupportedQuery {
 		t.Errorf("KNN over the queued index: plan %q, err %v; want 0AF00 (the queued index is not READABLE)", plan, err)
 	}
 	var n int64

@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -121,11 +123,11 @@ func (p *mmTxPair) want(name, q string, expect []string) {
 	p.t.Helper()
 	gi := p.rows(p.itx, q)
 	gn := p.rows(p.ntx, q)
-	if !mmEqRows(gn, expect) {
+	if !testkit.EqualRows(gn, expect) {
 		p.t.Errorf("%s: UNINDEXED (oracle) answer is wrong mid-transaction\n  q: %s\n  got  %v\n  want %v",
 			name, q, gn, expect)
 	}
-	if !mmEqRows(gi, expect) {
+	if !testkit.EqualRows(gi, expect) {
 		p.t.Errorf("%s: the INDEXED schema does not see its own transaction's writes\n"+
 			"  q: %s\n  got  %v\n  want %v\n"+
 			"An index read inside a transaction must reflect the writes that transaction already "+
@@ -141,11 +143,11 @@ func (p *mmTxPair) wantIndexed(name, q string, expectIndexed, expectRecords []st
 	p.t.Helper()
 	gi := p.rows(p.itx, q)
 	gn := p.rows(p.ntx, q)
-	if !mmEqRows(gn, expectRecords) {
+	if !testkit.EqualRows(gn, expectRecords) {
 		p.t.Errorf("%s: UNINDEXED (oracle) answer is wrong mid-transaction\n  q: %s\n  got  %v\n  want %v",
 			name, q, gn, expectRecords)
 	}
-	if !mmEqRows(gi, expectIndexed) {
+	if !testkit.EqualRows(gi, expectIndexed) {
 		p.t.Errorf("%s: the INDEXED schema does not see its own transaction's writes\n"+
 			"  q: %s\n  got  %v\n  want %v", name, q, gi, expectIndexed)
 	}
@@ -164,7 +166,7 @@ func (p *mmTxPair) wantIndexed(name, q string, expectIndexed, expectRecords []st
 // attempts would be reporting something worth seeing rather than something
 // worth hiding — so the cap fails loudly and says how long the transaction
 // survived.
-func mmInTxPair(t *testing.T, ctx context.Context, w *mmTwin, body func(p *mmTxPair)) {
+func mmInTxPair(t *testing.T, ctx context.Context, w *testkit.Twin, body func(p *mmTxPair)) {
 	t.Helper()
 	const maxAttempts = 4
 	for attempt := 1; ; attempt++ {
@@ -201,13 +203,13 @@ func mmInTxPair(t *testing.T, ctx context.Context, w *mmTwin, body func(p *mmTxP
 	}
 }
 
-func mmBeginPair(t *testing.T, ctx context.Context, w *mmTwin) (*mmTxPair, func()) {
+func mmBeginPair(t *testing.T, ctx context.Context, w *testkit.Twin) (*mmTxPair, func()) {
 	t.Helper()
-	itx, err := w.idx.BeginTx(ctx, nil)
+	itx, err := w.Idx.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin on the indexed schema: %v", err)
 	}
-	ntx, err := w.plain.BeginTx(ctx, nil)
+	ntx, err := w.Plain.BeginTx(ctx, nil)
 	if err != nil {
 		_ = itx.Rollback()
 		t.Fatalf("begin on the unindexed schema: %v", err)
@@ -223,11 +225,11 @@ func mmBeginPair(t *testing.T, ctx context.Context, w *mmTwin) (*mmTxPair, func(
 // only this transaction has updated.
 func TestFDB_ReadYourWritesThroughValueIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_ryw_value", "rywv",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_ryw_value", "rywv",
 		"CREATE TABLE t (id BIGINT, a BIGINT, s STRING, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_s ON t (s) ")
 	w.Exec("INSERT INTO t (id, a, s) VALUES (1, 10, 'x'), (2, 20, 'y')")
@@ -283,11 +285,11 @@ func TestFDB_ReadYourWritesThroughValueIndex(t *testing.T) {
 // rather than a missing row.
 func TestFDB_ReadYourWritesThroughAggregateIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_ryw_agg", "rywa",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_ryw_agg", "rywa",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_cnt AS SELECT COUNT(*) FROM t GROUP BY g "+
 			"CREATE INDEX t_sum AS SELECT SUM(v) FROM t GROUP BY g "+
@@ -365,11 +367,11 @@ func TestFDB_ReadYourWritesThroughAggregateIndex(t *testing.T) {
 // ROLLBACK — through the indexes as much as through the records.
 func TestFDB_ReadYourWritesCommitAndRollback(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_ryw_exit", "rywx",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_ryw_exit", "rywx",
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_cnt AS SELECT COUNT(*) FROM t GROUP BY a ")
 	w.Exec("INSERT INTO t (id, a) VALUES (1, 10)")
@@ -387,11 +389,11 @@ func TestFDB_ReadYourWritesCommitAndRollback(t *testing.T) {
 		"SELECT a, COUNT(*) FROM t GROUP BY a ORDER BY a", []string{"10|1"})
 
 	// ---- commit ----
-	itx, err := w.idx.BeginTx(ctx, nil)
+	itx, err := w.Idx.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	ntx, err := w.plain.BeginTx(ctx, nil)
+	ntx, err := w.Plain.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}

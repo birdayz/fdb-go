@@ -37,25 +37,27 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_czs")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_czs")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czs "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_czs")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_czs")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE czs "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w) "+
 		"CREATE TABLE t2 (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE o (id BIGINT, k DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_czs/s WITH TEMPLATE czs")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CZS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_czs/s WITH TEMPLATE czs")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CZS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -68,11 +70,11 @@ func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 	// id 4: positive zero at w=1 — same guard from the other side.
 	// id 5: POSITIVE zero at w=5 — must match a -0.0 (and +0.0) outer key.
 	const rows = " (1, -0.0, 5), (2, 5.0, 5), (3, -0.0, 9), (4, 0.0, 1), (5, 0.0, 5)"
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, w) VALUES"+rows)
-	mwjoMustExec(t, db, ctx, "INSERT INTO t2 (id, v, w) VALUES"+rows)
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v, w) VALUES"+rows)
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t2 (id, v, w) VALUES"+rows)
 	// Outer keys: id 10 = +0.0, id 30 = -0.0 (both correlation directions),
 	// id 20 = nonzero control, and id 40 = NULL (SQL 3VL control).
-	mwjoMustExec(t, db, ctx, "INSERT INTO o (id, k) VALUES (10, 0.0), (20, 5.0), (30, -0.0), (40, NULL)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO o (id, k) VALUES (10, 0.0), (20, 5.0), (30, -0.0), (40, NULL)")
 
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -193,36 +195,36 @@ func TestFDB_CorrelatedZeroCompositeSentinel(t *testing.T) {
 // messages say what gets re-armed if the pinned fact changes.
 func TestFDB_CorrelatedZeroRangeSetShapes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_czf")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_czf")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czf "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_czf")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_czf")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE czf "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w) "+
 		"CREATE TABLE m (id BIGINT, a DOUBLE, b DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX m_abw ON m (a, b, w) "+
 		"CREATE TABLE o (id BIGINT, k DOUBLE, k2 DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_czf/s WITH TEMPLATE czf")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CZF?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_czf/s WITH TEMPLATE czf")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CZF?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO t (id, v, w) VALUES (1, -0.0, 5), (2, 5.0, 5), (3, -0.0, 9), (4, 0.0, 1), (5, 0.0, 5)")
 	// m: ALL FOUR sign combinations at w=5 (ids 1-4) — the 2^2 Cartesian range
 	// set must cover — plus guards: ids 5-6 sit between the wanted
 	// (a,b,5) keys in index order (wrong w), ids 7-8 have a nonzero in one
 	// fork column (must not match a zero comparand).
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO m (id, a, b, w) VALUES "+
 			"(1, -0.0, -0.0, 5), (2, -0.0, 0.0, 5), (3, 0.0, -0.0, 5), (4, 0.0, 0.0, 5), "+
 			"(5, -0.0, -0.0, 9), (6, 0.0, 0.0, 1), (7, -0.0, 5.0, 5), (8, 5.0, 0.0, 5)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO o (id, k, k2) VALUES (10, 0.0, -0.0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO o (id, k, k2) VALUES (10, 0.0, -0.0)")
 
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -269,7 +271,7 @@ func TestFDB_CorrelatedZeroRangeSetShapes(t *testing.T) {
 	// per sign combination, no duplicates, and the full prefix stays sarg'd.
 	t.Run("two-zero-cartesian", func(t *testing.T) {
 		q := "SELECT m.id FROM m, o WHERE m.a = o.k AND m.b = o.k2 AND m.w = 5 AND o.id = 10"
-		plan := explainOnConn(t, ctx, conn, q)
+		plan := testkit.ExplainConn(t, ctx, conn, q)
 		if !strings.Contains(plan, "IndexScan(M_ABW, [=, =, =])") {
 			t.Errorf("two-zero probe no longer sargs the full (a, b, w) prefix — de-sargged or residualized?\nplan: %s", plan)
 		}
@@ -291,7 +293,7 @@ func TestFDB_CorrelatedZeroRangeSetShapes(t *testing.T) {
 			{"SELECT COUNT(*) FROM t, o WHERE t.v = o.k AND t.w = 5 AND o.id = 10", 2},
 			{"SELECT MAX(t.id) FROM t, o WHERE t.v = o.k AND t.w = 5 AND o.id = 10", 5},
 		} {
-			plan := explainOnConn(t, ctx, conn, tc.q)
+			plan := testkit.ExplainConn(t, ctx, conn, tc.q)
 			if !strings.Contains(plan, "IndexScan(T_VW, [=, =])") {
 				t.Errorf("aggregate over the correlated range set lost the composite index probe\nquery: %s\nplan: %s", tc.q, plan)
 			}
@@ -311,22 +313,22 @@ func TestFDB_CorrelatedZeroRangeSetShapes(t *testing.T) {
 	// under budgets that stop inside and between the two signed-zero branches.
 	t.Run("reverse-order-and-resume", func(t *testing.T) {
 		q := "SELECT t.id FROM t, o WHERE t.v = o.k AND t.w = 5 AND o.id = 10 ORDER BY t.v DESC"
-		plan := explainOnConn(t, ctx, conn, q)
+		plan := testkit.ExplainConn(t, ctx, conn, q)
 		if !strings.Contains(plan, "IndexScan(T_VW, [=, =]) REVERSE") || strings.Contains(plan, "InMemorySort") {
 			t.Fatalf("DESC over the correlated range set must use the reverse composite probe directly\nplan: %s", plan)
 		}
 
-		unpaged := scanInt64Rows(t, ctx, conn, q)
+		unpaged := testkit.ScanInt64Rows(t, ctx, conn, q)
 		if got, want := fmt.Sprint(unpaged), "[5 1]"; got != want {
 			t.Fatalf("reverse physical range order = %s, want %s\nplan: %s", got, want, plan)
 		}
 		for budget := 2; budget <= 4; budget++ {
-			pagedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+			pagedConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 				ec.SetOptions(api.NewOptionsBuilder().
 					Set(api.OptExecutionScannedRowsLimit, budget).
 					Build())
 			})
-			paged := scanInt64Rows(t, ctx, pagedConn, q)
+			paged := testkit.ScanInt64Rows(t, ctx, pagedConn, q)
 			if fmt.Sprint(paged) != fmt.Sprint(unpaged) {
 				t.Fatalf("reverse range-set continuation dropped, duplicated, or reordered rows (budget %d): paged=%v unpaged=%v",
 					budget, paged, unpaged)

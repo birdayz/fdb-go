@@ -26,21 +26,23 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_InsertColumnListReorderings(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_iclr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_iclr")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE iclr "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_iclr")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_iclr")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE iclr "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE u (id BIGINT, a BIGINT ARRAY NOT NULL, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_iclr/s WITH TEMPLATE iclr")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ICLR?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_iclr/s WITH TEMPLATE iclr")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ICLR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

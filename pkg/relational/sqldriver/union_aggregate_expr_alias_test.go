@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_UnionAggregateExprAlias is the RFC-079 (RFC-078 follow-up b) regression:
@@ -23,28 +25,28 @@ import (
 // helper (buildPostAggregateProjection) so both builders carry the alias.
 func TestFDB_UnionAggregateExprAlias(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_union_expralias")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_union_expralias")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_union_expralias")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_union_expralias")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE union_expralias_tmpl "+
 			"CREATE TABLE a (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, g BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_union_expralias/s WITH TEMPLATE union_expralias_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_union_expralias/s WITH TEMPLATE union_expralias_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_EXPRALIAS?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNION_EXPRALIAS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1, 0), (2, 0)")            // count(a) = 2 → +1 = 3
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (10, 0), (20, 0), (30, 0)") // count(b) = 3 → +1 = 4
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1, 0), (2, 0)")            // count(a) = 2 → +1 = 3
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (10, 0), (20, 0), (30, 0)") // count(b) = 3 → +1 = 4
 
 	// (1) The core regression: mismatched-alias post-aggregate EXPRESSION branches,
 	// projected by the first branch's name → both expression values, no NULL.

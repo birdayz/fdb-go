@@ -13,30 +13,32 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CaseCollidingNames(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_case_colliding")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_case_colliding")
-	mustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE case_colliding_tmpl `+
+	setup := testkit.OpenDB(t, "/FRL/testdb_case_colliding")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_case_colliding")
+	testkit.MustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE case_colliding_tmpl `+
 		`create table t2(id bigint, "COLUMN" string, "column" string, "cOLumN" string, primary key(id)) `+
 		`create table "Table1"("id" bigint, "col1" bigint, "col2" bigint, primary key("id")) `+
 		`create table "TaBlE1"("x" bigint, "y" string, primary key("x")) `+
 		`create index "i1" as select "col2", "col1" from "Table1" order by "col2", "col1"`)
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_case_colliding/s WITH TEMPLATE case_colliding_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_COLLIDING?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_case_colliding/s WITH TEMPLATE case_colliding_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_CASE_COLLIDING?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, `insert into t2 values (1, 'a_UP', 'a_lo', 'a_Mx')`)
-	mustExec(t, db, ctx, `insert into t2(id, "column") values (2, 'only_lo')`)
-	mustExec(t, db, ctx, `insert into "Table1" values (1, 10, 1)`)
-	mustExec(t, db, ctx, `insert into "TaBlE1" values (1, 'foo')`)
+	testkit.MustExec(t, db, ctx, `insert into t2 values (1, 'a_UP', 'a_lo', 'a_Mx')`)
+	testkit.MustExec(t, db, ctx, `insert into t2(id, "column") values (2, 'only_lo')`)
+	testkit.MustExec(t, db, ctx, `insert into "Table1" values (1, 10, 1)`)
+	testkit.MustExec(t, db, ctx, `insert into "TaBlE1" values (1, 'foo')`)
 
 	for _, tc := range []struct {
 		query string

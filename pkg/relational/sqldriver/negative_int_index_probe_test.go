@@ -11,29 +11,31 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_NegativeIntIndexProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_negint")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_negint")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_negint")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_negint")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE negint "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_v ON t (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_negint/s WITH TEMPLATE negint")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NEGINT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_negint/s WITH TEMPLATE negint")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NEGINT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// v: -9223372036854775808 (MinInt64), -100, -1, 0, 1, 100
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1,-100),(2,-1),(3,0),(4,1),(5,100),(6,-9223372036854775808)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1,-100),(2,-1),(3,0),(4,1),(5,100),(6,-9223372036854775808)")
 
 	vals := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

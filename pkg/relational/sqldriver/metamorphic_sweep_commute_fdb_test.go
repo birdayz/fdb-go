@@ -36,6 +36,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // mmcCommute flips a comparison operator so that swapping its operands
@@ -65,11 +67,11 @@ func mmcCommute(op string) (string, bool) {
 
 func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_mhcommute", "mhcom",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_mhcommute", "mhcom",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) "+
 			"CREATE INDEX t_c ON t (c) CREATE INDEX t_s ON t (s) ")
@@ -78,14 +80,14 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 	const nRows = 120
 	var vals []string
 	for i := 1; i <= nRows; i++ {
-		vals = append(vals, mhRowLiteral(dataRand, i))
+		vals = append(vals, testkit.MhRowLiteral(dataRand, i))
 	}
 	for start := 0; start < len(vals); start += 20 {
 		end := start + 20
 		if end > len(vals) {
 			end = len(vals)
 		}
-		w.Exec("INSERT INTO t " + mhCols + " VALUES " + strings.Join(vals[start:end], ", "))
+		w.Exec("INSERT INTO t " + testkit.MhCols + " VALUES " + strings.Join(vals[start:end], ", "))
 	}
 
 	seed := int64(11)
@@ -96,7 +98,7 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 	if s := os.Getenv("MHC_ITERS"); s != "" {
 		fmt.Sscan(s, &iters)
 	}
-	g := &mhGen{r: rand.New(rand.NewSource(seed))}
+	g := &testkit.MhGen{R: rand.New(rand.NewSource(seed))}
 
 	// Three counters, because there are three ways to be green having proved
 	// nothing: no pairs compared at all, no pair whose rows were non-empty, and
@@ -109,9 +111,9 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 		col  func() string
 		lit  func() string
 	}{
-		{"bigint", func() string { return g.pick(g.ints()) }, func() string { return g.pick(mhIntLits) }},
-		{"double", func() string { return g.pick(g.dbls()) }, func() string { return g.pick(mhDblLits) }},
-		{"string", func() string { return g.pick(g.strs()) }, func() string { return g.pick(mhStrLits) }},
+		{"bigint", func() string { return g.Pick(g.Ints()) }, func() string { return g.Pick(testkit.MhIntLits) }},
+		{"double", func() string { return g.Pick(g.Dbls()) }, func() string { return g.Pick(testkit.MhDblLits) }},
+		{"string", func() string { return g.Pick(g.Strs()) }, func() string { return g.Pick(testkit.MhStrLits) }},
 	}
 
 	// The value space is small (a handful of columns, literals and operators),
@@ -126,7 +128,7 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 		t.Run(o.name, func(t *testing.T) {
 			w := w.Sub(t)
 			for i := 0; i < iters; i++ {
-				col, lit, op := o.col(), o.lit(), g.cmpOp()
+				col, lit, op := o.col(), o.lit(), g.CmpOp()
 				flipped, ok := mmcCommute(op)
 				if !ok {
 					t.Fatalf("the operator table has no flip for %q, so this iteration would "+
@@ -146,13 +148,13 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 					continue
 				}
 
-				want, err := mmRows(t, ctx, w.plain, asWritten)
+				want, err := testkit.QueryRowStrings(t, ctx, w.Plain, asWritten)
 				if err != nil {
 					// An unsupported shape is not a finding, but the two
 					// spellings must be unsupported TOGETHER — a commutation
 					// that changes whether a query is ACCEPTED is a defect even
 					// when no row is involved.
-					if _, cerr := mmRows(t, ctx, w.plain, commuted); (cerr == nil) != (err == nil) {
+					if _, cerr := testkit.QueryRowStrings(t, ctx, w.Plain, commuted); (cerr == nil) != (err == nil) {
 						t.Errorf("commuting changed whether the query is ACCEPTED\n"+
 							"  as written: %s\n  err: %v\n  commuted  : %s\n  err: %v",
 							asWritten, err, commuted, cerr)
@@ -192,7 +194,7 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 	// what makes an inclusive/exclusive confusion visible rather than a matter
 	// of which rows happened to exist.
 	t.Run("fixed boundaries with hand-computed answers", func(t *testing.T) {
-		w := mmNewTwin(t, ctx, "/FRL/testdb_mhcommute_fixed", "mhcomf",
+		w := testkit.NewTwin(t, ctx, "/FRL/testdb_mhcommute_fixed", "mhcomf",
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) ",
 			"CREATE INDEX t_a ON t (a) ")
 		// a = 10, 20, 30, and a NULL. 20 is the boundary every case below

@@ -29,12 +29,13 @@ package sqldriver_test
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"math/rand/v2"
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -73,8 +74,8 @@ func mhcpkLit(v any) string {
 // returns (compared, nonEmpty): compared is false when both sides errored (a
 // legitimate outcome for a query the engine declines, counted by the caller),
 // nonEmpty is whether the agreed answer had rows.
-func mhcpkCompare(w *mmTwin, stage string, q mhcpkQuery) (compared, nonEmpty bool) {
-	w.t.Helper()
+func mhcpkCompare(w *testkit.Twin, stage string, q mhcpkQuery) (compared, nonEmpty bool) {
+	w.T.Helper()
 	compared, nonEmpty, _, _ = mhcpkCompareRows(w, stage, q)
 	return compared, nonEmpty
 }
@@ -82,16 +83,16 @@ func mhcpkCompare(w *mmTwin, stage string, q mhcpkQuery) (compared, nonEmpty boo
 // mhcpkCompareRows is mhcpkCompare that also hands back the indexed side's
 // rows and error, so a later pass over the same unchanged fixture can reuse
 // them instead of re-reading.
-func mhcpkCompareRows(w *mmTwin, stage string, q mhcpkQuery) (compared, nonEmpty bool, gi []string, ei error) {
-	w.t.Helper()
-	gi, ei = mmRows(w.t, w.ctx, w.idx, q.sql)
-	gn, en := mmRows(w.t, w.ctx, w.plain, q.sql)
+func mhcpkCompareRows(w *testkit.Twin, stage string, q mhcpkQuery) (compared, nonEmpty bool, gi []string, ei error) {
+	w.T.Helper()
+	gi, ei = testkit.QueryRowStrings(w.T, w.Ctx, w.Idx, q.sql)
+	gn, en := testkit.QueryRowStrings(w.T, w.Ctx, w.Plain, q.sql)
 	if (ei == nil) != (en == nil) {
-		w.t.Errorf("%s: ERROR ASYMMETRY\n  q: %s\n  indexed:   %v\n  unindexed: %v", stage, q.sql, ei, en)
+		w.T.Errorf("%s: ERROR ASYMMETRY\n  q: %s\n  indexed:   %v\n  unindexed: %v", stage, q.sql, ei, en)
 		return false, false, gi, ei
 	}
 	if ei != nil {
-		w.t.Logf("%s: both errored: %s: %v", stage, q.sql, ei)
+		w.T.Logf("%s: both errored: %s: %v", stage, q.sql, ei)
 		return false, false, gi, ei
 	}
 	si, sn := append([]string(nil), gi...), append([]string(nil), gn...)
@@ -99,8 +100,8 @@ func mhcpkCompareRows(w *mmTwin, stage string, q mhcpkQuery) (compared, nonEmpty
 		sort.Strings(si)
 		sort.Strings(sn)
 	}
-	if !mmEqRows(si, sn) {
-		w.t.Errorf("%s: indexed and unindexed DISAGREE (ordered=%v)\n  q: %s\n  plan: %s\n  indexed   (%d): %v\n  unindexed (%d): %v",
+	if !testkit.EqualRows(si, sn) {
+		w.T.Errorf("%s: indexed and unindexed DISAGREE (ordered=%v)\n  q: %s\n  plan: %s\n  indexed   (%d): %v\n  unindexed (%d): %v",
 			stage, q.ordered, q.sql, w.Explain(q.sql), len(gi), gi, len(gn), gn)
 		return true, len(gi) > 0, gi, ei
 	}
@@ -109,14 +110,14 @@ func mhcpkCompareRows(w *mmTwin, stage string, q mhcpkQuery) (compared, nonEmpty
 
 func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	// U is the second relation for the join section: its (upk1, upk2) pair
 	// refers to t's composite primary key, with a composite index over the
 	// pair and a single-column index over its first half.
-	w := mmNewTwin(t, ctx, "/FRL/testdb_mhcpk", "mhcpk",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_mhcpk", "mhcpk",
 		mhcpkTable+
 			"CREATE TABLE u (uid BIGINT, upk1 BIGINT, upk2 BIGINT, uv BIGINT, us STRING, PRIMARY KEY (uid)) ",
 		"CREATE INDEX t_a ON t (a) "+
@@ -616,7 +617,7 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 
 	// Paging variant on the indexed side: a pinned connection with a tiny
 	// scanned-rows limit so every query pages through continuations.
-	conn, err := w.idx.Conn(ctx)
+	conn, err := w.Idx.Conn(ctx)
 	if err != nil {
 		t.Fatalf("db.Conn: %v", err)
 	}
@@ -636,7 +637,7 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		paged, err := mhcpkRowsOnConn(ctx, conn, q.sql)
+		paged, err := testkit.MhcpkRowsOnConn(ctx, conn, q.sql)
 		if err != nil {
 			if strings.Contains(err.Error(), "54F01") {
 				pagingDeclined++
@@ -652,7 +653,7 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 			sort.Strings(sf)
 			sort.Strings(sp)
 		}
-		if !mmEqRows(sf, sp) {
+		if !testkit.EqualRows(sf, sp) {
 			t.Errorf("PAGING DIVERGENCE (ordered=%v)\n  q: %s\n  plan: %s\n  full  (%d): %v\n  paged (%d): %v",
 				q.ordered, q.sql, w.Explain(q.sql), len(full), full, len(paged), paged)
 		}
@@ -681,50 +682,13 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 	}
 }
 
-// mhcpkRowsOnConn is mmRows over a pinned *sql.Conn (the paged reader).
-func mhcpkRowsOnConn(ctx context.Context, conn *sql.Conn, q string) ([]string, error) {
-	rows, err := conn.QueryContext(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for rows.Next() {
-		cells := make([]any, len(cols))
-		for i := range cells {
-			cells[i] = new(sql.NullString)
-		}
-		if err := rows.Scan(cells...); err != nil {
-			return nil, err
-		}
-		parts := make([]string, len(cells))
-		for i, c := range cells {
-			v := c.(*sql.NullString)
-			if v.Valid {
-				parts[i] = v.String
-			} else {
-				parts[i] = "NULL"
-			}
-		}
-		out = append(out, strings.Join(parts, "|"))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func TestFDB_MetamorphicCompositePrimaryKeyDML(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_mhcpkdml", "mhcpkdml", mhcpkTable,
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_mhcpkdml", "mhcpkdml", mhcpkTable,
 		"CREATE INDEX t_a ON t (a) "+
 			"CREATE INDEX t_s ON t (s) "+
 			"CREATE INDEX t_asb ON t (a, s, b) "+
@@ -821,8 +785,8 @@ func TestFDB_MetamorphicCompositePrimaryKeyDML(t *testing.T) {
 	}
 	sweep("initial")
 	for i, stmt := range dml {
-		ri, ei := w.idx.ExecContext(ctx, stmt)
-		rn, en := w.plain.ExecContext(ctx, stmt)
+		ri, ei := w.Idx.ExecContext(ctx, stmt)
+		rn, en := w.Plain.ExecContext(ctx, stmt)
 		if (ei == nil) != (en == nil) {
 			t.Fatalf("dml %d: DML asymmetry\n  stmt: %s\n  indexed:   %v\n  unindexed: %v", i, stmt, ei, en)
 		}

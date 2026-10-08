@@ -6,25 +6,27 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"github.com/onsi/gomega"
 )
 
 func TestFDB_OrderByAggregateExpression(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_obaggexpr")
+	setup := testkit.OpenDB(t, "/FRL/testdb_obaggexpr")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_obaggexpr")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE obaggexpr_tmpl CREATE TABLE t (id BIGINT, grp STRING, v BIGINT, PRIMARY KEY (id))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_obaggexpr/s WITH TEMPLATE obaggexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OBAGGEXPR?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OBAGGEXPR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

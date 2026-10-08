@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -15,7 +17,7 @@ func avgInsertDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	t.Helper()
 	ctx := context.Background()
 	dbPath := "/FRL/avgins_" + tag
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -29,7 +31,7 @@ func avgInsertDB(t *testing.T, tag string) (*sql.DB, context.Context) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -50,7 +52,7 @@ func TestFDB_AvgDoubleInsertPromotion(t *testing.T) {
 
 	t.Run("avg_into_bigint_rejected", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, "INSERT INTO dbig SELECT 100, AVG(v) FROM src")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 
 	// The empty-source axis: even with ZERO rows the rejection
@@ -58,7 +60,7 @@ func TestFDB_AvgDoubleInsertPromotion(t *testing.T) {
 	// value — the runtime converter never sees a float here.
 	t.Run("avg_into_bigint_empty_source_rejected", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, "INSERT INTO dbig SELECT 101, AVG(v) FROM src WHERE id > 999")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 
 	// The tree-contains-aggregate axis: AVG(v)+1 has a top-level
@@ -66,7 +68,7 @@ func TestFDB_AvgDoubleInsertPromotion(t *testing.T) {
 	// A top-level type assert would miss this; the WalkValue provenance catches it.
 	t.Run("avg_plus_one_into_bigint_empty_source_rejected", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, "INSERT INTO dbig SELECT 102, AVG(v) + 1 FROM src WHERE id > 999")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 
 	// AVG into a DOUBLE column is accepted (DOUBLE→DOUBLE) and correct.
@@ -140,11 +142,11 @@ func TestFDB_AvgDoubleValuesInsert(t *testing.T) {
 
 	t.Run("whole_double_into_bigint_rejected", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, "INSERT INTO dbig VALUES (500, 5.0)")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 	t.Run("fractional_double_into_bigint_rejected", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, "INSERT INTO dbig VALUES (501, 5.5)")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 	t.Run("double_into_double_ok", func(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO ddbl VALUES (502, 5.5)"); err != nil {
@@ -190,7 +192,7 @@ func TestFDB_AvgWithAggregateIndexPresent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/avgins_idx"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -203,7 +205,7 @@ func TestFDB_AvgWithAggregateIndexPresent(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE avgins_idx_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -214,7 +216,7 @@ func TestFDB_AvgWithAggregateIndexPresent(t *testing.T) {
 
 	// AVG must NOT use the aggregate-index path (it has none) — it streams, even
 	// with a SUM aggregate index present on the same table/grouping.
-	plan := planExplainVia(t, ctx, db, "SELECT g, AVG(v) FROM src GROUP BY g")
+	plan := testkit.ExplainVia(t, ctx, db, "SELECT g, AVG(v) FROM src GROUP BY g")
 	if strings.Contains(plan, "AggregateIndex") {
 		t.Fatalf("AVG must not use an AggregateIndex (it has none); plan:\n%s", plan)
 	}
@@ -224,5 +226,5 @@ func TestFDB_AvgWithAggregateIndexPresent(t *testing.T) {
 	// LogicalAggregate without a Project — deferred to the PromoteValue follow-up;
 	// the scalar form exercises the same DOUBLE-typing-under-index property.)
 	_, err = db.ExecContext(ctx, "INSERT INTO dbig SELECT 1, AVG(v) FROM src")
-	requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+	testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 }

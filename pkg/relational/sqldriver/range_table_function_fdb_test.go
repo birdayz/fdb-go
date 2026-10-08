@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -15,17 +17,17 @@ import (
 func TestFDB_RangeTableFunction(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_rangefn")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rangefn")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE rangefn_tpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_rangefn")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rangefn")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE rangefn_tpl "+
 		"CREATE TABLE t1 (id BIGINT, col1 STRING, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rangefn/s WITH TEMPLATE rangefn_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RANGEFN?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rangefn/s WITH TEMPLATE rangefn_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RANGEFN?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 'a'), (2, 'b'), (3, 'c')")
 
 	for _, c := range []struct {
 		q    string

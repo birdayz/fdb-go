@@ -7,6 +7,8 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // RFC-048 W2: metamorphic / TLP property testing.
@@ -38,12 +40,12 @@ type w2Row struct {
 // with ~25% NULLs per nullable column.
 func w2DB(t *testing.T, seed int64) (*sql.DB, []w2Row) {
 	t.Helper()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := fmt.Sprintf("/FRL/w2_%d_%s", seed, t.Name())
-	db := openTestDB(t, dbPath)
+	db := testkit.OpenDB(t, dbPath)
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -56,7 +58,7 @@ func w2DB(t *testing.T, seed int64) (*sql.DB, []w2Row) {
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	sdb, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	sdb, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -106,7 +108,7 @@ func nullableStr(p *string) string {
 // scalarInt runs a single-column single-row integer query.
 func scalarInt(t *testing.T, db *sql.DB, query string) int64 {
 	t.Helper()
-	rows := collectRows(t, db, query)
+	rows := testkit.CollectRows(t, db, query)
 	if len(rows) != 1 {
 		t.Fatalf("scalarInt %q: want 1 row, got %d (%v)", query, len(rows), rows)
 	}
@@ -309,7 +311,7 @@ func TestFDB_W2_Metamorphic_ArithmeticIdentity(t *testing.T) {
 func pkSet(t *testing.T, db *sql.DB, query string) map[int64]bool {
 	t.Helper()
 	out := map[int64]bool{}
-	for _, r := range collectRows(t, db, query) {
+	for _, r := range testkit.CollectRows(t, db, query) {
 		if v, ok := r[0].(int64); ok {
 			out[v] = true
 		}
@@ -334,7 +336,7 @@ func sameSet(a, b map[int64]bool) bool {
 func groupCounts(t *testing.T, db *sql.DB, query string) map[string]int64 {
 	t.Helper()
 	out := map[string]int64{}
-	for _, r := range collectRows(t, db, query) {
+	for _, r := range testkit.CollectRows(t, db, query) {
 		key := "<null>"
 		if r[0] != nil {
 			key = fmt.Sprintf("%v", r[0])

@@ -15,71 +15,11 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
-
-// rfc128DB seeds a single-column table t(id) with ids 1..10 and returns a *sql.DB
-// bound to it. Each call uses a unique db/template name (tag) for t.Parallel
-// isolation.
-func rfc128DB(t *testing.T, tag string) (*sql.DB, context.Context) {
-	t.Helper()
-	ctx := context.Background()
-	dbPath := "/FRL/rfc128_" + tag
-	setup := openTestDB(t, dbPath)
-	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
-		t.Fatalf("db: %v", err)
-	}
-	tmpl := "rfc128_tmpl_" + tag
-	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA TEMPLATE "+tmpl+
-		" CREATE TABLE t (id BIGINT, PRIMARY KEY (id))"+
-		" CREATE TABLE t2 (id BIGINT, v BIGINT, PRIMARY KEY (id))"); err != nil {
-		t.Fatalf("tmpl: %v", err)
-	}
-	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"); err != nil {
-		t.Fatalf("seed t: %v", err)
-	}
-	// t2: v has duplicates so SELECT DISTINCT v is meaningful.
-	if _, err := db.ExecContext(ctx,
-		"INSERT INTO t2 VALUES (1,10),(2,10),(3,20),(4,20),(5,30),(6,30),(7,40),(8,40)"); err != nil {
-		t.Fatalf("seed t2: %v", err)
-	}
-	return db, ctx
-}
-
-// getInts runs a single-int-column query and returns the rows in order.
-func getInts(t *testing.T, ctx context.Context, db queryer, q string) []int64 {
-	t.Helper()
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		t.Fatalf("%s: %v", q, err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []int64
-	for rows.Next() {
-		var v int64
-		if err := rows.Scan(&v); err != nil {
-			t.Fatalf("scan (%s): %v", q, err)
-		}
-		out = append(out, v)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows.Err (%s): %v", q, err)
-	}
-	return out
-}
-
-type queryer interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-}
 
 func wantInts(t *testing.T, got, want []int64, ctx string) {
 	t.Helper()
@@ -93,51 +33,16 @@ func wantInts(t *testing.T, got, want []int64, ctx string) {
 	}
 }
 
-// explainPlan returns the EXPLAIN PLAN text for q.
-func explainPlan(t *testing.T, ctx context.Context, db *sql.DB, q string) string {
-	t.Helper()
-	rows, err := db.QueryContext(ctx, "EXPLAIN "+q)
-	if err != nil {
-		t.Fatalf("EXPLAIN %s: %v", q, err)
-	}
-	defer func() { _ = rows.Close() }()
-	var plan strings.Builder
-	cols, _ := rows.Columns()
-	for rows.Next() {
-		vals := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			t.Fatalf("scan explain: %v", err)
-		}
-		for _, v := range vals {
-			switch s := v.(type) {
-			case string:
-				plan.WriteString(s)
-			case []byte:
-				plan.Write(s)
-			}
-			plan.WriteString(" ")
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("explain rows.Err: %v", err)
-	}
-	return plan.String()
-}
-
 // ---------------------------------------------------------------------------
 // §4.1 — the repro: derived-table LIMIT under outer WHERE + ORDER BY.
 // ---------------------------------------------------------------------------
 
 func TestFDB_DerivedTableLimit_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "repro")
+	db, ctx := testkit.RFC128DB(t, "repro")
 
 	// inner: ORDER BY id OFFSET 2 LIMIT 5 → [3,4,5,6,7]; outer WHERE id>4 → [5,6,7].
-	got := getInts(t, ctx, db,
+	got := testkit.GetInts(t, ctx, db,
 		"SELECT id FROM (SELECT id FROM t ORDER BY id LIMIT 5 OFFSET 2) AS s WHERE id > 4 ORDER BY id")
 	wantInts(t, got, []int64{5, 6, 7}, "derived-table LIMIT under WHERE (was [7,8,9,10] pre-fix)")
 }
@@ -148,10 +53,10 @@ func TestFDB_DerivedTableLimit_RFC128(t *testing.T) {
 
 func TestFDB_DerivedLimit_OuterOrderAndLimit_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "doubleouter")
+	db, ctx := testkit.RFC128DB(t, "doubleouter")
 
 	// inner [3..7]; outer ORDER BY id LIMIT 3 OFFSET 1 → drop 3 → [4,5,6].
-	got := getInts(t, ctx, db,
+	got := testkit.GetInts(t, ctx, db,
 		"SELECT id FROM (SELECT id FROM t ORDER BY id LIMIT 5 OFFSET 2) AS s ORDER BY id LIMIT 3 OFFSET 1")
 	wantInts(t, got, []int64{4, 5, 6}, "derived LIMIT + outer ORDER BY + outer LIMIT")
 }
@@ -162,9 +67,9 @@ func TestFDB_DerivedLimit_OuterOrderAndLimit_RFC128(t *testing.T) {
 
 func TestFDB_DerivedLimit_NoOuterShaping_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "noouter")
+	db, ctx := testkit.RFC128DB(t, "noouter")
 
-	got := getInts(t, ctx, db,
+	got := testkit.GetInts(t, ctx, db,
 		"SELECT id FROM (SELECT id FROM t ORDER BY id LIMIT 3) AS s ORDER BY id")
 	wantInts(t, got, []int64{1, 2, 3}, "derived LIMIT with no outer shaping")
 }
@@ -175,13 +80,13 @@ func TestFDB_DerivedLimit_NoOuterShaping_RFC128(t *testing.T) {
 
 func TestFDB_PlainTopLevelLimit_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "plain")
+	db, ctx := testkit.RFC128DB(t, "plain")
 
-	got := getInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 3 OFFSET 2")
+	got := testkit.GetInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 3 OFFSET 2")
 	wantInts(t, got, []int64{3, 4, 5}, "plain top-level LIMIT/OFFSET")
 
 	// LIMIT with no OFFSET.
-	got = getInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 4")
+	got = testkit.GetInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 4")
 	wantInts(t, got, []int64{1, 2, 3, 4}, "plain top-level LIMIT, no offset")
 }
 
@@ -194,12 +99,12 @@ func TestFDB_PlainTopLevelLimit_RFC128(t *testing.T) {
 // in the rebuild branch this returns 10 rows.
 func TestFDB_QualifiedStarLimit_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "qstar")
+	db, ctx := testkit.RFC128DB(t, "qstar")
 
-	got := getInts(t, ctx, db, "SELECT a.* FROM t a ORDER BY id LIMIT 5")
+	got := testkit.GetInts(t, ctx, db, "SELECT a.* FROM t a ORDER BY id LIMIT 5")
 	wantInts(t, got, []int64{1, 2, 3, 4, 5}, "qualified-star a.* + LIMIT")
 
-	got = getInts(t, ctx, db, "SELECT a.* FROM t a ORDER BY id LIMIT 3 OFFSET 2")
+	got = testkit.GetInts(t, ctx, db, "SELECT a.* FROM t a ORDER BY id LIMIT 3 OFFSET 2")
 	wantInts(t, got, []int64{3, 4, 5}, "qualified-star a.* + LIMIT OFFSET")
 }
 
@@ -211,7 +116,7 @@ func TestFDB_QualifiedStarLimit_RFC128(t *testing.T) {
 // Revert-proven: without the parseLimitClause reject, LIMIT 0.0 yields 10 rows.
 func TestFDB_InvalidLimitLiteralRejected_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "invalidlimit")
+	db, ctx := testkit.RFC128DB(t, "invalidlimit")
 
 	// Bad literals → 42601, at plan time (QueryContext returns the error).
 	for _, q := range []string{
@@ -232,9 +137,9 @@ func TestFDB_InvalidLimitLiteralRejected_RFC128(t *testing.T) {
 
 	// Positive controls: a VALID integer zero limits to nothing (it is NOT the
 	// unparseable sentinel), and ordinary integer LIMIT/OFFSET still work.
-	wantInts(t, getInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 0"), nil,
+	wantInts(t, testkit.GetInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 0"), nil,
 		"LIMIT 0 returns zero rows (valid integer, not the sentinel)")
-	wantInts(t, getInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 3"),
+	wantInts(t, testkit.GetInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 2 OFFSET 3"),
 		[]int64{4, 5}, "valid integer LIMIT/OFFSET still works")
 }
 
@@ -244,10 +149,10 @@ func TestFDB_InvalidLimitLiteralRejected_RFC128(t *testing.T) {
 
 func TestFDB_SelectDistinctLimit_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "distinct")
+	db, ctx := testkit.RFC128DB(t, "distinct")
 
 	// distinct v over t2 = {10,20,30,40}; ORDER BY v LIMIT 3 OFFSET 1 → [20,30,40].
-	got := getInts(t, ctx, db, "SELECT DISTINCT v FROM t2 ORDER BY v LIMIT 3 OFFSET 1")
+	got := testkit.GetInts(t, ctx, db, "SELECT DISTINCT v FROM t2 ORDER BY v LIMIT 3 OFFSET 1")
 	wantInts(t, got, []int64{20, 30, 40}, "SELECT DISTINCT ... LIMIT")
 }
 
@@ -258,15 +163,15 @@ func TestFDB_SelectDistinctLimit_RFC128(t *testing.T) {
 
 func TestFDB_CTELimit_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "cte")
+	db, ctx := testkit.RFC128DB(t, "cte")
 
 	// Outer LIMIT over a CTE main: pre-fix the children[0]==Body walk missed it.
-	got := getInts(t, ctx, db,
+	got := testkit.GetInts(t, ctx, db,
 		"WITH c AS (SELECT id FROM t) SELECT id FROM c ORDER BY id LIMIT 3")
 	wantInts(t, got, []int64{1, 2, 3}, "top-level CTE + outer LIMIT")
 
 	// LIMIT inside the CTE body: must NOT be mis-hoisted to the top level.
-	got = getInts(t, ctx, db,
+	got = testkit.GetInts(t, ctx, db,
 		"WITH c AS (SELECT id FROM t ORDER BY id LIMIT 2) SELECT id FROM c ORDER BY id")
 	wantInts(t, got, []int64{1, 2}, "LIMIT inside CTE body")
 }
@@ -277,18 +182,18 @@ func TestFDB_CTELimit_RFC128(t *testing.T) {
 
 func TestFDB_UnionLimit_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "union")
+	db, ctx := testkit.RFC128DB(t, "union")
 
 	// Per-branch LIMIT: each branch capped at 2 → 2 from t (ids 1,2) + 2 from
 	// t2 (ids 1,2). UNION ALL keeps duplicates; sort the result for a stable
 	// assertion.
-	got := getInts(t, ctx, db,
+	got := testkit.GetInts(t, ctx, db,
 		"SELECT id FROM ((SELECT id FROM t ORDER BY id LIMIT 2) UNION ALL (SELECT id FROM t2 ORDER BY id LIMIT 2)) AS u ORDER BY id")
 	wantInts(t, got, []int64{1, 1, 2, 2}, "union with per-branch LIMIT")
 
 	// Trailing LIMIT over a union: union of t(1,2,3) and t2(1,2,3) = {1,2,3}
 	// (UNION ALL → 6 rows: 1,1,2,2,3,3) ORDER BY id LIMIT 3 → [1,1,2].
-	got = getInts(t, ctx, db,
+	got = testkit.GetInts(t, ctx, db,
 		"SELECT id FROM ((SELECT id FROM t WHERE id<=3) UNION ALL (SELECT id FROM t2 WHERE id<=3)) AS u ORDER BY id LIMIT 3")
 	wantInts(t, got, []int64{1, 1, 2}, "union with trailing LIMIT")
 }
@@ -302,11 +207,11 @@ func TestFDB_UnionLimit_RFC128(t *testing.T) {
 
 func TestFDB_MultiPageLimitRollover_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "rollover")
+	db, ctx := testkit.RFC128DB(t, "rollover")
 
 	// Pin a connection with a tiny per-page scanned-rows budget (3) so the
 	// LIMIT 4 OFFSET 3 window (rows 4,5,6,7) straddles several pages.
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 3). // paginate every 3 scanned rows
 			Build())
@@ -355,14 +260,14 @@ func getIntsConn(t *testing.T, ctx context.Context, conn *sql.Conn, q string) ([
 
 func TestFDB_ExplainShowsLimitNode_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "explainlimit")
+	db, ctx := testkit.RFC128DB(t, "explainlimit")
 
-	plan := explainPlan(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 3 OFFSET 2")
+	plan := testkit.ExplainPlan(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 3 OFFSET 2")
 	if !strings.Contains(plan, "Limit(") {
 		t.Fatalf("EXPLAIN does not show a Limit node: %q", plan)
 	}
 	// The query still returns correct rows alongside the visible operator.
-	got := getInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 3 OFFSET 2")
+	got := testkit.GetInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 3 OFFSET 2")
 	wantInts(t, got, []int64{3, 4, 5}, "explain-limit query rows")
 }
 
@@ -374,10 +279,10 @@ func TestFDB_ExplainShowsLimitNode_RFC128(t *testing.T) {
 
 func TestFDB_LimitAboveSort_OrderingGate_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "limitsort")
+	db, ctx := testkit.RFC128DB(t, "limitsort")
 
 	// ORDER BY a non-PK column (v) forces a Sort; LIMIT must wrap it.
-	plan := explainPlan(t, ctx, db, "SELECT v FROM t2 ORDER BY v LIMIT 3")
+	plan := testkit.ExplainPlan(t, ctx, db, "SELECT v FROM t2 ORDER BY v LIMIT 3")
 	limitIdx := strings.Index(plan, "Limit(")
 	sortIdx := strings.Index(plan, "Sort(")
 	if limitIdx < 0 {
@@ -391,7 +296,7 @@ func TestFDB_LimitAboveSort_OrderingGate_RFC128(t *testing.T) {
 	}
 	// Correctness alongside the shape: v sorted ascending, first 3 distinct-ish
 	// values of v are 10,10,20.
-	got := getInts(t, ctx, db, "SELECT v FROM t2 ORDER BY v LIMIT 3")
+	got := testkit.GetInts(t, ctx, db, "SELECT v FROM t2 ORDER BY v LIMIT 3")
 	wantInts(t, got, []int64{10, 10, 20}, "limit-above-sort rows")
 }
 
@@ -402,12 +307,12 @@ func TestFDB_LimitAboveSort_OrderingGate_RFC128(t *testing.T) {
 
 func TestFDB_LimitPlanCacheReuse_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "cache")
+	db, ctx := testkit.RFC128DB(t, "cache")
 
 	q := "SELECT id FROM t ORDER BY id LIMIT 3 OFFSET 1"
-	got1 := getInts(t, ctx, db, q)
+	got1 := testkit.GetInts(t, ctx, db, q)
 	wantInts(t, got1, []int64{2, 3, 4}, "limit cache run 1")
-	got2 := getInts(t, ctx, db, q)
+	got2 := testkit.GetInts(t, ctx, db, q)
 	wantInts(t, got2, []int64{2, 3, 4}, "limit cache run 2 (cached plan)")
 }
 
@@ -420,13 +325,13 @@ func TestFDB_LimitPlanCacheReuse_RFC128(t *testing.T) {
 
 func TestFDB_LimitScanBound_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "scanbound")
+	db, ctx := testkit.RFC128DB(t, "scanbound")
 
-	plan := explainPlan(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 2")
+	plan := testkit.ExplainPlan(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 2")
 	if !strings.Contains(plan, "Limit(") {
 		t.Fatalf("LIMIT not visible in plan (scan-bound regressed): %q", plan)
 	}
-	got := getInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 2")
+	got := testkit.GetInts(t, ctx, db, "SELECT id FROM t ORDER BY id LIMIT 2")
 	wantInts(t, got, []int64{1, 2}, "scan-bound LIMIT rows")
 }
 
@@ -440,12 +345,12 @@ func TestFDB_LimitScanBound_RFC128(t *testing.T) {
 
 func TestFDB_SharedCombinatorResume_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "sharedcombo")
+	db, ctx := testkit.RFC128DB(t, "sharedcombo")
 
 	// MAX_ROWS=4 with a tiny scan page (2) over a 10-row scan with NO SQL LIMIT:
 	// this drives applySkipLimit's ReturnedRowLimit / SkipCursor path across
 	// pages, independent of the LIMIT envelope. Exactly 4 rows must come back.
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptMaxRows, 4).
 			Set(api.OptExecutionScannedRowsLimit, 2).
@@ -466,8 +371,8 @@ func TestFDB_SharedCombinatorResume_RFC128(t *testing.T) {
 // rows. Revert-proven: with min(remOffset+remLimit, parentCap) this query errors.
 func TestFDB_LimitOffsetUnderMaxRows_RFC128(t *testing.T) {
 	t.Parallel()
-	db, ctx := rfc128DB(t, "offmaxrows")
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	db, ctx := testkit.RFC128DB(t, "offmaxrows")
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptMaxRows, 1).Build())
 	})
 	// COUNT(*) over t is one row (=10); LIMIT 1 OFFSET 1 skips it → 0 rows, no error.

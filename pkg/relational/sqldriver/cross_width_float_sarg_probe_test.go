@@ -41,6 +41,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // ORDER BY with two sort keys that differ ONLY in float width. Sort-key dedup
@@ -55,22 +57,22 @@ import (
 // them, and id 3 rounds up so it sorts last under either key.
 func TestFDB_CrossWidthFloatSortKeys(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_cwfsort")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cwfsort")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cwfsort "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_cwfsort")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cwfsort")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE cwfsort "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cwfsort/s WITH TEMPLATE cwfsort")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CWFSORT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cwfsort/s WITH TEMPLATE cwfsort")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CWFSORT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, d) VALUES "+
 		"(1, 1.0000000596046448), (2, 1.0000000298023224), (3, 1.0000000894069672)")
 
 	for _, tc := range []struct {
@@ -140,19 +142,19 @@ func TestFDB_CrossWidthFloatSortKeys(t *testing.T) {
 
 func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_cwfsarg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cwfsarg")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cwfsarg "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_cwfsarg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cwfsarg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE cwfsarg "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, f FLOAT, PRIMARY KEY (id)) "+
 		"CREATE TABLE u (id BIGINT, uf FLOAT, ud DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_d ON t (d) "+
 		"CREATE INDEX t_f ON t (f)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cwfsarg/s WITH TEMPLATE cwfsarg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CWFSARG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cwfsarg/s WITH TEMPLATE cwfsarg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CWFSARG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -162,8 +164,8 @@ func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 	// Row 3 carries 0.1 in both columns: d holds binary64 0.1, f holds binary32
 	// 0.1, and those two are NOT equal once f is widened for comparison. Every
 	// assertion below that involves row 3 turns on that inequality.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d, f) VALUES (1, 1.5, CAST(1.5 AS FLOAT)), (2, 2.5, CAST(2.5 AS FLOAT)), (3, 0.1, CAST(0.1 AS FLOAT))")
-	mwjoMustExec(t, db, ctx, "INSERT INTO u (id, uf, ud) VALUES (10, CAST(1.5 AS FLOAT), 1.5), (20, CAST(2.5 AS FLOAT), 2.5), (30, CAST(0.1 AS FLOAT), 0.1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, d, f) VALUES (1, 1.5, CAST(1.5 AS FLOAT)), (2, 2.5, CAST(2.5 AS FLOAT)), (3, 0.1, CAST(0.1 AS FLOAT))")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO u (id, uf, ud) VALUES (10, CAST(1.5 AS FLOAT), 1.5), (20, CAST(2.5 AS FLOAT), 2.5), (30, CAST(0.1 AS FLOAT), 0.1)")
 
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -218,7 +220,7 @@ func TestFDB_CrossWidthFloatSargProbe(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.query, func(t *testing.T) {
 			if tc.plan != "" {
-				plan := explainOnConn(t, ctx, conn, tc.query)
+				plan := testkit.ExplainConn(t, ctx, conn, tc.query)
 				if !strings.Contains(plan, tc.plan) {
 					t.Fatalf("%s\nplan = %s\nwant it to contain %q — the rows may still be right via a\n"+
 						"different physical path, which would hide a planner-contract regression", tc.why, plan, tc.plan)

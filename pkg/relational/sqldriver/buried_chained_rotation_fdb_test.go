@@ -6,6 +6,8 @@ import (
 	"sort"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -47,19 +49,19 @@ import (
 // T4C) is observable (the leg-projection subtest reads both IDs).
 func TestFDB_BuriedChainedRotation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
 	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 
-	md := buildChainedUnnestMetadata(t)
+	md := testkit.BuildChainedUnnestMetadata(t)
 	if err := saveBuriedChainedRotationRows(ctx, db, ks, md); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +88,7 @@ func TestFDB_BuriedChainedRotation(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})
@@ -181,7 +183,7 @@ func TestFDB_BuriedChainedRotation(t *testing.T) {
 		if _, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil); perr != nil {
 			t.Fatalf("SELECT * over the buried chain must plan post-rotation: %v", perr)
 		}
-		labels := fmt.Sprintf("%v", queryLabels(t, q, md))
+		labels := fmt.Sprintf("%v", testkit.QueryLabels(t, q, md))
 		if labels != "[ID SARR SCARR SUB SUB K SUBSTRUCT Y ID SARR SCARR SUB]" {
 			t.Fatalf("SELECT * labels = %s (SQL FROM-order layout expected)", labels)
 		}
@@ -218,7 +220,7 @@ func TestFDB_BuriedChainedRotation(t *testing.T) {
 		}
 		want2 := append([]string(nil), want...)
 		sort.Strings(want2)
-		if got := run("star_rows", q); !unnestEqualStrs(got, want2) {
+		if got := run("star_rows", q); !testkit.UnnestEqualStrs(got, want2) {
 			t.Fatalf("SELECT * rows =\n  %v\nwant\n  %v", got, want2)
 		}
 	})
@@ -229,7 +231,7 @@ func TestFDB_BuriedChainedRotation(t *testing.T) {
 // resolution (or failing to plan at all) around the buried spine. Serial:
 // shares process-global planner state with other tests in the package.
 func TestBuriedChainedRotationCensus(t *testing.T) { //nolint:paralleltest // shares process-global planner state, must be serial
-	md := buildChainedUnnestMetadata(t)
+	md := testkit.BuildChainedUnnestMetadata(t)
 	buried := `FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y", T4 AS "T4C"`
 	queries := []struct{ name, sql string }{
 		{"unfiltered", `SELECT "Y" ` + buried},
@@ -255,9 +257,9 @@ func TestBuriedChainedRotationCensus(t *testing.T) { //nolint:paralleltest // sh
 func saveBuriedChainedRotationRows(ctx context.Context, db *recordlayer.FDBDatabase, ks subspace.Subspace, md *recordlayer.RecordMetaData) error {
 	t4Desc := md.GetRecordType("T4").Descriptor
 	sarrFD := t4Desc.Fields().ByName("SARR")
-	elemDesc := arrayElementMessageDescriptor(sarrFD)
+	elemDesc := testkit.ArrayElementMessageDescriptor(sarrFD)
 	substructFD := elemDesc.Fields().ByName("SUBSTRUCT")
-	elem2Desc := arrayElementMessageDescriptor(substructFD)
+	elem2Desc := testkit.ArrayElementMessageDescriptor(substructFD)
 
 	mkElem2 := func(deep ...int32) protoreflect.Value {
 		m := dynamicpb.NewMessage(elem2Desc)
@@ -266,7 +268,7 @@ func saveBuriedChainedRotationRows(ctx context.Context, db *recordlayer.FDBDatab
 		for i, d := range deep {
 			dvals[i] = protoreflect.ValueOfInt32(d)
 		}
-		setArrayField(m, elem2Desc.Fields().ByName("DEEP"), dvals...)
+		testkit.SetArrayField(m, elem2Desc.Fields().ByName("DEEP"), dvals...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkElem := func(sub []int32, substruct ...protoreflect.Value) protoreflect.Value {
@@ -276,15 +278,15 @@ func saveBuriedChainedRotationRows(ctx context.Context, db *recordlayer.FDBDatab
 		for i, s := range sub {
 			svals[i] = protoreflect.ValueOfInt32(s)
 		}
-		setArrayField(m, elemDesc.Fields().ByName("SUB"), svals...)
-		setArrayField(m, substructFD, substruct...)
+		testkit.SetArrayField(m, elemDesc.Fields().ByName("SUB"), svals...)
+		testkit.SetArrayField(m, substructFD, substruct...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkT4 := func(id, sub int64, sarr ...protoreflect.Value) proto.Message {
 		m := dynamicpb.NewMessage(t4Desc)
 		m.Set(t4Desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(sub))
-		setArrayField(m, sarrFD, sarr...)
+		testkit.SetArrayField(m, sarrFD, sarr...)
 		return m
 	}
 

@@ -11,29 +11,31 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_MultiColOrderByProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_mcorder")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mcorder")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_mcorder")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mcorder")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE mcorder "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_ab ON t (a, b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mcorder/s WITH TEMPLATE mcorder")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MCORDER?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mcorder/s WITH TEMPLATE mcorder")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MCORDER?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// (a,b): (1,10) (1,20) (2,5) (2,40) (3,10)
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1,1,10),(2,1,20),(3,2,5),(4,2,40),(5,3,10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1,1,10),(2,1,20),(3,2,5),(4,2,40),(5,3,10)")
 
 	orderedIDs := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)
@@ -99,26 +101,26 @@ func TestFDB_MultiColOrderByProbe(t *testing.T) {
 // under DESC. Pin that this is consistent.
 func TestFDB_OrderByNullPlacement(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nullorder")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullorder")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_nullorder")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullorder")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nullorder "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullorder/s WITH TEMPLATE nullorder")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLORDER?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullorder/s WITH TEMPLATE nullorder")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLORDER?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// a = 10, NULL, 20
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 10), (3, 20)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 10), (3, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (2)")
 
 	order := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

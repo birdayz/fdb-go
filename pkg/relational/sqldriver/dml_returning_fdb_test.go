@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -18,17 +20,17 @@ import (
 func TestFDB_DMLReturning(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dml_returning")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dml_returning")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE dml_returning_tpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_dml_returning")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dml_returning")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE dml_returning_tpl "+
 		"CREATE TABLE a (a1 BIGINT, a2 BIGINT, a3 BIGINT, PRIMARY KEY (a1))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dml_returning/s WITH TEMPLATE dml_returning_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DML_RETURNING?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dml_returning/s WITH TEMPLATE dml_returning_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_DML_RETURNING?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO a VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO a VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)")
 
 	query := func(q string, args ...any) string {
 		t.Helper()

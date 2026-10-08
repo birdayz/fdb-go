@@ -23,6 +23,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -31,30 +33,30 @@ import (
 // during semantic analysis with Java's WINDOWING_ERROR, before planning.
 func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_explainloud")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_explainloud")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_explainloud")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_explainloud")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE explainloud_tmpl "+
 			"CREATE TABLE a (id BIGINT, av BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, bv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, cv BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, c_id BIGINT, dw BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_explainloud/s WITH TEMPLATE explainloud_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXPLAINLOUD?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_explainloud/s WITH TEMPLATE explainloud_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXPLAINLOUD?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, a_id, bv) VALUES (10, 1, 111)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, cv) VALUES (1, 51)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id, c_id, dw) VALUES (1000, 1, 41)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, av) VALUES (1, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, a_id, bv) VALUES (10, 1, 111)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, cv) VALUES (1, 51)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id, c_id, dw) VALUES (1000, 1, 41)")
 
 	unplannable := []struct {
 		name string
@@ -147,12 +149,12 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 				want: []string{"1|1"},
 			},
 		} {
-			got := pinRows(t, db, ctx, tc.sql)
+			got := testkit.PinRows(t, db, ctx, tc.sql)
 			sort.Strings(got)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("rows = %v, want %v\n  sql: %s", got, tc.want, tc.sql)
 			}
-			if plan := pinExplain(t, db, ctx, tc.sql); plan == "" {
+			if plan := testkit.PinExplain(t, db, ctx, tc.sql); plan == "" {
 				t.Fatalf("EXPLAIN of a plannable statement returned nothing\n  sql: %s", tc.sql)
 			}
 		}
@@ -162,7 +164,7 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 		// The other direction: the fix must not make EXPLAIN loud in general.
 		// A plannable query still yields a PHYSICAL plan (Scan/IndexScan
 		// vocabulary), never the logical `Scan(A)`-only rendering.
-		plan := pinExplain(t, db, ctx, "SELECT a.id FROM a WHERE a.id = 1")
+		plan := testkit.PinExplain(t, db, ctx, "SELECT a.id FROM a WHERE a.id = 1")
 		if !strings.Contains(plan, "Scan(A") {
 			t.Fatalf("plannable EXPLAIN lost its physical plan text:\n%s", plan)
 		}
@@ -178,17 +180,17 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 // before the split there was nothing asserting that guard at all.
 func TestFDB_ExplainInformationSchemaStillRenders(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_explaininfo")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_explaininfo")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_explaininfo")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_explaininfo")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE explaininfo_tmpl "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_explaininfo/s WITH TEMPLATE explaininfo_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXPLAININFO?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_explaininfo/s WITH TEMPLATE explaininfo_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXPLAININFO?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -201,7 +203,7 @@ func TestFDB_ExplainInformationSchemaStillRenders(t *testing.T) {
 	if _, err := db.QueryContext(ctx, q); err != nil {
 		t.Fatalf("INFORMATION_SCHEMA query must execute: %v", err)
 	}
-	plan := pinExplain(t, db, ctx, q)
+	plan := testkit.PinExplain(t, db, ctx, q)
 	if plan == "" {
 		t.Fatal("EXPLAIN of an executable INFORMATION_SCHEMA query rendered nothing")
 	}

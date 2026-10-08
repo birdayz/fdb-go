@@ -10,21 +10,23 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ColumnMetadataProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_colmetap")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_colmetap")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_colmetap")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_colmetap")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE colmetap "+
 			"CREATE TABLE t (id BIGINT, d DOUBLE, s STRING, flag BOOLEAN, bin BYTES, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_colmetap/s WITH TEMPLATE colmetap")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COLMETAP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_colmetap/s WITH TEMPLATE colmetap")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COLMETAP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -35,7 +37,7 @@ import (
 func multiPartitionVectorSetup(t *testing.T, ctx context.Context) (*recordlayer.FDBDatabase, *recordlayer.RecordMetaData, subspace.Subspace) {
 	t.Helper()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -107,7 +109,7 @@ func multiPartitionVectorSetup(t *testing.T, ctx context.Context) (*recordlayer.
 // assertion.
 func TestFDB_VectorSearch_MultiPartition_Fanout(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -140,7 +142,7 @@ func TestFDB_VectorSearch_MultiPartition_Fanout(t *testing.T) {
 // honored.
 func TestFDB_VectorSearch_MultiPartition_InequalityResidual(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -184,7 +186,7 @@ func TestFDB_VectorSearch_MultiPartition_InequalityResidual(t *testing.T) {
 // an intersection (assert the self-limiting shape).
 func TestFDB_VectorSearch_MultiPartition_InequalityResidualK2(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -223,7 +225,7 @@ func TestFDB_VectorSearch_MultiPartition_InequalityResidualK2(t *testing.T) {
 // direct entry point into vectorMultiPartitionCursor.
 func TestFDB_VectorSearch_MultiPartition_Pagination(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -285,7 +287,7 @@ func TestFDB_VectorSearch_MultiPartition_Pagination(t *testing.T) {
 // unpartitioned paths which validate before touching graph contents.
 func TestFDB_VectorSearch_MultiPartition_DimensionValidation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -348,7 +350,7 @@ func TestFDB_VectorSearch_MultiPartition_DimensionValidation(t *testing.T) {
 // return a different set.
 func TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -385,7 +387,7 @@ func TestFDB_VectorSearch_MultiPartition_TrailingEqualityResidual(t *testing.T) 
 // (not an intersection, not unplannable).
 func TestFDB_VectorSearch_MultiPartition_LeadingInequalityResidual(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -448,7 +450,7 @@ func planExplainAndRun(t *testing.T, ctx context.Context, db *recordlayer.FDBDat
 			// Slots by POSITION: every caller projects (id, region) in that order.
 			// A name-keyed read hands back each column whatever slot it sits in, so
 			// it cannot see a projection whose two columns were swapped.
-			slots := positionalSlots(r)
+			slots := testkit.PositionalSlots(r)
 			if len(slots) != 2 {
 				return nil, fmt.Errorf("row has %d slots, want 2 (id, region)", len(slots))
 			}
@@ -534,7 +536,7 @@ func collectVectorPage(t *testing.T, ctx context.Context, store *recordlayer.FDB
 // filter is welcome and must return exactly {12}.
 func TestFDB_VectorSearch_UnsafeNonPartitionResidual(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()

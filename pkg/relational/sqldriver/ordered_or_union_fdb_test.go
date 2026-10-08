@@ -12,33 +12,35 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_OrderedOrUnionMergesLegs(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const ddl = "CREATE TABLE t (id BIGINT, v BIGINT, w BIGINT, PRIMARY KEY (id)) " +
 		"CREATE INDEX t_v ON t (v) CREATE INDEX t_w ON t (w)"
-	setup := openTestDB(t, "/FRL/testdb_oou")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_oou")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE oou "+ddl)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_oou/s WITH TEMPLATE oou")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OOU?cluster_file=%s&schema=S", clusterFilePath)
+	setup := testkit.OpenDB(t, "/FRL/testdb_oou")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_oou")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE oou "+ddl)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_oou/s WITH TEMPLATE oou")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OOU?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// 3 and 6 satisfy both v = 1 and w = 2.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 1, 0), (2, 0, 2), (3, 1, 2), (4, 0, 0), "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1, 1, 0), (2, 0, 2), (3, 1, 2), (4, 0, 0), "+
 		"(5, 1, 9), (6, 1, 2), (7, 0, 2), (8, 5, 5)")
 
-	explain := mwjoExplainer(t, db, ctx)
+	explain := testkit.Explainer(t, db, ctx)
 	paged, err := db.Conn(ctx)
 	if err != nil {
 		t.Fatalf("db.Conn: %v", err)
@@ -69,18 +71,18 @@ func TestFDB_OrderedOrUnionMergesLegs(t *testing.T) {
 		if !strings.Contains(plan, "MergeSortUnion(") || strings.Contains(plan, "InMemorySort") {
 			t.Errorf("%s\n  plan %s: the legs deliver the order, so they merge without a sort", c.sql, plan)
 		}
-		got, err := mmRows(t, ctx, db, c.sql)
+		got, err := testkit.QueryRowStrings(t, ctx, db, c.sql)
 		if err != nil {
 			t.Fatalf("%s: %v", c.sql, err)
 		}
-		if !mmEqRows(got, c.want) {
+		if !testkit.EqualRows(got, c.want) {
 			t.Errorf("%s\n  plan: %s\n  got  %v\n  want %v", c.sql, plan, got, c.want)
 		}
-		gotPaged, err := mhcpkRowsOnConn(ctx, paged, c.sql)
+		gotPaged, err := testkit.MhcpkRowsOnConn(ctx, paged, c.sql)
 		if err != nil {
 			t.Fatalf("%s (paged): %v", c.sql, err)
 		}
-		if !mmEqRows(gotPaged, c.want) {
+		if !testkit.EqualRows(gotPaged, c.want) {
 			t.Errorf("%s (paged)\n  got  %v\n  want %v", c.sql, gotPaged, c.want)
 		}
 	}

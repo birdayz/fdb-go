@@ -13,18 +13,20 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_ExistsInOn_Probe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_exists_on_probe")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_on_probe")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_exists_on_probe")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_on_probe")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exists_on_probe "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
@@ -32,8 +34,8 @@ func TestFDB_ExistsInOn_Probe(t *testing.T) {
 			"CREATE TABLE e (id BIGINT, c_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id) "+
 			"CREATE INDEX e_c_id ON e (c_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_on_probe/s WITH TEMPLATE exists_on_probe")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ON_PROBE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_on_probe/s WITH TEMPLATE exists_on_probe")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ON_PROBE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -41,10 +43,10 @@ func TestFDB_ExistsInOn_Probe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// a={1,2,3}; c: 50→a1, 51→a2, 52→a1; d={1}; e: 900→c50.
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2), (3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2), (52, 1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id) VALUES (1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO e (id, c_id) VALUES (900, 50)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2), (3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2), (52, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id) VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO e (id, c_id) VALUES (900, 50)")
 
 	// Two EXISTS conjuncts in one ON are two WHERE-EXISTS (the builder folds
 	// an inner join's ON-EXISTS into the WHERE), applied one after the other
@@ -56,7 +58,7 @@ func TestFDB_ExistsInOn_Probe(t *testing.T) {
 				"AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id) "+
 				"AND EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)")
 		want := []string{"1|50"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("two-EXISTS-in-ON rows = %v, want %v", got, want)
 		}
 	})
@@ -74,7 +76,7 @@ func TestFDB_ExistsInOn_Probe(t *testing.T) {
 			"SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id) "+
 				"WHERE EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)")
 		want := []string{"1|50"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("EXISTS-in-ON + WHERE-EXISTS rows = %v, want %v", got, want)
 		}
 	})
@@ -85,7 +87,7 @@ func TestFDB_ExistsInOn_Probe(t *testing.T) {
 		got := scanPairs(t, db, ctx,
 			"SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id AND EXISTS (SELECT 1 FROM d)")
 		want := []string{"1|50", "1|52", "2|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("uncorrelated-EXISTS-in-ON rows = %v, want %v", got, want)
 		}
 	})
@@ -98,7 +100,7 @@ func TestFDB_ExistsInOn_Probe(t *testing.T) {
 			"SELECT a.id, c.id, e.id FROM a JOIN c ON c.a_id = a.id "+
 				"JOIN e ON e.c_id = c.id AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id)")
 		want := []string{"1|50|900"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("3-way EXISTS-in-2nd-ON rows = %v, want %v", got, want)
 		}
 	})
@@ -110,7 +112,7 @@ func scanPairs(t *testing.T, db *sql.DB, ctx context.Context, q string) []string
 	if err != nil {
 		t.Fatalf("query %q: %v", q, err)
 	}
-	got := siScanRows(t, rows)
+	got := testkit.ScanRowStrings(t, rows)
 	return got
 }
 
@@ -138,16 +140,8 @@ func scanTriples(t *testing.T, db *sql.DB, ctx context.Context, q string) []stri
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows.Err: %v", err)
 	}
-	sortStrings(out)
+	testkit.SortStrings(out)
 	return out
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
 }
 
 // TestFDB_ExistsInOnPlusWhereExists pins, on data that can tell, that BOTH
@@ -178,13 +172,13 @@ func sortStrings(s []string) {
 // WHERE-EXISTS would return (2,53,902) as well.
 func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_exists_on_where")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_on_where")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_exists_on_where")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_on_where")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exists_on_where "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
@@ -196,19 +190,19 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 			"CREATE INDEX e_c_id ON e (c_id) "+
 			"CREATE INDEX g_c_id ON g (c_id) "+
 			"CREATE INDEX h_g_id ON h (g_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_on_where/s WITH TEMPLATE exists_on_where")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ON_WHERE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_on_where/s WITH TEMPLATE exists_on_where")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ON_WHERE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2), (3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2), (52, 1), (53, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id) VALUES (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO e (id, c_id) VALUES (900, 50), (901, 51)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO g (id, c_id) VALUES (900, 50), (901, 51), (902, 53)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO h (id, g_id) VALUES (7000, 901), (7001, 900)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2), (3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2), (52, 1), (53, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id) VALUES (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO e (id, c_id) VALUES (900, 50), (901, 51)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO g (id, c_id) VALUES (900, 50), (901, 51), (902, 53)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO h (id, g_id) VALUES (7000, 901), (7001, 900)")
 
 	for _, tc := range []struct {
 		name string
@@ -222,7 +216,7 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := scanPairs(t, db, ctx, tc.sql)
 			want := []string{"2|51"}
-			if !eqStrSlices(got, want) {
+			if !testkit.EqualStrings(got, want) {
 				t.Errorf("rows = %v, want %v\n  sql: %s", got, want, tc.sql)
 			}
 		})
@@ -274,7 +268,7 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := scanTriples(t, db, ctx, tc.sql)
-			if !eqStrSlices(got, tc.want) {
+			if !testkit.EqualStrings(got, tc.want) {
 				t.Errorf("rows = %v, want %v\n  sql: %s", got, tc.want, tc.sql)
 			}
 		})
@@ -328,8 +322,8 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 			if err := rows.Err(); err != nil {
 				t.Fatal(err)
 			}
-			sortStrings(got)
-			if !eqStrSlices(got, tc.want) {
+			testkit.SortStrings(got)
+			if !testkit.EqualStrings(got, tc.want) {
 				t.Errorf("rows = %v, want %v\n  sql: %s", got, tc.want, tc.sql)
 			}
 		})
@@ -352,13 +346,13 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 // The cluster a⋈c∧∃d is (2,51),(2,53).
 func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_exists_on_outer")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_on_outer")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_exists_on_outer")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_on_outer")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exists_on_outer "+
 			"CREATE TYPE AS STRUCT Sub (k BIGINT, subs BIGINT ARRAY) "+
 			"CREATE TABLE a (id BIGINT, tags BIGINT ARRAY, nest Sub ARRAY, PRIMARY KEY (id)) "+
@@ -367,17 +361,17 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 			"CREATE TABLE e (id BIGINT, c_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id) "+
 			"CREATE INDEX e_c_id ON e (c_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_on_outer/s WITH TEMPLATE exists_on_outer")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ON_OUTER?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_on_outer/s WITH TEMPLATE exists_on_outer")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ON_OUTER?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, tags, nest) VALUES (1, [10, 11], [(1, [100])]), (2, [20], [(2, [200])]), (3, [30], [(3, [300])])")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2), (52, 1), (53, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id) VALUES (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO e (id, c_id) VALUES (900, 50), (901, 51)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, tags, nest) VALUES (1, [10, 11], [(1, [100])]), (2, [20], [(2, [200])]), (3, [30], [(3, [300])])")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2), (52, 1), (53, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id) VALUES (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO e (id, c_id) VALUES (900, 50), (901, 51)")
 
 	const existsD = " AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id)"
 	const whereD = " WHERE EXISTS (SELECT 1 FROM d WHERE d.id = a.id)"
@@ -458,7 +452,7 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := scanTriples(t, db, ctx, tc.sql)
-			if !eqStrSlices(got, tc.want) {
+			if !testkit.EqualStrings(got, tc.want) {
 				t.Errorf("rows = %v, want %v\n  sql: %s", got, tc.want, tc.sql)
 			}
 		})
@@ -470,7 +464,7 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 		q := "SELECT a.id, c.id, e.id FROM a JOIN c ON c.a_id = a.id" + existsD + " LEFT JOIN e ON e.c_id = c.id ORDER BY c.id DESC"
 		got := scanTriplesInOrder(t, db, ctx, q)
 		want := []string{"2|53|NULL", "2|51|901"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("rows in order = %v, want %v\n  sql: %s", got, want, q)
 		}
 	})
@@ -498,7 +492,7 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 				rows.Close()
 				t.Fatalf("planned; want the enclosed-leg refusal\n  sql: %s", q)
 			}
-			requireSQLSTATE(t, qErr, api.ErrCodeUnsupportedQuery)
+			testkit.RequireSQLSTATE(t, qErr, api.ErrCodeUnsupportedQuery)
 			if !strings.Contains(qErr.Error(), "did not ordinalize (enclosed in an inner-join cluster") {
 				t.Fatalf("refused for another reason: %v\n  sql: %s", qErr, q)
 			}
@@ -519,7 +513,7 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 func TestFDB_TwoExistentialsNeverRepeatARow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/FRL/testdb_two_existentials", "twoexists",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_two_existentials", "twoexists",
 		"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
@@ -527,10 +521,10 @@ func TestFDB_TwoExistentialsNeverRepeatARow(t *testing.T) {
 			"CREATE INDEX c_a_id ON c (a_id) "+
 			"CREATE INDEX e_c_id ON e (c_id) "+
 			"CREATE INDEX d_x ON d (x)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1), (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (10, 1), (20, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO d VALUES (100, 1), (101, 1), (102, 1), (103, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO e VALUES (1000, 10), (1001, 10), (1002, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1), (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (10, 1), (20, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d VALUES (100, 1), (101, 1), (102, 1), (103, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO e VALUES (1000, 10), (1001, 10), (1002, 20)")
 
 	for _, tc := range []struct {
 		sql  string
@@ -573,13 +567,13 @@ func TestFDB_TwoExistentialsNeverRepeatARow(t *testing.T) {
 			defer rows.Close()
 			var got []string
 			for rows.Next() {
-				got = append(got, siRenderRow(t, rows))
+				got = append(got, testkit.SiRenderRow(t, rows))
 			}
 			if err := rows.Err(); err != nil {
 				t.Fatalf("rows.Err: %v", err)
 			}
-			sortStrings(got)
-			if !eqStrSlices(got, tc.want) {
+			testkit.SortStrings(got)
+			if !testkit.EqualStrings(got, tc.want) {
 				t.Errorf("rows = %v, want %v", got, tc.want)
 			}
 		})

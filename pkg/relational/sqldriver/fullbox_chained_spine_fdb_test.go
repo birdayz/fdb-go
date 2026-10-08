@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -41,24 +43,24 @@ import (
 // are B-null; B(10) and B(3) are A-null (whose NULL SARR unnests to no rows).
 func TestFDB_FullBoxChainedSpine(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
 	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 
-	md := buildChainedUnnestMetadata(t)
+	md := testkit.BuildChainedUnnestMetadata(t)
 	t4Desc := md.GetRecordType("T4").Descriptor
 	sarrFD := t4Desc.Fields().ByName("SARR")
-	elemDesc := arrayElementMessageDescriptor(sarrFD)
+	elemDesc := testkit.ArrayElementMessageDescriptor(sarrFD)
 	substructFD := elemDesc.Fields().ByName("SUBSTRUCT")
-	elem2Desc := arrayElementMessageDescriptor(substructFD)
+	elem2Desc := testkit.ArrayElementMessageDescriptor(substructFD)
 
 	mkElem2 := func(deep ...int32) protoreflect.Value {
 		m := dynamicpb.NewMessage(elem2Desc)
@@ -67,7 +69,7 @@ func TestFDB_FullBoxChainedSpine(t *testing.T) {
 		for _, d := range deep {
 			deepVals = append(deepVals, protoreflect.ValueOfInt32(d))
 		}
-		setArrayField(m, elem2Desc.Fields().ByName("DEEP"), deepVals...)
+		testkit.SetArrayField(m, elem2Desc.Fields().ByName("DEEP"), deepVals...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkElem := func(sub []int32, substruct ...protoreflect.Value) protoreflect.Value {
@@ -77,15 +79,15 @@ func TestFDB_FullBoxChainedSpine(t *testing.T) {
 		for _, s := range sub {
 			subVals = append(subVals, protoreflect.ValueOfInt32(s))
 		}
-		setArrayField(m, elemDesc.Fields().ByName("SUB"), subVals...)
-		setArrayField(m, substructFD, substruct...)
+		testkit.SetArrayField(m, elemDesc.Fields().ByName("SUB"), subVals...)
+		testkit.SetArrayField(m, substructFD, substruct...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkT4 := func(id int64, sarr ...protoreflect.Value) proto.Message {
 		m := dynamicpb.NewMessage(t4Desc)
 		m.Set(t4Desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(5))
-		setArrayField(m, sarrFD, sarr...)
+		testkit.SetArrayField(m, sarrFD, sarr...)
 		return m
 	}
 
@@ -132,7 +134,7 @@ func TestFDB_FullBoxChainedSpine(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})

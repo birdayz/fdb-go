@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_CoveringIndexScan pins that a query whose projection is fully covered
@@ -20,7 +22,7 @@ import (
 func TestFDB_CoveringIndexScan(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "covidx",
+	db := testkit.SetupPlanShapeDB(t, "covidx",
 		"CREATE TABLE items (id BIGINT, cat STRING, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cat_idx ON items (cat)")
 
@@ -42,14 +44,14 @@ func TestFDB_CoveringIndexScan(t *testing.T) {
 		{"project_noncovered_col", "SELECT price FROM items WHERE cat = 'c1'", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			plan := planExplainVia(t, ctx, db, c.query)
+			plan := testkit.ExplainVia(t, ctx, db, c.query)
 			if !strings.Contains(plan, "IndexScan(CAT_IDX") {
 				t.Fatalf("%s: expected an IndexScan on CAT_IDX, got: %s", c.query, plan)
 			}
 			if c.wantCovered {
 				assertScanAnswersFromIndexEntry(t, plan, "IndexScan(CAT_IDX")
 			} else {
-				assertScanReadsBaseRecords(t, plan, "IndexScan(CAT_IDX")
+				testkit.AssertScanReadsBaseRecords(t, plan, "IndexScan(CAT_IDX")
 			}
 		})
 	}

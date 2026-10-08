@@ -12,23 +12,25 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CorrelatedNullInequality(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_corrineq")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_corrineq")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_corrineq")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_corrineq")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE corrineq "+
 			"CREATE TABLE a (id BIGINT, k BIGINT, lo BIGINT, hi BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_k ON b (k)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_corrineq/s WITH TEMPLATE corrineq")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRINEQ?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_corrineq/s WITH TEMPLATE corrineq")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRINEQ?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -36,13 +38,13 @@ func TestFDB_CorrelatedNullInequality(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// a: id1 k=5 lo=3 hi=7; id2 k=NULL lo=NULL hi=NULL. b: 120 rows k=1..120.
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, k, lo, hi) VALUES (1, 5, 3, 7)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, k, lo, hi) VALUES (1, 5, 3, 7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id) VALUES (2)")
 	var bVals []string
 	for i := 1; i <= 120; i++ {
 		bVals = append(bVals, fmt.Sprintf("(%d, %d)", i, i))
 	}
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, k) VALUES "+strings.Join(bVals, ", "))
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, k) VALUES "+strings.Join(bVals, ", "))
 
 	scalar := func(q string) int64 {
 		var v int64

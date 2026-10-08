@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -29,7 +31,7 @@ import (
 // distinct_unique_elision_paging_repro_test.go.
 func TestFDB_DistinctUniqueElisionFiresInExplicitTx(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -38,18 +40,18 @@ func TestFDB_DistinctUniqueElisionFiresInExplicitTx(t *testing.T) {
 	// waiting for a loaded machine to supply the condition. Safe to arm for the
 	// whole test: preflightTxBudget runs under `if r.tx != nil`, so the DDL and
 	// seed statements below — all autocommit — never meet it.
-	key, clk := spikedClusterKey(t, 30*time.Second)
-	setup := openSpiked(t, key, "/FRL/testdb_dusrv", "")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dusrv")
-	mwjoMustExec(t, setup, ctx,
+	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
+	setup := testkit.OpenSpiked(t, key, "/FRL/testdb_dusrv", "")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dusrv")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dusrv "+
 			"CREATE TABLE t1 (id BIGINT, email STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email1 ON t1 (email) "+
 			"CREATE TABLE t3 (id BIGINT, email STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email3 ON t3 (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dusrv/s WITH TEMPLATE dusrv")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dusrv/s WITH TEMPLATE dusrv")
 
-	db := openSpiked(t, key, "/FRL/testdb_dusrv", "s")
+	db := testkit.OpenSpiked(t, key, "/FRL/testdb_dusrv", "s")
 
 	const nRows = 8
 	for _, tbl := range []string{"t1", "t3"} {
@@ -61,7 +63,7 @@ func TestFDB_DistinctUniqueElisionFiresInExplicitTx(t *testing.T) {
 			}
 			fmt.Fprintf(&sb, "(%d, 'e%02d@x')", i, i)
 		}
-		mwjoMustExec(t, db, ctx, sb.String())
+		testkit.MustExecCtx(t, db, ctx, sb.String())
 	}
 
 	// The same two arms the repro exercises: R3 narrows the operator to the
@@ -78,7 +80,7 @@ func TestFDB_DistinctUniqueElisionFiresInExplicitTx(t *testing.T) {
 	// One row per page, so the drain below crosses a page boundary after every
 	// single row — the same paging pressure the repro applies, but on a
 	// transaction, where the proof is admissible.
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, int64(1)).Build())
 	})
@@ -99,19 +101,19 @@ func TestFDB_DistinctUniqueElisionFiresInExplicitTx(t *testing.T) {
 	var narrowedPlan, elidedPlan string
 	drained := map[string][]string{}
 	var attemptsRun int
-	retryTx(t, conn, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+	testkit.RetryTx(t, conn, testkit.SpikeOnce(clk, &attemptsRun), func(a testkit.TxAttempt) error {
 		narrowedPlan, elidedPlan = "", ""
 		drained = map[string][]string{}
 
 		var err error
-		if narrowedPlan, err = explainPlanOnErr(ctx, a.tx, narrowedQ); err != nil {
+		if narrowedPlan, err = testkit.ExplainPlanOnErr(ctx, a.Tx, narrowedQ); err != nil {
 			return err
 		}
-		if elidedPlan, err = explainPlanOnErr(ctx, a.tx, elidedQ); err != nil {
+		if elidedPlan, err = testkit.ExplainPlanOnErr(ctx, a.Tx, elidedQ); err != nil {
 			return err
 		}
 		for _, q := range []string{narrowedQ, elidedQ} {
-			got, derr := dusrvDrainTxErr(ctx, a.tx, q)
+			got, derr := testkit.DusrvDrainTxErr(ctx, a.Tx, q)
 			if derr != nil {
 				return derr
 			}
@@ -119,7 +121,7 @@ func TestFDB_DistinctUniqueElisionFiresInExplicitTx(t *testing.T) {
 		}
 		return nil
 	})
-	mustHaveRetried(t, attemptsRun)
+	testkit.MustHaveRetried(t, attemptsRun)
 
 	t.Logf("in-tx EXPLAIN R3 %q\n  => %s", narrowedQ, narrowedPlan)
 	t.Logf("in-tx EXPLAIN R2 %q\n  => %s", elidedQ, elidedPlan)
@@ -172,29 +174,29 @@ func TestFDB_DistinctUniqueElisionFiresInExplicitTx(t *testing.T) {
 // in a transaction only loses an optimization.
 func TestFDB_DistinctUniqueElisionNotCachedAcrossReadVersionScope(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_dusrvc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dusrvc")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dusrvc")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dusrvc")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dusrvc "+
 			"CREATE TABLE t1 (id BIGINT, email STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email1 ON t1 (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dusrvc/s WITH TEMPLATE dusrvc")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dusrvc/s WITH TEMPLATE dusrvc")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUSRVC?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUSRVC?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t1 (id, email) VALUES (1, 'a@x'), (2, 'b@x')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 (id, email) VALUES (1, 'a@x'), (2, 'b@x')")
 
 	const q = "SELECT DISTINCT email FROM t1 WHERE id > 0" // a base scan; see narrowedQ above
-	conn := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	conn := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
 
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
@@ -235,36 +237,11 @@ func TestFDB_DistinctUniqueElisionNotCachedAcrossReadVersionScope(t *testing.T) 
 // single read version.
 func dusrvDrainTx(t *testing.T, ctx context.Context, tx *sql.Tx, q string) []string {
 	t.Helper()
-	out, err := dusrvDrainTxErr(ctx, tx, q)
+	out, err := testkit.DusrvDrainTxErr(ctx, tx, q)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
 	return out
-}
-
-// dusrvDrainTxErr is dusrvDrainTx that RETURNS its driver error, which is what
-// a retried transaction body needs. A drain crosses many page boundaries by
-// design, and every one of those pages is a place the whole-transaction budget
-// pre-emption can arrive; fatalling there would end the test before the retry
-// loop could classify the error.
-func dusrvDrainTxErr(ctx context.Context, tx *sql.Tx, q string) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("query %q: %w", q, err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []string
-	for rows.Next() {
-		var s sql.NullString
-		if err := rows.Scan(&s); err != nil {
-			return nil, fmt.Errorf("scan %q: %w", q, err)
-		}
-		out = append(out, s.String)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows.Err %q: %w", q, err)
-	}
-	return out, nil
 }
 
 // explainPlanOn is explainPlan against any queryer, so an EXPLAIN can be issued
@@ -272,52 +249,11 @@ func dusrvDrainTxErr(ctx context.Context, tx *sql.Tx, q string) ([]string, error
 // cosmetic: the plan a statement gets now depends on whether it runs on one read
 // version, so an EXPLAIN issued on the pool and one issued on a transaction are
 // answering different questions and may legitimately differ.
-func explainPlanOn(t *testing.T, ctx context.Context, q dusrvQueryer, stmt string) string {
+func explainPlanOn(t *testing.T, ctx context.Context, q testkit.DusrvQueryer, stmt string) string {
 	t.Helper()
-	plan, err := explainPlanOnErr(ctx, q, stmt)
+	plan, err := testkit.ExplainPlanOnErr(ctx, q, stmt)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
 	return plan
-}
-
-// explainPlanOnErr is explainPlanOn that RETURNS its driver error, for use
-// inside a retried transaction body. An EXPLAIN issued on a transaction is a
-// read page like any other and can be pre-empted for outliving the MVCC window.
-func explainPlanOnErr(ctx context.Context, q dusrvQueryer, stmt string) (string, error) {
-	rows, err := q.QueryContext(ctx, "EXPLAIN "+stmt)
-	if err != nil {
-		return "", fmt.Errorf("EXPLAIN %s: %w", stmt, err)
-	}
-	defer func() { _ = rows.Close() }()
-	var plan strings.Builder
-	cols, _ := rows.Columns()
-	for rows.Next() {
-		vals := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			return "", fmt.Errorf("scan explain %s: %w", stmt, err)
-		}
-		for _, v := range vals {
-			switch s := v.(type) {
-			case string:
-				plan.WriteString(s)
-			case []byte:
-				plan.Write(s)
-			}
-			plan.WriteString(" ")
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("explain rows.Err %s: %w", stmt, err)
-	}
-	return plan.String(), nil
-}
-
-// dusrvQueryer is satisfied by *sql.DB, *sql.Conn and *sql.Tx alike.
-type dusrvQueryer interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }

@@ -2,57 +2,13 @@ package sqldriver_test
 
 import (
 	"context"
-	"database/sql"
 	"strings"
-	"sync"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"fdb.dev/pkg/relational/core/embedded"
 )
-
-// syncCaptureLogger is a concurrency-safe PlanGenerationLogger for tests.
-type syncCaptureLogger struct {
-	mu     sync.Mutex
-	events []embedded.PlanGenerationInfo
-}
-
-func (l *syncCaptureLogger) LogPlanGeneration(_ context.Context, info embedded.PlanGenerationInfo) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.events = append(l.events, info)
-}
-
-func (l *syncCaptureLogger) snapshot() []embedded.PlanGenerationInfo {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	out := make([]embedded.PlanGenerationInfo, len(l.events))
-	copy(out, l.events)
-	return out
-}
-
-// installLogger pins a single *sql.Conn and installs a planning-metrics
-// logger on its underlying EmbeddedConnection via Raw. The returned *sql.Conn
-// must be used for all subsequent statements so the logger-equipped
-// connection is the one that plans them.
-func installLogger(t *testing.T, db *sql.DB, logger embedded.PlanGenerationLogger) *sql.Conn {
-	t.Helper()
-	conn, err := db.Conn(context.Background())
-	if err != nil {
-		t.Fatalf("pin conn: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	if err := conn.Raw(func(driverConn any) error {
-		ec, ok := driverConn.(*embedded.EmbeddedConnection)
-		if !ok {
-			t.Fatalf("driver conn is %T, want *embedded.EmbeddedConnection", driverConn)
-		}
-		ec.SetPlanLogger(logger)
-		return nil
-	}); err != nil {
-		t.Fatalf("Raw: %v", err)
-	}
-	return conn
-}
 
 // TestFDB_PlanLogging_DML proves the planDML funnel emits a planning-metrics
 // event with Cache==Skip (DML is never cached) and a valid plan hash.
@@ -66,11 +22,11 @@ func installLogger(t *testing.T, db *sql.DB, logger embedded.PlanGenerationLogge
 // needs the planning-metrics event.)
 func TestFDB_PlanLogging_DML(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
-	logger := &syncCaptureLogger{}
-	conn := installLogger(t, cascadesDB, logger)
+	logger := &testkit.SyncCaptureLogger{}
+	conn := testkit.InstallLogger(t, cascadesDB, logger)
 
 	rows, err := conn.QueryContext(ctx, "DELETE FROM Item WHERE item_id = 2")
 	if err == nil {
@@ -79,7 +35,7 @@ func TestFDB_PlanLogging_DML(t *testing.T) {
 		t.Fatalf("DELETE: unexpected error: %v", err)
 	}
 
-	events := logger.snapshot()
+	events := logger.Snapshot()
 	if len(events) != 1 {
 		t.Fatalf("want 1 planning event for DML, got %d", len(events))
 	}
@@ -110,11 +66,11 @@ func TestFDB_PlanLogging_DML(t *testing.T) {
 // rather than the naive execInsert fallback.
 func TestFDB_InsertValues_ThroughCascades(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
-	logger := &syncCaptureLogger{}
-	conn := installLogger(t, cascadesDB, logger)
+	logger := &testkit.SyncCaptureLogger{}
+	conn := testkit.InstallLogger(t, cascadesDB, logger)
 
 	res, err := conn.ExecContext(ctx,
 		"INSERT INTO Item VALUES (101, 'Sprocket', 11), (102, 'Cog', 22)")
@@ -131,7 +87,7 @@ func TestFDB_InsertValues_ThroughCascades(t *testing.T) {
 
 	// The DML plan went through planDML (one planning event, cache Skip),
 	// and the physical plan is Insert over Explode — the values path.
-	events := logger.snapshot()
+	events := logger.Snapshot()
 	if len(events) != 1 {
 		t.Fatalf("want 1 planning event, got %d", len(events))
 	}
@@ -170,11 +126,11 @@ func TestFDB_InsertValues_ThroughCascades(t *testing.T) {
 // emits miss-then-hit across two identical SELECTs on the same connection.
 func TestFDB_PlanLogging_SelectMissThenHit(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
-	logger := &syncCaptureLogger{}
-	conn := installLogger(t, cascadesDB, logger)
+	logger := &testkit.SyncCaptureLogger{}
+	conn := testkit.InstallLogger(t, cascadesDB, logger)
 
 	const q = "SELECT name FROM Item WHERE item_id = 1"
 	for i := 0; i < 2; i++ {
@@ -185,7 +141,7 @@ func TestFDB_PlanLogging_SelectMissThenHit(t *testing.T) {
 		rows.Close()
 	}
 
-	events := logger.snapshot()
+	events := logger.Snapshot()
 	if len(events) != 2 {
 		t.Fatalf("want 2 planning events, got %d", len(events))
 	}

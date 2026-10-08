@@ -11,26 +11,28 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_StringLenPadProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_slpp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_slpp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_slpp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_slpp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE slpp CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_slpp/s WITH TEMPLATE slpp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SLPP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_slpp/s WITH TEMPLATE slpp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SLPP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, s) VALUES (1, 'a '), (2, 'héllo')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, s) VALUES (1, 'a '), (2, 'héllo')")
 
 	matches := func(where string) bool {
 		rows, err := db.QueryContext(ctx, "SELECT id FROM t WHERE "+where)

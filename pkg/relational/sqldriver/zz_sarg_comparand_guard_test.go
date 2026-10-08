@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // queryIDs runs q and returns the single BIGINT column of every row, sorted
@@ -46,19 +48,19 @@ func queryIDs(t *testing.T, db *sql.DB, ctx context.Context, q string) []int64 {
 // pre-existing sibling with the identical root cause; both must return 2 rows.
 func TestFDB_SelfComparisonNotSargedToCircularRange(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_selfcmp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_selfcmp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_selfcmp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_selfcmp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE selfcmp_tmpl "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_selfcmp/s WITH TEMPLATE selfcmp_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_selfcmp/s WITH TEMPLATE selfcmp_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELFCMP?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELFCMP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -66,9 +68,9 @@ func TestFDB_SelfComparisonNotSargedToCircularRange(t *testing.T) {
 	defer db.Close()
 
 	// rows 1,2: a==b (must match); row 3: a!=b (must not).
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10, 10)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (2, 20, 20)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (3, 30, 99)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1, 10, 10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (2, 20, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (3, 30, 99)")
 
 	for _, q := range []string{
 		"SELECT id FROM t WHERE b = a",
@@ -82,7 +84,7 @@ func TestFDB_SelfComparisonNotSargedToCircularRange(t *testing.T) {
 		// BOUNDED index range scan over T_A (which would seek the circular a=<b>
 		// range). T_A read whole ([*]) under the residual is PREFER_INDEX's
 		// predicate-free read (F-7c), not a SARG.
-		plan := strings.ToUpper(mwjoExplainer(t, db, ctx)(q))
+		plan := strings.ToUpper(testkit.Explainer(t, db, ctx)(q))
 		if strings.Contains(plan, "INDEXSCAN(T_A") && !strings.Contains(plan, "INDEXSCAN(T_A, [*]") {
 			t.Errorf("%q SARG'd self-comparison into circular index range: %s", q, plan)
 		}
@@ -92,7 +94,7 @@ func TestFDB_SelfComparisonNotSargedToCircularRange(t *testing.T) {
 	}
 
 	// Control: a genuine constant comparand MUST still SARG the index.
-	planConst := mwjoExplainer(t, db, ctx)("SELECT id FROM t WHERE a = 20")
+	planConst := testkit.Explainer(t, db, ctx)("SELECT id FROM t WHERE a = 20")
 	if !strings.Contains(strings.ToUpper(planConst), "INDEXSCAN(T_A") {
 		t.Errorf("constant equality lost its index SARG (regression): %s", planConst)
 	}
@@ -111,34 +113,34 @@ func TestFDB_SelfComparisonNotSargedToCircularRange(t *testing.T) {
 // it and forcing the U-driver full-scan-T plan.
 func TestFDB_CompositeJoinDrivesProbeSide(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_compjoin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_compjoin")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_compjoin")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_compjoin")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE compjoin_tmpl "+
 			"CREATE TABLE t (id BIGINT, fk BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE u (id BIGINT, c BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_compjoin/s WITH TEMPLATE compjoin_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_compjoin/s WITH TEMPLATE compjoin_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COMPJOIN?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COMPJOIN?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO u VALUES (1, 100)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO u VALUES (2, 200)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO u VALUES (3, 300)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO u VALUES (1, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO u VALUES (2, 200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO u VALUES (3, 300)")
 	// t.id 10: fk=1→u.id=1, a=100==u.c=100  MATCH
 	// t.id 11: fk=2→u.id=2, a=999!=u.c=200  no
 	// t.id 12: fk=3→u.id=3, a=300==u.c=300  MATCH
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (10, 1, 100)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (11, 2, 999)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (12, 3, 300)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (10, 1, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (11, 2, 999)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (12, 3, 300)")
 
 	const q = "SELECT t.id FROM t, u WHERE t.fk = u.id AND t.a = u.c"
 	got := queryIDs(t, db, ctx, q)
@@ -146,7 +148,7 @@ func TestFDB_CompositeJoinDrivesProbeSide(t *testing.T) {
 		t.Errorf("%q: got %v, want [10 12]", q, got)
 	}
 
-	plan := mwjoExplainer(t, db, ctx)(q)
+	plan := testkit.Explainer(t, db, ctx)(q)
 	t.Logf("PLAN: %s", plan)
 	up := strings.ToUpper(plan)
 	// The bad plan drives U and re-scans all of T per U row.

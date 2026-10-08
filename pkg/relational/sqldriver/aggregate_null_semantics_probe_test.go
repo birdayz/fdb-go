@@ -10,28 +10,30 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateNullSemanticsProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ans")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ans")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_ans")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ans")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ans CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ans/s WITH TEMPLATE ans")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ANS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ans/s WITH TEMPLATE ans")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ANS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (1,10)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (2)") // a NULL
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (3,30)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (1,10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (2)") // a NULL
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (3,30)")
 
 	agg := func(expr string) sql.NullFloat64 {
 		var v sql.NullFloat64
@@ -56,7 +58,7 @@ func TestFDB_AggregateNullSemanticsProbe(t *testing.T) {
 	val("max_ignores_null", "MAX(a)", 30)
 
 	// reduce to a single row whose only value is NULL.
-	mwjoMustExec(t, db, ctx, "DELETE FROM t WHERE id IN (1, 3)")
+	testkit.MustExecCtx(t, db, ctx, "DELETE FROM t WHERE id IN (1, 3)")
 	val("count_star_over_null_row", "COUNT(*)", 1)
 	val("count_col_all_null", "COUNT(a)", 0)
 	t.Run("sum_all_null_is_null", func(t *testing.T) {

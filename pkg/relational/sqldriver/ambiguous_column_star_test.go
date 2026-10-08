@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"github.com/onsi/gomega"
 )
 
@@ -14,13 +16,13 @@ import (
 // overlapping column schemas.
 func TestFDB_AmbiguousColumnStar(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_ambcol_star")
+	setup := testkit.OpenDB(t, "/FRL/testdb_ambcol_star")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_ambcol_star")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE ambcol_star_tmpl "+
@@ -29,7 +31,7 @@ func TestFDB_AmbiguousColumnStar(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_ambcol_star/s WITH TEMPLATE ambcol_star_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AMBCOL_STAR?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AMBCOL_STAR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

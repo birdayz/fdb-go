@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -34,30 +36,30 @@ import (
 // plus the StrictSingle cardinality guard, which must never silently pick
 // one row.
 func TestFDB_CorrelatedScalarSubqueryEnclosure(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_4051_cleanlift"
-	setup := openTestDB(t, dbPath)
-	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cl4051_tmpl "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cl4051_tmpl "+
 		"CREATE TABLE t (tid BIGINT, k BIGINT, PRIMARY KEY (tid)) "+
 		"CREATE TABLE a (aid BIGINT, k BIGINT, PRIMARY KEY (aid)) "+
 		"CREATE TABLE b (bid BIGINT, bref BIGINT, PRIMARY KEY (bid)) "+
 		"CREATE TABLE c (cid BIGINT, ck BIGINT, cv BIGINT, PRIMARY KEY (cid)) "+
 		"CREATE TABLE e (eid BIGINT, eref BIGINT, PRIMARY KEY (eid))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cl4051_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE cl4051_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, 100), (2, 200)")
-	mustExec(t, db, ctx, "INSERT INTO a VALUES (1, 100), (2, 200)")
-	mustExec(t, db, ctx, "INSERT INTO b VALUES (10, 1), (20, 2)")
-	mustExec(t, db, ctx, "INSERT INTO c VALUES (1, 100, 7), (2, 200, 8)")
-	mustExec(t, db, ctx, "INSERT INTO e VALUES (10, 1)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, 100), (2, 200)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO a VALUES (1, 100), (2, 200)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO b VALUES (10, 1), (20, 2)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO c VALUES (1, 100, 7), (2, 200, 8)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO e VALUES (10, 1)")
 
 	rowsOf := func(t *testing.T, q string) ([]string, error) {
 		rows, qerr := db.QueryContext(ctx, q)
@@ -147,11 +149,11 @@ func TestFDB_CorrelatedScalarSubqueryEnclosure(t *testing.T) {
 	// rows for t.k=100 → cardinality violation. The fresh-rooted inner must still
 	// ERROR (21000), never silently pick one row.
 	t.Run("inner_join_scalar_two_rows_strict_single", func(t *testing.T) {
-		mustExec(t, db, ctx, "INSERT INTO e VALUES (11, 1)")
+		testkit.MustExec(t, db, ctx, "INSERT INTO e VALUES (11, 1)")
 		_, err := rowsOf(t, "SELECT t.k, (SELECT c.cv FROM c JOIN e ON e.eref = c.cid WHERE c.ck = t.k) FROM t WHERE t.k = 100")
 		if err == nil {
 			t.Fatalf("two-inner-row scalar: expected a 21000 cardinality violation, got no error (silent pick)")
 		}
-		requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 	})
 }

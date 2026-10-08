@@ -8,62 +8,14 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-func setupCascadesTestDB(t *testing.T) (*sql.DB, *sql.DB) {
-	t.Helper()
-	if clusterFilePath == "" {
-		t.Skip("FDB not available (no Docker)")
-	}
-	ctx := context.Background()
-
-	dbPath := fmt.Sprintf("/FRL/casc_%s", t.Name())
-	setup := openTestDB(t, dbPath)
-	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
-		t.Fatalf("CREATE DATABASE: %v", err)
-	}
-	tmpl := fmt.Sprintf("casc_tmpl_%s", t.Name())
-	if _, err := setup.ExecContext(ctx,
-		fmt.Sprintf("CREATE SCHEMA TEMPLATE %s "+
-			"CREATE TABLE Item (item_id BIGINT, name STRING, price BIGINT, PRIMARY KEY (item_id))", tmpl)); err != nil {
-		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
-	}
-	if _, err := setup.ExecContext(ctx,
-		fmt.Sprintf("CREATE SCHEMA %s/store WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
-		t.Fatalf("CREATE SCHEMA: %v", err)
-	}
-
-	naiveDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
-	naiveDB, err := sql.Open("fdbsql", naiveDSN)
-	if err != nil {
-		t.Fatalf("sql.Open naive: %v", err)
-	}
-	t.Cleanup(func() { naiveDB.Close() })
-
-	if _, err := naiveDB.ExecContext(ctx, "INSERT INTO Item VALUES (1, 'Widget', 100)"); err != nil {
-		t.Fatalf("INSERT 1: %v", err)
-	}
-	if _, err := naiveDB.ExecContext(ctx, "INSERT INTO Item VALUES (2, 'Gadget', 200)"); err != nil {
-		t.Fatalf("INSERT 2: %v", err)
-	}
-	if _, err := naiveDB.ExecContext(ctx, "INSERT INTO Item VALUES (3, 'Doohickey', 50)"); err != nil {
-		t.Fatalf("INSERT 3: %v", err)
-	}
-
-	cascadesDSN := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
-	cascadesDB, err := sql.Open("fdbsql", cascadesDSN)
-	if err != nil {
-		t.Fatalf("sql.Open cascades: %v", err)
-	}
-	t.Cleanup(func() { cascadesDB.Close() })
-
-	return naiveDB, cascadesDB
-}
-
 func TestFDB_CascadesScan(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx, "SELECT * FROM Item")
@@ -72,7 +24,7 @@ func TestFDB_CascadesScan(t *testing.T) {
 	}
 	defer rows.Close()
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	if count != 3 {
 		t.Fatalf("expected 3 rows, got %d", count)
 	}
@@ -81,7 +33,7 @@ func TestFDB_CascadesScan(t *testing.T) {
 
 func TestFDB_CascadesFilter(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx, "SELECT * FROM Item WHERE price > 100")
@@ -90,7 +42,7 @@ func TestFDB_CascadesFilter(t *testing.T) {
 	}
 	defer rows.Close()
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	if count != 1 {
 		t.Fatalf("expected 1 row with price > 100, got %d", count)
 	}
@@ -99,7 +51,7 @@ func TestFDB_CascadesFilter(t *testing.T) {
 
 func TestFDB_CascadesProjection(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx, "SELECT item_id, name FROM Item")
@@ -111,7 +63,7 @@ func TestFDB_CascadesProjection(t *testing.T) {
 	cols, _ := rows.Columns()
 	t.Logf("columns: %v", cols)
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	if count != 3 {
 		t.Fatalf("expected 3 rows, got %d", count)
 	}
@@ -120,7 +72,7 @@ func TestFDB_CascadesProjection(t *testing.T) {
 
 func TestFDB_CascadesStringFilter(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx, "SELECT * FROM Item WHERE name = 'Gadget'")
@@ -129,7 +81,7 @@ func TestFDB_CascadesStringFilter(t *testing.T) {
 	}
 	defer rows.Close()
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	if count != 1 {
 		t.Fatalf("expected 1 row (Gadget), got %d", count)
 	}
@@ -138,7 +90,7 @@ func TestFDB_CascadesStringFilter(t *testing.T) {
 
 func TestFDB_CascadesInequalityFilter(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx, "SELECT * FROM Item WHERE price >= 100")
@@ -147,7 +99,7 @@ func TestFDB_CascadesInequalityFilter(t *testing.T) {
 	}
 	defer rows.Close()
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	if count != 2 {
 		t.Fatalf("expected 2 rows (price >= 100), got %d", count)
 	}
@@ -156,7 +108,7 @@ func TestFDB_CascadesInequalityFilter(t *testing.T) {
 
 func TestFDB_CascadesMultiPredicate(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx, "SELECT * FROM Item WHERE price > 50 AND price < 200")
@@ -165,7 +117,7 @@ func TestFDB_CascadesMultiPredicate(t *testing.T) {
 	}
 	defer rows.Close()
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	if count != 1 {
 		t.Fatalf("expected 1 row (Widget, price=100), got %d", count)
 	}
@@ -174,13 +126,13 @@ func TestFDB_CascadesMultiPredicate(t *testing.T) {
 
 func TestFDB_CascadesIndexScan(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_idx_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -196,7 +148,7 @@ func TestFDB_CascadesIndexScan(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -220,7 +172,7 @@ func TestFDB_CascadesIndexScan(t *testing.T) {
 	}
 	defer rows.Close()
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	if count != 3 {
 		t.Fatalf("expected 3 electronics, got %d", count)
 	}
@@ -229,7 +181,7 @@ func TestFDB_CascadesIndexScan(t *testing.T) {
 
 func TestFDB_CascadesSumAggregate(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx, "SELECT SUM(price) FROM Item")
@@ -254,7 +206,7 @@ func TestFDB_CascadesSumAggregate(t *testing.T) {
 
 func TestFDB_CascadesDistinct(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx, "SELECT DISTINCT price FROM Item")
@@ -263,7 +215,7 @@ func TestFDB_CascadesDistinct(t *testing.T) {
 	}
 	defer rows.Close()
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	// 3 items with prices 100, 200, 50 — all distinct
 	if count != 3 {
 		t.Fatalf("expected 3 distinct prices, got %d", count)
@@ -273,7 +225,7 @@ func TestFDB_CascadesDistinct(t *testing.T) {
 
 func TestFDB_CascadesNotEqual(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx, "SELECT * FROM Item WHERE price <> 100")
@@ -282,7 +234,7 @@ func TestFDB_CascadesNotEqual(t *testing.T) {
 	}
 	defer rows.Close()
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	if count != 2 {
 		t.Fatalf("expected 2 rows (price <> 100), got %d", count)
 	}
@@ -291,7 +243,7 @@ func TestFDB_CascadesNotEqual(t *testing.T) {
 
 func TestFDB_CascadesOrFilter(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx, "SELECT * FROM Item WHERE price > 150 OR name = 'Doohickey'")
@@ -300,7 +252,7 @@ func TestFDB_CascadesOrFilter(t *testing.T) {
 	}
 	defer rows.Close()
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	if count != 2 {
 		t.Fatalf("expected 2 rows (Gadget price=200, Doohickey), got %d", count)
 	}
@@ -309,7 +261,7 @@ func TestFDB_CascadesOrFilter(t *testing.T) {
 
 func TestFDB_CascadesCount(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx, "SELECT COUNT(*) FROM Item")
@@ -333,7 +285,7 @@ func TestFDB_CascadesCount(t *testing.T) {
 
 func TestFDB_CascadesOrderByNoIndex(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// ORDER BY on non-indexed column — uses in-memory sort (Go extension).
@@ -359,13 +311,13 @@ func TestFDB_CascadesOrderByNoIndex(t *testing.T) {
 
 func TestFDB_CascadesJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_join_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -381,7 +333,7 @@ func TestFDB_CascadesJoin(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -410,7 +362,7 @@ func TestFDB_CascadesJoin(t *testing.T) {
 	}
 	defer rows.Close()
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	if count != 3 {
 		t.Fatalf("expected 3 rows from join, got %d", count)
 	}
@@ -419,13 +371,13 @@ func TestFDB_CascadesJoin(t *testing.T) {
 
 func TestFDB_CascadesAggregateWithGroupBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_grpby_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -440,7 +392,7 @@ func TestFDB_CascadesAggregateWithGroupBy(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -487,13 +439,13 @@ func TestFDB_CascadesAggregateWithGroupBy(t *testing.T) {
 
 func TestFDB_CascadesDistinctWithFilter(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_distfilt_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -508,7 +460,7 @@ func TestFDB_CascadesDistinctWithFilter(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -550,7 +502,7 @@ func TestFDB_CascadesDistinctWithFilter(t *testing.T) {
 
 func TestFDB_CascadesMultiColumnProjection(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx, "SELECT name, price FROM Item WHERE price > 50")
@@ -582,13 +534,13 @@ func TestFDB_CascadesMultiColumnProjection(t *testing.T) {
 
 func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_orderby_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -604,7 +556,7 @@ func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -674,7 +626,7 @@ func TestFDB_CascadesOrderByWithIndex(t *testing.T) {
 
 func TestFDB_CascadesUnionAll(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx,
@@ -703,7 +655,7 @@ func TestFDB_CascadesUnionAll(t *testing.T) {
 
 func TestFDB_CascadesCTESimple(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// Simple CTE scan — inlines to a plain scan of Item.
@@ -713,7 +665,7 @@ func TestFDB_CascadesCTESimple(t *testing.T) {
 		t.Fatalf("CTE not supported via Cascades: %v", err)
 	}
 	defer rows.Close()
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	if count != 3 {
 		t.Fatalf("expected 3 rows from CTE, got %d", count)
 	}
@@ -722,7 +674,7 @@ func TestFDB_CascadesCTESimple(t *testing.T) {
 
 func TestFDB_CascadesCTEWithFilter(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// CTE with WHERE on inner body — filter inlines into the plan.
@@ -750,7 +702,7 @@ func TestFDB_CascadesCTEWithFilter(t *testing.T) {
 
 func TestFDB_CascadesCTEOuterWhere(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// CTE with WHERE on the outer query (the CTE reference).
@@ -781,7 +733,7 @@ func TestFDB_CascadesCTEOuterWhere(t *testing.T) {
 
 func TestFDB_CascadesCTEAggregateOnBody(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// Aggregate (COUNT) over a CTE — CTE inlines, aggregate on top.
@@ -809,7 +761,7 @@ func TestFDB_CascadesCTEAggregateOnBody(t *testing.T) {
 
 func TestFDB_CascadesCTESelectStar(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// CTE body uses SELECT * — all columns from underlying table.
@@ -837,7 +789,7 @@ func TestFDB_CascadesCTESelectStar(t *testing.T) {
 
 func TestFDB_CascadesCTEProjectionAlias(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// CTE body with column aliases — tests that aliased projections
@@ -867,7 +819,7 @@ func TestFDB_CascadesCTEProjectionAlias(t *testing.T) {
 
 func TestFDB_CascadesCTEColumnAliases(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// WITH c(alias1, alias2) AS (...) renames body columns.
@@ -898,7 +850,7 @@ func TestFDB_CascadesCTEColumnAliases(t *testing.T) {
 
 func TestFDB_CascadesCTEUnionBody(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// CTE body is a UNION ALL — both branches contribute rows.
@@ -930,7 +882,7 @@ func TestFDB_CascadesCTEUnionBody(t *testing.T) {
 
 func TestFDB_CascadesCTEChainedSelectStar(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// Chained CTE where the second CTE uses SELECT * from the first.
@@ -960,7 +912,7 @@ func TestFDB_CascadesCTEChainedSelectStar(t *testing.T) {
 
 func TestFDB_CascadesCTEGroupBy(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// CTE + GROUP BY + SUM — tests aggregate on inlined CTE scan.
@@ -988,13 +940,13 @@ func TestFDB_CascadesCTEGroupBy(t *testing.T) {
 
 func TestFDB_CascadesCTEJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_ctejoin_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -1010,7 +962,7 @@ func TestFDB_CascadesCTEJoin(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1040,7 +992,7 @@ func TestFDB_CascadesCTEJoin(t *testing.T) {
 	}
 	defer rows.Close()
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	if count != 2 {
 		t.Fatalf("expected 2 rows from CTE+JOIN, got %d", count)
 	}
@@ -1049,7 +1001,7 @@ func TestFDB_CascadesCTEJoin(t *testing.T) {
 
 func TestFDB_CascadesCTEChained(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// CTE B references CTE A — tests chained schema derivation.
@@ -1079,7 +1031,7 @@ func TestFDB_CascadesCTEChained(t *testing.T) {
 
 func TestFDB_CascadesCTEDistinct(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// CTE + DISTINCT — dedup over inlined CTE scan.
@@ -1091,7 +1043,7 @@ func TestFDB_CascadesCTEDistinct(t *testing.T) {
 	}
 	defer rows.Close()
 
-	count := countRows(t, rows)
+	count := testkit.CountRows(t, rows)
 	// prices: 100, 200, 50 → all distinct → 3
 	if count != 3 {
 		t.Fatalf("expected 3 distinct prices, got %d", count)
@@ -1101,13 +1053,13 @@ func TestFDB_CascadesCTEDistinct(t *testing.T) {
 
 func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_joinon_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -1123,7 +1075,7 @@ func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1165,7 +1117,7 @@ func TestFDB_CascadesExplicitJoinOn(t *testing.T) {
 
 func TestFDB_CascadesCTEDoubleFilter(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// Filter in both CTE body AND outer query.
@@ -1194,7 +1146,7 @@ func TestFDB_CascadesCTEDoubleFilter(t *testing.T) {
 
 func TestFDB_CascadesCTEInUnion(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx,
@@ -1222,7 +1174,7 @@ func TestFDB_CascadesCTEInUnion(t *testing.T) {
 
 func TestFDB_CascadesCTEComplexStack(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// Complex CTE stack: filter → project → distinct → count.
@@ -1251,7 +1203,7 @@ func TestFDB_CascadesCTEComplexStack(t *testing.T) {
 
 func TestFDB_CascadesComputedProjection(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx,
@@ -1278,13 +1230,13 @@ func TestFDB_CascadesComputedProjection(t *testing.T) {
 
 func TestFDB_CascadesThreeWayJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_3join_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -1301,7 +1253,7 @@ func TestFDB_CascadesThreeWayJoin(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1345,7 +1297,7 @@ func TestFDB_CascadesThreeWayJoin(t *testing.T) {
 
 func TestFDB_CascadesMultiFilter(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// Multiple predicates: AND compound filter.
@@ -1373,7 +1325,7 @@ func TestFDB_CascadesMultiFilter(t *testing.T) {
 
 func TestFDB_CascadesOrderByPK(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	rows, err := cascadesDB.QueryContext(ctx,
@@ -1427,7 +1379,7 @@ func TestFDB_CascadesOrderByPK(t *testing.T) {
 // now succeeds via ImplementInMemorySortRule.
 func TestFDB_CascadesCTEOrderByNoIndex(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// Go extension: in-memory sort — CTE + ORDER BY on a non-indexed column.
@@ -1464,13 +1416,13 @@ func TestFDB_CascadesCTEOrderByNoIndex(t *testing.T) {
 // now succeeds via ImplementInMemorySortRule.
 func TestFDB_CascadesJoinOrderByNoIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_joinob_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -1486,7 +1438,7 @@ func TestFDB_CascadesJoinOrderByNoIndex(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1527,13 +1479,13 @@ func TestFDB_CascadesJoinOrderByNoIndex(t *testing.T) {
 
 func TestFDB_CascadesRecursiveCTE(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_reccte_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -1548,7 +1500,7 @@ func TestFDB_CascadesRecursiveCTE(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1629,13 +1581,13 @@ func TestFDB_CascadesRecursiveCTE(t *testing.T) {
 
 func TestFDB_CascadesRecursiveCTEPostOrder(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := "/FRL/casc_reccte_postorder"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -1647,7 +1599,7 @@ func TestFDB_CascadesRecursiveCTEPostOrder(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1699,13 +1651,13 @@ func TestFDB_CascadesRecursiveCTEPostOrder(t *testing.T) {
 
 func TestFDB_CascadesScalarSubqueryInProjection(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_ssq_proj_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -1721,7 +1673,7 @@ func TestFDB_CascadesScalarSubqueryInProjection(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1755,13 +1707,13 @@ func TestFDB_CascadesScalarSubqueryInProjection(t *testing.T) {
 
 func TestFDB_CascadesScalarSubqueryInWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_ssq_where_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -1777,7 +1729,7 @@ func TestFDB_CascadesScalarSubqueryInWhere(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1827,7 +1779,7 @@ func TestFDB_CascadesScalarSubqueryInWhere(t *testing.T) {
 // Java's fdb-relational which only installs numeric MIN/MAX overloads.
 func TestFDB_CascadesMinMaxStringRejected(t *testing.T) {
 	t.Parallel()
-	_, cascadesDB := setupCascadesTestDB(t)
+	_, cascadesDB := testkit.SetupCascadesTestDB(t)
 	ctx := context.Background()
 
 	// MIN(name) where name is STRING — must fail with 0A000.
@@ -1891,13 +1843,13 @@ func TestFDB_CascadesMinMaxStringRejected(t *testing.T) {
 // (no error) and this test fails.
 func TestFDB_CascadesMinMaxNonNumericEmptyRejected(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_mmempty_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -1912,7 +1864,7 @@ func TestFDB_CascadesMinMaxNonNumericEmptyRejected(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -1970,13 +1922,13 @@ func TestFDB_CascadesMinMaxNonNumericEmptyRejected(t *testing.T) {
 // BIGINT-range value) instead of erroring, and this test fails.
 func TestFDB_CascadesSumIntOverflow(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_sumovf_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -1991,7 +1943,7 @@ func TestFDB_CascadesSumIntOverflow(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2058,13 +2010,13 @@ func TestFDB_CascadesSumIntOverflow(t *testing.T) {
 // descending order within each tied group).
 func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_sorttie_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -2080,7 +2032,7 @@ func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2177,31 +2129,19 @@ func TestFDB_CascadesSortPKTiebreaker(t *testing.T) {
 	t.Logf("ASC PK tiebreaker correct: %+v", got2)
 }
 
-func countRows(t *testing.T, rows *sql.Rows) int {
-	t.Helper()
-	var n int
-	for rows.Next() {
-		n++
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows.Err: %v", err)
-	}
-	return n
-}
-
 // TestFDB_CascadesSortEliminationViaIndex verifies that the Cascades planner
 // eliminates in-memory sort when a secondary index provides the requested
 // ORDER BY ordering, and falls back to in-memory sort when no matching index
 // exists.
 func TestFDB_CascadesSortEliminationViaIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_sortelim_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -2217,7 +2157,7 @@ func TestFDB_CascadesSortEliminationViaIndex(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2397,13 +2337,13 @@ func TestFDB_CascadesSortEliminationViaIndex(t *testing.T) {
 // and still uses StreamingAgg when no matching index exists.
 func TestFDB_CascadesStreamingAggFromIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_streamagg_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -2419,7 +2359,7 @@ func TestFDB_CascadesStreamingAggFromIndex(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2575,13 +2515,13 @@ func TestFDB_CascadesStreamingAggFromIndex(t *testing.T) {
 // connections to the pool.
 func TestFDB_PlanCacheCorrectness(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_plancache_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -2596,7 +2536,7 @@ func TestFDB_PlanCacheCorrectness(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2793,13 +2733,13 @@ func TestFDB_PlanCacheCorrectness(t *testing.T) {
 
 func TestFDB_CascadesFlatMapCorrelatedJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/casc_flatmap_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -2815,7 +2755,7 @@ func TestFDB_CascadesFlatMapCorrelatedJoin(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -2851,7 +2791,7 @@ func TestFDB_CascadesFlatMapCorrelatedJoin(t *testing.T) {
 	// --- Part 1: inner join with filter + ORDER BY ---
 	innerJoinQ := "SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.amount > 50 ORDER BY o.id"
 
-	plan := planExplainVia(t, ctx, db, innerJoinQ)
+	plan := testkit.ExplainVia(t, ctx, db, innerJoinQ)
 	t.Logf("FlatMap plan: %s", plan)
 	if !strings.Contains(plan, "FlatMap") {
 		t.Fatalf("expected FlatMap in plan for correlated join, got: %s", plan)
@@ -2980,13 +2920,13 @@ func TestFDB_CascadesFlatMapCorrelatedJoin(t *testing.T) {
 
 func TestFDB_JoinAggregateNull(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/join_agg_null_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -3002,7 +2942,7 @@ func TestFDB_JoinAggregateNull(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3136,13 +3076,13 @@ func TestFDB_JoinAggregateNull(t *testing.T) {
 
 func TestFDB_NestedNotExists(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/nested_ne_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -3159,7 +3099,7 @@ func TestFDB_NestedNotExists(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3241,13 +3181,13 @@ func TestFDB_NestedNotExists(t *testing.T) {
 
 func TestFDB_ExistsWithJoinInside(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/exists_join_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -3264,7 +3204,7 @@ func TestFDB_ExistsWithJoinInside(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3309,13 +3249,13 @@ func TestFDB_ExistsWithJoinInside(t *testing.T) {
 
 func TestFDB_NotExistsWithOR(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/ne_or_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -3331,7 +3271,7 @@ func TestFDB_NotExistsWithOR(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3370,13 +3310,13 @@ func TestFDB_NotExistsWithOR(t *testing.T) {
 
 func TestFDB_NotExistsNonPKWithWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/ne_nonpk_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -3392,7 +3332,7 @@ func TestFDB_NotExistsNonPKWithWhere(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3439,13 +3379,13 @@ func TestFDB_NotExistsNonPKWithWhere(t *testing.T) {
 
 func TestFDB_NotExistsWithAdditionalPredicate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/notexists_pred_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -3461,7 +3401,7 @@ func TestFDB_NotExistsWithAdditionalPredicate(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3507,13 +3447,13 @@ func TestFDB_NotExistsWithAdditionalPredicate(t *testing.T) {
 
 func TestFDB_NestedAggregateRejection(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/nest_agg_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -3526,7 +3466,7 @@ func TestFDB_NestedAggregateRejection(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -3578,13 +3518,13 @@ func TestFDB_NestedAggregateRejection(t *testing.T) {
 
 func TestFDB_InListMultiValue(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/in_dbg_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -3597,7 +3537,7 @@ func TestFDB_InListMultiValue(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/shop WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=SHOP", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

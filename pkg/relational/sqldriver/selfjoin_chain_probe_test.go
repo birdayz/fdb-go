@@ -10,44 +10,46 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_SelfJoinChainProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_selfchain")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_selfchain")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_selfchain")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_selfchain")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE selfchain "+
 			"CREATE TABLE emp (id BIGINT, mgr BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX emp_mgr ON emp (mgr)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_selfchain/s WITH TEMPLATE selfchain")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELFCHAIN?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_selfchain/s WITH TEMPLATE selfchain")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SELFCHAIN?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// id1 mgr=NULL (CEO); id2 mgr=1; id3 mgr=1; id4 mgr=2
-	mwjoMustExec(t, db, ctx, "INSERT INTO emp (id, mgr) VALUES (2,1),(3,1),(4,2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO emp (id) VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO emp (id, mgr) VALUES (2,1),(3,1),(4,2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO emp (id) VALUES (1)")
 
 	pairs := func(q string) []string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
 			t.Fatalf("query %q: %v", q, err)
 		}
-		return siScanRows(t, rows)
+		return testkit.ScanRowStrings(t, rows)
 	}
 
 	// Self-join INNER: employee → its manager. id1 (mgr NULL) excluded.
 	t.Run("selfjoin_inner", func(t *testing.T) {
 		got := pairs("SELECT e.id, m.id FROM emp e JOIN emp m ON e.mgr = m.id")
 		want := []string{"2|1", "3|1", "4|2"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("self-join inner = %v, want %v", got, want)
 		}
 	})
@@ -90,7 +92,7 @@ func TestFDB_SelfJoinChainProbe(t *testing.T) {
 	t.Run("selfjoin_where_on_alias", func(t *testing.T) {
 		got := pairs("SELECT e.id, m.id FROM emp e JOIN emp m ON e.mgr = m.id WHERE m.id = 1")
 		want := []string{"2|1", "3|1"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("self-join + WHERE = %v, want %v", got, want)
 		}
 	})

@@ -41,18 +41,20 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_InListSignedZeroKeepsPrimaryKeyOrder(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/testdb_inlist_signed_zero"
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inlistzero "+
 			// idx_e is what makes the per-binding leg — and so the merge —
 			// available at all. Both indexes name id in their key: an ORDER BY
@@ -67,10 +69,10 @@ func TestFDB_InListSignedZeroKeepsPrimaryKeyOrder(t *testing.T) {
 			// the direction a blanket "never trust a leg" fix would break.
 			"CREATE TABLE tn (id BIGINT, e BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_n ON tn (e, id)")
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE inlistzero")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -84,9 +86,9 @@ func TestFDB_InListSignedZeroKeepsPrimaryKeyOrder(t *testing.T) {
 	// one would coincide.
 	const rows = "(1, 5.0, 1), (2, 0.0, 1), (3, 7.0, 1), (4, -0.0, 1), " +
 		"(5, 5.0, 1), (6, 0.0, 1), (7, 7.0, 1), (8, -0.0, 1)"
-	mwjoMustExec(t, db, ctx, "INSERT INTO ti (id, e, g) VALUES "+rows)
-	mwjoMustExec(t, db, ctx, "INSERT INTO tb (id, e, g) VALUES "+rows)
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ti (id, e, g) VALUES "+rows)
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tb (id, e, g) VALUES "+rows)
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO tn (id, e, g) VALUES (1, 5, 1), (2, 0, 1), (3, 7, 1), (4, 0, 1), "+
 			"(5, 5, 1), (6, 0, 1), (7, 7, 1), (8, 0, 1)")
 

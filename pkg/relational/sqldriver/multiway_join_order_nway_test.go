@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_MultiwayJoinOrder_Nway is the acceptance test for RFC-043: generic
@@ -39,14 +41,14 @@ import (
 // Performance; ties into RFC-039 broad memo merging).
 func TestFDB_MultiwayJoinOrder_Nway(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_nway")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nway")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_nway")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nway")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nway_tmpl "+
 			// indexed chain t1(1) <- t2(20) <- t3(200) <- t4(2000)
 			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
@@ -61,9 +63,9 @@ func TestFDB_MultiwayJoinOrder_Nway(t *testing.T) {
 			"CREATE TABLE w (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE xx (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE yy (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nway/s WITH TEMPLATE nway_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nway/s WITH TEMPLATE nway_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NWAY?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NWAY?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -71,18 +73,18 @@ func TestFDB_MultiwayJoinOrder_Nway(t *testing.T) {
 	defer db.Close()
 
 	// chain: t1=1 row; each t2 -> t1; each t3 -> t2; each t4 -> t3.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t1 VALUES (1)")
-	mwjoInsertRange(t, db, ctx, "t2", 1, 20, func(i int) string { return fmt.Sprintf("(%d, 1, 'x%d')", i, i) })
-	mwjoInsertRange(t, db, ctx, "t3", 1, 200, func(i int) string { return fmt.Sprintf("(%d, %d)", i, (i%20)+1) })
-	mwjoInsertRange(t, db, ctx, "t4", 1, 2000, func(i int) string { return fmt.Sprintf("(%d, %d)", i, (i%200)+1) })
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 VALUES (1)")
+	testkit.MwjoInsertRange(t, db, ctx, "t2", 1, 20, func(i int) string { return fmt.Sprintf("(%d, 1, 'x%d')", i, i) })
+	testkit.MwjoInsertRange(t, db, ctx, "t3", 1, 200, func(i int) string { return fmt.Sprintf("(%d, %d)", i, (i%20)+1) })
+	testkit.MwjoInsertRange(t, db, ctx, "t4", 1, 2000, func(i int) string { return fmt.Sprintf("(%d, %d)", i, (i%200)+1) })
 	// star
-	mwjoMustExec(t, db, ctx, "INSERT INTO w VALUES (5)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO xx VALUES (6)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO yy VALUES (7)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO hub VALUES (1, 5, 6, 7, 'hublabel')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO hub VALUES (2, 5, 6, 99, 'nomatch')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO w VALUES (5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO xx VALUES (6)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO yy VALUES (7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO hub VALUES (1, 5, 6, 7, 'hublabel')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO hub VALUES (2, 5, 6, 99, 'nomatch')")
 
-	planExplain := mwjoExplainer(t, db, ctx)
+	planExplain := testkit.Explainer(t, db, ctx)
 
 	chainPred := "t2.t1_id = t1.id AND t3.t2_id = t2.id AND t4.t3_id = t3.id"
 	qSmall := "SELECT t1.id FROM t1, t2, t3, t4 WHERE " + chainPred

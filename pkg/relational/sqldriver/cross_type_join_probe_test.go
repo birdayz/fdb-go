@@ -23,49 +23,51 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_xtype")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_xtype")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_xtype")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_xtype")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE xtype "+
 			"CREATE TABLE a (id BIGINT, xbig BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE bi (id BIGINT, yint INTEGER, PRIMARY KEY (id)) "+
 			"CREATE TABLE bd (id BIGINT, ydbl DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE TABLE bf (id BIGINT, yflt FLOAT, PRIMARY KEY (id)) "+
 			"CREATE INDEX bi_y ON bi (yint) CREATE INDEX bd_y ON bd (ydbl) CREATE INDEX bf_y ON bf (yflt)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_xtype/s WITH TEMPLATE xtype")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_XTYPE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_xtype/s WITH TEMPLATE xtype")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_XTYPE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, xbig) VALUES (1, 5), (2, 10), (3, 7)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO bi (id, yint) VALUES (50, 5), (51, 10), (52, 99)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO bd (id, ydbl) VALUES (60, 5.0), (61, 7.0), (62, 99.0)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO bf (id, yflt) VALUES (70, CAST(5.0 AS FLOAT)), (71, CAST(7.0 AS FLOAT)), (72, CAST(99.0 AS FLOAT))")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, xbig) VALUES (1, 5), (2, 10), (3, 7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO bi (id, yint) VALUES (50, 5), (51, 10), (52, 99)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO bd (id, ydbl) VALUES (60, 5.0), (61, 7.0), (62, 99.0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO bf (id, yflt) VALUES (70, CAST(5.0 AS FLOAT)), (71, CAST(7.0 AS FLOAT)), (72, CAST(99.0 AS FLOAT))")
 
 	pairs := func(q string) []string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
 			t.Fatalf("query %q: %v", q, err)
 		}
-		return siScanRows(t, rows)
+		return testkit.ScanRowStrings(t, rows)
 	}
 
 	// BIGINT = INTEGER, index on the INTEGER side: a1(5)=bi50, a2(10)=bi51, a3(7) none.
 	t.Run("bigint_eq_integer", func(t *testing.T) {
 		got := pairs("SELECT a.id, bi.id FROM a JOIN bi ON a.xbig = bi.yint")
 		want := []string{"1|50", "2|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("BIGINT=INTEGER join = %v, want %v", got, want)
 		}
 	})
@@ -109,14 +111,14 @@ func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 	t.Run("bigint_eq_double", func(t *testing.T) {
 		got := pairs("SELECT a.id, bd.id FROM a JOIN bd ON a.xbig = bd.ydbl")
 		want := []string{"1|60", "3|61"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("BIGINT=DOUBLE join = %v, want %v", got, want)
 		}
 	})
 	t.Run("double_eq_bigint_reversed", func(t *testing.T) {
 		got := pairs("SELECT a.id, bd.id FROM bd JOIN a ON bd.ydbl = a.xbig")
 		want := []string{"1|60", "3|61"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("DOUBLE=BIGINT reversed join = %v, want %v", got, want)
 		}
 	})
@@ -126,7 +128,7 @@ func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 		// 7>7.0 is false, not a strict inequality).
 		got := pairs("SELECT a.id, bd.id FROM a JOIN bd ON a.xbig > bd.ydbl")
 		want := []string{"2|60", "2|61", "3|60"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("BIGINT>DOUBLE join = %v, want %v", got, want)
 		}
 	})
@@ -148,7 +150,7 @@ func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 	t.Run("bigint_eq_float", func(t *testing.T) {
 		got := pairs("SELECT a.id, bf.id FROM a JOIN bf ON a.xbig = bf.yflt")
 		want := []string{"1|70", "3|71"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("BIGINT=FLOAT join = %v, want %v", got, want)
 		}
 	})
@@ -158,7 +160,7 @@ func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 	t.Run("computed_bigint_eq_integer", func(t *testing.T) {
 		got := pairs("SELECT a.id, bi.id FROM a JOIN bi ON a.xbig + 0 = bi.yint")
 		want := []string{"1|50", "2|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("computed BIGINT=INTEGER join = %v, want %v", got, want)
 		}
 	})
@@ -167,7 +169,7 @@ func TestFDB_CrossTypeJoinProbe(t *testing.T) {
 	t.Run("integer_eq_bigint_reversed", func(t *testing.T) {
 		got := pairs("SELECT a.id, bi.id FROM bi JOIN a ON bi.yint = a.xbig")
 		want := []string{"1|50", "2|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("INTEGER=BIGINT reversed join = %v, want %v", got, want)
 		}
 	})

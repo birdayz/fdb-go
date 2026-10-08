@@ -24,6 +24,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -32,7 +34,7 @@ import (
 func timeBudgetCeilingDB(t *testing.T, dbPath string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -45,7 +47,7 @@ func timeBudgetCeilingDB(t *testing.T, dbPath string) *sql.DB {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmplName); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -64,7 +66,7 @@ func timeBudgetCeilingDB(t *testing.T, dbPath string) *sql.DB {
 // look like success while dropping the rest of the graph.
 func TestFDB_TimeBudgetCeiling_RecursionErrorsNotPartial(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -89,7 +91,7 @@ func TestFDB_TimeBudgetCeiling_RecursionErrorsNotPartial(t *testing.T) {
 		"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n" +
 		") SELECT n FROM r"
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionTimeLimit, int64(1)).
 			Build())
@@ -130,7 +132,7 @@ func TestFDB_TimeBudgetCeiling_RecursionErrorsNotPartial(t *testing.T) {
 // stop by resuming, not by giving up.
 func TestFDB_TimeBudgetCeiling_StreamingShapesPaginateComplete(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -158,7 +160,7 @@ func TestFDB_TimeBudgetCeiling_StreamingShapesPaginateComplete(t *testing.T) {
 	const millis = 1
 
 	t.Run("PlainScan", func(t *testing.T) {
-		conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 			ec.SetOptions(api.NewOptionsBuilder().
 				Set(api.OptExecutionTimeLimit, int64(millis)).
 				Build())
@@ -193,7 +195,7 @@ func TestFDB_TimeBudgetCeiling_StreamingShapesPaginateComplete(t *testing.T) {
 	})
 
 	t.Run("OrderBy", func(t *testing.T) {
-		conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 			ec.SetOptions(api.NewOptionsBuilder().
 				Set(api.OptExecutionTimeLimit, int64(millis)).
 				Build())

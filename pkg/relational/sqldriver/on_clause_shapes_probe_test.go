@@ -12,22 +12,24 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_OnClauseShapes_StillWork(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_on_shapes")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_on_shapes")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_on_shapes")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_on_shapes")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE on_shapes "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, y BIGINT, name STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_on_shapes/s WITH TEMPLATE on_shapes")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ON_SHAPES?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_on_shapes/s WITH TEMPLATE on_shapes")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ON_SHAPES?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -36,8 +38,8 @@ func TestFDB_OnClauseShapes_StillWork(t *testing.T) {
 
 	// a: (1, x=5, 'X'), (2, x=10, 'y')
 	// c: (50, y=5, 'x'), (51, y=99, 'Y')
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x, name) VALUES (1, 5, 'X'), (2, 10, 'y')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, y, name) VALUES (50, 5, 'x'), (51, 99, 'Y')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x, name) VALUES (1, 5, 'X'), (2, 10, 'y')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, y, name) VALUES (50, 5, 'x'), (51, 99, 'Y')")
 
 	check := func(name, on string, want []string) {
 		t.Run(name, func(t *testing.T) {
@@ -46,8 +48,8 @@ func TestFDB_OnClauseShapes_StillWork(t *testing.T) {
 			if err != nil {
 				t.Fatalf("query %q: %v (fail-closed gate over-rejected a valid ON?)", q, err)
 			}
-			got := siScanRows(t, rows)
-			if !eqStrSlices(got, want) {
+			got := testkit.ScanRowStrings(t, rows)
+			if !testkit.EqualStrings(got, want) {
 				t.Errorf("ON %q rows = %v, want %v", on, got, want)
 			}
 		})

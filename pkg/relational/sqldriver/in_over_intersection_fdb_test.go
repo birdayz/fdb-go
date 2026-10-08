@@ -15,21 +15,23 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_InOverIntersection_ResidualApplied(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/testdb_inovix"
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inovix CREATE TABLE t_rd (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, PRIMARY KEY (id)) CREATE INDEX idx_b ON t_rd (b) CREATE INDEX idx_c ON t_rd (c)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE inovix")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE inovix")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -37,7 +39,7 @@ func TestFDB_InOverIntersection_ResidualApplied(t *testing.T) {
 
 	// b=1 AND c=9 selects ids {1,2,3}; only id 1 (a=3) and id 3 (a=7) are in
 	// the IN list, so a dropped residual would leak id 2.
-	mwjoMustExec(t, db, ctx, `INSERT INTO t_rd VALUES
+	testkit.MustExecCtx(t, db, ctx, `INSERT INTO t_rd VALUES
 		(1, 3, 1, 9, 'x'),
 		(2, 4, 1, 9, 'y'),
 		(3, 7, 1, 9, 'x'),

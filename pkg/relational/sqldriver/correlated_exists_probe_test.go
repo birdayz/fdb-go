@@ -11,24 +11,26 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CorrelatedExistsProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_corr_exists")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_corr_exists")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_corr_exists")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_corr_exists")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE corr_exists "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, b_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) CREATE INDEX c_b_id ON c (b_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_corr_exists/s WITH TEMPLATE corr_exists")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORR_EXISTS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_corr_exists/s WITH TEMPLATE corr_exists")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORR_EXISTS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -36,9 +38,9 @@ func TestFDB_CorrelatedExistsProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// a: 1,2,3,4. b: a1→{v8}, a2→{v3}, a3→none, a4→{v20}. c: b for a1's b only.
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10), (3, 7), (4, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, a_id, v) VALUES (100, 1, 8), (101, 2, 3), (102, 4, 20)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, b_id) VALUES (900, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10), (3, 7), (4, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, a_id, v) VALUES (100, 1, 8), (101, 2, 3), (102, 4, 20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, b_id) VALUES (900, 100)")
 
 	ints := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

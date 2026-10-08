@@ -18,26 +18,28 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateInputOrdinal(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aggin_ord")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggin_ord")
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggin_ord")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggin_ord")
 	// idx_g is a covering index whose row layout ([g, id]) differs from the table's
 	// declaration order ([id, g, v, price, active]); a grouped scan over it exercises
 	// the covering-index dimension — the group key must resolve by NAME against the
 	// actual runtime row, NOT a plan-time table ordinal (which would read the wrong
 	// slot).
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggin_ord "+
 			"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, price BIGINT, active BOOLEAN, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_g ON t (g)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggin_ord/s WITH TEMPLATE aggin_ord")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGIN_ORD?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggin_ord/s WITH TEMPLATE aggin_ord")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGIN_ORD?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -45,7 +47,7 @@ func TestFDB_AggregateInputOrdinal(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// g: 1,1,2 ; v: 10,20,30 ; price: 2,3,4 ; active: T,F,T
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO t (id, g, v, price, active) VALUES "+
 			"(1, 1, 10, 2, true), (2, 1, 20, 3, false), (3, 2, 30, 4, true)")
 

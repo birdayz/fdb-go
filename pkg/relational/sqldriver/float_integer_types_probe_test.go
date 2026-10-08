@@ -11,20 +11,22 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_FloatIntegerTypesProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_fit")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fit")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_fit")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fit")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE fit CREATE TABLE t (id BIGINT, f FLOAT, i INTEGER, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fit/s WITH TEMPLATE fit")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FIT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fit/s WITH TEMPLATE fit")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FIT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -32,7 +34,7 @@ func TestFDB_FloatIntegerTypesProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	t.Run("float_is_32bit_precision", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, f) VALUES (1, CAST(0.1 AS FLOAT))")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, f) VALUES (1, CAST(0.1 AS FLOAT))")
 		var f float64
 		if err := db.QueryRowContext(ctx, "SELECT f FROM t WHERE id = 1").Scan(&f); err != nil {
 			t.Fatalf("scan: %v", err)
@@ -45,7 +47,7 @@ func TestFDB_FloatIntegerTypesProbe(t *testing.T) {
 		}
 	})
 	t.Run("float_exact_value_roundtrips", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, f) VALUES (2, CAST(1.5 AS FLOAT))") // exact in float32
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, f) VALUES (2, CAST(1.5 AS FLOAT))") // exact in float32
 		var f float64
 		if err := db.QueryRowContext(ctx, "SELECT f FROM t WHERE id = 2").Scan(&f); err != nil {
 			t.Fatalf("scan: %v", err)
@@ -55,7 +57,7 @@ func TestFDB_FloatIntegerTypesProbe(t *testing.T) {
 		}
 	})
 	t.Run("integer_max_int32_roundtrips", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, i) VALUES (3, 2147483647)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, i) VALUES (3, 2147483647)")
 		var i int64
 		if err := db.QueryRowContext(ctx, "SELECT i FROM t WHERE id = 3").Scan(&i); err != nil {
 			t.Fatalf("scan: %v", err)

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExistsRound11 pins RFC-141 R4 round-11, the silent-wrong bug
@@ -49,20 +51,20 @@ import (
 // scalar would wrongly INCLUDE it.
 func TestFDB_ProjectedExistsRound11(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_pexr11")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pexr11")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr11_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_pexr11")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pexr11")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr11_tmpl "+
 		"CREATE TABLE t1 (id BIGINT, price BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t3 (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pexr11/s WITH TEMPLATE pexr11_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pexr11/s WITH TEMPLATE pexr11_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PEXR11?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PEXR11?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -70,9 +72,9 @@ func TestFDB_ProjectedExistsRound11(t *testing.T) {
 
 	// id 0 (price 10, NO t3 match) is the discriminator: NOT-EXISTS TRUE but
 	// price 10 <= 15 → must be excluded by the scalar. A dropped scalar includes it.
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (0, 10), (1, 10), (2, 20), (3, 30), (4, 40)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 15)")
-	mustExec(t, db, ctx, "INSERT INTO t3 VALUES (1000, 1), (3000, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (0, 10), (1, 10), (2, 20), (3, 30), (4, 40)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 15)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t3 VALUES (1000, 1), (3000, 3)")
 
 	queryInts := func(t *testing.T, q string) []int64 {
 		t.Helper()

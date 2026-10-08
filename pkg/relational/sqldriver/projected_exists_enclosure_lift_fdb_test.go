@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -48,12 +50,12 @@ import (
 //     CONTROL), never the suppressed silent-0. The sentinel is the guard against
 //     silently shipping the wrong-direction treatment.
 func TestFDB_ProjectedExistsEnclosureLift(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +86,7 @@ func TestFDB_ProjectedExistsEnclosureLift(t *testing.T) {
 	a := dynamicpb.NewMessage(aDesc)
 	a.Set(aDesc.Fields().ByName("AID"), protoreflect.ValueOfInt64(1))
 	a.Set(aDesc.Fields().ByName("K"), protoreflect.ValueOfInt64(100))
-	setArrayField(a, aDesc.Fields().ByName("ARR"),
+	testkit.SetArrayField(a, aDesc.Fields().ByName("ARR"),
 		protoreflect.ValueOfInt32(7), protoreflect.ValueOfInt32(8))
 
 	bDesc := md.GetRecordType("B").Descriptor
@@ -136,7 +138,7 @@ func TestFDB_ProjectedExistsEnclosureLift(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})

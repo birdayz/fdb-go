@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 type mhDB struct {
@@ -48,206 +50,28 @@ func mhScanIDs(ctx context.Context, db *sql.DB, q string) ([]int64, error) {
 	return out, nil
 }
 
-func mhScanStrings(ctx context.Context, db *sql.DB, q string) ([]string, error) {
-	rows, err := db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for rows.Next() {
-		cells := make([]any, len(cols))
-		for i := range cells {
-			cells[i] = new(sql.NullString)
-		}
-		if err := rows.Scan(cells...); err != nil {
-			return nil, err
-		}
-		parts := make([]string, len(cells))
-		for i, c := range cells {
-			v := c.(*sql.NullString)
-			if v.Valid {
-				parts[i] = v.String
-			} else {
-				parts[i] = "NULL"
-			}
-		}
-		out = append(out, strings.Join(parts, "|"))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// ---- random predicate generation -------------------------------------------
-
-// mhGen generates random predicates. The column names are parameters so the
-// same generator can drive fixtures with different schemas; a generator that
-// emits a column the table does not have produces a 42703 on BOTH sides, which
-// is an EMPTY comparison, not a passing one.
-type mhGen struct {
-	r *rand.Rand
-	// intCols/dblCols/strCols/boolCols default (when nil) to the hunt-1 fixture.
-	intCols, dblCols, strCols, boolCols []string
-}
-
-func (g *mhGen) ints() []string {
-	if g.intCols == nil {
-		return []string{"a", "b", "id"}
-	}
-	return g.intCols
-}
-
-func (g *mhGen) dbls() []string {
-	if g.dblCols == nil {
-		return []string{"c"}
-	}
-	return g.dblCols
-}
-
-func (g *mhGen) strs() []string {
-	if g.strCols == nil {
-		return []string{"s"}
-	}
-	return g.strCols
-}
-
-func (g *mhGen) bools() []string {
-	if g.boolCols == nil {
-		return []string{"f"}
-	}
-	return g.boolCols
-}
-
-var (
-	mhIntLits = []string{"-2", "-1", "0", "1", "2", "3", "10"}
-	mhDblLits = []string{"-1.5", "-0.0", "0.0", "1.5", "2.25", "3.0"}
-	mhStrLits = []string{"''", "'a'", "'ab'", "'b'", "'B'", "'abc'", "'z'"}
-)
-
-func (g *mhGen) pick(ss []string) string { return ss[g.r.Intn(len(ss))] }
-
-func (g *mhGen) intExpr(depth int) string {
-	if depth <= 0 || g.r.Intn(3) == 0 {
-		if g.r.Intn(2) == 0 {
-			return g.pick(g.ints())
-		}
-		return g.pick(mhIntLits)
-	}
-	op := g.pick([]string{"+", "-", "*"})
-	return "(" + g.intExpr(depth-1) + " " + op + " " + g.intExpr(depth-1) + ")"
-}
-
-func (g *mhGen) cmpOp() string {
-	return g.pick([]string{"=", "<>", "<", "<=", ">", ">="})
-}
-
-func (g *mhGen) atom(depth int) string {
-	all := append(append(append(append([]string{}, g.ints()...), g.dbls()...), g.strs()...), g.bools()...)
-	switch g.r.Intn(10) {
-	case 0, 1:
-		return g.pick(g.ints()) + " " + g.cmpOp() + " " + g.pick(mhIntLits)
-	case 2:
-		if len(g.dbls()) == 0 {
-			return g.pick(g.ints()) + " " + g.cmpOp() + " " + g.pick(mhIntLits)
-		}
-		return g.pick(g.dbls()) + " " + g.cmpOp() + " " + g.pick(mhDblLits)
-	case 3:
-		return g.pick(g.strs()) + " " + g.cmpOp() + " " + g.pick(mhStrLits)
-	case 4:
-		return g.pick(all) + " IS " + g.pick([]string{"", "NOT "}) + "NULL"
-	case 5:
-		return g.pick(g.ints()) + " IN (" + g.pick(mhIntLits) + ", " + g.pick(mhIntLits) + ", " + g.pick(mhIntLits) + ")"
-	case 6:
-		lo, hi := g.pick(mhIntLits), g.pick(mhIntLits)
-		return g.pick(g.ints()) + " BETWEEN " + lo + " AND " + hi
-	case 7:
-		return g.pick(g.strs()) + " LIKE " + g.pick([]string{"'a%'", "'%b'", "'%a%'", "'_b'", "'a_'", "''"})
-	case 8:
-		return g.intExpr(2) + " " + g.cmpOp() + " " + g.intExpr(2)
-	default:
-		if len(g.bools()) == 0 {
-			return g.pick(g.ints()) + " " + g.cmpOp() + " " + g.pick(mhIntLits)
-		}
-		if g.r.Intn(2) == 0 {
-			return g.pick(g.bools())
-		}
-		return "NOT " + g.pick(g.bools())
-	}
-}
-
-func (g *mhGen) pred(depth int) string {
-	if depth <= 0 {
-		return g.atom(2)
-	}
-	switch g.r.Intn(5) {
-	case 0:
-		return "(NOT " + g.pred(depth-1) + ")"
-	case 1, 2:
-		return "(" + g.pred(depth-1) + " AND " + g.pred(depth-1) + ")"
-	case 3:
-		return "(" + g.pred(depth-1) + " OR " + g.pred(depth-1) + ")"
-	default:
-		return g.atom(2)
-	}
-}
-
-// ---- fixture ----------------------------------------------------------------
-
-const mhCols = "(id, a, b, c, s, f)"
-
-// mhRowLiteral builds one fixture row.
-func mhRowLiteral(r *rand.Rand, id int) string {
-	nul := func(p int, gen func() string) string {
-		if r.Intn(100) < p {
-			return "NULL"
-		}
-		return gen()
-	}
-	a := nul(18, func() string { return fmt.Sprintf("%d", r.Intn(7)-2) })
-	b := nul(18, func() string { return fmt.Sprintf("%d", r.Intn(4)) })
-	c := nul(18, func() string {
-		return []string{"-1.5", "-0.0", "0.0", "1.5", "2.25", "3.0"}[r.Intn(6)]
-	})
-	s := nul(18, func() string {
-		return []string{"''", "'a'", "'ab'", "'b'", "'B'", "'abc'", "'z'", "'aa'"}[r.Intn(8)]
-	})
-	f := nul(18, func() string {
-		if r.Intn(2) == 0 {
-			return "true"
-		}
-		return "false"
-	})
-	return fmt.Sprintf("(%d, %s, %s, %s, %s, %s)", id, a, b, c, s, f)
-}
-
 func TestFDB_MetamorphicIndexDifferential(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_mh")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mh")
+	setup := testkit.OpenDB(t, "/FRL/testdb_mh")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mh")
 	table := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) "
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh_idx "+table+
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh_idx "+table+
 		"CREATE INDEX t_a ON t (a) "+
 		"CREATE INDEX t_ab ON t (a, b) "+
 		"CREATE INDEX t_c ON t (c) "+
 		"CREATE INDEX t_s ON t (s) "+
 		"CREATE INDEX t_ba ON t (b, a) "+
 		"CREATE INDEX t_f ON t (f)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh_noidx "+table)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh/si WITH TEMPLATE mh_idx")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh/sn WITH TEMPLATE mh_noidx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh_noidx "+table)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh/si WITH TEMPLATE mh_idx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh/sn WITH TEMPLATE mh_noidx")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MH?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
+		dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MH?cluster_file=%s&schema=%s", testkit.ClusterFile(), strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s: %v", schema, err)
@@ -262,16 +86,16 @@ func TestFDB_MetamorphicIndexDifferential(t *testing.T) {
 	const nRows = 140
 	var vals []string
 	for i := 1; i <= nRows; i++ {
-		vals = append(vals, mhRowLiteral(dataRand, i))
+		vals = append(vals, testkit.MhRowLiteral(dataRand, i))
 	}
 	for start := 0; start < len(vals); start += 20 {
 		end := start + 20
 		if end > len(vals) {
 			end = len(vals)
 		}
-		stmt := "INSERT INTO t " + mhCols + " VALUES " + strings.Join(vals[start:end], ", ")
-		mwjoMustExec(t, idx.db, ctx, stmt)
-		mwjoMustExec(t, noidx.db, ctx, stmt)
+		stmt := "INSERT INTO t " + testkit.MhCols + " VALUES " + strings.Join(vals[start:end], ", ")
+		testkit.MustExecCtx(t, idx.db, ctx, stmt)
+		testkit.MustExecCtx(t, noidx.db, ctx, stmt)
 	}
 
 	seed := int64(1)
@@ -282,7 +106,7 @@ func TestFDB_MetamorphicIndexDifferential(t *testing.T) {
 	if s := os.Getenv("MH_ITERS"); s != "" {
 		fmt.Sscan(s, &iters)
 	}
-	g := &mhGen{r: rand.New(rand.NewSource(seed))}
+	g := &testkit.MhGen{R: rand.New(rand.NewSource(seed))}
 
 	allIDs, err := mhScanIDs(ctx, idx.db, "SELECT id FROM t ORDER BY id")
 	if err != nil {
@@ -294,7 +118,7 @@ func TestFDB_MetamorphicIndexDifferential(t *testing.T) {
 
 	bothErr, checked := 0, 0
 	for i := 0; i < iters; i++ {
-		p := g.pred(2)
+		p := g.Pred(2)
 		q := "SELECT id FROM t WHERE " + p + " ORDER BY id"
 
 		gi, ei := mhScanIDs(ctx, idx.db, q)
@@ -371,4 +195,4 @@ func mhDiff(a, b []int64) []int64 {
 	return out
 }
 
-var _ = mhScanStrings
+var _ = testkit.MhScanStrings

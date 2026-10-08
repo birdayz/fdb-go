@@ -27,23 +27,25 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_NumericPrecisionBoundary(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_npb")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_npb")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE npb "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_npb")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_npb")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE npb "+
 		"CREATE TABLE d (id BIGINT, v DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE INDEX d_v ON d (v) "+
 		"CREATE TABLE b (id BIGINT, n BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX b_n ON b (n)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_npb/s WITH TEMPLATE npb")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NPB?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_npb/s WITH TEMPLATE npb")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NPB?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -51,9 +53,9 @@ func TestFDB_NumericPrecisionBoundary(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// 2^53 = 9007199254740992. 2^53+1 is NOT representable in float64.
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id, v) VALUES (1, 9007199254740992), (2, 9007199254740994)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id, v) VALUES (1, 9007199254740992), (2, 9007199254740994)")
 	// A BIGINT column holds 2^53+1 exactly.
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, n) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, n) VALUES "+
 		"(1, 9007199254740992), (2, 9007199254740993), (3, 9007199254740994)")
 
 	conn, err := db.Conn(ctx)

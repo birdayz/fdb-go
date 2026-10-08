@@ -8,15 +8,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateFloatPrecision(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_aggfloatprecision", "aggfloatprecision",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_aggfloatprecision", "aggfloatprecision",
 		"CREATE TABLE t (id BIGINT, g BIGINT, f FLOAT, d DOUBLE, PRIMARY KEY (g, id))")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES "+
 		"(1, 1, CAST(16777216 AS FLOAT), 16777216.0), "+
 		"(2, 1, CAST(1 AS FLOAT), 1.0), "+
 		"(3, 1, CAST(-16777216 AS FLOAT), -16777216.0), "+
@@ -41,7 +43,7 @@ func TestFDB_AggregateFloatPrecision(t *testing.T) {
 		"SUM(CASE WHEN id > 0 THEN f ELSE CAST(0 AS FLOAT) END)"
 	const grouped = "SELECT g, " + columns + " FROM t GROUP BY g ORDER BY g"
 	for _, q := range []string{grouped, "SELECT " + columns + " FROM t WHERE g = 1"} {
-		plan := planExplainVia(t, ctx, db, q)
+		plan := testkit.ExplainVia(t, ctx, db, q)
 		if !strings.Contains(plan, "StreamingAgg") || !strings.Contains(plan, "Scan") || strings.Contains(plan, "Sort") {
 			t.Fatalf("require streaming aggregation over primary-key-ordered input without a sort: %s", plan)
 		}
@@ -60,7 +62,7 @@ func TestFDB_AggregateFloatPrecision(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
-			conn := pagedConn(t, db, budget)
+			conn := testkit.PagedConn(t, db, budget)
 			check := func(q string, groups []int64, grouped bool) {
 				t.Helper()
 				rows, err := conn.QueryContext(ctx, q)

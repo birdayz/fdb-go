@@ -40,19 +40,21 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"github.com/onsi/gomega"
 )
 
 func TestFDB_CaseConditionMustBeBoolean(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/FRL/testdb_case_boolcond", "caseboolcond",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_case_boolcond", "caseboolcond",
 		"CREATE TABLE t (id BIGINT, a BIGINT, s STRING, f BOOLEAN, d DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO t (id, a, s, f, d) VALUES (1, 1, 'x', true, 1.5), (2, 0, 'y', false, 0.0)")
 
 	// ---- rejected: a definitively-typed non-boolean condition ---------------
@@ -124,7 +126,7 @@ func TestFDB_CaseConditionMustBeBoolean(t *testing.T) {
 			q := fmt.Sprintf("SELECT CASE WHEN %s THEN 'p' ELSE 'q' END FROM t ORDER BY id", c.cond)
 			t.Run(c.name, func(t *testing.T) {
 				g := gomega.NewWithT(t)
-				got, err := mmRows(t, ctx, db, q)
+				got, err := testkit.QueryRowStrings(t, ctx, db, q)
 				g.Expect(err).NotTo(gomega.HaveOccurred(),
 					"the type check rejected a condition it must accept — the repair narrowed too "+
 						"far. Only a DEFINITIVELY-TYPED non-boolean is a mismatch; boolean, "+

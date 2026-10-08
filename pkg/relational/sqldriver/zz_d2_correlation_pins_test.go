@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // PIN: a query-PARAMETER-bound scan in a join leg must plan and
@@ -19,30 +21,30 @@ import (
 // k = 5.
 func TestFDB_ParamBoundScanInJoinLeg_NotMisseenAsCorrelated(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_paramleg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_paramleg")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_paramleg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_paramleg")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE paramleg_tmpl "+
 			"CREATE TABLE o (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t (id BIGINT, fk BIGINT, k BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_paramleg/s WITH TEMPLATE paramleg_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_paramleg/s WITH TEMPLATE paramleg_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAMLEG?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PARAMLEG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO o VALUES (1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO o VALUES (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (10, 1, 5)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (11, 1, 7)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (12, 2, 5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO o VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO o VALUES (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (10, 1, 5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (11, 1, 7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (12, 2, 5)")
 
 	const q = "SELECT o.id FROM o, t WHERE t.fk = o.id AND t.k = ?"
 	rows, err := db.QueryContext(ctx, q, 5)
@@ -76,34 +78,34 @@ func TestFDB_ParamBoundScanInJoinLeg_NotMisseenAsCorrelated(t *testing.T) {
 // the chain matches.
 func TestFDB_NestedFlatMapUnderJoin_NoCorrelationLeak(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nestedfm")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nestedfm")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_nestedfm")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nestedfm")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nestedfm_tmpl "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, fk BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nestedfm/s WITH TEMPLATE nestedfm_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nestedfm/s WITH TEMPLATE nestedfm_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTEDFM?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NESTEDFM?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (10, 1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (11, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (10, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (11, 2)")
 	// c20→b10→a1 MATCH; c21→b11→a2 MATCH; c22→b99 no b → no.
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (20, 10)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (21, 11)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (22, 99)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (20, 10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (21, 11)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (22, 99)")
 
 	const q = "SELECT c.id FROM a, b, c WHERE b.fk = a.id AND c.fk = b.id"
 	got := queryIDs(t, db, ctx, q)
@@ -123,7 +125,7 @@ func TestFDB_NestedFlatMapUnderJoin_NoCorrelationLeak(t *testing.T) {
 // exactly the a's that join b AND have a matching c.
 func TestFDB_CorrelatedExistsUnderJoin_NoCorrelationLeak(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -132,31 +134,31 @@ func TestFDB_CorrelatedExistsUnderJoin_NoCorrelationLeak(t *testing.T) {
 	u := time.Now().UnixNano()
 	dbp := fmt.Sprintf("/FRL/testdb_existsleak_%d", u)
 	tmpl := fmt.Sprintf("existsleak_tmpl_%d", u)
-	setup := openTestDB(t, dbp)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbp)
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, dbp)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbp)
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+" "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, fk BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbp+"/s WITH TEMPLATE "+tmpl)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbp+"/s WITH TEMPLATE "+tmpl)
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbp), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbp), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (10, 1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (11, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (12, 3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (10, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (11, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (12, 3)")
 	// c has fk for a=1 and a=3 only.
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (20, 1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (21, 3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (20, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (21, 3)")
 
 	// a=1: joins b10, EXISTS c(fk=1) -> yes; a=2: joins b11, no c(fk=2) -> no;
 	// a=3: joins b12, EXISTS c(fk=3) -> yes. Project BOTH leg columns: the

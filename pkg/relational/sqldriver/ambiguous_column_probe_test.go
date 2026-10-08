@@ -11,28 +11,30 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AmbiguousColumnProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ambp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ambp")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ambp "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_ambp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ambp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE ambp "+
 		"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE b (id BIGINT, y BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ambp/s WITH TEMPLATE ambp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AMBP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ambp/s WITH TEMPLATE ambp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AMBP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1,100),(2,200)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, y) VALUES (100,1),(200,2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x) VALUES (1,100),(2,200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, y) VALUES (100,1),(200,2)")
 
 	rowCount := func(q string) (int, error) {
 		rows, err := db.QueryContext(ctx, q)

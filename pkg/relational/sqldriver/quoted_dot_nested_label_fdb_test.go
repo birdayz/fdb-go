@@ -12,26 +12,28 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_QuotedDotNestedMemberLabel(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_qdnl")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_qdnl")
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE qdnl_tpl
+	setup := testkit.OpenDB(t, "/FRL/testdb_qdnl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_qdnl")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE qdnl_tpl
 		CREATE TYPE AS STRUCT qs ("a.b" BIGINT)
 		CREATE TABLE tq (id BIGINT, s qs, PRIMARY KEY (id))`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_qdnl/s1 WITH TEMPLATE qdnl_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_QDNL?cluster_file=%s&schema=S1", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_qdnl/s1 WITH TEMPLATE qdnl_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_QDNL?cluster_file=%s&schema=S1", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO tq VALUES (1, (9))")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tq VALUES (1, (9))")
 
 	read := func(t *testing.T, query string) (string, int64) {
 		t.Helper()

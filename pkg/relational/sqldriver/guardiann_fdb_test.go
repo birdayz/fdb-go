@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
@@ -16,15 +18,15 @@ import (
 func TestFDB_GuardiannSemanticSearch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_guardiann")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_guardiann")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE guardiann_tpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_guardiann")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_guardiann")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE guardiann_tpl "+
 		"create table documents(zone string, docId string, bookshelf string, title string, embedding vector(3, half), primary key (zone, docId)) "+
 		"create view documentsView as select embedding, zone, bookshelf, docId, title from documents "+
 		"create vector index documentsGuardiannIndex using guardiann on documentsView(embedding) partition by(zone, bookshelf) "+
 		"options (metric = euclidean_metric, primary_cluster_min = 1, primary_cluster_max = 100, collapse_min_duplicates = 50)")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_guardiann/s WITH TEMPLATE guardiann_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_GUARDIANN?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_guardiann/s WITH TEMPLATE guardiann_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_GUARDIANN?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -86,7 +88,7 @@ func TestFDB_GuardiannSemanticSearch(t *testing.T) {
 			t.Errorf("%s top-%d = %s, want %s", c.shelf, c.k, got, c.want)
 		}
 	}
-	mustExec(t, db, ctx, "delete from documents where zone = 'zone1' and docId = 'd1'")
+	testkit.MustExec(t, db, ctx, "delete from documents where zone = 'zone1' and docId = 'd1'")
 	if got := knn("fiction", fiction, 3); got != "d2:0.14147317261689443 d3:0.28294634523378887" {
 		t.Errorf("after delete: %s", got)
 	}
@@ -94,7 +96,7 @@ func TestFDB_GuardiannSemanticSearch(t *testing.T) {
 	if got := knn("fiction", fiction, 1); got != "d1:0" {
 		t.Errorf("after re-insert: %s", got)
 	}
-	mustExec(t, db, ctx, "delete from documents where zone = 'zone1' and bookshelf = 'fiction'")
+	testkit.MustExec(t, db, ctx, "delete from documents where zone = 'zone1' and bookshelf = 'fiction'")
 	if got := knn("fiction", fiction, 3); got != "" {
 		t.Errorf("emptied partition: %s", got)
 	}

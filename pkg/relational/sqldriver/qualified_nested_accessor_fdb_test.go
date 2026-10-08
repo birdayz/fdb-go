@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_QualifiedNestedAccessorReadsTheLeafNotTheStructRoot pins the ROWS a
@@ -34,13 +36,13 @@ import (
 // what makes the assertion an assertion and not a coincidence of ordering.
 func TestFDB_QualifiedNestedAccessorReadsTheLeafNotTheStructRoot(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	const dbPath = "/FRL/testdb_qual_nested_accessor"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -56,7 +58,7 @@ func TestFDB_QualifiedNestedAccessorReadsTheLeafNotTheStructRoot(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -148,25 +150,25 @@ func TestFDB_QualifiedNestedAccessorReadsTheLeafNotTheStructRoot(t *testing.T) {
 
 func TestFDB_JoinFilterKeepsNestedDependency(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/testdb_join_nested_dependency"
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE join_nested_dependency "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE join_nested_dependency "+
 		"CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE b (id BIGINT, n nst, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE join_nested_dependency")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE join_nested_dependency")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1), (2), (3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (10, (90, 2)), (20, (80, 1))")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1), (2), (3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (10, (90, 2)), (20, (80, 1))")
 	for _, query := range []string{
 		"SELECT a.id, b.id FROM a JOIN b ON TRUE WHERE a.id = b.n.co ORDER BY a.id",
 		"SELECT a.id, b.id FROM a JOIN b ON TRUE WHERE b.n.co = a.id ORDER BY a.id",
@@ -174,7 +176,7 @@ func TestFDB_JoinFilterKeepsNestedDependency(t *testing.T) {
 	} {
 		t.Run(query, func(t *testing.T) {
 			t.Parallel()
-			t.Logf("plan: %s", mwjoExplainer(t, db, ctx)(query))
+			t.Logf("plan: %s", testkit.Explainer(t, db, ctx)(query))
 			rows, err := db.QueryContext(ctx, query)
 			if err != nil {
 				t.Fatal(err)

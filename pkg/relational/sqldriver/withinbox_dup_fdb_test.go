@@ -6,6 +6,8 @@ import (
 	"sort"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -39,12 +41,12 @@ import (
 //
 // Box (A FULL B): matched A.K=10/B.K=20; A-only A.K=30/B.K=NULL; B-only A.K=NULL/B.K=40.
 func TestFDB_WithinBoxDup(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +92,7 @@ func TestFDB_WithinBoxDup(t *testing.T) {
 		for _, v := range vals {
 			elems = append(elems, protoreflect.ValueOfInt32(v))
 		}
-		setArrayField(m, d.Fields().ByName(protoreflect.Name(arrField)), elems...)
+		testkit.SetArrayField(m, d.Fields().ByName(protoreflect.Name(arrField)), elems...)
 		return m
 	}
 	mkA := func(aid, k int64, vals ...int32) proto.Message {
@@ -102,7 +104,7 @@ func TestFDB_WithinBoxDup(t *testing.T) {
 		for _, v := range vals {
 			elems = append(elems, protoreflect.ValueOfInt32(v))
 		}
-		setArrayField(m, d.Fields().ByName("ARR"), elems...)
+		testkit.SetArrayField(m, d.Fields().ByName("ARR"), elems...)
 		return m
 	}
 
@@ -150,7 +152,7 @@ func TestFDB_WithinBoxDup(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				got = append(got, positionalNamedPipeSprint(r))
+				got = append(got, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})

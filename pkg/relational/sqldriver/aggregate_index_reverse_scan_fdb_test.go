@@ -14,13 +14,15 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_AggregateIndexReverseScan(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -31,7 +33,7 @@ func TestFDB_AggregateIndexReverseScan(t *testing.T) {
 		"CREATE INDEX mv_cnt13 AS SELECT COUNT(*) FROM t1 GROUP BY col1, col3 " +
 		"CREATE INDEX mv_sum13 AS SELECT SUM(col2) FROM t1 GROUP BY col1, col3 " +
 		"CREATE INDEX mv_cntv13 AS SELECT COUNT(col2) FROM t1 GROUP BY col1, col3 "
-	w := mmNewTwin(t, ctx, "/FRL/testdb_aggreverse", "aggreverse", table, indexes)
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_aggreverse", "aggreverse", table, indexes)
 
 	var rows []string
 	for id := int64(0); id < 40; id++ {
@@ -91,8 +93,8 @@ func TestFDB_AggregateIndexReverseScan(t *testing.T) {
 	sweep := func(stage string) {
 		t.Helper()
 		for _, r := range reads {
-			gi, ei := mmRows(t, ctx, w.idx, r.sql)
-			gn, en := mmRows(t, ctx, w.plain, r.sql)
+			gi, ei := testkit.QueryRowStrings(t, ctx, w.Idx, r.sql)
+			gn, en := testkit.QueryRowStrings(t, ctx, w.Plain, r.sql)
 			if ei != nil || en != nil {
 				t.Errorf("%s: query failed\n  q: %s\n  indexed:   %v\n  unindexed: %v", stage, r.sql, ei, en)
 				continue
@@ -100,7 +102,7 @@ func TestFDB_AggregateIndexReverseScan(t *testing.T) {
 			if len(gn) < 2 {
 				t.Errorf("%s: the unindexed twin answers %d rows, too few to show an order\n  q: %s", stage, len(gn), r.sql)
 			}
-			if !mmAggregateIndexRowsAgree(gi, gn, mmTrailingAggregates(r.sql)) {
+			if !testkit.MmAggregateIndexRowsAgree(gi, gn, testkit.MmTrailingAggregates(r.sql)) {
 				t.Errorf("%s: the reverse aggregate scan disagrees with the unindexed twin\n  q: %s\n  indexed  : %v\n  unindexed: %v\n  plan: %s",
 					stage, r.sql, gi, gn, w.Explain(r.sql))
 			}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_NestedPathDepthGate pins how DEEP a dotted reference may go, and it
@@ -38,12 +40,12 @@ import (
 // answering shapes beside it.
 func TestFDB_NestedPathDepthGate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/nestdepth")
+	setup := testkit.OpenDB(t, "/FRL/nestdepth")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/nestdepth"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -57,7 +59,7 @@ func TestFDB_NestedPathDepthGate(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/nestdepth/s WITH TEMPLATE nd_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/NESTDEPTH?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/NESTDEPTH?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

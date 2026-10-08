@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -41,12 +43,12 @@ import (
 // broken; two arrays of DIFFERENT cardinality must still coexist.
 func TestFDB_ArrayCardinalityUniqueIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -85,7 +87,7 @@ func TestFDB_ArrayCardinalityUniqueIndex(t *testing.T) {
 		for i, v := range arr {
 			pvals[i] = protoreflect.ValueOfInt32(v)
 		}
-		setArrayField(m, fd, pvals...)
+		testkit.SetArrayField(m, fd, pvals...)
 		return m
 	}
 

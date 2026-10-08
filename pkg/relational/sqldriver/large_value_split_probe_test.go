@@ -13,20 +13,22 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_LargeValueSplitProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_lvs")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_lvs")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_lvs")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_lvs")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE lvs CREATE TABLE t (id BIGINT, data STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_lvs/s WITH TEMPLATE lvs")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LVS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_lvs/s WITH TEMPLATE lvs")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LVS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

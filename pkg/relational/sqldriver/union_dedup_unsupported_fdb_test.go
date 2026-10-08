@@ -14,27 +14,29 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_UnionDedup_Unsupported(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uniondd")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uniondd")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uniondd "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_uniondd")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uniondd")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE uniondd "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uniondd/s WITH TEMPLATE uniondd")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNIONDD?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uniondd/s WITH TEMPLATE uniondd")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNIONDD?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// id=1 a=1 ; id=2 a=2 ; id=3 a=1
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a) VALUES (1,1),(2,2),(3,1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,a) VALUES (1,1),(2,2),(3,1)")
 
 	count := func(q string) (int, error) {
 		rows, err := db.QueryContext(ctx, q)

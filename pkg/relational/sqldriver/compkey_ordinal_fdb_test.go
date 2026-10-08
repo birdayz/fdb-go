@@ -27,24 +27,26 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CompKeyOrdinal(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	// Two+ aggregate indexes sharing the group column g → the multi-aggregate
 	// intersection (MultiIntersection) whose comparison key is g.
-	db := setupPlanShapeDB(t, "ck",
+	db := testkit.SetupPlanShapeDB(t, "ck",
 		"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g "+
 			"CREATE INDEX sum_by_g_nn AS SELECT COUNT(v) FROM ga GROUP BY g "+
 			"CREATE INDEX min_by_g AS SELECT MIN(v) FROM ga GROUP BY g "+
 			"CREATE INDEX max_by_g AS SELECT MAX(v) FROM ga GROUP BY g")
 	// g=1: v=10,20,30 → SUM=60 MIN=10 MAX=30 ; g=2: v=25,45 → SUM=70 MIN=25 MAX=45
-	mwjoMustExec(t, db, ctx, "INSERT INTO ga VALUES (1, 1, 10), (2, 1, 20), (3, 1, 30), (4, 2, 25), (5, 2, 45)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ga VALUES (1, 1, 10), (2, 1, 20), (3, 1, 30), (4, 2, 25), (5, 2, 45)")
 
 	// The two-aggregate grouped query plans as the multi-aggregate merge (each
 	// aggregate index supplies one column; the merge aligns them on the shared
@@ -54,7 +56,7 @@ func TestFDB_CompKeyOrdinal(t *testing.T) {
 	// The comparison key is what aligns the streams — which is what this test
 	// is about. What must NOT appear is a streaming-aggregation fallback.
 	twoAgg := "SELECT g, SUM(v), MAX(v) FROM ga GROUP BY g"
-	if plan := planExplainVia(t, ctx, db, twoAgg); !strings.Contains(plan, "MultiIntersection(") {
+	if plan := testkit.ExplainVia(t, ctx, db, twoAgg); !strings.Contains(plan, "MultiIntersection(") {
 		t.Fatalf("two-aggregate grouped query must plan as the multi-aggregate merge (exercises the comp-key extractor), got: %s", plan)
 	}
 
@@ -98,7 +100,7 @@ func TestFDB_CompKeyOrdinal(t *testing.T) {
 	// on the same comparison key.
 	t.Run("three_aggregate_sum_min_max", func(t *testing.T) {
 		threeAgg := "SELECT g, SUM(v), MIN(v), MAX(v) FROM ga GROUP BY g"
-		if plan := planExplainVia(t, ctx, db, threeAgg); !strings.Contains(plan, "MultiIntersection(") {
+		if plan := testkit.ExplainVia(t, ctx, db, threeAgg); !strings.Contains(plan, "MultiIntersection(") {
 			t.Fatalf("three-aggregate grouped query must plan as the multi-aggregate merge, got: %s", plan)
 		}
 		if got := rowsGMM(t, threeAgg, 4); got != "1|60|10|30 2|70|25|45" {

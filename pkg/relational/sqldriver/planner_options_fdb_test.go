@@ -23,43 +23,11 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
-
-// explainOnConn returns the EXPLAIN plan text for q on the pinned connection,
-// so the connection's api.Options are the ones in effect. EXPLAIN routes
-// through the same planSelectCascades the real query path uses.
-func explainOnConn(t *testing.T, ctx context.Context, conn *sql.Conn, q string) string {
-	t.Helper()
-	var plan string
-	if err := conn.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
-		t.Fatalf("EXPLAIN %s: %v", q, err)
-	}
-	return plan
-}
-
-// scanInt64Rows drains q into a slice of the first column's values.
-func scanInt64Rows(t *testing.T, ctx context.Context, conn *sql.Conn, q string) []int64 {
-	t.Helper()
-	rows, err := conn.QueryContext(ctx, q)
-	if err != nil {
-		t.Fatalf("query %s: %v", q, err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []int64
-	for rows.Next() {
-		var v sql.NullInt64
-		if err := rows.Scan(&v); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		out = append(out, v.Int64)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows: %v", err)
-	}
-	return out
-}
 
 func sameInt64s(a, b []int64) bool {
 	if len(a) != len(b) {
@@ -77,7 +45,7 @@ func sameInt64s(a, b []int64) bool {
 // self-joinable shape, plus a few rows so a plan can actually be executed.
 func plannerOptsDB(t *testing.T, tag string) *sql.DB {
 	t.Helper()
-	db := setupErrorTestDB(t, "/FRL/planopts_"+tag, "planopts"+tag,
+	db := testkit.SetupErrorDB(t, "/FRL/planopts_"+tag, "planopts"+tag,
 		"CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, c STRING, PRIMARY KEY (id))"+
 			" CREATE INDEX idx_a ON T(a)"+
 			" CREATE INDEX idx_ab ON T(a, b)")
@@ -105,21 +73,21 @@ func TestFDB_PlannerOptions_DisabledPlannerRules(t *testing.T) {
 	db := plannerOptsDB(t, "rules")
 	const q = "SELECT id FROM T WHERE a = 1"
 
-	base := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
-	baseExplain := explainOnConn(t, ctx, base, q)
+	base := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	baseExplain := testkit.ExplainConn(t, ctx, base, q)
 	if !strings.Contains(baseExplain, "IndexScan") {
 		t.Fatalf("default plan %q must use an index for the contrast to mean anything", baseExplain)
 	}
-	baseRows := scanInt64Rows(t, ctx, base, q)
+	baseRows := testkit.ScanInt64Rows(t, ctx, base, q)
 	if len(baseRows) == 0 {
 		t.Fatal("fixture produced no rows; the row-equality check would be vacuous")
 	}
 
-	off := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	off := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptDisabledPlannerRules, []string{"MatchLeafRule"}).Build())
 	})
-	offExplain := explainOnConn(t, ctx, off, q)
+	offExplain := testkit.ExplainConn(t, ctx, off, q)
 	if strings.Contains(offExplain, "IndexScan") {
 		t.Fatalf("DISABLED_PLANNER_RULES=[MatchLeafRule] left an IndexScan in the plan (%q) — "+
 			"the option is being accepted and ignored", offExplain)
@@ -127,7 +95,7 @@ func TestFDB_PlannerOptions_DisabledPlannerRules(t *testing.T) {
 	if !strings.Contains(offExplain, "Scan(T)") {
 		t.Fatalf("with index matching disabled the plan must be a full scan, got %q", offExplain)
 	}
-	if got := scanInt64Rows(t, ctx, off, q); !sameInt64s(got, baseRows) {
+	if got := testkit.ScanInt64Rows(t, ctx, off, q); !sameInt64s(got, baseRows) {
 		t.Fatalf("disabling a planner rule changed the ANSWER: %v vs %v — a planner option may "+
 			"only change the plan", got, baseRows)
 	}
@@ -144,22 +112,22 @@ func TestFDB_PlannerOptions_DisablePlannerRewriting(t *testing.T) {
 	db := plannerOptsDB(t, "rewrite")
 	const q = "SELECT T.id FROM T LEFT JOIN T AS U ON T.a = U.a"
 
-	base := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
-	baseExplain := explainOnConn(t, ctx, base, q)
+	base := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	baseExplain := testkit.ExplainConn(t, ctx, base, q)
 	if !strings.Contains(baseExplain, "FlatMap") {
 		t.Fatalf("default plan %q must be the REWRITTEN correlated outer join for the contrast "+
 			"to mean anything", baseExplain)
 	}
-	baseRows := scanInt64Rows(t, ctx, base, q)
+	baseRows := testkit.ScanInt64Rows(t, ctx, base, q)
 	if len(baseRows) == 0 {
 		t.Fatal("fixture produced no rows; the row-equality check would be vacuous")
 	}
 
-	off := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	off := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptDisablePlannerRewriting, true).Build())
 	})
-	offExplain := explainOnConn(t, ctx, off, q)
+	offExplain := testkit.ExplainConn(t, ctx, off, q)
 	if offExplain == baseExplain {
 		t.Fatalf("DISABLE_PLANNER_REWRITING left the plan unchanged (%q) — the option is being "+
 			"accepted and ignored", offExplain)
@@ -167,7 +135,7 @@ func TestFDB_PlannerOptions_DisablePlannerRewriting(t *testing.T) {
 	if !strings.Contains(offExplain, "NestedLoopJoin(LEFT OUTER") {
 		t.Fatalf("with rewriting disabled the outer join must stay un-canonicalized, got %q", offExplain)
 	}
-	if got := scanInt64Rows(t, ctx, off, q); !sameInt64s(got, baseRows) {
+	if got := testkit.ScanInt64Rows(t, ctx, off, q); !sameInt64s(got, baseRows) {
 		t.Fatalf("disabling rewriting changed the ANSWER: %v vs %v", got, baseRows)
 	}
 }
@@ -192,17 +160,17 @@ func TestFDB_PlannerOptions_PlanCacheKeyedByOptions(t *testing.T) {
 			t.Fatalf("Raw: %v", err)
 		}
 	}
-	conn = pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	conn = testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
 
 	// Warm the cache under the defaults.
-	first := explainOnConn(t, ctx, conn, q)
+	first := testkit.ExplainConn(t, ctx, conn, q)
 	if !strings.Contains(first, "IndexScan") {
 		t.Fatalf("default plan %q must use an index", first)
 	}
 
 	setOpts(api.NewOptionsBuilder().
 		Set(api.OptDisabledPlannerRules, []string{"MatchLeafRule"}).Build())
-	second := explainOnConn(t, ctx, conn, q)
+	second := testkit.ExplainConn(t, ctx, conn, q)
 	if second == first {
 		t.Fatalf("the cached default plan survived an option change: %q — the plan-cache key "+
 			"does not include the planner options", second)
@@ -211,7 +179,7 @@ func TestFDB_PlannerOptions_PlanCacheKeyedByOptions(t *testing.T) {
 	// Back to the defaults: the original plan must return, not the one built
 	// under the disabled rule.
 	setOpts(api.NoOptions())
-	third := explainOnConn(t, ctx, conn, q)
+	third := testkit.ExplainConn(t, ctx, conn, q)
 	if third != first {
 		t.Fatalf("restoring the default options gave %q, want the original %q", third, first)
 	}
@@ -225,7 +193,7 @@ func starOptsDB(t *testing.T, tag string) *sql.DB {
 	for i := 1; i <= 6; i++ {
 		ddl += fmt.Sprintf(" CREATE TABLE S%d (id BIGINT, hid BIGINT, PRIMARY KEY (id))", i)
 	}
-	db := setupErrorTestDB(t, "/FRL/planstar_"+tag, "planstar"+tag, ddl)
+	db := testkit.SetupErrorDB(t, "/FRL/planstar_"+tag, "planstar"+tag, ddl)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO H (id, v) VALUES (1, 10)"); err != nil {
 		t.Fatalf("INSERT H: %v", err)
@@ -377,16 +345,16 @@ func TestHasBushyJoin(t *testing.T) {
 func TestFDB_PlannerOptions_PlanRightDeepPreservesRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/FRL/planchain_rows", "planchainrows", chainDDL)
+	db := testkit.SetupErrorDB(t, "/FRL/planchain_rows", "planchainrows", chainDDL)
 	seedChain(t, ctx, db)
 
-	base := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
-	rd := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	base := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	rd := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptPlanRightDeep, true).Build())
 	})
 
-	basePlan := explainOnConn(t, ctx, base, chainQuery)
-	rdPlan := explainOnConn(t, ctx, rd, chainQuery)
+	basePlan := testkit.ExplainConn(t, ctx, base, chainQuery)
+	rdPlan := testkit.ExplainConn(t, ctx, rd, chainQuery)
 	if basePlan == rdPlan || hasBushyJoin(rdPlan) {
 		t.Fatalf("want the option to choose a different, non-bushy join tree — row equality "+
 			"below would otherwise prove nothing about the option preserving semantics\n"+
@@ -426,18 +394,18 @@ var outerJoinChainQueries = map[string]string{
 func TestFDB_PlannerOptions_PlanRightDeepPreservesOuterJoinRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/FRL/planchain_oj", "planchainoj", chainDDL)
+	db := testkit.SetupErrorDB(t, "/FRL/planchain_oj", "planchainoj", chainDDL)
 	seedChain(t, ctx, db)
 
-	base := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
-	rd := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	base := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	rd := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptPlanRightDeep, true).Build())
 	})
 
 	for name, q := range outerJoinChainQueries {
 		t.Run(name, func(t *testing.T) {
-			basePlan := explainOnConn(t, ctx, base, q)
-			rdPlan := explainOnConn(t, ctx, rd, q)
+			basePlan := testkit.ExplainConn(t, ctx, base, q)
+			rdPlan := testkit.ExplainConn(t, ctx, rd, q)
 			if !strings.Contains(basePlan, "LEFT OUTER") && !strings.Contains(basePlan, "DefaultOnEmpty") {
 				t.Fatalf("default plan %q has no outer join; this fixture is not testing what it claims", basePlan)
 			}
@@ -486,14 +454,14 @@ func TestFDB_PlannerOptions_PlanRightDeep(t *testing.T) {
 	ctx := context.Background()
 	db := starOptsDB(t, "rd")
 
-	base := pinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	base := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
 	rows, err := base.QueryContext(ctx, sixSpokeStarQuery)
 	if rows != nil {
 		_ = rows.Close()
 	}
-	assertPlannerCapHit(t, err)
+	testkit.AssertPlannerCapHit(t, err)
 
-	rd := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	rd := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptPlanRightDeep, true).Build())
 	})
 	rdRows, rdErr := rd.QueryContext(ctx, sixSpokeStarQuery)
@@ -523,12 +491,12 @@ func TestFDB_PlannerOptions_PlanRightDeep(t *testing.T) {
 
 	// Explicitly false must be identical to unset: the Java-identical default
 	// is not something setting the option can move.
-	off := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	off := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptPlanRightDeep, false).Build())
 	})
 	offRows, offErr := off.QueryContext(ctx, sixSpokeStarQuery)
 	if offRows != nil {
 		_ = offRows.Close()
 	}
-	assertPlannerCapHit(t, offErr)
+	testkit.AssertPlannerCapHit(t, offErr)
 }

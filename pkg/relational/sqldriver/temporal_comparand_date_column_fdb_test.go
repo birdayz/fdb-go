@@ -27,16 +27,18 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_TemporalComparandDateColumn(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	t.Parallel()
 	ctx := context.Background()
 	const dbName = "FRL/testdb_temporal_comparand_date"
-	setup := openTestDB(t, "/"+dbName)
+	setup := testkit.OpenDB(t, "/"+dbName)
 	mustExec := func(db *sql.DB, stmt string, args ...any) {
 		t.Helper()
 		if _, err := db.ExecContext(ctx, stmt, args...); err != nil {
@@ -49,7 +51,7 @@ func TestFDB_TemporalComparandDateColumn(t *testing.T) {
 		"CREATE INDEX X_D ON X(D)")
 	mustExec(setup, "CREATE SCHEMA /"+dbName+"/s WITH TEMPLATE temporal_comparand_date")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///%s?cluster_file=%s&schema=S", strings.ToUpper(dbName), clusterFilePath))
+		fmt.Sprintf("fdbsql:///%s?cluster_file=%s&schema=S", strings.ToUpper(dbName), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

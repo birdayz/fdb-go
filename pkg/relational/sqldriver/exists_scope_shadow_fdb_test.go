@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -48,12 +50,12 @@ import (
 // store extent keyed by primary key; a colliding pk silently overwrites).
 func TestFDB_ExistsInnerShadow(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +112,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 		for _, v := range arr {
 			arrVals = append(arrVals, protoreflect.ValueOfInt64(v))
 		}
-		setArrayField(m, desc.Fields().ByName("ARR"), arrVals...)
+		testkit.SetArrayField(m, desc.Fields().ByName("ARR"), arrVals...)
 		return m
 	}
 	stDesc := md.GetRecordType("ST").Descriptor
@@ -169,7 +171,7 @@ func TestFDB_ExistsInnerShadow(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})

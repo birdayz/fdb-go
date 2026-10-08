@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -41,7 +43,7 @@ func TestFDB_IndexStateReadScope(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dbName := "/FRL/TESTDB_INDEX_STATE_SCOPE_" + strings.ToUpper(tc.name)
-			setup := openTestDB(t, dbName)
+			setup := testkit.OpenDB(t, dbName)
 			for _, stmt := range []string{
 				"CREATE DATABASE " + dbName,
 				"CREATE SCHEMA TEMPLATE index_state_scope_" + tc.name + " " +
@@ -54,7 +56,7 @@ func TestFDB_IndexStateReadScope(t *testing.T) {
 					t.Fatalf("%s: %v", stmt, err)
 				}
 			}
-			db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", dbName, clusterFilePath))
+			db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", dbName, testkit.ClusterFile()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -70,7 +72,7 @@ func TestFDB_IndexStateReadScope(t *testing.T) {
 				t.Fatalf("plan %s, want %s: the case would not test the scope it names", plan, tc.explainHas)
 			}
 
-			rawDB, err := fdb.OpenDatabase(clusterFilePath)
+			rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -93,24 +95,24 @@ func TestFDB_IndexStateReadScope(t *testing.T) {
 			}
 			// An attempt pre-empted by the transaction time limit starts
 			// again from a readable index, so it reads by the same plan.
-			retryTx(t, db, txRetryOpts{BeforeAttempt: func(int) { setState(false) }}, func(a txAttempt) error {
+			testkit.RetryTx(t, db, testkit.TxRetryOpts{BeforeAttempt: func(int) { setState(false) }}, func(a testkit.TxAttempt) error {
 				var id int64
-				if err := a.tx.QueryRowContext(ctx, tc.query).Scan(&id); err != nil {
+				if err := a.Tx.QueryRowContext(ctx, tc.query).Scan(&id); err != nil {
 					return err
 				}
 				if id != 1 {
 					t.Fatalf("read id %d, want 1", id)
 				}
 				setState(true)
-				if _, err := a.tx.ExecContext(ctx, "INSERT INTO WR VALUES (1)"); err != nil {
+				if _, err := a.Tx.ExecContext(ctx, "INSERT INTO WR VALUES (1)"); err != nil {
 					return err
 				}
-				err := a.tx.Commit()
+				err := a.Tx.Commit()
 				if api.IsTransactionTimeLimit(err) {
 					return err
 				}
 				if tc.conflict {
-					assertSerializationFailure(t, err)
+					testkit.AssertSerializationFailure(t, err)
 				} else if err != nil {
 					t.Fatalf("commit after a state change of %s, which the read did not scan: %v", tc.changed, err)
 				}

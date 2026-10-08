@@ -36,24 +36,26 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_NestedOperandTypeComesFromItsOwnLeafNotAFlatNamesake(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nlopnd")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nlopnd")
+	setup := testkit.OpenDB(t, "/FRL/testdb_nlopnd")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nlopnd")
 	// `nn.sk` is BIGINT and the TOP-LEVEL `sk` is DOUBLE. That collision is the
 	// fixture's whole point; see the header before changing either type.
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nlopnd "+
 			"CREATE TYPE AS STRUCT nn (sk BIGINT, co STRING) "+
 			"CREATE TABLE t (id BIGINT, n nn, sk DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nlopnd/s WITH TEMPLATE nlopnd")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NLOPND?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nlopnd/s WITH TEMPLATE nlopnd")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NLOPND?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

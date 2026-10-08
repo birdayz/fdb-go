@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -42,7 +44,7 @@ func structInsertDB(t *testing.T, tag string) (*sql.DB, context.Context, subspac
 	t.Helper()
 	ctx := context.Background()
 	dbPath := "/FRL/structins_" + tag
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -53,12 +55,12 @@ func structInsertDB(t *testing.T, tag string) (*sql.DB, context.Context, subspac
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return db, ctx, relationalStoreSubspace(t, strings.ToUpper(dbPath), "MAIN") // the path CREATE DATABASE stored
+	return db, ctx, testkit.RelationalStoreSubspace(t, strings.ToUpper(dbPath), "MAIN") // the path CREATE DATABASE stored
 }
 
 // structInsertMetaData rebuilds structInsertDDL's metadata out-of-band. The
@@ -80,7 +82,7 @@ func structInsertMetaData(t *testing.T) *recordlayer.RecordMetaData {
 func storedRecordBytes(t *testing.T, ctx context.Context, ss subspace.Subspace, md *recordlayer.RecordMetaData, table string, pk int64) []byte {
 	t.Helper()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -229,13 +231,13 @@ func TestFDB_StructLiteralInsertWireBytes(t *testing.T) {
 		golden := dynamicpb.NewMessage(t3)
 		golden.Set(t3.Fields().ByName("ID"), protoreflect.ValueOfInt64(1))
 		elem := func(a int32, b string) protoreflect.Value {
-			ed := arrayElementMessageDescriptor(arrFD)
+			ed := testkit.ArrayElementMessageDescriptor(arrFD)
 			m := dynamicpb.NewMessage(ed)
 			m.Set(ed.Fields().ByName("A"), protoreflect.ValueOfInt32(a))
 			m.Set(ed.Fields().ByName("B"), protoreflect.ValueOfString(b))
 			return protoreflect.ValueOfMessage(m)
 		}
-		setArrayField(golden, arrFD, elem(10, "s11"), elem(11, "s12"))
+		testkit.SetArrayField(golden, arrFD, elem(10, "s11"), elem(11, "s12"))
 
 		got := storedRecordBytes(t, ctx, ss, md, "T3", 1)
 		if want := goldenBytes(t, golden); !reflect.DeepEqual(got, want) {
@@ -252,7 +254,7 @@ func TestFDB_StructLiteralInsertWireBytes(t *testing.T) {
 		t3 := md.GetRecordType("T3").Descriptor
 		golden := dynamicpb.NewMessage(t3)
 		golden.Set(t3.Fields().ByName("ID"), protoreflect.ValueOfInt64(2))
-		setArrayField(golden, t3.Fields().ByName("ARR"))
+		testkit.SetArrayField(golden, t3.Fields().ByName("ARR"))
 
 		got := storedRecordBytes(t, ctx, ss, md, "T3", 2)
 		if want := goldenBytes(t, golden); !reflect.DeepEqual(got, want) {
@@ -273,7 +275,7 @@ func TestFDB_StructLiteralInsertWireBytes(t *testing.T) {
 		golden := dynamicpb.NewMessage(t4)
 		golden.Set(t4.Fields().ByName("ID"), protoreflect.ValueOfInt64(1))
 		s := dynamicpb.NewMessage(sarr)
-		setArrayField(s, sarr.Fields().ByName("VALS"),
+		testkit.SetArrayField(s, sarr.Fields().ByName("VALS"),
 			protoreflect.ValueOfInt64(7), protoreflect.ValueOfInt64(8))
 		s.Set(sarr.Fields().ByName("LABEL"), protoreflect.ValueOfString("lab"))
 		golden.Set(sFD, protoreflect.ValueOfMessage(s))
@@ -283,18 +285,6 @@ func TestFDB_StructLiteralInsertWireBytes(t *testing.T) {
 			t.Fatalf("stored bytes diverge from the array-in-struct golden:\n stored=%x\n golden=%x", got, want)
 		}
 	})
-}
-
-// requireErrContains asserts the statement failed with a message carrying
-// want — used where the Java-verbatim WORDING is the contract.
-func requireErrContains(t *testing.T, err error, want string) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("expected an error containing %q, statement succeeded", want)
-	}
-	if !strings.Contains(err.Error(), want) {
-		t.Fatalf("error %q does not contain %q", err.Error(), want)
-	}
 }
 
 // TestFDB_StructLiteralInsertRejections pins the structural type errors of
@@ -309,19 +299,19 @@ func TestFDB_StructLiteralInsertRejections(t *testing.T) {
 		// fails with Assert's "expected Record but got Primitive"
 		// (Assert.java:211-212).
 		_, err := db.ExecContext(ctx, "INSERT INTO T1 VALUES (90, (1, 2), ((3, 4), (5, 6)))")
-		requireErrContains(t, err, "expected Record but got Primitive")
+		testkit.RequireErrContains(t, err, "expected Record but got Primitive")
 	})
 
 	t.Run("arity_mismatch_in_struct_literal", func(t *testing.T) {
 		// Java: elementFields.size() == providedColumnContexts.size()
 		// (ExpressionVisitor.java:1080-1082) → CANNOT_CONVERT_TYPE.
 		_, err := db.ExecContext(ctx, "INSERT INTO T1 VALUES (91, 1, ((3, 4, 5), (5, 6)))")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 
 	t.Run("scalar_at_struct_slot", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, "INSERT INTO T1 VALUES (92, 1, 7)")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 
 	t.Run("scalar_element_in_struct_array", func(t *testing.T) {
@@ -331,17 +321,17 @@ func TestFDB_StructLiteralInsertRejections(t *testing.T) {
 		// coercion resolves no physical operator, so SemanticException
 		// INCOMPATIBLE_TYPE (PromoteValue.java:370-371) → 22000.
 		_, err := db.ExecContext(ctx, "INSERT INTO T3 VALUES (93, [7, 8])")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 
 	t.Run("mixed_struct_array_fails_on_the_bad_element", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, "INSERT INTO T3 VALUES (95, [(1, 'a'), 7])")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 
 	t.Run("wrong_element_type_in_struct_literal", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, "INSERT INTO T1 VALUES (94, 1, (('x', 4), (5, 6)))")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 }
 
@@ -513,7 +503,7 @@ func TestFDB_StructUpdateAndInsertSelect(t *testing.T) {
 
 	t.Run("update_set_scalar_at_struct_column_rejected", func(t *testing.T) {
 		_, err := db.ExecContext(ctx, "UPDATE T1 SET h = 5 WHERE id = 1")
-		requireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCannotConvertType)
 	})
 }
 
@@ -525,7 +515,7 @@ func TestFDB_StructNotNullArrayFieldRejectsNull(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/structnn"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -537,14 +527,14 @@ func TestFDB_StructNotNullArrayFieldRejectsNull(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE structnn_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
 	_, err = db.ExecContext(ctx, "INSERT INTO t VALUES (1, (null, 'x'))")
-	requireSQLSTATE(t, err, api.ErrCodeNotNullViolation)
+	testkit.RequireSQLSTATE(t, err, api.ErrCodeNotNullViolation)
 
 	// The same NULL through UPDATE, which does not go through the plan-time
 	// fold at all — the gate must hold on both writers.
@@ -552,5 +542,5 @@ func TestFDB_StructNotNullArrayFieldRejectsNull(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	_, err = db.ExecContext(ctx, "UPDATE t SET s = (null, 'z') WHERE id = 2")
-	requireSQLSTATE(t, err, api.ErrCodeNotNullViolation)
+	testkit.RequireSQLSTATE(t, err, api.ErrCodeNotNullViolation)
 }

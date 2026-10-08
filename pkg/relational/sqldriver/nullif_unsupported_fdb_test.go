@@ -12,25 +12,27 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_Nullif_Unsupported(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nullif")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullif")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nulliftpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_nullif")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullif")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE nulliftpl "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullif/s WITH TEMPLATE nulliftpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLIF?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullif/s WITH TEMPLATE nulliftpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLIF?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a) VALUES (1,7),(2,3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,a) VALUES (1,7),(2,3)")
 
 	// COALESCE is supported and NULL-absorbing (a non-NULL row → its value).
 	t.Run("coalesce_ok", func(t *testing.T) {

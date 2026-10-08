@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
-	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
-	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/sqldriver"
 )
 
@@ -22,11 +20,11 @@ import (
 // like FRL.
 func TestFDB_DatabaseDomainsAreRegistered(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	sys, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFilePath))
+	sys, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,37 +45,18 @@ func TestFDB_DatabaseDomainsAreRegistered(t *testing.T) {
 
 	sqldriver.RegisterDomainIfNotExists("DOMREG_MARIO")
 	sqldriver.RegisterDomainIfNotExists("DOMREG_MARIO")
-	mwjoMustExec(t, sys, ctx, "CREATE DATABASE /DOMREG_MARIO/SHOP")
+	testkit.MustExecCtx(t, sys, ctx, "CREATE DATABASE /DOMREG_MARIO/SHOP")
 	t.Cleanup(func() { _, _ = sys.ExecContext(ctx, "DROP DATABASE /DOMREG_MARIO/SHOP") })
-	mwjoMustExec(t, sys, ctx, "CREATE SCHEMA TEMPLATE domreg_t CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, sys, ctx, "CREATE SCHEMA /DOMREG_MARIO/SHOP/S WITH TEMPLATE domreg_t")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///DOMREG_MARIO/SHOP?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExecCtx(t, sys, ctx, "CREATE SCHEMA TEMPLATE domreg_t CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+	testkit.MustExecCtx(t, sys, ctx, "CREATE SCHEMA /DOMREG_MARIO/SHOP/S WITH TEMPLATE domreg_t")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///DOMREG_MARIO/SHOP?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (7)")
 	var id int64
 	if err := db.QueryRowContext(ctx, "SELECT id FROM t").Scan(&id); err != nil || id != 7 {
 		t.Fatalf("read back: %d, %v", id, err)
 	}
-}
-
-// relationalStoreSubspace is the record-store subspace of a schema the driver
-// created: Java's (domain, database, schema) longs, looked up (never interned)
-// in the cluster under test. Names are the ones CREATE DATABASE / CREATE SCHEMA
-// stored (an unquoted path or schema folds to upper case).
-func relationalStoreSubspace(t *testing.T, dbPath, schema string) subspace.Subspace {
-	t.Helper()
-	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	ss, err := keyspace.New(subspace.Sub()).LookupSchemaSubspace(context.Background(),
-		recordlayer.NewFDBDatabase(rawDB), dbPath, schema)
-	if err != nil {
-		t.Fatalf("store subspace of %s/%s: %v", dbPath, schema, err)
-	}
-	return ss
 }

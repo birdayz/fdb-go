@@ -39,18 +39,20 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func openClauseKeywordDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_clausekw")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_clausekw")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE clausekw_t "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_clausekw")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_clausekw")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE clausekw_t "+
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_clausekw/s WITH TEMPLATE clausekw_t")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_clausekw/s WITH TEMPLATE clausekw_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///FRL/TESTDB_CLAUSEKW?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_CLAUSEKW?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -60,14 +62,14 @@ func openClauseKeywordDB(t *testing.T) *sql.DB {
 
 func TestFDB_ClauseKeywordsAreNotSwallowedAsAliases(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	db := openClauseKeywordDB(t)
 	// g groups {1,1,1} and {2,2}: any GROUP BY that actually grouped gives two
 	// rows with counts 3 and 2, and one that did not gives something else.
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO t (id, g) VALUES (1,1), (2,1), (3,1), (4,2), (5,2)")
 
 	cases := []struct {
@@ -102,14 +104,14 @@ func TestFDB_ClauseKeywordsAreNotSwallowedAsAliases(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.keyword, func(t *testing.T) {
-			got, err := mmRows(t, ctx, db, c.sql)
+			got, err := testkit.QueryRowStrings(t, ctx, db, c.sql)
 			if err != nil {
 				t.Fatalf("%s is no longer parsed as a clause: %v\n  q: %s\n"+
 					"  If %s has become ambiguous with a table alias, it needs excluding from "+
 					"keywordsCanBeId the way LEFT, RIGHT and FULL are", c.keyword, err, c.sql,
 					c.keyword)
 			}
-			if !mmEqRows(got, c.want) {
+			if !testkit.EqualRows(got, c.want) {
 				t.Errorf("%s was not applied as a clause\n  q: %s\n  got  %v\n  want %v\n  %s",
 					c.keyword, c.sql, got, c.want, c.why)
 			}
@@ -144,12 +146,12 @@ func TestFDB_ClauseKeywordsAreNotSwallowedAsAliases(t *testing.T) {
 			shortQ := fmt.Sprintf(
 				"SELECT COUNT(*) FROM t %s JOIN t AS u ON u.g = 1 AND t.g = 2", kind)
 
-			withOuter, err := mmRows(t, ctx, db, outerQ)
+			withOuter, err := testkit.QueryRowStrings(t, ctx, db, outerQ)
 			if err != nil {
 				t.Errorf("%s OUTER JOIN failed: %v", kind, err)
 				continue
 			}
-			short, err := mmRows(t, ctx, db, shortQ)
+			short, err := testkit.QueryRowStrings(t, ctx, db, shortQ)
 			if err != nil {
 				t.Errorf("`%s JOIN` (no OUTER) is not accepted: %v\n"+
 					"  SQL makes OUTER optional and the grammar agrees — "+
@@ -157,7 +159,7 @@ func TestFDB_ClauseKeywordsAreNotSwallowedAsAliases(t *testing.T) {
 					"the same join", kind, err)
 				continue
 			}
-			if !mmEqRows(short, withOuter) {
+			if !testkit.EqualRows(short, withOuter) {
 				t.Errorf("`%s JOIN` and `%s OUTER JOIN` disagree\n  OUTER -> %v\n  short -> %v\n"+
 					"  (%s is being consumed as a table ALIAS — check whether it has returned to "+
 					"keywordsCanBeId, which is what made FULL do exactly this)",
@@ -176,7 +178,7 @@ func TestFDB_ClauseKeywordsAreNotSwallowedAsAliases(t *testing.T) {
 				"about a shrunken set", len(got))
 		}
 		left, right, full := got["LEFT"].outer, got["RIGHT"].outer, got["FULL"].outer
-		if mmEqRows(left, right) && mmEqRows(right, full) {
+		if testkit.EqualRows(left, right) && testkit.EqualRows(right, full) {
 			t.Errorf("LEFT (%v), RIGHT (%v) and FULL (%v) all answered the SAME over a fixture "+
 				"built to separate them. Each assertion above then compares a join with itself, "+
 				"and an engine that collapsed all three into one shape would pass",

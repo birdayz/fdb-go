@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -16,30 +18,30 @@ import (
 // subqueries and DML consume it through the ordinary query pipeline.
 func TestFDB_NoFromSelectProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	// Setup ends before parallel subtests start; their operation deadlines
 	// must not include time spent waiting for the suite's parallel-test slots.
 	defer cancel()
-	setup := openTestDB(t, "/FRL/testdb_nofrom")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nofrom")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_nofrom")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nofrom")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nofrom CREATE TABLE t (id BIGINT, PRIMARY KEY (id)) CREATE TABLE wide_t (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE pair_t (id BIGINT, PRIMARY KEY (id)) CREATE TABLE pair_s (id STRING, PRIMARY KEY (id)) CREATE TABLE sort_t (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TYPE AS STRUCT item_type (sk BIGINT, co BIGINT) CREATE TABLE items_t (id BIGINT, items item_type ARRAY, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nofrom/s WITH TEMPLATE nofrom")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NOFROM?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nofrom/s WITH TEMPLATE nofrom")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NOFROM?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (1), (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO wide_t VALUES (2, 7)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO pair_t VALUES (1), (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO pair_s VALUES ('a'), ('b')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO sort_t VALUES (1, 9), (2, 3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO items_t VALUES (1, [(9, 1), (3, 2)])")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (1), (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO wide_t VALUES (2, 7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO pair_t VALUES (1), (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO pair_s VALUES ('a'), ('b')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO sort_t VALUES (1, 9), (2, 3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO items_t VALUES (1, [(9, 1), (3, 2)])")
 
 	for _, tc := range []struct {
 		name, query string
@@ -213,7 +215,7 @@ func TestFDB_NoFromSelectProbe(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected SQLSTATE %s for %s", tc.code, tc.query)
 			}
-			requireSQLSTATE(t, err, tc.code)
+			testkit.RequireSQLSTATE(t, err, tc.code)
 		})
 	}
 	t.Run("explode_no_scan", func(t *testing.T) {

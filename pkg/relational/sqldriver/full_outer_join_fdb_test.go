@@ -19,6 +19,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"github.com/onsi/gomega"
 )
 
@@ -30,7 +32,7 @@ func setupFullOuterDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_foj_" + suffix
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	_, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	tmpl := "foj_tmpl_" + suffix
@@ -40,7 +42,7 @@ func setupFullOuterDB(t *testing.T, g *gomega.WithT, suffix string) *sql.DB {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	_, err = setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/main WITH TEMPLATE %s", dbPath, tmpl))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	t.Cleanup(func() { db.Close() })
@@ -84,7 +86,7 @@ func TestFDB_FullOuterJoin_AllClasses(t *testing.T) {
 	const q = `SELECT Customer.name, Ord.amount
 		FROM Customer FULL OUTER JOIN Ord ON Customer.id = Ord.customer_id`
 
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	g.Expect(plan).To(gomega.ContainSubstring("NestedLoopJoin(FULL OUTER"),
 		"FULL OUTER must plan as a materialized nested-loop join")
 	g.Expect(strings.Contains(plan, "FlatMap")).To(gomega.BeFalse(),
@@ -201,7 +203,7 @@ func TestFDB_FullOuterJoin_LargeInner(t *testing.T) {
 
 	const q = `SELECT Customer.name, Ord.amount
 		FROM Customer FULL OUTER JOIN Ord ON Customer.id = Ord.customer_id`
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	g.Expect(plan).To(gomega.ContainSubstring("NestedLoopJoin(FULL OUTER"))
 
 	rows, err := db.QueryContext(ctx, q)
@@ -399,10 +401,10 @@ func TestFDB_FullOuterJoin_Determinism(t *testing.T) {
 
 	const q = `SELECT Customer.name, Ord.amount
 		FROM Customer FULL OUTER JOIN Ord ON Customer.id = Ord.customer_id`
-	first := planExplainVia(t, ctx, db, q)
+	first := testkit.ExplainVia(t, ctx, db, q)
 	g.Expect(first).To(gomega.ContainSubstring("NestedLoopJoin(FULL OUTER"))
 	for i := 0; i < 10; i++ {
-		got := planExplainVia(t, ctx, db, q)
+		got := testkit.ExplainVia(t, ctx, db, q)
 		g.Expect(got).To(gomega.Equal(first), "FULL OUTER plan must be deterministic across runs")
 	}
 }

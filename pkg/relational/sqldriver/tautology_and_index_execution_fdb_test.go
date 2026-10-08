@@ -23,29 +23,31 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ConjunctiveTautologyIndexPredicateExecutes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_taut_and")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_taut_and")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_taut_and")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_taut_and")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE taut_and "+
 			"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX i_and AS SELECT col1 FROM t1 WHERE TRUE AND TRUE")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_taut_and/s WITH TEMPLATE taut_and")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TAUT_AND?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_taut_and/s WITH TEMPLATE taut_and")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TAUT_AND?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO t1 (id, col1) VALUES (1, 10), (2, 20), (3, 30), (4, 200)")
 
 	const q = "SELECT col1 FROM t1 WHERE col1 < 100"

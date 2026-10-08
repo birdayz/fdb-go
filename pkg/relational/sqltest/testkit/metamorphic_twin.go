@@ -1,4 +1,4 @@
-package sqldriver_test
+package testkit
 
 // The indexed/unindexed TWIN harness.
 //
@@ -28,11 +28,11 @@ import (
 
 // mmTwin is a pair of connections to two schemas over the same table shapes:
 // idx has the indexes under test, plain has none.
-type mmTwin struct {
-	idx   *sql.DB
-	plain *sql.DB
-	t     *testing.T
-	ctx   context.Context
+type Twin struct {
+	Idx   *sql.DB
+	Plain *sql.DB
+	T     *testing.T
+	Ctx   context.Context
 }
 
 // mmNewTwin creates database dbPath with two schemas built from the same table
@@ -41,14 +41,14 @@ type mmTwin struct {
 //
 // tableDDL and indexDDL are raw schema-template fragments ("CREATE TABLE ... "
 // / "CREATE INDEX ... "), concatenated as the relational DDL expects.
-func mmNewTwin(t *testing.T, ctx context.Context, dbPath, templatePrefix, tableDDL, indexDDL string) *mmTwin {
+func NewTwin(t *testing.T, ctx context.Context, dbPath, templatePrefix, tableDDL, indexDDL string) *Twin {
 	t.Helper()
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE "+templatePrefix+"_idx "+tableDDL+indexDDL)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE "+templatePrefix+"_plain "+tableDDL)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/si WITH TEMPLATE "+templatePrefix+"_idx")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/sn WITH TEMPLATE "+templatePrefix+"_plain")
+	setup := OpenDB(t, dbPath)
+	MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE "+templatePrefix+"_idx "+tableDDL+indexDDL)
+	MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE "+templatePrefix+"_plain "+tableDDL)
+	MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/si WITH TEMPLATE "+templatePrefix+"_idx")
+	MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/sn WITH TEMPLATE "+templatePrefix+"_plain")
 
 	open := func(schema string) *sql.DB {
 		dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schema))
@@ -59,7 +59,7 @@ func mmNewTwin(t *testing.T, ctx context.Context, dbPath, templatePrefix, tableD
 		t.Cleanup(func() { db.Close() })
 		return db
 	}
-	return &mmTwin{idx: open("si"), plain: open("sn"), t: t, ctx: ctx}
+	return &Twin{Idx: open("si"), Plain: open("sn"), T: t, Ctx: ctx}
 }
 
 // Sub rebinds the twin to a SUBTEST's *testing.T, sharing the same two
@@ -76,30 +76,30 @@ func mmNewTwin(t *testing.T, ctx context.Context, dbPath, templatePrefix, tableD
 // queries returned 0AF00.
 //
 //	t.Run("name", func(t *testing.T) { w := w.Sub(t); w.Want(…) })
-func (w *mmTwin) Sub(t *testing.T) *mmTwin {
-	return &mmTwin{idx: w.idx, plain: w.plain, t: t, ctx: w.ctx}
+func (w *Twin) Sub(t *testing.T) *Twin {
+	return &Twin{Idx: w.Idx, Plain: w.Plain, T: t, Ctx: w.Ctx}
 }
 
 // Exec runs stmt against BOTH schemas. A statement that succeeds on one side and
 // fails on the other is itself a finding, so the asymmetry is checked before the
 // error is reported.
-func (w *mmTwin) Exec(stmt string) {
-	w.t.Helper()
-	_, ei := w.idx.ExecContext(w.ctx, stmt)
-	_, en := w.plain.ExecContext(w.ctx, stmt)
+func (w *Twin) Exec(stmt string) {
+	w.T.Helper()
+	_, ei := w.Idx.ExecContext(w.Ctx, stmt)
+	_, en := w.Plain.ExecContext(w.Ctx, stmt)
 	if (ei == nil) != (en == nil) {
-		w.t.Fatalf("DML asymmetry between indexed and unindexed schema\n  stmt: %s\n  indexed:   %v\n  unindexed: %v",
+		w.T.Fatalf("DML asymmetry between indexed and unindexed schema\n  stmt: %s\n  indexed:   %v\n  unindexed: %v",
 			stmt, ei, en)
 	}
 	if ei != nil {
-		w.t.Fatalf("exec %q failed on both schemas: %v", stmt, ei)
+		w.T.Fatalf("exec %q failed on both schemas: %v", stmt, ei)
 	}
 }
 
 // mmRows runs q and renders each row as a |-joined string so a case can state
 // its expectation without knowing the column count. NULL renders as "NULL",
 // which is distinct from the empty string a NULL-free empty column produces.
-func mmRows(t *testing.T, ctx context.Context, db *sql.DB, q string) ([]string, error) {
+func QueryRowStrings(t *testing.T, ctx context.Context, db *sql.DB, q string) ([]string, error) {
 	t.Helper()
 	rows, err := db.QueryContext(ctx, q)
 	if err != nil {
@@ -142,11 +142,11 @@ func mmRows(t *testing.T, ctx context.Context, db *sql.DB, q string) ([]string, 
 // Explain returns the rendered plan for q on the INDEXED side. Used to prove a
 // case actually reaches the operator under test — without it, a green is a
 // statement about whichever plan the cost model happened to pick.
-func (w *mmTwin) Explain(q string) string {
-	w.t.Helper()
+func (w *Twin) Explain(q string) string {
+	w.T.Helper()
 	var plan string
-	if err := w.idx.QueryRowContext(w.ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
-		w.t.Fatalf("EXPLAIN %q: %v", q, err)
+	if err := w.Idx.QueryRowContext(w.Ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+		w.T.Fatalf("EXPLAIN %q: %v", q, err)
 	}
 	return plan
 }
@@ -158,24 +158,24 @@ func (w *mmTwin) Explain(q string) string {
 // the indexed side wrong means the index path is wrong, and the two disagreeing
 // with each other localizes it to the index path even when `want` itself is in
 // doubt.
-func (w *mmTwin) Want(name, q string, want []string) {
-	w.t.Helper()
-	gi, ei := mmRows(w.t, w.ctx, w.idx, q)
-	gn, en := mmRows(w.t, w.ctx, w.plain, q)
+func (w *Twin) Want(name, q string, want []string) {
+	w.T.Helper()
+	gi, ei := QueryRowStrings(w.T, w.Ctx, w.Idx, q)
+	gn, en := QueryRowStrings(w.T, w.Ctx, w.Plain, q)
 	if ei != nil || en != nil {
-		w.t.Errorf("%s: query failed\n  q: %s\n  indexed:   %v\n  unindexed: %v", name, q, ei, en)
+		w.T.Errorf("%s: query failed\n  q: %s\n  indexed:   %v\n  unindexed: %v", name, q, ei, en)
 		return
 	}
-	if !mmEqRows(gn, want) {
-		w.t.Errorf("%s: UNINDEXED (oracle) answer is wrong\n  q: %s\n  got  %v\n  want %v\n  %s",
-			name, q, gn, want, mmFirstDiff(gn, want))
+	if !EqualRows(gn, want) {
+		w.T.Errorf("%s: UNINDEXED (oracle) answer is wrong\n  q: %s\n  got  %v\n  want %v\n  %s",
+			name, q, gn, want, MmFirstDiff(gn, want))
 	}
-	if !mmEqRows(gi, want) {
-		w.t.Errorf("%s: INDEXED answer is wrong\n  q: %s\n  got  %v\n  want %v\n  %s\n  plan: %s",
-			name, q, gi, want, mmFirstDiff(gi, want), w.Explain(q))
+	if !EqualRows(gi, want) {
+		w.T.Errorf("%s: INDEXED answer is wrong\n  q: %s\n  got  %v\n  want %v\n  %s\n  plan: %s",
+			name, q, gi, want, MmFirstDiff(gi, want), w.Explain(q))
 	}
-	if !mmEqRows(gi, gn) {
-		w.t.Errorf("%s: indexed and unindexed DISAGREE\n  q: %s\n  indexed  : %v\n  unindexed: %v\n  plan: %s",
+	if !EqualRows(gi, gn) {
+		w.T.Errorf("%s: indexed and unindexed DISAGREE\n  q: %s\n  indexed  : %v\n  unindexed: %v\n  plan: %s",
 			name, q, gi, gn, w.Explain(q))
 	}
 }
@@ -191,10 +191,10 @@ func (w *mmTwin) Want(name, q string, want []string) {
 //
 // The code is compared, not the message: wording is free to differ between the
 // two paths, a SQLSTATE is not.
-func (w *mmTwin) WantRejected(name, q, wantCode string) {
-	w.t.Helper()
+func (w *Twin) WantRejected(name, q, wantCode string) {
+	w.T.Helper()
 	code := func(db *sql.DB) (string, error) {
-		_, err := db.QueryContext(w.ctx, q)
+		_, err := db.QueryContext(w.Ctx, q)
 		if err == nil {
 			return "", nil
 		}
@@ -204,20 +204,20 @@ func (w *mmTwin) WantRejected(name, q, wantCode string) {
 		}
 		return "<not-an-api.Error:" + err.Error() + ">", err
 	}
-	ci, ei := code(w.idx)
-	cn, en := code(w.plain)
+	ci, ei := code(w.Idx)
+	cn, en := code(w.Plain)
 	if ei == nil || en == nil {
-		w.t.Errorf("%s: expected BOTH schemas to reject\n  q: %s\n  indexed err  : %v\n  unindexed err: %v",
+		w.T.Errorf("%s: expected BOTH schemas to reject\n  q: %s\n  indexed err  : %v\n  unindexed err: %v",
 			name, q, ei, en)
 		return
 	}
 	if ci != cn {
-		w.t.Errorf("%s: the two schemas reject with DIFFERENT sqlstates, so an index changed "+
+		w.T.Errorf("%s: the two schemas reject with DIFFERENT sqlstates, so an index changed "+
 			"whether/how the query is accepted\n  q: %s\n  indexed  : %s (%v)\n  unindexed: %s (%v)",
 			name, q, ci, ei, cn, en)
 	}
 	if ci != wantCode {
-		w.t.Errorf("%s: wrong sqlstate\n  q: %s\n  got  %s (%v)\n  want %s",
+		w.T.Errorf("%s: wrong sqlstate\n  q: %s\n  got  %s (%v)\n  want %s",
 			name, q, ci, ei, wantCode)
 	}
 }
@@ -232,25 +232,25 @@ func (w *mmTwin) WantRejected(name, q, wantCode string) {
 //
 // This is not a way to accept a wrong answer. It is how a wrong answer stays
 // visible while the fix it needs is decided, and every use carries `why`.
-func (w *mmTwin) WantKnownDivergence(name, q string, wantIndexed, wantOracle []string, why string) {
-	w.t.Helper()
-	gi, ei := mmRows(w.t, w.ctx, w.idx, q)
-	gn, en := mmRows(w.t, w.ctx, w.plain, q)
+func (w *Twin) WantKnownDivergence(name, q string, wantIndexed, wantOracle []string, why string) {
+	w.T.Helper()
+	gi, ei := QueryRowStrings(w.T, w.Ctx, w.Idx, q)
+	gn, en := QueryRowStrings(w.T, w.Ctx, w.Plain, q)
 	if ei != nil || en != nil {
-		w.t.Errorf("%s: query failed\n  q: %s\n  indexed:   %v\n  unindexed: %v", name, q, ei, en)
+		w.T.Errorf("%s: query failed\n  q: %s\n  indexed:   %v\n  unindexed: %v", name, q, ei, en)
 		return
 	}
-	if !mmEqRows(gn, wantOracle) {
-		w.t.Errorf("%s: UNINDEXED (oracle) answer moved — the SQL-correct result is what this pin "+
+	if !EqualRows(gn, wantOracle) {
+		w.T.Errorf("%s: UNINDEXED (oracle) answer moved — the SQL-correct result is what this pin "+
 			"rests on\n  q: %s\n  got  %v\n  want %v", name, q, gn, wantOracle)
 	}
-	if !mmEqRows(gi, wantIndexed) {
-		w.t.Errorf("%s: the known divergence MOVED. Either it was repaired (re-arm this pin to "+
+	if !EqualRows(gi, wantIndexed) {
+		w.T.Errorf("%s: the known divergence MOVED. Either it was repaired (re-arm this pin to "+
 			"WantKnownDivergence's oracle list and delete the divergence) or it changed shape.\n"+
 			"  q: %s\n  indexed got  %v\n  indexed want %v\n  why: %s", name, q, gi, wantIndexed, why)
 	}
-	if mmEqRows(gi, gn) {
-		w.t.Errorf("%s: indexed and unindexed now AGREE, so the divergence this pin describes is "+
+	if EqualRows(gi, gn) {
+		w.T.Errorf("%s: indexed and unindexed now AGREE, so the divergence this pin describes is "+
 			"gone. Replace this call with Want(...) asserting the correct answer.\n  q: %s\n  both: %v\n"+
 			"  why: %s", name, q, gi, why)
 	}
@@ -265,16 +265,16 @@ func (w *mmTwin) WantKnownDivergence(name, q string, wantIndexed, wantOracle []s
 //
 // A test that reads a plan in auto-commit and expects an elision therefore sees
 // the UN-elided plan and is asserting the wrong thing about a correct engine.
-func (w *mmTwin) ExplainInTx(q string) string {
-	w.t.Helper()
-	tx, err := w.idx.BeginTx(w.ctx, nil)
+func (w *Twin) ExplainInTx(q string) string {
+	w.T.Helper()
+	tx, err := w.Idx.BeginTx(w.Ctx, nil)
 	if err != nil {
-		w.t.Fatalf("begin: %v", err)
+		w.T.Fatalf("begin: %v", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	var plan string
-	if err := tx.QueryRowContext(w.ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
-		w.t.Fatalf("EXPLAIN %q in a transaction: %v", q, err)
+	if err := tx.QueryRowContext(w.Ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+		w.T.Fatalf("EXPLAIN %q in a transaction: %v", q, err)
 	}
 	return plan
 }
@@ -282,15 +282,15 @@ func (w *mmTwin) ExplainInTx(q string) string {
 // WantInTx is Want with both sides read inside their own explicit transaction,
 // so the single-read-version proofs are licensed. Use it for any case whose
 // point is an optimization gated on one read version; use Want otherwise.
-func (w *mmTwin) WantInTx(name, q string, want []string) {
-	w.t.Helper()
+func (w *Twin) WantInTx(name, q string, want []string) {
+	w.T.Helper()
 	read := func(db *sql.DB) ([]string, error) {
-		tx, err := db.BeginTx(w.ctx, nil)
+		tx, err := db.BeginTx(w.Ctx, nil)
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = tx.Rollback() }()
-		rows, err := tx.QueryContext(w.ctx, q)
+		rows, err := tx.QueryContext(w.Ctx, q)
 		if err != nil {
 			return nil, err
 		}
@@ -321,19 +321,19 @@ func (w *mmTwin) WantInTx(name, q string, want []string) {
 		}
 		return out, rows.Err()
 	}
-	gi, ei := read(w.idx)
-	gn, en := read(w.plain)
+	gi, ei := read(w.Idx)
+	gn, en := read(w.Plain)
 	if ei != nil || en != nil {
-		w.t.Errorf("%s: query failed in a transaction\n  q: %s\n  indexed: %v\n  unindexed: %v",
+		w.T.Errorf("%s: query failed in a transaction\n  q: %s\n  indexed: %v\n  unindexed: %v",
 			name, q, ei, en)
 		return
 	}
-	if !mmEqRows(gn, want) {
-		w.t.Errorf("%s: UNINDEXED (oracle) answer is wrong\n  q: %s\n  got  %v\n  want %v",
+	if !EqualRows(gn, want) {
+		w.T.Errorf("%s: UNINDEXED (oracle) answer is wrong\n  q: %s\n  got  %v\n  want %v",
 			name, q, gn, want)
 	}
-	if !mmEqRows(gi, want) {
-		w.t.Errorf("%s: INDEXED answer is wrong\n  q: %s\n  got  %v\n  want %v\n  plan: %s",
+	if !EqualRows(gi, want) {
+		w.T.Errorf("%s: INDEXED answer is wrong\n  q: %s\n  got  %v\n  want %v\n  plan: %s",
 			name, q, gi, want, w.ExplainInTx(q))
 	}
 }
@@ -342,16 +342,16 @@ func (w *mmTwin) WantInTx(name, q string, want []string) {
 // assertion that silently stopped exercising the operator under test is a green
 // that proves nothing, so every case whose point is an index-backed operator
 // pins the operator too.
-func (w *mmTwin) WantPlanContains(name, q, marker string) {
-	w.t.Helper()
+func (w *Twin) WantPlanContains(name, q, marker string) {
+	w.T.Helper()
 	plan := w.Explain(q)
 	if !strings.Contains(plan, marker) {
-		w.t.Errorf("%s: plan does not reach %s — the row assertion below proves nothing about it\n  q: %s\n  plan: %s",
+		w.T.Errorf("%s: plan does not reach %s — the row assertion below proves nothing about it\n  q: %s\n  plan: %s",
 			name, marker, q, plan)
 	}
 }
 
-func mmEqRows(a, b []string) bool {
+func EqualRows(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -363,7 +363,7 @@ func mmEqRows(a, b []string) bool {
 	return true
 }
 
-func mmFirstDiff(got, want []string) string {
+func MmFirstDiff(got, want []string) string {
 	n := len(got)
 	if len(want) < n {
 		n = len(want)

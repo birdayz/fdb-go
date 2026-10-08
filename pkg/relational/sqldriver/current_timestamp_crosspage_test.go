@@ -16,13 +16,15 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_CurrentTimestamp_CrossPage_Stable(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_cts_xpage", "cts_xpage",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_cts_xpage", "cts_xpage",
 		"CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -33,7 +35,7 @@ func TestFDB_CurrentTimestamp_CrossPage_Stable(t *testing.T) {
 	// loop executions across wall-clock second boundaries so at least one
 	// statement's pages straddle a second. Without the Execute-time capture
 	// the straddling statement observes two instants.
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, int64(500)).Build())
 	})

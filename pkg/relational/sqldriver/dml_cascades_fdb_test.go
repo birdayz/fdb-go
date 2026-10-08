@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -18,7 +20,7 @@ func dmlCascadesDB(t *testing.T, tag string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 	dbPath := "/FRL/dmlc_" + tag
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -31,7 +33,7 @@ func dmlCascadesDB(t *testing.T, tag string) *sql.DB {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE "+tmpl); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -257,7 +259,7 @@ func TestFDB_DMLCascades_InsertSelect(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/dmlc_inssel"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -271,7 +273,7 @@ func TestFDB_DMLCascades_InsertSelect(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE dmlc_inssel_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -345,7 +347,7 @@ func TestFDB_DMLCascades_UniqueIndexViolation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/dmlc_uniq"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -357,7 +359,7 @@ func TestFDB_DMLCascades_UniqueIndexViolation(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE dmlc_uniq_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -388,8 +390,8 @@ func TestFDB_DMLCascades_ExplainPlanShapes(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := dmlCascadesDB(t, "explain")
-	logger := &syncCaptureLogger{}
-	conn := installLogger(t, db, logger)
+	logger := &testkit.SyncCaptureLogger{}
+	conn := testkit.InstallLogger(t, db, logger)
 
 	if _, err := conn.ExecContext(ctx, "INSERT INTO Item (id, price) VALUES (1, 10), (2, 20)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
@@ -398,7 +400,7 @@ func TestFDB_DMLCascades_ExplainPlanShapes(t *testing.T) {
 		t.Fatalf("DELETE: %v", err)
 	}
 
-	events := logger.snapshot()
+	events := logger.Snapshot()
 	if len(events) < 2 {
 		t.Fatalf("want >=2 planning events, got %d", len(events))
 	}
@@ -420,7 +422,7 @@ func TestFDB_DMLCascades_ExplainPlanShapes(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, "DELETE FROM Item WHERE price = 10"); err != nil {
 		t.Fatalf("DELETE again: %v", err)
 	}
-	if events := logger.snapshot(); events[len(events)-1].Cache != embedded.PlanCacheHit {
+	if events := logger.Snapshot(); events[len(events)-1].Cache != embedded.PlanCacheHit {
 		t.Errorf("repeated DELETE cache event = %v, want hit", events[len(events)-1].Cache)
 	}
 	if _, err := conn.ExecContext(ctx, "UPDATE Item SET price = 30 WHERE id = 2"); err != nil {
@@ -429,7 +431,7 @@ func TestFDB_DMLCascades_ExplainPlanShapes(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, "UPDATE Item SET price = 30 WHERE id = 2"); err != nil {
 		t.Fatalf("UPDATE again: %v", err)
 	}
-	if events := logger.snapshot(); events[len(events)-1].Cache != embedded.PlanCacheHit {
+	if events := logger.Snapshot(); events[len(events)-1].Cache != embedded.PlanCacheHit {
 		t.Errorf("repeated UPDATE cache event = %v, want hit", events[len(events)-1].Cache)
 	}
 	var price int64

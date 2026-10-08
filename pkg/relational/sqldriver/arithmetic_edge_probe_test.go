@@ -10,27 +10,29 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ArithmeticEdgeProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_arith")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_arith")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_arith")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_arith")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE arith "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_arith/s WITH TEMPLATE arith")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ARITH?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_arith/s WITH TEMPLATE arith")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ARITH?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1, 7, 2), (2, 9223372036854775807, 1), (3, 7, 0), (4, -7, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1, 7, 2), (2, 9223372036854775807, 1), (3, 7, 0), (4, -7, 2)")
 
 	scalar := func(q string) (int64, error) {
 		var v int64

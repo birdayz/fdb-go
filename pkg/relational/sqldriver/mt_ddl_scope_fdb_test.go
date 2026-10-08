@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/sqldriver"
 )
@@ -85,7 +87,7 @@ func mtDDLAssertTemplate42501(t *testing.T, what string, err error, wantSession 
 // mtDDLOpen opens a connection to dbPath, optionally with the restriction on.
 func mtDDLOpen(t *testing.T, dbPath string, restrict bool) *sql.DB {
 	t.Helper()
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), testkit.ClusterFile())
 	if restrict {
 		dsn += "&restrict_ddl_to_session_database=true"
 	}
@@ -99,7 +101,7 @@ func mtDDLOpen(t *testing.T, dbPath string, restrict bool) *sql.DB {
 
 func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -111,16 +113,16 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 		foreign = "/FRL/MT_DDL_FOREIGN"
 	)
 
-	setup := openTestDB(t, home)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+home)
+	setup := testkit.OpenDB(t, home)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+home)
 	t.Cleanup(func() { _, _ = setup.ExecContext(ctx, "DROP DATABASE "+home) })
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+foreign)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+foreign)
 	t.Cleanup(func() { _, _ = setup.ExecContext(ctx, "DROP DATABASE "+foreign) })
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE mt_ddl_tmpl "+
 			"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	t.Cleanup(func() { _, _ = setup.ExecContext(ctx, "DROP SCHEMA TEMPLATE mt_ddl_tmpl") })
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+foreign+"/victim WITH TEMPLATE mt_ddl_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+foreign+"/victim WITH TEMPLATE mt_ddl_tmpl")
 
 	t.Run("restricted_rejects_cross_database_ddl", func(t *testing.T) {
 		db := mtDDLOpen(t, home, true)
@@ -162,10 +164,10 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 		// DROP SCHEMA takes a path in Java (a bare uid is 42F63 whatever the
 		// connection's database, DdlVisitor.java:598-600), so the bare schema
 		// is dropped by its path.
-		mwjoMustExec(t, db, ctx, "CREATE SCHEMA "+home+"/own_qualified WITH TEMPLATE mt_ddl_tmpl")
-		mwjoMustExec(t, db, ctx, "DROP SCHEMA "+home+"/own_qualified")
-		mwjoMustExec(t, db, ctx, "CREATE SCHEMA own_bare WITH TEMPLATE mt_ddl_tmpl")
-		mwjoMustExec(t, db, ctx, "DROP SCHEMA "+home+"/own_bare")
+		testkit.MustExecCtx(t, db, ctx, "CREATE SCHEMA "+home+"/own_qualified WITH TEMPLATE mt_ddl_tmpl")
+		testkit.MustExecCtx(t, db, ctx, "DROP SCHEMA "+home+"/own_qualified")
+		testkit.MustExecCtx(t, db, ctx, "CREATE SCHEMA own_bare WITH TEMPLATE mt_ddl_tmpl")
+		testkit.MustExecCtx(t, db, ctx, "DROP SCHEMA "+home+"/own_bare")
 
 		// A database path is exactly /DOMAIN/DB (Java's keyspace), so nothing
 		// nests under the session's own database: the path is INVALID_PATH,
@@ -207,8 +209,8 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 		// The refusal must be a refusal: the template the restricted connection
 		// tried to drop is still usable, proven by creating a schema from it on
 		// an unrestricted connection.
-		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+home+"/tmpl_survived WITH TEMPLATE mt_ddl_tmpl")
-		mwjoMustExec(t, setup, ctx, "DROP SCHEMA "+home+"/tmpl_survived")
+		testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+home+"/tmpl_survived WITH TEMPLATE mt_ddl_tmpl")
+		testkit.MustExecCtx(t, setup, ctx, "DROP SCHEMA "+home+"/tmpl_survived")
 	})
 
 	// The Java-parity default. This is a CONTRACT, not an accident.
@@ -218,8 +220,8 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 
 		// Cross-database CREATE/DROP DATABASE from a foreign connection: Java
 		// accepts these, so Go must too when the option is off.
-		mwjoMustExec(t, db, ctx, "CREATE DATABASE "+target)
-		mwjoMustExec(t, db, ctx, "CREATE SCHEMA "+target+"/cross WITH TEMPLATE mt_ddl_tmpl")
+		testkit.MustExecCtx(t, db, ctx, "CREATE DATABASE "+target)
+		testkit.MustExecCtx(t, db, ctx, "CREATE SCHEMA "+target+"/cross WITH TEMPLATE mt_ddl_tmpl")
 
 		tdb := mtDDLOpen(t, target, false)
 		got := mtScopeQueryRows(t, tdb, ctx,
@@ -227,8 +229,8 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 		mtScopeAssertRows(t, "cross-database CREATE SCHEMA took effect", got,
 			[]string{target + "\tCROSS"})
 
-		mwjoMustExec(t, db, ctx, "DROP SCHEMA "+target+"/cross")
-		mwjoMustExec(t, db, ctx, "DROP DATABASE "+target)
+		testkit.MustExecCtx(t, db, ctx, "DROP SCHEMA "+target+"/cross")
+		testkit.MustExecCtx(t, db, ctx, "DROP DATABASE "+target)
 	})
 }
 
@@ -243,7 +245,7 @@ func TestFDB_RestrictDDLToSessionDatabase(t *testing.T) {
 // DATABASE would go through.
 func TestFDB_RestrictDDLSurvivesDSNMutation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -253,13 +255,13 @@ func TestFDB_RestrictDDLSurvivesDSNMutation(t *testing.T) {
 		foreign = "/FRL/MT_FREEZE_FOREIGN"
 	)
 
-	setup := openTestDB(t, home)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+home)
+	setup := testkit.OpenDB(t, home)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+home)
 	t.Cleanup(func() { _, _ = setup.ExecContext(ctx, "DROP DATABASE "+home) })
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+foreign)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+foreign)
 	t.Cleanup(func() { _, _ = setup.ExecContext(ctx, "DROP DATABASE "+foreign) })
 
-	dsnStr := fmt.Sprintf("fdbsql://%s?cluster_file=%s&restrict_ddl_to_session_database=true", strings.ToUpper(home), clusterFilePath)
+	dsnStr := fmt.Sprintf("fdbsql://%s?cluster_file=%s&restrict_ddl_to_session_database=true", strings.ToUpper(home), testkit.ClusterFile())
 	var d sqldriver.Driver
 	connector, err := d.OpenConnector(dsnStr)
 	if err != nil {
@@ -302,11 +304,11 @@ func TestFDB_RestrictDDLSurvivesDSNMutation(t *testing.T) {
 // it forbids writes Java never intended to allow.
 func TestFDB_CreateDatabaseRefusesSystemCatalogSpace(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := openTestDB(t, "/FRL/mt_sys_guard")
+	db := testkit.OpenDB(t, "/FRL/mt_sys_guard")
 
 	// A path inside /__SYS names no database (Java's toDatabasePath: INVALID_PATH);
 	// /__SYS itself is the system database, refused as 42501.
@@ -330,6 +332,6 @@ func TestFDB_CreateDatabaseRefusesSystemCatalogSpace(t *testing.T) {
 
 	// A path that merely starts with the same characters is a normal database.
 	const lookalike = "/FRL/__SYSTEM_mt_guard"
-	mwjoMustExec(t, db, ctx, "CREATE DATABASE "+lookalike)
-	mwjoMustExec(t, db, ctx, "DROP DATABASE "+lookalike)
+	testkit.MustExecCtx(t, db, ctx, "CREATE DATABASE "+lookalike)
+	testkit.MustExecCtx(t, db, ctx, "DROP DATABASE "+lookalike)
 }

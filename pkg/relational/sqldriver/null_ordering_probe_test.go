@@ -10,30 +10,32 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_NullOrderingProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nullord")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullord")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_nullord")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nullord")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nullord "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullord/s WITH TEMPLATE nullord")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLORD?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nullord/s WITH TEMPLATE nullord")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULLORD?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// a: id1=10, id2=NULL, id3=20, id4=NULL, id5=5
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 10), (3, 20), (5, 5)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (2), (4)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 10), (3, 20), (5, 5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (2), (4)")
 
 	// returns the ordered list of `a` values, with NULL rendered as -1 sentinel
 	// (a is never -1 in the data) so order is observable.

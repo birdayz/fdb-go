@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -98,23 +100,23 @@ import (
 // The UNION and CASE outcomes remain explicit, separately owned contracts.
 func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_wraphidden")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_wraphidden")
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE wraphidden_tpl
+	setup := testkit.OpenDB(t, "/FRL/testdb_wraphidden")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_wraphidden")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE wraphidden_tpl
 		CREATE TABLE t (id BIGINT, PRIMARY KEY (id))`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_wraphidden/s1 WITH TEMPLATE wraphidden_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_WRAPHIDDEN?cluster_file=%s&schema=S1", clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_wraphidden/s1 WITH TEMPLATE wraphidden_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_WRAPHIDDEN?cluster_file=%s&schema=S1", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// A row must exist: with an empty table the projection is never evaluated
 	// and every row below succeeds vacuously.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1)")
 
 	const (
 		// The refusal names the TARGET. Matching only "is not promotable to"

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -19,22 +21,22 @@ import (
 func TestFDB_MacroNamedArguments(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_named_call")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_named_call")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE named_call_tpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_named_call")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_named_call")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE named_call_tpl "+
 		"CREATE TYPE AS STRUCT st1(y BIGINT, z BIGINT) "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id)) "+
 		"CREATE FUNCTION add2(IN a BIGINT, IN b BIGINT DEFAULT 100) RETURNS BIGINT RETURN a * 10 + b "+
 		"CREATE FUNCTION st1_d(IN y BIGINT, IN z BIGINT DEFAULT 2L) RETURNS st1 RETURN (y, z) "+
 		"CREATE FUNCTION st1_z(IN s TYPE st1) RETURNS BIGINT RETURN s.z "+
 		"CREATE FUNCTION tf(IN lo BIGINT, IN hi BIGINT DEFAULT 10) AS SELECT id FROM t WHERE id BETWEEN lo AND hi")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_named_call/s WITH TEMPLATE named_call_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NAMED_CALL?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_named_call/s WITH TEMPLATE named_call_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NAMED_CALL?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10, [1, 2]), (2, 20, [3])")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10, [1, 2]), (2, 20, [3])")
 
 	for q, want := range map[string]string{
 		"SELECT add2(b => 1, a => a) FROM t WHERE id = 2": "[201]",
@@ -46,7 +48,7 @@ func TestFDB_MacroNamedArguments(t *testing.T) {
 		"SELECT cardinality(x => arr) FROM t ORDER BY id": "[2 1]",
 		"SELECT id FROM tf(hi => 1, lo => 1)":             "[1]",
 	} {
-		got, err := queryInt64s(ctx, db, q)
+		got, err := testkit.QueryInt64s(ctx, db, q)
 		if err != nil {
 			t.Errorf("%s: %v", q, err)
 			continue
@@ -74,13 +76,13 @@ func TestFDB_MacroNamedArguments(t *testing.T) {
 		{"SELECT id FROM tf(lo => 1, lo => 2)", api.ErrCodeSyntaxError, "argument name(s) used more than onceLO=2"},
 		{"SELECT id FROM tf(1, 2, 3)", api.ErrCodeUndefinedFunction, "could not find function 'TF'"},
 	} {
-		_, err := queryInt64s(ctx, db, c.sql)
+		_, err := testkit.QueryInt64s(ctx, db, c.sql)
 		var apiErr *api.Error
 		if !errors.As(err, &apiErr) || apiErr.Code != c.code || apiErr.Message != c.message {
 			t.Errorf("%s: error %v, want %s %q", c.sql, err, c.code, c.message)
 		}
 	}
-	if _, err := queryInt64s(ctx, db, "SELECT add2(1, b => 2) FROM t"); err == nil {
+	if _, err := testkit.QueryInt64s(ctx, db, "SELECT add2(1, b => 2) FROM t"); err == nil {
 		t.Error("a mixed named and positional call parsed")
 	}
 }

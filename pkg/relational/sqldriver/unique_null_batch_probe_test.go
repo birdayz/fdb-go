@@ -10,22 +10,24 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_UniqueNullAndBatchAtomicity(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uniqnullb")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uniqnullb")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_uniqnullb")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uniqnullb")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uniqnullb "+
 			"CREATE TABLE t (id BIGINT, email STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email ON t (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uniqnullb/s WITH TEMPLATE uniqnullb")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNIQNULLB?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uniqnullb/s WITH TEMPLATE uniqnullb")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNIQNULLB?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -38,11 +40,11 @@ func TestFDB_UniqueNullAndBatchAtomicity(t *testing.T) {
 		}
 		return c
 	}
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, email) VALUES (1, 'a@x'), (2, 'b@x')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, email) VALUES (1, 'a@x'), (2, 'b@x')")
 
 	t.Run("unique_allows_multiple_nulls", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (3)") // NULL email
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (4)") // NULL email again
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (3)") // NULL email
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (4)") // NULL email again
 		if got := count(); got != 4 {
 			t.Errorf("after 2 NULL-email inserts count = %d, want 4 (UNIQUE allows multiple NULLs)", got)
 		}

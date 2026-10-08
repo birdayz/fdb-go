@@ -14,21 +14,23 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_InsertAtomicityProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_iatp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_iatp")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE iatp "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_iatp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_iatp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE iatp "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE u (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_iatp/s WITH TEMPLATE iatp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IATP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_iatp/s WITH TEMPLATE iatp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IATP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -63,7 +65,7 @@ func TestFDB_InsertAtomicityProbe(t *testing.T) {
 	}
 
 	t.Run("mid_batch_dup_pk_rolls_back_all", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a) VALUES (2, 20)") // pre-existing pk=2
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a) VALUES (2, 20)") // pre-existing pk=2
 		_, err := db.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (1,10),(2,99),(3,30)")
 		if err == nil || !strings.Contains(err.Error(), "23505") {
 			t.Fatalf("err = %v, want 23505", err)
@@ -74,7 +76,7 @@ func TestFDB_InsertAtomicityProbe(t *testing.T) {
 		}
 	})
 	t.Run("valid_multi_insert_all_applied", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO u (id, a) VALUES (10,1),(11,2),(12,3)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO u (id, a) VALUES (10,1),(11,2),(12,3)")
 		if got := ids("u"); !eq(got, []int64{10, 11, 12}) {
 			t.Errorf("valid multi-insert u = %v, want [10 11 12]", got)
 		}

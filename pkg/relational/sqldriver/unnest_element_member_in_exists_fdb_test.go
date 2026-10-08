@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_UnnestElementMemberInExists drives a struct-element member reference
@@ -53,13 +55,13 @@ import (
 // that never depended on the fix.
 func TestFDB_UnnestElementMemberInExists(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	const dbPath = "/FRL/testdb_unnest_elem_exists"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -76,7 +78,7 @@ func TestFDB_UnnestElementMemberInExists(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -249,7 +251,7 @@ func TestFDB_UnnestElementMemberInExists(t *testing.T) {
 		tc := cases[i]
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := runShape(t, ctx, db, tc.sql); got != tc.want {
+			if got := testkit.RunShape(t, ctx, db, tc.sql); got != tc.want {
 				t.Fatalf("query %q\n   got: %s\n  want: %s\n  RE-ARMED IF THIS CHANGES: %s",
 					tc.sql, got, tc.want, tc.rearms)
 			}
@@ -276,36 +278,36 @@ func TestFDB_UnnestElementMemberInExists(t *testing.T) {
 // here cannot come from a family that stopped planning.
 func TestFDB_UnnestElementMemberInExistsConvertedSentinel(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_uelem")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uelem")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uelem_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_uelem")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uelem")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uelem_tmpl "+
 		"CREATE TYPE AS STRUCT deeper (dk BIGINT) "+
 		"CREATE TYPE AS STRUCT elem (ek BIGINT, d deeper) "+
 		"CREATE TABLE t (id BIGINT, sarr BIGINT ARRAY, arr elem ARRAY, PRIMARY KEY(id)) "+
 		"CREATE TABLE v (vid BIGINT, vk BIGINT, PRIMARY KEY(vid)) "+
 		"CREATE TABLE u (uk BIGINT, PRIMARY KEY(uk))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uelem/s WITH TEMPLATE uelem_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uelem/s WITH TEMPLATE uelem_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UELEM?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_UELEM?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, [100, 200], [(10, (100)), (20, (200))]), (2, [300], [(30, (300))])")
-	mustExec(t, db, ctx, "INSERT INTO v VALUES (1, 7), (2, 8)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, [100, 200], [(10, (100)), (20, (200))]), (2, [300], [(30, (300))])")
+	testkit.MustExec(t, db, ctx, "INSERT INTO v VALUES (1, 7), (2, 8)")
 	// uk=10 is ADDED BY THE CONVERSION. The original data made the FLAT arm's
 	// converted answer EMPTY (ek is 10/20/30, uk was 100/300), and an arm that
 	// asserts an empty result cannot distinguish "resolves and matches nothing"
 	// from "silently drops every row" — which is the exact failure mode the
 	// element bake had. 10 matches ek only: it is absent from sarr (100/200/300)
 	// and from the dk values (100/200/300), so the other two arms are unchanged.
-	mustExec(t, db, ctx, "INSERT INTO u VALUES (10), (100), (300)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO u VALUES (10), (100), (300)")
 
 	run := func(q string) ([]string, error) {
 		rows, err := db.QueryContext(ctx, q)

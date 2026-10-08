@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExistsRound10 pins RFC-141 R4 round-10, two silent-wrong bugs
@@ -37,30 +39,30 @@ import (
 //	t3: non-empty       -> the `t2, t3` cross-join is non-empty whenever t2 matches.
 func TestFDB_ProjectedExistsRound10(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_pexr10")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pexr10")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr10_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_pexr10")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pexr10")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr10_tmpl "+
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t4 (id BIGINT, t3_id BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pexr10/s WITH TEMPLATE pexr10_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pexr10/s WITH TEMPLATE pexr10_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PEXR10?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PEXR10?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 99), (2, 98), (3, 97)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (10, 1), (20, 3)")
-	mustExec(t, db, ctx, "INSERT INTO t3 VALUES (100, 10), (200, 20)")
-	mustExec(t, db, ctx, "INSERT INTO t4 VALUES (1000, 100)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 99), (2, 98), (3, 97)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (10, 1), (20, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t3 VALUES (100, 10), (200, 20)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t4 VALUES (1000, 100)")
 
 	// queryInts runs a 1-column query and returns the sorted int64 values.
 	queryInts := func(t *testing.T, q string) []int64 {

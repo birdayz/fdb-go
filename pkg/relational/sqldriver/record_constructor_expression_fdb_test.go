@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"github.com/onsi/gomega"
 
 	"fdb.dev/pkg/relational/api"
@@ -31,13 +33,13 @@ import (
 // with the defect fully present.
 func TestFDB_RecordConstructorInExpressionPosition(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_rcexpr")
+	setup := testkit.OpenDB(t, "/FRL/testdb_rcexpr")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_rcexpr")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE rcexpr_tmpl "+
@@ -47,7 +49,7 @@ func TestFDB_RecordConstructorInExpressionPosition(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /FRL/testdb_rcexpr/s WITH TEMPLATE rcexpr_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RCEXPR?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RCEXPR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

@@ -1,7 +1,6 @@
-package sqldriver_test
+package testkit
 
 import (
-	"flag"
 	"fmt"
 	"io"
 
@@ -32,7 +31,7 @@ import (
 // narrowed reports whether -test.run cut the corpus down, in which case no
 // whole-corpus population floor here can be honestly decided.
 func narrowed() (string, bool) {
-	f := flag.Lookup("test.run")
+	f := corpusNarrowing()
 	if f == nil || f.Value.String() == "" {
 		return "", false
 	}

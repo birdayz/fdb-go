@@ -44,33 +44,35 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_UnionOrderByNamesAColumnNotAPosition(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_union_ob_names"
-	setup := openTestDB(t, dbPath)
-	mustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uobn_tmpl "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE uobn_tmpl "+
 		"CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE b (id BIGINT, w BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE uobn_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE uobn_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO a VALUES (1, 10)")
-	mustExec(t, db, ctx, "INSERT INTO a VALUES (2, 20)")
-	mustExec(t, db, ctx, "INSERT INTO b VALUES (1, 100)")
-	mustExec(t, db, ctx, "INSERT INTO b VALUES (2, 200)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO a VALUES (1, 10)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO a VALUES (2, 20)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO b VALUES (1, 100)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO b VALUES (2, 200)")
 
 	const union = "SELECT id, v FROM a UNION ALL SELECT id, w FROM b"
 
@@ -149,6 +151,6 @@ func TestFDB_UnionOrderByNamesAColumnNotAPosition(t *testing.T) {
 				"check keyed on position accepts any spelling of it and the "+
 				"undefined-column error disappears.", union)
 		}
-		requireSQLSTATE(t, qerr, api.ErrCodeUndefinedColumn)
+		testkit.RequireSQLSTATE(t, qerr, api.ErrCodeUndefinedColumn)
 	})
 }

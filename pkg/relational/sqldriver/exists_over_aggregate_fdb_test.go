@@ -13,17 +13,19 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dbPath := "/FRL/testdb_exists_agg_fold"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -37,7 +39,7 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE eagf_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -167,7 +169,7 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 				rows.Close()
 				t.Fatalf("%s: expected a 42601 syntax error (LIMIT must be an integer literal), got a successful query", lim)
 			}
-			requireSQLSTATE(t, qErr, api.ErrCodeSyntaxError)
+			testkit.RequireSQLSTATE(t, qErr, api.ErrCodeSyntaxError)
 		}
 	})
 
@@ -241,7 +243,7 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 				rows.Close()
 				t.Fatalf("%s: expected a 42601 syntax error (OFFSET must be an integer literal), got a successful query", off)
 			}
-			requireSQLSTATE(t, qErr, api.ErrCodeSyntaxError)
+			testkit.RequireSQLSTATE(t, qErr, api.ErrCodeSyntaxError)
 		}
 	})
 
@@ -271,7 +273,7 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 			rows.Close()
 			t.Fatal("grouped correlated EXISTS with OFFSET planned; expected typed unsupported rejection")
 		}
-		requireSQLSTATE(t, qErr, api.ErrCodeUnsupportedQuery)
+		testkit.RequireSQLSTATE(t, qErr, api.ErrCodeUnsupportedQuery)
 	})
 
 	// The SQL driver substitutes bound parameters before parsing, so production
@@ -296,7 +298,7 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 			rows.Close()
 			t.Fatal("projected cardinality-known EXISTS planned; expected typed unsupported rejection")
 		}
-		requireSQLSTATE(t, qErr, api.ErrCodeUnsupportedQuery)
+		testkit.RequireSQLSTATE(t, qErr, api.ErrCodeUnsupportedQuery)
 	})
 	// An inner join's ON-clause EXISTS is a WHERE-EXISTS (the builder folds it
 	// into the WHERE), so the cardinality-known ON consumer is the WHERE
@@ -326,7 +328,7 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 			t.Fatalf("windowed aggregate DML EXISTS planned: affected=%d rowsErr=%v; want SQLSTATE %s",
 				affected, rowsErr, api.ErrCodeUnsupportedQuery)
 		}
-		requireSQLSTATE(t, execErr, api.ErrCodeUnsupportedQuery)
+		testkit.RequireSQLSTATE(t, execErr, api.ErrCodeUnsupportedQuery)
 	})
 
 	// DML WHERE routes through the same filter consumer. Pin FALSE, negated

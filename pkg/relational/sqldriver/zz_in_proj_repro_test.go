@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_INProj_OuterProjectionOverInJoin pins RFC-070: `SELECT id FROM t
@@ -24,30 +26,30 @@ import (
 // (proving the optimization fires, not a silent full-scan fallback).
 func TestFDB_INProj_OuterProjectionOverInJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_inproj")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inproj")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_inproj")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inproj")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inproj_tmpl "+
 			"CREATE TABLE ti (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE tu (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_a ON ti (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inproj/s WITH TEMPLATE inproj_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INPROJ?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inproj/s WITH TEMPLATE inproj_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INPROJ?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 	for i := 1; i <= 8; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO ti VALUES (%d, %d)", i, i))
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO tu VALUES (%d, %d)", i, i))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO ti VALUES (%d, %d)", i, i))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO tu VALUES (%d, %d)", i, i))
 	}
 
-	explain := mwjoExplainer(t, db, ctx)
+	explain := testkit.Explainer(t, db, ctx)
 
 	// Indexed table: the IN drives an index InJoin.
 	idxPlan := explain("SELECT id FROM ti WHERE a IN (1, 7)")

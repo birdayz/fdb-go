@@ -39,6 +39,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // openParenDB builds the two-table fixture the join arm needs. It is separate
@@ -59,13 +61,13 @@ func openParenDB2(t *testing.T) *sql.DB { return openInJoinDB(t, "/FRL/testdb_in
 func openUUIDInDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_in_uuid")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_uuid")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE inuuid_t "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_in_uuid")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_uuid")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE inuuid_t "+
 		"CREATE TABLE u (id BIGINT, uu UUID, us STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_uuid/s WITH TEMPLATE inuuid_t")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_uuid/s WITH TEMPLATE inuuid_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_UUID?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_UUID?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -76,14 +78,14 @@ func openUUIDInDB(t *testing.T) *sql.DB {
 func openInJoinDB(t *testing.T, dbPath, template string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE "+template+" "+
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE "+template+" "+
 		"CREATE TABLE l (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE r (id BIGINT, y BIGINT, lo BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+template)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+template)
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -93,11 +95,11 @@ func openInJoinDB(t *testing.T, dbPath, template string) *sql.DB {
 
 func TestFDB_InListWithNonConstantItems(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_in_nonconst", "innonconst",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_in_nonconst", "innonconst",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_b ON t (b) CREATE INDEX t_a ON t (a) ")
 	//  id=1: a=10 b=10   a == b
@@ -179,34 +181,34 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 	// the predicate is being APPLIED and not merely accepted.
 	t.Run("cross_table_in_a_join_ON", func(t *testing.T) {
 		db := openParenDB(t)
-		mwjoMustExec(t, db, ctx, "INSERT INTO l (id, x) VALUES (1, 5), (2, 10), (3, 7)")
-		mwjoMustExec(t, db, ctx, "INSERT INTO r (id, y, lo) VALUES (50, 5, 1), (51, 99, 8)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO l (id, x) VALUES (1, 5), (2, 10), (3, 7)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO r (id, y, lo) VALUES (50, 5, 1), (51, 99, 8)")
 
 		// Only l=1 (x=5) satisfies `x IN (y, lo)` — against r=50, where y=5.
 		// The full cross product is 3 x 2 = 6 rows, so a 6-row answer is the
 		// old silent drop returning and a 0-row answer is the predicate being
 		// evaluated against the wrong row.
-		got, err := mmRows(t, ctx, db,
+		got, err := testkit.QueryRowStrings(t, ctx, db,
 			"SELECT l.id, r.id FROM l JOIN r ON l.x IN (r.y, r.lo) ORDER BY l.id, r.id")
 		if err != nil {
 			t.Fatalf("a cross-table IN in an ON clause failed to plan: %v", err)
 		}
 		want := []string{"1|50"}
-		if !mmEqRows(got, want) {
+		if !testkit.EqualRows(got, want) {
 			t.Fatalf("cross-table IN in an ON clause is wrong\n  got  %v\n  want %v\n"+
 				"  (6 rows would be the join's full cross product — the predicate dropped; "+
 				"0 rows would be it evaluated against the wrong row)\n  %s",
-				got, want, mmFirstDiff(got, want))
+				got, want, testkit.MmFirstDiff(got, want))
 		}
 
 		// The same predicate in WHERE must agree with it in ON — the two
 		// spellings of an inner join's filter cannot disagree.
-		gotWhere, err := mmRows(t, ctx, db,
+		gotWhere, err := testkit.QueryRowStrings(t, ctx, db,
 			"SELECT l.id, r.id FROM l, r WHERE l.x IN (r.y, r.lo) ORDER BY l.id, r.id")
 		if err != nil {
 			t.Fatalf("the WHERE spelling failed to plan: %v", err)
 		}
-		if !mmEqRows(gotWhere, want) {
+		if !testkit.EqualRows(gotWhere, want) {
 			t.Fatalf("the ON and WHERE spellings of the same cross-table IN disagree\n"+
 				"  ON   : %v\n  WHERE: %v", got, gotWhere)
 		}
@@ -233,7 +235,7 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 	// the list takes the runtime fork and that it evaluates against a binding.
 	t.Run("a placeholder among the items, through the driver", func(t *testing.T) {
 		pdb := openParenDB2(t)
-		mwjoMustExec(t, pdb, ctx, "INSERT INTO l (id, x) VALUES (1, 5), (2, 10), (3, 7)")
+		testkit.MustExecCtx(t, pdb, ctx, "INSERT INTO l (id, x) VALUES (1, 5), (2, 10), (3, 7)")
 
 		scanIDs := func(q string, args ...any) ([]string, error) {
 			rows, err := pdb.QueryContext(ctx, q, args...)
@@ -258,7 +260,7 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 		if err5 != nil || err10 != nil {
 			t.Fatalf("a parameterized IN list failed to run\n  ?=5 : %v\n  ?=10: %v", err5, err10)
 		}
-		if !mmEqRows(got5, []string{"1"}) || !mmEqRows(got10, []string{"2"}) {
+		if !testkit.EqualRows(got5, []string{"1"}) || !testkit.EqualRows(got10, []string{"2"}) {
 			t.Fatalf("a placeholder inside an IN list does not track its binding\n"+
 				"  ?=5  got %v want [1]\n  ?=10 got %v want [2]\n"+
 				"  (the SAME answer for both bindings means the substitution is not happening "+
@@ -287,17 +289,17 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 	// cmpAny promotes across numeric widths at evaluation anyway.
 	t.Run("a UUID operand with a non-constant STRING item", func(t *testing.T) {
 		udb := openUUIDInDB(t)
-		mwjoMustExec(t, udb, ctx, "INSERT INTO u (id, uu, us) VALUES "+
+		testkit.MustExecCtx(t, udb, ctx, "INSERT INTO u (id, uu, us) VALUES "+
 			// row 1: us holds uu's own text  -> `uu IN (us)` matches
 			"(1, '11111111-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111111'), "+
 			// row 2: us holds a DIFFERENT uuid's text -> no match
 			"(2, '22222222-2222-2222-2222-222222222222', '33333333-3333-3333-3333-333333333333')")
 
-		got, err := mmRows(t, ctx, udb, "SELECT id FROM u WHERE uu IN (us) ORDER BY id")
+		got, err := testkit.QueryRowStrings(t, ctx, udb, "SELECT id FROM u WHERE uu IN (us) ORDER BY id")
 		if err != nil {
 			t.Fatalf("a UUID IN with a column item failed to plan: %v", err)
 		}
-		if !mmEqRows(got, []string{"1"}) {
+		if !testkit.EqualRows(got, []string{"1"}) {
 			t.Fatalf("a UUID compared against a runtime STRING item did not match\n"+
 				"  got  %v\n  want [1]\n"+
 				"  (an empty answer means the [16]byte field was compared against a raw string "+
@@ -306,11 +308,11 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 
 		// The negation, where the same failure reads as ordinary rather than as
 		// an obviously empty result.
-		gotNot, err := mmRows(t, ctx, udb, "SELECT id FROM u WHERE uu NOT IN (us) ORDER BY id")
+		gotNot, err := testkit.QueryRowStrings(t, ctx, udb, "SELECT id FROM u WHERE uu NOT IN (us) ORDER BY id")
 		if err != nil {
 			t.Fatalf("a UUID NOT IN with a column item failed to plan: %v", err)
 		}
-		if !mmEqRows(gotNot, []string{"2"}) {
+		if !testkit.EqualRows(gotNot, []string{"2"}) {
 			t.Fatalf("a UUID NOT IN over a runtime STRING item is wrong\n"+
 				"  got  %v\n  want [2]\n"+
 				"  (returning row 1 as well is the un-promoted comparison admitting a row whose "+

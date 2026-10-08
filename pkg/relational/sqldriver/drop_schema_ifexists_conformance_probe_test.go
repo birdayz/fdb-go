@@ -12,18 +12,20 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DropSchemaIfExistsConformance(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := openTestDB(t, "/FRL/testdb_dsiec")
-	mwjoMustExec(t, db, ctx, "CREATE DATABASE /FRL/testdb_dsiec")
-	mwjoMustExec(t, db, ctx, "CREATE SCHEMA TEMPLATE dsiec CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, db, ctx, "CREATE SCHEMA /FRL/testdb_dsiec/real WITH TEMPLATE dsiec")
+	db := testkit.OpenDB(t, "/FRL/testdb_dsiec")
+	testkit.MustExecCtx(t, db, ctx, "CREATE DATABASE /FRL/testdb_dsiec")
+	testkit.MustExecCtx(t, db, ctx, "CREATE SCHEMA TEMPLATE dsiec CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+	testkit.MustExecCtx(t, db, ctx, "CREATE SCHEMA /FRL/testdb_dsiec/real WITH TEMPLATE dsiec")
 
 	errs := func(q string) error { _, err := db.ExecContext(ctx, q); return err }
 

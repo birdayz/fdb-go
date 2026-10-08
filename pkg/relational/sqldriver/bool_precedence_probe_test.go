@@ -12,27 +12,29 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_BoolPrecedenceProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_boolprec")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_boolprec")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_boolprec")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_boolprec")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE boolprec CREATE TABLE t (id BIGINT, a BOOLEAN, b BOOLEAN, c BOOLEAN, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_boolprec/s WITH TEMPLATE boolprec")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BOOLPREC?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_boolprec/s WITH TEMPLATE boolprec")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_BOOLPREC?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// a=T, b=F, c=F
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b, c) VALUES (1, true, false, false)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b, c) VALUES (1, true, false, false)")
 
 	matches := func(where string) bool {
 		rows, err := db.QueryContext(ctx, "SELECT id FROM t WHERE "+where)

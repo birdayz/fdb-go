@@ -14,6 +14,8 @@ import (
 	"slices"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -73,23 +75,23 @@ func TestFDB_LikeJavaSemantics(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_like_java")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_like_java")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE like_java_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_like_java")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_like_java")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE like_java_tmpl "+
 		"CREATE TYPE AS ENUM color ('RED', 'GREEN') "+
 		"CREATE TABLE T (id BIGINT, s STRING, n BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE U (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE E (id BIGINT, c color, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_like_java/s WITH TEMPLATE like_java_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_like_java/s WITH TEMPLATE like_java_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_LIKE_JAVA?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_LIKE_JAVA?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO T VALUES (1, 'abc', NULL), (2, 'a\nb', 5), (3, '\U0001D11Ex', 7), "+
+	testkit.MustExec(t, db, ctx, "INSERT INTO T VALUES (1, 'abc', NULL), (2, 'a\nb', 5), (3, '\U0001D11Ex', 7), "+
 		"(4, 'a%b', 1), (5, 'a_b', 2), (6, 'ab\n', 3), (7, 'a\\b', 4)")
-	mustExec(t, db, ctx, "INSERT INTO E VALUES (1, 'RED'), (2, 'GREEN')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO E VALUES (1, 'RED'), (2, 'GREEN')")
 
 	runLikeCases(t, ctx, db, []likeCase{
 		{name: "percent crosses newline", sql: "SELECT id FROM T WHERE s LIKE 'a%b' ORDER BY id", want: []int64{2, 4, 5, 7}},
@@ -180,14 +182,14 @@ func TestFDB_LikeEscape_MapPath(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_like_esc_map")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_like_esc_map")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE like_esc_map_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_like_esc_map")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_like_esc_map")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE like_esc_map_tmpl "+
 		"CREATE TABLE Z (id BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE ZQ (id BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_like_esc_map/s WITH TEMPLATE like_esc_map_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_like_esc_map/s WITH TEMPLATE like_esc_map_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_LIKE_ESC_MAP?cluster_file=%s", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_LIKE_ESC_MAP?cluster_file=%s", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

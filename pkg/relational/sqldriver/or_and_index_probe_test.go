@@ -11,27 +11,29 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_OrAndIndexProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_oai")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_oai")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE oai "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_oai")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_oai")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE oai "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_b ON t (b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_oai/s WITH TEMPLATE oai")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OAI?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_oai/s WITH TEMPLATE oai")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OAI?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1,1,9),(2,9,2),(3,1,2),(4,9,9)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b) VALUES (1,1,9),(2,9,2),(3,1,2),(4,9,9)")
 
 	ids := func(where string) []int64 {
 		rows, err := db.QueryContext(ctx, "SELECT id FROM t WHERE "+where)

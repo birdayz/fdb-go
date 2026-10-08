@@ -14,31 +14,33 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_MetamorphicJoinsSubqueries(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_mh3")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mh3")
+	setup := testkit.OpenDB(t, "/FRL/testdb_mh3")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mh3")
 	tables := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id)) " +
 		"CREATE TABLE u (uid BIGINT, ua BIGINT, ub BIGINT, us STRING, PRIMARY KEY (uid)) "
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh3_idx "+tables+
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh3_idx "+tables+
 		"CREATE INDEX t_a ON t (a) "+
 		"CREATE INDEX t_ba ON t (b, a) "+
 		"CREATE INDEX t_s ON t (s) "+
 		"CREATE INDEX u_ua ON u (ua) "+
 		"CREATE INDEX u_uba ON u (ub, ua) "+
 		"CREATE INDEX u_us ON u (us)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh3_noidx "+tables)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh3/si WITH TEMPLATE mh3_idx")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh3/sn WITH TEMPLATE mh3_noidx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE mh3_noidx "+tables)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh3/si WITH TEMPLATE mh3_idx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mh3/sn WITH TEMPLATE mh3_noidx")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MH3?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
+		dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MH3?cluster_file=%s&schema=%s", testkit.ClusterFile(), strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s: %v", schema, err)
@@ -103,8 +105,8 @@ func TestFDB_MetamorphicJoinsSubqueries(t *testing.T) {
 		fmt.Sscan(s, &iters)
 	}
 	r := rand.New(rand.NewSource(seed))
-	g := &mhGen{r: r, intCols: []string{"a", "b", "id"}, dblCols: nil, strCols: []string{"s"}, boolCols: []string{}}
-	gu := &mhGen{r: r, intCols: []string{"ua", "ub", "uid"}, dblCols: nil, strCols: []string{"us"}, boolCols: []string{}}
+	g := &testkit.MhGen{R: r, IntCols: []string{"a", "b", "id"}, DblCols: nil, StrCols: []string{"s"}, BoolCols: []string{}}
+	gu := &testkit.MhGen{R: r, IntCols: []string{"ua", "ub", "uid"}, DblCols: nil, StrCols: []string{"us"}, BoolCols: []string{}}
 
 	okByTag := map[string]int{}
 	errByTag := map[string]int{}
@@ -114,8 +116,8 @@ func TestFDB_MetamorphicJoinsSubqueries(t *testing.T) {
 	firstFailure := map[string]string{}
 	compare := func(tag, q string) {
 		t.Helper()
-		gi, ei := mhScanStrings(ctx, idb, q)
-		gn, en := mhScanStrings(ctx, ndb, q)
+		gi, ei := testkit.MhScanStrings(ctx, idb, q)
+		gn, en := testkit.MhScanStrings(ctx, ndb, q)
 		switch {
 		case ei != nil && en != nil:
 			errByTag[tag]++
@@ -131,17 +133,17 @@ func TestFDB_MetamorphicJoinsSubqueries(t *testing.T) {
 			return
 		}
 		okByTag[tag]++
-		if !mhEqRows(gi, gn) {
+		if !testkit.MhEqRows(gi, gn) {
 			diffByTag[tag]++
 			if _, seen := firstFailure[tag]; !seen {
 				firstFailure[tag] = fmt.Sprintf("ROW-DIFF\n  q: %s\n  %s\n  idx  (%d): %v\n  noidx(%d): %v",
-					q, mhFirstDiff(gi, gn), len(gi), mhHead(gi), len(gn), mhHead(gn))
+					q, testkit.MhFirstDiff(gi, gn), len(gi), testkit.MhHead(gi), len(gn), testkit.MhHead(gn))
 			}
 		}
 	}
 
-	predT := func() string { return g.pred(1) }
-	predU := func() string { return gu.pred(1) }
+	predT := func() string { return g.Pred(1) }
+	predU := func() string { return gu.Pred(1) }
 
 	joinCond := []string{
 		"t.a = u.ua",

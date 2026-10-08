@@ -1,4 +1,4 @@
-package sqldriver_test
+package testkit
 
 // Shared direct-executor harness helper: the scalar-subquery pre-bind pass.
 
@@ -19,7 +19,7 @@ import (
 // so every direct-harness test that runs SQL through
 // embedded.PlanRecordQueryWithSubqueries + executor.ExecutePlan threads its
 // subqueries through here.
-func prebindScalarSubqueries(ctx context.Context, store *recordlayer.FDBRecordStore, subs []embedded.PlannedScalarSubquery) (*executor.EvaluationContext, error) {
+func PrebindScalarSubqueries(ctx context.Context, store *recordlayer.FDBRecordStore, subs []embedded.PlannedScalarSubquery) (*executor.EvaluationContext, error) {
 	evalCtx := executor.EmptyEvaluationContext()
 	if len(subs) == 0 {
 		return evalCtx, nil

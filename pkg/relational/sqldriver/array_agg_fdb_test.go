@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -14,17 +16,17 @@ import (
 func TestFDB_ArrayAgg(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_array_agg")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_array_agg")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE array_agg_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_array_agg")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_array_agg")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE array_agg_tmpl "+
 		"CREATE TABLE T (id BIGINT, g BIGINT, n BIGINT, s STRING, PRIMARY KEY (id)) CREATE INDEX T_G ON T (g)")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_array_agg/s WITH TEMPLATE array_agg_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_ARRAY_AGG?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_array_agg/s WITH TEMPLATE array_agg_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_ARRAY_AGG?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO T VALUES (1, 1, 10, 'a'), (2, 1, NULL, 'b'), (3, 2, 30, 'c'), (4, 2, 40, 'd')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO T VALUES (1, 1, 10, 'a'), (2, 1, NULL, 'b'), (3, 2, 30, 'c'), (4, 2, 40, 'd')")
 
 	rowsOf := func(q string) (string, error) {
 		rows, err := db.QueryContext(ctx, q)

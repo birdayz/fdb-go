@@ -9,22 +9,24 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_StringIndexRangeProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_stridx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_stridx")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_stridx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_stridx")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE stridx "+
 			"CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_s ON t (s)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_stridx/s WITH TEMPLATE stridx")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STRIDX?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_stridx/s WITH TEMPLATE stridx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STRIDX?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -32,7 +34,7 @@ func TestFDB_StringIndexRangeProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// id : s = '', 'a', 'apple', 'b', 'banana', 'z'
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, s) VALUES (1, ''), (2, 'a'), (3, 'apple'), (4, 'b'), (5, 'banana'), (6, 'z')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, s) VALUES (1, ''), (2, 'a'), (3, 'apple'), (4, 'b'), (5, 'banana'), (6, 'z')")
 
 	ids := func(q string, keepOrder bool) []int64 {
 		rows, err := db.QueryContext(ctx, q)

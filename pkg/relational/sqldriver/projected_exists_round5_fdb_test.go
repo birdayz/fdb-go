@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExists_Round5 pins the two round-5 regressions:
@@ -30,25 +32,25 @@ import (
 //	     merged-row key so it resolves the correct leg.
 func TestFDB_ProjectedExists_Round5(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_projexists_r5")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r5")
+	setup := testkit.OpenDB(t, "/FRL/testdb_projexists_r5")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r5")
 	// Both t1 and t2 carry a COLLIDING column name `sk` (the sort key) with
 	// OPPOSITE orderings, so a wrong-leg resolution (stripping `t2.sk`→bare `SK`,
 	// which is last-leg-wins on the merged join row) produces a DIFFERENT order
 	// than the correct leg. `id` likewise collides (both PK), and t2.id ordering
 	// is deliberately the INVERSE of t1.id ordering across the joined rows.
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r5_tmpl "+
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r5_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, sk BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, sk BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r5/s WITH TEMPLATE projexists_r5_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r5/s WITH TEMPLATE projexists_r5_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R5?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R5?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -68,9 +70,9 @@ func TestFDB_ProjectedExists_Round5(t *testing.T) {
 	//     `ORDER BY t2.sk` give DISTINGUISHABLE orders: a wrong-leg sort (bare
 	//     `ID`/`SK` last-leg-wins) yields a different t1.id sequence and fails.
 	// t3: references t1 ids {2,3} (the projected-EXISTS probe target for the join).
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10, 1), (2, 20, 2), (3, 30, 3), (4, 40, 4), (5, 50, 5)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (300, 1, 30), (200, 3, 20), (100, 5, 10)")
-	mustExec(t, db, ctx, "INSERT INTO t3 VALUES (1000, 2), (2000, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10, 1), (2, 20, 2), (3, 30, 3), (4, 40, 4), (5, 50, 5)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (300, 1, 30), (200, 3, 20), (100, 5, 10)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t3 VALUES (1000, 2), (2000, 3)")
 
 	// ════════════════════════════════════════════════════════════════════════
 	// P1: SELECT * FROM t1 WHERE EXISTS(...) reports EXACTLY t1's columns.

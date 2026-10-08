@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_CorrelatedExistsSharedKeyName exercises the correlated-EXISTS fast
@@ -38,33 +40,33 @@ import (
 // this is the end-to-end half, over real FoundationDB.
 func TestFDB_CorrelatedExistsSharedKeyName(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_cexsharedkey")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cexsharedkey")
+	setup := testkit.OpenDB(t, "/FRL/testdb_cexsharedkey")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cexsharedkey")
 	// products.ID and orders.ID are both the primary key, both named ID, both
 	// the first declared column. orders.product_id is the foreign key.
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cex_tmpl "+
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cex_tmpl "+
 		"CREATE TABLE products (id BIGINT, category STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE orders (id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cexsharedkey/s WITH TEMPLATE cex_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cexsharedkey/s WITH TEMPLATE cex_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_CEXSHAREDKEY?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_CEXSHAREDKEY?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO products VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO products VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')")
 	// Orders reference products 1 and 3 only. Order IDs deliberately OVERLAP
 	// the product IDs (10,11,12 would not exercise the confusion; 1,2,3 do):
 	// order id 2 exists while product 2 has NO order, so a proof that confuses
 	// orders.ID with products.ID answers the EXISTS for product 2 by finding
 	// ORDER 2 and reports it as ordered.
-	mustExec(t, db, ctx, "INSERT INTO orders VALUES (1, 1, 5), (2, 3, 7), (3, 1, 9)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO orders VALUES (1, 1, 5), (2, 3, 7), (3, 1, 9)")
 
 	queryIDs := func(t *testing.T, q string) []int64 {
 		t.Helper()

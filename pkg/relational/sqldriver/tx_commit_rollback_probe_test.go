@@ -9,21 +9,23 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_TxCommitRollbackProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	key, clk := spikedClusterKey(t, 30*time.Second)
-	setup := openSpiked(t, key, "/FRL/testdb_tcrp", "")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_tcrp")
-	mwjoMustExec(t, setup, ctx,
+	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
+	setup := testkit.OpenSpiked(t, key, "/FRL/testdb_tcrp", "")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_tcrp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE tcrp CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_tcrp/s WITH TEMPLATE tcrp")
-	db := openSpiked(t, key, "/FRL/testdb_tcrp", "s")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_tcrp/s WITH TEMPLATE tcrp")
+	db := testkit.OpenSpiked(t, key, "/FRL/testdb_tcrp", "s")
 	t.Cleanup(func() { db.Close() })
 	count := func() int {
 		var n int
@@ -41,14 +43,14 @@ func TestFDB_TxCommitRollbackProbe(t *testing.T) {
 	t.Run("rollback_discards", func(t *testing.T) {
 		clk.Rearm()
 		var attemptsRun int
-		retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
-			if _, err := a.tx.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (1, 10)"); err != nil {
+		testkit.RetryTx(t, db, testkit.SpikeOnce(clk, &attemptsRun), func(a testkit.TxAttempt) error {
+			if _, err := a.Tx.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (1, 10)"); err != nil {
 				return err
 			}
-			_, err := a.tx.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (2, 20)")
+			_, err := a.Tx.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (2, 20)")
 			return err
 		})
-		mustHaveRetried(t, attemptsRun)
+		testkit.MustHaveRetried(t, attemptsRun)
 		// retryTx rolled the successful attempt back, which IS the property under
 		// test here: nothing the transaction wrote may survive.
 		if c := count(); c != 0 {
@@ -64,16 +66,16 @@ func TestFDB_TxCommitRollbackProbe(t *testing.T) {
 		// attempt never reaches the commit, so no attempt but the last one can
 		// leave anything behind — which is what makes the exact count below still
 		// a legitimate assertion under a retry.
-		retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
-			if _, err := a.tx.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (3, 30)"); err != nil {
+		testkit.RetryTx(t, db, testkit.SpikeOnce(clk, &attemptsRun), func(a testkit.TxAttempt) error {
+			if _, err := a.Tx.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (3, 30)"); err != nil {
 				return err
 			}
-			if _, err := a.tx.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (4, 40)"); err != nil {
+			if _, err := a.Tx.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (4, 40)"); err != nil {
 				return err
 			}
-			return a.tx.Commit()
+			return a.Tx.Commit()
 		})
-		mustHaveRetried(t, attemptsRun)
+		testkit.MustHaveRetried(t, attemptsRun)
 		if c := count(); c != 2 {
 			t.Errorf("after COMMIT count = %d, want 2", c)
 		}

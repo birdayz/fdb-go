@@ -10,27 +10,29 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_HavingGroupByProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_havgb")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_havgb")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_havgb")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_havgb")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE havgb CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_havgb/s WITH TEMPLATE havgb")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVGB?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_havgb/s WITH TEMPLATE havgb")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVGB?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// g1: v10,v20 (cnt2 sum30) ; g2: v30 (cnt1 sum30) ; g3: v1,v2,v3 (cnt3 sum6)
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,g,v) VALUES (1,1,10),(2,1,20),(3,2,30),(4,3,1),(5,3,2),(6,3,3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,g,v) VALUES (1,1,10),(2,1,20),(3,2,30),(4,3,1),(5,3,2),(6,3,3)")
 
 	groups := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

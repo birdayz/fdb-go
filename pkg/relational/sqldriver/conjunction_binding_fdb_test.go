@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -67,23 +69,23 @@ func conjunctionScanShapeOf(plan plans.RecordQueryPlan) conjunctionScanShape {
 // residual bookkeeping fails the rows half.
 func TestFDB_ConjunctionBinding(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_conjbind")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_conjbind")
+	setup := testkit.OpenDB(t, "/FRL/testdb_conjbind")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_conjbind")
 	const table = "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, v BIGINT, PRIMARY KEY (id)) "
 	const indexes = "CREATE INDEX idx_a ON t (a) CREATE INDEX idx_ab ON t (a, b)"
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE conjbind "+table+indexes)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_conjbind/s WITH TEMPLATE conjbind")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONJBIND?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE conjbind "+table+indexes)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_conjbind/s WITH TEMPLATE conjbind")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONJBIND?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	rows := oracleGenRows(300)
+	rows := testkit.OracleGenRows(300)
 	for i := 0; i < len(rows); i += 50 {
 		end := i + 50
 		if end > len(rows) {
@@ -91,9 +93,9 @@ func TestFDB_ConjunctionBinding(t *testing.T) {
 		}
 		var parts []string
 		for _, r := range rows[i:end] {
-			parts = append(parts, r.insertSQL())
+			parts = append(parts, r.InsertSQL())
 		}
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b, c, s, v) VALUES "+strings.Join(parts, ","))
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b, c, s, v) VALUES "+strings.Join(parts, ","))
 	}
 	planSchema := "CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, v BIGINT, PRIMARY KEY (id))\n" +
 		"CREATE INDEX idx_a ON T(a)\nCREATE INDEX idx_ab ON T(a, b)"
@@ -101,27 +103,35 @@ func TestFDB_ConjunctionBinding(t *testing.T) {
 	cases := []struct {
 		name  string
 		sql   string
-		pred  func(oracleRow) bool
+		pred  func(testkit.OracleRow) bool
 		shape conjunctionScanShape
 	}{
-		{"two_sided_range", "SELECT id FROM t WHERE a >= 2 AND a < 5", func(r oracleRow) bool { return oracleGe(r.a, 2) && oracleLt(r.a, 5) }, conjunctionScanShape{comparisons: 2}},
-		{"two_sided_range_reversed", "SELECT id FROM t WHERE a < 5 AND a >= 2", func(r oracleRow) bool { return oracleGe(r.a, 2) && oracleLt(r.a, 5) }, conjunctionScanShape{comparisons: 2}},
-		{"two_lower_bounds", "SELECT id FROM t WHERE a > 2 AND a > 3", func(r oracleRow) bool { return oracleGt(r.a, 3) }, conjunctionScanShape{comparisons: 2}},
-		{"between_on_second_column", "SELECT id FROM t WHERE a = 1 AND b BETWEEN 2 AND 5", func(r oracleRow) bool { return oracleEq(r.a, 1) && oracleGe(r.b, 2) && oracleLe(r.b, 5) }, conjunctionScanShape{comparisons: 3}},
-		{"range_then_equality_residual", "SELECT id FROM t WHERE a > 2 AND a < 5 AND b = 3", func(r oracleRow) bool { return oracleGt(r.a, 2) && oracleLt(r.a, 5) && oracleEq(r.b, 3) }, conjunctionScanShape{comparisons: 2, residuals: 1}},
-		{"equality_beside_inequality", "SELECT id FROM t WHERE a = 1 AND a > 0", func(r oracleRow) bool { return oracleEq(r.a, 1) }, conjunctionScanShape{comparisons: 1, residuals: 1}},
-		{"equality_beside_excluding_inequality", "SELECT id FROM t WHERE a = 1 AND a > 3", func(r oracleRow) bool { return false }, conjunctionScanShape{comparisons: 1, residuals: 1}},
-		{"contradictory_equalities", "SELECT id FROM t WHERE a = 1 AND a = 2", func(r oracleRow) bool { return false }, conjunctionScanShape{comparisons: 1, residuals: 1}},
-		{"duplicate_equality", "SELECT id FROM t WHERE a = 1 AND a = 1", func(r oracleRow) bool { return oracleEq(r.a, 1) }, conjunctionScanShape{comparisons: 1}},
-		{"empty_two_sided_range", "SELECT id FROM t WHERE a > 5 AND a < 3", func(r oracleRow) bool { return false }, conjunctionScanShape{comparisons: 2}},
-		{"in_with_unindexed_residual", "SELECT id FROM t WHERE a IN (1, 2) AND v = 3", func(r oracleRow) bool { return oracleIn(r.a, 1, 2) && oracleEq(r.v, 3) }, conjunctionScanShape{comparisons: 1, residuals: 1, inNodes: 1}},
-		{"in_with_second_column_bound", "SELECT id FROM t WHERE a IN (1, 2) AND b = 3", func(r oracleRow) bool { return oracleIn(r.a, 1, 2) && oracleEq(r.b, 3) }, conjunctionScanShape{comparisons: 2, inNodes: 1}},
-		{"in_on_pk_with_residual", "SELECT id FROM t WHERE id IN (1, 2, 300) AND b > 2", func(r oracleRow) bool { return oracleIn(oracleInt(r.id), 1, 2, 300) && oracleGt(r.b, 2) }, conjunctionScanShape{comparisons: 1, residuals: 1, inNodes: 1}},
-		{"nested_ins", "SELECT id FROM t WHERE a IN (1, 2) AND b IN (5, 4)", func(r oracleRow) bool { return oracleIn(r.a, 1, 2) && oracleIn(r.b, 5, 4) }, conjunctionScanShape{comparisons: 2, inNodes: 2}},
-		{"in_beside_a_range_on_the_same_column", "SELECT id FROM t WHERE a IN (1, 2, 3) AND a > 1", func(r oracleRow) bool { return oracleIn(r.a, 2, 3) }, conjunctionScanShape{comparisons: 1, residuals: 1, inNodes: 1}},
-		{"in_on_the_second_column", "SELECT id FROM t WHERE a = 1 AND b IN (5, 4)", func(r oracleRow) bool { return oracleEq(r.a, 1) && oracleIn(r.b, 5, 4) }, conjunctionScanShape{comparisons: 2, inNodes: 1}},
-		{"in_with_range_on_second_column", "SELECT id FROM t WHERE a IN (1, 2) AND b > 3 AND b <= 5", func(r oracleRow) bool { return oracleIn(r.a, 1, 2) && oracleGt(r.b, 3) && oracleLe(r.b, 5) }, conjunctionScanShape{comparisons: 3, inNodes: 1}},
-		{"in_with_null_column_residual", "SELECT id FROM t WHERE a IN (1, 2) AND c IS NULL", func(r oracleRow) bool { return oracleIn(r.a, 1, 2) && r.c == nil }, conjunctionScanShape{comparisons: 1, residuals: 1, inNodes: 1}},
+		{"two_sided_range", "SELECT id FROM t WHERE a >= 2 AND a < 5", func(r testkit.OracleRow) bool { return testkit.OracleGe(r.A, 2) && testkit.OracleLt(r.A, 5) }, conjunctionScanShape{comparisons: 2}},
+		{"two_sided_range_reversed", "SELECT id FROM t WHERE a < 5 AND a >= 2", func(r testkit.OracleRow) bool { return testkit.OracleGe(r.A, 2) && testkit.OracleLt(r.A, 5) }, conjunctionScanShape{comparisons: 2}},
+		{"two_lower_bounds", "SELECT id FROM t WHERE a > 2 AND a > 3", func(r testkit.OracleRow) bool { return testkit.OracleGt(r.A, 3) }, conjunctionScanShape{comparisons: 2}},
+		{"between_on_second_column", "SELECT id FROM t WHERE a = 1 AND b BETWEEN 2 AND 5", func(r testkit.OracleRow) bool {
+			return testkit.OracleEq(r.A, 1) && testkit.OracleGe(r.B, 2) && testkit.OracleLe(r.B, 5)
+		}, conjunctionScanShape{comparisons: 3}},
+		{"range_then_equality_residual", "SELECT id FROM t WHERE a > 2 AND a < 5 AND b = 3", func(r testkit.OracleRow) bool {
+			return testkit.OracleGt(r.A, 2) && testkit.OracleLt(r.A, 5) && testkit.OracleEq(r.B, 3)
+		}, conjunctionScanShape{comparisons: 2, residuals: 1}},
+		{"equality_beside_inequality", "SELECT id FROM t WHERE a = 1 AND a > 0", func(r testkit.OracleRow) bool { return testkit.OracleEq(r.A, 1) }, conjunctionScanShape{comparisons: 1, residuals: 1}},
+		{"equality_beside_excluding_inequality", "SELECT id FROM t WHERE a = 1 AND a > 3", func(r testkit.OracleRow) bool { return false }, conjunctionScanShape{comparisons: 1, residuals: 1}},
+		{"contradictory_equalities", "SELECT id FROM t WHERE a = 1 AND a = 2", func(r testkit.OracleRow) bool { return false }, conjunctionScanShape{comparisons: 1, residuals: 1}},
+		{"duplicate_equality", "SELECT id FROM t WHERE a = 1 AND a = 1", func(r testkit.OracleRow) bool { return testkit.OracleEq(r.A, 1) }, conjunctionScanShape{comparisons: 1}},
+		{"empty_two_sided_range", "SELECT id FROM t WHERE a > 5 AND a < 3", func(r testkit.OracleRow) bool { return false }, conjunctionScanShape{comparisons: 2}},
+		{"in_with_unindexed_residual", "SELECT id FROM t WHERE a IN (1, 2) AND v = 3", func(r testkit.OracleRow) bool { return testkit.OracleIn(r.A, 1, 2) && testkit.OracleEq(r.V, 3) }, conjunctionScanShape{comparisons: 1, residuals: 1, inNodes: 1}},
+		{"in_with_second_column_bound", "SELECT id FROM t WHERE a IN (1, 2) AND b = 3", func(r testkit.OracleRow) bool { return testkit.OracleIn(r.A, 1, 2) && testkit.OracleEq(r.B, 3) }, conjunctionScanShape{comparisons: 2, inNodes: 1}},
+		{"in_on_pk_with_residual", "SELECT id FROM t WHERE id IN (1, 2, 300) AND b > 2", func(r testkit.OracleRow) bool {
+			return testkit.OracleIn(testkit.OracleInt(r.ID), 1, 2, 300) && testkit.OracleGt(r.B, 2)
+		}, conjunctionScanShape{comparisons: 1, residuals: 1, inNodes: 1}},
+		{"nested_ins", "SELECT id FROM t WHERE a IN (1, 2) AND b IN (5, 4)", func(r testkit.OracleRow) bool { return testkit.OracleIn(r.A, 1, 2) && testkit.OracleIn(r.B, 5, 4) }, conjunctionScanShape{comparisons: 2, inNodes: 2}},
+		{"in_beside_a_range_on_the_same_column", "SELECT id FROM t WHERE a IN (1, 2, 3) AND a > 1", func(r testkit.OracleRow) bool { return testkit.OracleIn(r.A, 2, 3) }, conjunctionScanShape{comparisons: 1, residuals: 1, inNodes: 1}},
+		{"in_on_the_second_column", "SELECT id FROM t WHERE a = 1 AND b IN (5, 4)", func(r testkit.OracleRow) bool { return testkit.OracleEq(r.A, 1) && testkit.OracleIn(r.B, 5, 4) }, conjunctionScanShape{comparisons: 2, inNodes: 1}},
+		{"in_with_range_on_second_column", "SELECT id FROM t WHERE a IN (1, 2) AND b > 3 AND b <= 5", func(r testkit.OracleRow) bool {
+			return testkit.OracleIn(r.A, 1, 2) && testkit.OracleGt(r.B, 3) && testkit.OracleLe(r.B, 5)
+		}, conjunctionScanShape{comparisons: 3, inNodes: 1}},
+		{"in_with_null_column_residual", "SELECT id FROM t WHERE a IN (1, 2) AND c IS NULL", func(r testkit.OracleRow) bool { return testkit.OracleIn(r.A, 1, 2) && r.C == nil }, conjunctionScanShape{comparisons: 1, residuals: 1, inNodes: 1}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -151,7 +161,7 @@ func TestFDB_ConjunctionBinding(t *testing.T) {
 			want := map[int64]int{}
 			for _, r := range rows {
 				if tc.pred(r) {
-					want[r.id]++
+					want[r.ID]++
 				}
 			}
 			if fmt.Sprint(got) != fmt.Sprint(want) {

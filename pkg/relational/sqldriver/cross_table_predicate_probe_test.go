@@ -10,30 +10,32 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CrossTablePredicateProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_xtab_probe")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_xtab_probe")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_xtab_probe")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_xtab_probe")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE xtab_probe "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, y BIGINT, lo BIGINT, hi BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_xtab_probe/s WITH TEMPLATE xtab_probe")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_XTAB_PROBE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_xtab_probe/s WITH TEMPLATE xtab_probe")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_XTAB_PROBE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10), (3, 7)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, y, lo, hi) VALUES (50, 5, 1, 6), (51, 99, 8, 12)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (2, 10), (3, 7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, y, lo, hi) VALUES (50, 5, 1, 6), (51, 99, 8, 12)")
 
 	// A cross-table IN-list (`x IN (col, col)`) in an ON clause. This shape has
 	// been through all three states and the history is why it is asserted by
@@ -50,24 +52,24 @@ func TestFDB_CrossTablePredicateProbe(t *testing.T) {
 	// cross product is 6 rows, so a 6-row answer is state 1 returning.
 	t.Run("in_list_cross_applies_the_predicate", func(t *testing.T) {
 		const onQ = "SELECT a.id, c.id FROM a JOIN c ON a.x IN (c.y, c.lo) ORDER BY a.id, c.id"
-		got, err := mmRows(t, ctx, db, onQ)
+		got, err := testkit.QueryRowStrings(t, ctx, db, onQ)
 		if err != nil {
 			t.Fatalf("a cross-table IN in an ON clause failed to plan: %v", err)
 		}
 		want := []string{"1|50"}
-		if !mmEqRows(got, want) {
+		if !testkit.EqualRows(got, want) {
 			t.Fatalf("cross-table IN in an ON clause is wrong\n  got  %v\n  want %v\n"+
 				"  (6 rows is the join's full cross product — the ON predicate dropped)",
 				got, want)
 		}
 		// The WHERE spelling of the same inner join must agree; a predicate that
 		// applies in one and not the other is the drop wearing a different hat.
-		gotWhere, err := mmRows(t, ctx, db,
+		gotWhere, err := testkit.QueryRowStrings(t, ctx, db,
 			"SELECT a.id, c.id FROM a, c WHERE a.x IN (c.y, c.lo) ORDER BY a.id, c.id")
 		if err != nil {
 			t.Fatalf("the WHERE spelling failed to plan: %v", err)
 		}
-		if !mmEqRows(gotWhere, want) {
+		if !testkit.EqualRows(gotWhere, want) {
 			t.Fatalf("ON and WHERE spellings disagree\n  ON   : %v\n  WHERE: %v", got, gotWhere)
 		}
 	})
@@ -105,8 +107,8 @@ func TestFDB_CrossTablePredicateProbe(t *testing.T) {
 			if err != nil {
 				t.Fatalf("query %q: %v", tc.q, err)
 			}
-			got := siScanRows(t, rows)
-			if !eqStrSlices(got, tc.want) {
+			got := testkit.ScanRowStrings(t, rows)
+			if !testkit.EqualStrings(got, tc.want) {
 				t.Errorf("%s rows = %v, want %v", tc.name, got, tc.want)
 			}
 		})

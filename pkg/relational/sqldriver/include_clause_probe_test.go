@@ -12,16 +12,18 @@ package sqldriver_test
 import (
 	"context"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_IncludeClauseAcceptedProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := openTestDB(t, "/FRL/testdb_incr")
-	mwjoMustExec(t, db, ctx, "CREATE DATABASE /FRL/testdb_incr")
+	db := testkit.OpenDB(t, "/FRL/testdb_incr")
+	testkit.MustExecCtx(t, db, ctx, "CREATE DATABASE /FRL/testdb_incr")
 
 	t.Run("create_index_include_builds_covering", func(t *testing.T) {
 		if _, err := db.ExecContext(ctx,

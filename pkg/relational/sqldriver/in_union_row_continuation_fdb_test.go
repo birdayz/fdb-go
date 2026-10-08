@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -27,7 +29,7 @@ func setupInUnionContDB(t *testing.T) *sql.DB {
 	// between them. The index names id in its own key: an in-union ordered by
 	// a primary key reached only past the entry's record-type coordinate is
 	// not built (RFC-257 WS-F 4.3 item 2).
-	return setupErrorTestDB(t, "/FRL/testdb_inunioncont", "inunioncont",
+	return testkit.SetupErrorDB(t, "/FRL/testdb_inunioncont", "inunioncont",
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON t (g, id)")
 }
@@ -39,7 +41,7 @@ func setupInUnionContDB(t *testing.T) *sql.DB {
 // its UnionContinuation snapshot, or the InJoin from its flatMap position.
 func TestFDB_InUnionRowContinuation_BudgetSweep_Paged(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	db := setupInUnionContDB(t)
@@ -64,14 +66,14 @@ func inPlanBudgetSweep(t *testing.T, db *sql.DB, q, wantPlan string) {
 	ctx := t.Context()
 	// The shape under test — otherwise this pins some other cursor's
 	// continuation.
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	if !strings.Contains(plan, wantPlan) || strings.Contains(plan, "InMemorySort") {
 		t.Fatalf("%s must plan as %s without a sort; got:\n%s", q, wantPlan, plan)
 	}
 
 	// Order matters, and ids rise with g here, so both orders read these rows
 	// verbatim.
-	unpaged := readIDPairs(t, ctx, db, q)
+	unpaged := testkit.ReadIDPairs(t, ctx, db, q)
 	want := "[[1 10] [2 10] [3 10] [4 20] [5 20] [6 30] [7 30] [8 30]]" // buckets 10,20,30; 40 excluded
 	if fmt.Sprint(unpaged) != want {
 		t.Fatalf("unpaged IN query = %v, want %v", unpaged, want)
@@ -82,11 +84,11 @@ func inPlanBudgetSweep(t *testing.T, db *sql.DB, q, wantPlan string) {
 	// merge ERRORED on any out-of-band child stop (RFC-106a) instead of
 	// checkpointing, so every one of these paged reads failed.
 	for budget := 2; budget <= 8; budget++ {
-		conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 			ec.SetOptions(api.NewOptionsBuilder().
 				Set(api.OptExecutionScannedRowsLimit, budget).Build())
 		})
-		paged := readIDPairsConn(t, ctx, conn, q)
+		paged := testkit.ReadIDPairsConn(t, ctx, conn, q)
 		if fmt.Sprint(paged) != fmt.Sprint(unpaged) {
 			t.Fatalf("%s continuation dropped/duplicated/reordered rows (budget %d):\n paged (%d) = %v\n unpaged (%d) = %v",
 				wantPlan, budget, len(paged), paged, len(unpaged), unpaged)

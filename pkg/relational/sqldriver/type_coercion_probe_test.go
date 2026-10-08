@@ -10,28 +10,30 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_TypeCoercionProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_coerce")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_coerce")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_coerce")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_coerce")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE coerce "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, f DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_coerce/s WITH TEMPLATE coerce")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COERCE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_coerce/s WITH TEMPLATE coerce")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_COERCE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, f) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, f) VALUES "+
 		"(1, 5, 1.5), (2, 10, 2.5), (3, -3, 3.0), (4, 7, 7.0), (5, 9223372036854775807, 0.0)")
 
 	ints := func(q string) []int64 {

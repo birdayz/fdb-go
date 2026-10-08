@@ -13,29 +13,31 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CrossTypeConstSarg(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_xtconstsarg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_xtconstsarg")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_xtconstsarg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_xtconstsarg")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE xtconstsarg "+
 			"CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_d ON t (d)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_xtconstsarg/s WITH TEMPLATE xtconstsarg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_XTCONSTSARG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_xtconstsarg/s WITH TEMPLATE xtconstsarg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_XTCONSTSARG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// d = 5.0, 7.0, 10.0
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d) VALUES (1, 5.0), (2, 7.0), (3, 10.0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, d) VALUES (1, 5.0), (2, 7.0), (3, 10.0)")
 
 	ids := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

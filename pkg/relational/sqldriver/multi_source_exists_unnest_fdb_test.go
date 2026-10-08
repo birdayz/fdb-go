@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // An existential's child WHERE must read the outer element before FirstOrDefault,
@@ -14,7 +16,7 @@ func TestFDB_MultiSourceExistsReadsUnnestElement(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	const dbPath = "/FRL/multi_source_exists_unnest"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE multi_source_exists_unnest_tmpl" +
@@ -28,7 +30,7 @@ func TestFDB_MultiSourceExistsReadsUnnestElement(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +72,7 @@ func TestFDB_MultiSourceExistsReadsUnnestElement(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := pinRows(t, db, ctx, tc.sql)
+			got := testkit.PinRows(t, db, ctx, tc.sql)
 			sort.Strings(got)
 			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
 				t.Fatalf("%s: rows = %v, want %v", tc.sql, got, tc.want)

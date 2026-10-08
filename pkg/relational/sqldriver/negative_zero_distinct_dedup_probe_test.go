@@ -47,6 +47,8 @@ import (
 	"math"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // The actual reproducer of the bug the revert fixed, and the shape the
@@ -69,25 +71,25 @@ import (
 // genuinely distinct and both paths return 3.
 func TestFDB_NegativeZeroDistinctMultiColumnPlanIndependence(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nzmulti")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nzmulti")
+	setup := testkit.OpenDB(t, "/FRL/testdb_nzmulti")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nzmulti")
 	// Index leads on the DOUBLE column so the ordered dedup is eligible: the
 	// inner ordering (D, A) prefix-matches the dedup columns (D, A).
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzmulti "+
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzmulti "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_da ON t (d, a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nzmulti/s WITH TEMPLATE nzmulti")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NZMULTI?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nzmulti/s WITH TEMPLATE nzmulti")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NZMULTI?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d, a) VALUES (1, -0.0, 1), (2, -0.0, 2), (3, 0.0, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, d, a) VALUES (1, -0.0, 1), (2, -0.0, 2), (3, 0.0, 1)")
 
 	count := func(t *testing.T, q string) int {
 		t.Helper()
@@ -129,17 +131,17 @@ func TestFDB_NegativeZeroDistinctMultiColumnPlanIndependence(t *testing.T) {
 
 func TestFDB_NegativeZeroDistinctDedupProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nzdedup")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nzdedup")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzdedup "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_nzdedup")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nzdedup")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzdedup "+
 		"CREATE TABLE d (id BIGINT, v DOUBLE, PRIMARY KEY (id)) "+
 		"CREATE TABLE f (id BIGINT, v FLOAT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nzdedup/s WITH TEMPLATE nzdedup")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NZDEDUP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nzdedup/s WITH TEMPLATE nzdedup")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NZDEDUP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -148,8 +150,8 @@ func TestFDB_NegativeZeroDistinctDedupProbe(t *testing.T) {
 
 	// Both signed zeros, plus a duplicated nonzero control that proves ordinary
 	// dedup still collapses — otherwise "3 rows" could mean dedup is simply off.
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id, v) VALUES (1, -0.0), (2, 0.0), (3, 5.0), (4, 5.0)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO f (id, v) VALUES (1, CAST(-0.0 AS FLOAT)), (2, CAST(0.0 AS FLOAT)), (3, CAST(5.0 AS FLOAT)), (4, CAST(5.0 AS FLOAT))")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id, v) VALUES (1, -0.0), (2, 0.0), (3, 5.0), (4, 5.0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO f (id, v) VALUES (1, CAST(-0.0 AS FLOAT)), (2, CAST(0.0 AS FLOAT)), (3, CAST(5.0 AS FLOAT)), (4, CAST(5.0 AS FLOAT))")
 
 	// signbit distinguishes the two zeros; plain == cannot.
 	fmtSigned := func(v float64) string {

@@ -9,31 +9,33 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_SetOpsDistinctProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_setops")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_setops")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_setops")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_setops")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE setops "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_setops/s WITH TEMPLATE setops")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SETOPS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_setops/s WITH TEMPLATE setops")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SETOPS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 10), (2, 20), (3, 30)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 1), (52, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 10), (2, 20), (3, 30)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 1), (52, 2)")
 
 	// ordered = preserve order (for ORDER BY tests); sorted = order-insensitive.
 	ints := func(q string, keepOrder bool) []int64 {
@@ -81,7 +83,7 @@ func TestFDB_SetOpsDistinctProbe(t *testing.T) {
 	// UNION (distinct) is not implemented in Go (only UNION ALL) — a feature gap
 	// vs Java, but cleanly rejected (not wrong rows).
 	t.Run("union_distinct_rejected", func(t *testing.T) {
-		assertUnsupported(t, db, ctx, "SELECT id FROM a UNION SELECT a_id FROM c")
+		testkit.AssertUnsupported(t, db, ctx, "SELECT id FROM a UNION SELECT a_id FROM c")
 	})
 	// DISTINCT a_id: {1,2}.
 	check("distinct_col", "SELECT DISTINCT a_id FROM c", false, []int64{1, 2})

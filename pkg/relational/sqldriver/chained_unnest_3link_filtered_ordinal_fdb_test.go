@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -35,24 +37,24 @@ import (
 // into the chained merged row), and the buried 2-chain.
 func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
 	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 
-	md := buildChainedUnnestMetadata(t)
+	md := testkit.BuildChainedUnnestMetadata(t)
 	t4Desc := md.GetRecordType("T4").Descriptor
 	sarrFD := t4Desc.Fields().ByName("SARR")
-	elemDesc := arrayElementMessageDescriptor(sarrFD)
+	elemDesc := testkit.ArrayElementMessageDescriptor(sarrFD)
 	substructFD := elemDesc.Fields().ByName("SUBSTRUCT")
-	elem2Desc := arrayElementMessageDescriptor(substructFD)
+	elem2Desc := testkit.ArrayElementMessageDescriptor(substructFD)
 
 	mkElem2 := func(deep ...int32) protoreflect.Value {
 		m := dynamicpb.NewMessage(elem2Desc)
@@ -61,7 +63,7 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 		for i, d := range deep {
 			dvals[i] = protoreflect.ValueOfInt32(d)
 		}
-		setArrayField(m, elem2Desc.Fields().ByName("DEEP"), dvals...)
+		testkit.SetArrayField(m, elem2Desc.Fields().ByName("DEEP"), dvals...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkElem := func(sub []int32, substruct ...protoreflect.Value) protoreflect.Value {
@@ -71,8 +73,8 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 		for i, s := range sub {
 			svals[i] = protoreflect.ValueOfInt32(s)
 		}
-		setArrayField(m, elemDesc.Fields().ByName("SUB"), svals...)
-		setArrayField(m, substructFD, substruct...)
+		testkit.SetArrayField(m, elemDesc.Fields().ByName("SUB"), svals...)
+		testkit.SetArrayField(m, substructFD, substruct...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	// sub is the top-level SHADOW scalar (same bare name as the element's SUB
@@ -83,7 +85,7 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 		m := dynamicpb.NewMessage(t4Desc)
 		m.Set(t4Desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(t4Desc.Fields().ByName("SUB"), protoreflect.ValueOfInt64(sub))
-		setArrayField(m, sarrFD, sarr...)
+		testkit.SetArrayField(m, sarrFD, sarr...)
 		return m
 	}
 
@@ -129,7 +131,7 @@ func TestFDB_ThreeLinkFilteredOrdinalizes(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})

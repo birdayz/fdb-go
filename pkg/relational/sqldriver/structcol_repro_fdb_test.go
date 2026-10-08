@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedStructColumnThroughAJoin pins what a projected struct-typed
@@ -35,21 +37,21 @@ import (
 // run as controls rather than assumed.
 func TestFDB_ProjectedStructColumnThroughAJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_structcol_join")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_structcol_join")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE structcol_join_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_structcol_join")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_structcol_join")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE structcol_join_tmpl "+
 		"CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t1(id BIGINT, n nst, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t3(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_structcol_join/s WITH TEMPLATE structcol_join_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_structcol_join/s WITH TEMPLATE structcol_join_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_STRUCTCOL_JOIN?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_STRUCTCOL_JOIN?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -57,9 +59,9 @@ func TestFDB_ProjectedStructColumnThroughAJoin(t *testing.T) {
 
 	// n.sk runs OPPOSITE to id and n.co runs WITH it, so reading the wrong
 	// struct member, or the wrong column entirely, is visible rather than tied.
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (50, 1)), (2, (40, 2)), (3, (30, 3))")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3)")
-	mustExec(t, db, ctx, "INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (50, 1)), (2, (40, 2)), (3, (30, 3))")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 1), (200, 3)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t3 VALUES (900, 1), (901, 2), (902, 3)")
 
 	// idAndStruct reads a two-column (BIGINT, struct) result into the id and the
 	// struct's flattened members, so an assertion can name a MEMBER value.

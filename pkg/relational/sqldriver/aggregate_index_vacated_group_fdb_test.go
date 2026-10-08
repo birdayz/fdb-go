@@ -28,6 +28,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // aggVacRows runs q and returns its rows rendered "[a b ...]", sorted.
@@ -93,13 +95,13 @@ func aggVacPin(t *testing.T, ctx context.Context, db *sql.DB, name, indexedQ, wa
 
 func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aggvac")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggvac")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggvac")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggvac")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggvac "+
 			"CREATE TABLE ai (pk BIGINT, d DOUBLE, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE TABLE ao (pk BIGINT, d DOUBLE, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
@@ -109,8 +111,8 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 			"CREATE INDEX ai_cntv_g AS SELECT COUNT(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_min_g AS SELECT MIN(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_max_g AS SELECT MAX(v) FROM ai GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggvac/s WITH TEMPLATE aggvac")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGVAC?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggvac/s WITH TEMPLATE aggvac")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGVAC?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -124,14 +126,14 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 	//   g=4 / d=3.5 : sums to zero (+5, -5), live
 	//   g=5 / d=4.5 : every v is NULL, live
 	for _, tbl := range []string{"ai", "ao"} {
-		mwjoMustExec(t, db, ctx, "INSERT INTO "+tbl+" (pk,d,g,v) VALUES "+
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO "+tbl+" (pk,d,g,v) VALUES "+
 			"(1,7.5,1,10),(2,7.5,1,20),"+
 			"(3,1.5,2,30),"+
 			"(4,2.5,3,40),(5,2.5,3,50),"+
 			"(6,3.5,4,5),(7,3.5,4,-5),"+
 			"(8,4.5,5,NULL),(9,4.5,5,NULL)")
-		mwjoMustExec(t, db, ctx, "UPDATE "+tbl+" SET d = 1.5, g = 2 WHERE g = 1")
-		mwjoMustExec(t, db, ctx, "DELETE FROM "+tbl+" WHERE g = 3")
+		testkit.MustExecCtx(t, db, ctx, "UPDATE "+tbl+" SET d = 1.5, g = 2 WHERE g = 1")
+		testkit.MustExecCtx(t, db, ctx, "DELETE FROM "+tbl+" WHERE g = 3")
 	}
 
 	aggVacPin(t, ctx, db, "sum", "SELECT g, SUM(v) FROM ai GROUP BY g",
@@ -160,12 +162,12 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 	// The ungrouped COUNT(*) spelling over an emptied table reads the stored 0,
 	// which is also SQL's answer.
 	t.Run("count-star-ungrouped-empty-table", func(t *testing.T) {
-		mwjoMustExec(t, setup, ctx,
+		testkit.MustExecCtx(t, setup, ctx,
 			"CREATE SCHEMA TEMPLATE aggvacu "+
 				"CREATE TABLE e (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 				"CREATE INDEX e_cnt AS SELECT COUNT(*) FROM e")
-		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggvac/su WITH TEMPLATE aggvacu")
-		udsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGVAC?cluster_file=%s&schema=SU", clusterFilePath)
+		testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggvac/su WITH TEMPLATE aggvacu")
+		udsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGVAC?cluster_file=%s&schema=SU", testkit.ClusterFile())
 		udb, err := sql.Open("fdbsql", udsn)
 		if err != nil {
 			t.Fatalf("sql.Open: %v", err)
@@ -181,11 +183,11 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 		if n := count("empty"); n != 0 {
 			t.Fatalf("COUNT(*) on a never-populated table = %d, want 0", n)
 		}
-		mwjoMustExec(t, udb, ctx, "INSERT INTO e (pk,v) VALUES (1,1),(2,2)")
+		testkit.MustExecCtx(t, udb, ctx, "INSERT INTO e (pk,v) VALUES (1,1),(2,2)")
 		if n := count("populated"); n != 2 {
 			t.Fatalf("COUNT(*) after 2 inserts = %d, want 2", n)
 		}
-		mwjoMustExec(t, udb, ctx, "DELETE FROM e")
+		testkit.MustExecCtx(t, udb, ctx, "DELETE FROM e")
 		if n := count("emptied"); n != 0 {
 			t.Fatalf("COUNT(*) after emptying the table = %d, want 0", n)
 		}
@@ -199,37 +201,37 @@ func TestFDB_AggregateIndexVacatedGroup(t *testing.T) {
 // these exact rows (RFC-209 §2 measured them before Go diverged).
 func TestFDB_AggregateIndexVacatedGroup_ZeroGroups(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aggvacpin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggvacpin")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggvacpin")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggvacpin")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggvacpin "+
 			"CREATE TABLE ai (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE TABLE ao (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE INDEX ai_sum_g AS SELECT SUM(v) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_cnt_g AS SELECT COUNT(*) FROM ai GROUP BY g "+
 			"CREATE INDEX ai_cntv_g AS SELECT COUNT(v) FROM ai GROUP BY g")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggvacpin/s WITH TEMPLATE aggvacpin")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGVACPIN?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggvacpin/s WITH TEMPLATE aggvacpin")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGVACPIN?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	for _, tbl := range []string{"ai", "ao"} {
-		mwjoMustExec(t, db, ctx, "INSERT INTO "+tbl+" (pk,g,v) VALUES "+
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO "+tbl+" (pk,g,v) VALUES "+
 			"(1,1,10),(2,1,20),"+ // g=1 vacated by UPDATE below
 			"(3,2,30),"+ // g=2 survives
 			"(4,3,40),(5,3,50),"+ // g=3 vacated by DELETE below
 			"(8,5,NULL),(9,5,NULL),"+ // g=5 all-NULL
 			"(10,6,0),(11,6,0)") // g=6 all values zero
-		mwjoMustExec(t, db, ctx, "INSERT INTO "+tbl+" (pk,g,v) VALUES (6,4,5)")
-		mwjoMustExec(t, db, ctx, "INSERT INTO "+tbl+" (pk,g,v) VALUES (7,4,-5)")
-		mwjoMustExec(t, db, ctx, "UPDATE "+tbl+" SET g = 2 WHERE g = 1")
-		mwjoMustExec(t, db, ctx, "DELETE FROM "+tbl+" WHERE g = 3")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO "+tbl+" (pk,g,v) VALUES (6,4,5)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO "+tbl+" (pk,g,v) VALUES (7,4,-5)")
+		testkit.MustExecCtx(t, db, ctx, "UPDATE "+tbl+" SET g = 2 WHERE g = 1")
+		testkit.MustExecCtx(t, db, ctx, "DELETE FROM "+tbl+" WHERE g = 3")
 	}
 	aggVacPin(t, ctx, db, "sum", "SELECT g, SUM(v) FROM ai GROUP BY g",
 		"[1 0],[2 60],[3 0],[4 0],[6 0]", "[2 60],[4 0],[5 NULL],[6 0]")
@@ -246,13 +248,13 @@ func TestFDB_AggregateIndexVacatedGroup_ZeroGroups(t *testing.T) {
 // answers NULL. Two live rows that cancel answer 0 both ways.
 func TestFDB_AggregateIndexVacatedGroup_UngroupedSumEmptyTable(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aggvacsum")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggvacsum")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_aggvacsum")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aggvacsum")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE aggvacsum "+
 			"CREATE TABLE ai (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE TABLE ao (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
@@ -260,8 +262,8 @@ func TestFDB_AggregateIndexVacatedGroup_UngroupedSumEmptyTable(t *testing.T) {
 			"CREATE TABLE bo (pk BIGINT, v BIGINT, PRIMARY KEY (pk)) "+
 			"CREATE INDEX ai_sum AS SELECT SUM(v) FROM ai "+
 			"CREATE INDEX bi_sum AS SELECT SUM(v) FROM bi")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggvacsum/s WITH TEMPLATE aggvacsum")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGVACSUM?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aggvacsum/s WITH TEMPLATE aggvacsum")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AGGVACSUM?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -273,14 +275,14 @@ func TestFDB_AggregateIndexVacatedGroup_UngroupedSumEmptyTable(t *testing.T) {
 	aggVacPin(t, ctx, db, "never-populated", "SELECT SUM(v) FROM ai ", "[NULL]", "[NULL]")
 
 	for _, tbl := range []string{"ai", "ao"} {
-		mwjoMustExec(t, db, ctx, "INSERT INTO "+tbl+" (pk,v) VALUES (1,10),(2,20)")
-		mwjoMustExec(t, db, ctx, "DELETE FROM "+tbl)
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO "+tbl+" (pk,v) VALUES (1,10),(2,20)")
+		testkit.MustExecCtx(t, db, ctx, "DELETE FROM "+tbl)
 	}
 	aggVacPin(t, ctx, db, "emptied-by-delete", "SELECT SUM(v) FROM ai ", "[0]", "[NULL]")
 
 	for _, tbl := range []string{"bi", "bo"} {
-		mwjoMustExec(t, db, ctx, "INSERT INTO "+tbl+" (pk,v) VALUES (1,5)")
-		mwjoMustExec(t, db, ctx, "INSERT INTO "+tbl+" (pk,v) VALUES (2,-5)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO "+tbl+" (pk,v) VALUES (1,5)")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO "+tbl+" (pk,v) VALUES (2,-5)")
 	}
 	t.Run("cancels-to-zero-live-rows", func(t *testing.T) {
 		var plan string

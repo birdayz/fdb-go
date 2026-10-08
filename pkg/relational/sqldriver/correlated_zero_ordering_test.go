@@ -35,22 +35,24 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CorrelatedZeroOrdering(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_czo")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_czo")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czo "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_czo")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_czo")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE czo "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w) "+
 		"CREATE TABLE o (id BIGINT, k DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_czo/s WITH TEMPLATE czo")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CZO?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_czo/s WITH TEMPLATE czo")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CZO?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -58,8 +60,8 @@ func TestFDB_CorrelatedZeroOrdering(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	// Physical scan order is (-0.0, 9) then (+0.0, 1): w DESCENDS across the
 	// signed-zero boundary, so any claim that w is ordered is observably false.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, w) VALUES (1, -0.0, 9), (2, 0.0, 1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO o (id, k) VALUES (10, 0.0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v, w) VALUES (1, -0.0, 9), (2, 0.0, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO o (id, k) VALUES (10, 0.0)")
 
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -97,7 +99,7 @@ func TestFDB_CorrelatedZeroOrdering(t *testing.T) {
 		{"SELECT t.w FROM t, o WHERE t.v = o.k AND o.id = 10 ORDER BY t.w DESC LIMIT 1", []int64{9}},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
-			if plan := explainOnConn(t, ctx, conn, tc.query); !strings.Contains(plan, "Sort") {
+			if plan := testkit.ExplainConn(t, ctx, conn, tc.query); !strings.Contains(plan, "Sort") {
 				t.Fatalf("plan = %s\nwant a sort node: the correlated operand may bind to zero, "+
 					"which widens the scan across two prefixes, so w's order is not provided",
 					plan)

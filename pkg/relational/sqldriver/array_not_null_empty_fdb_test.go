@@ -44,25 +44,27 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_NonNullableArrayEmptyReadsBack(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nnarr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nnarr")
+	setup := testkit.OpenDB(t, "/FRL/testdb_nnarr")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nnarr")
 	// `arr` is NULLABLE (wrapper-encoded), `arr_nn` is NOT NULL (flat
 	// repeated). `tag` gives an indexed, non-array access path so the same
 	// column can be reached through an index scan rather than a full scan.
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nnarr "+
 			"CREATE TABLE t (pk BIGINT, tag BIGINT, arr INTEGER ARRAY, arr_nn INTEGER ARRAY NOT NULL, PRIMARY KEY (pk)) "+
 			"CREATE INDEX t_tag AS SELECT tag FROM t")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nnarr/s WITH TEMPLATE nnarr")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NNARR?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nnarr/s WITH TEMPLATE nnarr")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NNARR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -73,7 +75,7 @@ func TestFDB_NonNullableArrayEmptyReadsBack(t *testing.T) {
 	//   pk 1 — NULL nullable array,  EMPTY non-nullable array
 	//   pk 2 — EMPTY nullable array, EMPTY non-nullable array
 	//   pk 3 — populated both
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO t (pk, tag, arr, arr_nn) VALUES (1, 10, NULL, []), (2, 20, [], []), (3, 30, [7], [7, 8])")
 
 	scanCol := func(t *testing.T, q string) any {

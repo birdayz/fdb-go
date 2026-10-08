@@ -27,21 +27,23 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_NegativeZeroCompositeIndexSargProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nzcsarg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nzcsarg")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzcsarg "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_nzcsarg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nzcsarg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE nzcsarg "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX t_vw ON t (v, w)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nzcsarg/s WITH TEMPLATE nzcsarg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NZCSARG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nzcsarg/s WITH TEMPLATE nzcsarg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NZCSARG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -53,7 +55,7 @@ func TestFDB_NegativeZeroCompositeIndexSargProbe(t *testing.T) {
 	// id 3: POSITIVE zero at a DIFFERENT w — a naive single-interval widening
 	//       would wrongly pull it in, so it guards the opposite error.
 	// id 4: negative zero at a different w, guarding the same from below.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, w) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v, w) VALUES "+
 		"(1, -0.0, 5), (2, 5.0, 5), (3, 0.0, 9), (4, -0.0, 1)")
 
 	conn, err := db.Conn(ctx)
@@ -133,7 +135,7 @@ func TestFDB_NegativeZeroCompositeIndexSargProbe(t *testing.T) {
 			// IEEE comparison handles signed zero correctly on its own — so the
 			// test would prove nothing about the SARG path it exists to cover,
 			// and reverting the fix would not reliably redden it.
-			if plan := explainOnConn(t, ctx, conn, tc.query); !strings.Contains(plan, "T_VW") {
+			if plan := testkit.ExplainConn(t, ctx, conn, tc.query); !strings.Contains(plan, "T_VW") {
 				t.Fatalf("%s\nplan = %s\nwant the composite index T_VW: on a primary scan the "+
 					"residual filter answers correctly by itself, so this case would pass "+
 					"without exercising the changed matching path at all", tc.query, plan)

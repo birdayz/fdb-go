@@ -23,6 +23,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -30,7 +32,7 @@ import (
 
 func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -49,11 +51,11 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 		// D drives the OR-union arm: the correlated inner of a LEFT JOIN is the
 		// shape that reaches the union of index probes today.
 		"CREATE TABLE d (did BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (did))"
-	setup := openTestDB(t, "/FRL/testdb_pkilbc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pkilbc")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pkilbc "+ddl)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pkilbc/s WITH TEMPLATE pkilbc")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PKILBC?cluster_file=%s&schema=S", clusterFilePath)
+	setup := testkit.OpenDB(t, "/FRL/testdb_pkilbc")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pkilbc")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE pkilbc "+ddl)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pkilbc/s WITH TEMPLATE pkilbc")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_PKILBC?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -66,16 +68,16 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 	// gives the three-way shape one true row as well.
 	const rows = "(0, 2, 1, 1), (0, 3, 0, 0), (1, 4, 0, 1), (1, 3, 0, 0), " +
 		"(2, 0, 0, 1), (2, 3, 0, 7), (3, 3, 1, 1), (4, 1, 0, 1), (5, 3, 1, 1), (6, 3, 1, 0)"
-	mwjoMustExec(t, db, ctx, "INSERT INTO ti (pk1, pk2, a, b) VALUES "+rows)
-	mwjoMustExec(t, db, ctx, "INSERT INTO tj (pk1, pk2, a, b) VALUES "+rows)
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ti (pk1, pk2, a, b) VALUES "+rows)
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO tj (pk1, pk2, a, b) VALUES "+rows)
 	// did=1 probes the two legs of the defect (b = 1, pk2 = 3); did=2 probes a
 	// disjoint pair (b = 7, pk2 = 4); did=3 matches nothing.
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (did, x, y) VALUES (1, 1, 3), (2, 7, 4), (3, 9, 9)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (did, x, y) VALUES (1, 1, 3), (2, 7, 4), (3, 9, 9)")
 
-	explain := mwjoExplainer(t, db, ctx)
+	explain := testkit.Explainer(t, db, ctx)
 	rowsOf := func(q string) []string {
 		t.Helper()
-		out, err := mmRows(t, ctx, db, q)
+		out, err := testkit.QueryRowStrings(t, ctx, db, q)
 		if err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}

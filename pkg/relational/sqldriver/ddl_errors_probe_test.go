@@ -14,16 +14,18 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DDLErrorsProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := openTestDB(t, "/FRL/testdb_ddlerrp")
-	mwjoMustExec(t, db, ctx, "CREATE DATABASE /FRL/testdb_ddlerrp")
+	db := testkit.OpenDB(t, "/FRL/testdb_ddlerrp")
+	testkit.MustExecCtx(t, db, ctx, "CREATE DATABASE /FRL/testdb_ddlerrp")
 
 	rejectsCode := func(name, q, code string) {
 		t.Run(name, func(t *testing.T) {
@@ -67,7 +69,7 @@ func TestFDB_DDLErrorsProbe(t *testing.T) {
 	// as in Java; Go refused them here while its INSERT folded them onto one
 	// field. TestFDB_CaseCollidingNames reads and writes such a table.
 	t.Run("case-colliding quoted columns are distinct", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "CREATE SCHEMA TEMPLATE de_fold CREATE TABLE t (id BIGINT, \"y\" BIGINT, y BIGINT, PRIMARY KEY (id))")
+		testkit.MustExecCtx(t, db, ctx, "CREATE SCHEMA TEMPLATE de_fold CREATE TABLE t (id BIGINT, \"y\" BIGINT, y BIGINT, PRIMARY KEY (id))")
 	})
 	// PK over an unknown column → clean 42703 (validated in parseTableDefinition
 	// before the metadata build that used to leak an XX000 internal error).
@@ -83,7 +85,7 @@ func TestFDB_DDLErrorsProbe(t *testing.T) {
 	// 42F59 when its save action refused a version at or below the latest
 	// before the duplicate.
 	t.Run("duplicate_template_name", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "CREATE SCHEMA TEMPLATE de_ok CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+		testkit.MustExecCtx(t, db, ctx, "CREATE SCHEMA TEMPLATE de_ok CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 		_, err := db.ExecContext(ctx, "CREATE SCHEMA TEMPLATE de_ok CREATE TABLE u (id BIGINT, PRIMARY KEY (id))")
 		if err == nil || !strings.Contains(err.Error(), "42F62") || !strings.Contains(err.Error(), "Schema template already exists: DE_OK") {
 			t.Errorf("duplicate template error = %v, want 42F62 Schema template already exists", err)

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // A three-segment reference is `alias . struct column . member` — `a.n.sk`.
@@ -39,19 +41,19 @@ import (
 // unthreaded and green.
 func TestFDB_ThreeSegmentNestedPathResolvesInEveryClause(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_3seg")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3seg")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE seg3_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_3seg")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3seg")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE seg3_tmpl "+
 		"CREATE TYPE AS STRUCT gst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t(id BIGINT, n gst, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3seg/s WITH TEMPLATE seg3_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3seg/s WITH TEMPLATE seg3_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3SEG?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3SEG?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -60,7 +62,7 @@ func TestFDB_ThreeSegmentNestedPathResolvesInEveryClause(t *testing.T) {
 	// sk and co differ per row and neither is the primary key, so a read of the
 	// wrong member — or of the struct root — produces a different column, not a
 	// coincidentally equal one.
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, (1, 7)), (2, (1, 8)), (3, (2, 9))")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, (1, 7)), (2, (1, 8)), (3, (2, 9))")
 
 	queryInts := func(t *testing.T, q string) []int64 {
 		t.Helper()
@@ -147,20 +149,20 @@ func TestFDB_ThreeSegmentNestedPathResolvesInEveryClause(t *testing.T) {
 // reference %s").
 func TestFDB_ThreeSegmentPathsOfTwoSourcesDoNotCollapse(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_3seg_amb")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3seg_amb")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE seg3amb_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_3seg_amb")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3seg_amb")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE seg3amb_tmpl "+
 		"CREATE TYPE AS STRUCT gst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t1(id BIGINT, n gst, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, n gst, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3seg_amb/s WITH TEMPLATE seg3amb_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3seg_amb/s WITH TEMPLATE seg3amb_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3SEG_AMB?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3SEG_AMB?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -169,8 +171,8 @@ func TestFDB_ThreeSegmentPathsOfTwoSourcesDoNotCollapse(t *testing.T) {
 	// Disjoint value ranges: every t1 member is a single digit, every t2 member
 	// is in the hundreds. Any leg confusion is visible at a glance and cannot
 	// coincide.
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (1, 7)), (2, (2, 8))")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (1, (100, 700)), (2, (200, 800))")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, (1, 7)), (2, (2, 8))")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (1, (100, 700)), (2, (200, 800))")
 
 	const join = " FROM t1 AS a, t2 AS b WHERE a.id = b.id"
 
@@ -261,24 +263,24 @@ func TestFDB_ThreeSegmentPathsOfTwoSourcesDoNotCollapse(t *testing.T) {
 // is a QUALIFIER, and qualifying a reference does not change how it is read.
 func TestFDB_ThreeSegmentNestedPathPlanShape(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_3seg_plan")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3seg_plan")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE seg3plan_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_3seg_plan")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3seg_plan")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE seg3plan_tmpl "+
 		"CREATE TYPE AS STRUCT gst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t(id BIGINT, n gst, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3seg_plan/s WITH TEMPLATE seg3plan_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3seg_plan/s WITH TEMPLATE seg3plan_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3SEG_PLAN?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3SEG_PLAN?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, (1, 7))")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, (1, 7))")
 
 	explain := func(t *testing.T, q string) string {
 		t.Helper()
@@ -329,24 +331,24 @@ func TestFDB_ThreeSegmentNestedPathPlanShape(t *testing.T) {
 // struct ROOT and still returns rows.
 func TestFDB_ThreeSegmentGroupKeyGroupsLikeItsTwoSegmentTwin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_3seg_gb")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3seg_gb")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE seg3gb_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_3seg_gb")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3seg_gb")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE seg3gb_tmpl "+
 		"CREATE TYPE AS STRUCT gst (sk BIGINT, co BIGINT) "+
 		"CREATE TABLE t(id BIGINT, n gst, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3seg_gb/s WITH TEMPLATE seg3gb_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3seg_gb/s WITH TEMPLATE seg3gb_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3SEG_GB?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_3SEG_GB?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, (1, 7)), (2, (1, 8)), (3, (2, 9))")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, (1, 7)), (2, (1, 8)), (3, (2, 9))")
 
 	// (sk, co) = (1,7) (1,8) (2,9): two distinct sk over three rows, so the
 	// correct answer is 2 groups. Grouping by the struct ROOT would give 3

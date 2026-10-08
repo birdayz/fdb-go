@@ -35,33 +35,35 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CompositeIndexZeroWidening(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_czw")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_czw")
+	setup := testkit.OpenDB(t, "/FRL/testdb_czw")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_czw")
 	// s: single-column index only. c: composite only. u: no index at all.
 	// The same predicate must answer identically through all three.
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE czw "+
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE czw "+
 		"CREATE TABLE s (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX s_v ON s (v) "+
 		"CREATE TABLE c (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX c_vw ON c (v, w) "+
 		"CREATE TABLE u (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_czw/s WITH TEMPLATE czw")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CZW?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_czw/s WITH TEMPLATE czw")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CZW?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	for _, tbl := range []string{"s", "c", "u"} {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf(
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 			"INSERT INTO %s (id, v, w) VALUES (1, -0.0, 5), (2, 5.0, 5), (3, 0.0, 9)", tbl))
 	}
 
@@ -119,7 +121,7 @@ func TestFDB_CompositeIndexZeroWidening(t *testing.T) {
 	} {
 		t.Run("cq75_exact_in_"+tc.name, func(t *testing.T) {
 			indexedQuery := "SELECT id FROM c WHERE v IN " + tc.inList
-			if plan := planExplainVia(t, ctx, db, indexedQuery); plan != wantCompositeINPlan {
+			if plan := testkit.ExplainVia(t, ctx, db, indexedQuery); plan != wantCompositeINPlan {
 				t.Fatalf("EXPLAIN %s\n got: %s\nwant: %s", indexedQuery, plan, wantCompositeINPlan)
 			}
 			if got := ids(t, indexedQuery); !eq(got, []int64{1, 3}) {

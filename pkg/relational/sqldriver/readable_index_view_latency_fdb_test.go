@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ReadableIndexViewLatency measures what the planner's readable-index
@@ -51,20 +53,20 @@ import (
 // index build), and the NUMBERS above are the real record. Read the log line.
 func TestFDB_ReadableIndexViewLatency(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_rivlat")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rivlat")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_rivlat")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rivlat")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rivlat_tmpl "+
 			"CREATE TABLE t (id BIGINT, c BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_by_c ON t (c)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rivlat/s WITH TEMPLATE rivlat_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rivlat/s WITH TEMPLATE rivlat_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RIVLAT?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RIVLAT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -81,7 +83,7 @@ func TestFDB_ReadableIndexViewLatency(t *testing.T) {
 	defer conn.Close()
 
 	for i := 1; i <= 200; i++ {
-		mwjoMustExec(t, conn, ctx, fmt.Sprintf("INSERT INTO t VALUES (%d, %d, %d)", i, i%10, i*10))
+		testkit.MustExecCtx(t, conn, ctx, fmt.Sprintf("INSERT INTO t VALUES (%d, %d, %d)", i, i%10, i*10))
 	}
 
 	const q = "SELECT v FROM t WHERE id = 7"

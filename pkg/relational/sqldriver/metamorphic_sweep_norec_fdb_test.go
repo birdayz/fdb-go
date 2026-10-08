@@ -33,15 +33,17 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_MetamorphicNoRecPredicateSweep(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_norec", "norec",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_norec", "norec",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) "+
 			"CREATE INDEX t_ab ON t (a, b) "+
@@ -53,14 +55,14 @@ func TestFDB_MetamorphicNoRecPredicateSweep(t *testing.T) {
 	const nRows = 200
 	var vals []string
 	for i := 1; i <= nRows; i++ {
-		vals = append(vals, mhRowLiteral(dataRand, i))
+		vals = append(vals, testkit.MhRowLiteral(dataRand, i))
 	}
 	for start := 0; start < len(vals); start += 25 {
 		end := start + 25
 		if end > len(vals) {
 			end = len(vals)
 		}
-		w.Exec("INSERT INTO t " + mhCols + " VALUES " + strings.Join(vals[start:end], ", "))
+		w.Exec("INSERT INTO t " + testkit.MhCols + " VALUES " + strings.Join(vals[start:end], ", "))
 	}
 
 	seed := int64(1)
@@ -71,21 +73,21 @@ func TestFDB_MetamorphicNoRecPredicateSweep(t *testing.T) {
 	if s := os.Getenv("NOREC_ITERS"); s != "" {
 		fmt.Sscan(s, &iters)
 	}
-	g := &mhGen{r: rand.New(rand.NewSource(seed))}
+	g := &testkit.MhGen{R: rand.New(rand.NewSource(seed))}
 
 	compared, bothErr := 0, 0
 	nonTrivial := 0
 	for i := 0; i < iters; i++ {
-		p := g.pred(2)
+		p := g.Pred(2)
 		optimized := fmt.Sprintf("SELECT COUNT(*) FROM t WHERE %s", p)
 		unoptimized := fmt.Sprintf("SELECT SUM(CASE WHEN %s THEN 1 ELSE 0 END) FROM t", p)
 
 		// Indexed side: where an optimization exists to go wrong.
-		gotOpt, e1 := mmRows(t, ctx, w.idx, optimized)
-		gotUnopt, e2 := mmRows(t, ctx, w.idx, unoptimized)
+		gotOpt, e1 := testkit.QueryRowStrings(t, ctx, w.Idx, optimized)
+		gotUnopt, e2 := testkit.QueryRowStrings(t, ctx, w.Idx, unoptimized)
 		// Unindexed side: the control.
-		gotOptN, e3 := mmRows(t, ctx, w.plain, optimized)
-		gotUnoptN, e4 := mmRows(t, ctx, w.plain, unoptimized)
+		gotOptN, e3 := testkit.QueryRowStrings(t, ctx, w.Plain, optimized)
+		gotUnoptN, e4 := testkit.QueryRowStrings(t, ctx, w.Plain, unoptimized)
 
 		if e1 != nil || e2 != nil || e3 != nil || e4 != nil {
 			bothErr++

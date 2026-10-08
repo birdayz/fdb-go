@@ -11,26 +11,28 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_OverflowProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ovf")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ovf")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_ovf")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ovf")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ovf CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ovf/s WITH TEMPLATE ovf")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OVF?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ovf/s WITH TEMPLATE ovf")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OVF?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 9223372036854775807), (2, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 9223372036854775807), (2, 1)")
 
 	overflows := func(name, q string) {
 		t.Run(name, func(t *testing.T) {

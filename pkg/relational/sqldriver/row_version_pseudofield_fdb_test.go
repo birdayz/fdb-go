@@ -15,27 +15,29 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_RowVersionPseudoField_BaseScan(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_rvpf")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvpf")
+	setup := testkit.OpenDB(t, "/FRL/testdb_rvpf")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvpf")
 	// t3 mirrors pseudo-field-clash.yamsql's t3 (no real __ROW_VERSION
 	// column → the pseudo-field applies); t2 declares a REAL "__ROW_VERSION"
 	// string column (real-column-wins). No version index — this pins the
 	// BASE-SCAN read path.
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE rvpf_tpl
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE rvpf_tpl
 		CREATE TABLE t3(id BIGINT, col1 BIGINT, col2 STRING, PRIMARY KEY(id))
 		CREATE TABLE t2(id BIGINT, col1 BIGINT, "__ROW_VERSION" STRING, PRIMARY KEY(id))
 		WITH OPTIONS(store_row_versions=true)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvpf/s1 WITH TEMPLATE rvpf_tpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvpf/s1 WITH TEMPLATE rvpf_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RVPF?cluster_file=%s&schema=S1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RVPF?cluster_file=%s&schema=S1", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -43,9 +45,9 @@ func TestFDB_RowVersionPseudoField_BaseScan(t *testing.T) {
 
 	// Two separate transactions → two distinct commit versions; the
 	// increasing-bytes assertion below depends on that.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t3 VALUES (1, 10, 'aa'), (2, 20, 'ab')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t3 VALUES (3, 10, 'ac')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t2 VALUES (1, 10, 'ra'), (2, 20, 'rb')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t3 VALUES (1, 10, 'aa'), (2, 20, 'ab')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t3 VALUES (3, 10, 'ac')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t2 VALUES (1, 10, 'ra'), (2, 20, 'rb')")
 
 	t.Run("select_pseudo_field_returns_version_bytes", func(t *testing.T) {
 		t.Parallel()
@@ -188,23 +190,23 @@ func TestFDB_RowVersionPseudoField_BaseScan(t *testing.T) {
 // __ROW_VERSION", IndexTest.java:952-960 — the same UNDEFINED_COLUMN code).
 func TestFDB_RowVersionPseudoField_DisabledTemplate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_rvpf_off")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvpf_off")
-	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE rvpf_off_tpl
+	setup := testkit.OpenDB(t, "/FRL/testdb_rvpf_off")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rvpf_off")
+	testkit.MustExecCtx(t, setup, ctx, `CREATE SCHEMA TEMPLATE rvpf_off_tpl
 		CREATE TABLE t3(id BIGINT, col1 BIGINT, PRIMARY KEY(id))
 		WITH OPTIONS(store_row_versions=false)`)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvpf_off/s1 WITH TEMPLATE rvpf_off_tpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rvpf_off/s1 WITH TEMPLATE rvpf_off_tpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RVPF_OFF?cluster_file=%s&schema=S1", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RVPF_OFF?cluster_file=%s&schema=S1", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t3 VALUES (1, 10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t3 VALUES (1, 10)")
 
 	_, qerr := db.QueryContext(ctx, `SELECT "__ROW_VERSION" FROM t3`)
 	if qerr == nil || !strings.Contains(qerr.Error(), "42703") {

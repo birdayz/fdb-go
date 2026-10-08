@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -22,13 +24,13 @@ import (
 // and still allow the all-equality-bound composition.
 func TestFDB_IntersectionOrderingGate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ixgate")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ixgate")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_ixgate")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ixgate")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ixgate "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_a ON t (a) "+
@@ -36,8 +38,8 @@ func TestFDB_IntersectionOrderingGate(t *testing.T) {
 			"CREATE TABLE t_desc (id BIGINT, a BIGINT, b BIGINT, sort_key BIGINT, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_desc_a_sort ON t_desc (a, sort_key) "+
 			"CREATE INDEX idx_desc_b_sort ON t_desc (b, sort_key)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ixgate/s WITH TEMPLATE ixgate")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IXGATE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ixgate/s WITH TEMPLATE ixgate")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IXGATE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -60,7 +62,7 @@ func TestFDB_IntersectionOrderingGate(t *testing.T) {
 		}
 		fmt.Fprintf(&sb, "(%d, %d, %d)", i, 1000-(i*7)%997, b)
 	}
-	mwjoMustExec(t, db, ctx, sb.String())
+	testkit.MustExecCtx(t, db, ctx, sb.String())
 
 	collect := func(q string) map[int64]bool {
 		rows, err := db.QueryContext(ctx, q)
@@ -108,7 +110,7 @@ func TestFDB_IntersectionOrderingGate(t *testing.T) {
 		// (sort_key, id). Duplicate sort_key values make ID DESC load-bearing:
 		// comparing on sort_key alone can admit/drop the wrong record, while a
 		// forward merge or forward leg produces the wrong row order.
-		mwjoMustExec(t, db, ctx, "INSERT INTO t_desc (id, a, b, sort_key) VALUES "+
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t_desc (id, a, b, sort_key) VALUES "+
 			"(1, 7, 9, 10), "+
 			"(3, 7, 9, 90), "+
 			"(7, 7, 9, 100), "+
@@ -151,7 +153,7 @@ func TestFDB_IntersectionOrderingGate(t *testing.T) {
 		// intersection repeatedly. This exercises the reverse flag through
 		// executor construction and continuation restore, not merely the first
 		// in-memory page.
-		conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 			ec.SetOptions(api.NewOptionsBuilder().
 				Set(api.OptExecutionScannedRowsLimit, 2).
 				Build())

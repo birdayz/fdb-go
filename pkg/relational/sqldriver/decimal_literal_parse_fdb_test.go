@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -18,7 +20,7 @@ import (
 // overflows is an infinity.
 func TestFDB_DecimalLiteralParsesAsJava(t *testing.T) {
 	t.Parallel()
-	db := setupPlanShapeDB(t, "declit", `CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))`)
+	db := testkit.SetupPlanShapeDB(t, "declit", `CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))`)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, `INSERT INTO t VALUES (1, 1.0)`); err != nil {
 		t.Fatal(err)

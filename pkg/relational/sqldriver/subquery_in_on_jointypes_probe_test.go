@@ -12,17 +12,19 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_SubqueryInOn_JoinTypesAndNegation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_subq_on_jt")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_subq_on_jt")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_subq_on_jt")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_subq_on_jt")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE subq_on_jt "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
@@ -30,38 +32,38 @@ func TestFDB_SubqueryInOn_JoinTypesAndNegation(t *testing.T) {
 			"CREATE TABLE d (id BIGINT, b_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_subq_on_jt/s WITH TEMPLATE subq_on_jt")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQ_ON_JT?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_subq_on_jt/s WITH TEMPLATE subq_on_jt")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SUBQ_ON_JT?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, a_id) VALUES (10, 1), (20, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id, w) VALUES (50, 1, 999), (51, 2, 888)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id, b_id) VALUES (1, 999), (2, 888)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, a_id) VALUES (10, 1), (20, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id, w) VALUES (50, 1, 999), (51, 2, 888)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id, b_id) VALUES (1, 999), (2, 888)")
 
 	// NOT IN-subquery in ON — the negation must not slip past the IN detector.
 	t.Run("not_in_subquery_left_on", func(t *testing.T) {
-		assertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
+		testkit.AssertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
 			"LEFT JOIN c ON c.a_id = a.id AND c.w NOT IN (SELECT d.b_id FROM d WHERE d.id = a.id + 999)")
 	})
 	// non-LEFT join types must reject too (detector must not be LEFT-only).
 	t.Run("in_subquery_right_on", func(t *testing.T) {
-		assertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
+		testkit.AssertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
 			"RIGHT JOIN c ON c.a_id = a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id = a.id + 999)")
 	})
 	t.Run("in_subquery_full_outer_on", func(t *testing.T) {
-		assertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
+		testkit.AssertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
 			"FULL OUTER JOIN c ON c.a_id = a.id AND c.w IN (SELECT d.b_id FROM d WHERE d.id = a.id + 999)")
 	})
 	t.Run("scalar_subquery_right_on", func(t *testing.T) {
-		assertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
+		testkit.AssertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
 			"RIGHT JOIN c ON c.a_id = a.id AND c.w > (SELECT MAX(d.b_id) FROM d WHERE d.id = a.id + 999)")
 	})
 	t.Run("not_in_subquery_inner_on", func(t *testing.T) {
-		assertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
+		testkit.AssertUnsupported(t, db, ctx, "SELECT a.id, c.id FROM a JOIN b ON b.a_id = a.id "+
 			"JOIN c ON c.a_id = a.id AND c.w NOT IN (SELECT d.b_id FROM d WHERE d.id = a.id + 999)")
 	})
 
@@ -73,9 +75,9 @@ func TestFDB_SubqueryInOn_JoinTypesAndNegation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query: %v", err)
 		}
-		got := siScanRows(t, rows)
+		got := testkit.ScanRowStrings(t, rows)
 		want := []string{"1|50", "2|51"} // both c rows have w not in {111,222}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("NOT IN-value-list LEFT JOIN rows = %v, want %v", got, want)
 		}
 	})

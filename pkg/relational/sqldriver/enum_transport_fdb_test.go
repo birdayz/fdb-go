@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -30,7 +32,7 @@ import (
 // the records exactly as a generated protobuf application would.
 func TestFDB_EnumTransport(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 
@@ -91,7 +93,7 @@ func TestFDB_EnumTransport(t *testing.T) {
 
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open FDB: %v", err)
 	}
@@ -174,7 +176,7 @@ func TestFDB_EnumTransport(t *testing.T) {
 				return nil, err
 			}
 			for _, row := range rows {
-				out.rows = append(out.rows, positionalPipeSprint(row))
+				out.rows = append(out.rows, testkit.PositionalPipeSprint(row))
 			}
 			return nil, nil
 		})

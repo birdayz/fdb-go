@@ -8,18 +8,20 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // A negative zero is not the additive identity for +0. Java seeds SUM/AVG
 // with the first non-null operand, so an all-negative-zero group stays -0.
 func TestFDB_AggregateSignedZero(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_aggsignedzero", "aggsignedzero",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_aggsignedzero", "aggsignedzero",
 		"CREATE TABLE t (id BIGINT, g BIGINT, d DOUBLE, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_gid_d ON t (g, id, d)")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES "+
 		"(1, 1, NULL), (2, 1, -0.0), (3, 1, NULL), (4, 1, -0.0), "+
 		"(5, 2, 0.0), (6, 2, -0.0), (7, 3, NULL), (8, 3, NULL), "+
 		"(9, 4, -1.0), (10, 4, 1.0), (11, 5, -0.0)")
@@ -34,7 +36,7 @@ func TestFDB_AggregateSignedZero(t *testing.T) {
 	}
 
 	const grouped = "SELECT g, SUM(d), AVG(d) FROM t GROUP BY g ORDER BY g"
-	plan := planExplainVia(t, ctx, db, grouped)
+	plan := testkit.ExplainVia(t, ctx, db, grouped)
 	if !strings.Contains(plan, "StreamingAgg") || !strings.Contains(plan, "Index") || strings.Contains(plan, "Sort") {
 		t.Fatalf("require a streaming aggregate over ordered index input, without a buffering sort: %s", plan)
 	}
@@ -44,7 +46,7 @@ func TestFDB_AggregateSignedZero(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
-			conn := pagedConn(t, db, budget)
+			conn := testkit.PagedConn(t, db, budget)
 			check := func(q string, grouped bool, want []int64) {
 				t.Helper()
 				rows, err := conn.QueryContext(ctx, q)

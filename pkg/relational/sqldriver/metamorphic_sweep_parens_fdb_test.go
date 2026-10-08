@@ -40,6 +40,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // mmpWrap returns s wrapped in depth layers of parentheses.
@@ -52,18 +54,18 @@ func mmpWrap(s string, depth int) string {
 
 func TestFDB_MetamorphicParenthesization(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_mhparen")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mhparen")
+	setup := testkit.OpenDB(t, "/FRL/testdb_mhparen")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mhparen")
 	table := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) "
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mhparen_idx "+table+
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE mhparen_idx "+table+
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) CREATE INDEX t_s ON t (s)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mhparen/si WITH TEMPLATE mhparen_idx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mhparen/si WITH TEMPLATE mhparen_idx")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MHPAREN?cluster_file=%s&schema=SI", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MHPAREN?cluster_file=%s&schema=SI", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -74,14 +76,14 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 	const nRows = 120
 	var vals []string
 	for i := 1; i <= nRows; i++ {
-		vals = append(vals, mhRowLiteral(dataRand, i))
+		vals = append(vals, testkit.MhRowLiteral(dataRand, i))
 	}
 	for start := 0; start < len(vals); start += 20 {
 		end := start + 20
 		if end > len(vals) {
 			end = len(vals)
 		}
-		mwjoMustExec(t, db, ctx, "INSERT INTO t "+mhCols+" VALUES "+strings.Join(vals[start:end], ", "))
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t "+testkit.MhCols+" VALUES "+strings.Join(vals[start:end], ", "))
 	}
 
 	seed := int64(7)
@@ -92,9 +94,9 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 	if s := os.Getenv("MHP_ITERS"); s != "" {
 		fmt.Sscan(s, &iters)
 	}
-	g := &mhGen{r: rand.New(rand.NewSource(seed))}
+	g := &testkit.MhGen{R: rand.New(rand.NewSource(seed))}
 
-	rowsFor := func(q string) ([]string, error) { return mmRows(t, ctx, db, q) }
+	rowsFor := func(q string) ([]string, error) { return testkit.QueryRowStrings(t, ctx, db, q) }
 
 	// The population guards. Three distinct ways this sweep could be green
 	// while proving nothing, so three counters:
@@ -113,7 +115,7 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 	// `p AND q` vs `(p) AND (q)`.
 	t.Run("where_predicate", func(t *testing.T) {
 		for i := 0; i < iters; i++ {
-			p := g.pred(2)
+			p := g.Pred(2)
 			bare := fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY id", p)
 			want, err := rowsFor(bare)
 			if err != nil {
@@ -142,10 +144,10 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 				if len(want) > 0 {
 					nonEmpty++
 				}
-				if !mmEqRows(got, want) {
+				if !testkit.EqualRows(got, want) {
 					t.Errorf("REDUNDANT PARENTHESES CHANGED THE ANSWER\n  bare : %s\n  paren: %s\n"+
 						"  bare rows  %v\n  paren rows %v\n  %s",
-						bare, variant, want, got, mmFirstDiff(got, want))
+						bare, variant, want, got, testkit.MmFirstDiff(got, want))
 				}
 			}
 		}
@@ -159,9 +161,9 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 	t.Run("case_arms", func(t *testing.T) {
 		lits := []string{"1", "0", "-3", "'z'", "NULL"}
 		for i := 0; i < iters; i++ {
-			p := g.pred(1)
-			thenLit := g.pick(lits)
-			elseLit := g.pick(lits)
+			p := g.Pred(1)
+			thenLit := g.Pick(lits)
+			elseLit := g.Pick(lits)
 			// Both arms the same literal KIND, so the bare form's own result
 			// type is not what the variants are being compared against.
 			if (thenLit == "'z'") != (elseLit == "'z'") {
@@ -198,10 +200,10 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 				if len(want) > 0 {
 					nonEmpty++
 				}
-				if !mmEqRows(got, want) {
+				if !testkit.EqualRows(got, want) {
 					t.Errorf("REDUNDANT PARENTHESES CHANGED A CASE RESULT\n  bare : %s\n  paren: %s\n"+
 						"  bare rows  %v\n  paren rows %v\n  %s",
-						bare, variant, want, got, mmFirstDiff(got, want))
+						bare, variant, want, got, testkit.MmFirstDiff(got, want))
 				}
 			}
 		}
@@ -216,7 +218,7 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 	// above cannot reach it: their operands are never predicates.
 	t.Run("case_arm_is_a_comparison", func(t *testing.T) {
 		for i := 0; i < iters/2; i++ {
-			thenPred := g.atom(1)
+			thenPred := g.Atom(1)
 			bare := fmt.Sprintf("SELECT CASE WHEN id > 0 THEN %s ELSE FALSE END FROM t ORDER BY id",
 				thenPred)
 			want, err := rowsFor(bare)
@@ -237,10 +239,10 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 				if len(want) > 0 {
 					nonEmpty++
 				}
-				if !mmEqRows(got, want) {
+				if !testkit.EqualRows(got, want) {
 					t.Errorf("REDUNDANT PARENTHESES CHANGED A COMPARISON-VALUED CASE ARM\n"+
 						"  bare : %s\n  paren: %s\n  bare rows  %v\n  paren rows %v\n  %s",
-						bare, variant, want, got, mmFirstDiff(got, want))
+						bare, variant, want, got, testkit.MmFirstDiff(got, want))
 				}
 			}
 		}
@@ -249,8 +251,8 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 	// ---- axis 3: parenthesized IN-list items -------------------------------
 	t.Run("in_list_items", func(t *testing.T) {
 		for i := 0; i < iters; i++ {
-			col := g.pick(g.ints())
-			items := []string{g.pick(mhIntLits), g.pick(mhIntLits), g.pick(mhIntLits)}
+			col := g.Pick(g.Ints())
+			items := []string{g.Pick(testkit.MhIntLits), g.Pick(testkit.MhIntLits), g.Pick(testkit.MhIntLits)}
 			bare := fmt.Sprintf("SELECT id FROM t WHERE %s IN (%s) ORDER BY id",
 				col, strings.Join(items, ", "))
 			want, err := rowsFor(bare)
@@ -284,10 +286,10 @@ func TestFDB_MetamorphicParenthesization(t *testing.T) {
 				if len(want) > 0 {
 					nonEmpty++
 				}
-				if !mmEqRows(got, want) {
+				if !testkit.EqualRows(got, want) {
 					t.Errorf("REDUNDANT PARENTHESES CHANGED AN IN-LIST RESULT\n  bare : %s\n  paren: %s\n"+
 						"  bare rows  %v\n  paren rows %v\n  %s",
-						bare, variant, want, got, mmFirstDiff(got, want))
+						bare, variant, want, got, testkit.MmFirstDiff(got, want))
 				}
 			}
 		}

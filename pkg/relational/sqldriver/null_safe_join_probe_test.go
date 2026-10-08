@@ -11,33 +11,35 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_NullSafeJoinProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_nsjoin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nsjoin")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_nsjoin")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_nsjoin")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE nsjoin "+
 			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX a_k ON a (k) CREATE INDEX b_k ON b (k)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nsjoin/s WITH TEMPLATE nsjoin")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NSJOIN?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_nsjoin/s WITH TEMPLATE nsjoin")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NSJOIN?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// a: id1 k=1, id2 k=NULL, id3 k=2 ; b: id1 k=1, id2 k=NULL, id3 k=9
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, k) VALUES (1, 1), (3, 2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, k) VALUES (1, 1), (3, 9)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id) VALUES (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, k) VALUES (1, 1), (3, 2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id) VALUES (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, k) VALUES (1, 1), (3, 9)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id) VALUES (2)")
 
 	pairs := func(q string) []string {
 		rows, err := db.QueryContext(ctx, q)

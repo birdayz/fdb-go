@@ -31,23 +31,25 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DMLPrimaryKeyDedupExecutes(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dmldedup")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dmldedup")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dmldedup")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dmldedup")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dmldedup "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_a ON t (a) "+
 			"CREATE INDEX t_ab ON t (a, b)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dmldedup/s WITH TEMPLATE dmldedup")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DMLDEDUP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dmldedup/s WITH TEMPLATE dmldedup")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DMLDEDUP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -55,8 +57,8 @@ func TestFDB_DMLPrimaryKeyDedupExecutes(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	reset := func() {
-		mwjoMustExec(t, db, ctx, "DELETE FROM t")
-		mwjoMustExec(t, db, ctx,
+		testkit.MustExecCtx(t, db, ctx, "DELETE FROM t")
+		testkit.MustExecCtx(t, db, ctx,
 			"INSERT INTO t (id, a, b, v) VALUES (1, 10, 1, 100), (2, 20, 1, 200), (3, 30, 1, 300)")
 	}
 	scalar := func(q string) int64 {

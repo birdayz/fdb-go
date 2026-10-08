@@ -13,6 +13,8 @@ import (
 	"sort"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -32,12 +34,12 @@ import (
 
 func TestFDB_DynamicNaNCompositeIndexKeyFilter(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -243,12 +245,12 @@ func TestFDB_DynamicNaNCompositeIndexKeyFilter(t *testing.T) {
 // that has no secondary index.
 func TestFDB_FloatInequalitiesWithRawNaNPayloadsUseExactIndexRanges(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -471,7 +473,7 @@ func TestFDB_FloatInequalitiesWithRawNaNPayloadsUseExactIndexRanges(t *testing.T
 					// `IndexScan(VALUE_IDX, [<>] COVERING)` — a plan carrying exactly
 					// the bounded inequality range it demands. See
 					// covering_plan_assertions_test.go for the general rule.
-					_, usedBoundedIndex := planBindsBoundedScanOn(indexedPlan, indexName)
+					_, usedBoundedIndex := testkit.PlanBindsBoundedScanOn(indexedPlan, indexName)
 					if !usedBoundedIndex {
 						t.Fatalf(
 							"%s did not bind a bounded scan on %s: %s\n"+

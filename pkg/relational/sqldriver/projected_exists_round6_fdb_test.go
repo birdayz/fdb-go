@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExists_Round6 pins the two round-6 regressions,
@@ -33,19 +35,19 @@ import (
 //	      projected columns.
 func TestFDB_ProjectedExists_Round6(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_projexists_r6")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r6")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r6_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_projexists_r6")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_projexists_r6")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE projexists_r6_tmpl "+
 		"CREATE TABLE t1(id BIGINT, col1 BIGINT, PRIMARY KEY(id)) "+
 		"CREATE TABLE t2(id BIGINT, t1_id BIGINT, PRIMARY KEY(id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r6/s WITH TEMPLATE projexists_r6_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_projexists_r6/s WITH TEMPLATE projexists_r6_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R6?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PROJEXISTS_R6?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -61,8 +63,8 @@ func TestFDB_ProjectedExists_Round6(t *testing.T) {
 	//   col1: 90  80  70  60  50
 	// Then `ORDER BY x` (= ORDER BY t1.id ASC) must yield id 1,2,3,4,5, whereas
 	// a buggy "sort by the field named ID" (= col1 ASC) yields id 5,4,3,2,1.
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 90), (2, 80), (3, 70), (4, 60), (5, 50)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (10, 1), (30, 3), (50, 5)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 90), (2, 80), (3, 70), (4, 60), (5, 50)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (10, 1), (30, 3), (50, 5)")
 
 	// ════════════════════════════════════════════════════════════════════════
 	// P2a: ORDER BY a SELECT-list alias whose value is a simple column.

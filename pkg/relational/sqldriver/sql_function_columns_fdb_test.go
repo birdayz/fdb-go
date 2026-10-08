@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -17,21 +19,21 @@ import (
 func TestFDB_QuantifierColumnNames(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_qcols")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_qcols")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE qcols_tpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_qcols")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_qcols")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE qcols_tpl "+
 		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE FUNCTION fd(IN x BIGINT) AS SELECT a.id, b.id FROM t a, t b WHERE a.id = x AND b.id = x "+
 		"CREATE FUNCTION fs(IN x BIGINT) AS SELECT * FROM t a, t b WHERE a.id = x AND b.id = x "+
 		"CREATE FUNCTION fe(IN x BIGINT) AS SELECT id + 1, id FROM t WHERE id = x "+
 		`CREATE FUNCTION "नमस्त"(IN x BIGINT) AS SELECT id FROM t WHERE id = x`)
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_qcols/s WITH TEMPLATE qcols_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_QCOLS?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_qcols/s WITH TEMPLATE qcols_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_QCOLS?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10), (2, 20)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10), (2, 20)")
 
 	for _, tc := range []struct{ query, want string }{
 		{`SELECT * FROM fd(1)`, `[_0 _1] [[1 1]]`},

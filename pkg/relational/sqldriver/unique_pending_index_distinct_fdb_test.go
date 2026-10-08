@@ -26,6 +26,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -42,12 +44,12 @@ import (
 
 func TestFDB_UniquePendingIndexDoesNotEliminateDistinct(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -186,7 +188,7 @@ func TestFDB_UniquePendingIndexDoesNotEliminateDistinct(t *testing.T) {
 			return nil, rErr
 		}
 		for _, r := range rows {
-			got = append(got, positionalNamedPipeSprint(r))
+			got = append(got, testkit.PositionalNamedPipeSprint(r))
 		}
 		return nil, nil
 	}); err != nil {

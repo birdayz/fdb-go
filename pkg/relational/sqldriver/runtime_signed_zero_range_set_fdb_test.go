@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
@@ -30,17 +32,17 @@ import (
 
 func TestFDB_RuntimeRangeSetLimitThroughFilterAndDistinct(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const path = "/FRL/testdb_range_budget"
-	setup := openTestDB(t, path)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+path)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE range_budget "+
+	setup := testkit.OpenDB(t, path)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+path)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE range_budget "+
 		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, payload STRING, PRIMARY KEY (id)) "+
 		"CREATE INDEX rb_vw ON t (v, w)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+path+"/s WITH TEMPLATE range_budget")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+path+"/s WITH TEMPLATE range_budget")
 	t.Cleanup(func() {
 		for _, ddl := range []string{"DROP SCHEMA " + path + "/s", "DROP SCHEMA TEMPLATE range_budget", "DROP DATABASE " + path} {
 			if _, err := setup.ExecContext(ctx, ddl); err != nil {
@@ -48,7 +50,7 @@ func TestFDB_RuntimeRangeSetLimitThroughFilterAndDistinct(t *testing.T) {
 			}
 		}
 	})
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(path), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(path), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +59,7 @@ func TestFDB_RuntimeRangeSetLimitThroughFilterAndDistinct(t *testing.T) {
 	// rejects, or that DISTINCT collapses. A result cap of three is not a safe
 	// raw-row cap below either operator. The suffix equality forces range-set
 	// enumeration of both signs, rather than terminal-zero widening.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES "+
 		"(1,-0.0,5,'a'),(2,-0.0,5,'a'),(3,-0.0,5,'a'),"+
 		"(4,-0.0,5,'b'),(5,0.0,5,'b'),(6,0.0,5,'c')")
 	for _, tc := range []struct {
@@ -68,7 +70,7 @@ func TestFDB_RuntimeRangeSetLimitThroughFilterAndDistinct(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			plan := planExplainVia(t, ctx, db, tc.query)
+			plan := testkit.ExplainVia(t, ctx, db, tc.query)
 			for _, part := range []string{"Limit(3", tc.operator, "IndexScan(RB_VW", "[=, =]"} {
 				if !strings.Contains(plan, part) {
 					t.Fatalf("plan %s does not exercise %s above the range set (missing %q)", plan, tc.operator, part)
@@ -101,13 +103,13 @@ func TestFDB_RuntimeRangeSetLimitThroughFilterAndDistinct(t *testing.T) {
 
 func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_rszr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rszr")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE rszr "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_rszr")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rszr")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE rszr "+
 		"CREATE TABLE d (id BIGINT, v DOUBLE, w BIGINT, payload STRING, PRIMARY KEY (id)) "+
 		"CREATE INDEX d_vw ON d (v, w) "+
 		"CREATE TABLE f (id BIGINT, v FLOAT, w BIGINT, payload STRING, PRIMARY KEY (id)) "+
@@ -120,8 +122,8 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 		"CREATE TABLE u (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 		"CREATE UNIQUE INDEX u_vw ON u (v, w) "+
 		"CREATE TABLE o (id BIGINT, kd DOUBLE, kf FLOAT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rszr/s WITH TEMPLATE rszr")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RSZR?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rszr/s WITH TEMPLATE rszr")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RSZR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -130,29 +132,29 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 
 	// DOUBLE and FLOAT corpora each contain both exact target signs, the two
 	// broad-interval flank rows, an ordinary nonzero, and two NULL suffixes.
-	mwjoMustExec(t, db, ctx, "INSERT INTO d (id,v,w,payload) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d (id,v,w,payload) VALUES "+
 		"(1,-0.0,5,'d-neg'),(2,0.0,5,'d-pos'),(3,-0.0,9,'d-high'),"+
 		"(4,0.0,1,'d-low'),(5,7.0,5,'d-seven'),"+
 		"(6,-0.0,NULL,'d-neg-null'),(7,0.0,NULL,'d-pos-null')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO f (id,v,w,payload) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO f (id,v,w,payload) VALUES "+
 		"(101,CAST(-0.0 AS FLOAT),5,'f-neg'),(102,CAST(0.0 AS FLOAT),5,'f-pos'),(103,CAST(-0.0 AS FLOAT),9,'f-high'),"+
 		"(104,CAST(0.0 AS FLOAT),1,'f-low'),(105,CAST(7.0 AS FLOAT),5,'f-seven')")
 
 	// One row for every physical sign choice of (DOUBLE,FLOAT), plus flanks.
 	// IDs follow tuple order: (--), (-+), (+-), (++).
-	mwjoMustExec(t, db, ctx, "INSERT INTO m (id,v1,v2,w,payload) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO m (id,v1,v2,w,payload) VALUES "+
 		"(201,-0.0,CAST(-0.0 AS FLOAT),5,'mm'),(202,-0.0,CAST(0.0 AS FLOAT),5,'mp'),"+
 		"(203,0.0,CAST(-0.0 AS FLOAT),5,'pm'),(204,0.0,CAST(0.0 AS FLOAT),5,'pp'),"+
 		"(205,-0.0,CAST(-0.0 AS FLOAT),9,'high'),(206,0.0,CAST(0.0 AS FLOAT),1,'low')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO pfx (id,g,v,w) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO pfx (id,g,v,w) VALUES "+
 		"(211,1,-0.0,5),(212,1,0.0,5),(213,1,-0.0,9),(214,1,0.0,1),"+
 		"(215,2,-0.0,5),(216,2,0.0,5)")
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO pkd (v,w,id,payload) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO pkd (v,w,id,payload) VALUES "+
 		"(-0.0,5,301,'pk-neg'),(0.0,5,302,'pk-pos'),"+
 		"(-0.0,9,303,'pk-high'),(0.0,1,304,'pk-low')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO u (id,v,w) VALUES (401,-0.0,5),(402,0.0,5),(403,7.0,5)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO o (id,kd,kf) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO u (id,v,w) VALUES (401,-0.0,5),(402,0.0,5),(403,7.0,5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO o (id,kd,kf) VALUES "+
 		"(10,0.0,CAST(-0.0 AS FLOAT)),(11,-0.0,CAST(0.0 AS FLOAT)),(20,7.0,CAST(7.0 AS FLOAT)),(30,NULL,NULL)")
 
 	idsDB := func(t *testing.T, q string, args ...any) []int64 {
@@ -220,7 +222,7 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 		{"SELECT id FROM m WHERE v1 = 0 AND v2 = 0 AND w = 5", "M_V1V2W"},
 		{"SELECT id FROM pfx WHERE g = 1 AND v = 0 AND w = 5", "PFX_GVW"},
 	} {
-		plan := planExplainVia(t, ctx, db, tc.q)
+		plan := testkit.ExplainVia(t, ctx, db, tc.q)
 		if !strings.Contains(plan, "IndexScan("+tc.index) || !strings.Contains(plan, "[=, =") {
 			t.Fatalf("%s plan = %s\nwant %s with the equality suffix retained", tc.q, plan, tc.index)
 		}
@@ -229,17 +231,17 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 	// Covering and fetch are each applied once above the combined physical
 	// ranges. The two shapes must return the same two logical matches.
 	coveringQ := "SELECT id FROM d WHERE v = 0 AND w = 5"
-	coveringPlan := planExplainVia(t, ctx, db, coveringQ)
+	coveringPlan := testkit.ExplainVia(t, ctx, db, coveringQ)
 	if !strings.Contains(coveringPlan, "COVERING") || strings.Contains(coveringPlan, "Fetch(") {
 		t.Fatalf("covering plan = %s, want one COVERING D_VW scan and no Fetch", coveringPlan)
 	}
 	nonCoveringQ := "SELECT payload FROM d WHERE v = 0 AND w = 5"
-	nonCoveringPlan := planExplainVia(t, ctx, db, nonCoveringQ)
+	nonCoveringPlan := testkit.ExplainVia(t, ctx, db, nonCoveringQ)
 	// PAYLOAD is outside D_VW's entry, so this scan must read base records.
 	// Asserted as the property, not as the literal `Fetch(IndexScan(D_VW` — a
 	// bare IndexScan is a fetching scan, so the old string tested the rendering
 	// and went red on a plan that reads exactly the records it should.
-	assertScanReadsBaseRecords(t, nonCoveringPlan, "IndexScan(D_VW")
+	testkit.AssertScanReadsBaseRecords(t, nonCoveringPlan, "IndexScan(D_VW")
 	var payloads []string
 	rows, err := db.QueryContext(ctx, nonCoveringQ)
 	if err != nil {
@@ -275,7 +277,7 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 	// Force a transaction/page stop after every scanned row. The resumed stream
 	// must cross all four sign branches with no gap or duplicate, and SQL
 	// LIMIT/OFFSET must be global rather than resetting for each branch.
-	pagedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	pagedConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 1).
 			Build())
@@ -305,19 +307,19 @@ func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 
 func TestFDB_RuntimeSignedZeroCorrelatedFloatAndDouble(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "rsz_corr_widths",
+	db := testkit.SetupPlanShapeDB(t, "rsz_corr_widths",
 		"CREATE TABLE d (id BIGINT, v DOUBLE, w BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX d_vw ON d (v, w) "+
 			"CREATE TABLE f (id BIGINT, v FLOAT, w BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX f_vw ON f (v, w) "+
 			"CREATE TABLE o (id BIGINT, kd DOUBLE, kf FLOAT, PRIMARY KEY (id))")
-	mwjoMustExec(t, db, ctx, "INSERT INTO d VALUES (1,-0.0,5),(2,0.0,5),(3,-0.0,9),(4,0.0,1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO f VALUES (101,CAST(-0.0 AS FLOAT),5),(102,CAST(0.0 AS FLOAT),5),(103,CAST(-0.0 AS FLOAT),9),(104,CAST(0.0 AS FLOAT),1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO o VALUES (10,0.0,CAST(-0.0 AS FLOAT)),(11,-0.0,CAST(0.0 AS FLOAT)),(30,NULL,NULL)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d VALUES (1,-0.0,5),(2,0.0,5),(3,-0.0,9),(4,0.0,1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO f VALUES (101,CAST(-0.0 AS FLOAT),5),(102,CAST(0.0 AS FLOAT),5),(103,CAST(-0.0 AS FLOAT),9),(104,CAST(0.0 AS FLOAT),1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO o VALUES (10,0.0,CAST(-0.0 AS FLOAT)),(11,-0.0,CAST(0.0 AS FLOAT)),(30,NULL,NULL)")
 
 	for _, tc := range []struct {
 		name  string
@@ -333,7 +335,7 @@ func TestFDB_RuntimeSignedZeroCorrelatedFloatAndDouble(t *testing.T) {
 		{"float_outer_null", "SELECT f.id FROM f,o WHERE f.v=o.kf AND f.w=5 AND o.id=30", "F_VW", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := planExplainVia(t, ctx, db, tc.q)
+			plan := testkit.ExplainVia(t, ctx, db, tc.q)
 			if !strings.Contains(plan, tc.index) || !strings.Contains(plan, "[=, =]") {
 				t.Fatalf("plan = %s\nwant correlated %s composite probe with its suffix", plan, tc.index)
 			}
@@ -365,12 +367,12 @@ func TestFDB_RuntimeSignedZeroCorrelatedFloatAndDouble(t *testing.T) {
 // hide an incorrectly capped filter/distinct child by resuming its empty page.
 func TestFDB_RuntimeRangeSetFilterDistinctOneExecution(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,36 +19,38 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_JoinUsingStarHidesRightColumns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_usingstar")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_usingstar")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_usingstar")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_usingstar")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE usingstar "+
 			"CREATE TABLE ja (c1 BIGINT, a2 STRING, PRIMARY KEY (c1)) "+
 			"CREATE TABLE jb (c1 BIGINT, b2 STRING, PRIMARY KEY (c1)) "+
 			"CREATE TABLE jd (c1 BIGINT, d2 STRING, PRIMARY KEY (c1)) "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE u (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_usingstar/s WITH TEMPLATE usingstar")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_USINGSTAR?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_usingstar/s WITH TEMPLATE usingstar")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_USINGSTAR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO ja VALUES (1, 'a1'), (2, 'a2')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO jb VALUES (1, 'b1'), (3, 'b3')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO jd VALUES (1, 'd1'), (2, 'd2')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10, 20), (2, 30, 40)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO u VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO ja VALUES (1, 'a1'), (2, 'a2')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO jb VALUES (1, 'b1'), (3, 'b3')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO jd VALUES (1, 'd1'), (2, 'd2')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1, 10, 20), (2, 30, 40)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO u VALUES (1)")
 
 	// run returns (column labels, rows-as-strings).
 	run := func(t *testing.T, q string) ([]string, []string) {
@@ -254,7 +256,7 @@ func TestFDB_JoinUsingStarHidesRightColumns(t *testing.T) {
 
 	t.Run("duplicate attributes remain ambiguous by name", func(t *testing.T) {
 		t.Parallel()
-		assertErrorCode(t, db, "SELECT d.x FROM (SELECT id, a AS x, b AS x FROM t) d JOIN u USING (id)", "42702")
+		testkit.AssertErrorCode(t, db, "SELECT d.x FROM (SELECT id, a AS x, b AS x FROM t) d JOIN u USING (id)", "42702")
 	})
 
 	t.Run("ON join keeps both copies", func(t *testing.T) {

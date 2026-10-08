@@ -36,21 +36,23 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_AggregateReshapingInputOrdinal(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "aggreshape",
+	db := testkit.SetupPlanShapeDB(t, "aggreshape",
 		"CREATE TABLE orders (oid BIGINT, cust BIGINT, status STRING, amt BIGINT, PRIMARY KEY (oid)) "+
 			"CREATE INDEX status_idx ON orders (status) "+
 			"CREATE TABLE cust (cid BIGINT, name STRING, region STRING, PRIMARY KEY (cid))")
 
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO cust (cid, name, region) VALUES (1,'alice','west'),(2,'bob','east'),(3,'carol','west')")
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO orders (oid, cust, status, amt) VALUES "+
 			"(10,1,'shipped',100),(11,1,'pending',50),(12,2,'shipped',200),(13,3,'shipped',30),(14,2,'pending',70)")
 

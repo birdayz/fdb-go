@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -36,7 +38,7 @@ func TestFDB_GuardiannDeferredMerge(t *testing.T) {
 	md := tmpl.Underlying()
 	idx := md.GetIndex("DOCSIDX")
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}

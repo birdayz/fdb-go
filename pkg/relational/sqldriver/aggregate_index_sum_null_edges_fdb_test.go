@@ -9,6 +9,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_AggregateIndexSum_AvgDoesNotInheritTheDefect is a load-bearing
@@ -23,11 +25,11 @@ import (
 // so.
 func TestFDB_AggregateIndexSum_AvgDoesNotInheritTheDefect(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_sum_avg", "sumavg",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_sum_avg", "sumavg",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_sum_v_g AS SELECT SUM(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_cnt_g AS SELECT COUNT(*) FROM t GROUP BY g "+
@@ -79,11 +81,11 @@ func TestFDB_AggregateIndexSum_AvgDoesNotInheritTheDefect(t *testing.T) {
 // residue plus them.
 func TestFDB_AggregateIndexSum_GroupLifecycle(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_sum_lifecycle", "sumlc",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_sum_lifecycle", "sumlc",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_sum_v_g AS SELECT SUM(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_cnt_g AS SELECT COUNT(*) FROM t GROUP BY g ")
@@ -127,11 +129,11 @@ func TestFDB_AggregateIndexSum_GroupLifecycle(t *testing.T) {
 // rather than the value, for SUM as the MIN suite does for the extremum.
 func TestFDB_AggregateIndexSum_NullGroupKey(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_sum_nullkey", "sumnk",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_sum_nullkey", "sumnk",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_sum_v_g AS SELECT SUM(v) FROM t GROUP BY g "+
 			"CREATE INDEX t_cnt_g AS SELECT COUNT(*) FROM t GROUP BY g ")

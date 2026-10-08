@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // The whole-struct comparison gate must survive a DERIVED TABLE and a CTE.
@@ -34,12 +36,12 @@ import (
 // be optimised away.
 func TestFDB_DerivedStructComparisonGate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/derivedstructgate")
+	setup := testkit.OpenDB(t, "/FRL/derivedstructgate")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/derivedstructgate"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -52,7 +54,7 @@ func TestFDB_DerivedStructComparisonGate(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/derivedstructgate/s WITH TEMPLATE dsg_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	dsn := fmt.Sprintf("fdbsql:///FRL/DERIVEDSTRUCTGATE?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/DERIVEDSTRUCTGATE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -30,7 +32,7 @@ import (
 // against that: if the cache is not live, the final MISS proves nothing.
 func TestFDB_StatisticsChangesInvalidateCachedPlans(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -38,24 +40,24 @@ func TestFDB_StatisticsChangesInvalidateCachedPlans(t *testing.T) {
 	const pkRows, fkRows = 200, 10
 
 	dbPath := "/FRL/statscache"
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE statscache"+
 			" CREATE TABLE pkside (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 			" CREATE TABLE fkside (id BIGINT, fk BIGINT, PRIMARY KEY (id))"+
 			" CREATE INDEX fkside_by_fk ON fkside (fk)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE statscache")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE statscache")
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S&planner_statistics=true", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S&planner_statistics=true", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	logger := &syncCaptureLogger{}
-	conn := installLogger(t, db, logger)
+	logger := &testkit.SyncCaptureLogger{}
+	conn := testkit.InstallLogger(t, db, logger)
 
 	for r := 0; r < pkRows; r++ {
 		if _, e := conn.ExecContext(ctx,
@@ -111,7 +113,7 @@ func TestFDB_StatisticsChangesInvalidateCachedPlans(t *testing.T) {
 
 	// Discard everything planned before this point (the INSERTs); from here the
 	// captured events are this query's and nothing else's.
-	base := len(logger.snapshot())
+	base := len(logger.Snapshot())
 
 	// ARM 1 -- COLLECTING must reach the next plan. This is the direction an
 	// operator hits first: run `stats collect`, and the very next query on the
@@ -120,7 +122,7 @@ func TestFDB_StatisticsChangesInvalidateCachedPlans(t *testing.T) {
 	// collecting, so there is an entry for the collection to displace.
 	runQuery("before any collection")
 	runQuery("before any collection, identical")
-	pre := logger.snapshot()[base:]
+	pre := logger.Snapshot()[base:]
 	if len(pre) != 2 {
 		t.Fatalf("want 2 planning events priming the cache, got %d", len(pre))
 	}
@@ -135,7 +137,7 @@ func TestFDB_StatisticsChangesInvalidateCachedPlans(t *testing.T) {
 	runQuery("first, after collect")
 	runQuery("second, identical")
 
-	events := logger.snapshot()[base:]
+	events := logger.Snapshot()[base:]
 	if len(events) != 4 {
 		t.Fatalf("want 4 planning events (2 priming + 2 after collect), got %d — the "+
 			"population has to be right before any cache outcome below means anything",
@@ -165,7 +167,7 @@ func TestFDB_StatisticsChangesInvalidateCachedPlans(t *testing.T) {
 	})
 
 	runQuery("after clear")
-	events = logger.snapshot()[base:]
+	events = logger.Snapshot()[base:]
 	if len(events) != 5 {
 		t.Fatalf("want 5 planning events, got %d", len(events))
 	}

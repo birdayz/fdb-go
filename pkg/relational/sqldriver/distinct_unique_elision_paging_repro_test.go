@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -41,14 +43,14 @@ import (
 // everyone".
 func TestFDB_DistinctUniqueElisionPagingRepro(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_duepr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duepr")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_duepr")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duepr")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE duepr "+
 			// Two structurally identical tables so the elided run and the control
 			// run each get their own un-mutated starting state.
@@ -58,9 +60,9 @@ func TestFDB_DistinctUniqueElisionPagingRepro(t *testing.T) {
 			"CREATE UNIQUE INDEX by_email2 ON t2 (email) "+
 			"CREATE TABLE t3 (id BIGINT, email STRING, email_plain STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email3 ON t3 (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duepr/s WITH TEMPLATE duepr")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duepr/s WITH TEMPLATE duepr")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUEPR?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUEPR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -78,7 +80,7 @@ func TestFDB_DistinctUniqueElisionPagingRepro(t *testing.T) {
 			}
 			fmt.Fprintf(&sb, "(%d, 'e%02d@x', 'e%02d@x')", i, i, i)
 		}
-		mwjoMustExec(t, db, ctx, sb.String())
+		testkit.MustExecCtx(t, db, ctx, sb.String())
 	}
 
 	// ---- the plan shapes the whole test is interpreted against -----------
@@ -109,7 +111,7 @@ func TestFDB_DistinctUniqueElisionPagingRepro(t *testing.T) {
 	// Reading these shapes in auto-commit instead would assert the BUG's
 	// presence and could never pass alongside its own fix.
 	narrowedPlan := duepExplainInTx(t, ctx, db, narrowedQ)
-	controlPlan := explainPlan(t, ctx, db, controlQ)
+	controlPlan := testkit.ExplainPlan(t, ctx, db, controlQ)
 	elidedPlan := duepExplainInTx(t, ctx, db, elidedQ)
 	t.Logf("EXPLAIN R3 narrowed %q\n  => %s", narrowedQ, narrowedPlan)
 	t.Logf("EXPLAIN R2 elided   %q\n  => %s", elidedQ, elidedPlan)
@@ -164,7 +166,7 @@ func TestFDB_DistinctUniqueElisionPagingRepro(t *testing.T) {
 		{"R3 narrowed", narrowedQ},
 		{"R2 elided", elidedQ},
 	} {
-		plan := explainPlan(t, ctx, db, ac.query)
+		plan := testkit.ExplainPlan(t, ctx, db, ac.query)
 		t.Logf("EXPLAIN auto-commit %-12s %q\n  => %s", ac.label, ac.query, plan)
 		if strings.Contains(plan, "narrowed-by:") || strings.Contains(plan, "distinct-by:") {
 			t.Fatalf("%s drew a secondary-UNIQUE proof in AUTO-COMMIT: %s\n"+
@@ -241,7 +243,7 @@ type duepResult struct {
 // page 2 is not fetched until the buffer runs dry.
 func duepRun(t *testing.T, ctx context.Context, db *sql.DB, table, q string) duepResult {
 	t.Helper()
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, int64(duepPageScanLimit)).Build())
 	})
@@ -271,9 +273,9 @@ func duepRun(t *testing.T, ctx context.Context, db *sql.DB, table, q string) due
 			// The mutation. Two separate auto-commit statements on the pool, so
 			// they are committed and visible before the next page's read version.
 			// The UNIQUE index is never violated: V is absent between them.
-			mwjoMustExec(t, db, ctx,
+			testkit.MustExecCtx(t, db, ctx,
 				fmt.Sprintf("DELETE FROM %s WHERE id = 1", table))
-			mwjoMustExec(t, db, ctx,
+			testkit.MustExecCtx(t, db, ctx,
 				fmt.Sprintf("INSERT INTO %s (id, email, email_plain) VALUES (%d, '%s', '%s')",
 					table, duepReinsertPK, duepV, duepV))
 			mutated = true

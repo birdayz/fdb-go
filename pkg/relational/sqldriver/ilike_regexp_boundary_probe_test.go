@@ -10,26 +10,28 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_IlikeRegexpBoundaryProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ilrp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ilrp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_ilrp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ilrp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE ilrp CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ilrp/s WITH TEMPLATE ilrp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ILRP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ilrp/s WITH TEMPLATE ilrp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_ILRP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, s) VALUES (1,'Apple'),(2,'banana')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, s) VALUES (1,'Apple'),(2,'banana')")
 
 	count := func(where string) (int, error) {
 		rows, err := db.QueryContext(ctx, "SELECT id FROM t WHERE "+where)

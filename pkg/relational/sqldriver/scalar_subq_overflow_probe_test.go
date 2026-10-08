@@ -13,28 +13,30 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ScalarSubqOverflowProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_sso")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sso")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE sso "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_sso")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sso")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE sso "+
 		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE o (id BIGINT, w BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sso/s WITH TEMPLATE sso")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSO?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sso/s WITH TEMPLATE sso")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSO?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1,10),(2,20)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO o (id, w) VALUES (1,100),(2,200),(3,300)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1,10),(2,20)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO o (id, w) VALUES (1,100),(2,200),(3,300)")
 
 	wantErr := func(name, q, code string) {
 		t.Run(name, func(t *testing.T) {
@@ -70,7 +72,7 @@ func TestFDB_ScalarSubqOverflowProbe(t *testing.T) {
 		}
 	})
 	t.Run("sum_overflow_22003", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (3, 9223372036854775807)") // max int64
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (3, 9223372036854775807)") // max int64
 		var s sql.NullInt64
 		err := db.QueryRowContext(ctx, "SELECT SUM(v) FROM t").Scan(&s)
 		if err == nil || !strings.Contains(err.Error(), "22003") {

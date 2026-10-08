@@ -22,15 +22,17 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_MetamorphicExpressionEquivalenceSweep(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_exprequiv", "xeq",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_exprequiv", "xeq",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c DOUBLE, s STRING, f BOOLEAN, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) CREATE INDEX t_c ON t (c) ")
 
@@ -38,14 +40,14 @@ func TestFDB_MetamorphicExpressionEquivalenceSweep(t *testing.T) {
 	const nRows = 150
 	var vals []string
 	for i := 1; i <= nRows; i++ {
-		vals = append(vals, mhRowLiteral(dataRand, i))
+		vals = append(vals, testkit.MhRowLiteral(dataRand, i))
 	}
 	for start := 0; start < len(vals); start += 25 {
 		end := start + 25
 		if end > len(vals) {
 			end = len(vals)
 		}
-		w.Exec("INSERT INTO t " + mhCols + " VALUES " + strings.Join(vals[start:end], ", "))
+		w.Exec("INSERT INTO t " + testkit.MhCols + " VALUES " + strings.Join(vals[start:end], ", "))
 	}
 
 	seed := int64(1)
@@ -57,16 +59,16 @@ func TestFDB_MetamorphicExpressionEquivalenceSweep(t *testing.T) {
 		fmt.Sscan(s, &iters)
 	}
 	r := rand.New(rand.NewSource(seed))
-	g := &mhGen{r: r}
+	g := &testkit.MhGen{R: r}
 
 	okByRule := map[string]int{}
 	errByRule := map[string]int{}
 	equiv := func(rule, qa, qb string) {
 		t.Helper()
-		ia, ea := mmRows(t, ctx, w.idx, qa)
-		ib, eb := mmRows(t, ctx, w.idx, qb)
-		na, ena := mmRows(t, ctx, w.plain, qa)
-		nb, enb := mmRows(t, ctx, w.plain, qb)
+		ia, ea := testkit.QueryRowStrings(t, ctx, w.Idx, qa)
+		ib, eb := testkit.QueryRowStrings(t, ctx, w.Idx, qb)
+		na, ena := testkit.QueryRowStrings(t, ctx, w.Plain, qa)
+		nb, enb := testkit.QueryRowStrings(t, ctx, w.Plain, qb)
 		if ea != nil || eb != nil || ena != nil || enb != nil {
 			errByRule[rule]++
 			if errByRule[rule] <= 1 {
@@ -75,16 +77,16 @@ func TestFDB_MetamorphicExpressionEquivalenceSweep(t *testing.T) {
 			return
 		}
 		okByRule[rule]++
-		if !mmEqRows(ia, ib) {
+		if !testkit.EqualRows(ia, ib) {
 			t.Errorf("EXPRESSION MISMATCH [%s] on the INDEXED schema (seed=%d)\n  A: %s\n  B: %s\n"+
 				"  A gives %v\n  B gives %v\n  %s",
-				rule, seed, qa, qb, mmHeadRows(ia), mmHeadRows(ib), mmFirstDiff(ia, ib))
+				rule, seed, qa, qb, testkit.MmHeadRows(ia), testkit.MmHeadRows(ib), testkit.MmFirstDiff(ia, ib))
 		}
-		if !mmEqRows(na, nb) {
+		if !testkit.EqualRows(na, nb) {
 			t.Errorf("EXPRESSION MISMATCH [%s] on the UNINDEXED schema (seed=%d)\n  A: %s\n  B: %s\n"+
 				"  A gives %v\n  B gives %v\n"+
 				"With no index in play this is an expression-evaluation defect.",
-				rule, seed, qa, qb, mmHeadRows(na), mmHeadRows(nb))
+				rule, seed, qa, qb, testkit.MmHeadRows(na), testkit.MmHeadRows(nb))
 		}
 	}
 
@@ -133,8 +135,8 @@ func TestFDB_MetamorphicExpressionEquivalenceSweep(t *testing.T) {
 		"SELECT a FROM t WHERE b = 1 AND a IS NOT NULL ORDER BY a LIMIT 1")
 
 	for i := 0; i < iters; i++ {
-		p := g.pred(1)
-		lit := mhIntLits[r.Intn(len(mhIntLits))]
+		p := g.Pred(1)
+		lit := testkit.MhIntLits[r.Intn(len(testkit.MhIntLits))]
 
 		// Comparison spellings.
 		equiv("not-equals-vs-ne",
@@ -158,11 +160,11 @@ func TestFDB_MetamorphicExpressionEquivalenceSweep(t *testing.T) {
 	// The two shapes that cannot be swept, pinned as rejections. Each names the
 	// rule it would restore, so the day support lands the failure says what to
 	// do rather than merely that something changed.
-	if _, err := mmRows(t, ctx, w.plain, "SELECT id, NULLIF(a, 1) FROM t ORDER BY id"); err == nil {
+	if _, err := testkit.QueryRowStrings(t, ctx, w.Plain, "SELECT id, NULLIF(a, 1) FROM t ORDER BY id"); err == nil {
 		t.Errorf("NULLIF is now supported. Restore the nullif-vs-case rule to the sweep above: " +
 			"NULLIF(a, v) must equal CASE WHEN a = v THEN NULL ELSE a END for every row.")
 	}
-	if _, err := mmRows(t, ctx, w.plain, "SELECT id, -(-a) FROM t ORDER BY id"); err == nil {
+	if _, err := testkit.QueryRowStrings(t, ctx, w.Plain, "SELECT id, -(-a) FROM t ORDER BY id"); err == nil {
 		t.Errorf("`-(-a)` now parses. Restore it as the double-negate rule's spelling — it is the " +
 			"direct form of the identity that is currently expressed as 0 - (0 - a).")
 	}

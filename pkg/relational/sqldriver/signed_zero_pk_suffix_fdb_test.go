@@ -12,6 +12,8 @@ import (
 	"slices"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -60,12 +62,12 @@ import (
 // rather than about plan shape.
 func TestFDB_SignedZeroEqualityDoesNotOrderThePKSuffix(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -304,7 +306,7 @@ func TestFDB_SignedZeroEqualityDoesNotOrderThePKSuffix(t *testing.T) {
 			// under-reports is the worst direction: it fires on a healthy plan and
 			// trains the reader to disbelieve it. See
 			// covering_plan_assertions_test.go for the general rule.
-			usesIndex := planUsesIndex(indexedPlan, indexName)
+			usesIndex := testkit.PlanUsesIndex(indexedPlan, indexName)
 			if !usesIndex {
 				t.Fatalf(
 					"%s did not bind %s: %s\nwithout an index scan this test cannot express the "+

@@ -11,28 +11,30 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_UniqueViolationProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_uniqv")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uniqv")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_uniqv")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_uniqv")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE uniqv "+
 			"CREATE TABLE t (id BIGINT, email STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email ON t (email)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uniqv/s WITH TEMPLATE uniqv")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNIQV?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_uniqv/s WITH TEMPLATE uniqv")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UNIQV?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, email) VALUES (1, 'a@x'), (2, 'b@x')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, email) VALUES (1, 'a@x'), (2, 'b@x')")
 
 	exec := func(q string) error {
 		_, err := db.ExecContext(ctx, q)

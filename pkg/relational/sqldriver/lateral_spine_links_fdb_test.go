@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_LateralSpineLinksAndCorrelatedLegs executes, on real FDB, the
@@ -33,7 +35,7 @@ func TestFDB_LateralSpineLinksAndCorrelatedLegs(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/lateral_spine_links"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE lateral_spine_links_tmpl" +
@@ -47,7 +49,7 @@ func TestFDB_LateralSpineLinksAndCorrelatedLegs(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -145,7 +147,7 @@ func TestFDB_NestedExistsOverASpineIsOneProduct(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/nested_exists_spine_product"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE nested_exists_spine_product_tmpl" +
@@ -159,7 +161,7 @@ func TestFDB_NestedExistsOverASpineIsOneProduct(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -189,7 +191,7 @@ func TestFDB_NestedExistsOverASpineIsOneProduct(t *testing.T) {
 		{`SELECT id FROM q WHERE EXISTS (SELECT 1 FROM q.bs AS b WHERE EXISTS (SELECT 1 FROM h WHERE h.f = b.k + 9))`, []string{"1", "2"}},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {
-			got := pinRows(t, db, ctx, tc.sql)
+			got := testkit.PinRows(t, db, ctx, tc.sql)
 			sort.Strings(got)
 			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
 				t.Fatalf("rows = %v, want %v", got, tc.want)
@@ -207,7 +209,7 @@ func TestFDB_ExistsOverASpine(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/exists_over_a_spine"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE exists_over_a_spine_tmpl" +
@@ -224,7 +226,7 @@ func TestFDB_ExistsOverASpine(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -276,7 +278,7 @@ func TestFDB_ExistsOverASpine(t *testing.T) {
 		{`SELECT id FROM q WHERE EXISTS (SELECT 1 FROM q.bs AS b, b.tags AS t WHERE NOT EXISTS (SELECT 1 FROM h WHERE h.f = b.k + 8))`, []string{"2"}},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {
-			got := pinRows(t, db, ctx, tc.sql)
+			got := testkit.PinRows(t, db, ctx, tc.sql)
 			sort.Strings(got)
 			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
 				t.Fatalf("rows = %v, want %v", got, tc.want)
@@ -295,7 +297,7 @@ func TestFDB_ExistsOverARecordElementUnnestReadsTheTable(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/exists_over_record_element_unnest"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE exists_over_record_element_unnest_tmpl" +
@@ -310,7 +312,7 @@ func TestFDB_ExistsOverARecordElementUnnestReadsTheTable(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -344,7 +346,7 @@ func TestFDB_ExistsOverARecordElementUnnestReadsTheTable(t *testing.T) {
 		{from + `EXISTS (SELECT 1 FROM h WHERE h.f = x.d.dk)`, []string{"20"}},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {
-			got := pinRows(t, db, ctx, tc.sql)
+			got := testkit.PinRows(t, db, ctx, tc.sql)
 			sort.Strings(got)
 			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
 				t.Fatalf("rows = %v, want %v", got, tc.want)
@@ -363,7 +365,7 @@ func TestFDB_SpineWhereReadsADeeperLinksElement(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/spine_deeper_link_where"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE spine_deeper_link_where_tmpl" +
@@ -377,7 +379,7 @@ func TestFDB_SpineWhereReadsADeeperLinksElement(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -418,7 +420,7 @@ func TestFDB_SpineWhereReadsADeeperLinksElement(t *testing.T) {
 		{`SELECT d.t FROM qq, (SELECT t FROM qq.cs AS c, c.bs AS b, b.tags AS t WHERE t = c.k + 8) AS d`, []string{"11", "13", "9"}},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {
-			got := pinRows(t, db, ctx, tc.sql)
+			got := testkit.PinRows(t, db, ctx, tc.sql)
 			sort.Strings(got)
 			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
 				t.Fatalf("rows = %v, want %v", got, tc.want)
@@ -441,7 +443,7 @@ func TestFDB_LateralLegReadsASpineLinksElement(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/lateral_leg_spine_element"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE lateral_leg_spine_element_tmpl" +
@@ -457,7 +459,7 @@ func TestFDB_LateralLegReadsASpineLinksElement(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -532,7 +534,7 @@ func TestFDB_LateralLegReadsASpineLinksElement(t *testing.T) {
 		{`SELECT p, h.id FROM w, w.arr AS v AT p, h WHERE h.f = v + p + 1`, []string{"1|3"}},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {
-			got := pinRows(t, db, ctx, tc.sql)
+			got := testkit.PinRows(t, db, ctx, tc.sql)
 			sort.Strings(got)
 			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
 				t.Fatalf("rows = %v, want %v", got, tc.want)

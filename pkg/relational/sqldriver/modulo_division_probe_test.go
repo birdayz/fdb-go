@@ -10,26 +10,28 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ModuloDivisionProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_moddiv")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_moddiv")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_moddiv")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_moddiv")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE moddiv CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_moddiv/s WITH TEMPLATE moddiv")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MODDIV?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_moddiv/s WITH TEMPLATE moddiv")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MODDIV?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (1)")
 
 	scalar := func(expr string) int64 {
 		var v int64

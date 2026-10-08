@@ -7,23 +7,25 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_cq4_scalar")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cq4_scalar")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE cq4_scalar "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_cq4_scalar")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_cq4_scalar")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE cq4_scalar "+
 		"CREATE TABLE parent (id BIGINT, wanted BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE child (id BIGINT, parent_id BIGINT, grp STRING, val BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE marker (id BIGINT, parent_id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cq4_scalar/s WITH TEMPLATE cq4_scalar")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CQ4_SCALAR?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_cq4_scalar/s WITH TEMPLATE cq4_scalar")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CQ4_SCALAR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -35,10 +37,10 @@ func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 	// cardinality would therefore hide the violation, so this is the barrier
 	// discriminator. Parent 2 has one row, parent 3 none, parent 4 two raw rows
 	// in one group (one grouped scalar row, SUM=5).
-	mwjoMustExec(t, db, ctx, "INSERT INTO parent VALUES (1,20),(2,30),(3,40),(4,5)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO child VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO parent VALUES (1,20),(2,30),(3,40),(4,5)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO child VALUES "+
 		"(10,1,'a',10),(11,1,'b',20),(20,2,'a',30),(40,4,'a',2),(41,4,'a',3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO marker VALUES (100,1),(200,2),(300,3),(400,4)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO marker VALUES (100,1),(200,2),(300,3),(400,4)")
 
 	t.Run("outer_limit_keeps_strict_inner_cardinality", func(t *testing.T) {
 		t.Parallel()
@@ -53,14 +55,14 @@ func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 		// SQL's join boundary already clears request caps before the scalar
 		// leg. Preserve that protected shape as well as the direct API guard:
 		// a one-row outer request cannot license truncating the inner scalar.
-		requireSQLSTATE(t, expectError(t, db, query), api.ErrCodeCardinalityViolation)
+		testkit.RequireSQLSTATE(t, testkit.ExpectError(t, db, query), api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("projection_grouped_multiple_groups_21000", func(t *testing.T) {
-		err := expectError(t, db,
+		err := testkit.ExpectError(t, db,
 			"SELECT (SELECT SUM(c.val) FROM child c WHERE c.parent_id = p.id GROUP BY c.grp) "+
 				"FROM parent p WHERE p.id = 1")
-		requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("simplified_away_correlation_still_21000", func(t *testing.T) {
@@ -70,23 +72,23 @@ func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 			"SELECT p.id FROM parent p WHERE p.id = 1 AND p.wanted = " +
 				"(SELECT c.val FROM child c WHERE c.parent_id = p.id OR 1 = 1)",
 		} {
-			err := expectError(t, db, query)
-			requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
+			err := testkit.ExpectError(t, db, query)
+			testkit.RequireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 		}
 	})
 
 	t.Run("projection_group_key_only_multiple_groups_21000", func(t *testing.T) {
-		err := expectError(t, db,
+		err := testkit.ExpectError(t, db,
 			"SELECT (SELECT c.grp FROM child c WHERE c.parent_id = p.id GROUP BY c.grp) "+
 				"FROM parent p WHERE p.id = 1")
-		requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("projection_grouped_order_without_limit_still_21000", func(t *testing.T) {
-		err := expectError(t, db,
+		err := testkit.ExpectError(t, db,
 			"SELECT (SELECT SUM(c.val) FROM child c WHERE c.parent_id = p.id "+
 				"GROUP BY c.grp ORDER BY SUM(c.val) DESC) FROM parent p WHERE p.id = 1")
-		requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("projection_grouped_having_cardinality_is_post_having", func(t *testing.T) {
@@ -112,31 +114,31 @@ func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 			t.Fatalf("zero surviving HAVING groups = %d, want NULL", zero.Int64)
 		}
 
-		err := expectError(t, db,
+		err := testkit.ExpectError(t, db,
 			"SELECT (SELECT SUM(c.val) FROM child c WHERE c.parent_id = p.id "+
 				"GROUP BY c.grp HAVING SUM(c.val) > 0) FROM parent p WHERE p.id = 1")
-		requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("projection_grouped_joined_outer_21000", func(t *testing.T) {
-		err := expectError(t, db,
+		err := testkit.ExpectError(t, db,
 			"SELECT (SELECT SUM(c.val) FROM child c WHERE c.parent_id = p.id GROUP BY c.grp) "+
 				"FROM parent p JOIN marker m ON m.parent_id = p.id WHERE p.id = 1")
-		requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("where_comparison_two_rows_one_matches_still_21000", func(t *testing.T) {
-		err := expectError(t, db,
+		err := testkit.ExpectError(t, db,
 			"SELECT p.id FROM parent p "+
 				"WHERE p.id = 1 AND p.wanted = (SELECT c.val FROM child c WHERE c.parent_id = p.id)")
-		requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("where_comparison_grouped_multiple_groups_21000", func(t *testing.T) {
-		err := expectError(t, db,
+		err := testkit.ExpectError(t, db,
 			"SELECT p.id FROM parent p WHERE p.id = 1 AND p.wanted = "+
 				"(SELECT SUM(c.val) FROM child c WHERE c.parent_id = p.id GROUP BY c.grp)")
-		requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("single_empty_and_one_group", func(t *testing.T) {
@@ -304,8 +306,8 @@ func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 			"SELECT p.id FROM parent p WHERE p.wanted = (SELECT c.val FROM child c WHERE c.parent_id = p.id LIMIT 2)",
 			"SELECT (SELECT SUM(c.val) FROM child c WHERE c.parent_id = p.id GROUP BY c.grp LIMIT 2) FROM parent p",
 		} {
-			err := expectError(t, db, query)
-			requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
+			err := testkit.ExpectError(t, db, query)
+			testkit.RequireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 		}
 	})
 
@@ -338,8 +340,8 @@ func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 				t.Fatalf("DISTINCT scalar parent %d = %+v, %v; want %+v", tc.id, got, err, tc.want)
 			}
 		}
-		err := expectError(t, db, "SELECT (SELECT DISTINCT c.grp FROM child c WHERE c.parent_id = p.id) FROM parent p WHERE p.id = 1")
-		requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
+		err := testkit.ExpectError(t, db, "SELECT (SELECT DISTINCT c.grp FROM child c WHERE c.parent_id = p.id) FROM parent p WHERE p.id = 1")
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("bound_limit_preserves_guard", func(t *testing.T) {
@@ -368,7 +370,7 @@ func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 			}
 			_ = rows.Close()
 		}
-		requireSQLSTATE(t, boundErr, api.ErrCodeCardinalityViolation)
+		testkit.RequireSQLSTATE(t, boundErr, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("dml_correlated_scalar_stays_typed_loud", func(t *testing.T) {
@@ -382,8 +384,8 @@ func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 			"DELETE FROM parent WHERE wanted = " +
 				"(SELECT c.val FROM child c WHERE c.parent_id = parent.id LIMIT 2)",
 		} {
-			err := expectError(t, db, query)
-			requireSQLSTATE(t, err, api.ErrCodeUnsupportedQuery)
+			err := testkit.ExpectError(t, db, query)
+			testkit.RequireSQLSTATE(t, err, api.ErrCodeUnsupportedQuery)
 		}
 		var count int64
 		var wantedSum int64

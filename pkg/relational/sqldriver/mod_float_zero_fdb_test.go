@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -21,13 +23,13 @@ var modFixtureID atomic.Uint64
 func TestFDB_ModFloatZero(t *testing.T) {
 	t.Parallel()
 	name := fmt.Sprintf("modfloatzero_%d", modFixtureID.Add(1))
-	db := setupErrorTestDB(t, "/FRL/testdb_"+name, name,
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_"+name, name,
 		"CREATE TABLE t (id BIGINT, n BIGINT, f FLOAT, d DOUBLE, PRIMARY KEY (id))")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	// Cancel setup before parallel children resume: their deadlines must start
 	// after t.Parallel returns, not while they wait for the suite's run slots.
 	defer cancel()
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 7, CAST(7 AS FLOAT), 7.0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1, 7, CAST(7 AS FLOAT), 7.0)")
 	for _, expr := range []string{"-0.0", "CAST(-0.0 AS FLOAT)"} {
 		var got float64
 		if err := db.QueryRowContext(ctx, "SELECT "+expr+" FROM t").Scan(&got); err != nil {
@@ -139,7 +141,7 @@ func TestFDB_ModFloatZero(t *testing.T) {
 func TestFDB_ModFunctionIndexRemainsRejected(t *testing.T) {
 	t.Parallel()
 	name := fmt.Sprintf("modindexboundary_%d", modFixtureID.Add(1))
-	db := setupErrorTestDB(t, "/FRL/testdb_"+name, name,
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_"+name, name,
 		"CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -152,7 +154,7 @@ func TestFDB_ModFunctionIndexRemainsRejected(t *testing.T) {
 			"Unsupported index definition, not all fields can be mapped to key expression in SelectExpression") {
 		t.Fatalf("MOD() index: %v; want unsupported operation, not new persisted index-expression admission", err)
 	}
-	mwjoMustExec(t, db, ctx, `CREATE SCHEMA TEMPLATE `+name+`_operator
+	testkit.MustExecCtx(t, db, ctx, `CREATE SCHEMA TEMPLATE `+name+`_operator
 		CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))
 		CREATE INDEX i_mod AS SELECT n % 3 FROM t`)
 }

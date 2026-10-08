@@ -24,13 +24,15 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_agg_straddle", "aggstraddle",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_agg_straddle", "aggstraddle",
 		"CREATE TABLE t (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_g ON t (g) "+
 			"CREATE TABLE td (id BIGINT, g DOUBLE, PRIMARY KEY (id)) "+
@@ -48,7 +50,7 @@ func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 	ctx := context.Background()
 
 	const scanLimit = 3
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 		// Paginate mode (no FailOnScanLimitReached): the mid-group scan break
@@ -68,7 +70,7 @@ func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 	// sort continuation, exercising a different (out-of-scope) code path.
 	requireStreaming := func(q string) {
 		t.Helper()
-		plan := planExplainVia(t, ctx, db, q)
+		plan := testkit.ExplainVia(t, ctx, db, q)
 		if !strings.Contains(plan, "StreamingAgg") {
 			t.Fatalf("query must plan as a streaming aggregate (exercises the aggregate continuation); got:\n%s", plan)
 		}
@@ -155,7 +157,7 @@ func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 		const q = "SELECT g, SUM(v), MIN(v), MAX(v), COUNT(*) FROM ta GROUP BY g"
 		requireStreamingAgg := func(query string) {
 			t.Helper()
-			plan := planExplainVia(t, ctx, db, query)
+			plan := testkit.ExplainVia(t, ctx, db, query)
 			if !strings.Contains(plan, "StreamingAgg") || strings.Contains(plan, "Sort") {
 				t.Fatalf("query must plan as a streaming aggregate with no in-memory sort "+
 					"(so the break lands in the aggregate cursor); got:\n%s", plan)
@@ -242,7 +244,7 @@ func TestFDB_StreamingAggregate_MidGroupContinuation(t *testing.T) {
 	// one row.
 	t.Run("double_group_key", func(t *testing.T) {
 		const q = "SELECT g, COUNT(*) FROM td GROUP BY g"
-		plan := planExplainVia(t, ctx, db, q)
+		plan := testkit.ExplainVia(t, ctx, db, q)
 		if !strings.Contains(plan, "StreamingAgg") {
 			t.Fatalf("query must plan as a streaming aggregate; got:\n%s", plan)
 		}

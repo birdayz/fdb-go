@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -17,19 +19,19 @@ import (
 func TestFDB_RecordConstructorFieldNames(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_record_names")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_record_names")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE record_names_tpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_record_names")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_record_names")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE record_names_tpl "+
 		"CREATE TYPE AS STRUCT S(a BIGINT, b BIGINT) "+
 		"CREATE TABLE t (id BIGINT, x BIGINT, y BIGINT, s S, PRIMARY KEY (id)) "+
 		"CREATE TABLE u (id BIGINT, s S, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_record_names/s WITH TEMPLATE record_names_tpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RECORD_NAMES?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_record_names/s WITH TEMPLATE record_names_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RECORD_NAMES?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10, 20, (1, 2)), (2, 30, 40, NULL)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10, 20, (1, 2)), (2, 30, 40, NULL)")
 
 	structs := func(query string) string {
 		t.Helper()
@@ -64,9 +66,9 @@ func TestFDB_RecordConstructorFieldNames(t *testing.T) {
 			t.Errorf("%s: %s, want %s", q, got, want)
 		}
 	}
-	mustExec(t, db, ctx, "INSERT INTO u SELECT id, (y AS b, x AS a) FROM t WHERE id = 1")
-	mustExec(t, db, ctx, "UPDATE t SET s = coalesce(s, (x, y))")
-	mustExec(t, db, ctx, "INSERT INTO u VALUES (2, (5 AS a, 6 AS b))")
+	testkit.MustExec(t, db, ctx, "INSERT INTO u SELECT id, (y AS b, x AS a) FROM t WHERE id = 1")
+	testkit.MustExec(t, db, ctx, "UPDATE t SET s = coalesce(s, (x, y))")
+	testkit.MustExec(t, db, ctx, "INSERT INTO u VALUES (2, (5 AS a, 6 AS b))")
 	for q, want := range map[string]string{
 		"SELECT s FROM u ORDER BY id": "[map[A:20 B:10] map[A:5 B:6]]",
 		"SELECT s FROM t ORDER BY id": "[map[A:1 B:2] map[A:30 B:40]]",
@@ -75,7 +77,7 @@ func TestFDB_RecordConstructorFieldNames(t *testing.T) {
 			t.Errorf("%s: %s, want %s", q, got, want)
 		}
 	}
-	mustExec(t, db, ctx, "UPDATE t SET s = (y AS b, x AS a) WHERE id = 2")
+	testkit.MustExec(t, db, ctx, "UPDATE t SET s = (y AS b, x AS a) WHERE id = 2")
 	if got, want := structs("SELECT s FROM t WHERE id = 2"), "[map[A:40 B:30]]"; got != want {
 		t.Errorf("UPDATE by position: %s, want %s", got, want)
 	}

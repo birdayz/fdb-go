@@ -32,11 +32,13 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
-func mmSparseFixture(t *testing.T, ctx context.Context, dbPath, prefix string) *mmTwin {
+func mmSparseFixture(t *testing.T, ctx context.Context, dbPath, prefix string) *testkit.Twin {
 	t.Helper()
-	w := mmNewTwin(t, ctx, dbPath, prefix,
+	w := testkit.NewTwin(t, ctx, dbPath, prefix,
 		"CREATE TABLE t (id BIGINT, a BIGINT, keep BIGINT, pad STRING, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a_sparse AS SELECT a FROM t WHERE keep > 0 "+
 			"CREATE INDEX t_a_sparse_or AS SELECT a FROM t WHERE keep < -5 OR keep > 10 ")
@@ -76,7 +78,7 @@ func mmSparseFixture(t *testing.T, ctx context.Context, dbPath, prefix string) *
 // predicate does NOT imply the index's filter must still see every row.
 func TestFDB_SparseIndexNotUsedWhereItWouldDropRows(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -136,7 +138,7 @@ func TestFDB_SparseIndexNotUsedWhereItWouldDropRows(t *testing.T) {
 // implication test has to hold arm by arm rather than as a whole.
 func TestFDB_SparseIndexWithDisjunctivePredicate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -163,7 +165,7 @@ func TestFDB_SparseIndexWithDisjunctivePredicate(t *testing.T) {
 // unfiltered query returns.
 func TestFDB_SparseIndexUnderMutation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -208,10 +210,10 @@ func TestFDB_SparseIndexUnderMutation(t *testing.T) {
 
 func TestFDB_SparseIndexRangeContainment(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	w := mmNewTwin(t, context.Background(), "/FRL/testdb_sparse_ranges", "sparse_ranges",
+	w := testkit.NewTwin(t, context.Background(), "/FRL/testdb_sparse_ranges", "sparse_ranges",
 		"CREATE TABLE t (id BIGINT, a BIGINT, keep BIGINT, PRIMARY KEY(id)) ",
 		"CREATE INDEX sparse_a AS SELECT a FROM t WHERE keep > 0 ORDER BY a ")
 	w.Exec("INSERT INTO t VALUES (1,5,1),(2,5,10),(3,5,11),(4,5,20),(5,5,0),(6,5,NULL)")

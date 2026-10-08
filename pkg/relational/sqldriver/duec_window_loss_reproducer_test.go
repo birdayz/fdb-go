@@ -69,6 +69,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -76,17 +78,17 @@ import (
 
 func TestFDB_DuecMeasurementWindowLoss_IsSeenByDetectorA(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_duecwin")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duecwin")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_duecwin")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duecwin")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE duecwin "+
 			"CREATE TABLE rows1 (id BIGINT, v STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duecwin/s WITH TEMPLATE duecwin")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUECWIN?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duecwin/s WITH TEMPLATE duecwin")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUECWIN?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -260,17 +262,17 @@ func TestDuecCIGoldenStillMatchesTheDriversError(t *testing.T) {
 // short-and-nil.
 func TestFDB_DuecScannedRowsLimitDoesNotSilentlyTruncate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_duecpage")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duecpage")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_duecpage")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duecpage")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE duecpage "+
 			"CREATE TABLE rows2 (id BIGINT, v STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duecpage/s WITH TEMPLATE duecpage")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUECPAGE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duecpage/s WITH TEMPLATE duecpage")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUECPAGE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -295,7 +297,7 @@ func TestFDB_DuecScannedRowsLimitDoesNotSilentlyTruncate(t *testing.T) {
 	}
 
 	for _, perPage := range []int64{50, 1} {
-		conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 			ec.SetOptions(api.NewOptionsBuilder().
 				Set(api.OptExecutionScannedRowsLimit, perPage).Build())
 		})

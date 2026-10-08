@@ -43,19 +43,21 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func openFullJoinDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_fulljoin_decomp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fulljoin_decomp")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fjd_t "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_fulljoin_decomp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fulljoin_decomp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE fjd_t "+
 		"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fulljoin_decomp/s WITH TEMPLATE fjd_t")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fulljoin_decomp/s WITH TEMPLATE fjd_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///FRL/TESTDB_FULLJOIN_DECOMP?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_FULLJOIN_DECOMP?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -65,7 +67,7 @@ func openFullJoinDB(t *testing.T) *sql.DB {
 
 func TestFDB_FullOuterJoinMatchesItsDecomposition(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -77,16 +79,16 @@ func TestFDB_FullOuterJoinMatchesItsDecomposition(t *testing.T) {
 	// k=1 appearing twice on each side makes the matched part a 2x2 fan-out,
 	// so a decomposition that deduplicated anywhere would show up as a row
 	// count difference rather than needing a value to change.
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, k) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, k) VALUES "+
 		"(1, 1), (2, 1), (3, 2), (4, 7), (5, NULL)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b (id, k) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b (id, k) VALUES "+
 		"(10, 1), (11, 1), (12, 2), (13, 9), (14, NULL)")
 
 	// multiset renders an unordered result comparably. FULL JOIN has no
 	// inherent order and neither does UNION ALL, so order is not part of the
 	// answer and comparing it would report a difference that is not one.
 	multiset := func(q string) ([]string, error) {
-		rows, err := mmRows(t, ctx, db, q)
+		rows, err := testkit.QueryRowStrings(t, ctx, db, q)
 		if err != nil {
 			return nil, err
 		}
@@ -135,13 +137,13 @@ func TestFDB_FullOuterJoinMatchesItsDecomposition(t *testing.T) {
 				t.Fatalf("the decomposition failed to run, so the oracle has no reading: %v\n"+
 					"  q: %s", err, decomposed)
 			}
-			if !mmEqRows(gotFull, gotDecomp) {
+			if !testkit.EqualRows(gotFull, gotDecomp) {
 				t.Errorf("FULL JOIN does not equal its decomposition\n"+
 					"  on         : %s\n  full       : %v\n  decomposed : %v\n  %s\n"+
 					"  (both terms of the decomposition are LEFT JOINs, which have a Java "+
 					"oracle and a large corpus — so a difference here is FULL's, unless LEFT "+
 					"is broken in a way nothing else has noticed)",
-					c.on, gotFull, gotDecomp, mmFirstDiff(gotFull, gotDecomp))
+					c.on, gotFull, gotDecomp, testkit.MmFirstDiff(gotFull, gotDecomp))
 			}
 		})
 	}
@@ -172,11 +174,11 @@ func TestFDB_FullOuterJoinMatchesItsDecomposition(t *testing.T) {
 		const withOuter = "SELECT COUNT(*) FROM a FULL OUTER JOIN b ON b.k = 1"
 		const withoutOuter = "SELECT COUNT(*) FROM a FULL JOIN b ON b.k = 1"
 
-		outer, err := mmRows(t, ctx, db, withOuter)
+		outer, err := testkit.QueryRowStrings(t, ctx, db, withOuter)
 		if err != nil {
 			t.Fatalf("FULL OUTER JOIN failed: %v", err)
 		}
-		short, shortErr := mmRows(t, ctx, db, withoutOuter)
+		short, shortErr := testkit.QueryRowStrings(t, ctx, db, withoutOuter)
 
 		t.Logf("MEASURED\n  %s -> %v (err %v)\n  %s -> %v (err %v)",
 			withOuter, outer, err, withoutOuter, short, shortErr)
@@ -186,7 +188,7 @@ func TestFDB_FullOuterJoinMatchesItsDecomposition(t *testing.T) {
 			// direction, and it means no user can silently get the wrong join.
 			return
 		}
-		if !mmEqRows(short, outer) {
+		if !testkit.EqualRows(short, outer) {
 			t.Errorf("`FULL JOIN` and `FULL OUTER JOIN` answer DIFFERENTLY, so the short "+
 				"spelling is not a full outer join\n  FULL OUTER -> %v\n  FULL       -> %v\n"+
 				"  SQL makes OUTER optional, so a user writing the short form gets a different "+
@@ -201,7 +203,7 @@ func TestFDB_FullOuterJoinMatchesItsDecomposition(t *testing.T) {
 	// rather than by someone reading a row list.
 	t.Run("unmatched rows from both sides are present", func(t *testing.T) {
 		counts := func(q string) int {
-			rows, err := mmRows(t, ctx, db, q)
+			rows, err := testkit.QueryRowStrings(t, ctx, db, q)
 			if err != nil {
 				t.Fatalf("%s: %v", q, err)
 			}

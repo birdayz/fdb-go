@@ -13,16 +13,18 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ConstraintValidationProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_constrp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_constrp")
+	setup := testkit.OpenDB(t, "/FRL/testdb_constrp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_constrp")
 
 	// Scalar NOT NULL is rejected at CREATE time — RecordMetaData cannot
 	// represent scalar non-nullability, so the constraint would silently
@@ -40,17 +42,17 @@ func TestFDB_ConstraintValidationProbe(t *testing.T) {
 		}
 	})
 
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE constrp "+
 			"CREATE TABLE t (id BIGINT, req BIGINT, opt BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_constrp/s WITH TEMPLATE constrp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONSTRP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_constrp/s WITH TEMPLATE constrp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONSTRP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, req, opt) VALUES (1, 10, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, req, opt) VALUES (1, 10, 100)")
 
 	rejects := func(name, q, code string) {
 		t.Run(name, func(t *testing.T) {

@@ -10,28 +10,30 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DMLPredicateProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_dml_pred")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dml_pred")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_dml_pred")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_dml_pred")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE dml_pred "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, grp STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dml_pred/s WITH TEMPLATE dml_pred")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DML_PRED?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_dml_pred/s WITH TEMPLATE dml_pred")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DML_PRED?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v, grp) VALUES (1, 10, 'A'), (2, 20, 'A'), (3, 30, 'B'), (4, 40, 'B')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v, grp) VALUES (1, 10, 'A'), (2, 20, 'A'), (3, 30, 'B'), (4, 40, 'B')")
 
 	// snapshot returns id->v for the whole table as a stable string.
 	snapshot := func() string {
@@ -53,19 +55,19 @@ func TestFDB_DMLPredicateProbe(t *testing.T) {
 	}
 
 	// UPDATE with a grp predicate.
-	mwjoMustExec(t, db, ctx, "UPDATE t SET v = v + 1 WHERE grp = 'A'")
+	testkit.MustExecCtx(t, db, ctx, "UPDATE t SET v = v + 1 WHERE grp = 'A'")
 	if got, want := snapshot(), "[1:11 2:21 3:30 4:40]"; got != want {
 		t.Fatalf("after UPDATE grp=A: %s, want %s", got, want)
 	}
 
 	// UPDATE with an arithmetic predicate (v in (30,40) → id3,id4).
-	mwjoMustExec(t, db, ctx, "UPDATE t SET v = v * 2 WHERE v >= 30")
+	testkit.MustExecCtx(t, db, ctx, "UPDATE t SET v = v * 2 WHERE v >= 30")
 	if got, want := snapshot(), "[1:11 2:21 3:60 4:80]"; got != want {
 		t.Fatalf("after UPDATE v>=30: %s, want %s", got, want)
 	}
 
 	// UPDATE with a CASE predicate (single-table): rows where CASE WHEN v>50 THEN 1 ELSE 0 END = 1 → id3,id4.
-	mwjoMustExec(t, db, ctx, "UPDATE t SET grp = 'C' WHERE CASE WHEN v > 50 THEN 1 ELSE 0 END = 1")
+	testkit.MustExecCtx(t, db, ctx, "UPDATE t SET grp = 'C' WHERE CASE WHEN v > 50 THEN 1 ELSE 0 END = 1")
 	rows, err := db.QueryContext(ctx, "SELECT id FROM t WHERE grp = 'C' ORDER BY id")
 	if err != nil {
 		t.Fatalf("select grp=C: %v", err)
@@ -82,13 +84,13 @@ func TestFDB_DMLPredicateProbe(t *testing.T) {
 	}
 
 	// DELETE with an IN-list predicate.
-	mwjoMustExec(t, db, ctx, "DELETE FROM t WHERE id IN (1, 3)")
+	testkit.MustExecCtx(t, db, ctx, "DELETE FROM t WHERE id IN (1, 3)")
 	if got, want := snapshot(), "[2:21 4:80]"; got != want {
 		t.Fatalf("after DELETE IN(1,3): %s, want %s", got, want)
 	}
 
 	// INSERT ... SELECT from the same table (id offset).
-	mwjoMustExec(t, db, ctx, "INSERT INTO t SELECT id + 100, v + 1, grp FROM t WHERE v > 50")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t SELECT id + 100, v + 1, grp FROM t WHERE v > 50")
 	if got, want := snapshot(), "[104:81 2:21 4:80]"; got != want {
 		t.Fatalf("after INSERT...SELECT: %s, want %s", got, want)
 	}

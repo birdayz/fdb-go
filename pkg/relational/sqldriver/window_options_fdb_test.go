@@ -2,9 +2,10 @@ package sqldriver_test
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"fdb.dev/pkg/relational/api"
 )
@@ -16,7 +17,7 @@ import (
 // k returns fewer rows and a huge one returns them all.
 func TestFDB_WindowOptionsEfSearch(t *testing.T) {
 	t.Parallel()
-	db := setupPlanShapeDB(t, "winopt", `CREATE TABLE v (id BIGINT, emb VECTOR(3, FLOAT), PRIMARY KEY (id)) `+
+	db := testkit.SetupPlanShapeDB(t, "winopt", `CREATE TABLE v (id BIGINT, emb VECTOR(3, FLOAT), PRIMARY KEY (id)) `+
 		`CREATE VECTOR INDEX vi USING HNSW ON v (emb)`)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, `INSERT INTO v VALUES (1, CAST([1.0, 0.0, 0.0] AS VECTOR(3, FLOAT))), `+
@@ -52,7 +53,7 @@ func TestFDB_WindowOptionsEfSearch(t *testing.T) {
 	} {
 		sql := `SELECT id FROM v QUALIFY ROW_NUMBER() OVER (ORDER BY euclidean_distance(emb, CAST([0.9, 0.1, 0.0] AS VECTOR(3, FLOAT)))` +
 			c.options + `) <= 3`
-		got, err := queryInt64s(ctx, db, sql)
+		got, err := testkit.QueryInt64s(ctx, db, sql)
 		if c.code != "" {
 			var apiErr *api.Error
 			if !errors.As(err, &apiErr) || apiErr.Code != c.code || apiErr.Message != c.message {
@@ -72,21 +73,4 @@ func TestFDB_WindowOptionsEfSearch(t *testing.T) {
 			}
 		}
 	}
-}
-
-func queryInt64s(ctx context.Context, db *sql.DB, query string) ([]int64, error) {
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var v int64
-		if err := rows.Scan(&v); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, rows.Err()
 }

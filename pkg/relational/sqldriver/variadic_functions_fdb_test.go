@@ -11,23 +11,25 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_VariadicFunctions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_variadic")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_variadic")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE variadic_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_variadic")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_variadic")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE variadic_tmpl "+
 		"CREATE TABLE T (id BIGINT, n BIGINT, b BYTES, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_variadic/s WITH TEMPLATE variadic_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_VARIADIC?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_variadic/s WITH TEMPLATE variadic_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_VARIADIC?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO T VALUES (1, NULL, X'00'), (2, 5, X'01')")
+	testkit.MustExec(t, db, ctx, "INSERT INTO T VALUES (1, NULL, X'00'), (2, 5, X'01')")
 
 	for _, c := range []struct {
 		sql  string

@@ -22,15 +22,17 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_MetamorphicShapeEquivalenceSweep(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_shapeequiv", "sheq",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_shapeequiv", "sheq",
 		"CREATE TABLE t (id BIGINT, g BIGINT, v BIGINT, n BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE u (uid BIGINT, ug BIGINT, uv BIGINT, PRIMARY KEY (uid)) ",
 		"CREATE INDEX t_g ON t (g) "+
@@ -83,16 +85,16 @@ func TestFDB_MetamorphicShapeEquivalenceSweep(t *testing.T) {
 	okByRule := map[string]int{}
 	equiv := func(rule, qa, qb string) {
 		t.Helper()
-		ia, ea := mmRows(t, ctx, w.idx, qa)
-		ib, eb := mmRows(t, ctx, w.idx, qb)
+		ia, ea := testkit.QueryRowStrings(t, ctx, w.Idx, qa)
+		ib, eb := testkit.QueryRowStrings(t, ctx, w.Idx, qb)
 		if ea != nil || eb != nil {
 			t.Errorf("[%s] a query failed\n  A: %s -> %v\n  B: %s -> %v", rule, qa, ea, qb, eb)
 			return
 		}
 		okByRule[rule]++
-		if !mmEqRows(ia, ib) {
+		if !testkit.EqualRows(ia, ib) {
 			t.Errorf("SHAPE MISMATCH [%s]\n  A: %s\n  B: %s\n  A gives %v\n  B gives %v\n  %s",
-				rule, qa, qb, mmHeadRows(ia), mmHeadRows(ib), mmFirstDiff(ia, ib))
+				rule, qa, qb, testkit.MmHeadRows(ia), testkit.MmHeadRows(ib), testkit.MmFirstDiff(ia, ib))
 		}
 	}
 
@@ -101,7 +103,7 @@ func TestFDB_MetamorphicShapeEquivalenceSweep(t *testing.T) {
 	// The grouped form reads an aggregate index; the per-group form filters and
 	// recomputes. Every group is checked, including the ones whose extremum is
 	// NULL, which is where the two paths most recently disagreed.
-	groups, err := mmRows(t, ctx, w.plain, "SELECT g FROM t GROUP BY g ORDER BY g")
+	groups, err := testkit.QueryRowStrings(t, ctx, w.Plain, "SELECT g FROM t GROUP BY g ORDER BY g")
 	if err != nil {
 		t.Fatalf("group probe: %v", err)
 	}

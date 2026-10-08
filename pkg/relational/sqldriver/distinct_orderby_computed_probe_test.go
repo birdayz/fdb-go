@@ -9,29 +9,31 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DistinctMultiColProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_distmc")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_distmc")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_distmc")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_distmc")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE distmc "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_distmc/s WITH TEMPLATE distmc")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTMC?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_distmc/s WITH TEMPLATE distmc")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTMC?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// (a,b): (1,1) (1,1) dup; (1,2); (2,1); (1,NULL); (1,NULL) dup
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a,b) VALUES (1,1,1),(2,1,1),(3,1,2),(4,2,1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a) VALUES (5,1),(6,1)") // (1,NULL) x2
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,a,b) VALUES (1,1,1),(2,1,1),(3,1,2),(4,2,1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,a) VALUES (5,1),(6,1)") // (1,NULL) x2
 
 	t.Run("distinct_multicol_dedups_incl_null_pair", func(t *testing.T) {
 		// distinct (a,b): (1,1),(1,2),(2,1),(1,NULL) → 4 distinct pairs (the two
@@ -48,24 +50,24 @@ func TestFDB_DistinctMultiColProbe(t *testing.T) {
 
 func TestFDB_OrderByComputedProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_obcomp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_obcomp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_obcomp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_obcomp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE obcomp "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, grp BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_obcomp/s WITH TEMPLATE obcomp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OBCOMP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_obcomp/s WITH TEMPLATE obcomp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_OBCOMP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// a+b: id1=1+5=6, id2=3+1=4, id3=2+2=4(tie, lower id first), id4=10+0=10
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a,b,grp) VALUES (1,1,5,1),(2,3,1,1),(3,2,2,2),(4,10,0,2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,a,b,grp) VALUES (1,1,5,1),(2,3,1,1),(3,2,2,2),(4,10,0,2)")
 
 	ordered := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)
@@ -139,17 +141,17 @@ func TestFDB_OrderByComputedProbe(t *testing.T) {
 // a different sequence than the correct sign-aware order.
 func TestFDB_OrderBySignedZeroProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_sz")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sz")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_sz")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sz")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE szt "+
 			"CREATE TABLE t (id BIGINT, a DOUBLE, b DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sz/s WITH TEMPLATE szt")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SZ?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sz/s WITH TEMPLATE szt")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SZ?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -160,7 +162,7 @@ func TestFDB_OrderBySignedZeroProbe(t *testing.T) {
 	// id4=-2.5 (-1*2.5). id1 (+0.0) has a LOWER id than id2 (-0.0), so a
 	// comparator that ties the zeros and breaks by id ASC would emit id1
 	// before id2; the correct sign-aware order puts -0.0 (id2) first.
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO t (id,a,b) VALUES (1,1.0,0.0),(2,-1.0,0.0),(3,1.0,2.5),(4,-1.0,2.5)")
 
 	orderedIDs := func(q string) []int64 {

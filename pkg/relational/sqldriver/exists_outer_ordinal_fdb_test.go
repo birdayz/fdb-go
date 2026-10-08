@@ -22,21 +22,23 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ExistsOuterOrdinal(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_exists_ord")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_ord")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_exists_ord")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_exists_ord")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exists_ord "+
 			"CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did)) "+
 			"CREATE TABLE emp (eid BIGINT, did BIGINT, PRIMARY KEY (eid))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_ord/s WITH TEMPLATE exists_ord")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ORD?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_exists_ord/s WITH TEMPLATE exists_ord")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_EXISTS_ORD?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -44,9 +46,9 @@ func TestFDB_ExistsOuterOrdinal(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// dept: eng(1), sales(2), hr(3)   emp: did references 1 and 2 only (hr has none).
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO dept (did, dname) VALUES (1, 'eng'), (2, 'sales'), (3, 'hr')")
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO emp (eid, did) VALUES (10, 1), (11, 1), (12, 2)")
 
 	names := func(t *testing.T, q string) string {

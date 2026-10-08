@@ -15,31 +15,33 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_InsertSelectProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_inssel")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inssel")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_inssel")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_inssel")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE inssel "+
 			"CREATE TABLE src (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE dst (id BIGINT, x DOUBLE, y BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX dst_x ON dst (x) "+
 			"CREATE TABLE lk (id BIGINT, label BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inssel/s WITH TEMPLATE inssel")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSSEL?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_inssel/s WITH TEMPLATE inssel")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INSSEL?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO src (id, a, b) VALUES (1,10,100),(2,20,200),(3,30,300)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO lk (id, label) VALUES (1,7),(3,9)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO src (id, a, b) VALUES (1,10,100),(2,20,200),(3,30,300)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO lk (id, label) VALUES (1,7),(3,9)")
 
 	ids := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)
@@ -69,7 +71,7 @@ func TestFDB_InsertSelectProbe(t *testing.T) {
 	}
 
 	t.Run("positional_with_filter_and_coercion", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "INSERT INTO dst SELECT id, a, b FROM src WHERE a > 15")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO dst SELECT id, a, b FROM src WHERE a > 15")
 		if got := ids("SELECT id FROM dst"); !eq(got, []int64{2, 3}) {
 			t.Errorf("dst ids after INSERT...SELECT WHERE a>15 = %v, want [2 3]", got)
 		}
@@ -82,8 +84,8 @@ func TestFDB_InsertSelectProbe(t *testing.T) {
 	})
 
 	t.Run("positional_over_join", func(t *testing.T) {
-		mwjoMustExec(t, db, ctx, "DELETE FROM dst")
-		mwjoMustExec(t, db, ctx, "INSERT INTO dst SELECT s.id, s.a, l.label FROM src s JOIN lk l ON l.id = s.id")
+		testkit.MustExecCtx(t, db, ctx, "DELETE FROM dst")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO dst SELECT s.id, s.a, l.label FROM src s JOIN lk l ON l.id = s.id")
 		if got := ids("SELECT id FROM dst"); !eq(got, []int64{1, 3}) {
 			t.Errorf("dst ids after INSERT...SELECT JOIN = %v, want [1 3]", got)
 		}

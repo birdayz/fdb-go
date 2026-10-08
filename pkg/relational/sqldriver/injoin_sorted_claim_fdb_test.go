@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_InJoin_PreserveRequestClaimsNoOrder pins Java's IN-source choice for
@@ -20,28 +22,28 @@ import (
 // TestIntegration_InJoinRowContinuation_OneRowPerTx.
 func TestFDB_InJoin_PreserveRequestClaimsNoOrder(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_injoin_sorted")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_injoin_sorted")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_injoin_sorted")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_injoin_sorted")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE injoin_sorted_tmpl "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_injoin_sorted/s WITH TEMPLATE injoin_sorted_tmpl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INJOIN_SORTED?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_injoin_sorted/s WITH TEMPLATE injoin_sorted_tmpl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_INJOIN_SORTED?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 	for i := 1; i <= 5; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t VALUES (%d, %d)", i, i))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t VALUES (%d, %d)", i, i))
 	}
 
-	explain := mwjoExplainer(t, db, ctx)
+	explain := testkit.Explainer(t, db, ctx)
 	plan := explain("SELECT id FROM t WHERE a IN (3, 1, 2)")
 	up := strings.ToUpper(plan)
 	if !strings.Contains(up, "INJOIN") {

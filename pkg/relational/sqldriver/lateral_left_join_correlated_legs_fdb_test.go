@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_LateralLeftJoinOfTwoCorrelatedLegs pins a LEFT JOIN inside a lateral
@@ -21,7 +23,7 @@ func TestFDB_LateralLeftJoinOfTwoCorrelatedLegs(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/lateral_left_join_correlated_legs"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE lateral_left_join_correlated_legs_tmpl" +
@@ -34,7 +36,7 @@ func TestFDB_LateralLeftJoinOfTwoCorrelatedLegs(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -80,7 +82,7 @@ func TestFDB_LateralLeftJoinOfTwoCorrelatedLegs(t *testing.T) {
 		},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {
-			if got := sortedRowStrings(t, db, ctx, tc.sql); strings.Join(got, " ") != strings.Join(tc.want, " ") {
+			if got := testkit.SortedRowStrings(t, db, ctx, tc.sql); strings.Join(got, " ") != strings.Join(tc.want, " ") {
 				t.Fatalf("rows = %v, want %v", got, tc.want)
 			}
 		})

@@ -28,6 +28,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -100,28 +102,28 @@ func mtScopeSetup(t *testing.T, ctx context.Context, suffix string) mtScopeFixtu
 		templA:  "mt_tmpl_a_" + suffix,
 		templB:  "mt_tmpl_b_" + suffix,
 	}
-	setup := openTestDB(t, f.tenantA)
+	setup := testkit.OpenDB(t, f.tenantA)
 
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+f.tenantA)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+f.tenantA)
 	t.Cleanup(func() { _, _ = setup.ExecContext(ctx, "DROP DATABASE "+f.tenantA) })
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+f.tenantB)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+f.tenantB)
 	t.Cleanup(func() { _, _ = setup.ExecContext(ctx, "DROP DATABASE "+f.tenantB) })
 
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+f.templA+" "+
 			"CREATE TABLE alpha_tbl (alpha_id BIGINT, alpha_name STRING, PRIMARY KEY (alpha_id)) "+
 			"CREATE INDEX alpha_idx ON alpha_tbl (alpha_name)")
 	t.Cleanup(func() { _, _ = setup.ExecContext(ctx, "DROP SCHEMA TEMPLATE "+f.templA) })
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+f.templB+" "+
 			"CREATE TABLE bravo_tbl (bravo_id BIGINT, bravo_name STRING, PRIMARY KEY (bravo_id)) "+
 			"CREATE INDEX bravo_idx ON bravo_tbl (bravo_name)")
 	t.Cleanup(func() { _, _ = setup.ExecContext(ctx, "DROP SCHEMA TEMPLATE "+f.templB) })
 
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+f.tenantA+"/alpha_schema WITH TEMPLATE "+f.templA)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+f.tenantB+"/bravo_schema WITH TEMPLATE "+f.templB)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+f.tenantA+"/alpha_schema WITH TEMPLATE "+f.templA)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+f.tenantB+"/bravo_schema WITH TEMPLATE "+f.templB)
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=ALPHA_SCHEMA", strings.ToUpper(f.tenantA), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=ALPHA_SCHEMA", strings.ToUpper(f.tenantA), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open tenant A: %v", err)
@@ -133,7 +135,7 @@ func mtScopeSetup(t *testing.T, ctx context.Context, suffix string) mtScopeFixtu
 
 func TestFDB_MultiTenantCatalogScoping(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -239,7 +241,7 @@ func TestFDB_MultiTenantCatalogScoping(t *testing.T) {
 	// path merely starts with those characters.
 	t.Run("prefix_match_is_segment_granular", func(t *testing.T) {
 		sibling := f.tenantA + "_extra"
-		mwjoMustExec(t, db, ctx, "CREATE DATABASE "+sibling)
+		testkit.MustExecCtx(t, db, ctx, "CREATE DATABASE "+sibling)
 		t.Cleanup(func() { _, _ = db.ExecContext(ctx, "DROP DATABASE "+sibling) })
 
 		got := mtScopeQueryRows(t, db, ctx, "SHOW DATABASES WITH PREFIX "+f.tenantA)
@@ -275,7 +277,7 @@ func TestFDB_MultiTenantCatalogScoping(t *testing.T) {
 // template NAME.
 func TestFDB_MultiTenantSchemaTemplatesAreGlobal(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()

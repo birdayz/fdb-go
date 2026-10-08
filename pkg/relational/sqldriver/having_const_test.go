@@ -13,27 +13,29 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_HavingConstantScalarAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_havingconst")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_havingconst")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_havingconst")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_havingconst")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE havingconst "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_havingconst/s WITH TEMPLATE havingconst")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVINGCONST?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_havingconst/s WITH TEMPLATE havingconst")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_HAVINGCONST?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 10), (2, 20), (3, 10)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 10), (2, 20), (3, 10)")
 
 	rowCount := func(q string) int {
 		rows, err := db.QueryContext(ctx, q)

@@ -20,30 +20,32 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ScalarSubqueryCorrelationProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ssqcorr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ssqcorr")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssqcorr "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_ssqcorr")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ssqcorr")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE ssqcorr "+
 		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX emp_dept ON emp (dept_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ssqcorr/s WITH TEMPLATE ssqcorr")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSQCORR?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ssqcorr/s WITH TEMPLATE ssqcorr")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_SSQCORR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO dept (id, name) VALUES (1, 'eng'), (2, 'sales'), (3, 'empty')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO dept (id, name) VALUES (1, 'eng'), (2, 'sales'), (3, 'empty')")
 	// eng(1): two emps 100,200 ; sales(2): one emp 150 ; empty(3): none
-	mwjoMustExec(t, db, ctx, "INSERT INTO emp (id, dept_id, salary) VALUES (1, 1, 100), (2, 1, 200), (3, 2, 150)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO emp (id, dept_id, salary) VALUES (1, 1, 100), (2, 1, 200), (3, 2, 150)")
 
 	t.Run("corr_count_in_select", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx,

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // Java folds IS [NOT] NULL over a NOT NULL constant and arithmetic over a
@@ -12,17 +14,17 @@ import (
 func TestFDB_ConstantNullFolds(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_null_fold")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_null_fold")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE null_fold_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_null_fold")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_null_fold")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE null_fold_tmpl "+
 		"CREATE TABLE T (id BIGINT, n BIGINT, PRIMARY KEY (id)) CREATE INDEX T_N ON T (n)")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_null_fold/s WITH TEMPLATE null_fold_tmpl")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_FOLD?cluster_file=%s&schema=S", clusterFilePath))
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_null_fold/s WITH TEMPLATE null_fold_tmpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_FOLD?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mustExec(t, db, ctx, "INSERT INTO T VALUES (1, NULL), (2, 5), (3, 7)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO T VALUES (1, NULL), (2, 5), (3, 7)")
 
 	for q, want := range map[string]string{
 		"SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NULL ORDER BY id":                        "[]",

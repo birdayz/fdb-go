@@ -7,64 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
-
-type execer interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-}
-
-func mwjoMustExec(t *testing.T, db execer, ctx context.Context, query string) {
-	t.Helper()
-	if _, err := db.ExecContext(ctx, query); err != nil {
-		t.Fatalf("exec %q: %v", query, err)
-	}
-}
-
-// mwjoInsertRange inserts row(i) for i in [lo, hi] as multi-row INSERTs of 100.
-// For fixtures whose test reads only the loaded rows: one autocommit statement
-// per row cost these probes most of their runtime. 500-row statements hit the
-// 5s transaction limit (1007) on an overloaded box; 100 matches the other
-// batched fixtures here.
-func mwjoInsertRange(t *testing.T, db execer, ctx context.Context, table string, lo, hi int, row func(i int) string) {
-	t.Helper()
-	const chunk = 100
-	vals := make([]string, 0, chunk)
-	for i := lo; i <= hi; i++ {
-		vals = append(vals, row(i))
-		if len(vals) == chunk || i == hi {
-			mwjoMustExec(t, db, ctx, "INSERT INTO "+table+" VALUES "+strings.Join(vals, ", "))
-			vals = vals[:0]
-		}
-	}
-}
-
-func mwjoExplainer(t *testing.T, db *sql.DB, ctx context.Context) func(string) string {
-	return func(query string) string {
-		t.Helper()
-		conn, err := db.Conn(ctx)
-		if err != nil {
-			t.Fatalf("db.Conn: %v", err)
-		}
-		defer conn.Close()
-		var plan string
-		if err := conn.Raw(func(driverConn any) error {
-			ec, ok := driverConn.(*embedded.EmbeddedConnection)
-			if !ok {
-				t.Fatalf("expected *embedded.EmbeddedConnection, got %T", driverConn)
-			}
-			p, err := ec.PlanExplain(ctx, query)
-			if err != nil {
-				return err
-			}
-			plan = p
-			return nil
-		}); err != nil {
-			t.Fatalf("PlanExplain(%q): %v", query, err)
-		}
-		return plan
-	}
-}
 
 // TestFDB_MultiwayJoinIndexProbe pins a 3-way chain join on indexed FK columns.
 // It asserts TWO things, in order of importance:
@@ -89,38 +33,38 @@ func mwjoExplainer(t *testing.T, db *sql.DB, ctx context.Context) func(string) s
 // the index probe on cost); tracked in RFC-042. Correctness holds for both.
 func TestFDB_MultiwayJoinIndexProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_mwjip")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mwjip")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_mwjip")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mwjip")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE mwjip_tmpl "+
 			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_by_t1 ON t2 (t1_id) "+
 			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mwjip/s WITH TEMPLATE mwjip_tmpl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mwjip/s WITH TEMPLATE mwjip_tmpl")
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MWJIP?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MWJIP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO t1 VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 VALUES (1)")
 	for i := 1; i <= 20; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t2 VALUES (%d, 1)", i))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t2 VALUES (%d, 1)", i))
 	}
 	for i := 1; i <= 200; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t3 VALUES (%d, %d)", i, (i%20)+1))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t3 VALUES (%d, %d)", i, (i%20)+1))
 	}
 
-	planExplain := mwjoExplainer(t, db, ctx)
+	planExplain := testkit.Explainer(t, db, ctx)
 
 	// (1) CORRECTNESS — both FROM-orders must return 200 rows, all t1.id = 1.
 	for _, q := range []string{
@@ -174,7 +118,7 @@ func TestFDB_MultiwayJoinIndexProbe(t *testing.T) {
 func TestFDB_MergedJoinRangeSplitKeepsRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := setupErrorTestDB(t, "/FRL/testdb_merged_range_split", "mergedsplit",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_merged_range_split", "mergedsplit",
 		"CREATE TABLE orders (id BIGINT, cust_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
@@ -188,7 +132,7 @@ func TestFDB_MergedJoinRangeSplitKeepsRows(t *testing.T) {
 		"INSERT INTO b VALUES (1, 10), (2, 21), (3, 30)",
 		"INSERT INTO c VALUES (1, 10), (2, 20), (3, 31)",
 	} {
-		mwjoMustExec(t, db, ctx, stmt)
+		testkit.MustExecCtx(t, db, ctx, stmt)
 	}
 	for _, tc := range []struct {
 		sql  string
@@ -208,13 +152,13 @@ func TestFDB_MergedJoinRangeSplitKeepsRows(t *testing.T) {
 			defer rows.Close()
 			var got []string
 			for rows.Next() {
-				got = append(got, siRenderRow(t, rows))
+				got = append(got, testkit.SiRenderRow(t, rows))
 			}
 			if err := rows.Err(); err != nil {
 				t.Fatalf("rows.Err: %v", err)
 			}
-			sortStrings(got)
-			if !eqStrSlices(got, tc.want) {
+			testkit.SortStrings(got)
+			if !testkit.EqualStrings(got, tc.want) {
 				t.Errorf("rows = %v, want %v", got, tc.want)
 			}
 		})

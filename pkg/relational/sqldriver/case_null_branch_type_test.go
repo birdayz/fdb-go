@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"github.com/onsi/gomega"
 )
 
@@ -19,13 +21,13 @@ import (
 // keep the result UNKNOWN; that's the distinction this test guards.
 func TestFDB_CaseNullBranchColumnType(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	g := gomega.NewWithT(t)
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_casenull")
+	setup := testkit.OpenDB(t, "/FRL/testdb_casenull")
 	g.Expect(setup.ExecContext(ctx, "CREATE DATABASE /FRL/testdb_casenull")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE casenull_tmpl "+
@@ -34,7 +36,7 @@ func TestFDB_CaseNullBranchColumnType(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx, "CREATE SCHEMA /FRL/testdb_casenull/s WITH TEMPLATE casenull_tmpl")).
 		Error().NotTo(gomega.HaveOccurred())
 
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASENULL?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CASENULL?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()

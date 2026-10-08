@@ -1,7 +1,6 @@
-package sqldriver_test
+package testkit
 
 import (
-	"flag"
 	"fmt"
 	"io"
 
@@ -46,7 +45,7 @@ func assertDottedWitnessAttributionCensus(w io.Writer) bool {
 	// zero honest — it proves the producers are still registering, so an empty
 	// observed population means the arm is quiet rather than the instrument dead.
 	floors := &values.DottedWitnessFloors{Minted: 1}
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
+	if f := corpusNarrowing(); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "dotted-witness attribution census: population floors NOT checked "+
 			"(-test.run=%q narrowed the corpus; the minted floor describes the whole suite). "+
 			"The COLLISION hard zero still runs, over whatever population this filter "+

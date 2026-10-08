@@ -14,21 +14,23 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_FloatSpecialParamProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_fspecialp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fspecialp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_fspecialp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fspecialp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE fspecialp CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fspecialp/s WITH TEMPLATE fspecialp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FSPECIALP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fspecialp/s WITH TEMPLATE fspecialp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FSPECIALP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -92,16 +94,16 @@ func TestFDB_FloatSpecialParamProbe(t *testing.T) {
 // bit-exact; the test states the contract as a disjunction (exact or refused).
 func TestFDB_FloatSpecialParam_NaNBitsAreExactOrRefused(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_fnanbits")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fnanbits")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_fnanbits")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fnanbits")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE fnanbits CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fnanbits/s WITH TEMPLATE fnanbits")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FNANBITS?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fnanbits/s WITH TEMPLATE fnanbits")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FNANBITS?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -239,23 +241,23 @@ func TestFDB_FloatSpecialParam_NaNBitsAreExactOrRefused(t *testing.T) {
 // that a value-preserving rendering is value-preserving in every dimension.
 func TestFDB_FloatSpecialParam_BoundNaNKeepsDoubleStaticType(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_fnantype")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fnantype")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_fnantype")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fnantype")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE fnantype CREATE TABLE t (id BIGINT, d DOUBLE, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fnantype/s WITH TEMPLATE fnantype")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FNANTYPE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fnantype/s WITH TEMPLATE fnantype")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FNANTYPE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	// A projection of a bound parameter still needs a row to project over.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, d) VALUES (1, 1.0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, d) VALUES (1, 1.0)")
 
 	cases := []struct {
 		name string

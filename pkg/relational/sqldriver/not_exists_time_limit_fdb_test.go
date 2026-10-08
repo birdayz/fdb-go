@@ -31,6 +31,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -98,7 +100,7 @@ func seedNotExistsFixture(t *testing.T, ctx context.Context, db *sql.DB, rows in
 // TestSim_NotExistsTimeLimit_PaginatesNotErrors.
 func TestFDB_NotExistsOutOfBandStop_PaginatesNotErrors(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_notexists_oob", "neoob",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_notexists_oob", "neoob",
 		"CREATE TABLE t_rd (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE uniq (id BIGINT, k BIGINT, v BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
@@ -123,7 +125,7 @@ func TestFDB_NotExistsOutOfBandStop_PaginatesNotErrors(t *testing.T) {
 	}
 
 	// Oracle: no per-page budget beyond the 4s transaction ceiling.
-	plainConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	plainConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	want, err := drainIDB(ctx, plainConn, notExistsQuery)
 	if err != nil {
 		t.Fatalf("unbudgeted NOT EXISTS query failed: %v", err)
@@ -152,7 +154,7 @@ func TestFDB_NotExistsOutOfBandStop_PaginatesNotErrors(t *testing.T) {
 	// legs guarantees both that pages end mid-query and that each page makes
 	// progress.
 	t.Run("ScannedRowsLimit", func(t *testing.T) {
-		conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 			ec.SetOptions(api.NewOptionsBuilder().
 				Set(api.OptExecutionScannedRowsLimit, int64(3*rows)).
 				Build())
@@ -183,7 +185,7 @@ func TestFDB_NotExistsOutOfBandStop_PaginatesNotErrors(t *testing.T) {
 			t.Fatalf("oracle returned %d rows, want %d — the scalar subquery fixture "+
 				"no longer produces one value per outer row", len(wantScalar), rows)
 		}
-		conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 			ec.SetOptions(api.NewOptionsBuilder().
 				Set(api.OptExecutionScannedRowsLimit, int64(3*rows)).
 				Build())
@@ -212,7 +214,7 @@ func TestFDB_NotExistsOutOfBandStop_PaginatesNotErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unbudgeted ordered NOT EXISTS failed: %v", err)
 		}
-		conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 			ec.SetOptions(api.NewOptionsBuilder().
 				Set(api.OptExecutionScannedRowsLimit, int64(3*rows)).
 				Build())

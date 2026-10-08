@@ -33,13 +33,15 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
 func TestFDB_CollectedStatisticsDriveJoinOrder(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -49,16 +51,16 @@ func TestFDB_CollectedStatisticsDriveJoinOrder(t *testing.T) {
 	arrangement := func(t *testing.T, name string, aRows, bRows int, useStats bool) string {
 		t.Helper()
 		dbPath := "/FRL/statsjoin_" + name
-		setup := openTestDB(t, dbPath)
-		mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-		mwjoMustExec(t, setup, ctx,
+		setup := testkit.OpenDB(t, dbPath)
+		testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+		testkit.MustExecCtx(t, setup, ctx,
 			"CREATE SCHEMA TEMPLATE statsjoin_"+name+
 				" CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 				" CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id))"+
 				" CREATE INDEX b_by_a ON b (a_id)")
-		mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE statsjoin_"+name)
+		testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE statsjoin_"+name)
 
-		dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+		dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 		if useStats {
 			dsn += "&planner_statistics=true"
 		}
@@ -69,10 +71,10 @@ func TestFDB_CollectedStatisticsDriveJoinOrder(t *testing.T) {
 		t.Cleanup(func() { db.Close() })
 
 		for i := 0; i < aRows; i++ {
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO a VALUES (%d, %d)", i, i))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO a VALUES (%d, %d)", i, i))
 		}
 		for i := 0; i < bRows; i++ {
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO b VALUES (%d, %d)", i, i%maxInt(aRows, 1)))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO b VALUES (%d, %d)", i, i%maxInt(aRows, 1)))
 		}
 
 		if useStats {

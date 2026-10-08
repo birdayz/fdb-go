@@ -40,31 +40,33 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/conformance/coveringleaf"
 )
 
 func TestFDB_CoveringLeafKeepsColumnTypeMetadata(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const dbPath = "/FRL/testdb_covleafmeta"
-	setup := openTestDB(t, dbPath)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
 	// The schema is the SHARED definition. The planner-side pin
 	// (TestCoveringLeafMetadataQueriesStillPlanAsCoveringLeaves, package
 	// embedded_test) asserts the plan SHAPE these queries take against the very
 	// same DDL — which is the premise this test rests on, and which used to be
 	// a hand-kept copy on each side.
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE covleafmeta "+coveringleaf.DDL)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE covleafmeta")
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE covleafmeta "+coveringleaf.DDL)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE covleafmeta")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO products VALUES (1,2,100,'widget'),(2,2,200,'gadget'),(3,3,150,'gizmo')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO products VALUES (1,2,100,'widget'),(2,2,200,'gadget'),(3,3,150,'gizmo')")
 
 	// The queries and their expected metadata come from the shared probe table,
 	// alongside the coveringness the planner-side pin asserts for each. The

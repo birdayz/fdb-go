@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_UnnestMemberPredicateServesRows pins the ROWS of a WHERE predicate that
@@ -37,18 +39,18 @@ import (
 // was green throughout the defect. If one half moves, move the other.
 func TestFDB_UnnestMemberPredicateServesRows(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_umpr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_umpr")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_umpr")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_umpr")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE umpr "+
 			"CREATE TYPE AS STRUCT item (sku STRING, qty BIGINT) "+
 			"CREATE TABLE orders (order_id BIGINT, items item ARRAY, PRIMARY KEY (order_id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_umpr/s WITH TEMPLATE umpr")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UMPR?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_umpr/s WITH TEMPLATE umpr")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_UMPR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

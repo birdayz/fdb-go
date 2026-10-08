@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_DerivedStarJoinBesideAnotherSource executes, on real FDB, a derived
@@ -23,7 +25,7 @@ func TestFDB_DerivedStarJoinBesideAnotherSource(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/derived_star_join_beside_source"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE derived_star_join_beside_source_tmpl" +
@@ -36,7 +38,7 @@ func TestFDB_DerivedStarJoinBesideAnotherSource(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -127,7 +129,7 @@ func TestFDB_FilteredDerivedTableInsideAJoin(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/filtered_derived_table_inside_a_join"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE filtered_derived_table_inside_a_join_tmpl" +
@@ -140,7 +142,7 @@ func TestFDB_FilteredDerivedTableInsideAJoin(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -193,7 +195,7 @@ func TestFDB_FilteredDerivedTableInsideAJoin(t *testing.T) {
 					t.Errorf("plan %s does not contain %s", plan, pinned)
 				}
 			}
-			if got := sortedRowStrings(t, db, ctx, tc.sql); strings.Join(got, " ") != strings.Join(tc.want, " ") {
+			if got := testkit.SortedRowStrings(t, db, ctx, tc.sql); strings.Join(got, " ") != strings.Join(tc.want, " ") {
 				t.Fatalf("rows = %v, want %v", got, tc.want)
 			}
 		})
@@ -216,7 +218,7 @@ func TestFDB_DerivedOuterJoinBesideAnotherSource(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	dbPath := "/FRL/derived_outer_join_beside_source"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	for _, stmt := range []string{
 		"CREATE DATABASE " + dbPath,
 		"CREATE SCHEMA TEMPLATE derived_outer_join_beside_source_tmpl" +
@@ -229,7 +231,7 @@ func TestFDB_DerivedOuterJoinBesideAnotherSource(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -272,7 +274,7 @@ func TestFDB_DerivedOuterJoinBesideAnotherSource(t *testing.T) {
 		{`SELECT a.id, a.k FROM (SELECT * FROM w FULL JOIN g ON g.k = w.id) AS a, h AS d WHERE d.f = 10`, []string{"[1 1]", "[2 <nil>]", "[3 3]", "[<nil> 4]"}},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {
-			if got := sortedRowStrings(t, db, ctx, tc.sql); strings.Join(got, " ") != strings.Join(tc.want, " ") {
+			if got := testkit.SortedRowStrings(t, db, ctx, tc.sql); strings.Join(got, " ") != strings.Join(tc.want, " ") {
 				t.Fatalf("rows = %v, want %v", got, tc.want)
 			}
 		})

@@ -13,23 +13,25 @@ import (
 	"math/rand"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_JoinOracleConsistency(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_joinoracle")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_joinoracle")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_joinoracle")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_joinoracle")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE joinoracle "+
 			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX a_k ON a (k) CREATE INDEX b_k ON b (k)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_joinoracle/s WITH TEMPLATE joinoracle")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOINORACLE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_joinoracle/s WITH TEMPLATE joinoracle")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_JOINORACLE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -48,10 +50,10 @@ func TestFDB_JoinOracleConsistency(t *testing.T) {
 			r := rec{id: int64(i)}
 			if rng.Intn(8) == 0 {
 				r.isNull = true
-				mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO %s (id) VALUES (%d)", tbl, r.id))
+				testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO %s (id) VALUES (%d)", tbl, r.id))
 			} else {
 				r.k = int64(rng.Intn(12)) // [0,11], heavy duplication → many matches
-				mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO %s (id, k) VALUES (%d, %d)", tbl, r.id, r.k))
+				testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO %s (id, k) VALUES (%d, %d)", tbl, r.id, r.k))
 			}
 			out = append(out, r)
 		}

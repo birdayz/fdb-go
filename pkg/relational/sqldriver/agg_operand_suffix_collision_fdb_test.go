@@ -3,6 +3,8 @@ package sqldriver_test
 import (
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_AggregateOperandSuffixDoesNotCollideOnASharedLeaf pins that an
@@ -33,10 +35,10 @@ import (
 // notice it being widened again.
 func TestFDB_AggregateOperandSuffixDoesNotCollideOnASharedLeaf(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	db, ctx := dupAliasSurfaceDB(t, "aggsuffix")
+	db, ctx := testkit.DupAliasSurfaceDB(t, "aggsuffix")
 
 	// zn.n is nst(sk, co) with rows (11,12) and (21,22).
 	// zp.m is nst(sk, co) with rows (31,32), (41,42), (51,52).

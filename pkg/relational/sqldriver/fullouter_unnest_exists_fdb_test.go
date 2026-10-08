@@ -27,6 +27,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -41,12 +43,12 @@ import (
 )
 
 func TestFDB_FullOuterUnnestExists(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +88,7 @@ func TestFDB_FullOuterUnnestExists(t *testing.T) {
 	foa := dynamicpb.NewMessage(foaDesc)
 	foa.Set(foaDesc.Fields().ByName("AID"), protoreflect.ValueOfInt64(1))
 	foa.Set(foaDesc.Fields().ByName("K"), protoreflect.ValueOfInt64(100))
-	setArrayField(foa, foaDesc.Fields().ByName("ARR"), protoreflect.ValueOfInt32(7), protoreflect.ValueOfInt32(8))
+	testkit.SetArrayField(foa, foaDesc.Fields().ByName("ARR"), protoreflect.ValueOfInt32(7), protoreflect.ValueOfInt32(8))
 
 	fobDesc := md.GetRecordType("FOB").Descriptor
 	fob := dynamicpb.NewMessage(fobDesc)
@@ -159,7 +161,7 @@ func TestFDB_FullOuterUnnestExists(t *testing.T) {
 				// the row map's keys, so permuting (Fields, Slots) together rendered
 				// identically -- blind in the one dimension a mis-bound leg window
 				// moves.
-				out = append(out, positionalPipeSprint(r))
+				out = append(out, testkit.PositionalPipeSprint(r))
 			}
 			return nil, nil
 		})

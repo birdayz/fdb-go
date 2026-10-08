@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // RFC-048 W3.5: the plan-diversity oracle (Cascades-specific, self-oracling).
@@ -32,7 +34,7 @@ import (
 // b, seeded identically from `seed`.
 func pdDB(t *testing.T, withIndexes bool, seed int64) *sql.DB {
 	t.Helper()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -41,7 +43,7 @@ func pdDB(t *testing.T, withIndexes bool, seed int64) *sql.DB {
 		tag = "idx"
 	}
 	dbPath := fmt.Sprintf("/FRL/pd_%s_%d_%s", tag, seed, t.Name())
-	db := openTestDB(t, dbPath)
+	db := testkit.OpenDB(t, dbPath)
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
 	}
@@ -57,7 +59,7 @@ func pdDB(t *testing.T, withIndexes bool, seed int64) *sql.DB {
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
-	sdb, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath))
+	sdb, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -155,8 +157,8 @@ func TestFDB_W3_5_PlanDiversity_IndexedVsFullScan(t *testing.T) {
 		// the projection bug is fixed.
 	}
 	for _, q := range queries {
-		gotIdx := canonRows(collectRows(t, idx, q))
-		gotNo := canonRows(collectRows(t, noidx, q))
+		gotIdx := canonRows(testkit.CollectRows(t, idx, q))
+		gotNo := canonRows(testkit.CollectRows(t, noidx, q))
 		if !sameRows(gotIdx, gotNo) {
 			t.Fatalf("plan-diversity mismatch for %q:\n indexed: %v\n  noidx: %v", q, gotIdx, gotNo)
 		}
@@ -218,8 +220,8 @@ func TestFDB_W3_5_PlanDiversity_PlansActuallyDiffer(t *testing.T) {
 	}
 	diverged := false
 	for _, q := range probes {
-		pIdx := planExplainVia(t, ctx, idx, q)
-		pNo := planExplainVia(t, ctx, noidx, q)
+		pIdx := testkit.ExplainVia(t, ctx, idx, q)
+		pNo := testkit.ExplainVia(t, ctx, noidx, q)
 		idxUsesIndex := strings.Contains(strings.ToUpper(pIdx), "INDEX")
 		noUsesIndex := strings.Contains(strings.ToUpper(pNo), "INDEX")
 		if pIdx != pNo && idxUsesIndex && !noUsesIndex {

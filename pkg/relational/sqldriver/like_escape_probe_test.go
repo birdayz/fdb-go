@@ -11,26 +11,28 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_LikeEscapeProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_likeescp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_likeescp")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_likeescp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_likeescp")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE likeescp CREATE TABLE t (id BIGINT, s STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_likeescp/s WITH TEMPLATE likeescp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LIKEESCP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_likeescp/s WITH TEMPLATE likeescp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LIKEESCP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, s) VALUES (1,'50%off'),(2,'50Xoff'),(3,'a_b'),(4,'aXb')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, s) VALUES (1,'50%off'),(2,'50Xoff'),(3,'a_b'),(4,'aXb')")
 
 	ids := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

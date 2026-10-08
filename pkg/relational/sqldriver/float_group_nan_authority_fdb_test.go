@@ -42,6 +42,8 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // groupNaNSeed writes the ladder. Two DISTINCT NaN payloads are the point: a
@@ -54,10 +56,10 @@ import (
 // yields 0x7ff8000000000000.
 func groupNaNSeed(t *testing.T, db *sql.DB, ctx context.Context, tbl string) {
 	t.Helper()
-	mwjoMustExec(t, db, ctx, fmt.Sprintf(
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 		"INSERT INTO %s (id, d, a) VALUES (20, -1.5, 1), (30, -0.0, 1), (40, 0.0, 1), "+
 			"(70, 1.0e308, 1), (5, CAST('NaN' AS DOUBLE), 1)", tbl))
-	mwjoMustExec(t, db, ctx, fmt.Sprintf(
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 		"UPDATE %s SET d = (d * 10.0) + (d * -10.0) WHERE id = 70", tbl))
 
 	// Vacuity guard. Every assertion below is meaningless if the two NaN rows
@@ -146,18 +148,18 @@ func summarize(groups []floatGroup) (nanGroups int, nanRows int64, negZero, posZ
 
 func TestFDB_FloatGroupByNaNAuthority(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_fgna")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fgna")
+	setup := testkit.OpenDB(t, "/FRL/testdb_fgna")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fgna")
 	// No index on d anywhere: this table exercises the STREAMING aggregation,
 	// which is the path Java decides with DynamicMessage.equals.
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgna "+
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgna "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fgna/s WITH TEMPLATE fgna")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FGNA?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fgna/s WITH TEMPLATE fgna")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FGNA?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -170,7 +172,7 @@ func TestFDB_FloatGroupByNaNAuthority(t *testing.T) {
 		q := "SELECT d, COUNT(*) FROM t GROUP BY d"
 		groups := readFloatGroups(t, db, ctx, q)
 		nanGroups, nanRows, negZero, posZero := summarize(groups)
-		plan := floatOrderingExplain(t, db, ctx, q)
+		plan := testkit.FloatOrderingExplain(t, db, ctx, q)
 		if nanGroups != 1 || nanRows != 2 {
 			t.Errorf("GROUP BY over two distinct NaN payloads produced %d NaN group(s) "+
 				"covering %d row(s), want 1 group covering 2 — Java's streaming aggregation "+
@@ -258,17 +260,17 @@ func TestFDB_FloatGroupByNaNAuthority(t *testing.T) {
 // (TestFDB_FloatOrderingClaim_Aggregate_Differential).
 func TestFDB_FloatAggregateIndexSplitsNaNPayloads(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_fgnaidx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fgnaidx")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgnaidx "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_fgnaidx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fgnaidx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgnaidx "+
 		"CREATE TABLE t (id BIGINT, d DOUBLE, a BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX cnt_by_d AS SELECT COUNT(*) FROM t GROUP BY d")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fgnaidx/s WITH TEMPLATE fgnaidx")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FGNAIDX?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fgnaidx/s WITH TEMPLATE fgnaidx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FGNAIDX?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -278,7 +280,7 @@ func TestFDB_FloatAggregateIndexSplitsNaNPayloads(t *testing.T) {
 	groupNaNSeed(t, db, ctx, "t")
 
 	q := "SELECT d, COUNT(*) FROM t GROUP BY d"
-	plan := floatOrderingExplain(t, db, ctx, q)
+	plan := testkit.FloatOrderingExplain(t, db, ctx, q)
 	groups := readFloatGroups(t, db, ctx, q)
 	nanGroups, _, _, _ := summarize(groups)
 	// The plan assertion comes FIRST and is fatal. This test only says anything
@@ -323,16 +325,16 @@ func TestFDB_FloatAggregateIndexSplitsNaNPayloads(t *testing.T) {
 // float32 arm has become necessary.
 func TestFDB_FloatGroupByNaNAuthority_Float32(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_fgna32")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fgna32")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgna32 "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_fgna32")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_fgna32")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE fgna32 "+
 		"CREATE TABLE t (id BIGINT, g FLOAT, h DOUBLE, a BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fgna32/s WITH TEMPLATE fgna32")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FGNA32?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_fgna32/s WITH TEMPLATE fgna32")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_FGNA32?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -345,10 +347,10 @@ func TestFDB_FloatGroupByNaNAuthority_Float32(t *testing.T) {
 	// and their sum is the default quiet NaN 0xffc00000; CAST('NaN' AS FLOAT)
 	// is 0x7fc00000 — two DISTINCT float32 bit patterns, which is what this
 	// test needs.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, g, h, a) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, g, h, a) VALUES "+
 		"(20, CAST(-1.5 AS FLOAT), 1.0e308, 1), (30, CAST(-0.0 AS FLOAT), 1.0e308, 1), (40, CAST(0.0 AS FLOAT), 1.0e308, 1), "+
 		"(70, CAST(1.0 AS FLOAT), 1.0e308, 1), (5, CAST('NaN' AS FLOAT), 1.0e308, 1)")
-	mwjoMustExec(t, db, ctx, "UPDATE t SET g = (CAST(3.0E38 AS FLOAT) * CAST(10.0 AS FLOAT)) + (CAST(3.0E38 AS FLOAT) * CAST(-10.0 AS FLOAT)) WHERE id = 70")
+	testkit.MustExecCtx(t, db, ctx, "UPDATE t SET g = (CAST(3.0E38 AS FLOAT) * CAST(10.0 AS FLOAT)) + (CAST(3.0E38 AS FLOAT) * CAST(-10.0 AS FLOAT)) WHERE id = 70")
 
 	// Vacuity guard: two NaNs with the SAME payload would make the merge
 	// trivially true and the test would pass with the canonicalization gone.
@@ -387,7 +389,7 @@ func TestFDB_FloatGroupByNaNAuthority_Float32(t *testing.T) {
 	q := "SELECT g, COUNT(*) FROM t GROUP BY g"
 	groups := readFloatGroups(t, db, ctx, q)
 	nanGroups, nanRows, negZero, posZero := summarize(groups)
-	plan := floatOrderingExplain(t, db, ctx, q)
+	plan := testkit.FloatOrderingExplain(t, db, ctx, q)
 	if nanGroups != 1 || nanRows != 2 {
 		t.Errorf("GROUP BY on a FLOAT column over two distinct NaN payloads produced %d NaN "+
 			"group(s) covering %d row(s), want 1 covering 2. The FLOAT carrier reaches the "+

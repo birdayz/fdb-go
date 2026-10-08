@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -16,16 +18,16 @@ import (
 // no-cap sentinel; bare OFFSET syntax being rejected does not rule that out.
 func TestFDB_UnionLimitParameters(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	const path = "/FRL/testdb_union_limit_parameters"
-	setup := openTestDB(t, path)
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+path)
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, path)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+path)
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE union_limit_parameters CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+path+"/s WITH TEMPLATE union_limit_parameters")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+path+"/s WITH TEMPLATE union_limit_parameters")
 	// -count repeats the test in the same cluster. Release its catalog entries
 	// after closing the query DB so each iteration exercises fresh planning.
 	t.Cleanup(func() {
@@ -39,13 +41,13 @@ func TestFDB_UnionLimitParameters(t *testing.T) {
 			}
 		}
 	})
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(path), clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(path), testkit.ClusterFile()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 	db.SetMaxOpenConns(1)
-	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1), (2), (3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t VALUES (1), (2), (3)")
 
 	const query = "SELECT id FROM t UNION ALL SELECT id FROM t LIMIT ? OFFSET 2"
 	stmt, err := db.PrepareContext(ctx, query)

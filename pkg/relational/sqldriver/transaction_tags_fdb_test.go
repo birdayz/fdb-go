@@ -15,22 +15,24 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_TransactionTags_TaggedConnectionReadsAndWrites(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_txtags")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txtags")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_txtags")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txtags")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE txtags CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txtags/s WITH TEMPLATE txtags")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txtags/s WITH TEMPLATE txtags")
 
 	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TXTAGS?cluster_file=%s&schema=S&transaction_tags=tenant-a,bulk",
-		clusterFilePath)
+		testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -71,18 +73,18 @@ func TestFDB_TransactionTags_TaggedConnectionReadsAndWrites(t *testing.T) {
 // transaction, so dropping the loop turns it red.
 func TestFDB_TransactionTags_TagsReachTheTransaction(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_txtags2")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txtags2")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_txtags2")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_txtags2")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE txtags2 CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txtags2/s WITH TEMPLATE txtags2")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_txtags2/s WITH TEMPLATE txtags2")
 
 	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_TXTAGS2?cluster_file=%s&schema=S&transaction_tags=gamma,alpha",
-		clusterFilePath)
+		testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -124,12 +126,12 @@ func TestFDB_TransactionTags_TagsReachTheTransaction(t *testing.T) {
 // some later statement — the whole point of validating at parse time.
 func TestFDB_TransactionTags_InvalidTagFailsAtOpen(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	dsn := fmt.Sprintf("fdbsql:///TESTDB_TXTAGS_BAD?cluster_file=%s&transaction_tags=%s",
-		clusterFilePath, strings.Repeat("x", 17))
+		testkit.ClusterFile(), strings.Repeat("x", 17))
 	// sql.Open defers driver work, so the error may surface here or on first
 	// use — but it MUST surface, and it must carry the record layer's wording.
 	// An early `return` on the sql.Open error would let this pass vacuously.

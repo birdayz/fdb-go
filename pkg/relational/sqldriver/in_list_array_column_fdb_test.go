@@ -31,19 +31,21 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func openArrayInDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_in_arraycol")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_arraycol")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE inarr_t "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_in_arraycol")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_arraycol")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE inarr_t "+
 		"CREATE TABLE t (id BIGINT, b BIGINT, s STRING, xs BIGINT ARRAY, ss STRING ARRAY, "+
 		"PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_arraycol/s WITH TEMPLATE inarr_t")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_arraycol/s WITH TEMPLATE inarr_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_ARRAYCOL?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_ARRAYCOL?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -57,13 +59,13 @@ func openArrayInDB(t *testing.T) *sql.DB {
 func openArrayUUIDDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_in_arruuid")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_arruuid")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE inarruuid_t "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_in_arruuid")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_in_arruuid")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE inarruuid_t "+
 		"CREATE TABLE u (id BIGINT, uu UUID, s STRING, us STRING ARRAY, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_arruuid/s WITH TEMPLATE inarruuid_t")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_in_arruuid/s WITH TEMPLATE inarruuid_t")
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_ARRUUID?cluster_file=%s&schema=S", clusterFilePath))
+		fmt.Sprintf("fdbsql:///FRL/TESTDB_IN_ARRUUID?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -73,7 +75,7 @@ func openArrayUUIDDB(t *testing.T) *sql.DB {
 
 func TestFDB_InListIsAnArrayColumn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -86,7 +88,7 @@ func TestFDB_InListIsAnArrayColumn(t *testing.T) {
 	//
 	// There are deliberately NO NULL elements here: an array literal carrying
 	// one is rejected outright, which the arm at the end of this file pins.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, b, s, xs, ss) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, b, s, xs, ss) VALUES "+
 		"(1, 10, 'x', [10,20], ['x','y']), "+
 		"(2, 20, 'q', [30], ['z']), "+
 		"(3, 30, 'a', [30,40], []), "+
@@ -111,15 +113,15 @@ func TestFDB_InListIsAnArrayColumn(t *testing.T) {
 			{"parenthesized left operand", "(b) IN xs", []string{"1", "3", "5"}},
 		}
 		for _, c := range cases {
-			got, err := mmRows(t, ctx, db,
+			got, err := testkit.QueryRowStrings(t, ctx, db,
 				fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY id", c.pred))
 			if err != nil {
 				t.Errorf("%s: %v\n  pred: %s", c.name, err, c.pred)
 				continue
 			}
-			if !mmEqRows(got, c.want) {
+			if !testkit.EqualRows(got, c.want) {
 				t.Errorf("%s\n  pred: %s\n  got  %v\n  want %v\n  %s",
-					c.name, c.pred, got, c.want, mmFirstDiff(got, c.want))
+					c.name, c.pred, got, c.want, testkit.MmFirstDiff(got, c.want))
 			}
 		}
 	})
@@ -135,21 +137,21 @@ func TestFDB_InListIsAnArrayColumn(t *testing.T) {
 	// a defect that dropped a row from BOTH would otherwise need someone to
 	// notice a missing id.
 	t.Run("IN and NOT IN partition the rows when no element is NULL", func(t *testing.T) {
-		in, err := mmRows(t, ctx, db, "SELECT id FROM t WHERE b IN xs ORDER BY id")
+		in, err := testkit.QueryRowStrings(t, ctx, db, "SELECT id FROM t WHERE b IN xs ORDER BY id")
 		if err != nil {
 			t.Fatalf("IN: %v", err)
 		}
-		notIn, err := mmRows(t, ctx, db, "SELECT id FROM t WHERE b NOT IN xs ORDER BY id")
+		notIn, err := testkit.QueryRowStrings(t, ctx, db, "SELECT id FROM t WHERE b NOT IN xs ORDER BY id")
 		if err != nil {
 			t.Fatalf("NOT IN: %v", err)
 		}
-		if !mmEqRows(in, []string{"1", "3", "5"}) {
+		if !testkit.EqualRows(in, []string{"1", "3", "5"}) {
 			t.Errorf("IN over an array column\n  got  %v\n  want [1 3 5]", in)
 		}
 		// id=4's array is EMPTY, and membership in an empty set is FALSE, not
 		// UNKNOWN — so it belongs to the negation. An empty array confused with
 		// a NULL one would drop it from both sides and break the partition.
-		if !mmEqRows(notIn, []string{"2", "4"}) {
+		if !testkit.EqualRows(notIn, []string{"2", "4"}) {
 			t.Errorf("NOT IN over an array column\n  got  %v\n  want [2 4]\n"+
 				"  (missing id=4 means an EMPTY array was treated as UNKNOWN rather than as "+
 				"a set with no members)", notIn)
@@ -213,7 +215,7 @@ func TestFDB_InListIsAnArrayColumn(t *testing.T) {
 	// were there. This arm is what stops the answer from being silent.
 	t.Run("a probe needing element conversion is refused, not silently wrong", func(t *testing.T) {
 		udb := openArrayUUIDDB(t)
-		mwjoMustExec(t, udb, ctx, "INSERT INTO u (id, uu, s, us) VALUES "+
+		testkit.MustExecCtx(t, udb, ctx, "INSERT INTO u (id, uu, s, us) VALUES "+
 			"(1, '11111111-1111-1111-1111-111111111111', 'hit', ['hit', 'other'])")
 
 		for _, pred := range []string{"uu IN us", "uu NOT IN us"} {
@@ -235,11 +237,11 @@ func TestFDB_InListIsAnArrayColumn(t *testing.T) {
 		// The SAME element type is fine and must stay fine — the gate refuses a
 		// conversion it cannot perform, not every array whose elements are not
 		// the probe's exact type.
-		got, err := mmRows(t, ctx, udb, "SELECT id FROM u WHERE s IN us ORDER BY id")
+		got, err := testkit.QueryRowStrings(t, ctx, udb, "SELECT id FROM u WHERE s IN us ORDER BY id")
 		if err != nil {
 			t.Fatalf("a STRING probe against a STRING ARRAY must work: %v", err)
 		}
-		if !mmEqRows(got, []string{"1"}) {
+		if !testkit.EqualRows(got, []string{"1"}) {
 			t.Errorf("STRING in STRING ARRAY: got %v, want [1]", got)
 		}
 	})

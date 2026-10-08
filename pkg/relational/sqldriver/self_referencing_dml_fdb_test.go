@@ -20,15 +20,17 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_SelfReferencingUpdateDoesNotChase(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_halloween", "hw",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_halloween", "hw",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) ")
 	w.Exec("INSERT INTO t (id, a, b) VALUES (1, 1, 10), (2, 2, 20), (3, 3, 30), (4, 4, 40), (5, 5, 50)")
@@ -81,11 +83,11 @@ func TestFDB_SelfReferencingUpdateDoesNotChase(t *testing.T) {
 // them.
 func TestFDB_SelfReferencingDeleteTerminates(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_halloween_del", "hwd",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_halloween_del", "hwd",
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) ")
 
@@ -115,11 +117,11 @@ func TestFDB_SelfReferencingDeleteTerminates(t *testing.T) {
 // row count — it feeds on its own output.
 func TestFDB_InsertFromSelectOverTheSameTable(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_selfref_insert_select", "isel",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_selfref_insert_select", "isel",
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE u (id BIGINT, a BIGINT, PRIMARY KEY (id)) ",
 		"CREATE INDEX t_a ON t (a) CREATE INDEX u_a ON u (a) ")
@@ -134,13 +136,13 @@ func TestFDB_InsertFromSelectOverTheSameTable(t *testing.T) {
 	// If the statement ever stops being supported that is a regression worth a
 	// red build, and if it is ever supported only on one schema the next line
 	// catches that separately.
-	if _, err := w.idx.ExecContext(ctx, "INSERT INTO u SELECT id, a FROM t"); err != nil {
+	if _, err := w.Idx.ExecContext(ctx, "INSERT INTO u SELECT id, a FROM t"); err != nil {
 		t.Fatalf("INSERT ... SELECT failed on the indexed schema: %v\n"+
 			"  Every assertion in this file runs through this statement, so it cannot be "+
 			"skipped past — if the support was deliberately withdrawn, pin the exact rejection "+
 			"here instead of stepping around it", err)
 	}
-	if _, err := w.plain.ExecContext(ctx, "INSERT INTO u SELECT id, a FROM t"); err != nil {
+	if _, err := w.Plain.ExecContext(ctx, "INSERT INTO u SELECT id, a FROM t"); err != nil {
 		t.Fatalf("the indexed schema accepted INSERT ... SELECT and the unindexed one did not: %v", err)
 	}
 	w.Want("a copy between tables", "SELECT id, a FROM u ORDER BY id",
@@ -149,8 +151,8 @@ func TestFDB_InsertFromSelectOverTheSameTable(t *testing.T) {
 	// Now the self-referencing form. Whatever it does — succeed with exactly
 	// three new rows, or be rejected — it must do the same on both schemas and
 	// must not consume its own output.
-	_, ei := w.idx.ExecContext(ctx, "INSERT INTO t SELECT id + 100, a FROM t")
-	_, en := w.plain.ExecContext(ctx, "INSERT INTO t SELECT id + 100, a FROM t")
+	_, ei := w.Idx.ExecContext(ctx, "INSERT INTO t SELECT id + 100, a FROM t")
+	_, en := w.Plain.ExecContext(ctx, "INSERT INTO t SELECT id + 100, a FROM t")
 	if (ei == nil) != (en == nil) {
 		t.Fatalf("self-referencing INSERT ... SELECT differs by index presence\n  indexed: %v\n  unindexed: %v",
 			ei, en)

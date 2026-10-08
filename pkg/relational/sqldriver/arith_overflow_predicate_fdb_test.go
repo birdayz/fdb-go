@@ -21,28 +21,30 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ArithOverflowInPredicate_PlanStable(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	const p62 = int64(1) << 62 // 2^62 + 2^62 = 2^63 overflows int64
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_aovfp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aovfp")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE aovfp "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_aovfp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_aovfp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE aovfp "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 		"CREATE INDEX idx_g ON t (g)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aovfp/s WITH TEMPLATE aovfp")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AOVFP?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_aovfp/s WITH TEMPLATE aovfp")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_AOVFP?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, fmt.Sprintf(
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf(
 		"INSERT INTO t (id,a,b,g) VALUES (1,%d,%d,10),(2,1,1,20),(3,%d,%d,30)", p62, p62, p62, p62))
 
 	// outcome returns "22003", "ok" (rows, no overflow), or "err:<...>".

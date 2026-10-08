@@ -10,21 +10,23 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ThreeValuedLogicProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_3vl")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3vl")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_3vl")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_3vl")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE tvl "+
 			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3vl/s WITH TEMPLATE tvl")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_3VL?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_3vl/s WITH TEMPLATE tvl")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_3VL?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -32,11 +34,11 @@ func TestFDB_ThreeValuedLogicProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// id, a, b, s
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, a, b, s) VALUES (1, 5, 10, 'hello'), (3, 7, 30, 'foo'), (5, 3, 5, 'hello')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, b, s) VALUES (2, 20, 'world')") // a NULL
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (4)")                    // a,b,s NULL
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, a, b, s) VALUES (1, 5, 10, 'hello'), (3, 7, 30, 'foo'), (5, 3, 5, 'hello')")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, b, s) VALUES (2, 20, 'world')") // a NULL
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (4)")                    // a,b,s NULL
 	// Fix: id3 b should be NULL to exercise AND with NULL on b.
-	mwjoMustExec(t, db, ctx, "UPDATE t SET b = NULL WHERE id = 3")
+	testkit.MustExecCtx(t, db, ctx, "UPDATE t SET b = NULL WHERE id = 3")
 
 	ints := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)

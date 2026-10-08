@@ -11,11 +11,13 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func benchProjectionScan(b *testing.B, query string) {
 	b.Helper()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		b.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -30,7 +32,7 @@ func benchProjectionScan(b *testing.B, query string) {
 		"CREATE TABLE orders (id BIGINT, customer_id BIGINT, amount BIGINT, status STRING, PRIMARY KEY (id))", tmpl))
 	execOrFail(b, setup, ctx, fmt.Sprintf("CREATE SCHEMA %s/STORE WITH TEMPLATE %s", dbPath, tmpl))
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", dbPath, clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=STORE", dbPath, testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		b.Fatalf("sql.Open: %v", err)

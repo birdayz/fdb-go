@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // RFC-210 §5.1 clause 4: a SPARSE (WHERE-filtered) UNIQUE index proves NOTHING
@@ -41,7 +43,7 @@ import (
 // a sparse name.
 func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -49,10 +51,10 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 	// A one-shot clock spike, so the retry below fires on EVERY run. Safe to arm
 	// for the whole test: preflightTxBudget runs under `if r.tx != nil`, so the
 	// DDL and seed statements below — all autocommit — never meet it.
-	key, clk := spikedClusterKey(t, 30*time.Second)
-	setup := openSpiked(t, key, "/FRL/testdb_sparseu", "")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sparseu")
-	mwjoMustExec(t, setup, ctx,
+	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
+	setup := testkit.OpenSpiked(t, key, "/FRL/testdb_sparseu", "")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sparseu")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sparseu "+
 			"CREATE TABLE sp (id BIGINT, email STRING, keep BIGINT, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX sparse_u AS SELECT email FROM sp WHERE keep > 0 ORDER BY email "+
@@ -63,16 +65,16 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 			// nothing about clause 4.
 			"CREATE TABLE fu (id BIGINT, email STRING, keep BIGINT, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX full_u AS SELECT email FROM fu ORDER BY email")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sparseu/s WITH TEMPLATE sparseu")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sparseu/s WITH TEMPLATE sparseu")
 
-	db := openSpiked(t, key, "/FRL/testdb_sparseu", "s")
+	db := testkit.OpenSpiked(t, key, "/FRL/testdb_sparseu", "s")
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO sp (id, email, keep) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO sp (id, email, keep) VALUES "+
 		"(1, 'a@x', 1), (2, 'b@x', 1), (3, 'a@x', 0), (4, 'a@x', 0), (5, 'c@x', 0)")
 	// The control table's own duplicates would violate ITS unique index, so it
 	// carries only distinct values — which is the point: a full unique index
 	// genuinely guarantees that, and a sparse one does not.
-	mwjoMustExec(t, db, ctx, "INSERT INTO fu (id, email, keep) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO fu (id, email, keep) VALUES "+
 		"(1, 'a@x', 1), (2, 'b@x', 1), (3, 'c@x', 0)")
 
 	// Both plans are read INSIDE AN EXPLICIT TRANSACTION, and that is what makes
@@ -94,7 +96,7 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 	var fullExplain, sparseExplain string
 	var got []string
 	var attemptsRun int
-	retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+	testkit.RetryTx(t, db, testkit.SpikeOnce(clk, &attemptsRun), func(a testkit.TxAttempt) error {
 		fullExplain, sparseExplain, got = "", "", nil
 		var err error
 
@@ -102,20 +104,20 @@ func TestFDB_SparseUniqueIndexDoesNotProveDistinct(t *testing.T) {
 		// Every statement carries the primary-key range id > 0, which keeps
 		// the base-record scan the narrowing runs over: bare, PREFER_INDEX
 		// reads FULL_U whole in email order and dedups streaming (F-7c).
-		if fullExplain, err = explainPlanOnErr(ctx, a.tx, "SELECT DISTINCT email FROM fu WHERE id > 0"); err != nil {
+		if fullExplain, err = testkit.ExplainPlanOnErr(ctx, a.Tx, "SELECT DISTINCT email FROM fu WHERE id > 0"); err != nil {
 			return err
 		}
 		// ---- the sparse index is refused ---------------------------------
-		if sparseExplain, err = explainPlanOnErr(ctx, a.tx, "SELECT DISTINCT email FROM sp WHERE id > 0"); err != nil {
+		if sparseExplain, err = testkit.ExplainPlanOnErr(ctx, a.Tx, "SELECT DISTINCT email FROM sp WHERE id > 0"); err != nil {
 			return err
 		}
 		// ---- and the rows are right --------------------------------------
-		if got, err = dusrvDrainTxErr(ctx, a.tx, "SELECT DISTINCT email FROM sp WHERE id > 0"); err != nil {
+		if got, err = testkit.DusrvDrainTxErr(ctx, a.Tx, "SELECT DISTINCT email FROM sp WHERE id > 0"); err != nil {
 			return err
 		}
 		return nil
 	})
-	mustHaveRetried(t, attemptsRun)
+	testkit.MustHaveRetried(t, attemptsRun)
 
 	t.Logf("EXPLAIN control  => %s", fullExplain)
 	if !strings.Contains(fullExplain, "narrowed-by:FULL_U") {

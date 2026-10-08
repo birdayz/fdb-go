@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // rfc153Canon renders a scanned (a.id, c.id) pair to a stable canonical string
@@ -38,13 +40,13 @@ func rfc153Canon(a, c sql.NullInt64) string {
 // OUTER null-extension semantics correctly.
 func TestFDB_RFC153_JoinedPreservedMatrix(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_rfc153mx")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rfc153mx")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_rfc153mx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rfc153mx")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rfc153mx "+
 			"CREATE TABLE a (id BIGINT, flag BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, bx BIGINT, PRIMARY KEY (id)) "+
@@ -54,18 +56,18 @@ func TestFDB_RFC153_JoinedPreservedMatrix(t *testing.T) {
 			"CREATE INDEX d_b_id ON d (b_id) "+
 			"CREATE INDEX c_a_id ON c (a_id) "+
 			"CREATE INDEX c_bx_ref ON c (bx_ref)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rfc153mx/s WITH TEMPLATE rfc153mx")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC153MX?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rfc153mx/s WITH TEMPLATE rfc153mx")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC153MX?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1, 0), (2, 0)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (10, 1, 100), (11, 2, 200)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO d VALUES (1000, 10), (1001, 11)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (50, 1, 100), (51, 99, 999)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1, 0), (2, 0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (10, 1, 100), (11, 2, 200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO d VALUES (1000, 10), (1001, 11)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (50, 1, 100), (51, 99, 999)")
 
 	cases := []struct {
 		name    string
@@ -167,30 +169,30 @@ func equalStringSlices(a, b []string) bool {
 // no C rows → no aggregate group → its row null-extends; A=1/2 carry their COUNT(*).
 func TestFDB_RFC153_AggregateInnerNullExtension(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_rfc153agg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rfc153agg")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_rfc153agg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_rfc153agg")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE rfc153agg "+
 			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX b_a_id ON b (a_id) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rfc153agg/s WITH TEMPLATE rfc153agg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC153AGG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_rfc153agg/s WITH TEMPLATE rfc153agg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_RFC153AGG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1), (2), (3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (10, 1), (11, 2), (12, 3)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (50, 1), (51, 1), (52, 2)") // a_id=3 absent
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a VALUES (1), (2), (3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO b VALUES (10, 1), (11, 2), (12, 3)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c VALUES (50, 1), (51, 1), (52, 2)") // a_id=3 absent
 
 	rows, err := db.QueryContext(ctx,
 		"SELECT a.id, g.cnt FROM a JOIN b ON b.a_id = a.id "+

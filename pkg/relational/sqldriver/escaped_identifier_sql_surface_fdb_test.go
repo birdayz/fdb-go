@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // A table or column whose DDL name needs ProtoUtils escaping ('$', '.', or
@@ -28,12 +30,12 @@ import (
 //     value the caller supplied. Silent data loss, no error.
 func TestFDB_EscapedIdentifierSQLSurface(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/escapedident")
+	setup := testkit.OpenDB(t, "/FRL/escapedident")
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE /FRL/escapedident"); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -49,7 +51,7 @@ func TestFDB_EscapedIdentifierSQLSurface(t *testing.T) {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA /FRL/escapedident/s WITH TEMPLATE esc_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/ESCAPEDIDENT?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/ESCAPEDIDENT?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

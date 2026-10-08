@@ -10,27 +10,29 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_ConditionalAggregationProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_condagg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_condagg")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_condagg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_condagg")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE condagg "+
 			"CREATE TABLE sales (id BIGINT, region STRING, product STRING, amount BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_condagg/s WITH TEMPLATE condagg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONDAGG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_condagg/s WITH TEMPLATE condagg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CONDAGG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO sales (id, region, product, amount) VALUES "+
 			"(1,'east','A',100),(2,'east','B',200),(3,'west','A',300),(4,'west','A',50)")
 

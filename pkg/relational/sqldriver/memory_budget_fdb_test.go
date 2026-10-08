@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -66,7 +68,7 @@ func withMemBudget(bytes int64) func(*embedded.EmbeddedConnection) {
 // buffered, so the budget bites.
 func TestFDB_RFC130_ByteBudgetTripsBeforeRowLimit(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_sortbudget", "sortbudget",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc130_sortbudget", "sortbudget",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -76,23 +78,23 @@ func TestFDB_RFC130_ByteBudgetTripsBeforeRowLimit(t *testing.T) {
 	// Confirm the ORDER BY plans as an in-memory sort (the buffer under test),
 	// not an ordered index scan that would stream without buffering.
 	const orderByPayload = "SELECT id, payload FROM Item ORDER BY payload"
-	if plan := planExplainVia(t, ctx, db, orderByPayload); !planHasSort(plan) {
+	if plan := testkit.ExplainVia(t, ctx, db, orderByPayload); !planHasSort(plan) {
 		t.Fatalf("ORDER BY on an unindexed column must plan as an in-memory sort (the buffered op), got: %s", plan)
 	}
 
 	// 200 rows * ~500 bytes ~= 100KB buffered. Cap well under that.
 	const budget = 20_000
 
-	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	seedItemsOnConn(t, ctx, seedConn, rows, wide)
 
 	// --- budget bites: the sort buffer exceeds 20KB → 54F01 ---
-	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	capConn := testkit.PinEmbeddedConn(t, db, withMemBudget(budget))
 	_, err := drainIDPayload(ctx, capConn, orderByPayload)
 	wantExecLimit(t, err)
 
 	// --- control: no budget → every row comes back (revert-proof) ---
-	okConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	okConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	got, oerr := drainIDPayload(ctx, okConn, orderByPayload)
 	if oerr != nil {
 		t.Fatalf("no-budget sort must complete, got: %v", oerr)
@@ -110,14 +112,14 @@ func TestFDB_RFC130_ByteBudgetTripsBeforeRowLimit(t *testing.T) {
 // reasonable budget would have tripped.)
 func TestFDB_RFC130_DefaultUnlimitedRegression(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_default", "rfc130default",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc130_default", "rfc130default",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
 	const rows = 300
 	wide := strings.Repeat("z", 400) // ~120KB total buffered
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	seedItemsOnConn(t, ctx, conn, rows, wide)
 
 	got, err := drainIDPayload(ctx, conn, "SELECT id, payload FROM Item ORDER BY payload")
@@ -137,7 +139,7 @@ func TestFDB_RFC130_DefaultUnlimitedRegression(t *testing.T) {
 // but their SUM does, so a per-site (non-shared) counter would wrongly succeed.
 func TestFDB_RFC130_StatementWideAcrossTwoBranches(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_twobranch", "twobranch",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc130_twobranch", "twobranch",
 		"CREATE TABLE A (id BIGINT, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE B (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
@@ -145,7 +147,7 @@ func TestFDB_RFC130_StatementWideAcrossTwoBranches(t *testing.T) {
 	const perTable = 100
 	wide := strings.Repeat("w", 500) // each branch ~50KB
 
-	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	for i := 0; i < perTable; i++ {
 		if _, err := seedConn.ExecContext(ctx, fmt.Sprintf("INSERT INTO A (id, payload) VALUES (%d, '%s')", i, wide)); err != nil {
 			t.Fatalf("INSERT A %d: %v", i, err)
@@ -163,18 +165,18 @@ func TestFDB_RFC130_StatementWideAcrossTwoBranches(t *testing.T) {
 
 	// Sanity: each single branch sort stays under the budget (so the trip below
 	// is genuinely the SUM, not one branch on its own).
-	singleConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	singleConn := testkit.PinEmbeddedConn(t, db, withMemBudget(budget))
 	if _, err := drainIDPayload(ctx, singleConn, "SELECT id, payload FROM A ORDER BY payload"); err != nil {
 		t.Fatalf("single branch (%dKB) must stay under the %d budget, got: %v", perTable, budget, err)
 	}
 
 	// Subject: the two-branch UNION sums past the budget → 54F01.
-	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	capConn := testkit.PinEmbeddedConn(t, db, withMemBudget(budget))
 	_, err := drainIDPayload(ctx, capConn, twoSorts)
 	wantExecLimit(t, err)
 
 	// Control: no budget → both branches complete (200 rows total).
-	okConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	okConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	got, oerr := drainIDPayload(ctx, okConn, twoSorts)
 	if oerr != nil {
 		t.Fatalf("no-budget two-branch must complete, got: %v", oerr)
@@ -192,7 +194,7 @@ func TestFDB_RFC130_StatementWideAcrossTwoBranches(t *testing.T) {
 // Control with no budget completes.
 func TestFDB_RFC130_RecursiveCTECrossLevel(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_rcte", "rfc130rcte",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc130_rcte", "rfc130rcte",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -201,7 +203,7 @@ func TestFDB_RFC130_RecursiveCTECrossLevel(t *testing.T) {
 	// accumulated allResults/working-set grows by a wide payload each level.
 	const rows = 150
 	wide := strings.Repeat("r", 600)
-	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	seedItemsOnConn(t, ctx, seedConn, rows, wide)
 
 	// Recursive CTE: start at id 0, step to id+1, carrying the wide payload.
@@ -216,18 +218,18 @@ func TestFDB_RFC130_RecursiveCTECrossLevel(t *testing.T) {
 
 	// Confirm it plans as a recursive CTE (so the cross-level buffers are the op
 	// under test), not some folded form.
-	if plan := planExplainVia(t, ctx, db, rcte); !planHasRecursive(plan) {
+	if plan := testkit.ExplainVia(t, ctx, db, rcte); !planHasRecursive(plan) {
 		t.Fatalf("query must plan as a recursive CTE, got: %s", plan)
 	}
 
 	const budget = 30_000
 
-	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	capConn := testkit.PinEmbeddedConn(t, db, withMemBudget(budget))
 	_, err := drainIDs(ctx, capConn, rcte)
 	wantExecLimit(t, err)
 
 	// Control: no budget → the full walk returns all 150 rows.
-	okConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	okConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	got, oerr := drainIDs(ctx, okConn, rcte)
 	if oerr != nil {
 		t.Fatalf("no-budget recursive CTE must complete, got: %v", oerr)
@@ -247,13 +249,13 @@ func TestFDB_RFC130_RecursiveCTECrossLevel(t *testing.T) {
 // the old double-charge (~26KB > 20KB) — the revert-proof.
 func TestFDB_RFC130_RecursiveCTE_NoDoubleCharge(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_nodbl", "rfc130nodbl",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc130_nodbl", "rfc130nodbl",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
 	const rows = 20
 	wide := strings.Repeat("r", 600) // measured: ~10KB true (charged once), ~20KB if doubled
-	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	seedItemsOnConn(t, ctx, seedConn, rows, wide)
 
 	const rcte = "WITH RECURSIVE walk(id, payload) AS (" +
@@ -265,12 +267,12 @@ func TestFDB_RFC130_RecursiveCTE_NoDoubleCharge(t *testing.T) {
 	// RecursiveDfsJoin drains (executeRecursiveDfsJoin), which R1's cost-flip
 	// selects for this wide-payload recursive CTE. A flip back to level-union
 	// would move the charge-once fix's regression net — fail loudly if so.
-	if plan := planExplainVia(t, ctx, db, rcte); !planHasRecursiveDfsJoin(plan) {
+	if plan := testkit.ExplainVia(t, ctx, db, rcte); !planHasRecursiveDfsJoin(plan) {
 		t.Fatalf("double-charge test must plan as RecursiveDfsJoin (the DFS charge-once fix's net), got: %s", plan)
 	}
 
 	const budget = 15_000 // clear of both the true ~10KB and the doubled ~20KB
-	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	capConn := testkit.PinEmbeddedConn(t, db, withMemBudget(budget))
 	got, err := drainIDs(ctx, capConn, rcte)
 	if err != nil {
 		t.Fatalf("recursive CTE under a 15KB budget must complete (true residency ~10KB, charged once); a 54F01-class error here is the double-charge regression (~20KB > 15KB): %v", err)
@@ -289,17 +291,17 @@ func TestFDB_RFC130_RecursiveCTE_NoDoubleCharge(t *testing.T) {
 // up front, see TestFDB_RFC130_UpdateEchoChargedNoPartial.)
 func TestFDB_RFC130_DeleteEchoNotDoubleCharged(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_dml", "rfc130dml",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc130_dml", "rfc130dml",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
 	const rows = 20
 	wide := strings.Repeat("r", 600) // ~10KB target set charged once; ~20KB if the echo is also charged
-	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	seedItemsOnConn(t, ctx, seedConn, rows, wide)
 
 	const budget = 15_000 // fits the ~10KB target set; the old echo double-charge (~20KB) would trip
-	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	capConn := testkit.PinEmbeddedConn(t, db, withMemBudget(budget))
 	if _, err := capConn.ExecContext(ctx, "DELETE FROM Item"); err != nil {
 		t.Fatalf("DELETE under a 15KB budget must complete (target set ~10KB, charged once); a 54F01 here is the echo double-charge / post-mutation regression: %v", err)
 	}
@@ -321,18 +323,18 @@ func TestFDB_RFC130_DeleteEchoNotDoubleCharged(t *testing.T) {
 // charging it before any SaveRecord keeps the mutation all-or-nothing.
 func TestFDB_RFC130_UpdateEchoChargedNoPartial(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_upd", "rfc130upd",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc130_upd", "rfc130upd",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
 	const rows = 20
 	small := "x" // tiny source rows → the target set is only a few hundred bytes
-	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	seedItemsOnConn(t, ctx, seedConn, rows, small)
 
 	large := strings.Repeat("U", 600) // UPDATE grows each row to ~600B → ~12KB of new records
 	const budget = 8_000              // fits the tiny target set; the large new records (~12KB) trip
-	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	capConn := testkit.PinEmbeddedConn(t, db, withMemBudget(budget))
 	_, err := capConn.ExecContext(ctx, fmt.Sprintf("UPDATE Item SET payload = '%s'", large))
 	wantExecLimit(t, err) // the ACTUAL built-record size trips, before any write
 
@@ -352,14 +354,14 @@ func TestFDB_RFC130_UpdateEchoChargedNoPartial(t *testing.T) {
 // zero rows land in the destination (no partial INSERT).
 func TestFDB_RFC130_InsertEchoChargedNoPartial(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_ins", "rfc130ins",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc130_ins", "rfc130ins",
 		"CREATE TABLE Src (id BIGINT, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE Dst (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
 	const rows = 20
 	wide := strings.Repeat("r", 600)
-	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	for i := 0; i < rows; i++ {
 		if _, err := seedConn.ExecContext(ctx, fmt.Sprintf("INSERT INTO Src (id, payload) VALUES (%d, '%s')", i, wide)); err != nil {
 			t.Fatalf("seed Src %d: %v", i, err)
@@ -367,7 +369,7 @@ func TestFDB_RFC130_InsertEchoChargedNoPartial(t *testing.T) {
 	}
 
 	const budget = 15_000 // fits the ~10KB source; source+echo (~20KB) trips before any write
-	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	capConn := testkit.PinEmbeddedConn(t, db, withMemBudget(budget))
 	_, err := capConn.ExecContext(ctx, "INSERT INTO Dst SELECT id, payload FROM Src")
 	wantExecLimit(t, err)
 
@@ -389,13 +391,13 @@ func TestFDB_RFC130_InsertEchoChargedNoPartial(t *testing.T) {
 // the ~20KB total falls under the 25KB budget and the INSERT completes.
 func TestFDB_RFC130_DMLEchoChargesPrimaryKeyBytes(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_rfc130_pk", "rfc130pk",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc130_pk", "rfc130pk",
 		"CREATE TABLE Src (k STRING, PRIMARY KEY (k)) "+
 			"CREATE TABLE Dst (k STRING, PRIMARY KEY (k))")
 	ctx := context.Background()
 
 	const rows = 20
-	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	for i := 0; i < rows; i++ {
 		k := fmt.Sprintf("%03d%s", i, strings.Repeat("k", 497)) // 500-char distinct PK
 		if _, err := seedConn.ExecContext(ctx, fmt.Sprintf("INSERT INTO Src (k) VALUES ('%s')", k)); err != nil {
@@ -407,7 +409,7 @@ func TestFDB_RFC130_DMLEchoChargesPrimaryKeyBytes(t *testing.T) {
 	// packed PK ~503) ≈ 20KB → ~30KB with the PK term, trips the 25KB budget. Without the PK
 	// term the echo is ~10KB and the ~20KB total stays under (revert-proof).
 	const budget = 25_000
-	capConn := pinEmbeddedConn(t, db, withMemBudget(budget))
+	capConn := testkit.PinEmbeddedConn(t, db, withMemBudget(budget))
 	_, err := capConn.ExecContext(ctx, "INSERT INTO Dst SELECT k FROM Src")
 	wantExecLimit(t, err)
 

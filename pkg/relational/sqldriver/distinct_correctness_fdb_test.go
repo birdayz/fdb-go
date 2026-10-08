@@ -20,28 +20,30 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_DistinctOverComputedPKExpr pins F7.
 func TestFDB_DistinctOverComputedPKExpr(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_distinct_pkexpr")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_distinct_pkexpr")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_distinct_pkexpr")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_distinct_pkexpr")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE distinct_pkexpr "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_distinct_pkexpr/s WITH TEMPLATE distinct_pkexpr")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTINCT_PKEXPR?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_distinct_pkexpr/s WITH TEMPLATE distinct_pkexpr")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTINCT_PKEXPR?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO t (id, v) VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6)")
 
 	scanInts := func(t *testing.T, q string) []int64 {
@@ -85,17 +87,17 @@ func TestFDB_DistinctOverComputedPKExpr(t *testing.T) {
 
 // TestFDB_DistinctDelimiterInjection pins F8.
 func TestFDB_DistinctDelimiterInjection(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_distinct_delim")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_distinct_delim")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_distinct_delim")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_distinct_delim")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE distinct_delim "+
 			"CREATE TABLE t (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_distinct_delim/s WITH TEMPLATE distinct_delim")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTINCT_DELIM?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_distinct_delim/s WITH TEMPLATE distinct_delim")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DISTINCT_DELIM?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -106,7 +108,7 @@ func TestFDB_DistinctDelimiterInjection(t *testing.T) {
 	// Row 2: a="x|B=string:y",   b="z"
 	// Under the old '|'-joined key both serialize to the identical string, so
 	// DISTINCT dropped the second. The two (a,b) tuples are genuinely distinct.
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO t (id, a, b) VALUES "+
 			"(1, 'x', 'y|B=string:z'), (2, 'x|B=string:y', 'z')")
 

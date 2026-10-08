@@ -66,6 +66,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func gslkMustExec(t *testing.T, db *sql.DB, ctx context.Context, stmt string) {
@@ -76,19 +78,19 @@ func gslkMustExec(t *testing.T, db *sql.DB, ctx context.Context, stmt string) {
 }
 
 func TestFDB_GroupBySameLeafKeys_HavingRereadBindsItsOwnSlot(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	t.Parallel()
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_gb_same_leaf")
+	setup := testkit.OpenDB(t, "/FRL/testdb_gb_same_leaf")
 	gslkMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_gb_same_leaf")
 	gslkMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE gb_same_leaf "+
 			"CREATE TABLE outer_t (k BIGINT, PRIMARY KEY (k)) "+
 			"CREATE TABLE inner_t (k BIGINT, o_k BIGINT, PRIMARY KEY (k))")
 	gslkMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_gb_same_leaf/s WITH TEMPLATE gb_same_leaf")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GB_SAME_LEAF?cluster_file=%s&schema=S", clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_GB_SAME_LEAF?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

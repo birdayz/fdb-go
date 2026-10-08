@@ -24,11 +24,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_CurrentTimestamp_JoinShapes_StatementStable(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/FRL/testdb_cts_joins", "cts_joins",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_cts_joins", "cts_joins",
 		"CREATE TABLE A (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE B (id BIGINT, aid BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()

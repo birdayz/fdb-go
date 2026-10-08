@@ -7,79 +7,19 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
-
-// planExplainVia retrieves the Cascades physical plan Explain string
-// via the underlying EmbeddedConnection for the given query.
-func planExplainVia(t *testing.T, ctx context.Context, db *sql.DB, query string) string {
-	t.Helper()
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		t.Fatalf("db.Conn: %v", err)
-	}
-	defer conn.Close()
-	var plan string
-	if err := conn.Raw(func(driverConn any) error {
-		ec, ok := driverConn.(*embedded.EmbeddedConnection)
-		if !ok {
-			t.Fatalf("expected *embedded.EmbeddedConnection, got %T", driverConn)
-		}
-		p, err := ec.PlanExplain(ctx, query)
-		if err != nil {
-			return err
-		}
-		plan = p
-		return nil
-	}); err != nil {
-		t.Fatalf("PlanExplain(%q): %v", query, err)
-	}
-	return plan
-}
-
-// setupPlanShapeDB creates a fresh database + schema for a plan-shape subtest.
-// Returns a *sql.DB connected to the created schema.
-func setupPlanShapeDB(t *testing.T, suffix, templateDDL string) *sql.DB {
-	t.Helper()
-	if clusterFilePath == "" {
-		t.Skip("FDB not available (no Docker)")
-	}
-	ctx := context.Background()
-
-	// A subtest's name has a '/', and a database path is exactly /DOMAIN/DB.
-	dbPath := fmt.Sprintf("/FRL/planshape_%s_%s", suffix, strings.ReplaceAll(t.Name(), "/", "_"))
-	setup := openTestDB(t, dbPath)
-	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
-		t.Fatalf("CREATE DATABASE: %v", err)
-	}
-	tmpl := fmt.Sprintf("ps_%s_%s", suffix, t.Name())
-	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA TEMPLATE %s %s", tmpl, templateDDL)); err != nil {
-		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
-	}
-	if _, err := setup.ExecContext(ctx,
-		fmt.Sprintf("CREATE SCHEMA %s/s WITH TEMPLATE %s", dbPath, tmpl)); err != nil {
-		t.Fatalf("CREATE SCHEMA: %v", err)
-	}
-
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
-	db, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
-}
 
 // TestFDB_PlanShapePKLookup verifies that a simple WHERE on the primary key
 // produces a scan + filter plan (no index scan, no sort).
 func TestFDB_PlanShapePKLookup(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "pk", "CREATE TABLE users (id BIGINT, name STRING, PRIMARY KEY (id))")
+	db := testkit.SetupPlanShapeDB(t, "pk", "CREATE TABLE users (id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	for _, u := range []struct {
 		id   int
@@ -97,7 +37,7 @@ func TestFDB_PlanShapePKLookup(t *testing.T) {
 	}
 
 	q := "SELECT id, name FROM users WHERE id = 1"
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	t.Logf("plan: %s", plan)
 
 	// Plan should contain a scan of the users table.
@@ -143,12 +83,12 @@ func TestFDB_PlanShapePKLookup(t *testing.T) {
 // an indexed column produces an IndexScan without InMemorySort.
 func TestFDB_PlanShapeIndexScanRange(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ixr",
+	db := testkit.SetupPlanShapeDB(t, "ixr",
 		"CREATE TABLE items (id BIGINT, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_price ON items (price)")
 
@@ -170,7 +110,7 @@ func TestFDB_PlanShapeIndexScanRange(t *testing.T) {
 	}
 
 	q := "SELECT id, price FROM items WHERE price > 100 ORDER BY price"
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	t.Logf("plan: %s", plan)
 
 	// Must use IndexScan on idx_price.
@@ -220,12 +160,12 @@ func TestFDB_PlanShapeIndexScanRange(t *testing.T) {
 // column produces StreamingAgg with no InMemorySort.
 func TestFDB_PlanShapeStreamingAggIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "sagg",
+	db := testkit.SetupPlanShapeDB(t, "sagg",
 		"CREATE TABLE items (id BIGINT, category STRING, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_category ON items (category)")
 
@@ -248,7 +188,7 @@ func TestFDB_PlanShapeStreamingAggIndex(t *testing.T) {
 	}
 
 	q := "SELECT category, COUNT(*) FROM items GROUP BY category ORDER BY category"
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	t.Logf("plan: %s", plan)
 
 	// Must use StreamingAgg.
@@ -304,12 +244,12 @@ func TestFDB_PlanShapeStreamingAggIndex(t *testing.T) {
 // of a join is pushed below the NestedLoopJoin (filter before join, not after).
 func TestFDB_PlanShapeJoinFilterPushdown(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jfp",
+	db := testkit.SetupPlanShapeDB(t, "jfp",
 		"CREATE TABLE a (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE b (bid BIGINT, aid BIGINT, PRIMARY KEY (bid))")
 
@@ -345,7 +285,7 @@ func TestFDB_PlanShapeJoinFilterPushdown(t *testing.T) {
 	}
 
 	q := "SELECT a.id FROM a INNER JOIN b ON a.id = b.aid WHERE a.name = 'foo'"
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	t.Logf("plan: %s", plan)
 
 	// Must contain a join operator (NLJ or FlatMap with correlated scan).
@@ -407,12 +347,12 @@ func TestFDB_PlanShapeJoinFilterPushdown(t *testing.T) {
 // deduplication unnecessary.
 func TestFDB_PlanShapeDistinctOnPK(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dpk", "CREATE TABLE users (id BIGINT, name STRING, PRIMARY KEY (id))")
+	db := testkit.SetupPlanShapeDB(t, "dpk", "CREATE TABLE users (id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	for _, u := range []struct {
 		id   int
@@ -430,7 +370,7 @@ func TestFDB_PlanShapeDistinctOnPK(t *testing.T) {
 	}
 
 	q := "SELECT DISTINCT id FROM users"
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	t.Logf("plan: %s", plan)
 
 	// ImplementDistinctFinalRule eliminates the Distinct operator when
@@ -486,12 +426,12 @@ func TestFDB_PlanShapeDistinctOnPK(t *testing.T) {
 // stays above the join.
 func TestFDB_PlanShapeFilterPushdownBelowJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "fpbj",
+	db := testkit.SetupPlanShapeDB(t, "fpbj",
 		"CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did)) "+
 			"CREATE TABLE emp (eid BIGINT, did BIGINT, ename STRING, PRIMARY KEY (eid))")
 
@@ -534,7 +474,7 @@ func TestFDB_PlanShapeFilterPushdownBelowJoin(t *testing.T) {
 	// final plan. Without projection, the Cascades cost model cleanly
 	// selects the pushed-down shape.
 	q := "SELECT * FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE d.dname = 'eng'"
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	t.Logf("plan (pushdown): %s", plan)
 
 	// Plan must contain a NestedLoopJoin or FlatMap (Java-aligned correlated join).
@@ -608,7 +548,7 @@ func TestFDB_PlanShapeFilterPushdownBelowJoin(t *testing.T) {
 
 	// --- Negative case: cross-table predicate stays above join ---
 	qCross := "SELECT * FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE e.eid > d.did"
-	planCross := planExplainVia(t, ctx, db, qCross)
+	planCross := testkit.ExplainVia(t, ctx, db, qCross)
 	t.Logf("plan (cross-table pred): %s", planCross)
 
 	// The e.eid > d.did predicate references both sides — it must NOT
@@ -673,12 +613,12 @@ func TestFDB_PlanShapeFilterPushdownBelowJoin(t *testing.T) {
 // lexicographic ordering on ISO 8601 strings.
 func TestFDB_PlanShapeTimestampIndexRange(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "tsidx",
+	db := testkit.SetupPlanShapeDB(t, "tsidx",
 		"CREATE TABLE Events (id BIGINT, ts TIMESTAMP, PRIMARY KEY (id)) "+
 			"CREATE INDEX idx_events_ts ON Events (ts)")
 
@@ -687,7 +627,7 @@ func TestFDB_PlanShapeTimestampIndexRange(t *testing.T) {
 		t.Fatalf("INSERT: %v", err)
 	}
 
-	plan := planExplainVia(t, ctx, db, "SELECT id FROM Events WHERE ts > '2023-01-01 00:00:00'")
+	plan := testkit.ExplainVia(t, ctx, db, "SELECT id FROM Events WHERE ts > '2023-01-01 00:00:00'")
 
 	// The plan should contain "IndexScan" (using idx_events_ts), not just "Scan".
 	if !strings.Contains(plan, "IndexScan") && !strings.Contains(plan, "index") {
@@ -710,13 +650,13 @@ func TestFDB_PlanShapeTimestampIndexRange(t *testing.T) {
 
 func TestFDB_PlanShapeExistsFlatMap(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	dbPath := fmt.Sprintf("/FRL/ps_exists_%s", t.Name())
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	_, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath))
 	if err != nil {
 		t.Fatalf("CREATE DATABASE: %v", err)
@@ -735,7 +675,7 @@ func TestFDB_PlanShapeExistsFlatMap(t *testing.T) {
 		t.Fatalf("CREATE SCHEMA: %v", err)
 	}
 
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -750,7 +690,7 @@ func TestFDB_PlanShapeExistsFlatMap(t *testing.T) {
 	//
 	// Non-PK correlated EXISTS: the inner correlation can't push to a scan
 	// range, so the inner is Scan(child)+filter | FirstOrDefault | filter.
-	plan := planExplainVia(t, ctx, db,
+	plan := testkit.ExplainVia(t, ctx, db,
 		"SELECT id FROM parent WHERE EXISTS (SELECT 1 FROM child WHERE child.parent_id = parent.id)")
 	t.Logf("Non-PK EXISTS plan:\n%s", plan)
 	if !strings.Contains(plan, "FlatMap") {
@@ -765,7 +705,7 @@ func TestFDB_PlanShapeExistsFlatMap(t *testing.T) {
 
 	// PK-matching correlated EXISTS: the inner correlation pushes into a
 	// parameterized PK scan (Scan(parent, [=])) below the FirstOrDefault.
-	plan = planExplainVia(t, ctx, db,
+	plan = testkit.ExplainVia(t, ctx, db,
 		"SELECT id FROM child WHERE EXISTS (SELECT 1 FROM parent WHERE parent.id = child.parent_id)")
 	t.Logf("PK EXISTS plan:\n%s", plan)
 	if !strings.Contains(plan, "FlatMap") {
@@ -778,12 +718,12 @@ func TestFDB_PlanShapeExistsFlatMap(t *testing.T) {
 
 func TestFDB_PlanShapeAggregateIndexDDL(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "aggidx",
+	db := testkit.SetupPlanShapeDB(t, "aggidx",
 		"CREATE TABLE orders (id BIGINT, status STRING, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_by_status AS SELECT COUNT(*) FROM orders GROUP BY status "+
 			"CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM orders GROUP BY region "+
@@ -809,7 +749,7 @@ func TestFDB_PlanShapeAggregateIndexDDL(t *testing.T) {
 	}
 
 	t.Run("count_aggregate_index", func(t *testing.T) {
-		plan := planExplainVia(t, ctx, db, "SELECT status, COUNT(*) FROM orders GROUP BY status ORDER BY status")
+		plan := testkit.ExplainVia(t, ctx, db, "SELECT status, COUNT(*) FROM orders GROUP BY status ORDER BY status")
 		t.Logf("plan: %s", plan)
 		if !strings.Contains(plan, "AggregateIndex") {
 			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
@@ -847,7 +787,7 @@ func TestFDB_PlanShapeAggregateIndexDDL(t *testing.T) {
 	})
 
 	t.Run("sum_aggregate_index", func(t *testing.T) {
-		plan := planExplainVia(t, ctx, db, "SELECT region, SUM(amount) FROM orders GROUP BY region ORDER BY region")
+		plan := testkit.ExplainVia(t, ctx, db, "SELECT region, SUM(amount) FROM orders GROUP BY region ORDER BY region")
 		t.Logf("plan: %s", plan)
 		if !strings.Contains(plan, "AggregateIndex") {
 			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
@@ -887,12 +827,12 @@ func TestFDB_PlanShapeAggregateIndexDDL(t *testing.T) {
 
 func TestFDB_PlanShapeAggregateIndexDDL_MaxMin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "aggmm",
+	db := testkit.SetupPlanShapeDB(t, "aggmm",
 		"CREATE TABLE scores (id BIGINT, team STRING, points BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX max_points_by_team AS SELECT MAX(points) FROM scores GROUP BY team "+
 			"CREATE INDEX min_points_by_team AS SELECT MIN(points) FROM scores GROUP BY team")
@@ -917,7 +857,7 @@ func TestFDB_PlanShapeAggregateIndexDDL_MaxMin(t *testing.T) {
 	}
 
 	t.Run("max_aggregate_index", func(t *testing.T) {
-		plan := planExplainVia(t, ctx, db, "SELECT team, MAX(points) FROM scores GROUP BY team ORDER BY team")
+		plan := testkit.ExplainVia(t, ctx, db, "SELECT team, MAX(points) FROM scores GROUP BY team ORDER BY team")
 		t.Logf("plan: %s", plan)
 		if !strings.Contains(plan, "AggregateIndex") {
 			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
@@ -955,7 +895,7 @@ func TestFDB_PlanShapeAggregateIndexDDL_MaxMin(t *testing.T) {
 	})
 
 	t.Run("min_aggregate_index", func(t *testing.T) {
-		plan := planExplainVia(t, ctx, db, "SELECT team, MIN(points) FROM scores GROUP BY team ORDER BY team")
+		plan := testkit.ExplainVia(t, ctx, db, "SELECT team, MIN(points) FROM scores GROUP BY team ORDER BY team")
 		t.Logf("plan: %s", plan)
 		if !strings.Contains(plan, "AggregateIndex") {
 			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
@@ -995,12 +935,12 @@ func TestFDB_PlanShapeAggregateIndexDDL_MaxMin(t *testing.T) {
 
 func TestFDB_AggregateIndex_BoundedScan(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "aggbound",
+	db := testkit.SetupPlanShapeDB(t, "aggbound",
 		"CREATE TABLE orders (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_status AS SELECT SUM(amount) FROM orders GROUP BY status")
 
@@ -1072,12 +1012,12 @@ func TestFDB_AggregateIndex_BoundedScan(t *testing.T) {
 
 func TestFDB_AggregateIndex_MaxMinHaving(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mmhav",
+	db := testkit.SetupPlanShapeDB(t, "mmhav",
 		"CREATE TABLE scores (id BIGINT, team STRING, points BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX max_pts AS SELECT MAX(points) FROM scores GROUP BY team "+
 			"CREATE INDEX min_pts AS SELECT MIN(points) FROM scores GROUP BY team")
@@ -1172,12 +1112,12 @@ func TestFDB_AggregateIndex_MaxMinHaving(t *testing.T) {
 // must be served by the aggregate index, not a slower streaming/scan fallback.
 func TestFDB_AggregateIndex_PermutedMinMaxSemantics(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "permmm",
+	db := testkit.SetupPlanShapeDB(t, "permmm",
 		"CREATE TABLE highscores (id BIGINT, player STRING, score BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX max_score AS SELECT MAX(score) FROM highscores GROUP BY player "+
 			"CREATE INDEX min_score AS SELECT MIN(score) FROM highscores GROUP BY player")
@@ -1241,7 +1181,7 @@ func TestFDB_AggregateIndex_PermutedMinMaxSemantics(t *testing.T) {
 		// index serving the query, not a StreamingAgg / full-scan fallback.
 		for _, agg := range []string{"MAX", "MIN"} {
 			q := fmt.Sprintf("SELECT player, %s(score) FROM highscores GROUP BY player ORDER BY player", agg)
-			plan := planExplainVia(t, ctx, db, q)
+			plan := testkit.ExplainVia(t, ctx, db, q)
 			t.Logf("%s plan: %s", agg, plan)
 			if !strings.Contains(plan, "AggregateIndex") || !strings.Contains(plan, agg) {
 				t.Errorf("expected AggregateIndex(%s) plan, got: %s", agg, plan)
@@ -1310,12 +1250,12 @@ func TestFDB_AggregateIndex_PermutedMinMaxSemantics(t *testing.T) {
 // planner scan the _EVER index and this returns the stale value → red.
 func TestFDB_AggregateIndex_StaleEverNotServedByValueScan(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "staleever",
+	db := testkit.SetupPlanShapeDB(t, "staleever",
 		"CREATE TABLE highscores (id BIGINT, player STRING, score BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX max_ever_score AS SELECT MAX_EVER(score) FROM highscores GROUP BY player "+
 			"CREATE INDEX min_ever_score AS SELECT MIN_EVER(score) FROM highscores GROUP BY player")
@@ -1365,7 +1305,7 @@ func TestFDB_AggregateIndex_StaleEverNotServedByValueScan(t *testing.T) {
 		// AggregateIndex would mean it wrongly matched the aggregate path.
 		for _, agg := range []string{"MAX", "MIN"} {
 			q := fmt.Sprintf("SELECT player, %s(score) FROM highscores GROUP BY player ORDER BY player", agg)
-			plan := planExplainVia(t, ctx, db, q)
+			plan := testkit.ExplainVia(t, ctx, db, q)
 			t.Logf("%s plan: %s", agg, plan)
 			if strings.Contains(plan, "IndexScan") {
 				t.Errorf("plain %s must not scan the monotone _EVER index; plan: %s", agg, plan)
@@ -1401,12 +1341,12 @@ func TestFDB_AggregateIndex_StaleEverNotServedByValueScan(t *testing.T) {
 
 func TestFDB_AggregateIndex_UngroupedAndEmpty(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ungrp",
+	db := testkit.SetupPlanShapeDB(t, "ungrp",
 		"CREATE TABLE counters (id BIGINT, val BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX total_count AS SELECT COUNT(*) FROM counters "+
 			"CREATE INDEX total_sum AS SELECT SUM(val) FROM counters "+
@@ -1488,12 +1428,12 @@ func TestFDB_AggregateIndex_UngroupedAndEmpty(t *testing.T) {
 
 func TestFDB_AggregateIndex_Having(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "aghav",
+	db := testkit.SetupPlanShapeDB(t, "aghav",
 		"CREATE TABLE sales (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_region AS SELECT SUM(amount) FROM sales GROUP BY region "+
 			"CREATE INDEX count_by_region AS SELECT COUNT(*) FROM sales GROUP BY region")
@@ -1549,7 +1489,7 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 	})
 
 	t.Run("having_sum_gt", func(t *testing.T) {
-		plan := planExplainVia(t, ctx, db, "SELECT region, SUM(amount) FROM sales GROUP BY region HAVING SUM(amount) > 200 ORDER BY region")
+		plan := testkit.ExplainVia(t, ctx, db, "SELECT region, SUM(amount) FROM sales GROUP BY region HAVING SUM(amount) > 200 ORDER BY region")
 		t.Logf("plan: %s", plan)
 
 		rows, err := db.QueryContext(ctx,
@@ -2008,12 +1948,12 @@ func TestFDB_AggregateIndex_Having(t *testing.T) {
 
 func TestFDB_AggregateIndex_MultiColumnGroupBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mcgrp",
+	db := testkit.SetupPlanShapeDB(t, "mcgrp",
 		"CREATE TABLE events (id BIGINT, cat STRING, sev STRING, dur BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_cat_sev AS SELECT COUNT(*) FROM events GROUP BY cat, sev")
 
@@ -2039,7 +1979,7 @@ func TestFDB_AggregateIndex_MultiColumnGroupBy(t *testing.T) {
 	}
 
 	t.Run("multi_group_count", func(t *testing.T) {
-		plan := planExplainVia(t, ctx, db, "SELECT cat, sev, COUNT(*) FROM events GROUP BY cat, sev ORDER BY cat, sev")
+		plan := testkit.ExplainVia(t, ctx, db, "SELECT cat, sev, COUNT(*) FROM events GROUP BY cat, sev ORDER BY cat, sev")
 		t.Logf("plan: %s", plan)
 		if !strings.Contains(plan, "AggregateIndex") {
 			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
@@ -2084,14 +2024,14 @@ func TestFDB_AggregateIndex_MultiColumnGroupBy(t *testing.T) {
 
 func TestFDB_AggregateIndex_CountStarVsCountCol(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	// Java's aggregate-index-tests-count.yamsql: both COUNT(*) and COUNT(col)
 	// indexes on same table. Planner must pick the correct one.
-	db := setupPlanShapeDB(t, "cntboth",
+	db := testkit.SetupPlanShapeDB(t, "cntboth",
 		"CREATE TABLE items (id BIGINT, grp BIGINT, val BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_star AS SELECT COUNT(*) FROM items GROUP BY grp "+
 			"CREATE INDEX cnt_val AS SELECT COUNT(val) FROM items GROUP BY grp")
@@ -2175,12 +2115,12 @@ func TestFDB_AggregateIndex_CountStarVsCountCol(t *testing.T) {
 
 func TestFDB_AggregateIndex_UpdateAggColumn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "updagg",
+	db := testkit.SetupPlanShapeDB(t, "updagg",
 		"CREATE TABLE accounts (id BIGINT, owner STRING, balance BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_balance AS SELECT SUM(balance) FROM accounts GROUP BY owner")
 
@@ -2296,12 +2236,12 @@ func TestFDB_AggregateIndex_UpdateAggColumn(t *testing.T) {
 
 func TestFDB_AggregateIndex_CompositeAggExpressions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cmpag",
+	db := testkit.SetupPlanShapeDB(t, "cmpag",
 		"CREATE TABLE invoices (id BIGINT, vendor STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX sum_by_vendor AS SELECT SUM(amount) FROM invoices GROUP BY vendor "+
 			"CREATE INDEX count_by_vendor AS SELECT COUNT(*) FROM invoices GROUP BY vendor")
@@ -2393,12 +2333,12 @@ func TestFDB_AggregateIndex_CompositeAggExpressions(t *testing.T) {
 
 func TestFDB_AggregateIndex_InsertDeleteLifecycle(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "agglife",
+	db := testkit.SetupPlanShapeDB(t, "agglife",
 		"CREATE TABLE counters (id BIGINT, bucket STRING, val BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_by_bucket AS SELECT COUNT(*) FROM counters GROUP BY bucket")
 
@@ -2412,7 +2352,7 @@ func TestFDB_AggregateIndex_InsertDeleteLifecycle(t *testing.T) {
 	}
 
 	// Verify COUNT=3 via aggregate index
-	plan := planExplainVia(t, ctx, db, "SELECT bucket, COUNT(*) FROM counters GROUP BY bucket")
+	plan := testkit.ExplainVia(t, ctx, db, "SELECT bucket, COUNT(*) FROM counters GROUP BY bucket")
 	t.Logf("plan: %s", plan)
 	if !strings.Contains(plan, "AggregateIndex") {
 		t.Errorf("expected AggregateIndex plan, got: %s", plan)
@@ -2459,12 +2399,12 @@ func TestFDB_AggregateIndex_InsertDeleteLifecycle(t *testing.T) {
 
 func TestFDB_AggregateIndex_NullGroupKey(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "nullgrp",
+	db := testkit.SetupPlanShapeDB(t, "nullgrp",
 		"CREATE TABLE events (id BIGINT, category STRING, weight BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_by_cat AS SELECT COUNT(*) FROM events GROUP BY category "+
 			"CREATE INDEX sum_weight_by_cat AS SELECT SUM(weight) FROM events GROUP BY category")
@@ -2488,7 +2428,7 @@ func TestFDB_AggregateIndex_NullGroupKey(t *testing.T) {
 	}
 
 	t.Run("count_includes_null_group", func(t *testing.T) {
-		plan := planExplainVia(t, ctx, db, "SELECT category, COUNT(*) FROM events GROUP BY category ORDER BY category")
+		plan := testkit.ExplainVia(t, ctx, db, "SELECT category, COUNT(*) FROM events GROUP BY category ORDER BY category")
 		t.Logf("plan: %s", plan)
 		if !strings.Contains(plan, "AggregateIndex") {
 			t.Errorf("expected AggregateIndex in plan, got: %s", plan)
@@ -2592,12 +2532,12 @@ func TestFDB_AggregateIndex_NullGroupKey(t *testing.T) {
 
 func TestFDB_AggregateIndex_CountNotNull(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cntnull",
+	db := testkit.SetupPlanShapeDB(t, "cntnull",
 		"CREATE TABLE sensors (id BIGINT, sensor STRING, reading BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_readings AS SELECT COUNT(reading) FROM sensors GROUP BY sensor")
 
@@ -2622,7 +2562,7 @@ func TestFDB_AggregateIndex_CountNotNull(t *testing.T) {
 	}
 
 	t.Run("count_col_skips_nulls", func(t *testing.T) {
-		plan := planExplainVia(t, ctx, db, "SELECT sensor, COUNT(reading) FROM sensors GROUP BY sensor ORDER BY sensor")
+		plan := testkit.ExplainVia(t, ctx, db, "SELECT sensor, COUNT(reading) FROM sensors GROUP BY sensor ORDER BY sensor")
 		t.Logf("plan: %s", plan)
 		if !strings.Contains(plan, "AggregateIndex(COUNT, COUNT_READINGS") {
 			t.Errorf("expected the COUNT(reading) index in plan, got: %s", plan)
@@ -2740,12 +2680,12 @@ func TestFDB_AggregateIndex_CountNotNull(t *testing.T) {
 
 func TestFDB_DerivedTableJoinExists(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dtjex",
+	db := testkit.SetupPlanShapeDB(t, "dtjex",
 		"CREATE TABLE emp (id BIGINT, fname STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE project (id BIGINT, name STRING, emp_id BIGINT, PRIMARY KEY (id))")
@@ -2853,12 +2793,12 @@ func TestFDB_DerivedTableJoinExists(t *testing.T) {
 
 func TestFDB_TwoDerivedTablesJoined(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "2dt",
+	db := testkit.SetupPlanShapeDB(t, "2dt",
 		"CREATE TABLE a (ida BIGINT, a1 BIGINT, PRIMARY KEY (ida)) "+
 			"CREATE TABLE b (idb BIGINT, b1 BIGINT, PRIMARY KEY (idb))")
 
@@ -2893,12 +2833,12 @@ func TestFDB_TwoDerivedTablesJoined(t *testing.T) {
 
 func TestFDB_OrPredicateFilter(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "orpred",
+	db := testkit.SetupPlanShapeDB(t, "orpred",
 		"CREATE TABLE vals (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 
 	for i := 1; i <= 10; i++ {
@@ -2966,12 +2906,12 @@ func TestFDB_OrPredicateFilter(t *testing.T) {
 
 func TestFDB_NestedDerivedTableNullFilter(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "nestdt",
+	db := testkit.SetupPlanShapeDB(t, "nestdt",
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id))")
 
 	for i := 1; i <= 5; i++ {
@@ -3014,12 +2954,12 @@ func TestFDB_NestedDerivedTableNullFilter(t *testing.T) {
 
 func TestFDB_CaseWhenWithInList(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "casein",
+	db := testkit.SetupPlanShapeDB(t, "casein",
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -3087,12 +3027,12 @@ func TestFDB_CaseWhenWithInList(t *testing.T) {
 
 func TestFDB_CaseWhenWithoutElseReturnsNull(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "casenoelse",
+	db := testkit.SetupPlanShapeDB(t, "casenoelse",
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -3159,12 +3099,12 @@ func ptr[T any](v T) *T { return &v }
 
 func TestFDB_AndRangePredicateWithIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "andrange",
+	db := testkit.SetupPlanShapeDB(t, "andrange",
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX i1 ON t1 (col1)")
 
@@ -3193,7 +3133,7 @@ func TestFDB_AndRangePredicateWithIndex(t *testing.T) {
 	}
 
 	t.Run("equality_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, col1, col2 FROM t1 WHERE col1 = 20 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, col1, col2 FROM t1 WHERE col1 = 20 ORDER BY id")
 		if len(rows) != 8 {
 			t.Fatalf("want 8 rows, got %d", len(rows))
 		}
@@ -3203,14 +3143,14 @@ func TestFDB_AndRangePredicateWithIndex(t *testing.T) {
 	})
 
 	t.Run("and_range_both_bounds", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id")
 		if len(rows) != 13 {
 			t.Fatalf("want 13 rows, got %d", len(rows))
 		}
 	})
 
 	t.Run("and_equality_plus_secondary_filter", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id, col1, col2 FROM t1 WHERE col1 = 20 AND col2 > 10 ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows (ids 11,12,13), got %d", len(rows))
@@ -3221,7 +3161,7 @@ func TestFDB_AndRangePredicateWithIndex(t *testing.T) {
 	})
 
 	t.Run("not_equal_filter", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id, col1 FROM t1 WHERE col1 <> 10 ORDER BY id")
 		if len(rows) != 8 {
 			t.Fatalf("want 8 rows, got %d", len(rows))
@@ -3238,12 +3178,12 @@ func TestFDB_AndRangePredicateWithIndex(t *testing.T) {
 
 func TestFDB_JoinWithNotIn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jnotin",
+	db := testkit.SetupPlanShapeDB(t, "jnotin",
 		"CREATE TABLE emp (id BIGINT, fname STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))")
 
@@ -3346,12 +3286,12 @@ func TestFDB_JoinWithNotIn(t *testing.T) {
 
 func TestFDB_GroupByDerivedTableAgg(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbdt",
+	db := testkit.SetupPlanShapeDB(t, "gbdt",
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -3379,7 +3319,7 @@ func TestFDB_GroupByDerivedTableAgg(t *testing.T) {
 	}
 
 	t.Run("max_group_by", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT MAX(id) FROM t1 GROUP BY col1 ORDER BY MAX(id)")
+		rows := testkit.CollectRows(t, db, "SELECT MAX(id) FROM t1 GROUP BY col1 ORDER BY MAX(id)")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
 		}
@@ -3392,7 +3332,7 @@ func TestFDB_GroupByDerivedTableAgg(t *testing.T) {
 	})
 
 	t.Run("having_min_and_equality", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT MAX(id) FROM t1 GROUP BY col1 HAVING MIN(id) > 0 AND col1 = 20")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
@@ -3417,7 +3357,7 @@ func TestFDB_GroupByDerivedTableAgg(t *testing.T) {
 	})
 
 	t.Run("derived_table_max", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT MAX(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY MAX(x.col2)")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
@@ -3431,7 +3371,7 @@ func TestFDB_GroupByDerivedTableAgg(t *testing.T) {
 	})
 
 	t.Run("derived_table_count", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT COUNT(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY COUNT(x.col2)")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
@@ -3445,7 +3385,7 @@ func TestFDB_GroupByDerivedTableAgg(t *testing.T) {
 	})
 
 	t.Run("derived_table_sum", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT SUM(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY SUM(x.col2)")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
@@ -3463,12 +3403,12 @@ func TestFDB_GroupByDerivedTableAgg(t *testing.T) {
 
 func TestFDB_EmptyTableAggregates(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "emptyagg",
+	db := testkit.SetupPlanShapeDB(t, "emptyagg",
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	t.Run("sum_empty_is_null", func(t *testing.T) {
@@ -3530,7 +3470,7 @@ func TestFDB_EmptyTableAggregates(t *testing.T) {
 	})
 
 	t.Run("union_all_empty_tables", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT col1, col2 FROM t1 UNION ALL SELECT col1, col2 FROM t1")
 		if len(rows) != 0 {
 			t.Fatalf("want 0 rows, got %d", len(rows))
@@ -3542,12 +3482,12 @@ func TestFDB_EmptyTableAggregates(t *testing.T) {
 
 func TestFDB_CompositeAggregateExpressions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "compagg",
+	db := testkit.SetupPlanShapeDB(t, "compagg",
 		"CREATE TABLE t1 (id BIGINT, grp BIGINT, val BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -3567,7 +3507,7 @@ func TestFDB_CompositeAggregateExpressions(t *testing.T) {
 	}
 
 	t.Run("sum_and_count_per_group", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT grp, SUM(val), COUNT(*) FROM t1 GROUP BY grp ORDER BY grp")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
@@ -3581,7 +3521,7 @@ func TestFDB_CompositeAggregateExpressions(t *testing.T) {
 	})
 
 	t.Run("avg_as_sum_div_count", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT grp, SUM(val) / COUNT(*) FROM t1 GROUP BY grp ORDER BY grp")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
@@ -3595,7 +3535,7 @@ func TestFDB_CompositeAggregateExpressions(t *testing.T) {
 	})
 
 	t.Run("min_max_per_group", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT grp, MIN(val), MAX(val) FROM t1 GROUP BY grp ORDER BY grp")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
@@ -3609,7 +3549,7 @@ func TestFDB_CompositeAggregateExpressions(t *testing.T) {
 	})
 
 	t.Run("having_with_sum_and_count", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT grp, SUM(val) FROM t1 GROUP BY grp HAVING COUNT(*) > 2")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row (grp 1), got %d", len(rows))
@@ -3620,7 +3560,7 @@ func TestFDB_CompositeAggregateExpressions(t *testing.T) {
 	})
 
 	t.Run("duplicate_alias_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT grp AS g, grp AS g2, SUM(val) AS s1, SUM(val) AS s2 FROM t1 GROUP BY grp ORDER BY grp")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
@@ -3635,12 +3575,12 @@ func TestFDB_CompositeAggregateExpressions(t *testing.T) {
 
 func TestFDB_JoinWithOrderBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "joinob",
+	db := testkit.SetupPlanShapeDB(t, "joinob",
 		"CREATE TABLE t1 (id BIGINT, a1 BIGINT, a2 BIGINT, a3 STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, b1 BIGINT, b2 BIGINT, b3 STRING, PRIMARY KEY (id))")
 
@@ -3670,7 +3610,7 @@ func TestFDB_JoinWithOrderBy(t *testing.T) {
 	}
 
 	t.Run("join_order_by_outer_asc", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT t1.a2, t1.a3, t2.b2, t2.b3
 			 FROM t1, t2
 			 WHERE t1.a1 = 1 AND t2.b1 = 1 AND t1.a3 = t2.b3
@@ -3687,7 +3627,7 @@ func TestFDB_JoinWithOrderBy(t *testing.T) {
 	})
 
 	t.Run("join_order_by_outer_desc", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT t1.a2, t2.b2
 			 FROM t1, t2
 			 WHERE t1.a1 = 1 AND t2.b1 = 1 AND t1.a3 = t2.b3
@@ -3704,7 +3644,7 @@ func TestFDB_JoinWithOrderBy(t *testing.T) {
 	})
 
 	t.Run("join_project_inner_order_outer", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT t2.b2, t2.b3
 			 FROM t1, t2
 			 WHERE t1.a1 = 1 AND t2.b1 = 1 AND t1.a3 = t2.b3
@@ -3720,7 +3660,7 @@ func TestFDB_JoinWithOrderBy(t *testing.T) {
 	})
 
 	t.Run("join_with_aggregate_order", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT t1.a3, COUNT(*) AS cnt
 			 FROM t1, t2
 			 WHERE t1.a1 = 1 AND t2.b1 = 1 AND t1.a3 = t2.b3
@@ -3739,12 +3679,12 @@ func TestFDB_JoinWithOrderBy(t *testing.T) {
 
 func TestFDB_AggregateIndexOrderByDesc(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "aggdesc",
+	db := testkit.SetupPlanShapeDB(t, "aggdesc",
 		"CREATE TABLE orders (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX count_by_status AS SELECT COUNT(*) FROM orders GROUP BY status")
 
@@ -3768,7 +3708,7 @@ func TestFDB_AggregateIndexOrderByDesc(t *testing.T) {
 	}
 
 	t.Run("order_by_group_key_asc", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT status, COUNT(*) FROM orders GROUP BY status ORDER BY status")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
@@ -3782,7 +3722,7 @@ func TestFDB_AggregateIndexOrderByDesc(t *testing.T) {
 	})
 
 	t.Run("order_by_group_key_desc", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT status, COUNT(*) FROM orders GROUP BY status ORDER BY status DESC")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
@@ -3796,7 +3736,7 @@ func TestFDB_AggregateIndexOrderByDesc(t *testing.T) {
 	})
 
 	t.Run("order_by_aggregate_desc", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT status, COUNT(*) AS cnt FROM orders GROUP BY status ORDER BY cnt DESC")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
@@ -3814,12 +3754,12 @@ func TestFDB_AggregateIndexOrderByDesc(t *testing.T) {
 
 func TestFDB_AggregateColumnCaseSensitivity(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "aggcase",
+	db := testkit.SetupPlanShapeDB(t, "aggcase",
 		"CREATE TABLE orders (id BIGINT, Status STRING, Amount BIGINT, PRIMARY KEY (id))")
 
 	for _, o := range []struct {
@@ -3840,7 +3780,7 @@ func TestFDB_AggregateColumnCaseSensitivity(t *testing.T) {
 	}
 
 	t.Run("having_mixed_case_column", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT status, SUM(amount) FROM orders GROUP BY status HAVING SUM(Amount) > 200 ORDER BY status")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
@@ -3851,7 +3791,7 @@ func TestFDB_AggregateColumnCaseSensitivity(t *testing.T) {
 	})
 
 	t.Run("having_uppercase_column", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT STATUS, COUNT(*) FROM orders GROUP BY STATUS HAVING COUNT(*) >= 2")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
@@ -3859,7 +3799,7 @@ func TestFDB_AggregateColumnCaseSensitivity(t *testing.T) {
 	})
 
 	t.Run("mixed_case_group_by_and_select", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT Status, SUM(AMOUNT) AS total FROM orders GROUP BY Status ORDER BY total DESC")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
@@ -3874,12 +3814,12 @@ func TestFDB_AggregateColumnCaseSensitivity(t *testing.T) {
 
 func TestFDB_LeftJoinWithAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ljoinagg",
+	db := testkit.SetupPlanShapeDB(t, "ljoinagg",
 		"CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE orders (id BIGINT, cust_id BIGINT, amount BIGINT, PRIMARY KEY (id))")
 
@@ -3908,7 +3848,7 @@ func TestFDB_LeftJoinWithAggregate(t *testing.T) {
 	}
 
 	t.Run("left_join_count_with_null", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, COUNT(o.id) AS order_count
 			 FROM customers c LEFT JOIN orders o ON c.id = o.cust_id
 			 GROUP BY c.name
@@ -3928,7 +3868,7 @@ func TestFDB_LeftJoinWithAggregate(t *testing.T) {
 	})
 
 	t.Run("left_join_sum_with_coalesce", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, COALESCE(SUM(o.amount), 0) AS total
 			 FROM customers c LEFT JOIN orders o ON c.id = o.cust_id
 			 GROUP BY c.name
@@ -3945,7 +3885,7 @@ func TestFDB_LeftJoinWithAggregate(t *testing.T) {
 	})
 
 	t.Run("left_join_having_filter", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, COUNT(o.id) AS cnt
 			 FROM customers c LEFT JOIN orders o ON c.id = o.cust_id
 			 GROUP BY c.name
@@ -3964,12 +3904,12 @@ func TestFDB_LeftJoinWithAggregate(t *testing.T) {
 
 func TestFDB_SelectStarWithJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "selstar",
+	db := testkit.SetupPlanShapeDB(t, "selstar",
 		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
 
@@ -3999,7 +3939,7 @@ func TestFDB_SelectStarWithJoin(t *testing.T) {
 	}
 
 	t.Run("select_star_single_table", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM dept ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM dept ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
 		}
@@ -4009,7 +3949,7 @@ func TestFDB_SelectStarWithJoin(t *testing.T) {
 	})
 
 	t.Run("inner_join_with_projection", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT e.name, d.name AS dept_name, e.salary
 			 FROM emp e, dept d
 			 WHERE e.dept_id = d.id
@@ -4026,7 +3966,7 @@ func TestFDB_SelectStarWithJoin(t *testing.T) {
 	})
 
 	t.Run("subquery_with_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT d.name, sub.total
 			 FROM dept d,
 			      (SELECT dept_id, SUM(salary) AS total
@@ -4049,12 +3989,12 @@ func TestFDB_SelectStarWithJoin(t *testing.T) {
 
 func TestFDB_DerivedTableArithmeticOnAggregates(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dtagg",
+	db := testkit.SetupPlanShapeDB(t, "dtagg",
 		"CREATE TABLE emp (id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
 
 	for _, e := range []struct {
@@ -4070,7 +4010,7 @@ func TestFDB_DerivedTableArithmeticOnAggregates(t *testing.T) {
 	}
 
 	t.Run("direct_sum_div_count", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT dept_id, SUM(salary) / COUNT(*) AS avg FROM emp GROUP BY dept_id ORDER BY dept_id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
@@ -4082,7 +4022,7 @@ func TestFDB_DerivedTableArithmeticOnAggregates(t *testing.T) {
 	})
 
 	t.Run("derived_table_sum_div_count", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT sub.dept_id, sub.avg_sal
 			 FROM (SELECT dept_id, SUM(salary) / COUNT(*) AS avg_sal
 			       FROM emp GROUP BY dept_id) sub
@@ -4103,12 +4043,12 @@ func TestFDB_DerivedTableArithmeticOnAggregates(t *testing.T) {
 
 func TestFDB_DerivedTableEdgeCases(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dtedge",
+	db := testkit.SetupPlanShapeDB(t, "dtedge",
 		"CREATE TABLE items (id BIGINT, category STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -4131,7 +4071,7 @@ func TestFDB_DerivedTableEdgeCases(t *testing.T) {
 	}
 
 	t.Run("nested_derived_with_aggregate_arithmetic", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT sub.category, sub.total_value
 			 FROM (SELECT category, SUM(price * qty) AS total_value
 			       FROM items GROUP BY category) sub
@@ -4151,7 +4091,7 @@ func TestFDB_DerivedTableEdgeCases(t *testing.T) {
 	})
 
 	t.Run("derived_table_with_having_in_inner", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT sub.category, sub.cnt
 			 FROM (SELECT category, COUNT(*) AS cnt
 			       FROM items GROUP BY category HAVING COUNT(*) >= 2) sub
@@ -4165,7 +4105,7 @@ func TestFDB_DerivedTableEdgeCases(t *testing.T) {
 	})
 
 	t.Run("derived_table_with_where_and_group", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT sub.category, sub.avg_price
 			 FROM (SELECT category, SUM(price) / COUNT(*) AS avg_price
 			       FROM items WHERE qty > 1 GROUP BY category) sub
@@ -4182,7 +4122,7 @@ func TestFDB_DerivedTableEdgeCases(t *testing.T) {
 	})
 
 	t.Run("join_two_derived_tables", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT a.category, a.total, b.cnt
 			 FROM (SELECT category, SUM(price) AS total FROM items GROUP BY category) a,
 			      (SELECT category, COUNT(*) AS cnt FROM items GROUP BY category) b
@@ -4201,11 +4141,11 @@ func TestFDB_DerivedTableEdgeCases(t *testing.T) {
 
 func TestFDB_AggExprArgDirect(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "aggexpr",
+	db := testkit.SetupPlanShapeDB(t, "aggexpr",
 		"CREATE TABLE items (id BIGINT, cat STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
 	for _, r := range []struct {
 		id   int
@@ -4218,17 +4158,17 @@ func TestFDB_AggExprArgDirect(t *testing.T) {
 	}
 
 	t.Run("expr_only", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, price * qty FROM items ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, price * qty FROM items ORDER BY id")
 		t.Logf("price*qty: %v", rows)
 	})
 
 	t.Run("sum_bare", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT cat, SUM(price) FROM items GROUP BY cat ORDER BY cat")
+		rows := testkit.CollectRows(t, db, "SELECT cat, SUM(price) FROM items GROUP BY cat ORDER BY cat")
 		t.Logf("sum(price): %v", rows)
 	})
 
 	t.Run("sum_col_times_col", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT cat, SUM(price * qty) AS tv FROM items GROUP BY cat ORDER BY cat")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -4249,12 +4189,12 @@ func TestFDB_AggExprArgDirect(t *testing.T) {
 
 func TestFDB_AggregateExpressionVariants(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "aggvar",
+	db := testkit.SetupPlanShapeDB(t, "aggvar",
 		"CREATE TABLE sales (id BIGINT, region STRING, units BIGINT, price BIGINT, discount BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -4276,7 +4216,7 @@ func TestFDB_AggregateExpressionVariants(t *testing.T) {
 	}
 
 	t.Run("sum_product", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT region, SUM(units * price) AS revenue FROM sales GROUP BY region ORDER BY region")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -4293,7 +4233,7 @@ func TestFDB_AggregateExpressionVariants(t *testing.T) {
 	})
 
 	t.Run("sum_subtraction", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT region, SUM(price - discount) AS net FROM sales GROUP BY region ORDER BY region")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -4310,7 +4250,7 @@ func TestFDB_AggregateExpressionVariants(t *testing.T) {
 	})
 
 	t.Run("count_with_min_max", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT region, COUNT(*), MIN(price), MAX(price) FROM sales GROUP BY region ORDER BY region")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -4325,11 +4265,11 @@ func TestFDB_AggregateExpressionVariants(t *testing.T) {
 
 func TestFDB_MinMaxExpressionArg(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "mmexpr",
+	db := testkit.SetupPlanShapeDB(t, "mmexpr",
 		"CREATE TABLE items (id BIGINT, cat STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
 	for _, r := range []struct {
 		id   int
@@ -4342,7 +4282,7 @@ func TestFDB_MinMaxExpressionArg(t *testing.T) {
 	}
 
 	t.Run("min_expr", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT cat, MIN(price * qty) FROM items GROUP BY cat ORDER BY cat")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -4359,7 +4299,7 @@ func TestFDB_MinMaxExpressionArg(t *testing.T) {
 	})
 
 	t.Run("max_expr", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT cat, MAX(price * qty) FROM items GROUP BY cat ORDER BY cat")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -4380,11 +4320,11 @@ func TestFDB_MinMaxExpressionArg(t *testing.T) {
 
 func TestFDB_DerivedTableJoinWithAggExpr(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "dtjnagg",
+	db := testkit.SetupPlanShapeDB(t, "dtjnagg",
 		"CREATE TABLE products (id BIGINT, name STRING, category STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE orders (id BIGINT, product_id BIGINT, qty BIGINT, unit_price BIGINT, PRIMARY KEY (id))")
 
@@ -4406,7 +4346,7 @@ func TestFDB_DerivedTableJoinWithAggExpr(t *testing.T) {
 	}
 
 	t.Run("join_with_agg_derived_table", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT p.name, s.total
 			 FROM products p,
 			      (SELECT product_id, SUM(qty * unit_price) AS total
@@ -4428,7 +4368,7 @@ func TestFDB_DerivedTableJoinWithAggExpr(t *testing.T) {
 	})
 
 	t.Run("category_revenue_via_join", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT p.category, SUM(o.qty * o.unit_price) AS revenue
 			 FROM products p, orders o
 			 WHERE p.id = o.product_id
@@ -4450,11 +4390,11 @@ func TestFDB_DerivedTableJoinWithAggExpr(t *testing.T) {
 
 func TestFDB_CTEWithAggregateExpression(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "cteagg",
+	db := testkit.SetupPlanShapeDB(t, "cteagg",
 		"CREATE TABLE orders (id BIGINT, region STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
 
 	for _, o := range []struct {
@@ -4473,7 +4413,7 @@ func TestFDB_CTEWithAggregateExpression(t *testing.T) {
 	}
 
 	t.Run("cte_with_sum_expr", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`WITH revenue AS (
 			   SELECT region, SUM(qty * price) AS total
 			   FROM orders GROUP BY region
@@ -4494,7 +4434,7 @@ func TestFDB_CTEWithAggregateExpression(t *testing.T) {
 	})
 
 	t.Run("cte_joined_with_table", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`WITH totals AS (
 			   SELECT region, SUM(qty) AS total_qty
 			   FROM orders GROUP BY region
@@ -4516,11 +4456,11 @@ func TestFDB_CTEWithAggregateExpression(t *testing.T) {
 
 func TestFDB_UnionWithAggExpr(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "unagg",
+	db := testkit.SetupPlanShapeDB(t, "unagg",
 		"CREATE TABLE t1 (id BIGINT, grp STRING, val BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, grp STRING, val BIGINT, PRIMARY KEY (id))")
 
@@ -4544,7 +4484,7 @@ func TestFDB_UnionWithAggExpr(t *testing.T) {
 	}
 
 	t.Run("union_all_then_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT grp, SUM(val) AS total
 			 FROM (SELECT grp, val FROM t1 UNION ALL SELECT grp, val FROM t2) combined
 			 GROUP BY grp
@@ -4561,7 +4501,7 @@ func TestFDB_UnionWithAggExpr(t *testing.T) {
 	})
 
 	t.Run("separate_aggs_union", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT grp, SUM(val) FROM t1 GROUP BY grp
 			 UNION ALL
 			 SELECT grp, SUM(val) FROM t2 GROUP BY grp
@@ -4576,11 +4516,11 @@ func TestFDB_UnionWithAggExpr(t *testing.T) {
 
 func TestFDB_ScalarSubqueryWithAggExpr(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "ssqagg",
+	db := testkit.SetupPlanShapeDB(t, "ssqagg",
 		"CREATE TABLE items (id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct{ id, p, q int }{
@@ -4602,7 +4542,7 @@ func TestFDB_ScalarSubqueryWithAggExpr(t *testing.T) {
 	})
 
 	t.Run("where_gt_scalar_subquery", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT id, price * qty AS value FROM items
 			 WHERE price * qty > (SELECT SUM(price) FROM items)
 			 ORDER BY id`)
@@ -4620,11 +4560,11 @@ func TestFDB_ScalarSubqueryWithAggExpr(t *testing.T) {
 
 func TestFDB_AggExprWithNulls(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "aggnull",
+	db := testkit.SetupPlanShapeDB(t, "aggnull",
 		"CREATE TABLE items (id BIGINT, grp STRING, price BIGINT, qty BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -4649,7 +4589,7 @@ func TestFDB_AggExprWithNulls(t *testing.T) {
 	}
 
 	t.Run("sum_expr_skips_null_operand", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT grp, SUM(price * qty) FROM items GROUP BY grp ORDER BY grp")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
@@ -4669,7 +4609,7 @@ func TestFDB_AggExprWithNulls(t *testing.T) {
 	})
 
 	t.Run("count_with_null_expr", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT grp, COUNT(price * qty) FROM items GROUP BY grp ORDER BY grp")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d: %v", len(rows), rows)
@@ -4688,11 +4628,11 @@ func TestFDB_AggExprWithNulls(t *testing.T) {
 
 func TestFDB_HavingWithAggExpr(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "havagg",
+	db := testkit.SetupPlanShapeDB(t, "havagg",
 		"CREATE TABLE orders (id BIGINT, region STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
 
 	for _, o := range []struct {
@@ -4712,7 +4652,7 @@ func TestFDB_HavingWithAggExpr(t *testing.T) {
 	}
 
 	t.Run("having_sum_expr_threshold", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT region, SUM(qty * price) AS revenue
 			 FROM orders GROUP BY region
 			 HAVING SUM(qty * price) > 100
@@ -4729,7 +4669,7 @@ func TestFDB_HavingWithAggExpr(t *testing.T) {
 	})
 
 	t.Run("having_with_bare_count", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT region, COUNT(*) AS cnt
 			 FROM orders GROUP BY region
 			 HAVING COUNT(*) >= 2
@@ -4744,11 +4684,11 @@ func TestFDB_HavingWithAggExpr(t *testing.T) {
 
 func TestFDB_ComplexExpressionCombinations(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "cplxexpr",
+	db := testkit.SetupPlanShapeDB(t, "cplxexpr",
 		"CREATE TABLE t (id BIGINT, cat STRING, val BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -4767,7 +4707,7 @@ func TestFDB_ComplexExpressionCombinations(t *testing.T) {
 	}
 
 	t.Run("coalesce_sum_zero", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT cat, COALESCE(SUM(val), 0) FROM t GROUP BY cat ORDER BY cat")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
@@ -4778,7 +4718,7 @@ func TestFDB_ComplexExpressionCombinations(t *testing.T) {
 	})
 
 	t.Run("case_over_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT cat,
 			        CASE WHEN SUM(val) > 100 THEN 'high'
 			             WHEN SUM(val) > 10 THEN 'medium'
@@ -4800,7 +4740,7 @@ func TestFDB_ComplexExpressionCombinations(t *testing.T) {
 	})
 
 	t.Run("arithmetic_on_aggregates", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT cat, SUM(val) * 2 + 1 AS doubled_plus FROM t GROUP BY cat ORDER BY cat")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d: %v", len(rows), rows)
@@ -4821,11 +4761,11 @@ func TestFDB_ComplexExpressionCombinations(t *testing.T) {
 
 func TestFDB_ExistsWithGroupBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "exgrp",
+	db := testkit.SetupPlanShapeDB(t, "exgrp",
 		"CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE orders (id BIGINT, cust_id BIGINT, amount BIGINT, PRIMARY KEY (id))")
 
@@ -4846,7 +4786,7 @@ func TestFDB_ExistsWithGroupBy(t *testing.T) {
 	}
 
 	t.Run("exists_filters_customers", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name FROM customers c
 			 WHERE EXISTS (SELECT 1 FROM orders o WHERE o.cust_id = c.id)
 			 ORDER BY c.name`)
@@ -4862,7 +4802,7 @@ func TestFDB_ExistsWithGroupBy(t *testing.T) {
 	})
 
 	t.Run("not_exists_filters_customers", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name FROM customers c
 			 WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.cust_id = c.id)
 			 ORDER BY c.name`)
@@ -4875,7 +4815,7 @@ func TestFDB_ExistsWithGroupBy(t *testing.T) {
 	})
 
 	t.Run("exists_with_aggregate_in_outer", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, SUM(o.amount) AS total
 			 FROM customers c, orders o
 			 WHERE c.id = o.cust_id
@@ -4895,11 +4835,11 @@ func TestFDB_ExistsWithGroupBy(t *testing.T) {
 
 func TestFDB_MultipleAggExprsInOneQuery(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "multiaggx",
+	db := testkit.SetupPlanShapeDB(t, "multiaggx",
 		"CREATE TABLE sales (id BIGINT, region STRING, qty BIGINT, price BIGINT, cost BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -4918,7 +4858,7 @@ func TestFDB_MultipleAggExprsInOneQuery(t *testing.T) {
 	}
 
 	t.Run("revenue_and_cost_per_region", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT region,
 			        SUM(qty * price) AS revenue,
 			        SUM(qty * cost) AS total_cost
@@ -4946,7 +4886,7 @@ func TestFDB_MultipleAggExprsInOneQuery(t *testing.T) {
 	})
 
 	t.Run("profit_margin_derived", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT s.region, s.revenue - s.total_cost AS profit
 			 FROM (SELECT region,
 			              SUM(qty * price) AS revenue,
@@ -4973,11 +4913,11 @@ func TestFDB_MultipleAggExprsInOneQuery(t *testing.T) {
 
 func TestFDB_DistinctWithExpressions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "distexpr",
+	db := testkit.SetupPlanShapeDB(t, "distexpr",
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct{ id, a, b int }{
@@ -4987,21 +4927,21 @@ func TestFDB_DistinctWithExpressions(t *testing.T) {
 	}
 
 	t.Run("distinct_column", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT DISTINCT a FROM t ORDER BY a")
+		rows := testkit.CollectRows(t, db, "SELECT DISTINCT a FROM t ORDER BY a")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("distinct_two_columns", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT DISTINCT a, b FROM t ORDER BY a")
+		rows := testkit.CollectRows(t, db, "SELECT DISTINCT a, b FROM t ORDER BY a")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("distinct_with_expression", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT DISTINCT a * b FROM t ORDER BY a * b")
+		rows := testkit.CollectRows(t, db, "SELECT DISTINCT a * b FROM t ORDER BY a * b")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 (10, 40, 90), got %d: %v", len(rows), rows)
 		}
@@ -5025,11 +4965,11 @@ func TestFDB_DistinctWithExpressions(t *testing.T) {
 
 func TestFDB_UpdateDeleteWithExpressions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "upddel",
+	db := testkit.SetupPlanShapeDB(t, "upddel",
 		"CREATE TABLE inventory (id BIGINT, name STRING, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -5056,7 +4996,7 @@ func TestFDB_UpdateDeleteWithExpressions(t *testing.T) {
 		if n != 2 {
 			t.Errorf("rows affected: got %d, want 2 (Gadget, Thingamajig)", n)
 		}
-		rows := collectRows(t, db, "SELECT name, qty FROM inventory WHERE price > 15 ORDER BY name")
+		rows := testkit.CollectRows(t, db, "SELECT name, qty FROM inventory WHERE price > 15 ORDER BY name")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
 		}
@@ -5077,7 +5017,7 @@ func TestFDB_UpdateDeleteWithExpressions(t *testing.T) {
 		if n != 2 {
 			t.Errorf("rows affected: got %d, want 2 (Widget=10, Doohickey=5)", n)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM inventory")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM inventory")
 		if rows[0][0].(int64) != 2 {
 			t.Errorf("remaining: got %v, want 2", rows[0][0])
 		}
@@ -5088,11 +5028,11 @@ func TestFDB_UpdateDeleteWithExpressions(t *testing.T) {
 
 func TestFDB_InsertSelectWithAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "insselagg",
+	db := testkit.SetupPlanShapeDB(t, "insselagg",
 		"CREATE TABLE orders (id BIGINT, region STRING, amount BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE summary (id BIGINT, region STRING, total BIGINT, PRIMARY KEY (id))")
 
@@ -5117,14 +5057,14 @@ func TestFDB_InsertSelectWithAggregate(t *testing.T) {
 			db.ExecContext(ctx, "INSERT INTO summary VALUES (1, 'US', 300)")
 			db.ExecContext(ctx, "INSERT INTO summary VALUES (2, 'EU', 300)")
 		}
-		rows := collectRows(t, db, "SELECT region, total FROM summary ORDER BY region")
+		rows := testkit.CollectRows(t, db, "SELECT region, total FROM summary ORDER BY region")
 		if len(rows) < 2 {
 			t.Fatalf("want at least 2 rows, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("verify_summary", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT region, total FROM summary ORDER BY region")
+		rows := testkit.CollectRows(t, db, "SELECT region, total FROM summary ORDER BY region")
 		t.Logf("summary: %v", rows)
 		if len(rows) >= 2 {
 			if rows[0][0].(string) != "EU" {
@@ -5138,11 +5078,11 @@ func TestFDB_InsertSelectWithAggregate(t *testing.T) {
 
 func TestFDB_ThreeWayJoinWithAggregateExpr(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "threeway",
+	db := testkit.SetupPlanShapeDB(t, "threeway",
 		"CREATE TABLE categories (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE products (id BIGINT, cat_id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE sales (id BIGINT, prod_id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
@@ -5158,7 +5098,7 @@ func TestFDB_ThreeWayJoinWithAggregateExpr(t *testing.T) {
 	db.ExecContext(ctx, "INSERT INTO sales VALUES (4, 3, 10, 20)")
 
 	t.Run("category_revenue", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, SUM(s.qty * s.price) AS revenue
 			 FROM categories c, products p, sales s
 			 WHERE c.id = p.cat_id AND p.id = s.prod_id
@@ -5182,11 +5122,11 @@ func TestFDB_ThreeWayJoinWithAggregateExpr(t *testing.T) {
 
 func TestFDB_SelfJoinAndBetweenJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "selfjn",
+	db := testkit.SetupPlanShapeDB(t, "selfjn",
 		"CREATE TABLE emp (id BIGINT, name STRING, mgr_id BIGINT, salary BIGINT, PRIMARY KEY (id))")
 
 	for _, e := range []struct {
@@ -5204,7 +5144,7 @@ func TestFDB_SelfJoinAndBetweenJoin(t *testing.T) {
 	}
 
 	t.Run("self_join_manager", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT e.name, m.name AS manager
 			 FROM emp e, emp m
 			 WHERE e.mgr_id = m.id
@@ -5221,7 +5161,7 @@ func TestFDB_SelfJoinAndBetweenJoin(t *testing.T) {
 	})
 
 	t.Run("salary_between", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name, salary FROM emp WHERE salary BETWEEN 75 AND 95 ORDER BY salary")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
@@ -5236,11 +5176,11 @@ func TestFDB_SelfJoinAndBetweenJoin(t *testing.T) {
 
 func TestFDB_NestedDerivedWithIsNullNotNull(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "nestdnull",
+	db := testkit.SetupPlanShapeDB(t, "nestdnull",
 		"CREATE TABLE t (id BIGINT, label STRING, val BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -5261,7 +5201,7 @@ func TestFDB_NestedDerivedWithIsNullNotNull(t *testing.T) {
 	}
 
 	t.Run("nested_is_null", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT * FROM (SELECT * FROM (SELECT * FROM t) x WHERE id IS NULL) y`)
 		if len(rows) != 0 {
 			t.Fatalf("want 0 rows (id is NOT NULL), got %d", len(rows))
@@ -5281,7 +5221,7 @@ func TestFDB_NestedDerivedWithIsNullNotNull(t *testing.T) {
 	})
 
 	t.Run("nested_agg_over_filtered", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT label, SUM(val)
 			 FROM (SELECT * FROM t WHERE val IS NOT NULL) sub
 			 GROUP BY label ORDER BY label`)
@@ -5301,11 +5241,11 @@ func TestFDB_NestedDerivedWithIsNullNotNull(t *testing.T) {
 
 func TestFDB_OrPredicateWithJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "orjoin",
+	db := testkit.SetupPlanShapeDB(t, "orjoin",
 		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, level STRING, PRIMARY KEY (id))")
 
@@ -5326,7 +5266,7 @@ func TestFDB_OrPredicateWithJoin(t *testing.T) {
 	}
 
 	t.Run("or_on_different_tables", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT e.name, d.name AS dept
 			 FROM emp e, dept d
 			 WHERE e.dept_id = d.id AND (d.name = 'Engineering' OR e.level = 'senior')
@@ -5345,7 +5285,7 @@ func TestFDB_OrPredicateWithJoin(t *testing.T) {
 	})
 
 	t.Run("or_same_column", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT e.name FROM emp e
 			 WHERE e.level = 'senior' OR e.level = 'junior'
 			 ORDER BY e.name`)
@@ -5359,11 +5299,11 @@ func TestFDB_OrPredicateWithJoin(t *testing.T) {
 
 func TestFDB_CaseWhenInListCombined(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "casein2",
+	db := testkit.SetupPlanShapeDB(t, "casein2",
 		"CREATE TABLE orders (id BIGINT, status STRING, amount BIGINT, PRIMARY KEY (id))")
 
 	for _, o := range []struct {
@@ -5380,7 +5320,7 @@ func TestFDB_CaseWhenInListCombined(t *testing.T) {
 	}
 
 	t.Run("case_in_list", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT id,
 			        CASE WHEN status IN ('new', 'processing') THEN 'pending'
 			             WHEN status IN ('shipped', 'delivered') THEN 'complete'
@@ -5407,11 +5347,11 @@ func TestFDB_CaseWhenInListCombined(t *testing.T) {
 
 func TestFDB_TwoDerivedTablesCrossJoined(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "dtcross",
+	db := testkit.SetupPlanShapeDB(t, "dtcross",
 		"CREATE TABLE t (id BIGINT, grp STRING, val BIGINT, PRIMARY KEY (id))")
 
 	for _, r := range []struct {
@@ -5425,7 +5365,7 @@ func TestFDB_TwoDerivedTablesCrossJoined(t *testing.T) {
 	}
 
 	t.Run("cross_join_derived", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT a.grp, a.total, b.cnt
 			 FROM (SELECT grp, SUM(val) AS total FROM t GROUP BY grp) a,
 			      (SELECT grp, COUNT(*) AS cnt FROM t GROUP BY grp) b
@@ -5447,11 +5387,11 @@ func TestFDB_TwoDerivedTablesCrossJoined(t *testing.T) {
 
 func TestFDB_DerivedTableExistsJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "dtexjn",
+	db := testkit.SetupPlanShapeDB(t, "dtexjn",
 		"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE project (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id))")
@@ -5466,7 +5406,7 @@ func TestFDB_DerivedTableExistsJoin(t *testing.T) {
 	db.ExecContext(ctx, "INSERT INTO project VALUES (2, 'Beta', 2)")
 
 	t.Run("derived_table_join_agg", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT sub.dept_name, sub.emp_count
 			 FROM (SELECT d.name AS dept_name, COUNT(e.id) AS emp_count
 			       FROM dept d, emp e
@@ -5485,7 +5425,7 @@ func TestFDB_DerivedTableExistsJoin(t *testing.T) {
 	})
 
 	t.Run("three_way_dept_project_join", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT d.name, p.name AS project, COUNT(e.id) AS team_size
 			 FROM dept d, emp e, project p
 			 WHERE d.id = e.dept_id AND d.id = p.dept_id
@@ -5504,11 +5444,11 @@ func TestFDB_DerivedTableExistsJoin(t *testing.T) {
 
 func TestFDB_JoinNotInPattern(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "jnotin2",
+	db := testkit.SetupPlanShapeDB(t, "jnotin2",
 		"CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))")
 
@@ -5528,7 +5468,7 @@ func TestFDB_JoinNotInPattern(t *testing.T) {
 	})
 
 	t.Run("join_not_in_workaround", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT d.name FROM dept d
 			 WHERE NOT EXISTS (SELECT 1 FROM emp e WHERE e.dept_id = d.id)
 			 ORDER BY d.name`)
@@ -5543,11 +5483,11 @@ func TestFDB_JoinNotInPattern(t *testing.T) {
 
 func TestFDB_BetweenOperator(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "between1",
+	db := testkit.SetupPlanShapeDB(t, "between1",
 		"CREATE TABLE t1 (id INTEGER, col1 INTEGER, col2 INTEGER, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -5571,7 +5511,7 @@ func TestFDB_BetweenOperator(t *testing.T) {
 	}
 
 	t.Run("between_range", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 6 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 6 ORDER BY id")
 		wantIDs := []int64{4, 5, 6}
 		if len(rows) != len(wantIDs) {
 			t.Fatalf("want %d rows, got %d: %v", len(wantIDs), len(rows), rows)
@@ -5585,21 +5525,21 @@ func TestFDB_BetweenOperator(t *testing.T) {
 	})
 
 	t.Run("between_single_value", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 4")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 4")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 4 {
 			t.Fatalf("want [4], got %v", rows)
 		}
 	})
 
 	t.Run("between_empty_range", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 3")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM t1 WHERE col2 BETWEEN 4 AND 3")
 		if len(rows) != 0 {
 			t.Fatalf("want 0 rows for reversed range, got %d", len(rows))
 		}
 	})
 
 	t.Run("not_between", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM t1 WHERE col2 NOT BETWEEN 2 AND 12 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM t1 WHERE col2 NOT BETWEEN 2 AND 12 ORDER BY id")
 		wantIDs := []int64{1, 13}
 		if len(rows) != len(wantIDs) {
 			t.Fatalf("want %d rows, got %d: %v", len(wantIDs), len(rows), rows)
@@ -5612,14 +5552,14 @@ func TestFDB_BetweenOperator(t *testing.T) {
 	})
 
 	t.Run("not_between_reversed_returns_all", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM t1 WHERE col2 NOT BETWEEN 12 AND 2 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM t1 WHERE col2 NOT BETWEEN 12 AND 2 ORDER BY id")
 		if len(rows) != 13 {
 			t.Fatalf("want 13 rows for NOT BETWEEN with reversed range, got %d", len(rows))
 		}
 	})
 
 	t.Run("between_or_between", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE col2 BETWEEN 2 AND 4 OR col2 BETWEEN 6 AND 7 ORDER BY id")
 		wantIDs := []int64{2, 3, 4, 6, 7}
 		if len(rows) != len(wantIDs) {
@@ -5633,7 +5573,7 @@ func TestFDB_BetweenOperator(t *testing.T) {
 	})
 
 	t.Run("between_with_group_by", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT col1, COUNT(*) FROM t1 WHERE col2 BETWEEN 3 AND 8 GROUP BY col1 ORDER BY col1")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 groups, got %d: %v", len(rows), rows)
@@ -5647,7 +5587,7 @@ func TestFDB_BetweenOperator(t *testing.T) {
 	})
 
 	t.Run("between_in_having", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT col1, SUM(col2) AS s FROM t1 GROUP BY col1 HAVING SUM(col2) BETWEEN 10 AND 20 ORDER BY col1")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 group (col1=10, sum=15), got %d: %v", len(rows), rows)
@@ -5663,11 +5603,11 @@ func TestFDB_BetweenOperator(t *testing.T) {
 
 func TestFDB_GroupByAlias(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "gbalias1",
+	db := testkit.SetupPlanShapeDB(t, "gbalias1",
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -5683,7 +5623,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	}
 
 	t.Run("select_group_col", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT col1 FROM t1 GROUP BY col1 ORDER BY col1")
+		rows := testkit.CollectRows(t, db, "SELECT col1 FROM t1 GROUP BY col1 ORDER BY col1")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
 		}
@@ -5693,7 +5633,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("select_group_col_with_alias", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT col1 AS xx FROM t1 GROUP BY col1 ORDER BY col1")
+		rows := testkit.CollectRows(t, db, "SELECT col1 AS xx FROM t1 GROUP BY col1 ORDER BY col1")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
 		}
@@ -5733,7 +5673,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("max_min_per_group", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT col1, MAX(col2), MIN(col2) FROM t1 GROUP BY col1 ORDER BY col1")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -5747,7 +5687,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("having_min_and_col", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT MAX(id) FROM t1 GROUP BY col1 HAVING MIN(id) > 0 AND col1 = 20")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 5 {
 			t.Fatalf("want [{5}], got %v", rows)
@@ -5755,14 +5695,14 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("count_star_ungrouped", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM t1")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM t1")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 5 {
 			t.Fatalf("want 5, got %v", rows)
 		}
 	})
 
 	t.Run("group_col_expr_plus_literal", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT col1 + 10 FROM t1 GROUP BY col1 ORDER BY col1")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -5783,7 +5723,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("derived_table_group_by", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT col1 FROM (SELECT col1 FROM t1) AS x GROUP BY col1 ORDER BY col1")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -5794,7 +5734,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("derived_table_max", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT MAX(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -5805,7 +5745,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("derived_table_min", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT MIN(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -5816,7 +5756,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("derived_table_count", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT COUNT(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -5827,7 +5767,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("derived_table_sum", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT SUM(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -5838,7 +5778,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("sum_div_count_per_group", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT SUM(x.col2) / COUNT(x.col2) FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1 ORDER BY x.col1")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
@@ -5874,7 +5814,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("ungrouped_max", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT MAX(x.col2) FROM (SELECT col1, col2 FROM t1) AS x")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 5 {
 			t.Fatalf("want 5, got %v", rows)
@@ -5882,7 +5822,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("ungrouped_min", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT MIN(x.col2) FROM (SELECT col1, col2 FROM t1) AS x")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 1 {
 			t.Fatalf("want 1, got %v", rows)
@@ -5890,7 +5830,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("ungrouped_count", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT COUNT(x.col2) FROM (SELECT col1, col2 FROM t1) AS x")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 5 {
 			t.Fatalf("want 5, got %v", rows)
@@ -5898,7 +5838,7 @@ func TestFDB_GroupByAlias(t *testing.T) {
 	})
 
 	t.Run("nested_derived_agg_filter", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT g + 4 FROM
 			   (SELECT MIN(x.col2) AS g FROM (SELECT col1, col2 FROM t1) AS x GROUP BY x.col1) AS y
 			 WHERE g > 3`)
@@ -5910,11 +5850,11 @@ func TestFDB_GroupByAlias(t *testing.T) {
 
 func TestFDB_InsertSelectCross(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "inssel1",
+	db := testkit.SetupPlanShapeDB(t, "inssel1",
 		"CREATE TABLE src (id BIGINT, val BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE dst (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 
@@ -5933,7 +5873,7 @@ func TestFDB_InsertSelectCross(t *testing.T) {
 		if n != 5 {
 			t.Errorf("want 5 rows affected, got %d", n)
 		}
-		rows := collectRows(t, db, "SELECT id, val FROM dst ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM dst ORDER BY id")
 		if len(rows) != 5 {
 			t.Fatalf("want 5 rows in dst, got %d", len(rows))
 		}
@@ -5948,7 +5888,7 @@ func TestFDB_InsertSelectCross(t *testing.T) {
 	})
 
 	t.Run("insert_select_with_expr", func(t *testing.T) {
-		db2 := setupPlanShapeDB(t, "inssel2",
+		db2 := testkit.SetupPlanShapeDB(t, "inssel2",
 			"CREATE TABLE src2 (id BIGINT, val BIGINT, PRIMARY KEY (id)) "+
 				"CREATE TABLE dst2 (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 		for i := int64(1); i <= 3; i++ {
@@ -5962,7 +5902,7 @@ func TestFDB_InsertSelectCross(t *testing.T) {
 		if n != 3 {
 			t.Errorf("want 3 rows affected, got %d", n)
 		}
-		rows := collectRows(t, db2, "SELECT id, val FROM dst2 ORDER BY id")
+		rows := testkit.CollectRows(t, db2, "SELECT id, val FROM dst2 ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -5972,7 +5912,7 @@ func TestFDB_InsertSelectCross(t *testing.T) {
 	})
 
 	t.Run("insert_select_with_where", func(t *testing.T) {
-		db3 := setupPlanShapeDB(t, "inssel3",
+		db3 := testkit.SetupPlanShapeDB(t, "inssel3",
 			"CREATE TABLE src3 (id BIGINT, val BIGINT, PRIMARY KEY (id)) "+
 				"CREATE TABLE dst3 (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 		for i := int64(1); i <= 5; i++ {
@@ -5986,7 +5926,7 @@ func TestFDB_InsertSelectCross(t *testing.T) {
 		if n != 3 {
 			t.Errorf("want 3 rows affected, got %d", n)
 		}
-		rows := collectRows(t, db3, "SELECT id FROM dst3 ORDER BY id")
+		rows := testkit.CollectRows(t, db3, "SELECT id FROM dst3 ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -6001,11 +5941,11 @@ func TestFDB_InsertSelectCross(t *testing.T) {
 
 func TestFDB_UpdateExpressions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "updexpr1",
+	db := testkit.SetupPlanShapeDB(t, "updexpr1",
 		"CREATE TABLE items (id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -6027,7 +5967,7 @@ func TestFDB_UpdateExpressions(t *testing.T) {
 		if n != 1 {
 			t.Errorf("want 1 affected, got %d", n)
 		}
-		rows := collectRows(t, db, "SELECT qty FROM items WHERE id = 1")
+		rows := testkit.CollectRows(t, db, "SELECT qty FROM items WHERE id = 1")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 15 {
 			t.Fatalf("want qty=15, got %v", rows)
 		}
@@ -6038,7 +5978,7 @@ func TestFDB_UpdateExpressions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT qty, price FROM items WHERE id = 2")
+		rows := testkit.CollectRows(t, db, "SELECT qty, price FROM items WHERE id = 2")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -6072,11 +6012,11 @@ func TestFDB_UpdateExpressions(t *testing.T) {
 
 func TestFDB_CoalesceEdgeCases(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "coalesce1",
+	db := testkit.SetupPlanShapeDB(t, "coalesce1",
 		"CREATE TABLE t1 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -6091,7 +6031,7 @@ func TestFDB_CoalesceEdgeCases(t *testing.T) {
 	}
 
 	t.Run("coalesce_first_non_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, COALESCE(a, b, 0) FROM t1 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, COALESCE(a, b, 0) FROM t1 ORDER BY id")
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d", len(rows))
 		}
@@ -6104,21 +6044,21 @@ func TestFDB_CoalesceEdgeCases(t *testing.T) {
 	})
 
 	t.Run("coalesce_all_null_returns_fallback", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COALESCE(a, b, -1) FROM t1 WHERE id = 3")
+		rows := testkit.CollectRows(t, db, "SELECT COALESCE(a, b, -1) FROM t1 WHERE id = 3")
 		if len(rows) != 1 || toInt64(rows[0][0]) != -1 {
 			t.Fatalf("want -1, got %v", rows)
 		}
 	})
 
 	t.Run("coalesce_in_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(COALESCE(a, 0)) FROM t1")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(COALESCE(a, 0)) FROM t1")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 50 {
 			t.Fatalf("want 50 (10+0+0+40), got %v", rows)
 		}
 	})
 
 	t.Run("coalesce_in_where", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM t1 WHERE COALESCE(a, 0) > 0 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM t1 WHERE COALESCE(a, 0) > 0 ORDER BY id")
 		wantIDs := []int64{1, 4}
 		if len(rows) != len(wantIDs) {
 			t.Fatalf("want %d rows, got %d", len(wantIDs), len(rows))
@@ -6133,11 +6073,11 @@ func TestFDB_CoalesceEdgeCases(t *testing.T) {
 
 func TestFDB_MultiTableDeleteUpdate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "mtdel1",
+	db := testkit.SetupPlanShapeDB(t, "mtdel1",
 		"CREATE TABLE orders (id BIGINT, customer_id BIGINT, amount BIGINT, status STRING, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -6164,7 +6104,7 @@ func TestFDB_MultiTableDeleteUpdate(t *testing.T) {
 	})
 
 	t.Run("verify_after_delete", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM orders ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM orders ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 remaining, got %d", len(rows))
 		}
@@ -6186,7 +6126,7 @@ func TestFDB_MultiTableDeleteUpdate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("UPDATE CASE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT id, status FROM orders WHERE id = 5")
+		rows := testkit.CollectRows(t, db, "SELECT id, status FROM orders WHERE id = 5")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
 		}
@@ -6207,7 +6147,7 @@ func TestFDB_MultiTableDeleteUpdate(t *testing.T) {
 	})
 
 	t.Run("verify_final_state", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, amount FROM orders ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, amount FROM orders ORDER BY id")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d: %v", len(rows), rows)
 		}
@@ -6219,11 +6159,11 @@ func TestFDB_MultiTableDeleteUpdate(t *testing.T) {
 
 func TestFDB_LimitBasicPatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "limoff1",
+	db := testkit.SetupPlanShapeDB(t, "limoff1",
 		"CREATE TABLE items (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))")
 
 	for i := int64(1); i <= 10; i++ {
@@ -6235,7 +6175,7 @@ func TestFDB_LimitBasicPatterns(t *testing.T) {
 	}
 
 	t.Run("limit_basic", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM items ORDER BY id LIMIT 3")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM items ORDER BY id LIMIT 3")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -6247,21 +6187,21 @@ func TestFDB_LimitBasicPatterns(t *testing.T) {
 	})
 
 	t.Run("limit_exceeds_rows", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM items ORDER BY id LIMIT 100")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM items ORDER BY id LIMIT 100")
 		if len(rows) != 10 {
 			t.Fatalf("want 10, got %d", len(rows))
 		}
 	})
 
 	t.Run("limit_zero", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM items ORDER BY id LIMIT 0")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM items ORDER BY id LIMIT 0")
 		if len(rows) != 0 {
 			t.Fatalf("want 0, got %d", len(rows))
 		}
 	})
 
 	t.Run("limit_with_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id, price FROM items ORDER BY price DESC LIMIT 3")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
@@ -6276,11 +6216,11 @@ func TestFDB_LimitBasicPatterns(t *testing.T) {
 
 func TestFDB_SubqueryScalarComparison(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "subsclr1",
+	db := testkit.SetupPlanShapeDB(t, "subsclr1",
 		"CREATE TABLE emp (id BIGINT, name STRING, salary BIGINT, dept_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))")
 
@@ -6298,7 +6238,7 @@ func TestFDB_SubqueryScalarComparison(t *testing.T) {
 	}
 
 	t.Run("exists_with_correlated_filter", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT d.name FROM dept d
 			 WHERE EXISTS (SELECT 1 FROM emp e WHERE e.dept_id = d.id AND e.salary > 100)
 			 ORDER BY d.name`)
@@ -6311,7 +6251,7 @@ func TestFDB_SubqueryScalarComparison(t *testing.T) {
 	})
 
 	t.Run("not_exists_correlated", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT d.name FROM dept d
 			 WHERE NOT EXISTS (SELECT 1 FROM emp e WHERE e.dept_id = d.id AND e.salary > 100)
 			 ORDER BY d.name`)
@@ -6324,7 +6264,7 @@ func TestFDB_SubqueryScalarComparison(t *testing.T) {
 	})
 
 	t.Run("exists_non_correlated_all_rows", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT name FROM emp WHERE EXISTS (SELECT 1 FROM dept WHERE id = 1) ORDER BY name`)
 		if len(rows) != 4 {
 			t.Fatalf("want 4 (non-correlated EXISTS returns all), got %d", len(rows))
@@ -6332,7 +6272,7 @@ func TestFDB_SubqueryScalarComparison(t *testing.T) {
 	})
 
 	t.Run("join_aggregate_per_dept", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT d.name, COUNT(*) AS cnt, SUM(e.salary) AS total
 			 FROM dept d, emp e
 			 WHERE e.dept_id = d.id
@@ -6350,7 +6290,7 @@ func TestFDB_SubqueryScalarComparison(t *testing.T) {
 	})
 
 	t.Run("having_on_joined_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT d.name, SUM(e.salary)
 			 FROM dept d, emp e
 			 WHERE e.dept_id = d.id
@@ -6367,11 +6307,11 @@ func TestFDB_SubqueryScalarComparison(t *testing.T) {
 
 func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "distfrom1",
+	db := testkit.SetupPlanShapeDB(t, "distfrom1",
 		"CREATE TABLE t1 (id INTEGER, col1 INTEGER, col2 INTEGER, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -6392,7 +6332,7 @@ func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
 	}
 
 	t.Run("is_distinct_from_null", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE col2 IS DISTINCT FROM NULL ORDER BY id")
 		wantIDs := []int64{1, 3, 5, 9, 10}
 		if len(rows) != len(wantIDs) {
@@ -6406,7 +6346,7 @@ func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("is_distinct_from_value", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE col1 IS DISTINCT FROM 10 ORDER BY id")
 		wantIDs := []int64{6, 7, 8, 9, 10}
 		if len(rows) != len(wantIDs) {
@@ -6420,7 +6360,7 @@ func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("null_distinct_from_null_is_false", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE NULL IS DISTINCT FROM NULL")
 		if len(rows) != 0 {
 			t.Fatalf("NULL IS DISTINCT FROM NULL should be false, got %d rows", len(rows))
@@ -6428,7 +6368,7 @@ func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("value_distinct_from_same_value_is_false", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE 10 IS DISTINCT FROM 10")
 		if len(rows) != 0 {
 			t.Fatalf("10 IS DISTINCT FROM 10 should be false, got %d rows", len(rows))
@@ -6436,7 +6376,7 @@ func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("not_distinct_from_null", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE col2 IS NOT DISTINCT FROM NULL ORDER BY id")
 		wantIDs := []int64{2, 4, 6, 7, 8}
 		if len(rows) != len(wantIDs) {
@@ -6450,7 +6390,7 @@ func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("not_distinct_from_value", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE col1 IS NOT DISTINCT FROM 20 ORDER BY id")
 		wantIDs := []int64{6, 7, 8, 9, 10}
 		if len(rows) != len(wantIDs) {
@@ -6464,7 +6404,7 @@ func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("null_not_distinct_from_null_is_true", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT COUNT(*) FROM t1 WHERE NULL IS NOT DISTINCT FROM NULL")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 10 {
 			t.Fatalf("NULL IS NOT DISTINCT FROM NULL should be true (all 10 rows), got %v", rows)
@@ -6472,7 +6412,7 @@ func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("reversed_operand_order", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE NULL IS DISTINCT FROM col2 ORDER BY id")
 		wantIDs := []int64{1, 3, 5, 9, 10}
 		if len(rows) != len(wantIDs) {
@@ -6486,7 +6426,7 @@ func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("distinct_from_with_group_by", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT col1, COUNT(*) FROM t1
 			 WHERE col2 IS DISTINCT FROM NULL
 			 GROUP BY col1 ORDER BY col1`)
@@ -6504,11 +6444,11 @@ func TestFDB_IsDistinctFromJavaPatterns(t *testing.T) {
 
 func TestFDB_SelfJoinHierarchy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "selfjoin1",
+	db := testkit.SetupPlanShapeDB(t, "selfjoin1",
 		"CREATE TABLE emp (id BIGINT, name STRING, manager_id BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -6524,7 +6464,7 @@ func TestFDB_SelfJoinHierarchy(t *testing.T) {
 	}
 
 	t.Run("self_join_parent_child", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT child.name, parent.name
 			 FROM emp child, emp parent
 			 WHERE child.manager_id = parent.id
@@ -6549,7 +6489,7 @@ func TestFDB_SelfJoinHierarchy(t *testing.T) {
 	})
 
 	t.Run("self_join_count_reports", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT mgr.name, COUNT(*) AS cnt
 			 FROM emp mgr, emp report
 			 WHERE report.manager_id = mgr.id
@@ -6564,7 +6504,7 @@ func TestFDB_SelfJoinHierarchy(t *testing.T) {
 	})
 
 	t.Run("self_join_with_not_exists", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT e.name FROM emp e
 			 WHERE NOT EXISTS (SELECT 1 FROM emp r WHERE r.manager_id = e.id)
 			 ORDER BY e.name`)
@@ -6582,11 +6522,11 @@ func TestFDB_SelfJoinHierarchy(t *testing.T) {
 
 func TestFDB_MultiColumnOrderBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "mcord1",
+	db := testkit.SetupPlanShapeDB(t, "mcord1",
 		"CREATE TABLE items (id BIGINT, category STRING, name STRING, price BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -6602,7 +6542,7 @@ func TestFDB_MultiColumnOrderBy(t *testing.T) {
 	}
 
 	t.Run("order_by_two_columns_asc", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT category, name FROM items ORDER BY category, name")
 		if len(rows) != 5 {
 			t.Fatalf("want 5, got %d", len(rows))
@@ -6616,7 +6556,7 @@ func TestFDB_MultiColumnOrderBy(t *testing.T) {
 	})
 
 	t.Run("order_by_asc_desc", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT category, price FROM items ORDER BY category ASC, price DESC")
 		if len(rows) != 5 {
 			t.Fatalf("want 5, got %d", len(rows))
@@ -6630,7 +6570,7 @@ func TestFDB_MultiColumnOrderBy(t *testing.T) {
 	})
 
 	t.Run("group_by_with_order_by_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT category, COUNT(*), SUM(price)
 			 FROM items
 			 GROUP BY category
@@ -6651,11 +6591,11 @@ func TestFDB_MultiColumnOrderBy(t *testing.T) {
 
 func TestFDB_NullOrderingAndArithmetic(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "nullarith1",
+	db := testkit.SetupPlanShapeDB(t, "nullarith1",
 		"CREATE TABLE t1 (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -6671,7 +6611,7 @@ func TestFDB_NullOrderingAndArithmetic(t *testing.T) {
 	}
 
 	t.Run("null_arithmetic_propagates", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id, a + b FROM t1 ORDER BY id")
 		if len(rows) != 5 {
 			t.Fatalf("want 5, got %d", len(rows))
@@ -6694,14 +6634,14 @@ func TestFDB_NullOrderingAndArithmetic(t *testing.T) {
 	})
 
 	t.Run("null_in_sum_skipped", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(a) FROM t1")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(a) FROM t1")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 100 {
 			t.Fatalf("want 100 (10+40+50), got %v", rows)
 		}
 	})
 
 	t.Run("count_col_skips_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(a), COUNT(b), COUNT(*) FROM t1")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(a), COUNT(b), COUNT(*) FROM t1")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
 		}
@@ -6717,7 +6657,7 @@ func TestFDB_NullOrderingAndArithmetic(t *testing.T) {
 	})
 
 	t.Run("coalesce_with_arithmetic", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id, COALESCE(a, 0) + COALESCE(b, 0) FROM t1 ORDER BY id")
 		wantSums := []int64{30, 30, 40, 0, 110}
 		if len(rows) != 5 {
@@ -6731,7 +6671,7 @@ func TestFDB_NullOrderingAndArithmetic(t *testing.T) {
 	})
 
 	t.Run("min_max_with_nulls", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT MIN(a), MAX(a), MIN(b), MAX(b) FROM t1")
+		rows := testkit.CollectRows(t, db, "SELECT MIN(a), MAX(a), MIN(b), MAX(b) FROM t1")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
 		}
@@ -6752,11 +6692,11 @@ func TestFDB_NullOrderingAndArithmetic(t *testing.T) {
 
 func TestFDB_CTEJavaPatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "ctejava1",
+	db := testkit.SetupPlanShapeDB(t, "ctejava1",
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -6771,7 +6711,7 @@ func TestFDB_CTEJavaPatterns(t *testing.T) {
 	}
 
 	t.Run("basic_cte", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"WITH c1 AS (SELECT col1, col2 FROM t1) SELECT col1, col2 FROM c1 ORDER BY col2")
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d", len(rows))
@@ -6782,7 +6722,7 @@ func TestFDB_CTEJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("cte_select_star", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"WITH c1 AS (SELECT * FROM t1) SELECT * FROM c1 ORDER BY id")
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d", len(rows))
@@ -6793,7 +6733,7 @@ func TestFDB_CTEJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("cte_with_where", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"WITH c1 AS (SELECT col1, col2 FROM t1) SELECT col1 FROM c1 WHERE col2 < 3 ORDER BY col1")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
@@ -6806,7 +6746,7 @@ func TestFDB_CTEJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("cte_ignored_unused", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"WITH ignored AS (SELECT * FROM t1) SELECT COUNT(*) FROM t1")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 4 {
 			t.Fatalf("want 4, got %v", rows)
@@ -6838,7 +6778,7 @@ func TestFDB_CTEJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("cte_with_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`WITH summary AS (
 				SELECT col1, SUM(col2) AS total FROM t1 GROUP BY col1
 			) SELECT col1, total FROM summary ORDER BY col1`)
@@ -6854,7 +6794,7 @@ func TestFDB_CTEJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("cte_joined_with_base_table", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`WITH high_vals AS (
 				SELECT id, col1 FROM t1 WHERE col2 >= 6
 			) SELECT h.id, h.col1, t.col2
@@ -6872,11 +6812,11 @@ func TestFDB_CTEJavaPatterns(t *testing.T) {
 
 func TestFDB_UnionAllJavaPatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "unionjava1",
+	db := testkit.SetupPlanShapeDB(t, "unionjava1",
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))")
 
@@ -6895,7 +6835,7 @@ func TestFDB_UnionAllJavaPatterns(t *testing.T) {
 	}
 
 	t.Run("union_all_same_table", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT col1, col2 FROM t1 UNION ALL SELECT col1, col2 FROM t1 ORDER BY col2")
 		if len(rows) != 8 {
 			t.Fatalf("want 8, got %d", len(rows))
@@ -6903,7 +6843,7 @@ func TestFDB_UnionAllJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("union_all_different_tables", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT col1 FROM t1 UNION ALL SELECT col1 FROM t2 ORDER BY col1")
 		if len(rows) != 7 {
 			t.Fatalf("want 7 (4+3), got %d", len(rows))
@@ -6911,7 +6851,7 @@ func TestFDB_UnionAllJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("union_all_aggregate_over", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT SUM(a) AS a, SUM(b) AS b FROM (
 				SELECT SUM(col1) AS a, COUNT(*) AS b FROM t1
 				UNION ALL
@@ -6931,7 +6871,7 @@ func TestFDB_UnionAllJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("union_all_with_where", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT id, col1 FROM t1 WHERE col1 = 10
 			 UNION ALL
 			 SELECT id, col1 FROM t2 WHERE col1 = 200
@@ -6949,11 +6889,11 @@ func TestFDB_UnionAllJavaPatterns(t *testing.T) {
 
 func TestFDB_ComplexJoinAggregatePatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "cxjoin1",
+	db := testkit.SetupPlanShapeDB(t, "cxjoin1",
 		"CREATE TABLE products (id BIGINT, name STRING, category STRING, price BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE orders (id BIGINT, product_id BIGINT, qty BIGINT, customer STRING, PRIMARY KEY (id))")
 
@@ -6974,7 +6914,7 @@ func TestFDB_ComplexJoinAggregatePatterns(t *testing.T) {
 	}
 
 	t.Run("join_group_by_category", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT p.category, SUM(o.qty) AS total_qty, SUM(o.qty * p.price) AS revenue
 			 FROM products p, orders o
 			 WHERE o.product_id = p.id
@@ -7005,7 +6945,7 @@ func TestFDB_ComplexJoinAggregatePatterns(t *testing.T) {
 	})
 
 	t.Run("join_having_on_sum_expr", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT p.category, SUM(o.qty * p.price) AS revenue
 			 FROM products p, orders o
 			 WHERE o.product_id = p.id
@@ -7020,7 +6960,7 @@ func TestFDB_ComplexJoinAggregatePatterns(t *testing.T) {
 	})
 
 	t.Run("per_customer_total", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT o.customer, COUNT(*) AS orders, SUM(o.qty) AS total_qty
 			 FROM orders o
 			 GROUP BY o.customer
@@ -7040,7 +6980,7 @@ func TestFDB_ComplexJoinAggregatePatterns(t *testing.T) {
 	})
 
 	t.Run("customer_revenue_with_join", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT o.customer, SUM(o.qty * p.price) AS spent
 			 FROM orders o, products p
 			 WHERE o.product_id = p.id
@@ -7064,7 +7004,7 @@ func TestFDB_ComplexJoinAggregatePatterns(t *testing.T) {
 	})
 
 	t.Run("products_with_no_orders", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT p.name FROM products p
 			 WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.product_id = p.id)
 			 ORDER BY p.name`)
@@ -7074,7 +7014,7 @@ func TestFDB_ComplexJoinAggregatePatterns(t *testing.T) {
 	})
 
 	t.Run("products_with_exists", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT p.name FROM products p
 			 WHERE EXISTS (SELECT 1 FROM orders o WHERE o.product_id = p.id AND o.qty > 5)
 			 ORDER BY p.name`)
@@ -7089,11 +7029,11 @@ func TestFDB_ComplexJoinAggregatePatterns(t *testing.T) {
 
 func TestFDB_GroupByTableAliasEdgeCases(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "gbtalias1",
+	db := testkit.SetupPlanShapeDB(t, "gbtalias1",
 		"CREATE TABLE sales (id BIGINT, region STRING, amount BIGINT, rep STRING, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -7109,7 +7049,7 @@ func TestFDB_GroupByTableAliasEdgeCases(t *testing.T) {
 	}
 
 	t.Run("aliased_group_by_string", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT s.region, COUNT(*), SUM(s.amount) FROM sales s GROUP BY s.region ORDER BY s.region")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 regions, got %d: %v", len(rows), rows)
@@ -7126,7 +7066,7 @@ func TestFDB_GroupByTableAliasEdgeCases(t *testing.T) {
 	})
 
 	t.Run("aliased_having_with_alias_prefix", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT s.region, SUM(s.amount)
 			 FROM sales s
 			 GROUP BY s.region
@@ -7141,7 +7081,7 @@ func TestFDB_GroupByTableAliasEdgeCases(t *testing.T) {
 	})
 
 	t.Run("aliased_group_by_two_columns", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT s.region, s.rep, SUM(s.amount)
 			 FROM sales s
 			 GROUP BY s.region, s.rep
@@ -7152,9 +7092,9 @@ func TestFDB_GroupByTableAliasEdgeCases(t *testing.T) {
 	})
 
 	t.Run("unaliased_same_results", func(t *testing.T) {
-		aliased := collectRows(t, db,
+		aliased := testkit.CollectRows(t, db,
 			"SELECT s.region, COUNT(*) FROM sales s GROUP BY s.region ORDER BY s.region")
-		unaliased := collectRows(t, db,
+		unaliased := testkit.CollectRows(t, db,
 			"SELECT region, COUNT(*) FROM sales GROUP BY region ORDER BY region")
 		if len(aliased) != len(unaliased) {
 			t.Fatalf("aliased (%d) != unaliased (%d)", len(aliased), len(unaliased))
@@ -7171,11 +7111,11 @@ func TestFDB_GroupByTableAliasEdgeCases(t *testing.T) {
 
 func TestFDB_NestedAggregateErrors(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "nesterr1",
+	db := testkit.SetupPlanShapeDB(t, "nesterr1",
 		"CREATE TABLE t1 (id BIGINT, val BIGINT, PRIMARY KEY (id))")
 
 	db.ExecContext(ctx, "INSERT INTO t1 VALUES (1, 10)")
@@ -7200,11 +7140,11 @@ func TestFDB_NestedAggregateErrors(t *testing.T) {
 
 func TestFDB_StringOperations(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "strop1",
+	db := testkit.SetupPlanShapeDB(t, "strop1",
 		"CREATE TABLE t1 (id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -7219,7 +7159,7 @@ func TestFDB_StringOperations(t *testing.T) {
 	}
 
 	t.Run("like_prefix", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM t1 WHERE name LIKE 'A%' ORDER BY name")
 		if len(rows) != 1 || rows[0][0].(string) != "Alice" {
 			t.Fatalf("want [Alice], got %v", rows)
@@ -7227,7 +7167,7 @@ func TestFDB_StringOperations(t *testing.T) {
 	})
 
 	t.Run("like_suffix", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM t1 WHERE name LIKE '%ob' ORDER BY name")
 		if len(rows) != 1 || rows[0][0].(string) != "Bob" {
 			t.Fatalf("want [Bob], got %v", rows)
@@ -7235,7 +7175,7 @@ func TestFDB_StringOperations(t *testing.T) {
 	})
 
 	t.Run("like_contains", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM t1 WHERE name LIKE '%li%' ORDER BY name")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (Alice, Charlie), got %d: %v", len(rows), rows)
@@ -7243,7 +7183,7 @@ func TestFDB_StringOperations(t *testing.T) {
 	})
 
 	t.Run("not_like", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM t1 WHERE name NOT LIKE '%li%' ORDER BY name")
 		if len(rows) != 1 || rows[0][0].(string) != "Bob" {
 			t.Fatalf("want [Bob], got %v", rows)
@@ -7251,7 +7191,7 @@ func TestFDB_StringOperations(t *testing.T) {
 	})
 
 	t.Run("like_null_excluded", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT COUNT(*) FROM t1 WHERE name LIKE '%'")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
 			t.Fatalf("want 3 (NULL excluded from LIKE), got %v", rows)
@@ -7259,7 +7199,7 @@ func TestFDB_StringOperations(t *testing.T) {
 	})
 
 	t.Run("order_by_string", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM t1 WHERE name IS NOT NULL ORDER BY name")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
@@ -7270,7 +7210,7 @@ func TestFDB_StringOperations(t *testing.T) {
 	})
 
 	t.Run("order_by_string_desc", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT name FROM t1 WHERE name IS NOT NULL ORDER BY name DESC")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
@@ -7283,11 +7223,11 @@ func TestFDB_StringOperations(t *testing.T) {
 
 func TestFDB_ComplexWhereConditions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "cxwhere1",
+	db := testkit.SetupPlanShapeDB(t, "cxwhere1",
 		"CREATE TABLE t1 (id BIGINT, a BIGINT, b STRING, c BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -7304,7 +7244,7 @@ func TestFDB_ComplexWhereConditions(t *testing.T) {
 	}
 
 	t.Run("and_or_combined", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE (a = 10 AND b = 'foo') OR (a = 20 AND b = 'bar') ORDER BY id")
 		wantIDs := []int64{1, 2}
 		if len(rows) != len(wantIDs) {
@@ -7318,7 +7258,7 @@ func TestFDB_ComplexWhereConditions(t *testing.T) {
 	})
 
 	t.Run("not_equal_and_is_not_null", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE a <> 10 AND c IS NOT NULL ORDER BY id")
 		wantIDs := []int64{2, 3}
 		if len(rows) != len(wantIDs) {
@@ -7332,7 +7272,7 @@ func TestFDB_ComplexWhereConditions(t *testing.T) {
 	})
 
 	t.Run("in_list_with_null_column", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE a IN (10, 30) ORDER BY id")
 		wantIDs := []int64{1, 3, 4}
 		if len(rows) != len(wantIDs) {
@@ -7341,7 +7281,7 @@ func TestFDB_ComplexWhereConditions(t *testing.T) {
 	})
 
 	t.Run("between_and_like", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE c BETWEEN 100 AND 400 AND b LIKE 'f%' ORDER BY id")
 		wantIDs := []int64{1, 3}
 		if len(rows) != len(wantIDs) {
@@ -7350,7 +7290,7 @@ func TestFDB_ComplexWhereConditions(t *testing.T) {
 	})
 
 	t.Run("null_safe_comparison", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT id FROM t1 WHERE c IS NULL ORDER BY id")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 5 {
 			t.Fatalf("want [5], got %v", rows)
@@ -7358,7 +7298,7 @@ func TestFDB_ComplexWhereConditions(t *testing.T) {
 	})
 
 	t.Run("complex_having_with_case", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT b, COUNT(*),
 				CASE WHEN SUM(COALESCE(c, 0)) > 500 THEN 'high' ELSE 'low' END
 			 FROM t1
@@ -7380,7 +7320,7 @@ func TestFDB_ComplexWhereConditions(t *testing.T) {
 	})
 
 	t.Run("count_distinct_values_workaround", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT DISTINCT a FROM t1 WHERE a IS NOT NULL ORDER BY a")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 distinct a values (10,20,30), got %d: %v", len(rows), rows)
@@ -7395,11 +7335,11 @@ func TestFDB_ComplexWhereConditions(t *testing.T) {
 
 func TestFDB_ThreeWayJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "3wjoin1",
+	db := testkit.SetupPlanShapeDB(t, "3wjoin1",
 		"CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE orders (id BIGINT, customer_id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE products (id BIGINT, name STRING, price BIGINT, PRIMARY KEY (id))")
@@ -7419,7 +7359,7 @@ func TestFDB_ThreeWayJoin(t *testing.T) {
 	}
 
 	t.Run("three_table_join", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, p.name, o.qty
 			 FROM customers c, orders o, products p
 			 WHERE o.customer_id = c.id AND o.product_id = p.id
@@ -7445,7 +7385,7 @@ func TestFDB_ThreeWayJoin(t *testing.T) {
 	})
 
 	t.Run("three_way_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, SUM(o.qty * p.price) AS total_spent
 			 FROM customers c, orders o, products p
 			 WHERE o.customer_id = c.id AND o.product_id = p.id
@@ -7465,7 +7405,7 @@ func TestFDB_ThreeWayJoin(t *testing.T) {
 	})
 
 	t.Run("three_way_having", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT c.name, SUM(o.qty * p.price) AS total
 			 FROM customers c, orders o, products p
 			 WHERE o.customer_id = c.id AND o.product_id = p.id
@@ -7484,11 +7424,11 @@ func TestFDB_ThreeWayJoin(t *testing.T) {
 
 func TestFDB_RecursiveCTEBasic(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "rcte1",
+	db := testkit.SetupPlanShapeDB(t, "rcte1",
 		"CREATE TABLE nodes (id BIGINT, parent_id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -7505,7 +7445,7 @@ func TestFDB_RecursiveCTEBasic(t *testing.T) {
 	}
 
 	t.Run("recursive_cte_descendants", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`WITH RECURSIVE descendants AS (
 				SELECT id, parent_id, name FROM nodes WHERE id = 1
 				UNION ALL
@@ -7524,7 +7464,7 @@ func TestFDB_RecursiveCTEBasic(t *testing.T) {
 	})
 
 	t.Run("recursive_cte_leaf_count", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT n.name FROM nodes n
 			 WHERE NOT EXISTS (
 				SELECT 1 FROM nodes c WHERE c.parent_id = n.id
@@ -7544,11 +7484,11 @@ func TestFDB_RecursiveCTEBasic(t *testing.T) {
 
 func TestFDB_WindowOfAggregation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "winagg1",
+	db := testkit.SetupPlanShapeDB(t, "winagg1",
 		"CREATE TABLE sales (id BIGINT, region STRING, year BIGINT, amount BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -7564,7 +7504,7 @@ func TestFDB_WindowOfAggregation(t *testing.T) {
 	}
 
 	t.Run("group_by_two_cols", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT region, year, SUM(amount) AS total
 			 FROM sales
 			 GROUP BY region, year
@@ -7587,7 +7527,7 @@ func TestFDB_WindowOfAggregation(t *testing.T) {
 	})
 
 	t.Run("having_on_multi_group", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT region, year, SUM(amount)
 			 FROM sales
 			 GROUP BY region, year
@@ -7599,7 +7539,7 @@ func TestFDB_WindowOfAggregation(t *testing.T) {
 	})
 
 	t.Run("derived_table_yearly_total", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			`SELECT year, SUM(total) AS grand_total FROM (
 				SELECT region, year, SUM(amount) AS total
 				FROM sales
@@ -7623,11 +7563,11 @@ func TestFDB_WindowOfAggregation(t *testing.T) {
 
 func TestFDB_GroupByAliasWithTableName(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "gbtn1",
+	db := testkit.SetupPlanShapeDB(t, "gbtn1",
 		"CREATE TABLE items (id BIGINT, category STRING, price BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -7641,7 +7581,7 @@ func TestFDB_GroupByAliasWithTableName(t *testing.T) {
 	}
 
 	t.Run("group_by_table_name_qualified", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT items.category, SUM(items.price) FROM items GROUP BY items.category ORDER BY items.category")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
@@ -7655,7 +7595,7 @@ func TestFDB_GroupByAliasWithTableName(t *testing.T) {
 	})
 
 	t.Run("select_alias_group_unqualified", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT i.category, SUM(i.price) FROM items i GROUP BY category ORDER BY category")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
@@ -7666,7 +7606,7 @@ func TestFDB_GroupByAliasWithTableName(t *testing.T) {
 	})
 
 	t.Run("select_alias_group_alias", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT i.category, SUM(i.price) FROM items i GROUP BY i.category ORDER BY i.category")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
@@ -7677,7 +7617,7 @@ func TestFDB_GroupByAliasWithTableName(t *testing.T) {
 	})
 
 	t.Run("having_with_alias_qualified_sum", func(t *testing.T) {
-		rows := collectRows(t, db,
+		rows := testkit.CollectRows(t, db,
 			"SELECT i.category FROM items i GROUP BY i.category HAVING SUM(i.price) > 200")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (both groups have sum >= 300), got %d: %v", len(rows), rows)
@@ -7689,11 +7629,11 @@ func TestFDB_GroupByAliasWithTableName(t *testing.T) {
 
 func TestFDB_MixedTypeArithmetic(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	db := setupPlanShapeDB(t, "mixtype1",
+	db := testkit.SetupPlanShapeDB(t, "mixtype1",
 		"CREATE TABLE t1 (id BIGINT, int_val INTEGER, long_val BIGINT, PRIMARY KEY (id))")
 
 	for _, q := range []string{
@@ -7707,7 +7647,7 @@ func TestFDB_MixedTypeArithmetic(t *testing.T) {
 	}
 
 	t.Run("int_plus_literal", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, int_val + 5 FROM t1 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, int_val + 5 FROM t1 ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -7717,7 +7657,7 @@ func TestFDB_MixedTypeArithmetic(t *testing.T) {
 	})
 
 	t.Run("long_minus_int", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, long_val - int_val FROM t1 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, long_val - int_val FROM t1 ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -7727,14 +7667,14 @@ func TestFDB_MixedTypeArithmetic(t *testing.T) {
 	})
 
 	t.Run("multiplication", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, int_val * 3 FROM t1 WHERE id = 2")
+		rows := testkit.CollectRows(t, db, "SELECT id, int_val * 3 FROM t1 WHERE id = 2")
 		if len(rows) != 1 || toInt64(rows[0][1]) != 60 {
 			t.Fatalf("want 60, got %v", rows)
 		}
 	})
 
 	t.Run("division", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, long_val / int_val FROM t1 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, long_val / int_val FROM t1 ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -7744,7 +7684,7 @@ func TestFDB_MixedTypeArithmetic(t *testing.T) {
 	})
 
 	t.Run("aggregate_arithmetic", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(int_val) * 2, SUM(long_val) / 3 FROM t1")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(int_val) * 2, SUM(long_val) / 3 FROM t1")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
 		}
@@ -7760,15 +7700,15 @@ func TestFDB_MixedTypeArithmetic(t *testing.T) {
 // TestFDB_AggregateEmptyTable — Java aggregate-empty-table.yamsql patterns
 func TestFDB_AggregateEmptyTable(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "aget", "CREATE TABLE empty_t(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "aget", "CREATE TABLE empty_t(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
 
 	t.Run("count_star_empty", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM empty_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM empty_t")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -7778,7 +7718,7 @@ func TestFDB_AggregateEmptyTable(t *testing.T) {
 	})
 
 	t.Run("count_star_with_false_where", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM empty_t WHERE col1 = 0")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM empty_t WHERE col1 = 0")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -7788,7 +7728,7 @@ func TestFDB_AggregateEmptyTable(t *testing.T) {
 	})
 
 	t.Run("sum_empty_returns_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(col1) FROM empty_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(col1) FROM empty_t")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -7798,7 +7738,7 @@ func TestFDB_AggregateEmptyTable(t *testing.T) {
 	})
 
 	t.Run("sum_with_where_empty_returns_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(col1) FROM empty_t WHERE col1 > 0")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(col1) FROM empty_t WHERE col1 > 0")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -7808,7 +7748,7 @@ func TestFDB_AggregateEmptyTable(t *testing.T) {
 	})
 
 	t.Run("count_column_empty", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(col2) FROM empty_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(col2) FROM empty_t")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -7818,14 +7758,14 @@ func TestFDB_AggregateEmptyTable(t *testing.T) {
 	})
 
 	t.Run("group_by_empty_returns_no_rows", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT col1, COUNT(*) FROM empty_t GROUP BY col1")
+		rows := testkit.CollectRows(t, db, "SELECT col1, COUNT(*) FROM empty_t GROUP BY col1")
 		if len(rows) != 0 {
 			t.Errorf("GROUP BY on empty table should return 0 rows, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("min_max_empty_returns_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT MIN(col1), MAX(col1) FROM empty_t")
+		rows := testkit.CollectRows(t, db, "SELECT MIN(col1), MAX(col1) FROM empty_t")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -7841,7 +7781,7 @@ func TestFDB_AggregateEmptyTable(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO empty_t VALUES (1, 10, 20), (2, 30, 40), (3, 50, 60)"); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM empty_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM empty_t")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
 			t.Fatalf("after insert: want COUNT(*)=3, got %v", rows)
 		}
@@ -7849,12 +7789,12 @@ func TestFDB_AggregateEmptyTable(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "DELETE FROM empty_t WHERE id >= 1"); err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
-		rows = collectRows(t, db, "SELECT COUNT(*) FROM empty_t")
+		rows = testkit.CollectRows(t, db, "SELECT COUNT(*) FROM empty_t")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 0 {
 			t.Errorf("after delete: want COUNT(*)=0, got %v", rows)
 		}
 
-		rows = collectRows(t, db, "SELECT SUM(col1) FROM empty_t")
+		rows = testkit.CollectRows(t, db, "SELECT SUM(col1) FROM empty_t")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -7867,18 +7807,18 @@ func TestFDB_AggregateEmptyTable(t *testing.T) {
 // TestFDB_CaseWhenJavaPatterns — Java case-when.yamsql patterns
 func TestFDB_CaseWhenJavaPatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cwjp", "CREATE TABLE cw_a(a1 BIGINT, a2 BIGINT, a3 BIGINT, PRIMARY KEY(a1))")
+	db := testkit.SetupPlanShapeDB(t, "cwjp", "CREATE TABLE cw_a(a1 BIGINT, a2 BIGINT, a3 BIGINT, PRIMARY KEY(a1))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO cw_a VALUES (1, 10, 10), (2, 11, 20), (3, 12, 30)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("case_when_comparison", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a3, CASE WHEN a3 > 15 THEN 'foo' ELSE 'bar' END FROM cw_a ORDER BY a1")
+		rows := testkit.CollectRows(t, db, "SELECT a3, CASE WHEN a3 > 15 THEN 'foo' ELSE 'bar' END FROM cw_a ORDER BY a1")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
 		}
@@ -7895,7 +7835,7 @@ func TestFDB_CaseWhenJavaPatterns(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE cw_a SET a2 = CASE WHEN a1 = 1 THEN 4444 END"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT a1, a2 FROM cw_a ORDER BY a1")
+		rows := testkit.CollectRows(t, db, "SELECT a1, a2 FROM cw_a ORDER BY a1")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
 		}
@@ -7914,7 +7854,7 @@ func TestFDB_CaseWhenJavaPatterns(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE cw_a SET a2 = CASE WHEN a2 IS NULL THEN 8888 ELSE 2222 END"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT a1, a2 FROM cw_a ORDER BY a1")
+		rows := testkit.CollectRows(t, db, "SELECT a1, a2 FROM cw_a ORDER BY a1")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
 		}
@@ -7933,7 +7873,7 @@ func TestFDB_CaseWhenJavaPatterns(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE cw_a SET a2 = CASE WHEN CASE WHEN a2 = 2222 THEN 8888 ELSE 2222 END > 4000 THEN 4444 ELSE 6666 END"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT a1, a2 FROM cw_a ORDER BY a1")
+		rows := testkit.CollectRows(t, db, "SELECT a1, a2 FROM cw_a ORDER BY a1")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
 		}
@@ -7949,7 +7889,7 @@ func TestFDB_CaseWhenJavaPatterns(t *testing.T) {
 	})
 
 	t.Run("case_when_in_select_with_group_by", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT
 				CASE WHEN a2 = 4444 THEN 'high' ELSE 'low' END,
 				COUNT(*)
@@ -7966,12 +7906,12 @@ func TestFDB_CaseWhenJavaPatterns(t *testing.T) {
 // TestFDB_InPredicatePatterns — Java in-predicate.yamsql patterns
 func TestFDB_InPredicatePatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "inpred", "CREATE TABLE in_t(a BIGINT, b BIGINT, c STRING, d BIGINT, PRIMARY KEY(a))")
+	db := testkit.SetupPlanShapeDB(t, "inpred", "CREATE TABLE in_t(a BIGINT, b BIGINT, c STRING, d BIGINT, PRIMARY KEY(a))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO in_t VALUES
 		(0, 9, 'foo', 100),
 		(1, 8, 'bar', 200),
@@ -7988,7 +7928,7 @@ func TestFDB_InPredicatePatterns(t *testing.T) {
 	}
 
 	t.Run("in_list_long", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a, b FROM in_t WHERE b IN (1, 3, 5, 7) ORDER BY a")
+		rows := testkit.CollectRows(t, db, "SELECT a, b FROM in_t WHERE b IN (1, 3, 5, 7) ORDER BY a")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 rows, got %d: %v", len(rows), rows)
 		}
@@ -8001,7 +7941,7 @@ func TestFDB_InPredicatePatterns(t *testing.T) {
 	})
 
 	t.Run("in_singleton", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a, b FROM in_t WHERE b IN (6)")
+		rows := testkit.CollectRows(t, db, "SELECT a, b FROM in_t WHERE b IN (6)")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -8011,14 +7951,14 @@ func TestFDB_InPredicatePatterns(t *testing.T) {
 	})
 
 	t.Run("in_no_match", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a, b FROM in_t WHERE b IN (10, 33, 66)")
+		rows := testkit.CollectRows(t, db, "SELECT a, b FROM in_t WHERE b IN (10, 33, 66)")
 		if len(rows) != 0 {
 			t.Errorf("want 0 rows, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("in_string", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a FROM in_t WHERE c IN ('bar', 'doe') ORDER BY a")
+		rows := testkit.CollectRows(t, db, "SELECT a FROM in_t WHERE c IN ('bar', 'doe') ORDER BY a")
 		if len(rows) != 5 {
 			t.Fatalf("want 5 rows, got %d: %v", len(rows), rows)
 		}
@@ -8031,7 +7971,7 @@ func TestFDB_InPredicatePatterns(t *testing.T) {
 	})
 
 	t.Run("not_in", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a FROM in_t WHERE c NOT IN ('foo', 'bar', 'doe', 'arc') ORDER BY a")
+		rows := testkit.CollectRows(t, db, "SELECT a FROM in_t WHERE c NOT IN ('foo', 'bar', 'doe', 'arc') ORDER BY a")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row (per), got %d: %v", len(rows), rows)
 		}
@@ -8041,28 +7981,28 @@ func TestFDB_InPredicatePatterns(t *testing.T) {
 	})
 
 	t.Run("in_with_arithmetic", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a, b FROM in_t WHERE b IN (1 + 0, 3 + 0, 5, 7) ORDER BY a")
+		rows := testkit.CollectRows(t, db, "SELECT a, b FROM in_t WHERE b IN (1 + 0, 3 + 0, 5, 7) ORDER BY a")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 rows, got %d", len(rows))
 		}
 	})
 
 	t.Run("constant_in_returns_all", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a FROM in_t WHERE 1 IN (1, 2, 3) ORDER BY a")
+		rows := testkit.CollectRows(t, db, "SELECT a FROM in_t WHERE 1 IN (1, 2, 3) ORDER BY a")
 		if len(rows) != 10 {
 			t.Errorf("constant TRUE IN should return all 10 rows, got %d", len(rows))
 		}
 	})
 
 	t.Run("constant_in_returns_none", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a FROM in_t WHERE 1 IN (2, 3)")
+		rows := testkit.CollectRows(t, db, "SELECT a FROM in_t WHERE 1 IN (2, 3)")
 		if len(rows) != 0 {
 			t.Errorf("constant FALSE IN should return 0 rows, got %d", len(rows))
 		}
 	})
 
 	t.Run("in_with_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT c, COUNT(*) FROM in_t WHERE c IN ('foo', 'bar') GROUP BY c ORDER BY c")
+		rows := testkit.CollectRows(t, db, "SELECT c, COUNT(*) FROM in_t WHERE c IN ('foo', 'bar') GROUP BY c ORDER BY c")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 groups, got %d: %v", len(rows), rows)
 		}
@@ -8084,12 +8024,12 @@ func TestFDB_InPredicatePatterns(t *testing.T) {
 // TestFDB_NullOperatorPatterns — Java null-operator-tests.yamsql patterns
 func TestFDB_NullOperatorPatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "nullop", "CREATE TABLE null_op(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "nullop", "CREATE TABLE null_op(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO null_op VALUES
 		(1, 10, 1), (2, 10, 2), (3, 10, 3), (4, 10, 4), (5, 10, 5),
 		(6, 20, 6), (7, 20, 7), (8, 20, 8), (9, 20, 9), (10, 20, 10),
@@ -8099,14 +8039,14 @@ func TestFDB_NullOperatorPatterns(t *testing.T) {
 	}
 
 	t.Run("nested_derived_is_null_returns_empty", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM (SELECT * FROM (SELECT * FROM null_op) AS x WHERE id IS NULL) AS y")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM (SELECT * FROM (SELECT * FROM null_op) AS x WHERE id IS NULL) AS y")
 		if len(rows) != 0 {
 			t.Errorf("ID IS NULL on non-null PK should return 0 rows, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("nested_derived_is_not_null_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM null_op) AS x WHERE id IS NOT NULL) AS y")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM null_op) AS x WHERE id IS NOT NULL) AS y")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -8119,7 +8059,7 @@ func TestFDB_NullOperatorPatterns(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO null_op(id, col1) VALUES (100, NULL)"); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT id FROM null_op WHERE col1 IS NULL ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM null_op WHERE col1 IS NULL ORDER BY id")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row with NULL col1, got %d: %v", len(rows), rows)
 		}
@@ -8132,7 +8072,7 @@ func TestFDB_NullOperatorPatterns(t *testing.T) {
 	})
 
 	t.Run("is_null_in_case_when", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, CASE WHEN col2 > 10 THEN 'high' ELSE 'low' END
 			FROM null_op ORDER BY id
 		`)
@@ -8161,18 +8101,18 @@ func TestFDB_NullOperatorPatterns(t *testing.T) {
 // TestFDB_SelectStarDerived — derived table SELECT * patterns
 func TestFDB_SelectStarDerived(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "stard", "CREATE TABLE star_t(id BIGINT, name STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "stard", "CREATE TABLE star_t(id BIGINT, name STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO star_t VALUES (1, 'alice', 10), (2, 'bob', 20), (3, 'charlie', 30)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("select_star_basic", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM star_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM star_t ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -8182,7 +8122,7 @@ func TestFDB_SelectStarDerived(t *testing.T) {
 	})
 
 	t.Run("select_star_from_derived", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM (SELECT id, name FROM star_t) AS d ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM (SELECT id, name FROM star_t) AS d ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
 		}
@@ -8192,21 +8132,21 @@ func TestFDB_SelectStarDerived(t *testing.T) {
 	})
 
 	t.Run("select_star_from_nested_derived", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM (SELECT * FROM (SELECT id, val FROM star_t) AS inner_d) AS outer_d ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM (SELECT * FROM (SELECT id, val FROM star_t) AS inner_d) AS outer_d ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
 		}
 	})
 
 	t.Run("select_star_derived_with_where", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM (SELECT * FROM star_t WHERE val > 15) AS d ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM (SELECT * FROM star_t WHERE val > 15) AS d ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows (val>15), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("count_from_derived_star", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM (SELECT * FROM star_t) AS d")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM (SELECT * FROM star_t) AS d")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
 			t.Errorf("want COUNT(*)=3, got %v", rows)
 		}
@@ -8216,12 +8156,12 @@ func TestFDB_SelectStarDerived(t *testing.T) {
 // TestFDB_MultipleAggregates — multiple different aggregates in same query
 func TestFDB_MultipleAggregates(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mulagg", "CREATE TABLE multi_agg(id BIGINT, category STRING, amount BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "mulagg", "CREATE TABLE multi_agg(id BIGINT, category STRING, amount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO multi_agg VALUES
 		(1, 'A', 10), (2, 'A', 20), (3, 'A', 30),
 		(4, 'B', 15), (5, 'B', 25),
@@ -8231,7 +8171,7 @@ func TestFDB_MultipleAggregates(t *testing.T) {
 	}
 
 	t.Run("count_sum_min_max_global", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM multi_agg")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM multi_agg")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -8250,7 +8190,7 @@ func TestFDB_MultipleAggregates(t *testing.T) {
 	})
 
 	t.Run("grouped_multi_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT category, COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM multi_agg GROUP BY category ORDER BY category")
+		rows := testkit.CollectRows(t, db, "SELECT category, COUNT(*), SUM(amount), MIN(amount), MAX(amount) FROM multi_agg GROUP BY category ORDER BY category")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 groups, got %d: %v", len(rows), rows)
 		}
@@ -8284,7 +8224,7 @@ func TestFDB_MultipleAggregates(t *testing.T) {
 	})
 
 	t.Run("having_with_multiple_aggregates", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT category, COUNT(*), SUM(amount) FROM multi_agg GROUP BY category HAVING COUNT(*) > 1 ORDER BY category")
+		rows := testkit.CollectRows(t, db, "SELECT category, COUNT(*), SUM(amount) FROM multi_agg GROUP BY category HAVING COUNT(*) > 1 ORDER BY category")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 groups with COUNT>1 (A,B), got %d: %v", len(rows), rows)
 		}
@@ -8300,60 +8240,60 @@ func TestFDB_MultipleAggregates(t *testing.T) {
 // TestFDB_BooleanThreeValueLogic — Java boolean.yamsql patterns
 func TestFDB_BooleanThreeValueLogic(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "bool3v", "CREATE TABLE lb(a BIGINT, b BOOLEAN, PRIMARY KEY(a))")
+	db := testkit.SetupPlanShapeDB(t, "bool3v", "CREATE TABLE lb(a BIGINT, b BOOLEAN, PRIMARY KEY(a))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO lb VALUES (1, true), (2, false)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("where_b_eq_true", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a FROM lb WHERE b = true")
+		rows := testkit.CollectRows(t, db, "SELECT a FROM lb WHERE b = true")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 1 {
 			t.Errorf("want a=1, got %v", rows)
 		}
 	})
 
 	t.Run("where_b_eq_false", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a FROM lb WHERE b = false")
+		rows := testkit.CollectRows(t, db, "SELECT a FROM lb WHERE b = false")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
 			t.Errorf("want a=2, got %v", rows)
 		}
 	})
 
 	t.Run("where_b_ne_true", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a FROM lb WHERE b <> TRUE")
+		rows := testkit.CollectRows(t, db, "SELECT a FROM lb WHERE b <> TRUE")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
 			t.Errorf("want a=2, got %v", rows)
 		}
 	})
 
 	t.Run("where_b_is_true", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a FROM lb WHERE b IS TRUE")
+		rows := testkit.CollectRows(t, db, "SELECT a FROM lb WHERE b IS TRUE")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 1 {
 			t.Errorf("want a=1, got %v", rows)
 		}
 	})
 
 	t.Run("where_b_is_false", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a FROM lb WHERE b IS FALSE")
+		rows := testkit.CollectRows(t, db, "SELECT a FROM lb WHERE b IS FALSE")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
 			t.Errorf("want a=2, got %v", rows)
 		}
 	})
 
 	t.Run("where_b_is_not_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a FROM lb WHERE b IS NOT NULL ORDER BY a")
+		rows := testkit.CollectRows(t, db, "SELECT a FROM lb WHERE b IS NOT NULL ORDER BY a")
 		if len(rows) != 2 {
 			t.Errorf("want 2 rows (both non-null), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("select_b_eq_true", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT b = true FROM lb ORDER BY a")
+		rows := testkit.CollectRows(t, db, "SELECT b = true FROM lb ORDER BY a")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
 		}
@@ -8366,7 +8306,7 @@ func TestFDB_BooleanThreeValueLogic(t *testing.T) {
 	})
 
 	t.Run("select_not_b", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT NOT b FROM lb ORDER BY a")
+		rows := testkit.CollectRows(t, db, "SELECT NOT b FROM lb ORDER BY a")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
 		}
@@ -8379,7 +8319,7 @@ func TestFDB_BooleanThreeValueLogic(t *testing.T) {
 	})
 
 	t.Run("boolean_and_or", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT b AND TRUE, b OR FALSE FROM lb ORDER BY a")
+		rows := testkit.CollectRows(t, db, "SELECT b AND TRUE, b OR FALSE FROM lb ORDER BY a")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
 		}
@@ -8398,7 +8338,7 @@ func TestFDB_BooleanThreeValueLogic(t *testing.T) {
 	})
 
 	t.Run("count_boolean_groups", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT b, COUNT(*) FROM lb GROUP BY b ORDER BY b")
+		rows := testkit.CollectRows(t, db, "SELECT b, COUNT(*) FROM lb GROUP BY b ORDER BY b")
 		if len(rows) < 2 {
 			t.Fatalf("want at least 2 groups, got %d: %v", len(rows), rows)
 		}
@@ -8409,12 +8349,12 @@ func TestFDB_BooleanThreeValueLogic(t *testing.T) {
 // TestFDB_OrderByPatterns — Java orderby.yamsql patterns
 func TestFDB_OrderByPatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ordby", `
+	db := testkit.SetupPlanShapeDB(t, "ordby", `
 		CREATE TABLE obt(a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(a))
 	`)
 	if _, err := db.ExecContext(ctx, `INSERT INTO obt VALUES
@@ -8427,7 +8367,7 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 	}
 
 	t.Run("order_by_single_asc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT b, c FROM obt ORDER BY b")
+		rows := testkit.CollectRows(t, db, "SELECT b, c FROM obt ORDER BY b")
 		if len(rows) != 10 {
 			t.Fatalf("want 10, got %d", len(rows))
 		}
@@ -8440,7 +8380,7 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 	})
 
 	t.Run("order_by_single_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT b, c FROM obt ORDER BY b DESC")
+		rows := testkit.CollectRows(t, db, "SELECT b, c FROM obt ORDER BY b DESC")
 		if len(rows) != 10 {
 			t.Fatalf("want 10, got %d", len(rows))
 		}
@@ -8453,7 +8393,7 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 	})
 
 	t.Run("order_by_with_range_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT b, c FROM obt WHERE b >= 5 ORDER BY b")
+		rows := testkit.CollectRows(t, db, "SELECT b, c FROM obt WHERE b >= 5 ORDER BY b")
 		if len(rows) != 6 {
 			t.Fatalf("want 6 rows (b>=5), got %d", len(rows))
 		}
@@ -8463,7 +8403,7 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 	})
 
 	t.Run("order_by_with_filter_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT b, c FROM obt WHERE b >= 5 ORDER BY b DESC")
+		rows := testkit.CollectRows(t, db, "SELECT b, c FROM obt WHERE b >= 5 ORDER BY b DESC")
 		if len(rows) != 6 {
 			t.Fatalf("want 6 rows, got %d", len(rows))
 		}
@@ -8473,7 +8413,7 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 	})
 
 	t.Run("order_by_with_combined_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT b, c FROM obt WHERE b >= 5 AND c = 5 ORDER BY b")
+		rows := testkit.CollectRows(t, db, "SELECT b, c FROM obt WHERE b >= 5 AND c = 5 ORDER BY b")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows (b>=5 AND c=5), got %d: %v", len(rows), rows)
 		}
@@ -8486,7 +8426,7 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 	})
 
 	t.Run("order_by_repetitive_values", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT c FROM obt ORDER BY c")
+		rows := testkit.CollectRows(t, db, "SELECT c FROM obt ORDER BY c")
 		if len(rows) != 10 {
 			t.Fatalf("want 10, got %d", len(rows))
 		}
@@ -8499,7 +8439,7 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 	})
 
 	t.Run("order_by_two_columns", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT c, b FROM obt ORDER BY c, b")
+		rows := testkit.CollectRows(t, db, "SELECT c, b FROM obt ORDER BY c, b")
 		if len(rows) != 10 {
 			t.Fatalf("want 10, got %d", len(rows))
 		}
@@ -8509,7 +8449,7 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 	})
 
 	t.Run("order_by_two_columns_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT c, b FROM obt ORDER BY c DESC, b DESC")
+		rows := testkit.CollectRows(t, db, "SELECT c, b FROM obt ORDER BY c DESC, b DESC")
 		if len(rows) != 10 {
 			t.Fatalf("want 10, got %d", len(rows))
 		}
@@ -8519,7 +8459,7 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 	})
 
 	t.Run("order_by_with_limit", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT b FROM obt ORDER BY b LIMIT 4")
+		rows := testkit.CollectRows(t, db, "SELECT b FROM obt ORDER BY b LIMIT 4")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 with LIMIT, got %d", len(rows))
 		}
@@ -8532,7 +8472,7 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 	})
 
 	t.Run("order_by_non_projected", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT c FROM obt ORDER BY b")
+		rows := testkit.CollectRows(t, db, "SELECT c FROM obt ORDER BY b")
 		if len(rows) != 10 {
 			t.Fatalf("want 10, got %d", len(rows))
 		}
@@ -8545,7 +8485,7 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 	})
 
 	t.Run("order_by_non_projected_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT c FROM obt ORDER BY b DESC")
+		rows := testkit.CollectRows(t, db, "SELECT c FROM obt ORDER BY b DESC")
 		if len(rows) != 10 {
 			t.Fatalf("want 10, got %d", len(rows))
 		}
@@ -8555,7 +8495,7 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 	})
 
 	t.Run("order_by_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT c, COUNT(*) FROM obt GROUP BY c ORDER BY COUNT(*)")
+		rows := testkit.CollectRows(t, db, "SELECT c, COUNT(*) FROM obt GROUP BY c ORDER BY COUNT(*)")
 		if len(rows) < 3 {
 			t.Fatalf("want at least 3 groups, got %d", len(rows))
 		}
@@ -8566,12 +8506,12 @@ func TestFDB_OrderByPatterns(t *testing.T) {
 // TestFDB_OrderByDuplicate — ORDER BY with same column twice should error
 func TestFDB_OrderByDuplicate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "obdup", "CREATE TABLE dup_t(a BIGINT, b BIGINT, PRIMARY KEY(a))")
+	db := testkit.SetupPlanShapeDB(t, "obdup", "CREATE TABLE dup_t(a BIGINT, b BIGINT, PRIMARY KEY(a))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO dup_t VALUES (1, 10)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -8592,12 +8532,12 @@ func TestFDB_OrderByDuplicate(t *testing.T) {
 // TestFDB_MultiBranchCaseWhen — standard-tests.yamsql multi-branch CASE with IN
 func TestFDB_MultiBranchCaseWhen(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mbcw", "CREATE TABLE mbcw(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "mbcw", "CREATE TABLE mbcw(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO mbcw VALUES
 		(1, 10, 1), (2, 10, 2), (3, 10, 3), (4, 10, 4), (5, 10, 5),
 		(6, 20, 6), (7, 20, 7), (8, 20, 8), (9, 20, 9), (10, 20, 10),
@@ -8607,7 +8547,7 @@ func TestFDB_MultiBranchCaseWhen(t *testing.T) {
 	}
 
 	t.Run("case_when_in_with_else", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, CASE WHEN col1 = 10 THEN 100
 			                WHEN col2 IN (6,7,8,9) THEN 200
 			                ELSE 300 END AS newcol
@@ -8634,7 +8574,7 @@ func TestFDB_MultiBranchCaseWhen(t *testing.T) {
 	})
 
 	t.Run("case_when_in_no_else_null", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, CASE WHEN col1 = 10 THEN 100
 			                WHEN col2 IN (6,7,8,9) THEN 200 END AS newcol
 			FROM mbcw ORDER BY id
@@ -8653,12 +8593,12 @@ func TestFDB_MultiBranchCaseWhen(t *testing.T) {
 // TestFDB_RangePredicates — OR/AND range combinations from standard-tests.yamsql
 func TestFDB_RangePredicates(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "rngpred", "CREATE TABLE rng(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "rngpred", "CREATE TABLE rng(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO rng VALUES
 		(1, 10, 1), (2, 10, 2), (3, 10, 3), (4, 10, 4), (5, 10, 5),
 		(6, 20, 6), (7, 20, 7), (8, 20, 8), (9, 20, 9), (10, 20, 10),
@@ -8668,70 +8608,70 @@ func TestFDB_RangePredicates(t *testing.T) {
 	}
 
 	t.Run("eq_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM rng WHERE col1 = 20 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM rng WHERE col1 = 20 ORDER BY id")
 		if len(rows) != 8 {
 			t.Fatalf("want 8 (col1=20), got %d", len(rows))
 		}
 	})
 
 	t.Run("range_and", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM rng WHERE col1 >= 10 AND col1 <= 20 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM rng WHERE col1 >= 10 AND col1 <= 20 ORDER BY id")
 		if len(rows) != 13 {
 			t.Fatalf("want 13 (all), got %d", len(rows))
 		}
 	})
 
 	t.Run("range_or", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM rng WHERE col1 >= 10 OR col1 <= 20 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM rng WHERE col1 >= 10 OR col1 <= 20 ORDER BY id")
 		if len(rows) != 13 {
 			t.Fatalf("want 13 (OR covers all), got %d", len(rows))
 		}
 	})
 
 	t.Run("duplicate_or", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM rng WHERE col1 = 20 OR col1 = 20 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM rng WHERE col1 = 20 OR col1 = 20 ORDER BY id")
 		if len(rows) != 8 {
 			t.Fatalf("want 8 (dedup OR), got %d", len(rows))
 		}
 	})
 
 	t.Run("duplicate_and", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM rng WHERE col1 = 20 AND col1 = 20 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM rng WHERE col1 = 20 AND col1 = 20 ORDER BY id")
 		if len(rows) != 8 {
 			t.Fatalf("want 8 (dedup AND), got %d", len(rows))
 		}
 	})
 
 	t.Run("or_of_equals", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM rng WHERE col1 = 10 OR col1 = 20 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM rng WHERE col1 = 10 OR col1 = 20 ORDER BY id")
 		if len(rows) != 13 {
 			t.Fatalf("want 13 (10 OR 20 = all), got %d", len(rows))
 		}
 	})
 
 	t.Run("complex_or_and", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM rng WHERE (col1 = 20 OR col1 = 10) AND (col1 = 20 OR col1 = 10) ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM rng WHERE (col1 = 20 OR col1 = 10) AND (col1 = 20 OR col1 = 10) ORDER BY id")
 		if len(rows) != 13 {
 			t.Fatalf("want 13, got %d", len(rows))
 		}
 	})
 
 	t.Run("greater_than_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM rng WHERE col2 > 10 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM rng WHERE col2 > 10 ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 (col2>10: 11,12,13), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("less_than_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM rng WHERE col2 < 3 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM rng WHERE col2 < 3 ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (col2<3: 1,2), got %d", len(rows))
 		}
 	})
 
 	t.Run("not_equal", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM rng WHERE col1 <> 10 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM rng WHERE col1 <> 10 ORDER BY id")
 		if len(rows) != 8 {
 			t.Fatalf("want 8 (col1<>10 = col1=20), got %d", len(rows))
 		}
@@ -8741,12 +8681,12 @@ func TestFDB_RangePredicates(t *testing.T) {
 // TestFDB_DerivedTableAggregateJoin — derived tables with aggregates and joins
 func TestFDB_DerivedTableAggregateJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dtaj",
+	db := testkit.SetupPlanShapeDB(t, "dtaj",
 		"CREATE TABLE orders(id BIGINT, customer STRING, amount BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE customers(id BIGINT, name STRING, region STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO orders VALUES
@@ -8762,7 +8702,7 @@ func TestFDB_DerivedTableAggregateJoin(t *testing.T) {
 	}
 
 	t.Run("derived_aggregate_in_from", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT d.customer, d.total
 			FROM (SELECT customer, SUM(amount) AS total FROM orders GROUP BY customer) AS d
 			ORDER BY d.total DESC
@@ -8776,7 +8716,7 @@ func TestFDB_DerivedTableAggregateJoin(t *testing.T) {
 	})
 
 	t.Run("derived_with_having", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT customer, SUM(amount) AS total
 			FROM orders
 			GROUP BY customer
@@ -8792,7 +8732,7 @@ func TestFDB_DerivedTableAggregateJoin(t *testing.T) {
 		// RFC-144 TASK A: a derived table (subquery) on the right of an explicit
 		// JOIN is now supported (Java-aligned). Each customer matches its
 		// per-customer SUM(amount): alice=300, bob=400, charlie=300.
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT c.name, c.region, o.total
 			FROM customers c
 			JOIN (SELECT customer, SUM(amount) AS total FROM orders GROUP BY customer) AS o
@@ -8824,7 +8764,7 @@ func TestFDB_DerivedTableAggregateJoin(t *testing.T) {
 	})
 
 	t.Run("sum_with_case_when", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT SUM(CASE WHEN amount > 200 THEN amount ELSE 0 END) FROM orders
 		`)
 		if len(rows) != 1 {
@@ -8839,12 +8779,12 @@ func TestFDB_DerivedTableAggregateJoin(t *testing.T) {
 // TestFDB_LimitOffsetCombinations — LIMIT+OFFSET with ORDER BY
 func TestFDB_LimitOffsetCombinations(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "limoff", "CREATE TABLE lim_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "limoff", "CREATE TABLE lim_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	for i := 1; i <= 10; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO lim_t VALUES (%d, %d)", i, i*10)); err != nil {
 			t.Fatalf("INSERT id=%d: %v", i, err)
@@ -8852,7 +8792,7 @@ func TestFDB_LimitOffsetCombinations(t *testing.T) {
 	}
 
 	t.Run("limit_3_order_by", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lim_t ORDER BY id LIMIT 3")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lim_t ORDER BY id LIMIT 3")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -8862,21 +8802,21 @@ func TestFDB_LimitOffsetCombinations(t *testing.T) {
 	})
 
 	t.Run("limit_exceeds_table", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lim_t ORDER BY id LIMIT 100")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lim_t ORDER BY id LIMIT 100")
 		if len(rows) != 10 {
 			t.Fatalf("want 10 (all), got %d", len(rows))
 		}
 	})
 
 	t.Run("limit_0", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lim_t LIMIT 0")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lim_t LIMIT 0")
 		if len(rows) != 0 {
 			t.Errorf("LIMIT 0 should return 0, got %d", len(rows))
 		}
 	})
 
 	t.Run("limit_with_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lim_t ORDER BY id DESC LIMIT 3")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lim_t ORDER BY id DESC LIMIT 3")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -8886,7 +8826,7 @@ func TestFDB_LimitOffsetCombinations(t *testing.T) {
 	})
 
 	t.Run("limit_with_where", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lim_t WHERE val > 50 ORDER BY id LIMIT 2")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lim_t WHERE val > 50 ORDER BY id LIMIT 2")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
 		}
@@ -8896,7 +8836,7 @@ func TestFDB_LimitOffsetCombinations(t *testing.T) {
 	})
 
 	t.Run("limit_with_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM lim_t ORDER BY val DESC LIMIT 1")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM lim_t ORDER BY val DESC LIMIT 1")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
 		}
@@ -8909,12 +8849,12 @@ func TestFDB_LimitOffsetCombinations(t *testing.T) {
 // TestFDB_ScalarSubqueryInSelect — scalar subquery in SELECT list
 func TestFDB_ScalarSubqueryInSelect(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "scsq",
+	db := testkit.SetupPlanShapeDB(t, "scsq",
 		"CREATE TABLE main_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE ref_t(cat STRING, label STRING, PRIMARY KEY(cat))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO main_t VALUES
@@ -8929,14 +8869,14 @@ func TestFDB_ScalarSubqueryInSelect(t *testing.T) {
 	}
 
 	t.Run("scalar_subquery_in_select", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT (SELECT COUNT(*) FROM main_t)")
+		rows := testkit.CollectRows(t, db, "SELECT (SELECT COUNT(*) FROM main_t)")
 		if len(rows) != 1 || len(rows[0]) != 1 || toInt64(rows[0][0]) != 5 {
 			t.Fatalf("scalar count = %v, want [[5]]", rows)
 		}
 	})
 
 	t.Run("exists_subquery", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM main_t WHERE EXISTS (SELECT 1 FROM ref_t WHERE ref_t.cat = main_t.cat) ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM main_t WHERE EXISTS (SELECT 1 FROM ref_t WHERE ref_t.cat = main_t.cat) ORDER BY id")
 		if len(rows) != 5 {
 			t.Fatalf("all rows have matching ref_t, want 5 got %d", len(rows))
 		}
@@ -8946,7 +8886,7 @@ func TestFDB_ScalarSubqueryInSelect(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO main_t VALUES (6, 'D', 60)"); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT id FROM main_t WHERE NOT EXISTS (SELECT 1 FROM ref_t WHERE ref_t.cat = main_t.cat) ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM main_t WHERE NOT EXISTS (SELECT 1 FROM ref_t WHERE ref_t.cat = main_t.cat) ORDER BY id")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 (cat=D has no ref), got %d: %v", len(rows), rows)
 		}
@@ -8962,12 +8902,12 @@ func TestFDB_ScalarSubqueryInSelect(t *testing.T) {
 // TestFDB_UpdateDeleteReturnCount — UPDATE/DELETE affected row counts
 func TestFDB_UpdateDeleteReturnCount(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "udrc", "CREATE TABLE cnt_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "udrc", "CREATE TABLE cnt_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO cnt_t VALUES (1,10),(2,20),(3,30),(4,40),(5,50)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -9001,7 +8941,7 @@ func TestFDB_UpdateDeleteReturnCount(t *testing.T) {
 	})
 
 	t.Run("verify_remaining", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM cnt_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM cnt_t ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 remaining, got %d: %v", len(rows), rows)
 		}
@@ -9039,12 +8979,12 @@ func TestFDB_UpdateDeleteReturnCount(t *testing.T) {
 // TestFDB_UnionAllEdgeCases — Java union.yamsql edge cases
 func TestFDB_UnionAllEdgeCases(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uaec",
+	db := testkit.SetupPlanShapeDB(t, "uaec",
 		"CREATE TABLE u1(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE u2(id BIGINT, col1 BIGINT, col2 BIGINT, col3 BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO u1 VALUES (1, 10, 1), (2, 10, 2), (6, 20, 6), (7, 20, 7)`); err != nil {
@@ -9058,21 +8998,21 @@ func TestFDB_UnionAllEdgeCases(t *testing.T) {
 	}
 
 	t.Run("union_all_self", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT col1, col2 FROM u1 UNION ALL SELECT col1, col2 FROM u1")
+		rows := testkit.CollectRows(t, db, "SELECT col1, col2 FROM u1 UNION ALL SELECT col1, col2 FROM u1")
 		if len(rows) != 8 {
 			t.Fatalf("want 8 (4+4 dupes), got %d", len(rows))
 		}
 	})
 
 	t.Run("union_all_star_self", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM u1 UNION ALL SELECT * FROM u1")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM u1 UNION ALL SELECT * FROM u1")
 		if len(rows) != 8 {
 			t.Fatalf("want 8 (4+4 dupes), got %d", len(rows))
 		}
 	})
 
 	t.Run("union_all_with_alias", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id AS w, col1 AS x, col2 AS y FROM u1 UNION ALL SELECT * FROM u1")
+		rows := testkit.CollectRows(t, db, "SELECT id AS w, col1 AS x, col2 AS y FROM u1 UNION ALL SELECT * FROM u1")
 		if len(rows) != 8 {
 			t.Fatalf("want 8, got %d", len(rows))
 		}
@@ -9097,7 +9037,7 @@ func TestFDB_UnionAllEdgeCases(t *testing.T) {
 	})
 
 	t.Run("aggregate_over_union", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT SUM(a) AS total_a, SUM(b) AS total_b FROM (
 				SELECT SUM(col1) AS a, COUNT(*) AS b FROM u1
 				UNION ALL
@@ -9113,7 +9053,7 @@ func TestFDB_UnionAllEdgeCases(t *testing.T) {
 	})
 
 	t.Run("union_all_with_where", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, col1 FROM u1 WHERE col1 = 10 UNION ALL SELECT id, col1 FROM u1 WHERE col1 = 20")
+		rows := testkit.CollectRows(t, db, "SELECT id, col1 FROM u1 WHERE col1 = 10 UNION ALL SELECT id, col1 FROM u1 WHERE col1 = 20")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 (2+2), got %d", len(rows))
 		}
@@ -9123,12 +9063,12 @@ func TestFDB_UnionAllEdgeCases(t *testing.T) {
 // TestFDB_InsertSelectReturningRows — INSERT ... SELECT and INSERT with expressions
 func TestFDB_InsertSelectReturningRows(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "isrr",
+	db := testkit.SetupPlanShapeDB(t, "isrr",
 		"CREATE TABLE src(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE dst(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO src VALUES (1, 100), (2, 200), (3, 300)"); err != nil {
@@ -9144,7 +9084,7 @@ func TestFDB_InsertSelectReturningRows(t *testing.T) {
 		if n != 3 {
 			t.Errorf("want 3 inserted, got %d", n)
 		}
-		rows := collectRows(t, db, "SELECT id, val FROM dst ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM dst ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows in dst, got %d", len(rows))
 		}
@@ -9171,12 +9111,12 @@ func TestFDB_InsertSelectReturningRows(t *testing.T) {
 // TestFDB_ConcatExpressions — string concatenation and expressions in SELECT
 func TestFDB_ConcatExpressions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "concat", "CREATE TABLE str_t(id BIGINT, first_name STRING, last_name STRING, age BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "concat", "CREATE TABLE str_t(id BIGINT, first_name STRING, last_name STRING, age BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO str_t VALUES
 		(1, 'alice', 'smith', 30),
 		(2, 'bob', 'jones', 25),
@@ -9186,7 +9126,7 @@ func TestFDB_ConcatExpressions(t *testing.T) {
 	}
 
 	t.Run("arithmetic_in_select", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, age * 2 FROM str_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, age * 2 FROM str_t ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -9196,14 +9136,14 @@ func TestFDB_ConcatExpressions(t *testing.T) {
 	})
 
 	t.Run("arithmetic_in_where", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM str_t WHERE age + 5 > 32 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM str_t WHERE age + 5 > 32 ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (30+5=35>32, 35+5=40>32), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("avg_via_sum_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(age), COUNT(*), SUM(age) / COUNT(*) FROM str_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(age), COUNT(*), SUM(age) / COUNT(*) FROM str_t")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
 		}
@@ -9222,12 +9162,12 @@ func TestFDB_ConcatExpressions(t *testing.T) {
 // TestFDB_HavingEdgeCases — HAVING with various predicate shapes
 func TestFDB_HavingEdgeCases(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "havec", "CREATE TABLE hav_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "havec", "CREATE TABLE hav_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO hav_t VALUES
 		(1, 'A', 10), (2, 'A', 20), (3, 'A', 30),
 		(4, 'B', 5), (5, 'B', 15),
@@ -9238,7 +9178,7 @@ func TestFDB_HavingEdgeCases(t *testing.T) {
 	}
 
 	t.Run("having_count_gt", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grp, COUNT(*) FROM hav_t GROUP BY grp HAVING COUNT(*) > 2 ORDER BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, COUNT(*) FROM hav_t GROUP BY grp HAVING COUNT(*) > 2 ORDER BY grp")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 groups (A=3, D=4), got %d: %v", len(rows), rows)
 		}
@@ -9251,7 +9191,7 @@ func TestFDB_HavingEdgeCases(t *testing.T) {
 	})
 
 	t.Run("having_sum_lt", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grp, SUM(val) FROM hav_t GROUP BY grp HAVING SUM(val) < 30 ORDER BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, SUM(val) FROM hav_t GROUP BY grp HAVING SUM(val) < 30 ORDER BY grp")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 groups (B=20, D=10), got %d: %v", len(rows), rows)
 		}
@@ -9261,14 +9201,14 @@ func TestFDB_HavingEdgeCases(t *testing.T) {
 	})
 
 	t.Run("having_min_max", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grp, MIN(val), MAX(val) FROM hav_t GROUP BY grp HAVING MIN(val) > 3 ORDER BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, MIN(val), MAX(val) FROM hav_t GROUP BY grp HAVING MIN(val) > 3 ORDER BY grp")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 groups (A min=10, B min=5, C min=100), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("having_count_eq_1", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grp FROM hav_t GROUP BY grp HAVING COUNT(*) = 1")
+		rows := testkit.CollectRows(t, db, "SELECT grp FROM hav_t GROUP BY grp HAVING COUNT(*) = 1")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 group (C), got %d: %v", len(rows), rows)
 		}
@@ -9278,7 +9218,7 @@ func TestFDB_HavingEdgeCases(t *testing.T) {
 	})
 
 	t.Run("having_with_order_by_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grp, SUM(val) AS total FROM hav_t GROUP BY grp HAVING SUM(val) > 15 ORDER BY SUM(val) DESC")
+		rows := testkit.CollectRows(t, db, "SELECT grp, SUM(val) AS total FROM hav_t GROUP BY grp HAVING SUM(val) > 15 ORDER BY SUM(val) DESC")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 (C=100, A=60, B=20), got %d: %v", len(rows), rows)
 		}
@@ -9297,18 +9237,18 @@ func TestFDB_HavingEdgeCases(t *testing.T) {
 // TestFDB_DeleteInsertCycles — transactional integrity of delete+insert patterns
 func TestFDB_DeleteInsertCycles(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "delic", "CREATE TABLE cycle_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "delic", "CREATE TABLE cycle_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 
 	t.Run("insert_verify_delete_verify", func(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO cycle_t VALUES (1, 100), (2, 200), (3, 300)"); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM cycle_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM cycle_t")
 		if toInt64(rows[0][0]) != 3 {
 			t.Fatalf("after insert: want 3, got %v", rows[0][0])
 		}
@@ -9316,7 +9256,7 @@ func TestFDB_DeleteInsertCycles(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "DELETE FROM cycle_t WHERE val > 150"); err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
-		rows = collectRows(t, db, "SELECT COUNT(*) FROM cycle_t")
+		rows = testkit.CollectRows(t, db, "SELECT COUNT(*) FROM cycle_t")
 		if toInt64(rows[0][0]) != 1 {
 			t.Fatalf("after delete: want 1, got %v", rows[0][0])
 		}
@@ -9324,7 +9264,7 @@ func TestFDB_DeleteInsertCycles(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO cycle_t VALUES (4, 400), (5, 500)"); err != nil {
 			t.Fatalf("INSERT round 2: %v", err)
 		}
-		rows = collectRows(t, db, "SELECT id, val FROM cycle_t ORDER BY id")
+		rows = testkit.CollectRows(t, db, "SELECT id, val FROM cycle_t ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 (1,4,5), got %d: %v", len(rows), rows)
 		}
@@ -9340,7 +9280,7 @@ func TestFDB_DeleteInsertCycles(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE cycle_t SET val = val * 2"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT SUM(val), MIN(val), MAX(val) FROM cycle_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val), MIN(val), MAX(val) FROM cycle_t")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -9353,11 +9293,11 @@ func TestFDB_DeleteInsertCycles(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "DELETE FROM cycle_t WHERE id >= 0"); err != nil {
 			t.Fatalf("DELETE ALL: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM cycle_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM cycle_t")
 		if toInt64(rows[0][0]) != 0 {
 			t.Errorf("after delete all: COUNT should be 0, got %v", rows[0][0])
 		}
-		rows = collectRows(t, db, "SELECT SUM(val) FROM cycle_t")
+		rows = testkit.CollectRows(t, db, "SELECT SUM(val) FROM cycle_t")
 		if rows[0][0] != nil {
 			t.Errorf("SUM on empty should be NULL, got %v", rows[0][0])
 		}
@@ -9367,12 +9307,12 @@ func TestFDB_DeleteInsertCycles(t *testing.T) {
 // TestFDB_CrossJoinBasic — CROSS JOIN (cartesian product)
 func TestFDB_CrossJoinBasic(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "xjoin",
+	db := testkit.SetupPlanShapeDB(t, "xjoin",
 		"CREATE TABLE xj1(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE xj2(code BIGINT, label STRING, PRIMARY KEY(code))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO xj1 VALUES (1, 'a'), (2, 'b')"); err != nil {
@@ -9383,21 +9323,21 @@ func TestFDB_CrossJoinBasic(t *testing.T) {
 	}
 
 	t.Run("cross_join_row_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT xj1.id, xj2.code FROM xj1, xj2 ORDER BY xj1.id, xj2.code")
+		rows := testkit.CollectRows(t, db, "SELECT xj1.id, xj2.code FROM xj1, xj2 ORDER BY xj1.id, xj2.code")
 		if len(rows) != 6 {
 			t.Fatalf("want 2*3=6 rows, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("cross_join_with_where", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT xj1.id, xj2.code FROM xj1, xj2 WHERE xj2.code > 15 ORDER BY xj1.id, xj2.code")
+		rows := testkit.CollectRows(t, db, "SELECT xj1.id, xj2.code FROM xj1, xj2 WHERE xj2.code > 15 ORDER BY xj1.id, xj2.code")
 		if len(rows) != 4 {
 			t.Fatalf("want 2*2=4 rows (code>15: 20,30), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("cross_join_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM xj1, xj2")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM xj1, xj2")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 6 {
 			t.Errorf("COUNT(*) of cross join should be 6, got %v", rows)
 		}
@@ -9407,12 +9347,12 @@ func TestFDB_CrossJoinBasic(t *testing.T) {
 // TestFDB_GroupByWithWherePush — GROUP BY queries with WHERE filters that can push down
 func TestFDB_GroupByWithWherePush(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbwp",
+	db := testkit.SetupPlanShapeDB(t, "gbwp",
 		"CREATE TABLE sales(id BIGINT, region STRING, product STRING, qty BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO sales VALUES
 		(1, 'east', 'apples', 10), (2, 'east', 'bananas', 20),
@@ -9423,7 +9363,7 @@ func TestFDB_GroupByWithWherePush(t *testing.T) {
 	}
 
 	t.Run("group_by_with_eq_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT product, SUM(qty) FROM sales WHERE region = 'east' GROUP BY product ORDER BY product")
+		rows := testkit.CollectRows(t, db, "SELECT product, SUM(qty) FROM sales WHERE region = 'east' GROUP BY product ORDER BY product")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (apples, bananas), got %d: %v", len(rows), rows)
 		}
@@ -9436,21 +9376,21 @@ func TestFDB_GroupByWithWherePush(t *testing.T) {
 	})
 
 	t.Run("group_by_with_range_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT region, COUNT(*) FROM sales WHERE qty > 15 GROUP BY region ORDER BY region")
+		rows := testkit.CollectRows(t, db, "SELECT region, COUNT(*) FROM sales WHERE qty > 15 GROUP BY region ORDER BY region")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (east=1, west=2), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("group_by_two_columns", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT region, product, SUM(qty) FROM sales GROUP BY region, product ORDER BY region, product")
+		rows := testkit.CollectRows(t, db, "SELECT region, product, SUM(qty) FROM sales GROUP BY region, product ORDER BY region, product")
 		if len(rows) != 5 {
 			t.Fatalf("want 5 distinct region+product combos, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("group_by_count_with_having_and_where", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT product, COUNT(*), SUM(qty)
 			FROM sales
 			WHERE region IN ('east', 'west')
@@ -9470,7 +9410,7 @@ func TestFDB_GroupByWithWherePush(t *testing.T) {
 	})
 
 	t.Run("group_by_with_between", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT product, SUM(qty) FROM sales WHERE qty BETWEEN 10 AND 30 GROUP BY product ORDER BY product")
+		rows := testkit.CollectRows(t, db, "SELECT product, SUM(qty) FROM sales WHERE qty BETWEEN 10 AND 30 GROUP BY product ORDER BY product")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 groups (apples=10+30=40, bananas=20), got %d: %v", len(rows), rows)
 		}
@@ -9486,12 +9426,12 @@ func TestFDB_GroupByWithWherePush(t *testing.T) {
 // TestFDB_JoinWithGroupBy — JOIN queries with GROUP BY
 func TestFDB_JoinWithGroupBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jgb",
+	db := testkit.SetupPlanShapeDB(t, "jgb",
 		"CREATE TABLE dept(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE emp(id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO dept VALUES (1, 'engineering'), (2, 'sales'), (3, 'hr')"); err != nil {
@@ -9506,7 +9446,7 @@ func TestFDB_JoinWithGroupBy(t *testing.T) {
 	}
 
 	t.Run("join_group_by_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT d.name, COUNT(*)
 			FROM dept d JOIN emp e ON d.id = e.dept_id
 			GROUP BY d.name
@@ -9524,7 +9464,7 @@ func TestFDB_JoinWithGroupBy(t *testing.T) {
 	})
 
 	t.Run("join_group_by_sum", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT d.name, SUM(e.salary)
 			FROM dept d JOIN emp e ON d.id = e.dept_id
 			GROUP BY d.name
@@ -9539,7 +9479,7 @@ func TestFDB_JoinWithGroupBy(t *testing.T) {
 	})
 
 	t.Run("join_with_having", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT d.name, COUNT(*), SUM(e.salary)
 			FROM dept d JOIN emp e ON d.id = e.dept_id
 			GROUP BY d.name
@@ -9555,12 +9495,12 @@ func TestFDB_JoinWithGroupBy(t *testing.T) {
 // TestFDB_CTEWithAggregate — CTE + aggregate patterns
 func TestFDB_CTEWithAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ctea", "CREATE TABLE cte_data(id BIGINT, category STRING, amount BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "ctea", "CREATE TABLE cte_data(id BIGINT, category STRING, amount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO cte_data VALUES
 		(1, 'X', 10), (2, 'X', 20), (3, 'Y', 30), (4, 'Y', 40), (5, 'Z', 50)
 	`); err != nil {
@@ -9568,7 +9508,7 @@ func TestFDB_CTEWithAggregate(t *testing.T) {
 	}
 
 	t.Run("cte_with_aggregate_in_body", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH totals AS (SELECT category, SUM(amount) AS total FROM cte_data GROUP BY category)
 			SELECT * FROM totals ORDER BY total DESC
 		`)
@@ -9581,7 +9521,7 @@ func TestFDB_CTEWithAggregate(t *testing.T) {
 	})
 
 	t.Run("cte_filtered_by_outer_where", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH all_data AS (SELECT * FROM cte_data)
 			SELECT id, amount FROM all_data WHERE amount > 25 ORDER BY id
 		`)
@@ -9591,7 +9531,7 @@ func TestFDB_CTEWithAggregate(t *testing.T) {
 	})
 
 	t.Run("cte_used_twice", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH base AS (SELECT category, SUM(amount) AS total FROM cte_data GROUP BY category)
 			SELECT b1.category, b1.total FROM base b1
 			WHERE b1.total > 20
@@ -9603,7 +9543,7 @@ func TestFDB_CTEWithAggregate(t *testing.T) {
 	})
 
 	t.Run("cte_count_over_cte", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH filtered AS (SELECT * FROM cte_data WHERE amount >= 20)
 			SELECT COUNT(*) FROM filtered
 		`)
@@ -9619,12 +9559,12 @@ func TestFDB_CTEWithAggregate(t *testing.T) {
 // TestFDB_SetOperationErrors — INTERSECT/EXCEPT should error
 func TestFDB_SetOperationErrors(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "setop", "CREATE TABLE sop(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "setop", "CREATE TABLE sop(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO sop VALUES (1, 10), (2, 20)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -9651,46 +9591,46 @@ func TestFDB_SetOperationErrors(t *testing.T) {
 // TestFDB_NullSafeComparisons — NULL behavior in comparisons
 func TestFDB_NullSafeComparisons(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "nscmp", "CREATE TABLE ns_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "nscmp", "CREATE TABLE ns_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO ns_t VALUES (1, 10), (2, 20), (3, NULL)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("null_eq_returns_no_rows", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM ns_t WHERE val = NULL")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM ns_t WHERE val = NULL")
 		if len(rows) != 0 {
 			t.Errorf("val = NULL should return 0 rows (NULL = NULL is UNKNOWN), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("null_ne_returns_no_rows", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM ns_t WHERE val <> NULL")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM ns_t WHERE val <> NULL")
 		if len(rows) != 0 {
 			t.Errorf("val <> NULL should return 0 rows, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("is_null_finds_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM ns_t WHERE val IS NULL")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM ns_t WHERE val IS NULL")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
 			t.Errorf("IS NULL should find id=3, got %v", rows)
 		}
 	})
 
 	t.Run("is_not_null_excludes_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM ns_t WHERE val IS NOT NULL ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM ns_t WHERE val IS NOT NULL ORDER BY id")
 		if len(rows) != 2 {
 			t.Errorf("IS NOT NULL should find 2 rows, got %d", len(rows))
 		}
 	})
 
 	t.Run("coalesce_null_replacement", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, COALESCE(val, 0) FROM ns_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, COALESCE(val, 0) FROM ns_t ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -9700,7 +9640,7 @@ func TestFDB_NullSafeComparisons(t *testing.T) {
 	})
 
 	t.Run("sum_ignores_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM ns_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM ns_t")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
 		}
@@ -9710,14 +9650,14 @@ func TestFDB_NullSafeComparisons(t *testing.T) {
 	})
 
 	t.Run("count_star_includes_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM ns_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM ns_t")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("COUNT(*) includes NULL rows, should be 3, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("count_column_excludes_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(val) FROM ns_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(val) FROM ns_t")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("COUNT(val) excludes NULL, should be 2, got %v", rows[0][0])
 		}
@@ -9727,12 +9667,12 @@ func TestFDB_NullSafeComparisons(t *testing.T) {
 // TestFDB_SubqueryInWhere — subqueries in WHERE clause
 func TestFDB_SubqueryInWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "sqwh",
+	db := testkit.SetupPlanShapeDB(t, "sqwh",
 		"CREATE TABLE products(id BIGINT, name STRING, price BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE orders_sq(id BIGINT, product_id BIGINT, qty BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO products VALUES (1, 'widget', 10), (2, 'gadget', 20), (3, 'doohickey', 30)"); err != nil {
@@ -9743,7 +9683,7 @@ func TestFDB_SubqueryInWhere(t *testing.T) {
 	}
 
 	t.Run("exists_correlated", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name FROM products p
 			WHERE EXISTS (SELECT 1 FROM orders_sq o WHERE o.product_id = p.id)
 			ORDER BY p.name
@@ -9757,7 +9697,7 @@ func TestFDB_SubqueryInWhere(t *testing.T) {
 	})
 
 	t.Run("not_exists_correlated", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name FROM products p
 			WHERE NOT EXISTS (SELECT 1 FROM orders_sq o WHERE o.product_id = p.id)
 		`)
@@ -9786,12 +9726,12 @@ func TestFDB_SubqueryInWhere(t *testing.T) {
 // TestFDB_MultiTableJoinPatterns — various JOIN patterns
 func TestFDB_MultiTableJoinPatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mtjp",
+	db := testkit.SetupPlanShapeDB(t, "mtjp",
 		"CREATE TABLE t_a(id BIGINT, val STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE t_b(id BIGINT, a_id BIGINT, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO t_a VALUES (1, 'x'), (2, 'y'), (3, 'z')"); err != nil {
@@ -9802,7 +9742,7 @@ func TestFDB_MultiTableJoinPatterns(t *testing.T) {
 	}
 
 	t.Run("inner_join_basic", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT t_a.val, t_b.score FROM t_a JOIN t_b ON t_a.id = t_b.a_id ORDER BY t_b.score")
+		rows := testkit.CollectRows(t, db, "SELECT t_a.val, t_b.score FROM t_a JOIN t_b ON t_a.id = t_b.a_id ORDER BY t_b.score")
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d: %v", len(rows), rows)
 		}
@@ -9812,7 +9752,7 @@ func TestFDB_MultiTableJoinPatterns(t *testing.T) {
 	})
 
 	t.Run("left_join_includes_unmatched", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT t_a.val, t_b.score FROM t_a LEFT JOIN t_b ON t_a.id = t_b.a_id ORDER BY t_a.id")
+		rows := testkit.CollectRows(t, db, "SELECT t_a.val, t_b.score FROM t_a LEFT JOIN t_b ON t_a.id = t_b.a_id ORDER BY t_a.id")
 		if len(rows) != 5 {
 			t.Fatalf("want 5 (4 matched + 1 unmatched z), got %d: %v", len(rows), rows)
 		}
@@ -9822,7 +9762,7 @@ func TestFDB_MultiTableJoinPatterns(t *testing.T) {
 	})
 
 	t.Run("join_with_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT t_a.val, SUM(t_b.score), COUNT(*)
 			FROM t_a JOIN t_b ON t_a.id = t_b.a_id
 			GROUP BY t_a.val
@@ -9843,12 +9783,12 @@ func TestFDB_MultiTableJoinPatterns(t *testing.T) {
 // TestFDB_AggregateIndexUsage — queries that should use aggregate indexes
 func TestFDB_AggregateIndexUsage(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "agidx2",
+	db := testkit.SetupPlanShapeDB(t, "agidx2",
 		"CREATE TABLE aitems(id BIGINT, cat STRING, price BIGINT, PRIMARY KEY(id)) "+
 			"CREATE INDEX cnt_by_cat AS SELECT COUNT(*) FROM aitems GROUP BY cat "+
 			"CREATE INDEX sum_price_by_cat AS SELECT SUM(price) FROM aitems GROUP BY cat")
@@ -9872,7 +9812,7 @@ func TestFDB_AggregateIndexUsage(t *testing.T) {
 	}
 
 	t.Run("count_by_category", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT cat, COUNT(*) FROM aitems GROUP BY cat ORDER BY cat")
+		rows := testkit.CollectRows(t, db, "SELECT cat, COUNT(*) FROM aitems GROUP BY cat ORDER BY cat")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 categories, got %d: %v", len(rows), rows)
 		}
@@ -9888,7 +9828,7 @@ func TestFDB_AggregateIndexUsage(t *testing.T) {
 	})
 
 	t.Run("sum_by_category", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT cat, SUM(price) FROM aitems GROUP BY cat ORDER BY cat")
+		rows := testkit.CollectRows(t, db, "SELECT cat, SUM(price) FROM aitems GROUP BY cat ORDER BY cat")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d: %v", len(rows), rows)
 		}
@@ -9904,35 +9844,35 @@ func TestFDB_AggregateIndexUsage(t *testing.T) {
 	})
 
 	t.Run("global_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM aitems")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM aitems")
 		if toInt64(rows[0][0]) != 9 {
 			t.Errorf("total count should be 9, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("global_sum", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(price) FROM aitems")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(price) FROM aitems")
 		if toInt64(rows[0][0]) != 675 {
 			t.Errorf("total sum should be 675, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("count_with_eq_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM aitems WHERE cat = 'food'")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM aitems WHERE cat = 'food'")
 		if toInt64(rows[0][0]) != 4 {
 			t.Errorf("food count should be 4, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("sum_with_eq_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(price) FROM aitems WHERE cat = 'electronics'")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(price) FROM aitems WHERE cat = 'electronics'")
 		if toInt64(rows[0][0]) != 600 {
 			t.Errorf("electronics sum should be 600, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("having_on_aggregate_index", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT cat, COUNT(*) FROM aitems GROUP BY cat HAVING COUNT(*) > 2 ORDER BY cat")
+		rows := testkit.CollectRows(t, db, "SELECT cat, COUNT(*) FROM aitems GROUP BY cat HAVING COUNT(*) > 2 ORDER BY cat")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (electronics=3, food=4), got %d: %v", len(rows), rows)
 		}
@@ -9942,7 +9882,7 @@ func TestFDB_AggregateIndexUsage(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO aitems VALUES (10, 'books', 35)"); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT cat, COUNT(*), SUM(price) FROM aitems WHERE cat = 'books' GROUP BY cat")
+		rows := testkit.CollectRows(t, db, "SELECT cat, COUNT(*), SUM(price) FROM aitems WHERE cat = 'books' GROUP BY cat")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
 		}
@@ -9958,7 +9898,7 @@ func TestFDB_AggregateIndexUsage(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "DELETE FROM aitems WHERE id = 10"); err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM aitems WHERE cat = 'books'")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM aitems WHERE cat = 'books'")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("books count after delete should be 2, got %v", rows[0][0])
 		}
@@ -9981,12 +9921,12 @@ func TestFDB_AggregateIndexUsage(t *testing.T) {
 // every child's row), merges them, and evaluates the result value.
 func TestFDB_MultiAggregateIntersection_Filtered(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "magi",
+	db := testkit.SetupPlanShapeDB(t, "magi",
 		"CREATE TABLE mitems(id BIGINT, cat STRING, price BIGINT, PRIMARY KEY(id)) "+
 			"CREATE INDEX m_cnt_by_cat AS SELECT COUNT(*) FROM mitems GROUP BY cat "+
 			"CREATE INDEX m_sum_price_by_cat AS SELECT SUM(price) FROM mitems GROUP BY cat "+
@@ -10013,12 +9953,12 @@ func TestFDB_MultiAggregateIntersection_Filtered(t *testing.T) {
 
 	// Prove the multi-aggregate intersection plan actually fires — otherwise
 	// the correct counts below could be coming from a streaming-agg fallback.
-	plan := planExplainVia(t, ctx, db, q)
+	plan := testkit.ExplainVia(t, ctx, db, q)
 	if !strings.Contains(plan, "Intersection(") {
 		t.Fatalf("expected the multi-aggregate merge plan, got: %s", plan)
 	}
 
-	rows := collectRows(t, db, q)
+	rows := testkit.CollectRows(t, db, q)
 	if len(rows) != 1 {
 		t.Fatalf("filtered multi-aggregate: want 1 row, got %d: %v", len(rows), rows)
 	}
@@ -10037,7 +9977,7 @@ func TestFDB_MultiAggregateIntersection_Filtered(t *testing.T) {
 	// intersection — the selective WHERE filter is what tips the cost toward
 	// the intersection above. We only pin correctness, not plan shape.)
 	const qAll = "SELECT cat, COUNT(*), SUM(price) FROM mitems GROUP BY cat ORDER BY cat"
-	allRows := collectRows(t, db, qAll)
+	allRows := testkit.CollectRows(t, db, qAll)
 	if len(allRows) != 3 {
 		t.Fatalf("unfiltered multi-aggregate: want 3 rows, got %d: %v", len(allRows), allRows)
 	}
@@ -10066,12 +10006,12 @@ func TestFDB_MultiAggregateIntersection_Filtered(t *testing.T) {
 // TestFDB_UpdateWithExpressions — UPDATE with arithmetic and conditional expressions
 func TestFDB_UpdateWithExpressions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "updex", "CREATE TABLE upd_t(id BIGINT, val BIGINT, status STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "updex", "CREATE TABLE upd_t(id BIGINT, val BIGINT, status STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO upd_t VALUES
 		(1, 100, 'active'), (2, 200, 'active'), (3, 300, 'inactive'), (4, 400, 'active'), (5, 500, 'inactive')
 	`); err != nil {
@@ -10082,7 +10022,7 @@ func TestFDB_UpdateWithExpressions(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE upd_t SET val = val + 50 WHERE status = 'active'"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT id, val FROM upd_t WHERE status = 'active' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM upd_t WHERE status = 'active' ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 active, got %d", len(rows))
 		}
@@ -10098,7 +10038,7 @@ func TestFDB_UpdateWithExpressions(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE upd_t SET status = CASE WHEN val > 300 THEN 'premium' ELSE status END"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT id, status FROM upd_t WHERE status = 'premium' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, status FROM upd_t WHERE status = 'premium' ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 premium (val>300: id=4(450), id=5(500)), got %d: %v", len(rows), rows)
 		}
@@ -10108,7 +10048,7 @@ func TestFDB_UpdateWithExpressions(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE upd_t SET val = val * 2 WHERE id = 1"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT val FROM upd_t WHERE id = 1")
+		rows := testkit.CollectRows(t, db, "SELECT val FROM upd_t WHERE id = 1")
 		if toInt64(rows[0][0]) != 300 {
 			t.Errorf("id=1: 150*2=300, got %v", rows[0][0])
 		}
@@ -10118,12 +10058,12 @@ func TestFDB_UpdateWithExpressions(t *testing.T) {
 // TestFDB_NestedDerivedTableQueries — deeply nested derived tables
 func TestFDB_NestedDerivedTableQueries(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ndtq", "CREATE TABLE nest_t(id BIGINT, val BIGINT, grp STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "ndtq", "CREATE TABLE nest_t(id BIGINT, val BIGINT, grp STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO nest_t VALUES
 		(1, 10, 'A'), (2, 20, 'A'), (3, 30, 'B'), (4, 40, 'B'), (5, 50, 'C')
 	`); err != nil {
@@ -10131,7 +10071,7 @@ func TestFDB_NestedDerivedTableQueries(t *testing.T) {
 	}
 
 	t.Run("three_level_derived", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT * FROM (
 				SELECT * FROM (
 					SELECT * FROM nest_t WHERE val > 15
@@ -10145,7 +10085,7 @@ func TestFDB_NestedDerivedTableQueries(t *testing.T) {
 	})
 
 	t.Run("derived_with_rename_and_filter", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT d.x, d.y FROM (
 				SELECT id AS x, val AS y FROM nest_t
 			) AS d
@@ -10161,7 +10101,7 @@ func TestFDB_NestedDerivedTableQueries(t *testing.T) {
 	})
 
 	t.Run("aggregate_over_derived", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*), SUM(val) FROM (
 				SELECT * FROM nest_t WHERE grp = 'A'
 			) AS d
@@ -10178,7 +10118,7 @@ func TestFDB_NestedDerivedTableQueries(t *testing.T) {
 	})
 
 	t.Run("group_by_over_derived", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT grp, SUM(val) FROM (
 				SELECT * FROM nest_t WHERE val > 10
 			) AS d
@@ -10197,18 +10137,18 @@ func TestFDB_NestedDerivedTableQueries(t *testing.T) {
 // TestFDB_PrimaryKeyOperations — PK lookup, insert duplicate, delete by PK
 func TestFDB_PrimaryKeyOperations(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "pkop", "CREATE TABLE pk_t(id BIGINT, name STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "pkop", "CREATE TABLE pk_t(id BIGINT, name STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO pk_t VALUES (1, 'alice'), (2, 'bob'), (3, 'charlie')"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("pk_equality_lookup", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT name FROM pk_t WHERE id = 2")
+		rows := testkit.CollectRows(t, db, "SELECT name FROM pk_t WHERE id = 2")
 		if len(rows) != 1 {
 			t.Fatalf("PK lookup should return 1 row, got %d", len(rows))
 		}
@@ -10218,7 +10158,7 @@ func TestFDB_PrimaryKeyOperations(t *testing.T) {
 	})
 
 	t.Run("pk_not_found", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT name FROM pk_t WHERE id = 999")
+		rows := testkit.CollectRows(t, db, "SELECT name FROM pk_t WHERE id = 999")
 		if len(rows) != 0 {
 			t.Errorf("nonexistent PK should return 0 rows, got %d", len(rows))
 		}
@@ -10242,7 +10182,7 @@ func TestFDB_PrimaryKeyOperations(t *testing.T) {
 		if n != 1 {
 			t.Errorf("want 1 deleted, got %d", n)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM pk_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM pk_t")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("after delete: want 2 remaining, got %v", rows[0][0])
 		}
@@ -10252,7 +10192,7 @@ func TestFDB_PrimaryKeyOperations(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE pk_t SET name = 'ALICE' WHERE id = 1"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT name FROM pk_t WHERE id = 1")
+		rows := testkit.CollectRows(t, db, "SELECT name FROM pk_t WHERE id = 1")
 		if fmt.Sprintf("%v", rows[0][0]) != "ALICE" {
 			t.Errorf("want ALICE, got %v", rows[0][0])
 		}
@@ -10262,12 +10202,12 @@ func TestFDB_PrimaryKeyOperations(t *testing.T) {
 // TestFDB_LargeDataSet — tests with more than a handful of rows
 func TestFDB_LargeDataSet(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "lrgds", "CREATE TABLE big_t(id BIGINT, val BIGINT, grp BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "lrgds", "CREATE TABLE big_t(id BIGINT, val BIGINT, grp BIGINT, PRIMARY KEY(id))")
 	for i := 1; i <= 100; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO big_t VALUES (%d, %d, %d)", i, i*10, (i-1)%5)); err != nil {
 			t.Fatalf("INSERT %d: %v", i, err)
@@ -10275,21 +10215,21 @@ func TestFDB_LargeDataSet(t *testing.T) {
 	}
 
 	t.Run("count_100", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM big_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM big_t")
 		if toInt64(rows[0][0]) != 100 {
 			t.Errorf("want 100, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("sum_100", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM big_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM big_t")
 		if toInt64(rows[0][0]) != 50500 {
 			t.Errorf("SUM(1..100 * 10) = 50500, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("group_by_5_groups", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM big_t GROUP BY grp ORDER BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM big_t GROUP BY grp ORDER BY grp")
 		if len(rows) != 5 {
 			t.Fatalf("want 5 groups, got %d", len(rows))
 		}
@@ -10301,7 +10241,7 @@ func TestFDB_LargeDataSet(t *testing.T) {
 	})
 
 	t.Run("limit_on_large", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM big_t ORDER BY id LIMIT 5")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM big_t ORDER BY id LIMIT 5")
 		if len(rows) != 5 {
 			t.Fatalf("want 5, got %d", len(rows))
 		}
@@ -10311,14 +10251,14 @@ func TestFDB_LargeDataSet(t *testing.T) {
 	})
 
 	t.Run("filter_on_large", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM big_t WHERE val > 500")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM big_t WHERE val > 500")
 		if toInt64(rows[0][0]) != 50 {
 			t.Errorf("val>500 means id>50, want 50 rows, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("min_max_on_large", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT MIN(val), MAX(val) FROM big_t")
+		rows := testkit.CollectRows(t, db, "SELECT MIN(val), MAX(val) FROM big_t")
 		if toInt64(rows[0][0]) != 10 {
 			t.Errorf("MIN should be 10, got %v", rows[0][0])
 		}
@@ -10336,7 +10276,7 @@ func TestFDB_LargeDataSet(t *testing.T) {
 		if n != 50 {
 			t.Errorf("want 50 deleted, got %d", n)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM big_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM big_t")
 		if toInt64(rows[0][0]) != 50 {
 			t.Errorf("50 remaining, got %v", rows[0][0])
 		}
@@ -10346,12 +10286,12 @@ func TestFDB_LargeDataSet(t *testing.T) {
 // TestFDB_IndexScanPatterns — queries that should use index scans
 func TestFDB_IndexScanPatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ixsc",
+	db := testkit.SetupPlanShapeDB(t, "ixsc",
 		"CREATE TABLE idx_t(id BIGINT, status STRING, score BIGINT, PRIMARY KEY(id)) "+
 			"CREATE INDEX status_idx ON idx_t (status)")
 	for i := 1; i <= 20; i++ {
@@ -10365,7 +10305,7 @@ func TestFDB_IndexScanPatterns(t *testing.T) {
 	}
 
 	t.Run("index_eq_scan", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, score FROM idx_t WHERE status = 'inactive' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, score FROM idx_t WHERE status = 'inactive' ORDER BY id")
 		if len(rows) != 6 {
 			t.Fatalf("want 6 inactive (3,6,9,12,15,18), got %d: %v", len(rows), rows)
 		}
@@ -10375,14 +10315,14 @@ func TestFDB_IndexScanPatterns(t *testing.T) {
 	})
 
 	t.Run("count_via_index", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM idx_t WHERE status = 'active'")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM idx_t WHERE status = 'active'")
 		if toInt64(rows[0][0]) != 14 {
 			t.Errorf("active count should be 14, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("aggregate_with_index_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT status, SUM(score), MIN(score), MAX(score) FROM idx_t GROUP BY status ORDER BY status")
+		rows := testkit.CollectRows(t, db, "SELECT status, SUM(score), MIN(score), MAX(score) FROM idx_t GROUP BY status ORDER BY status")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 groups, got %d", len(rows))
 		}
@@ -10392,11 +10332,11 @@ func TestFDB_IndexScanPatterns(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE idx_t SET status = 'archived' WHERE id = 3"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM idx_t WHERE status = 'inactive'")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM idx_t WHERE status = 'inactive'")
 		if toInt64(rows[0][0]) != 5 {
 			t.Errorf("after archiving id=3: inactive should be 5, got %v", rows[0][0])
 		}
-		rows = collectRows(t, db, "SELECT COUNT(*) FROM idx_t WHERE status = 'archived'")
+		rows = testkit.CollectRows(t, db, "SELECT COUNT(*) FROM idx_t WHERE status = 'archived'")
 		if toInt64(rows[0][0]) != 1 {
 			t.Errorf("archived should be 1, got %v", rows[0][0])
 		}
@@ -10406,12 +10346,12 @@ func TestFDB_IndexScanPatterns(t *testing.T) {
 // TestFDB_ComplexExpressionEvaluation — complex expressions in various positions
 func TestFDB_ComplexExpressionEvaluation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cxeval", "CREATE TABLE expr_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "cxeval", "CREATE TABLE expr_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO expr_t VALUES
 		(1, 10, 20, 30), (2, 40, 50, 60), (3, 70, 80, 90), (4, 100, 0, 50)
 	`); err != nil {
@@ -10419,7 +10359,7 @@ func TestFDB_ComplexExpressionEvaluation(t *testing.T) {
 	}
 
 	t.Run("arithmetic_chain", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, a + b + c FROM expr_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, a + b + c FROM expr_t ORDER BY id")
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d", len(rows))
 		}
@@ -10432,7 +10372,7 @@ func TestFDB_ComplexExpressionEvaluation(t *testing.T) {
 	})
 
 	t.Run("multiply_in_where", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM expr_t WHERE a * b > 3000 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM expr_t WHERE a * b > 3000 ORDER BY id")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 (70*80=5600>3000), got %d: %v", len(rows), rows)
 		}
@@ -10442,7 +10382,7 @@ func TestFDB_ComplexExpressionEvaluation(t *testing.T) {
 	})
 
 	t.Run("subtraction", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, a - b FROM expr_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, a - b FROM expr_t ORDER BY id")
 		if toInt64(rows[0][1]) != -10 {
 			t.Errorf("10-20=-10, got %v", rows[0][1])
 		}
@@ -10452,7 +10392,7 @@ func TestFDB_ComplexExpressionEvaluation(t *testing.T) {
 	})
 
 	t.Run("case_with_arithmetic", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, CASE WHEN a + b > 100 THEN a * 2 ELSE b * 2 END
 			FROM expr_t ORDER BY id
 		`)
@@ -10471,7 +10411,7 @@ func TestFDB_ComplexExpressionEvaluation(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO expr_t(id, a) VALUES (5, 42)"); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT id, COALESCE(b, COALESCE(c, 999)) FROM expr_t WHERE id = 5")
+		rows := testkit.CollectRows(t, db, "SELECT id, COALESCE(b, COALESCE(c, 999)) FROM expr_t WHERE id = 5")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
 		}
@@ -10487,12 +10427,12 @@ func TestFDB_ComplexExpressionEvaluation(t *testing.T) {
 // TestFDB_MultiJoinWithFilter — multi-table join with various filter positions
 func TestFDB_MultiJoinWithFilter(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mjwf",
+	db := testkit.SetupPlanShapeDB(t, "mjwf",
 		"CREATE TABLE regions(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE stores(id BIGINT, region_id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE sales_mj(id BIGINT, store_id BIGINT, amount BIGINT, PRIMARY KEY(id))")
@@ -10509,7 +10449,7 @@ func TestFDB_MultiJoinWithFilter(t *testing.T) {
 	}
 
 	t.Run("three_table_join", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT r.name, s.name, sm.amount
 			FROM regions r
 			JOIN stores s ON r.id = s.region_id
@@ -10522,7 +10462,7 @@ func TestFDB_MultiJoinWithFilter(t *testing.T) {
 	})
 
 	t.Run("three_table_join_with_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT r.name, SUM(sm.amount)
 			FROM regions r
 			JOIN stores s ON r.id = s.region_id
@@ -10542,7 +10482,7 @@ func TestFDB_MultiJoinWithFilter(t *testing.T) {
 	})
 
 	t.Run("join_with_where_on_leaf", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT r.name, COUNT(*)
 			FROM regions r
 			JOIN stores s ON r.id = s.region_id
@@ -10566,12 +10506,12 @@ func TestFDB_MultiJoinWithFilter(t *testing.T) {
 // TestFDB_CTEWithJoin — CTE used in JOIN context
 func TestFDB_CTEWithJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ctejn",
+	db := testkit.SetupPlanShapeDB(t, "ctejn",
 		"CREATE TABLE cj_orders(id BIGINT, customer STRING, total BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE cj_customers(name STRING, tier STRING, PRIMARY KEY(name))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO cj_orders VALUES
@@ -10584,7 +10524,7 @@ func TestFDB_CTEWithJoin(t *testing.T) {
 	}
 
 	t.Run("cte_joined_with_table", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH order_totals AS (
 				SELECT customer, SUM(total) AS sum_total FROM cj_orders GROUP BY customer
 			)
@@ -10605,7 +10545,7 @@ func TestFDB_CTEWithJoin(t *testing.T) {
 	})
 
 	t.Run("cte_with_having_joined", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH big_spenders AS (
 				SELECT customer, SUM(total) AS spend FROM cj_orders GROUP BY customer HAVING SUM(total) >= 200
 			)
@@ -10630,12 +10570,12 @@ func TestFDB_CTEWithJoin(t *testing.T) {
 // TestFDB_WhereSubqueryCorrelated — correlated subquery patterns
 func TestFDB_WhereSubqueryCorrelated(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wscr",
+	db := testkit.SetupPlanShapeDB(t, "wscr",
 		"CREATE TABLE ws_parent(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE ws_child(id BIGINT, parent_id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO ws_parent VALUES (1, 'p1'), (2, 'p2'), (3, 'p3')"); err != nil {
@@ -10648,7 +10588,7 @@ func TestFDB_WhereSubqueryCorrelated(t *testing.T) {
 	}
 
 	t.Run("exists_with_children", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name FROM ws_parent p
 			WHERE EXISTS (SELECT 1 FROM ws_child c WHERE c.parent_id = p.id)
 			ORDER BY p.name
@@ -10659,7 +10599,7 @@ func TestFDB_WhereSubqueryCorrelated(t *testing.T) {
 	})
 
 	t.Run("not_exists_no_children", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name FROM ws_parent p
 			WHERE NOT EXISTS (SELECT 1 FROM ws_child c WHERE c.parent_id = p.id)
 		`)
@@ -10669,7 +10609,7 @@ func TestFDB_WhereSubqueryCorrelated(t *testing.T) {
 	})
 
 	t.Run("exists_with_filter_on_child", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name FROM ws_parent p
 			WHERE EXISTS (SELECT 1 FROM ws_child c WHERE c.parent_id = p.id AND c.val > 100)
 			ORDER BY p.name
@@ -10683,12 +10623,12 @@ func TestFDB_WhereSubqueryCorrelated(t *testing.T) {
 // TestFDB_LeftJoinNullHandling — LEFT JOIN NULL propagation edge cases
 func TestFDB_LeftJoinNullHandling(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ljnull",
+	db := testkit.SetupPlanShapeDB(t, "ljnull",
 		"CREATE TABLE lj_left(id BIGINT, val STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE lj_right(id BIGINT, left_id BIGINT, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO lj_left VALUES (1, 'a'), (2, 'b'), (3, 'c')"); err != nil {
@@ -10699,7 +10639,7 @@ func TestFDB_LeftJoinNullHandling(t *testing.T) {
 	}
 
 	t.Run("left_join_null_right_columns", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT l.val, r.score
 			FROM lj_left l LEFT JOIN lj_right r ON l.id = r.left_id
 			ORDER BY l.id, r.score
@@ -10719,7 +10659,7 @@ func TestFDB_LeftJoinNullHandling(t *testing.T) {
 	})
 
 	t.Run("left_join_count_with_null", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT l.val, COUNT(r.score)
 			FROM lj_left l LEFT JOIN lj_right r ON l.id = r.left_id
 			GROUP BY l.val
@@ -10734,7 +10674,7 @@ func TestFDB_LeftJoinNullHandling(t *testing.T) {
 	})
 
 	t.Run("left_join_sum_with_null", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT l.val, SUM(r.score)
 			FROM lj_left l LEFT JOIN lj_right r ON l.id = r.left_id
 			GROUP BY l.val
@@ -10755,7 +10695,7 @@ func TestFDB_LeftJoinNullHandling(t *testing.T) {
 	})
 
 	t.Run("left_join_coalesce_null", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT l.val, COALESCE(r.score, 0)
 			FROM lj_left l LEFT JOIN lj_right r ON l.id = r.left_id
 			ORDER BY l.id, r.score
@@ -10774,12 +10714,12 @@ func TestFDB_LeftJoinNullHandling(t *testing.T) {
 // TestFDB_UnionAllWithOrderBy — UNION ALL followed by ORDER BY
 func TestFDB_UnionAllWithOrderBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uaob",
+	db := testkit.SetupPlanShapeDB(t, "uaob",
 		"CREATE TABLE ua1(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE ua2(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO ua1 VALUES (1, 100), (2, 200)"); err != nil {
@@ -10790,7 +10730,7 @@ func TestFDB_UnionAllWithOrderBy(t *testing.T) {
 	}
 
 	t.Run("union_all_order_by_val", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM ua1 UNION ALL SELECT id, val FROM ua2 ORDER BY val")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM ua1 UNION ALL SELECT id, val FROM ua2 ORDER BY val")
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d", len(rows))
 		}
@@ -10803,7 +10743,7 @@ func TestFDB_UnionAllWithOrderBy(t *testing.T) {
 	})
 
 	t.Run("union_all_order_by_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM ua1 UNION ALL SELECT id, val FROM ua2 ORDER BY val DESC")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM ua1 UNION ALL SELECT id, val FROM ua2 ORDER BY val DESC")
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d", len(rows))
 		}
@@ -10813,7 +10753,7 @@ func TestFDB_UnionAllWithOrderBy(t *testing.T) {
 	})
 
 	t.Run("union_all_with_limit", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM ua1 UNION ALL SELECT id, val FROM ua2 ORDER BY val LIMIT 2")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM ua1 UNION ALL SELECT id, val FROM ua2 ORDER BY val LIMIT 2")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
 		}
@@ -10826,12 +10766,12 @@ func TestFDB_UnionAllWithOrderBy(t *testing.T) {
 // TestFDB_MultiColumnIndex — queries using multi-column indexes
 func TestFDB_MultiColumnIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mcidx",
+	db := testkit.SetupPlanShapeDB(t, "mcidx",
 		"CREATE TABLE mci_t(id BIGINT, a STRING, b BIGINT, c STRING, PRIMARY KEY(id)) "+
 			"CREATE INDEX idx_ab ON mci_t (a, b)")
 	if _, err := db.ExecContext(ctx, `INSERT INTO mci_t VALUES
@@ -10843,21 +10783,21 @@ func TestFDB_MultiColumnIndex(t *testing.T) {
 	}
 
 	t.Run("prefix_eq_scan", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, b FROM mci_t WHERE a = 'x' ORDER BY b")
+		rows := testkit.CollectRows(t, db, "SELECT id, b FROM mci_t WHERE a = 'x' ORDER BY b")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 for a='x', got %d", len(rows))
 		}
 	})
 
 	t.Run("full_eq_scan", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM mci_t WHERE a = 'y' AND b = 20")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM mci_t WHERE a = 'y' AND b = 20")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 5 {
 			t.Errorf("want id=5, got %v", rows)
 		}
 	})
 
 	t.Run("prefix_eq_with_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a, COUNT(*), SUM(b) FROM mci_t GROUP BY a ORDER BY a")
+		rows := testkit.CollectRows(t, db, "SELECT a, COUNT(*), SUM(b) FROM mci_t GROUP BY a ORDER BY a")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 groups, got %d", len(rows))
 		}
@@ -10867,7 +10807,7 @@ func TestFDB_MultiColumnIndex(t *testing.T) {
 	})
 
 	t.Run("range_on_second_column", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM mci_t WHERE a = 'x' AND b > 15 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM mci_t WHERE a = 'x' AND b > 15 ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (b=20,30), got %d", len(rows))
 		}
@@ -10877,12 +10817,12 @@ func TestFDB_MultiColumnIndex(t *testing.T) {
 // TestFDB_ErrorHandling — SQL error conditions
 func TestFDB_ErrorHandling(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "errhnd", "CREATE TABLE err_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "errhnd", "CREATE TABLE err_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO err_t VALUES (1, 10), (2, 20)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -10936,12 +10876,12 @@ func TestFDB_ErrorHandling(t *testing.T) {
 // TestFDB_MultipleCTEs — multiple CTEs in single query
 func TestFDB_MultipleCTEs(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mctes", "CREATE TABLE mc_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "mctes", "CREATE TABLE mc_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO mc_t VALUES
 		(1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40), (5, 'C', 50)
 	`); err != nil {
@@ -10949,7 +10889,7 @@ func TestFDB_MultipleCTEs(t *testing.T) {
 	}
 
 	t.Run("two_ctes", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH
 				totals AS (SELECT grp, SUM(val) AS total FROM mc_t GROUP BY grp),
 				counts AS (SELECT grp, COUNT(*) AS cnt FROM mc_t GROUP BY grp)
@@ -10966,7 +10906,7 @@ func TestFDB_MultipleCTEs(t *testing.T) {
 	})
 
 	t.Run("cte_referencing_earlier_cte", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH
 				base AS (SELECT * FROM mc_t WHERE val > 15),
 				summary AS (SELECT grp, COUNT(*) AS cnt FROM base GROUP BY grp)
@@ -10981,18 +10921,18 @@ func TestFDB_MultipleCTEs(t *testing.T) {
 // TestFDB_CaseWhenWithNull — CASE WHEN NULL edge cases
 func TestFDB_CaseWhenWithNull(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cwn", "CREATE TABLE cwn_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "cwn", "CREATE TABLE cwn_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO cwn_t VALUES (1, 10), (2, NULL), (3, 30)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("case_when_is_null", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, CASE WHEN val IS NULL THEN 'missing' ELSE 'present' END
 			FROM cwn_t ORDER BY id
 		`)
@@ -11005,7 +10945,7 @@ func TestFDB_CaseWhenWithNull(t *testing.T) {
 	})
 
 	t.Run("case_no_else_returns_null", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, CASE WHEN val > 20 THEN 'big' END
 			FROM cwn_t ORDER BY id
 		`)
@@ -11021,7 +10961,7 @@ func TestFDB_CaseWhenWithNull(t *testing.T) {
 	})
 
 	t.Run("coalesce_in_case", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, CASE WHEN COALESCE(val, 0) > 5 THEN 'yes' ELSE 'no' END
 			FROM cwn_t ORDER BY id
 		`)
@@ -11040,18 +10980,18 @@ func TestFDB_CaseWhenWithNull(t *testing.T) {
 // TestFDB_SelectExpressions — computed columns and aliases in SELECT
 func TestFDB_SelectExpressions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "selexpr", "CREATE TABLE se_t(id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "selexpr", "CREATE TABLE se_t(id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO se_t VALUES (1, 10, 5), (2, 20, 3), (3, 30, 7)`); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("computed_column", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, price * qty AS total FROM se_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, price * qty AS total FROM se_t ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -11064,14 +11004,14 @@ func TestFDB_SelectExpressions(t *testing.T) {
 	})
 
 	t.Run("sum_of_computed", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(price * qty) FROM se_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(price * qty) FROM se_t")
 		if toInt64(rows[0][0]) != 320 {
 			t.Errorf("SUM(price*qty)=50+60+210=320, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("order_by_expression", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, price * qty AS total FROM se_t ORDER BY price * qty DESC")
+		rows := testkit.CollectRows(t, db, "SELECT id, price * qty AS total FROM se_t ORDER BY price * qty DESC")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -11081,14 +11021,14 @@ func TestFDB_SelectExpressions(t *testing.T) {
 	})
 
 	t.Run("constant_expression_from_table", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT 1 + 2 + 3 FROM se_t LIMIT 1")
+		rows := testkit.CollectRows(t, db, "SELECT 1 + 2 + 3 FROM se_t LIMIT 1")
 		if toInt64(rows[0][0]) != 6 {
 			t.Errorf("1+2+3=6, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("where_on_computed", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM se_t WHERE price * qty > 100 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM se_t WHERE price * qty > 100 ORDER BY id")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
 			t.Errorf("only id=3 has price*qty=210>100, got %v", rows)
 		}
@@ -11098,12 +11038,12 @@ func TestFDB_SelectExpressions(t *testing.T) {
 // TestFDB_JoinSelfReference — self-join patterns
 func TestFDB_JoinSelfReference(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "sjref", "CREATE TABLE employees(id BIGINT, name STRING, manager_id BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "sjref", "CREATE TABLE employees(id BIGINT, name STRING, manager_id BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO employees VALUES
 		(1, 'ceo', NULL), (2, 'vp1', 1), (3, 'vp2', 1),
 		(4, 'mgr1', 2), (5, 'mgr2', 2), (6, 'dev1', 4)
@@ -11112,7 +11052,7 @@ func TestFDB_JoinSelfReference(t *testing.T) {
 	}
 
 	t.Run("self_join_manager", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT e.name, m.name AS manager
 			FROM employees e JOIN employees m ON e.manager_id = m.id
 			ORDER BY e.name
@@ -11123,7 +11063,7 @@ func TestFDB_JoinSelfReference(t *testing.T) {
 	})
 
 	t.Run("self_join_count_reports", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT m.name, COUNT(*) AS reports
 			FROM employees e JOIN employees m ON e.manager_id = m.id
 			GROUP BY m.name
@@ -11141,12 +11081,12 @@ func TestFDB_JoinSelfReference(t *testing.T) {
 // TestFDB_WhereWithMultipleConditions — complex WHERE with many predicates
 func TestFDB_WhereWithMultipleConditions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wmcond", "CREATE TABLE wmc_t(id BIGINT, a BIGINT, b STRING, c BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "wmcond", "CREATE TABLE wmc_t(id BIGINT, a BIGINT, b STRING, c BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO wmc_t VALUES
 		(1, 10, 'foo', 100), (2, 20, 'bar', 200), (3, 30, 'foo', 300),
 		(4, 40, 'baz', 400), (5, 50, 'foo', 500), (6, 10, 'bar', 150)
@@ -11155,28 +11095,28 @@ func TestFDB_WhereWithMultipleConditions(t *testing.T) {
 	}
 
 	t.Run("and_chain", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wmc_t WHERE a >= 10 AND a <= 30 AND b = 'foo' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wmc_t WHERE a >= 10 AND a <= 30 AND b = 'foo' ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (id=1,3), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("or_with_and", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wmc_t WHERE (b = 'foo' AND c > 200) OR (b = 'bar' AND c < 200) ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wmc_t WHERE (b = 'foo' AND c > 200) OR (b = 'bar' AND c < 200) ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 (id=3:foo+300, id=5:foo+500, id=6:bar+150), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("between_and_eq", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wmc_t WHERE a BETWEEN 20 AND 40 AND b = 'foo' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wmc_t WHERE a BETWEEN 20 AND 40 AND b = 'foo' ORDER BY id")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
 			t.Errorf("want id=3, got %v", rows)
 		}
 	})
 
 	t.Run("not_equal_combined", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wmc_t WHERE b <> 'foo' AND c > 100 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wmc_t WHERE b <> 'foo' AND c > 100 ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 (id=2,4,6), got %d: %v", len(rows), rows)
 		}
@@ -11186,12 +11126,12 @@ func TestFDB_WhereWithMultipleConditions(t *testing.T) {
 // TestFDB_GroupByMultipleAggregatesWithHaving — GROUP BY with multiple aggregates in HAVING
 func TestFDB_GroupByMultipleAggregatesWithHaving(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gmah", "CREATE TABLE gmah_t(id BIGINT, dept STRING, salary BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "gmah", "CREATE TABLE gmah_t(id BIGINT, dept STRING, salary BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gmah_t VALUES
 		(1, 'eng', 100), (2, 'eng', 120), (3, 'eng', 80),
 		(4, 'sales', 90), (5, 'sales', 110),
@@ -11201,7 +11141,7 @@ func TestFDB_GroupByMultipleAggregatesWithHaving(t *testing.T) {
 	}
 
 	t.Run("having_count_and_sum", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT dept, COUNT(*), SUM(salary), MIN(salary), MAX(salary)
 			FROM gmah_t
 			GROUP BY dept
@@ -11232,7 +11172,7 @@ func TestFDB_GroupByMultipleAggregatesWithHaving(t *testing.T) {
 	})
 
 	t.Run("having_avg_via_sum_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT dept, SUM(salary) / COUNT(*) AS avg_salary
 			FROM gmah_t
 			GROUP BY dept
@@ -11248,12 +11188,12 @@ func TestFDB_GroupByMultipleAggregatesWithHaving(t *testing.T) {
 // TestFDB_InsertMultiRow — multi-row INSERT patterns
 func TestFDB_InsertMultiRow(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "imr", "CREATE TABLE imr_t(id BIGINT, val STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "imr", "CREATE TABLE imr_t(id BIGINT, val STRING, PRIMARY KEY(id))")
 
 	t.Run("insert_single", func(t *testing.T) {
 		res, err := db.ExecContext(ctx, "INSERT INTO imr_t VALUES (1, 'one')")
@@ -11278,7 +11218,7 @@ func TestFDB_InsertMultiRow(t *testing.T) {
 	})
 
 	t.Run("verify_all_inserted", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM imr_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM imr_t")
 		if toInt64(rows[0][0]) != 4 {
 			t.Errorf("want 4 total, got %v", rows[0][0])
 		}
@@ -11288,7 +11228,7 @@ func TestFDB_InsertMultiRow(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO imr_t VALUES (5, NULL)"); err != nil {
 			t.Fatalf("INSERT with NULL: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT val FROM imr_t WHERE id = 5")
+		rows := testkit.CollectRows(t, db, "SELECT val FROM imr_t WHERE id = 5")
 		if rows[0][0] != nil {
 			t.Errorf("val should be NULL, got %v", rows[0][0])
 		}
@@ -11298,12 +11238,12 @@ func TestFDB_InsertMultiRow(t *testing.T) {
 // TestFDB_AggregateWithNullGroups — aggregates when group key contains NULL
 func TestFDB_AggregateWithNullGroups(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "agng", "CREATE TABLE agng_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "agng", "CREATE TABLE agng_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO agng_t VALUES
 		(1, 'A', 10), (2, 'A', 20), (3, NULL, 30), (4, NULL, 40), (5, 'B', 50)
 	`); err != nil {
@@ -11311,7 +11251,7 @@ func TestFDB_AggregateWithNullGroups(t *testing.T) {
 	}
 
 	t.Run("null_group_key", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM agng_t GROUP BY grp ORDER BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM agng_t GROUP BY grp ORDER BY grp")
 		if len(rows) < 2 {
 			t.Fatalf("want at least 2 groups, got %d: %v", len(rows), rows)
 		}
@@ -11319,7 +11259,7 @@ func TestFDB_AggregateWithNullGroups(t *testing.T) {
 	})
 
 	t.Run("count_star_vs_count_col", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*), COUNT(grp) FROM agng_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*), COUNT(grp) FROM agng_t")
 		if toInt64(rows[0][0]) != 5 {
 			t.Errorf("COUNT(*) should be 5, got %v", rows[0][0])
 		}
@@ -11332,12 +11272,12 @@ func TestFDB_AggregateWithNullGroups(t *testing.T) {
 // TestFDB_DeleteWithComplexWhere — DELETE with various WHERE patterns
 func TestFDB_DeleteWithComplexWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dcw", "CREATE TABLE dcw_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "dcw", "CREATE TABLE dcw_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO dcw_t VALUES
 		(1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'C', 40), (5, 'B', 50),
 		(6, 'A', 60), (7, 'C', 70), (8, 'B', 80)
@@ -11368,7 +11308,7 @@ func TestFDB_DeleteWithComplexWhere(t *testing.T) {
 	})
 
 	t.Run("verify_remaining", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, cat, val FROM dcw_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, cat, val FROM dcw_t ORDER BY id")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 remaining, got %d: %v", len(rows), rows)
 		}
@@ -11389,12 +11329,12 @@ func TestFDB_DeleteWithComplexWhere(t *testing.T) {
 // TestFDB_JoinWithLeftAndCrossVariants — different JOIN types
 func TestFDB_JoinWithLeftAndCrossVariants(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jvar",
+	db := testkit.SetupPlanShapeDB(t, "jvar",
 		"CREATE TABLE jv_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jv_b(id BIGINT, a_id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jv_a VALUES (1, 'x'), (2, 'y'), (3, 'z')"); err != nil {
@@ -11405,29 +11345,29 @@ func TestFDB_JoinWithLeftAndCrossVariants(t *testing.T) {
 	}
 
 	t.Run("inner_join_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM jv_a JOIN jv_b ON jv_a.id = jv_b.a_id")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM jv_a JOIN jv_b ON jv_a.id = jv_b.a_id")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("want 3 matched rows, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("left_join_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM jv_a LEFT JOIN jv_b ON jv_a.id = jv_b.a_id")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM jv_a LEFT JOIN jv_b ON jv_a.id = jv_b.a_id")
 		if toInt64(rows[0][0]) != 4 {
 			t.Errorf("want 4 (3 matched + 1 unmatched z), got %v", rows[0][0])
 		}
 	})
 
 	t.Run("cross_join_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM jv_a, jv_b")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM jv_a, jv_b")
 		if toInt64(rows[0][0]) != 9 {
 			t.Errorf("want 3*3=9 cross product, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("inner_vs_left_difference", func(t *testing.T) {
-		inner := collectRows(t, db, "SELECT jv_a.name FROM jv_a JOIN jv_b ON jv_a.id = jv_b.a_id GROUP BY jv_a.name ORDER BY jv_a.name")
-		left := collectRows(t, db, "SELECT jv_a.name FROM jv_a LEFT JOIN jv_b ON jv_a.id = jv_b.a_id GROUP BY jv_a.name ORDER BY jv_a.name")
+		inner := testkit.CollectRows(t, db, "SELECT jv_a.name FROM jv_a JOIN jv_b ON jv_a.id = jv_b.a_id GROUP BY jv_a.name ORDER BY jv_a.name")
+		left := testkit.CollectRows(t, db, "SELECT jv_a.name FROM jv_a LEFT JOIN jv_b ON jv_a.id = jv_b.a_id GROUP BY jv_a.name ORDER BY jv_a.name")
 		if len(inner) != 2 {
 			t.Errorf("inner join groups: want 2 (x,y), got %d", len(inner))
 		}
@@ -11440,12 +11380,12 @@ func TestFDB_JoinWithLeftAndCrossVariants(t *testing.T) {
 // TestFDB_UnionAllThreeLeg — UNION ALL with three legs
 func TestFDB_UnionAllThreeLeg(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ua3l",
+	db := testkit.SetupPlanShapeDB(t, "ua3l",
 		"CREATE TABLE u3a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE u3b(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE u3c(id BIGINT, val BIGINT, PRIMARY KEY(id))")
@@ -11460,7 +11400,7 @@ func TestFDB_UnionAllThreeLeg(t *testing.T) {
 	}
 
 	t.Run("three_way_union_all", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, val FROM u3a
 			UNION ALL SELECT id, val FROM u3b
 			UNION ALL SELECT id, val FROM u3c
@@ -11475,7 +11415,7 @@ func TestFDB_UnionAllThreeLeg(t *testing.T) {
 	})
 
 	t.Run("aggregate_over_three_way", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT SUM(val), COUNT(*) FROM (
 				SELECT val FROM u3a
 				UNION ALL SELECT val FROM u3b
@@ -11497,12 +11437,12 @@ func TestFDB_UnionAllThreeLeg(t *testing.T) {
 // TestFDB_GroupByWithOrderByAndLimit — GROUP BY + ORDER BY + LIMIT combined
 func TestFDB_GroupByWithOrderByAndLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbol", "CREATE TABLE gbol_t(id BIGINT, region STRING, revenue BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "gbol", "CREATE TABLE gbol_t(id BIGINT, region STRING, revenue BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gbol_t VALUES
 		(1, 'east', 100), (2, 'east', 200), (3, 'west', 50),
 		(4, 'west', 150), (5, 'north', 300), (6, 'south', 75), (7, 'south', 125)
@@ -11511,7 +11451,7 @@ func TestFDB_GroupByWithOrderByAndLimit(t *testing.T) {
 	}
 
 	t.Run("top_2_by_revenue", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT region, SUM(revenue) AS total
 			FROM gbol_t GROUP BY region
 			ORDER BY total DESC LIMIT 2
@@ -11525,7 +11465,7 @@ func TestFDB_GroupByWithOrderByAndLimit(t *testing.T) {
 	})
 
 	t.Run("bottom_1_by_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT region, COUNT(*) AS cnt
 			FROM gbol_t GROUP BY region
 			ORDER BY cnt LIMIT 1
@@ -11539,7 +11479,7 @@ func TestFDB_GroupByWithOrderByAndLimit(t *testing.T) {
 	})
 
 	t.Run("all_groups_ordered", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT region, SUM(revenue) AS total
 			FROM gbol_t GROUP BY region
 			ORDER BY region
@@ -11556,12 +11496,12 @@ func TestFDB_GroupByWithOrderByAndLimit(t *testing.T) {
 // TestFDB_CTEInDML — CTE used in INSERT...SELECT
 func TestFDB_CTEInDML(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ctdml",
+	db := testkit.SetupPlanShapeDB(t, "ctdml",
 		"CREATE TABLE ct_src(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE ct_dst(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO ct_src VALUES (1, 10), (2, 20), (3, 30), (4, 40)"); err != nil {
@@ -11595,12 +11535,12 @@ func TestFDB_CTEInDML(t *testing.T) {
 // TestFDB_UpdateMultiColumn — UPDATE setting multiple columns at once
 func TestFDB_UpdateMultiColumn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "updmc", "CREATE TABLE umc_t(id BIGINT, a BIGINT, b STRING, c BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "updmc", "CREATE TABLE umc_t(id BIGINT, a BIGINT, b STRING, c BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO umc_t VALUES (1, 10, 'old', 100), (2, 20, 'old', 200)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -11609,7 +11549,7 @@ func TestFDB_UpdateMultiColumn(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE umc_t SET a = 99, b = 'new' WHERE id = 1"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT a, b, c FROM umc_t WHERE id = 1")
+		rows := testkit.CollectRows(t, db, "SELECT a, b, c FROM umc_t WHERE id = 1")
 		if toInt64(rows[0][0]) != 99 {
 			t.Errorf("a should be 99, got %v", rows[0][0])
 		}
@@ -11630,7 +11570,7 @@ func TestFDB_UpdateMultiColumn(t *testing.T) {
 		if n != 2 {
 			t.Errorf("want 2 updated, got %d", n)
 		}
-		rows := collectRows(t, db, "SELECT c FROM umc_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT c FROM umc_t ORDER BY id")
 		if toInt64(rows[0][0]) != 1100 {
 			t.Errorf("id=1: c=100+1000=1100, got %v", rows[0][0])
 		}
@@ -11643,12 +11583,12 @@ func TestFDB_UpdateMultiColumn(t *testing.T) {
 // TestFDB_DerivedTableWithJoinAndAggregate — derived table in JOIN with aggregate
 func TestFDB_DerivedTableWithJoinAndAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dtja", "CREATE TABLE dtja_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "dtja", "CREATE TABLE dtja_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO dtja_t VALUES
 		(1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40), (5, 'C', 50)
 	`); err != nil {
@@ -11656,7 +11596,7 @@ func TestFDB_DerivedTableWithJoinAndAggregate(t *testing.T) {
 	}
 
 	t.Run("select_from_aggregate_derived", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT cat, total FROM (
 				SELECT cat, SUM(val) AS total FROM dtja_t GROUP BY cat
 			) AS summary
@@ -11672,7 +11612,7 @@ func TestFDB_DerivedTableWithJoinAndAggregate(t *testing.T) {
 	})
 
 	t.Run("count_over_aggregate_derived", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM (
 				SELECT cat, SUM(val) AS total FROM dtja_t GROUP BY cat HAVING SUM(val) > 40
 			) AS big_cats
@@ -11686,12 +11626,12 @@ func TestFDB_DerivedTableWithJoinAndAggregate(t *testing.T) {
 // TestFDB_WhereWithLikePatterns — LIKE pattern matching edge cases
 func TestFDB_WhereWithLikePatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "likep", "CREATE TABLE lp_t(id BIGINT, name STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "likep", "CREATE TABLE lp_t(id BIGINT, name STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO lp_t VALUES
 		(1, 'alice'), (2, 'bob'), (3, 'charlie'), (4, 'alex'),
 		(5, 'alice_jones'), (6, 'ALICE'), (7, 'al')
@@ -11700,42 +11640,42 @@ func TestFDB_WhereWithLikePatterns(t *testing.T) {
 	}
 
 	t.Run("like_prefix", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE 'al%' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE 'al%' ORDER BY id")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 (alice, alex, alice_jones, al), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("like_suffix", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE '%ice' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE '%ice' ORDER BY id")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 (alice), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("like_contains", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE '%li%' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE '%li%' ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 (alice, charlie, alice_jones), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("like_exact", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE 'bob'")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE 'bob'")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
 			t.Errorf("want id=2, got %v", rows)
 		}
 	})
 
 	t.Run("not_like", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lp_t WHERE name NOT LIKE 'al%' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lp_t WHERE name NOT LIKE 'al%' ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 (bob, charlie, ALICE), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("like_underscore_wildcard", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE 'a_' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lp_t WHERE name LIKE 'a_' ORDER BY id")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 7 {
 			t.Errorf("want id=7 (al matches a_), got %v", rows)
 		}
@@ -11745,12 +11685,12 @@ func TestFDB_WhereWithLikePatterns(t *testing.T) {
 // TestFDB_WindowFunctionErrors — window functions should error (not supported)
 func TestFDB_WindowFunctionErrors(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wferr", "CREATE TABLE wf_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "wferr", "CREATE TABLE wf_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO wf_t VALUES (1, 10), (2, 20), (3, 30)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -11777,12 +11717,12 @@ func TestFDB_WindowFunctionErrors(t *testing.T) {
 // TestFDB_MixedOperators — queries mixing multiple operator types
 func TestFDB_MixedOperators(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mixop", "CREATE TABLE mo_t(id BIGINT, a BIGINT, b STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "mixop", "CREATE TABLE mo_t(id BIGINT, a BIGINT, b STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO mo_t VALUES
 		(1, 10, 'hello'), (2, 20, 'world'), (3, 30, 'hello'),
 		(4, 40, 'test'), (5, 50, 'world'), (6, 60, 'hello')
@@ -11791,21 +11731,21 @@ func TestFDB_MixedOperators(t *testing.T) {
 	}
 
 	t.Run("in_and_like_combined", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM mo_t WHERE a IN (10, 30, 50) AND b LIKE 'hel%' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM mo_t WHERE a IN (10, 30, 50) AND b LIKE 'hel%' ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (id=1: a=10+hello, id=3: a=30+hello), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("between_and_not_like", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM mo_t WHERE a BETWEEN 20 AND 50 AND b NOT LIKE 'hel%' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM mo_t WHERE a BETWEEN 20 AND 50 AND b NOT LIKE 'hel%' ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 (id=2:world, id=4:test, id=5:world), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("group_by_string_with_count_and_sum", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT b, COUNT(*), SUM(a) FROM mo_t GROUP BY b ORDER BY b")
+		rows := testkit.CollectRows(t, db, "SELECT b, COUNT(*), SUM(a) FROM mo_t GROUP BY b ORDER BY b")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 groups, got %d: %v", len(rows), rows)
 		}
@@ -11815,7 +11755,7 @@ func TestFDB_MixedOperators(t *testing.T) {
 	})
 
 	t.Run("order_by_aggregate_desc_with_limit", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT b, SUM(a) AS total FROM mo_t GROUP BY b ORDER BY total DESC LIMIT 1")
+		rows := testkit.CollectRows(t, db, "SELECT b, SUM(a) AS total FROM mo_t GROUP BY b ORDER BY total DESC LIMIT 1")
 		if len(rows) != 1 {
 			t.Fatalf("want 1, got %d", len(rows))
 		}
@@ -11828,12 +11768,12 @@ func TestFDB_MixedOperators(t *testing.T) {
 // TestFDB_AggregateOverJoinWithNulls — aggregate over JOIN with NULL-producing LEFT JOIN
 func TestFDB_AggregateOverJoinWithNulls(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "agjn",
+	db := testkit.SetupPlanShapeDB(t, "agjn",
 		"CREATE TABLE aj_parent(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE aj_child(id BIGINT, parent_id BIGINT, amount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO aj_parent VALUES (1, 'p1'), (2, 'p2'), (3, 'p3')"); err != nil {
@@ -11844,7 +11784,7 @@ func TestFDB_AggregateOverJoinWithNulls(t *testing.T) {
 	}
 
 	t.Run("left_join_sum_with_null_group", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name, SUM(c.amount) AS total
 			FROM aj_parent p LEFT JOIN aj_child c ON p.id = c.parent_id
 			GROUP BY p.name ORDER BY p.name
@@ -11864,7 +11804,7 @@ func TestFDB_AggregateOverJoinWithNulls(t *testing.T) {
 	})
 
 	t.Run("left_join_count_col_excludes_null", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name, COUNT(c.amount)
 			FROM aj_parent p LEFT JOIN aj_child c ON p.id = c.parent_id
 			GROUP BY p.name ORDER BY p.name
@@ -11878,7 +11818,7 @@ func TestFDB_AggregateOverJoinWithNulls(t *testing.T) {
 	})
 
 	t.Run("left_join_coalesce_sum", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name, COALESCE(SUM(c.amount), 0) AS total
 			FROM aj_parent p LEFT JOIN aj_child c ON p.id = c.parent_id
 			GROUP BY p.name ORDER BY p.name
@@ -11895,18 +11835,18 @@ func TestFDB_AggregateOverJoinWithNulls(t *testing.T) {
 // TestFDB_OrderByWithNulls — ORDER BY behavior with NULL values
 func TestFDB_OrderByWithNulls(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "obnull", "CREATE TABLE obn_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "obnull", "CREATE TABLE obn_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO obn_t VALUES (1, 30), (2, NULL), (3, 10), (4, NULL), (5, 20)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("order_by_asc_nulls", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM obn_t ORDER BY val, id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM obn_t ORDER BY val, id")
 		if len(rows) != 5 {
 			t.Fatalf("want 5, got %d", len(rows))
 		}
@@ -11914,7 +11854,7 @@ func TestFDB_OrderByWithNulls(t *testing.T) {
 	})
 
 	t.Run("order_by_desc_nulls", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM obn_t ORDER BY val DESC, id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM obn_t ORDER BY val DESC, id")
 		if len(rows) != 5 {
 			t.Fatalf("want 5, got %d", len(rows))
 		}
@@ -11922,7 +11862,7 @@ func TestFDB_OrderByWithNulls(t *testing.T) {
 	})
 
 	t.Run("count_non_null_ordered", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(val) FROM obn_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(val) FROM obn_t")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("COUNT(val) should be 3 (excludes 2 NULLs), got %v", rows[0][0])
 		}
@@ -11932,18 +11872,18 @@ func TestFDB_OrderByWithNulls(t *testing.T) {
 // TestFDB_EmptyStringVsNull — empty string is NOT NULL
 func TestFDB_EmptyStringVsNull(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "esvn", "CREATE TABLE esvn_t(id BIGINT, val STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "esvn", "CREATE TABLE esvn_t(id BIGINT, val STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO esvn_t VALUES (1, ''), (2, NULL), (3, 'hello')"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("empty_string_is_not_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM esvn_t WHERE val IS NOT NULL ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM esvn_t WHERE val IS NOT NULL ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (empty string + hello), got %d: %v", len(rows), rows)
 		}
@@ -11953,21 +11893,21 @@ func TestFDB_EmptyStringVsNull(t *testing.T) {
 	})
 
 	t.Run("null_is_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM esvn_t WHERE val IS NULL")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM esvn_t WHERE val IS NULL")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
 			t.Errorf("want id=2 (NULL), got %v", rows)
 		}
 	})
 
 	t.Run("empty_string_eq", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM esvn_t WHERE val = ''")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM esvn_t WHERE val = ''")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 1 {
 			t.Errorf("want id=1, got %v", rows)
 		}
 	})
 
 	t.Run("count_col_excludes_null_not_empty", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(val) FROM esvn_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(val) FROM esvn_t")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("COUNT(val) should be 2 (empty string counts, NULL doesn't), got %v", rows[0][0])
 		}
@@ -11977,12 +11917,12 @@ func TestFDB_EmptyStringVsNull(t *testing.T) {
 // TestFDB_UpdateWithSubquery — UPDATE using correlated subquery logic
 func TestFDB_UpdateWithSubquery(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "upsq",
+	db := testkit.SetupPlanShapeDB(t, "upsq",
 		"CREATE TABLE up_main(id BIGINT, val BIGINT, flag STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE up_ref(id BIGINT, threshold BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO up_main VALUES (1, 10, 'low'), (2, 50, 'low'), (3, 90, 'low')"); err != nil {
@@ -11996,7 +11936,7 @@ func TestFDB_UpdateWithSubquery(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE up_main SET flag = CASE WHEN val > 40 THEN 'high' ELSE 'low' END"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT id, flag FROM up_main ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, flag FROM up_main ORDER BY id")
 		if fmt.Sprintf("%v", rows[0][1]) != "low" {
 			t.Errorf("id=1 (val=10): should stay low, got %v", rows[0][1])
 		}
@@ -12012,14 +11952,14 @@ func TestFDB_UpdateWithSubquery(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE up_main SET val = NULL WHERE id = 2"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT val FROM up_main WHERE id = 2")
+		rows := testkit.CollectRows(t, db, "SELECT val FROM up_main WHERE id = 2")
 		if rows[0][0] != nil {
 			t.Errorf("val should be NULL, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("verify_null_in_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val), COUNT(val), COUNT(*) FROM up_main")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val), COUNT(val), COUNT(*) FROM up_main")
 		if toInt64(rows[0][2]) != 3 {
 			t.Errorf("COUNT(*) should be 3, got %v", rows[0][2])
 		}
@@ -12032,12 +11972,12 @@ func TestFDB_UpdateWithSubquery(t *testing.T) {
 // TestFDB_CTERecursiveDepthLimit — recursive CTE hits depth limit
 func TestFDB_CTERecursiveDepthLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ctrdl", "CREATE TABLE tree(id BIGINT, parent_id BIGINT, name STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "ctrdl", "CREATE TABLE tree(id BIGINT, parent_id BIGINT, name STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO tree VALUES
 		(1, NULL, 'root'), (2, 1, 'child1'), (3, 1, 'child2'),
 		(4, 2, 'grandchild1'), (5, 3, 'grandchild2')
@@ -12064,7 +12004,7 @@ func TestFDB_CTERecursiveDepthLimit(t *testing.T) {
 	})
 
 	t.Run("recursive_cte_leaf_nodes", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT t.name FROM tree t
 			WHERE NOT EXISTS (SELECT 1 FROM tree c WHERE c.parent_id = t.id)
 			ORDER BY t.name
@@ -12078,12 +12018,12 @@ func TestFDB_CTERecursiveDepthLimit(t *testing.T) {
 // TestFDB_AggregateIndexWithUpdate — aggregate index correctness after updates
 func TestFDB_AggregateIndexWithUpdate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "aiupd",
+	db := testkit.SetupPlanShapeDB(t, "aiupd",
 		"CREATE TABLE ai_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE INDEX cnt_grp AS SELECT COUNT(*) FROM ai_t GROUP BY grp "+
 			"CREATE INDEX sum_grp AS SELECT SUM(val) FROM ai_t GROUP BY grp")
@@ -12094,7 +12034,7 @@ func TestFDB_AggregateIndexWithUpdate(t *testing.T) {
 	}
 
 	t.Run("initial_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM ai_t GROUP BY grp ORDER BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM ai_t GROUP BY grp ORDER BY grp")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
 		}
@@ -12107,7 +12047,7 @@ func TestFDB_AggregateIndexWithUpdate(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE ai_t SET val = 100 WHERE id = 1"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT grp, SUM(val) FROM ai_t WHERE grp = 'A' GROUP BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, SUM(val) FROM ai_t WHERE grp = 'A' GROUP BY grp")
 		if toInt64(rows[0][1]) != 120 {
 			t.Errorf("A sum after update: 100+20=120, got %v", rows[0][1])
 		}
@@ -12117,7 +12057,7 @@ func TestFDB_AggregateIndexWithUpdate(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "DELETE FROM ai_t WHERE id = 2"); err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT grp, COUNT(*) FROM ai_t WHERE grp = 'A' GROUP BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, COUNT(*) FROM ai_t WHERE grp = 'A' GROUP BY grp")
 		if toInt64(rows[0][1]) != 1 {
 			t.Errorf("A count after delete: want 1, got %v", rows[0][1])
 		}
@@ -12127,7 +12067,7 @@ func TestFDB_AggregateIndexWithUpdate(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO ai_t VALUES (4, 'C', 50)"); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM ai_t GROUP BY grp ORDER BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM ai_t GROUP BY grp ORDER BY grp")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 groups now, got %d", len(rows))
 		}
@@ -12137,12 +12077,12 @@ func TestFDB_AggregateIndexWithUpdate(t *testing.T) {
 // TestFDB_JoinWithCTEAndAggregate — CTE used in JOIN with GROUP BY
 func TestFDB_JoinWithCTEAndAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jcag",
+	db := testkit.SetupPlanShapeDB(t, "jcag",
 		"CREATE TABLE jca_items(id BIGINT, cat STRING, price BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE jca_cats(name STRING, budget BIGINT, PRIMARY KEY(name))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO jca_items VALUES
@@ -12155,7 +12095,7 @@ func TestFDB_JoinWithCTEAndAggregate(t *testing.T) {
 	}
 
 	t.Run("cte_join_budget_vs_actual", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH spending AS (
 				SELECT cat, SUM(price) AS total FROM jca_items GROUP BY cat
 			)
@@ -12175,7 +12115,7 @@ func TestFDB_JoinWithCTEAndAggregate(t *testing.T) {
 	})
 
 	t.Run("cte_join_over_budget", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH spending AS (
 				SELECT cat, SUM(price) AS total FROM jca_items GROUP BY cat
 			)
@@ -12192,12 +12132,12 @@ func TestFDB_JoinWithCTEAndAggregate(t *testing.T) {
 // TestFDB_CoalesceChain — COALESCE with multiple fallbacks
 func TestFDB_CoalesceChain(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "coalch", "CREATE TABLE cc_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "coalch", "CREATE TABLE cc_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO cc_t VALUES
 		(1, 10, 20, 30), (2, NULL, 20, 30), (3, NULL, NULL, 30), (4, NULL, NULL, NULL)
 	`); err != nil {
@@ -12205,7 +12145,7 @@ func TestFDB_CoalesceChain(t *testing.T) {
 	}
 
 	t.Run("coalesce_three_args", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, COALESCE(a, b, c) FROM cc_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, COALESCE(a, b, c) FROM cc_t ORDER BY id")
 		if len(rows) != 4 {
 			t.Fatalf("want 4, got %d", len(rows))
 		}
@@ -12224,14 +12164,14 @@ func TestFDB_CoalesceChain(t *testing.T) {
 	})
 
 	t.Run("coalesce_with_constant", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, COALESCE(a, b, c, 999) FROM cc_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, COALESCE(a, b, c, 999) FROM cc_t ORDER BY id")
 		if toInt64(rows[3][1]) != 999 {
 			t.Errorf("id=4: COALESCE(NULL,NULL,NULL,999)=999, got %v", rows[3][1])
 		}
 	})
 
 	t.Run("coalesce_in_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(COALESCE(a, 0)) FROM cc_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(COALESCE(a, 0)) FROM cc_t")
 		if toInt64(rows[0][0]) != 10 {
 			t.Errorf("SUM(COALESCE(a,0)) = 10+0+0+0 = 10, got %v", rows[0][0])
 		}
@@ -12241,12 +12181,12 @@ func TestFDB_CoalesceChain(t *testing.T) {
 // TestFDB_BetweenWithGroupBy — BETWEEN combined with GROUP BY and HAVING
 func TestFDB_BetweenWithGroupBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "btgb", "CREATE TABLE btgb_t(id BIGINT, score BIGINT, grade STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "btgb", "CREATE TABLE btgb_t(id BIGINT, score BIGINT, grade STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO btgb_t VALUES
 		(1, 95, 'A'), (2, 85, 'B'), (3, 75, 'C'), (4, 65, 'D'),
 		(5, 92, 'A'), (6, 88, 'B'), (7, 72, 'C'), (8, 55, 'F')
@@ -12255,7 +12195,7 @@ func TestFDB_BetweenWithGroupBy(t *testing.T) {
 	}
 
 	t.Run("between_filter_then_group", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT grade, COUNT(*), SUM(score)
 			FROM btgb_t WHERE score BETWEEN 70 AND 95
 			GROUP BY grade ORDER BY grade
@@ -12266,14 +12206,14 @@ func TestFDB_BetweenWithGroupBy(t *testing.T) {
 	})
 
 	t.Run("not_between_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM btgb_t WHERE score NOT BETWEEN 70 AND 90 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM btgb_t WHERE score NOT BETWEEN 70 AND 90 ORDER BY id")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 (id=1:95, id=4:65, id=5:92, id=8:55), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("between_with_having", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT grade, COUNT(*)
 			FROM btgb_t WHERE score BETWEEN 50 AND 100
 			GROUP BY grade HAVING COUNT(*) >= 2
@@ -12288,12 +12228,12 @@ func TestFDB_BetweenWithGroupBy(t *testing.T) {
 // TestFDB_JoinAggregateWithHaving — JOIN + GROUP BY + HAVING + ORDER BY combined
 func TestFDB_JoinAggregateWithHaving(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jagh",
+	db := testkit.SetupPlanShapeDB(t, "jagh",
 		"CREATE TABLE jagh_teams(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jagh_scores(id BIGINT, team_id BIGINT, points BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jagh_teams VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')"); err != nil {
@@ -12308,7 +12248,7 @@ func TestFDB_JoinAggregateWithHaving(t *testing.T) {
 	}
 
 	t.Run("join_group_having_order", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT t.name, COUNT(*) AS games, SUM(s.points) AS total
 			FROM jagh_teams t JOIN jagh_scores s ON t.id = s.team_id
 			GROUP BY t.name
@@ -12333,39 +12273,39 @@ func TestFDB_JoinAggregateWithHaving(t *testing.T) {
 // TestFDB_SelectWithAlias — column and table aliases in various positions
 func TestFDB_SelectWithAlias(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "swal", "CREATE TABLE swa_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "swal", "CREATE TABLE swa_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO swa_t VALUES (1, 100), (2, 200), (3, 300)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("column_alias", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id AS key, val AS value FROM swa_t ORDER BY key")
+		rows := testkit.CollectRows(t, db, "SELECT id AS key, val AS value FROM swa_t ORDER BY key")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
 	})
 
 	t.Run("table_alias_qualified", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT t.id, t.val FROM swa_t t ORDER BY t.id")
+		rows := testkit.CollectRows(t, db, "SELECT t.id, t.val FROM swa_t t ORDER BY t.id")
 		if len(rows) != 3 || toInt64(rows[0][0]) != 1 {
 			t.Errorf("want id=1, got %v", rows)
 		}
 	})
 
 	t.Run("aggregate_alias_in_order_by", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT val AS v FROM swa_t ORDER BY v DESC")
+		rows := testkit.CollectRows(t, db, "SELECT val AS v FROM swa_t ORDER BY v DESC")
 		if toInt64(rows[0][0]) != 300 {
 			t.Errorf("first val DESC should be 300, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("expression_alias", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val * 2 AS doubled FROM swa_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val * 2 AS doubled FROM swa_t ORDER BY id")
 		if toInt64(rows[0][1]) != 200 {
 			t.Errorf("100*2=200, got %v", rows[0][1])
 		}
@@ -12375,12 +12315,12 @@ func TestFDB_SelectWithAlias(t *testing.T) {
 // TestFDB_DistinctPatterns — DISTINCT queries from Java patterns
 func TestFDB_DistinctPatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "sdist", "CREATE TABLE sd_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "sdist", "CREATE TABLE sd_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO sd_t VALUES
 		(1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'C', 30), (5, 'B', 20), (6, 'A', 40)
 	`); err != nil {
@@ -12388,14 +12328,14 @@ func TestFDB_DistinctPatterns(t *testing.T) {
 	}
 
 	t.Run("distinct_single_column", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT DISTINCT cat FROM sd_t ORDER BY cat")
+		rows := testkit.CollectRows(t, db, "SELECT DISTINCT cat FROM sd_t ORDER BY cat")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 distinct cats (A,B,C), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("distinct_two_columns", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT DISTINCT cat, val FROM sd_t ORDER BY cat, val")
+		rows := testkit.CollectRows(t, db, "SELECT DISTINCT cat, val FROM sd_t ORDER BY cat, val")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 distinct (A,10),(A,40),(B,20),(C,30), got %d: %v", len(rows), rows)
 		}
@@ -12412,12 +12352,12 @@ func TestFDB_DistinctPatterns(t *testing.T) {
 // TestFDB_NestedAggregateInDerived — aggregate over aggregate via derived table
 func TestFDB_NestedAggregateInDerived(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "nagd", "CREATE TABLE nagd_t(id BIGINT, dept STRING, salary BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "nagd", "CREATE TABLE nagd_t(id BIGINT, dept STRING, salary BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO nagd_t VALUES
 		(1, 'eng', 100), (2, 'eng', 120), (3, 'eng', 80),
 		(4, 'sales', 90), (5, 'sales', 110),
@@ -12427,7 +12367,7 @@ func TestFDB_NestedAggregateInDerived(t *testing.T) {
 	}
 
 	t.Run("max_of_group_sums", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT MAX(total) FROM (
 				SELECT dept, SUM(salary) AS total FROM nagd_t GROUP BY dept
 			) AS dept_totals
@@ -12438,7 +12378,7 @@ func TestFDB_NestedAggregateInDerived(t *testing.T) {
 	})
 
 	t.Run("min_of_group_counts", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT MIN(cnt) FROM (
 				SELECT dept, COUNT(*) AS cnt FROM nagd_t GROUP BY dept
 			) AS dept_counts
@@ -12449,7 +12389,7 @@ func TestFDB_NestedAggregateInDerived(t *testing.T) {
 	})
 
 	t.Run("sum_of_group_sums", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT SUM(total) FROM (
 				SELECT dept, SUM(salary) AS total FROM nagd_t GROUP BY dept
 			) AS dept_totals
@@ -12463,12 +12403,12 @@ func TestFDB_NestedAggregateInDerived(t *testing.T) {
 // TestFDB_GroupByOrderByNonAggColumn — ORDER BY on GROUP BY key
 func TestFDB_GroupByOrderByNonAggColumn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbobn", "CREATE TABLE gobn_t(id BIGINT, city STRING, revenue BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "gbobn", "CREATE TABLE gobn_t(id BIGINT, city STRING, revenue BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gobn_t VALUES
 		(1, 'NYC', 500), (2, 'LA', 300), (3, 'NYC', 400),
 		(4, 'SF', 200), (5, 'LA', 100), (6, 'SF', 600)
@@ -12477,7 +12417,7 @@ func TestFDB_GroupByOrderByNonAggColumn(t *testing.T) {
 	}
 
 	t.Run("order_by_group_key", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT city, SUM(revenue) FROM gobn_t GROUP BY city ORDER BY city")
+		rows := testkit.CollectRows(t, db, "SELECT city, SUM(revenue) FROM gobn_t GROUP BY city ORDER BY city")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -12487,14 +12427,14 @@ func TestFDB_GroupByOrderByNonAggColumn(t *testing.T) {
 	})
 
 	t.Run("order_by_aggregate_asc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT city, SUM(revenue) AS total FROM gobn_t GROUP BY city ORDER BY total")
+		rows := testkit.CollectRows(t, db, "SELECT city, SUM(revenue) AS total FROM gobn_t GROUP BY city ORDER BY total")
 		if toInt64(rows[0][1]) != 400 {
 			t.Errorf("smallest total should be LA(400), got %v", rows[0][1])
 		}
 	})
 
 	t.Run("order_by_count_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT city, COUNT(*) AS cnt FROM gobn_t GROUP BY city ORDER BY cnt DESC, city")
+		rows := testkit.CollectRows(t, db, "SELECT city, COUNT(*) AS cnt FROM gobn_t GROUP BY city ORDER BY cnt DESC, city")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -12507,12 +12447,12 @@ func TestFDB_GroupByOrderByNonAggColumn(t *testing.T) {
 // TestFDB_InsertDuplicateAndRecover — insert duplicate PK then continue with valid operations
 func TestFDB_InsertDuplicateAndRecover(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "idrc", "CREATE TABLE idr_t(id BIGINT, val STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "idrc", "CREATE TABLE idr_t(id BIGINT, val STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO idr_t VALUES (1, 'first')"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -12532,7 +12472,7 @@ func TestFDB_InsertDuplicateAndRecover(t *testing.T) {
 	})
 
 	t.Run("data_intact", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM idr_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM idr_t ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
 		}
@@ -12548,12 +12488,12 @@ func TestFDB_InsertDuplicateAndRecover(t *testing.T) {
 // TestFDB_WhereInWithSubqueryResult — WHERE col IN (values) with aggregate results
 func TestFDB_WhereInWithSubqueryResult(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wisqr", "CREATE TABLE wisq_t(id BIGINT, val BIGINT, cat STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "wisqr", "CREATE TABLE wisq_t(id BIGINT, val BIGINT, cat STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO wisq_t VALUES
 		(1, 10, 'A'), (2, 20, 'B'), (3, 30, 'A'), (4, 40, 'C'), (5, 50, 'B')
 	`); err != nil {
@@ -12561,14 +12501,14 @@ func TestFDB_WhereInWithSubqueryResult(t *testing.T) {
 	}
 
 	t.Run("in_multiple_values", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM wisq_t WHERE val IN (10, 30, 50) ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM wisq_t WHERE val IN (10, 30, 50) ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("in_with_group_by", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT cat, SUM(val) FROM wisq_t WHERE cat IN ('A', 'B') GROUP BY cat ORDER BY cat")
+		rows := testkit.CollectRows(t, db, "SELECT cat, SUM(val) FROM wisq_t WHERE cat IN ('A', 'B') GROUP BY cat ORDER BY cat")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
 		}
@@ -12581,7 +12521,7 @@ func TestFDB_WhereInWithSubqueryResult(t *testing.T) {
 	})
 
 	t.Run("not_in_with_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM wisq_t WHERE cat NOT IN ('A')")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM wisq_t WHERE cat NOT IN ('A')")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("NOT IN A: want 3 (B,C,B), got %v", rows[0][0])
 		}
@@ -12591,12 +12531,12 @@ func TestFDB_WhereInWithSubqueryResult(t *testing.T) {
 // TestFDB_DeleteAllThenInsert — full table delete then repopulate
 func TestFDB_DeleteAllThenInsert(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dati", "CREATE TABLE dati_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "dati", "CREATE TABLE dati_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO dati_t VALUES (1, 100), (2, 200), (3, 300)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -12613,7 +12553,7 @@ func TestFDB_DeleteAllThenInsert(t *testing.T) {
 	})
 
 	t.Run("empty_aggregates", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*), SUM(val) FROM dati_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*), SUM(val) FROM dati_t")
 		if toInt64(rows[0][0]) != 0 {
 			t.Errorf("COUNT should be 0, got %v", rows[0][0])
 		}
@@ -12626,7 +12566,7 @@ func TestFDB_DeleteAllThenInsert(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO dati_t VALUES (10, 1000), (20, 2000)"); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*), SUM(val) FROM dati_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*), SUM(val) FROM dati_t")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("COUNT should be 2, got %v", rows[0][0])
 		}
@@ -12639,12 +12579,12 @@ func TestFDB_DeleteAllThenInsert(t *testing.T) {
 // TestFDB_UpdateWithWhereAndVerify — UPDATE with various WHERE and verify results
 func TestFDB_UpdateWithWhereAndVerify(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uwv", "CREATE TABLE uwv_t(id BIGINT, status STRING, score BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "uwv", "CREATE TABLE uwv_t(id BIGINT, status STRING, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO uwv_t VALUES
 		(1, 'pending', 10), (2, 'active', 20), (3, 'pending', 30),
 		(4, 'active', 40), (5, 'done', 50)
@@ -12664,7 +12604,7 @@ func TestFDB_UpdateWithWhereAndVerify(t *testing.T) {
 	})
 
 	t.Run("verify_update", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, score FROM uwv_t WHERE status = 'pending' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, score FROM uwv_t WHERE status = 'pending' ORDER BY id")
 		if toInt64(rows[0][1]) != 110 {
 			t.Errorf("id=1: 10+100=110, got %v", rows[0][1])
 		}
@@ -12677,14 +12617,14 @@ func TestFDB_UpdateWithWhereAndVerify(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE uwv_t SET status = 'done', score = 0 WHERE status = 'pending'"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM uwv_t WHERE status = 'done'")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM uwv_t WHERE status = 'done'")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("want 3 done (2 former pending + 1 original), got %v", rows[0][0])
 		}
 	})
 
 	t.Run("aggregate_after_updates", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT status, COUNT(*), SUM(score) FROM uwv_t GROUP BY status ORDER BY status")
+		rows := testkit.CollectRows(t, db, "SELECT status, COUNT(*), SUM(score) FROM uwv_t GROUP BY status ORDER BY status")
 		t.Logf("final state: %v", rows)
 		if len(rows) < 2 {
 			t.Fatalf("want at least 2 groups, got %d", len(rows))
@@ -12695,12 +12635,12 @@ func TestFDB_UpdateWithWhereAndVerify(t *testing.T) {
 // TestFDB_JoinWithMultipleConditions — JOIN ON with multiple predicates
 func TestFDB_JoinWithMultipleConditions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jmcond",
+	db := testkit.SetupPlanShapeDB(t, "jmcond",
 		"CREATE TABLE jmc_a(id BIGINT, x BIGINT, y STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jmc_b(id BIGINT, x BIGINT, y STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jmc_a VALUES (1, 10, 'foo'), (2, 20, 'bar'), (3, 10, 'bar')"); err != nil {
@@ -12713,7 +12653,7 @@ func TestFDB_JoinWithMultipleConditions(t *testing.T) {
 	}
 
 	t.Run("join_on_two_columns", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.id, b.val
 			FROM jmc_a a JOIN jmc_b b ON a.x = b.x AND a.y = b.y
 			ORDER BY a.id
@@ -12727,7 +12667,7 @@ func TestFDB_JoinWithMultipleConditions(t *testing.T) {
 	})
 
 	t.Run("join_two_col_with_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.y, SUM(b.val)
 			FROM jmc_a a JOIN jmc_b b ON a.x = b.x AND a.y = b.y
 			GROUP BY a.y ORDER BY a.y
@@ -12741,12 +12681,12 @@ func TestFDB_JoinWithMultipleConditions(t *testing.T) {
 // TestFDB_CaseWhenInGroupBy — CASE WHEN expression used as GROUP BY key
 func TestFDB_CaseWhenInGroupBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cwgb", "CREATE TABLE cwgb_t(id BIGINT, score BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "cwgb", "CREATE TABLE cwgb_t(id BIGINT, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO cwgb_t VALUES
 		(1, 95), (2, 85), (3, 75), (4, 65), (5, 55), (6, 45), (7, 35)
 	`); err != nil {
@@ -12779,12 +12719,12 @@ func TestFDB_CaseWhenInGroupBy(t *testing.T) {
 // TestFDB_SelectWhereOnString — string comparison operators
 func TestFDB_SelectWhereOnString(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "swstr", "CREATE TABLE sws_t(id BIGINT, name STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "swstr", "CREATE TABLE sws_t(id BIGINT, name STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO sws_t VALUES
 		(1, 'alice'), (2, 'bob'), (3, 'charlie'), (4, 'david'), (5, 'eve')
 	`); err != nil {
@@ -12792,21 +12732,21 @@ func TestFDB_SelectWhereOnString(t *testing.T) {
 	}
 
 	t.Run("string_eq", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM sws_t WHERE name = 'bob'")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM sws_t WHERE name = 'bob'")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
 			t.Errorf("want id=2, got %v", rows)
 		}
 	})
 
 	t.Run("string_ne", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM sws_t WHERE name <> 'bob'")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM sws_t WHERE name <> 'bob'")
 		if toInt64(rows[0][0]) != 4 {
 			t.Errorf("want 4 (!= bob), got %v", rows[0][0])
 		}
 	})
 
 	t.Run("string_order_by", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT name FROM sws_t ORDER BY name")
+		rows := testkit.CollectRows(t, db, "SELECT name FROM sws_t ORDER BY name")
 		if fmt.Sprintf("%v", rows[0][0]) != "alice" {
 			t.Errorf("first alphabetically should be alice, got %v", rows[0][0])
 		}
@@ -12816,7 +12756,7 @@ func TestFDB_SelectWhereOnString(t *testing.T) {
 	})
 
 	t.Run("string_in_list", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM sws_t WHERE name IN ('alice', 'eve') ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM sws_t WHERE name IN ('alice', 'eve') ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
 		}
@@ -12826,12 +12766,12 @@ func TestFDB_SelectWhereOnString(t *testing.T) {
 // TestFDB_MinMaxWithStrings — MIN/MAX on string columns
 func TestFDB_MinMaxWithStrings(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mmstr", "CREATE TABLE mms_t(id BIGINT, name STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "mmstr", "CREATE TABLE mms_t(id BIGINT, name STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO mms_t VALUES (1, 'charlie'), (2, 'alice'), (3, 'bob'), (4, 'david')"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -12846,7 +12786,7 @@ func TestFDB_MinMaxWithStrings(t *testing.T) {
 	})
 
 	t.Run("count_string_works", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(name) FROM mms_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(name) FROM mms_t")
 		if toInt64(rows[0][0]) != 4 {
 			t.Errorf("COUNT(name) should be 4, got %v", rows[0][0])
 		}
@@ -12856,12 +12796,12 @@ func TestFDB_MinMaxWithStrings(t *testing.T) {
 // TestFDB_UnionAllWithDifferentWheres — UNION ALL where each leg has different WHERE
 func TestFDB_UnionAllWithDifferentWheres(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uadw", "CREATE TABLE uadw_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "uadw", "CREATE TABLE uadw_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO uadw_t VALUES
 		(1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'C', 40), (5, 'B', 50)
 	`); err != nil {
@@ -12869,7 +12809,7 @@ func TestFDB_UnionAllWithDifferentWheres(t *testing.T) {
 	}
 
 	t.Run("union_different_filters", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, val FROM uadw_t WHERE cat = 'A'
 			UNION ALL
 			SELECT id, val FROM uadw_t WHERE val > 40
@@ -12881,7 +12821,7 @@ func TestFDB_UnionAllWithDifferentWheres(t *testing.T) {
 	})
 
 	t.Run("union_count_different_filters", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM (
 				SELECT id FROM uadw_t WHERE cat = 'A'
 				UNION ALL
@@ -12897,12 +12837,12 @@ func TestFDB_UnionAllWithDifferentWheres(t *testing.T) {
 // TestFDB_GroupByWithCoalesceAndCase — GROUP BY with expression columns
 func TestFDB_GroupByWithCoalesceAndCase(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbcc", "CREATE TABLE gbcc_t(id BIGINT, region STRING, amount BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "gbcc", "CREATE TABLE gbcc_t(id BIGINT, region STRING, amount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gbcc_t VALUES
 		(1, 'east', 100), (2, NULL, 200), (3, 'west', 300), (4, NULL, 400), (5, 'east', 500)
 	`); err != nil {
@@ -12910,7 +12850,7 @@ func TestFDB_GroupByWithCoalesceAndCase(t *testing.T) {
 	}
 
 	t.Run("group_by_coalesce", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COALESCE(region, 'unknown'), SUM(amount)
 			FROM gbcc_t
 			GROUP BY COALESCE(region, 'unknown')
@@ -12926,12 +12866,12 @@ func TestFDB_GroupByWithCoalesceAndCase(t *testing.T) {
 // TestFDB_SumWithArithmeticExpressions — SUM of arithmetic expressions
 func TestFDB_SumWithArithmeticExpressions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "sumae", "CREATE TABLE sae_t(id BIGINT, qty BIGINT, price BIGINT, discount BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "sumae", "CREATE TABLE sae_t(id BIGINT, qty BIGINT, price BIGINT, discount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO sae_t VALUES
 		(1, 10, 100, 5), (2, 20, 50, 10), (3, 5, 200, 0)
 	`); err != nil {
@@ -12939,21 +12879,21 @@ func TestFDB_SumWithArithmeticExpressions(t *testing.T) {
 	}
 
 	t.Run("sum_of_product", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(qty * price) FROM sae_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(qty * price) FROM sae_t")
 		if toInt64(rows[0][0]) != 3000 {
 			t.Errorf("SUM(qty*price) = 1000+1000+1000 = 3000, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("sum_of_difference", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(price - discount) FROM sae_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(price - discount) FROM sae_t")
 		if toInt64(rows[0][0]) != 335 {
 			t.Errorf("SUM(price-discount) = 95+40+200 = 335, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("multiple_sum_expressions", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(qty), SUM(price), SUM(qty * price) FROM sae_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(qty), SUM(price), SUM(qty * price) FROM sae_t")
 		if toInt64(rows[0][0]) != 35 {
 			t.Errorf("SUM(qty) = 35, got %v", rows[0][0])
 		}
@@ -12969,12 +12909,12 @@ func TestFDB_SumWithArithmeticExpressions(t *testing.T) {
 // TestFDB_LeftJoinWithAggregateAndHaving — LEFT JOIN + GROUP BY + HAVING
 func TestFDB_LeftJoinWithAggregateAndHaving(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ljah",
+	db := testkit.SetupPlanShapeDB(t, "ljah",
 		"CREATE TABLE ljah_p(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE ljah_c(id BIGINT, pid BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO ljah_p VALUES (1, 'p1'), (2, 'p2'), (3, 'p3')"); err != nil {
@@ -12985,7 +12925,7 @@ func TestFDB_LeftJoinWithAggregateAndHaving(t *testing.T) {
 	}
 
 	t.Run("left_join_having_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name, COUNT(c.val)
 			FROM ljah_p p LEFT JOIN ljah_c c ON p.id = c.pid
 			GROUP BY p.name
@@ -13001,7 +12941,7 @@ func TestFDB_LeftJoinWithAggregateAndHaving(t *testing.T) {
 	})
 
 	t.Run("left_join_sum_having", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name, SUM(c.val)
 			FROM ljah_p p LEFT JOIN ljah_c c ON p.id = c.pid
 			GROUP BY p.name
@@ -13020,12 +12960,12 @@ func TestFDB_LeftJoinWithAggregateAndHaving(t *testing.T) {
 // TestFDB_WhereOnJoinColumns — WHERE filtering on columns from both sides of JOIN
 func TestFDB_WhereOnJoinColumns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wojc",
+	db := testkit.SetupPlanShapeDB(t, "wojc",
 		"CREATE TABLE wj_a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE wj_b(id BIGINT, a_id BIGINT, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO wj_a VALUES (1, 10), (2, 20), (3, 30)"); err != nil {
@@ -13036,21 +12976,21 @@ func TestFDB_WhereOnJoinColumns(t *testing.T) {
 	}
 
 	t.Run("where_on_left_table", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a.id, b.score FROM wj_a a JOIN wj_b b ON a.id = b.a_id WHERE a.val > 15")
+		rows := testkit.CollectRows(t, db, "SELECT a.id, b.score FROM wj_a a JOIN wj_b b ON a.id = b.a_id WHERE a.val > 15")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("where_on_right_table", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a.id, b.score FROM wj_a a JOIN wj_b b ON a.id = b.a_id WHERE b.score >= 200")
+		rows := testkit.CollectRows(t, db, "SELECT a.id, b.score FROM wj_a a JOIN wj_b b ON a.id = b.a_id WHERE b.score >= 200")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("where_on_both_tables", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a.id FROM wj_a a JOIN wj_b b ON a.id = b.a_id WHERE a.val >= 20 AND b.score <= 200")
+		rows := testkit.CollectRows(t, db, "SELECT a.id FROM wj_a a JOIN wj_b b ON a.id = b.a_id WHERE a.val >= 20 AND b.score <= 200")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
 			t.Errorf("want id=2 (val=20>=20 AND score=200<=200), got %v", rows)
 		}
@@ -13060,18 +13000,18 @@ func TestFDB_WhereOnJoinColumns(t *testing.T) {
 // TestFDB_CTEMultipleUsage — single CTE referenced multiple times in query
 func TestFDB_CTEMultipleUsage(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ctmu", "CREATE TABLE ctmu_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "ctmu", "CREATE TABLE ctmu_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO ctmu_t VALUES (1, 10), (2, 20), (3, 30)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("cte_used_in_join_with_self", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH base AS (SELECT id, val FROM ctmu_t WHERE val >= 20)
 			SELECT a.id, b.id FROM base a JOIN base b ON a.id < b.id
 			ORDER BY a.id, b.id
@@ -13085,7 +13025,7 @@ func TestFDB_CTEMultipleUsage(t *testing.T) {
 	})
 
 	t.Run("cte_with_where_reuse", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH data AS (SELECT * FROM ctmu_t)
 			SELECT COUNT(*), SUM(val) FROM data
 		`)
@@ -13098,12 +13038,12 @@ func TestFDB_CTEMultipleUsage(t *testing.T) {
 // TestFDB_GroupByWithMinMaxBigint — MIN/MAX on BIGINT with GROUP BY
 func TestFDB_GroupByWithMinMaxBigint(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbmmb", "CREATE TABLE gbmm_t(id BIGINT, dept STRING, salary BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "gbmmb", "CREATE TABLE gbmm_t(id BIGINT, dept STRING, salary BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gbmm_t VALUES
 		(1, 'eng', 80), (2, 'eng', 120), (3, 'eng', 100),
 		(4, 'hr', 70), (5, 'hr', 90),
@@ -13113,7 +13053,7 @@ func TestFDB_GroupByWithMinMaxBigint(t *testing.T) {
 	}
 
 	t.Run("min_max_per_group", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT dept, MIN(salary), MAX(salary) FROM gbmm_t GROUP BY dept ORDER BY dept")
+		rows := testkit.CollectRows(t, db, "SELECT dept, MIN(salary), MAX(salary) FROM gbmm_t GROUP BY dept ORDER BY dept")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -13129,7 +13069,7 @@ func TestFDB_GroupByWithMinMaxBigint(t *testing.T) {
 	})
 
 	t.Run("max_minus_min_range", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT dept, MAX(salary) - MIN(salary) AS range_val FROM gbmm_t GROUP BY dept ORDER BY dept")
+		rows := testkit.CollectRows(t, db, "SELECT dept, MAX(salary) - MIN(salary) AS range_val FROM gbmm_t GROUP BY dept ORDER BY dept")
 		if toInt64(rows[0][1]) != 40 {
 			t.Errorf("eng range = 120-80 = 40, got %v", rows[0][1])
 		}
@@ -13142,12 +13082,12 @@ func TestFDB_GroupByWithMinMaxBigint(t *testing.T) {
 // TestFDB_OrderByWithLimitAndOffset — ORDER BY + LIMIT combinations
 func TestFDB_OrderByWithLimitAndOffset(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "oblim", "CREATE TABLE obl_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "oblim", "CREATE TABLE obl_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	for i := 1; i <= 10; i++ {
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO obl_t VALUES (%d, %d)", i, (11-i)*10)); err != nil {
 			t.Fatalf("INSERT %d: %v", i, err)
@@ -13155,7 +13095,7 @@ func TestFDB_OrderByWithLimitAndOffset(t *testing.T) {
 	}
 
 	t.Run("top_3_by_val_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM obl_t ORDER BY val DESC LIMIT 3")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM obl_t ORDER BY val DESC LIMIT 3")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -13165,14 +13105,14 @@ func TestFDB_OrderByWithLimitAndOffset(t *testing.T) {
 	})
 
 	t.Run("bottom_1_by_val", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM obl_t ORDER BY val LIMIT 1")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM obl_t ORDER BY val LIMIT 1")
 		if toInt64(rows[0][1]) != 10 {
 			t.Errorf("bottom val should be 10, got %v", rows[0][1])
 		}
 	})
 
 	t.Run("limit_with_where", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM obl_t WHERE val >= 50 ORDER BY val LIMIT 3")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM obl_t WHERE val >= 50 ORDER BY val LIMIT 3")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 from >=50, got %d", len(rows))
 		}
@@ -13182,12 +13122,12 @@ func TestFDB_OrderByWithLimitAndOffset(t *testing.T) {
 // TestFDB_JoinWithOrderByOnBothTables — ORDER BY referencing columns from both joined tables
 func TestFDB_JoinWithOrderByOnBothTables(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jobt",
+	db := testkit.SetupPlanShapeDB(t, "jobt",
 		"CREATE TABLE job_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE job_b(id BIGINT, aid BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO job_a VALUES (1, 'z'), (2, 'a'), (3, 'm')"); err != nil {
@@ -13198,7 +13138,7 @@ func TestFDB_JoinWithOrderByOnBothTables(t *testing.T) {
 	}
 
 	t.Run("order_by_left_column", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a.name, b.val FROM job_a a JOIN job_b b ON a.id = b.aid ORDER BY a.name")
+		rows := testkit.CollectRows(t, db, "SELECT a.name, b.val FROM job_a a JOIN job_b b ON a.id = b.aid ORDER BY a.name")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -13208,7 +13148,7 @@ func TestFDB_JoinWithOrderByOnBothTables(t *testing.T) {
 	})
 
 	t.Run("order_by_right_column", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a.name, b.val FROM job_a a JOIN job_b b ON a.id = b.aid ORDER BY b.val DESC")
+		rows := testkit.CollectRows(t, db, "SELECT a.name, b.val FROM job_a a JOIN job_b b ON a.id = b.aid ORDER BY b.val DESC")
 		if toInt64(rows[0][1]) != 300 {
 			t.Errorf("first val DESC should be 300, got %v", rows[0][1])
 		}
@@ -13218,12 +13158,12 @@ func TestFDB_JoinWithOrderByOnBothTables(t *testing.T) {
 // TestFDB_GroupByHavingWithMultipleConditions — HAVING with AND/OR
 func TestFDB_GroupByHavingWithMultipleConditions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbhmc", "CREATE TABLE ghmc_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "gbhmc", "CREATE TABLE ghmc_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO ghmc_t VALUES
 		(1, 'A', 10), (2, 'A', 20), (3, 'A', 30),
 		(4, 'B', 5), (5, 'B', 15),
@@ -13233,7 +13173,7 @@ func TestFDB_GroupByHavingWithMultipleConditions(t *testing.T) {
 	}
 
 	t.Run("having_count_and_sum", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT grp, COUNT(*), SUM(val) FROM ghmc_t
 			GROUP BY grp
 			HAVING COUNT(*) >= 2 AND SUM(val) > 30
@@ -13245,7 +13185,7 @@ func TestFDB_GroupByHavingWithMultipleConditions(t *testing.T) {
 	})
 
 	t.Run("having_min_check", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT grp, MIN(val) FROM ghmc_t
 			GROUP BY grp HAVING MIN(val) >= 5
 			ORDER BY grp
@@ -13259,12 +13199,12 @@ func TestFDB_GroupByHavingWithMultipleConditions(t *testing.T) {
 // TestFDB_UpdateSetArithmeticWithIndex — UPDATE arithmetic on indexed column
 func TestFDB_UpdateSetArithmeticWithIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "usawi",
+	db := testkit.SetupPlanShapeDB(t, "usawi",
 		"CREATE TABLE usai_t(id BIGINT, balance BIGINT, PRIMARY KEY(id)) "+
 			"CREATE INDEX sum_balance AS SELECT SUM(balance) FROM usai_t")
 	if _, err := db.ExecContext(ctx, "INSERT INTO usai_t VALUES (1, 100), (2, 200), (3, 300)"); err != nil {
@@ -13272,7 +13212,7 @@ func TestFDB_UpdateSetArithmeticWithIndex(t *testing.T) {
 	}
 
 	t.Run("initial_sum", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(balance) FROM usai_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(balance) FROM usai_t")
 		if toInt64(rows[0][0]) != 600 {
 			t.Errorf("initial SUM should be 600, got %v", rows[0][0])
 		}
@@ -13282,7 +13222,7 @@ func TestFDB_UpdateSetArithmeticWithIndex(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE usai_t SET balance = balance + 50 WHERE id = 1"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT SUM(balance) FROM usai_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(balance) FROM usai_t")
 		if toInt64(rows[0][0]) != 650 {
 			t.Errorf("after +50: SUM should be 650, got %v", rows[0][0])
 		}
@@ -13292,7 +13232,7 @@ func TestFDB_UpdateSetArithmeticWithIndex(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE usai_t SET balance = balance - 100 WHERE id = 3"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT balance FROM usai_t WHERE id = 3")
+		rows := testkit.CollectRows(t, db, "SELECT balance FROM usai_t WHERE id = 3")
 		if toInt64(rows[0][0]) != 200 {
 			t.Errorf("id=3: 300-100=200, got %v", rows[0][0])
 		}
@@ -13302,12 +13242,12 @@ func TestFDB_UpdateSetArithmeticWithIndex(t *testing.T) {
 // TestFDB_CombinedDMLWorkflow — INSERT + SELECT + UPDATE + DELETE + verify workflow
 func TestFDB_CombinedDMLWorkflow(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cdml", "CREATE TABLE cdml_t(id BIGINT, name STRING, active BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "cdml", "CREATE TABLE cdml_t(id BIGINT, name STRING, active BIGINT, PRIMARY KEY(id))")
 
 	t.Run("full_lifecycle", func(t *testing.T) {
 		// INSERT
@@ -13316,7 +13256,7 @@ func TestFDB_CombinedDMLWorkflow(t *testing.T) {
 		}
 
 		// SELECT verify
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM cdml_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM cdml_t")
 		if toInt64(rows[0][0]) != 3 {
 			t.Fatalf("after INSERT: want 3, got %v", rows[0][0])
 		}
@@ -13325,7 +13265,7 @@ func TestFDB_CombinedDMLWorkflow(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE cdml_t SET active = 0 WHERE name = 'bob'"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows = collectRows(t, db, "SELECT COUNT(*) FROM cdml_t WHERE active = 1")
+		rows = testkit.CollectRows(t, db, "SELECT COUNT(*) FROM cdml_t WHERE active = 1")
 		if toInt64(rows[0][0]) != 1 {
 			t.Errorf("after UPDATE: want 1 active, got %v", rows[0][0])
 		}
@@ -13341,7 +13281,7 @@ func TestFDB_CombinedDMLWorkflow(t *testing.T) {
 		}
 
 		// Final verify
-		rows = collectRows(t, db, "SELECT name FROM cdml_t")
+		rows = testkit.CollectRows(t, db, "SELECT name FROM cdml_t")
 		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "alice" {
 			t.Errorf("only alice should remain, got %v", rows)
 		}
@@ -13351,12 +13291,12 @@ func TestFDB_CombinedDMLWorkflow(t *testing.T) {
 // TestFDB_SelectWithMultipleStringColumns — queries on multiple string columns
 func TestFDB_SelectWithMultipleStringColumns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "smsc", "CREATE TABLE smsc_t(id BIGINT, first_name STRING, last_name STRING, city STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "smsc", "CREATE TABLE smsc_t(id BIGINT, first_name STRING, last_name STRING, city STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO smsc_t VALUES
 		(1, 'alice', 'smith', 'nyc'),
 		(2, 'bob', 'jones', 'la'),
@@ -13367,7 +13307,7 @@ func TestFDB_SelectWithMultipleStringColumns(t *testing.T) {
 	}
 
 	t.Run("group_by_last_name", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT last_name, COUNT(*) FROM smsc_t GROUP BY last_name ORDER BY last_name")
+		rows := testkit.CollectRows(t, db, "SELECT last_name, COUNT(*) FROM smsc_t GROUP BY last_name ORDER BY last_name")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 groups, got %d", len(rows))
 		}
@@ -13377,14 +13317,14 @@ func TestFDB_SelectWithMultipleStringColumns(t *testing.T) {
 	})
 
 	t.Run("filter_two_string_columns", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM smsc_t WHERE last_name = 'smith' AND city = 'nyc' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM smsc_t WHERE last_name = 'smith' AND city = 'nyc' ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (alice+charlie), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("group_by_city_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT city, COUNT(*) FROM smsc_t GROUP BY city ORDER BY city")
+		rows := testkit.CollectRows(t, db, "SELECT city, COUNT(*) FROM smsc_t GROUP BY city ORDER BY city")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 cities, got %d", len(rows))
 		}
@@ -13394,12 +13334,12 @@ func TestFDB_SelectWithMultipleStringColumns(t *testing.T) {
 // TestFDB_DerivedTableWithLimit — derived table containing LIMIT
 func TestFDB_DerivedTableWithLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dtlim", "CREATE TABLE dtl_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "dtlim", "CREATE TABLE dtl_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO dtl_t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -13408,21 +13348,21 @@ func TestFDB_DerivedTableWithLimit(t *testing.T) {
 		// RFC-128: the LIMIT inside a derived table is now applied at its
 		// pipeline position (no longer dropped/hoisted), so COUNT over a
 		// LIMIT-3 derived table is exactly 3 — not 5 (the old wrong behavior).
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM (SELECT * FROM dtl_t LIMIT 3) AS d")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM (SELECT * FROM dtl_t LIMIT 3) AS d")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("LIMIT in derived table must cap the inner to 3 rows: COUNT=%v, want 3", rows[0][0])
 		}
 	})
 
 	t.Run("outer_limit_works", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM (SELECT * FROM dtl_t) AS d ORDER BY id LIMIT 3")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM (SELECT * FROM dtl_t) AS d ORDER BY id LIMIT 3")
 		if len(rows) != 3 {
 			t.Fatalf("outer LIMIT should work: want 3, got %d", len(rows))
 		}
 	})
 
 	t.Run("aggregate_over_derived_no_limit", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM (SELECT * FROM dtl_t WHERE val <= 30) AS d")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM (SELECT * FROM dtl_t WHERE val <= 30) AS d")
 		if toInt64(rows[0][0]) != 60 {
 			t.Errorf("SUM of val<=30 (10+20+30=60), got %v", rows[0][0])
 		}
@@ -13432,12 +13372,12 @@ func TestFDB_DerivedTableWithLimit(t *testing.T) {
 // TestFDB_JoinWithCaseWhen — CASE WHEN expression in JOIN query
 func TestFDB_JoinWithCaseWhen(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jwcw",
+	db := testkit.SetupPlanShapeDB(t, "jwcw",
 		"CREATE TABLE jwcw_orders(id BIGINT, amount BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE jwcw_customers(id BIGINT, name STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jwcw_orders VALUES (1, 50), (2, 150), (3, 500)"); err != nil {
@@ -13448,7 +13388,7 @@ func TestFDB_JoinWithCaseWhen(t *testing.T) {
 	}
 
 	t.Run("case_when_in_join_select", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT c.name,
 				CASE WHEN o.amount >= 200 THEN 'premium' ELSE 'standard' END AS tier
 			FROM jwcw_customers c
@@ -13470,32 +13410,32 @@ func TestFDB_JoinWithCaseWhen(t *testing.T) {
 // TestFDB_WhereWithNegation — NOT, negative numbers, subtraction in WHERE
 func TestFDB_WhereWithNegation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wneg", "CREATE TABLE wn_t(id BIGINT, val BIGINT, flag BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "wneg", "CREATE TABLE wn_t(id BIGINT, val BIGINT, flag BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO wn_t VALUES (1, 10, 1), (2, -5, 0), (3, 20, 1), (4, -10, 0), (5, 0, 1)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("negative_values", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wn_t WHERE val < 0 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wn_t WHERE val < 0 ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 negative, got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("not_flag", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wn_t WHERE NOT (flag = 1) ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wn_t WHERE NOT (flag = 1) ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (flag<>1), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("abs_via_case", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, CASE WHEN val < 0 THEN val * -1 ELSE val END AS abs_val
 			FROM wn_t ORDER BY id
 		`)
@@ -13511,12 +13451,12 @@ func TestFDB_WhereWithNegation(t *testing.T) {
 // TestFDB_CTEWithFilter — CTE with WHERE filter in outer query
 func TestFDB_CTEWithFilter(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ctflt", "CREATE TABLE ctf_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "ctflt", "CREATE TABLE ctf_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO ctf_t VALUES
 		(1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'C', 40)
 	`); err != nil {
@@ -13524,7 +13464,7 @@ func TestFDB_CTEWithFilter(t *testing.T) {
 	}
 
 	t.Run("cte_with_outer_where", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH all_data AS (SELECT * FROM ctf_t)
 			SELECT id, val FROM all_data WHERE cat = 'A' ORDER BY id
 		`)
@@ -13534,7 +13474,7 @@ func TestFDB_CTEWithFilter(t *testing.T) {
 	})
 
 	t.Run("cte_aggregate_with_outer_filter", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH sums AS (SELECT cat, SUM(val) AS total FROM ctf_t GROUP BY cat)
 			SELECT cat, total FROM sums WHERE total > 20 ORDER BY cat
 		`)
@@ -13547,12 +13487,12 @@ func TestFDB_CTEWithFilter(t *testing.T) {
 // TestFDB_MultiTableInsertAndJoin — insert into multiple tables then join
 func TestFDB_MultiTableInsertAndJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mtij",
+	db := testkit.SetupPlanShapeDB(t, "mtij",
 		"CREATE TABLE mt_users(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE mt_posts(id BIGINT, user_id BIGINT, title STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO mt_users VALUES (1, 'alice'), (2, 'bob')"); err != nil {
@@ -13565,7 +13505,7 @@ func TestFDB_MultiTableInsertAndJoin(t *testing.T) {
 	}
 
 	t.Run("join_count_posts_per_user", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT u.name, COUNT(*) AS post_count
 			FROM mt_users u JOIN mt_posts p ON u.id = p.user_id
 			GROUP BY u.name ORDER BY u.name
@@ -13585,7 +13525,7 @@ func TestFDB_MultiTableInsertAndJoin(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO mt_users VALUES (3, 'charlie')"); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT u.name FROM mt_users u
 			LEFT JOIN mt_posts p ON u.id = p.user_id
 			WHERE p.id IS NULL
@@ -13599,12 +13539,12 @@ func TestFDB_MultiTableInsertAndJoin(t *testing.T) {
 // TestFDB_GroupByTwoColumnsWithAggregate — GROUP BY on two columns
 func TestFDB_GroupByTwoColumnsWithAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gb2ca", "CREATE TABLE gb2_t(id BIGINT, region STRING, product STRING, sales BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "gb2ca", "CREATE TABLE gb2_t(id BIGINT, region STRING, product STRING, sales BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gb2_t VALUES
 		(1, 'east', 'A', 10), (2, 'east', 'A', 20), (3, 'east', 'B', 30),
 		(4, 'west', 'A', 40), (5, 'west', 'B', 50), (6, 'west', 'B', 60)
@@ -13613,7 +13553,7 @@ func TestFDB_GroupByTwoColumnsWithAggregate(t *testing.T) {
 	}
 
 	t.Run("group_by_two_columns", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT region, product, SUM(sales), COUNT(*)
 			FROM gb2_t GROUP BY region, product
 			ORDER BY region, product
@@ -13630,7 +13570,7 @@ func TestFDB_GroupByTwoColumnsWithAggregate(t *testing.T) {
 	})
 
 	t.Run("group_by_two_with_having", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT region, product, SUM(sales)
 			FROM gb2_t GROUP BY region, product
 			HAVING SUM(sales) > 35
@@ -13645,12 +13585,12 @@ func TestFDB_GroupByTwoColumnsWithAggregate(t *testing.T) {
 // TestFDB_InsertSelectWithExpression — INSERT...SELECT with computed columns
 func TestFDB_InsertSelectWithExpression(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "iswe",
+	db := testkit.SetupPlanShapeDB(t, "iswe",
 		"CREATE TABLE iswe_src(id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE iswe_dst(id BIGINT, total BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO iswe_src VALUES (1, 10, 5), (2, 20, 3), (3, 30, 7)"); err != nil {
@@ -13669,7 +13609,7 @@ func TestFDB_InsertSelectWithExpression(t *testing.T) {
 	})
 
 	t.Run("verify_computed_values", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, total FROM iswe_dst ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, total FROM iswe_dst ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -13685,12 +13625,12 @@ func TestFDB_InsertSelectWithExpression(t *testing.T) {
 // TestFDB_JoinWithCoalesceAndCase — JOIN with COALESCE and CASE on joined columns
 func TestFDB_JoinWithCoalesceAndCase(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jwcc",
+	db := testkit.SetupPlanShapeDB(t, "jwcc",
 		"CREATE TABLE jwcc_a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE jwcc_b(id BIGINT, aid BIGINT, note STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jwcc_a VALUES (1, 100), (2, 200), (3, NULL)"); err != nil {
@@ -13701,7 +13641,7 @@ func TestFDB_JoinWithCoalesceAndCase(t *testing.T) {
 	}
 
 	t.Run("left_join_coalesce_val", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.id, COALESCE(a.val, 0), b.note
 			FROM jwcc_a a LEFT JOIN jwcc_b b ON a.id = b.aid
 			ORDER BY a.id
@@ -13715,7 +13655,7 @@ func TestFDB_JoinWithCoalesceAndCase(t *testing.T) {
 	})
 
 	t.Run("join_case_on_val", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.id,
 				CASE WHEN a.val IS NULL THEN 'unknown' ELSE 'known' END
 			FROM jwcc_a a JOIN jwcc_b b ON a.id = b.aid
@@ -13736,12 +13676,12 @@ func TestFDB_JoinWithCoalesceAndCase(t *testing.T) {
 // TestFDB_SelectCountWithVariousFilters — COUNT(*) with different WHERE patterns
 func TestFDB_SelectCountWithVariousFilters(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "scvf", "CREATE TABLE scvf_t(id BIGINT, status STRING, score BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "scvf", "CREATE TABLE scvf_t(id BIGINT, status STRING, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO scvf_t VALUES
 		(1, 'active', 90), (2, 'inactive', 60), (3, 'active', 80),
 		(4, 'active', 70), (5, 'inactive', 50), (6, 'active', 95)
@@ -13750,28 +13690,28 @@ func TestFDB_SelectCountWithVariousFilters(t *testing.T) {
 	}
 
 	t.Run("count_all", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM scvf_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM scvf_t")
 		if toInt64(rows[0][0]) != 6 {
 			t.Errorf("want 6, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("count_with_eq", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM scvf_t WHERE status = 'active'")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM scvf_t WHERE status = 'active'")
 		if toInt64(rows[0][0]) != 4 {
 			t.Errorf("want 4 active, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("count_with_gt", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM scvf_t WHERE score > 75")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM scvf_t WHERE score > 75")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("want 3 (80,90,95), got %v", rows[0][0])
 		}
 	})
 
 	t.Run("count_with_combined", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM scvf_t WHERE status = 'active' AND score >= 80")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM scvf_t WHERE status = 'active' AND score >= 80")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("want 3 (80,90,95 active), got %v", rows[0][0])
 		}
@@ -13781,12 +13721,12 @@ func TestFDB_SelectCountWithVariousFilters(t *testing.T) {
 // TestFDB_UnionAllWithAggregatePerLeg — each UNION ALL leg has its own aggregate
 func TestFDB_UnionAllWithAggregatePerLeg(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uaapl",
+	db := testkit.SetupPlanShapeDB(t, "uaapl",
 		"CREATE TABLE uaa_a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE uaa_b(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO uaa_a VALUES (1, 10), (2, 20), (3, 30)"); err != nil {
@@ -13797,7 +13737,7 @@ func TestFDB_UnionAllWithAggregatePerLeg(t *testing.T) {
 	}
 
 	t.Run("aggregate_per_leg_no_order", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*), SUM(val) FROM uaa_a
 			UNION ALL
 			SELECT COUNT(*), SUM(val) FROM uaa_b
@@ -13809,7 +13749,7 @@ func TestFDB_UnionAllWithAggregatePerLeg(t *testing.T) {
 	})
 
 	t.Run("sum_all_values_via_union", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT SUM(val), COUNT(*) FROM (
 				SELECT val FROM uaa_a UNION ALL SELECT val FROM uaa_b
 			) AS combined
@@ -13826,12 +13766,12 @@ func TestFDB_UnionAllWithAggregatePerLeg(t *testing.T) {
 // TestFDB_JoinWithGroupByAndCoalesce — JOIN + GROUP BY + COALESCE for NULL handling
 func TestFDB_JoinWithGroupByAndCoalesce(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jgbc",
+	db := testkit.SetupPlanShapeDB(t, "jgbc",
 		"CREATE TABLE jgbc_p(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jgbc_c(id BIGINT, pid BIGINT, amount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jgbc_p VALUES (1, 'alice'), (2, 'bob'), (3, 'charlie')"); err != nil {
@@ -13842,7 +13782,7 @@ func TestFDB_JoinWithGroupByAndCoalesce(t *testing.T) {
 	}
 
 	t.Run("left_join_coalesce_sum", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name, COALESCE(SUM(c.amount), 0) AS total
 			FROM jgbc_p p LEFT JOIN jgbc_c c ON p.id = c.pid
 			GROUP BY p.name ORDER BY p.name
@@ -13862,12 +13802,12 @@ func TestFDB_JoinWithGroupByAndCoalesce(t *testing.T) {
 // TestFDB_WhereWithOrAndIn — WHERE combining OR with IN
 func TestFDB_WhereWithOrAndIn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "woai", "CREATE TABLE woai_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "woai", "CREATE TABLE woai_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO woai_t VALUES
 		(1, 'A', 10), (2, 'B', 20), (3, 'C', 30), (4, 'D', 40), (5, 'A', 50)
 	`); err != nil {
@@ -13875,14 +13815,14 @@ func TestFDB_WhereWithOrAndIn(t *testing.T) {
 	}
 
 	t.Run("or_with_in", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM woai_t WHERE cat IN ('A', 'B') OR val > 35 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM woai_t WHERE cat IN ('A', 'B') OR val > 35 ORDER BY id")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 (A:1,5 + B:2 + val>35:4), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("and_with_in", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM woai_t WHERE cat IN ('A', 'C') AND val >= 30 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM woai_t WHERE cat IN ('A', 'C') AND val >= 30 ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (C:30, A:50), got %d: %v", len(rows), rows)
 		}
@@ -13892,12 +13832,12 @@ func TestFDB_WhereWithOrAndIn(t *testing.T) {
 // TestFDB_AggregateWithWhereAndOrderBy — aggregate + WHERE + ORDER BY combined
 func TestFDB_AggregateWithWhereAndOrderBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "awwo", "CREATE TABLE awwo_t(id BIGINT, dept STRING, salary BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "awwo", "CREATE TABLE awwo_t(id BIGINT, dept STRING, salary BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO awwo_t VALUES
 		(1, 'eng', 100), (2, 'eng', 120), (3, 'sales', 80),
 		(4, 'sales', 90), (5, 'hr', 70), (6, 'eng', 150)
@@ -13906,7 +13846,7 @@ func TestFDB_AggregateWithWhereAndOrderBy(t *testing.T) {
 	}
 
 	t.Run("group_where_order", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT dept, SUM(salary) AS total
 			FROM awwo_t WHERE salary > 75
 			GROUP BY dept ORDER BY total DESC
@@ -13920,7 +13860,7 @@ func TestFDB_AggregateWithWhereAndOrderBy(t *testing.T) {
 	})
 
 	t.Run("having_and_where_combined", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT dept, COUNT(*), SUM(salary)
 			FROM awwo_t WHERE salary >= 80
 			GROUP BY dept HAVING COUNT(*) >= 2
@@ -13935,12 +13875,12 @@ func TestFDB_AggregateWithWhereAndOrderBy(t *testing.T) {
 // TestFDB_CTE3Tables — CTE referencing 3 tables
 func TestFDB_CTE3Tables(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cte3t",
+	db := testkit.SetupPlanShapeDB(t, "cte3t",
 		"CREATE TABLE c3_dept(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE c3_emp(id BIGINT, dept_id BIGINT, name STRING, salary BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO c3_dept VALUES (1, 'eng'), (2, 'sales')"); err != nil {
@@ -13953,7 +13893,7 @@ func TestFDB_CTE3Tables(t *testing.T) {
 	}
 
 	t.Run("cte_with_join_and_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH dept_stats AS (
 				SELECT d.name AS dept, COUNT(*) AS headcount, SUM(e.salary) AS payroll
 				FROM c3_dept d JOIN c3_emp e ON d.id = e.dept_id
@@ -13973,12 +13913,12 @@ func TestFDB_CTE3Tables(t *testing.T) {
 // TestFDB_DeleteWithJoinedFilter — DELETE rows based on conditions involving related data
 func TestFDB_DeleteWithJoinedFilter(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dwjf", "CREATE TABLE dwjf_t(id BIGINT, status STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "dwjf", "CREATE TABLE dwjf_t(id BIGINT, status STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO dwjf_t VALUES
 		(1, 'keep', 100), (2, 'delete', 200), (3, 'keep', 300),
 		(4, 'delete', 400), (5, 'keep', 500)
@@ -13998,7 +13938,7 @@ func TestFDB_DeleteWithJoinedFilter(t *testing.T) {
 	})
 
 	t.Run("verify_remaining", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM dwjf_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM dwjf_t ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 remaining, got %d: %v", len(rows), rows)
 		}
@@ -14008,7 +13948,7 @@ func TestFDB_DeleteWithJoinedFilter(t *testing.T) {
 	})
 
 	t.Run("aggregate_after_delete", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM dwjf_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM dwjf_t")
 		if toInt64(rows[0][0]) != 900 {
 			t.Errorf("SUM after delete = 100+300+500 = 900, got %v", rows[0][0])
 		}
@@ -14018,12 +13958,12 @@ func TestFDB_DeleteWithJoinedFilter(t *testing.T) {
 // TestFDB_UpdateWithArithmeticAndWhere — UPDATE SET with arithmetic and WHERE
 func TestFDB_UpdateWithArithmeticAndWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uwaw", "CREATE TABLE uwaw_t(id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "uwaw", "CREATE TABLE uwaw_t(id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO uwaw_t VALUES (1, 10, 5), (2, 20, 3), (3, 30, 7)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -14037,7 +13977,7 @@ func TestFDB_UpdateWithArithmeticAndWhere(t *testing.T) {
 		if n != 2 {
 			t.Errorf("want 2 updated (qty=5,7), got %d", n)
 		}
-		rows := collectRows(t, db, "SELECT id, price FROM uwaw_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, price FROM uwaw_t ORDER BY id")
 		if toInt64(rows[0][1]) != 20 {
 			t.Errorf("id=1: 10*2=20, got %v", rows[0][1])
 		}
@@ -14050,7 +13990,7 @@ func TestFDB_UpdateWithArithmeticAndWhere(t *testing.T) {
 	})
 
 	t.Run("verify_sum_after_update", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(price), SUM(price * qty) FROM uwaw_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(price), SUM(price * qty) FROM uwaw_t")
 		if toInt64(rows[0][0]) != 100 {
 			t.Errorf("SUM(price) = 20+20+60 = 100, got %v", rows[0][0])
 		}
@@ -14060,12 +14000,12 @@ func TestFDB_UpdateWithArithmeticAndWhere(t *testing.T) {
 // TestFDB_GroupByWithSumAndCoalesce — SUM with COALESCE in GROUP BY context
 func TestFDB_GroupByWithSumAndCoalesce(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbsc", "CREATE TABLE gbsc_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "gbsc", "CREATE TABLE gbsc_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gbsc_t VALUES
 		(1, 'A', 10), (2, 'A', NULL), (3, 'B', 30), (4, 'B', 40), (5, 'A', 50)
 	`); err != nil {
@@ -14073,7 +14013,7 @@ func TestFDB_GroupByWithSumAndCoalesce(t *testing.T) {
 	}
 
 	t.Run("sum_with_coalesce_per_group", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT grp, SUM(COALESCE(val, 0)) AS total
 			FROM gbsc_t GROUP BY grp ORDER BY grp
 		`)
@@ -14089,7 +14029,7 @@ func TestFDB_GroupByWithSumAndCoalesce(t *testing.T) {
 	})
 
 	t.Run("count_vs_count_col_per_group", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT grp, COUNT(*), COUNT(val) FROM gbsc_t GROUP BY grp ORDER BY grp
 		`)
 		if toInt64(rows[0][1]) != 3 || toInt64(rows[0][2]) != 2 {
@@ -14101,12 +14041,12 @@ func TestFDB_GroupByWithSumAndCoalesce(t *testing.T) {
 // TestFDB_SelectWithMultipleJoins — query joining 3 tables
 func TestFDB_SelectWithMultipleJoins(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "smj3",
+	db := testkit.SetupPlanShapeDB(t, "smj3",
 		"CREATE TABLE mj_countries(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE mj_cities(id BIGINT, country_id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE mj_pop(city_id BIGINT, population BIGINT, PRIMARY KEY(city_id))")
@@ -14121,7 +14061,7 @@ func TestFDB_SelectWithMultipleJoins(t *testing.T) {
 	}
 
 	t.Run("three_table_join_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT co.name, SUM(p.population)
 			FROM mj_countries co
 			JOIN mj_cities ci ON co.id = ci.country_id
@@ -14143,12 +14083,12 @@ func TestFDB_SelectWithMultipleJoins(t *testing.T) {
 // TestFDB_InPredicateWithStrings — IN predicate with string values
 func TestFDB_InPredicateWithStrings(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ipws", "CREATE TABLE ipws_t(id BIGINT, color STRING, size STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "ipws", "CREATE TABLE ipws_t(id BIGINT, color STRING, size STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO ipws_t VALUES
 		(1, 'red', 'S'), (2, 'blue', 'M'), (3, 'red', 'L'),
 		(4, 'green', 'S'), (5, 'blue', 'XL'), (6, 'red', 'M')
@@ -14157,14 +14097,14 @@ func TestFDB_InPredicateWithStrings(t *testing.T) {
 	}
 
 	t.Run("in_string_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM ipws_t WHERE color IN ('red', 'green') ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM ipws_t WHERE color IN ('red', 'green') ORDER BY id")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 (red:1,3,6 + green:4), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("in_with_group_by", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT color, COUNT(*) FROM ipws_t
 			WHERE size IN ('S', 'M')
 			GROUP BY color ORDER BY color
@@ -14175,7 +14115,7 @@ func TestFDB_InPredicateWithStrings(t *testing.T) {
 	})
 
 	t.Run("not_in_string", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM ipws_t WHERE color NOT IN ('red')")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM ipws_t WHERE color NOT IN ('red')")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("NOT IN red: want 3 (blue:2 + green:1), got %v", rows[0][0])
 		}
@@ -14185,12 +14125,12 @@ func TestFDB_InPredicateWithStrings(t *testing.T) {
 // TestFDB_ExistsWithAggregate — EXISTS subquery combined with aggregate
 func TestFDB_ExistsWithAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "exagg",
+	db := testkit.SetupPlanShapeDB(t, "exagg",
 		"CREATE TABLE exa_parent(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE exa_child(id BIGINT, pid BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO exa_parent VALUES (1, 'p1'), (2, 'p2'), (3, 'p3')"); err != nil {
@@ -14201,7 +14141,7 @@ func TestFDB_ExistsWithAggregate(t *testing.T) {
 	}
 
 	t.Run("count_parents_with_children", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM exa_parent p
 			WHERE EXISTS (SELECT 1 FROM exa_child c WHERE c.pid = p.id)
 		`)
@@ -14211,7 +14151,7 @@ func TestFDB_ExistsWithAggregate(t *testing.T) {
 	})
 
 	t.Run("not_exists_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM exa_parent p
 			WHERE NOT EXISTS (SELECT 1 FROM exa_child c WHERE c.pid = p.id)
 		`)
@@ -14224,12 +14164,12 @@ func TestFDB_ExistsWithAggregate(t *testing.T) {
 // TestFDB_WhereWithMultipleLikePatterns — multiple LIKE conditions
 func TestFDB_WhereWithMultipleLikePatterns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wmlp", "CREATE TABLE wmlp_t(id BIGINT, name STRING, email STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "wmlp", "CREATE TABLE wmlp_t(id BIGINT, name STRING, email STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO wmlp_t VALUES
 		(1, 'alice_smith', 'alice@example.com'),
 		(2, 'bob_jones', 'bob@test.org'),
@@ -14240,14 +14180,14 @@ func TestFDB_WhereWithMultipleLikePatterns(t *testing.T) {
 	}
 
 	t.Run("like_or_like", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wmlp_t WHERE name LIKE 'alice%' OR name LIKE 'charlie%' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wmlp_t WHERE name LIKE 'alice%' OR name LIKE 'charlie%' ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 (alice_smith, alice_jones, charlie_brown), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("like_and_like", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wmlp_t WHERE name LIKE '%jones' AND email LIKE '%example%' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wmlp_t WHERE name LIKE '%jones' AND email LIKE '%example%' ORDER BY id")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 3 {
 			t.Errorf("want id=3 (alice_jones + example.com), got %v", rows)
 		}
@@ -14257,12 +14197,12 @@ func TestFDB_WhereWithMultipleLikePatterns(t *testing.T) {
 // TestFDB_DeleteAndReverifyAggregateIndex — delete rows and verify aggregate index stays correct
 func TestFDB_DeleteAndReverifyAggregateIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "drai",
+	db := testkit.SetupPlanShapeDB(t, "drai",
 		"CREATE TABLE drai_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE INDEX drai_cnt AS SELECT COUNT(*) FROM drai_t GROUP BY grp "+
 			"CREATE INDEX drai_sum AS SELECT SUM(val) FROM drai_t GROUP BY grp")
@@ -14273,7 +14213,7 @@ func TestFDB_DeleteAndReverifyAggregateIndex(t *testing.T) {
 	}
 
 	t.Run("initial_state", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM drai_t GROUP BY grp ORDER BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM drai_t GROUP BY grp ORDER BY grp")
 		if toInt64(rows[0][1]) != 3 || toInt64(rows[0][2]) != 80 {
 			t.Errorf("X: want cnt=3 sum=80, got %v %v", rows[0][1], rows[0][2])
 		}
@@ -14283,7 +14223,7 @@ func TestFDB_DeleteAndReverifyAggregateIndex(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "DELETE FROM drai_t WHERE id IN (1, 3)"); err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM drai_t GROUP BY grp ORDER BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, COUNT(*), SUM(val) FROM drai_t GROUP BY grp ORDER BY grp")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 groups, got %d: %v", len(rows), rows)
 		}
@@ -14299,12 +14239,12 @@ func TestFDB_DeleteAndReverifyAggregateIndex(t *testing.T) {
 // TestFDB_JoinWithBetweenAndOrder — JOIN with BETWEEN filter and ORDER BY
 func TestFDB_JoinWithBetweenAndOrder(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jwbo",
+	db := testkit.SetupPlanShapeDB(t, "jwbo",
 		"CREATE TABLE jwbo_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jwbo_b(id BIGINT, aid BIGINT, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jwbo_a VALUES (1, 'alice'), (2, 'bob')"); err != nil {
@@ -14315,7 +14255,7 @@ func TestFDB_JoinWithBetweenAndOrder(t *testing.T) {
 	}
 
 	t.Run("join_between_order", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.name, b.score
 			FROM jwbo_a a JOIN jwbo_b b ON a.id = b.aid
 			WHERE b.score BETWEEN 60 AND 85
@@ -14333,12 +14273,12 @@ func TestFDB_JoinWithBetweenAndOrder(t *testing.T) {
 // TestFDB_GroupByHavingOrderLimit — full pipeline: GROUP BY + HAVING + ORDER BY + LIMIT
 func TestFDB_GroupByHavingOrderLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ghol", "CREATE TABLE ghol_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "ghol", "CREATE TABLE ghol_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO ghol_t VALUES
 		(1, 'A', 10), (2, 'A', 20), (3, 'B', 30), (4, 'B', 40),
 		(5, 'C', 50), (6, 'D', 5), (7, 'D', 15), (8, 'D', 25)
@@ -14347,7 +14287,7 @@ func TestFDB_GroupByHavingOrderLimit(t *testing.T) {
 	}
 
 	t.Run("full_pipeline", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT cat, SUM(val) AS total
 			FROM ghol_t
 			GROUP BY cat
@@ -14367,12 +14307,12 @@ func TestFDB_GroupByHavingOrderLimit(t *testing.T) {
 // TestFDB_CTEWithJoinAndFilter — CTE + JOIN + WHERE filter
 func TestFDB_CTEWithJoinAndFilter(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ctjf",
+	db := testkit.SetupPlanShapeDB(t, "ctjf",
 		"CREATE TABLE ctjf_orders(id BIGINT, customer STRING, amount BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE ctjf_customers(name STRING, tier STRING, PRIMARY KEY(name))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO ctjf_orders VALUES
@@ -14385,7 +14325,7 @@ func TestFDB_CTEWithJoinAndFilter(t *testing.T) {
 	}
 
 	t.Run("cte_join_filter", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH order_sums AS (
 				SELECT customer, SUM(amount) AS total FROM ctjf_orders GROUP BY customer
 			)
@@ -14406,12 +14346,12 @@ func TestFDB_CTEWithJoinAndFilter(t *testing.T) {
 // TestFDB_UpdateSetToExpression — UPDATE SET to computed expression
 func TestFDB_UpdateSetToExpression(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uste", "CREATE TABLE uste_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "uste", "CREATE TABLE uste_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO uste_t VALUES (1, 10, 20, 0), (2, 30, 40, 0)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -14420,7 +14360,7 @@ func TestFDB_UpdateSetToExpression(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE uste_t SET c = a + b"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT id, c FROM uste_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, c FROM uste_t ORDER BY id")
 		if toInt64(rows[0][1]) != 30 {
 			t.Errorf("id=1: c=10+20=30, got %v", rows[0][1])
 		}
@@ -14430,7 +14370,7 @@ func TestFDB_UpdateSetToExpression(t *testing.T) {
 	})
 
 	t.Run("verify_sum_c", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(c) FROM uste_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(c) FROM uste_t")
 		if toInt64(rows[0][0]) != 100 {
 			t.Errorf("SUM(c) = 30+70 = 100, got %v", rows[0][0])
 		}
@@ -14440,18 +14380,18 @@ func TestFDB_UpdateSetToExpression(t *testing.T) {
 // TestFDB_SelectWithArithmeticAndAlias — arithmetic expressions with column aliases
 func TestFDB_SelectWithArithmeticAndAlias(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "swaaa", "CREATE TABLE swaa_t(id BIGINT, width BIGINT, height BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "swaaa", "CREATE TABLE swaa_t(id BIGINT, width BIGINT, height BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO swaa_t VALUES (1, 10, 5), (2, 20, 8), (3, 15, 12)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("area_computation", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, width * height AS area FROM swaa_t ORDER BY area DESC")
+		rows := testkit.CollectRows(t, db, "SELECT id, width * height AS area FROM swaa_t ORDER BY area DESC")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -14461,7 +14401,7 @@ func TestFDB_SelectWithArithmeticAndAlias(t *testing.T) {
 	})
 
 	t.Run("sum_simple_arithmetic", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(width + height) FROM swaa_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(width + height) FROM swaa_t")
 		if toInt64(rows[0][0]) != 70 {
 			t.Errorf("SUM(width+height) = (10+5)+(20+8)+(15+12) = 70, got %v", rows[0][0])
 		}
@@ -14471,12 +14411,12 @@ func TestFDB_SelectWithArithmeticAndAlias(t *testing.T) {
 // TestFDB_LeftJoinWithGroupByHavingOrder — LEFT JOIN full pipeline
 func TestFDB_LeftJoinWithGroupByHavingOrder(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ljgho",
+	db := testkit.SetupPlanShapeDB(t, "ljgho",
 		"CREATE TABLE ljgho_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE ljgho_b(id BIGINT, aid BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO ljgho_a VALUES (1, 'x'), (2, 'y'), (3, 'z')"); err != nil {
@@ -14487,7 +14427,7 @@ func TestFDB_LeftJoinWithGroupByHavingOrder(t *testing.T) {
 	}
 
 	t.Run("left_join_group_having_order", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.name, COUNT(b.val), COALESCE(SUM(b.val), 0) AS total
 			FROM ljgho_a a LEFT JOIN ljgho_b b ON a.id = b.aid
 			GROUP BY a.name
@@ -14506,12 +14446,12 @@ func TestFDB_LeftJoinWithGroupByHavingOrder(t *testing.T) {
 // TestFDB_WhereWithNullAndNotNull — WHERE IS NULL and IS NOT NULL combined
 func TestFDB_WhereWithNullAndNotNull(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wnn", "CREATE TABLE wnn_t(id BIGINT, a BIGINT, b STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "wnn", "CREATE TABLE wnn_t(id BIGINT, a BIGINT, b STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO wnn_t VALUES
 		(1, 10, 'x'), (2, NULL, 'y'), (3, 30, NULL), (4, NULL, NULL), (5, 50, 'z')
 	`); err != nil {
@@ -14519,21 +14459,21 @@ func TestFDB_WhereWithNullAndNotNull(t *testing.T) {
 	}
 
 	t.Run("a_null_and_b_not_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wnn_t WHERE a IS NULL AND b IS NOT NULL ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wnn_t WHERE a IS NULL AND b IS NOT NULL ORDER BY id")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
 			t.Errorf("want id=2 (a=NULL, b='y'), got %v", rows)
 		}
 	})
 
 	t.Run("both_not_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM wnn_t WHERE a IS NOT NULL AND b IS NOT NULL")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM wnn_t WHERE a IS NOT NULL AND b IS NOT NULL")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("want 2 (id=1: a=10,b='x' + id=5: a=50,b='z'), got %v", rows[0][0])
 		}
 	})
 
 	t.Run("either_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM wnn_t WHERE a IS NULL OR b IS NULL")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM wnn_t WHERE a IS NULL OR b IS NULL")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("want 3 (id=2:a=null, id=3:b=null, id=4:both), got %v", rows[0][0])
 		}
@@ -14543,19 +14483,19 @@ func TestFDB_WhereWithNullAndNotNull(t *testing.T) {
 // TestFDB_InsertAndCountIntegrity — insert rows one at a time and verify COUNT after each
 func TestFDB_InsertAndCountIntegrity(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "iaci", "CREATE TABLE iaci_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "iaci", "CREATE TABLE iaci_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 
 	t.Run("incremental_insert_count", func(t *testing.T) {
 		for i := 1; i <= 5; i++ {
 			if _, err := db.ExecContext(ctx, fmt.Sprintf("INSERT INTO iaci_t VALUES (%d, %d)", i, i*10)); err != nil {
 				t.Fatalf("INSERT %d: %v", i, err)
 			}
-			rows := collectRows(t, db, "SELECT COUNT(*) FROM iaci_t")
+			rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM iaci_t")
 			if toInt64(rows[0][0]) != int64(i) {
 				t.Fatalf("after %d inserts: COUNT should be %d, got %v", i, i, rows[0][0])
 			}
@@ -14563,7 +14503,7 @@ func TestFDB_InsertAndCountIntegrity(t *testing.T) {
 	})
 
 	t.Run("final_sum", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM iaci_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM iaci_t")
 		if toInt64(rows[0][0]) != 150 {
 			t.Errorf("SUM = 10+20+30+40+50 = 150, got %v", rows[0][0])
 		}
@@ -14573,12 +14513,12 @@ func TestFDB_InsertAndCountIntegrity(t *testing.T) {
 // TestFDB_GroupByWithWhereOnDifferentColumn — GROUP BY one col, WHERE on another
 func TestFDB_GroupByWithWhereOnDifferentColumn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbwdc", "CREATE TABLE gbwdc_t(id BIGINT, dept STRING, level STRING, salary BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "gbwdc", "CREATE TABLE gbwdc_t(id BIGINT, dept STRING, level STRING, salary BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gbwdc_t VALUES
 		(1, 'eng', 'senior', 150), (2, 'eng', 'junior', 80),
 		(3, 'sales', 'senior', 120), (4, 'sales', 'junior', 70),
@@ -14588,7 +14528,7 @@ func TestFDB_GroupByWithWhereOnDifferentColumn(t *testing.T) {
 	}
 
 	t.Run("group_by_dept_where_level", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT dept, COUNT(*), SUM(salary)
 			FROM gbwdc_t WHERE level = 'senior'
 			GROUP BY dept ORDER BY dept
@@ -14605,12 +14545,12 @@ func TestFDB_GroupByWithWhereOnDifferentColumn(t *testing.T) {
 // TestFDB_JoinSumWithHavingAndLimit — JOIN + SUM + HAVING + LIMIT combined
 func TestFDB_JoinSumWithHavingAndLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jshl",
+	db := testkit.SetupPlanShapeDB(t, "jshl",
 		"CREATE TABLE jshl_cat(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jshl_item(id BIGINT, cat_id BIGINT, price BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jshl_cat VALUES (1, 'food'), (2, 'toys'), (3, 'books')"); err != nil {
@@ -14625,7 +14565,7 @@ func TestFDB_JoinSumWithHavingAndLimit(t *testing.T) {
 	}
 
 	t.Run("join_sum_having_limit", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT c.name, SUM(i.price) AS total
 			FROM jshl_cat c JOIN jshl_item i ON c.id = i.cat_id
 			GROUP BY c.name
@@ -14645,12 +14585,12 @@ func TestFDB_JoinSumWithHavingAndLimit(t *testing.T) {
 // TestFDB_UpdateConditionalAndVerifyAggregate — UPDATE with CASE, verify via aggregate
 func TestFDB_UpdateConditionalAndVerifyAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ucva", "CREATE TABLE ucva_t(id BIGINT, score BIGINT, grade STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "ucva", "CREATE TABLE ucva_t(id BIGINT, score BIGINT, grade STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO ucva_t VALUES
 		(1, 95, ''), (2, 85, ''), (3, 75, ''), (4, 65, ''), (5, 55, '')
 	`); err != nil {
@@ -14671,7 +14611,7 @@ func TestFDB_UpdateConditionalAndVerifyAggregate(t *testing.T) {
 	})
 
 	t.Run("verify_grade_counts", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grade, COUNT(*) FROM ucva_t GROUP BY grade ORDER BY grade")
+		rows := testkit.CollectRows(t, db, "SELECT grade, COUNT(*) FROM ucva_t GROUP BY grade ORDER BY grade")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 grades, got %d: %v", len(rows), rows)
 		}
@@ -14682,12 +14622,12 @@ func TestFDB_UpdateConditionalAndVerifyAggregate(t *testing.T) {
 // TestFDB_SelectWithWhereAndOrderByLimit — SELECT + WHERE + ORDER BY + LIMIT
 func TestFDB_SelectWithWhereAndOrderByLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "swol", "CREATE TABLE swol_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "swol", "CREATE TABLE swol_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO swol_t VALUES
 		(1, 'A', 50), (2, 'B', 30), (3, 'A', 70), (4, 'B', 10),
 		(5, 'A', 90), (6, 'C', 60), (7, 'B', 80)
@@ -14696,7 +14636,7 @@ func TestFDB_SelectWithWhereAndOrderByLimit(t *testing.T) {
 	}
 
 	t.Run("top_2_cat_a_by_val", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM swol_t WHERE cat = 'A' ORDER BY val DESC LIMIT 2")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM swol_t WHERE cat = 'A' ORDER BY val DESC LIMIT 2")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
 		}
@@ -14706,7 +14646,7 @@ func TestFDB_SelectWithWhereAndOrderByLimit(t *testing.T) {
 	})
 
 	t.Run("bottom_3_all_by_val", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM swol_t ORDER BY val LIMIT 3")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM swol_t ORDER BY val LIMIT 3")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -14719,12 +14659,12 @@ func TestFDB_SelectWithWhereAndOrderByLimit(t *testing.T) {
 // TestFDB_UnionAllThreeWayAggregate — 3-way UNION ALL with aggregates
 func TestFDB_UnionAllThreeWayAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "u3wa",
+	db := testkit.SetupPlanShapeDB(t, "u3wa",
 		"CREATE TABLE u3wa_a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE u3wa_b(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE u3wa_c(id BIGINT, val BIGINT, PRIMARY KEY(id))")
@@ -14739,7 +14679,7 @@ func TestFDB_UnionAllThreeWayAggregate(t *testing.T) {
 	}
 
 	t.Run("three_way_count_sum", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*), SUM(val) FROM (
 				SELECT val FROM u3wa_a
 				UNION ALL SELECT val FROM u3wa_b
@@ -14758,12 +14698,12 @@ func TestFDB_UnionAllThreeWayAggregate(t *testing.T) {
 // TestFDB_DeleteWithMultipleConditions — DELETE with AND/OR/IN conditions
 func TestFDB_DeleteWithMultipleConditions(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dwmc2", "CREATE TABLE dwmc_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "dwmc2", "CREATE TABLE dwmc_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO dwmc_t VALUES
 		(1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'C', 40),
 		(5, 'B', 50), (6, 'A', 60), (7, 'C', 70)
@@ -14783,7 +14723,7 @@ func TestFDB_DeleteWithMultipleConditions(t *testing.T) {
 	})
 
 	t.Run("verify_remaining", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM dwmc_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM dwmc_t")
 		if toInt64(rows[0][0]) != 5 {
 			t.Errorf("want 5 remaining, got %v", rows[0][0])
 		}
@@ -14801,7 +14741,7 @@ func TestFDB_DeleteWithMultipleConditions(t *testing.T) {
 	})
 
 	t.Run("only_a_remains", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM dwmc_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM dwmc_t ORDER BY id")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 6 {
 			t.Errorf("only id=6 (A,60) should remain, got %v", rows)
 		}
@@ -14811,12 +14751,12 @@ func TestFDB_DeleteWithMultipleConditions(t *testing.T) {
 // TestFDB_SelectWithCaseInOrderBy — ORDER BY with CASE expression
 func TestFDB_SelectWithCaseInOrderBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "scob", "CREATE TABLE scob_t(id BIGINT, priority STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "scob", "CREATE TABLE scob_t(id BIGINT, priority STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO scob_t VALUES
 		(1, 'low', 10), (2, 'high', 20), (3, 'medium', 30), (4, 'high', 40), (5, 'low', 50)
 	`); err != nil {
@@ -14824,7 +14764,7 @@ func TestFDB_SelectWithCaseInOrderBy(t *testing.T) {
 	}
 
 	t.Run("order_by_case_priority", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, priority, val
 			FROM scob_t
 			ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, val DESC
@@ -14842,12 +14782,12 @@ func TestFDB_SelectWithCaseInOrderBy(t *testing.T) {
 // TestFDB_JoinWithCoalesceInGroupBy — JOIN + GROUP BY + COALESCE in SELECT
 func TestFDB_JoinWithCoalesceInGroupBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jcgb",
+	db := testkit.SetupPlanShapeDB(t, "jcgb",
 		"CREATE TABLE jcgb_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jcgb_b(id BIGINT, aid BIGINT, amount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jcgb_a VALUES (1, 'alice'), (2, 'bob'), (3, 'charlie')"); err != nil {
@@ -14858,7 +14798,7 @@ func TestFDB_JoinWithCoalesceInGroupBy(t *testing.T) {
 	}
 
 	t.Run("left_join_coalesce_group_by", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.name, COALESCE(SUM(b.amount), 0) AS total
 			FROM jcgb_a a LEFT JOIN jcgb_b b ON a.id = b.aid
 			GROUP BY a.name
@@ -14879,12 +14819,12 @@ func TestFDB_JoinWithCoalesceInGroupBy(t *testing.T) {
 // TestFDB_MultiColumnInsertAndQuery — multiple string+bigint columns
 func TestFDB_MultiColumnInsertAndQuery(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mciq", "CREATE TABLE mciq_t(id BIGINT, first STRING, last STRING, age BIGINT, score BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "mciq", "CREATE TABLE mciq_t(id BIGINT, first STRING, last STRING, age BIGINT, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO mciq_t VALUES
 		(1, 'alice', 'smith', 30, 90),
 		(2, 'bob', 'jones', 25, 85),
@@ -14895,7 +14835,7 @@ func TestFDB_MultiColumnInsertAndQuery(t *testing.T) {
 	}
 
 	t.Run("filter_and_project", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT first, score FROM mciq_t WHERE last = 'smith' ORDER BY score DESC")
+		rows := testkit.CollectRows(t, db, "SELECT first, score FROM mciq_t WHERE last = 'smith' ORDER BY score DESC")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 smiths, got %d", len(rows))
 		}
@@ -14905,7 +14845,7 @@ func TestFDB_MultiColumnInsertAndQuery(t *testing.T) {
 	})
 
 	t.Run("group_by_last_name_avg", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT last, SUM(score) / COUNT(*) AS avg_score FROM mciq_t GROUP BY last ORDER BY last")
+		rows := testkit.CollectRows(t, db, "SELECT last, SUM(score) / COUNT(*) AS avg_score FROM mciq_t GROUP BY last ORDER BY last")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
 		}
@@ -14921,39 +14861,39 @@ func TestFDB_MultiColumnInsertAndQuery(t *testing.T) {
 // TestFDB_WhereWithSubtraction — WHERE with subtraction and negative results
 func TestFDB_WhereWithSubtraction(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wwsub", "CREATE TABLE wwsub_t(id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "wwsub", "CREATE TABLE wwsub_t(id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO wwsub_t VALUES (1, 100, 30), (2, 50, 80), (3, 200, 100), (4, 10, 10)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("positive_difference", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wwsub_t WHERE a - b > 50 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wwsub_t WHERE a - b > 50 ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (id=1: 70, id=3: 100), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("negative_difference", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, a - b FROM wwsub_t WHERE a - b < 0 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, a - b FROM wwsub_t WHERE a - b < 0 ORDER BY id")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
 			t.Errorf("want id=2 (50-80=-30), got %v", rows)
 		}
 	})
 
 	t.Run("zero_difference", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wwsub_t WHERE a - b = 0")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wwsub_t WHERE a - b = 0")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 4 {
 			t.Errorf("want id=4 (10-10=0), got %v", rows)
 		}
 	})
 
 	t.Run("sum_of_differences", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(a - b) FROM wwsub_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(a - b) FROM wwsub_t")
 		if toInt64(rows[0][0]) != 140 {
 			t.Errorf("SUM(a-b) = 70+(-30)+100+0 = 140, got %v", rows[0][0])
 		}
@@ -14963,12 +14903,12 @@ func TestFDB_WhereWithSubtraction(t *testing.T) {
 // TestFDB_CompleteQueryPipeline — full SQL pipeline: CTE + JOIN + WHERE + GROUP BY + HAVING + ORDER BY + LIMIT
 func TestFDB_CompleteQueryPipeline(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cqpl",
+	db := testkit.SetupPlanShapeDB(t, "cqpl",
 		"CREATE TABLE cqpl_depts(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE cqpl_emps(id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO cqpl_depts VALUES (1, 'eng'), (2, 'sales'), (3, 'hr'), (4, 'ops')"); err != nil {
@@ -14984,7 +14924,7 @@ func TestFDB_CompleteQueryPipeline(t *testing.T) {
 	}
 
 	t.Run("full_pipeline", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH dept_stats AS (
 				SELECT d.name AS dept, COUNT(*) AS headcount, SUM(e.salary) AS payroll
 				FROM cqpl_depts d JOIN cqpl_emps e ON d.id = e.dept_id
@@ -15006,7 +14946,7 @@ func TestFDB_CompleteQueryPipeline(t *testing.T) {
 	})
 
 	t.Run("cte_with_having_pipeline", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH dept_stats AS (
 				SELECT d.name AS dept, COUNT(*) AS hc, SUM(e.salary) AS pay
 				FROM cqpl_depts d JOIN cqpl_emps e ON d.id = e.dept_id
@@ -15021,7 +14961,7 @@ func TestFDB_CompleteQueryPipeline(t *testing.T) {
 	})
 
 	t.Run("total_payroll", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(salary) FROM cqpl_emps")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(salary) FROM cqpl_emps")
 		if toInt64(rows[0][0]) != 800 {
 			t.Errorf("total payroll = 800, got %v", rows[0][0])
 		}
@@ -15031,12 +14971,12 @@ func TestFDB_CompleteQueryPipeline(t *testing.T) {
 // TestFDB_EndToEndWorkflow — complete e2e: CREATE + INSERT + SELECT + UPDATE + DELETE + aggregate verify
 func TestFDB_EndToEndWorkflow(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "e2ew", "CREATE TABLE e2e_t(id BIGINT, name STRING, score BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "e2ew", "CREATE TABLE e2e_t(id BIGINT, name STRING, score BIGINT, PRIMARY KEY(id))")
 
 	t.Run("full_e2e", func(t *testing.T) {
 		// INSERT
@@ -15048,7 +14988,7 @@ func TestFDB_EndToEndWorkflow(t *testing.T) {
 		}
 
 		// SELECT with ORDER BY
-		rows := collectRows(t, db, "SELECT name, score FROM e2e_t ORDER BY score DESC LIMIT 3")
+		rows := testkit.CollectRows(t, db, "SELECT name, score FROM e2e_t ORDER BY score DESC LIMIT 3")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -15072,7 +15012,7 @@ func TestFDB_EndToEndWorkflow(t *testing.T) {
 		}
 
 		// Aggregate verify
-		rows = collectRows(t, db, "SELECT COUNT(*), SUM(score), MIN(score), MAX(score) FROM e2e_t")
+		rows = testkit.CollectRows(t, db, "SELECT COUNT(*), SUM(score), MIN(score), MAX(score) FROM e2e_t")
 		if toInt64(rows[0][0]) != 4 {
 			t.Errorf("COUNT should be 4, got %v", rows[0][0])
 		}
@@ -15085,12 +15025,12 @@ func TestFDB_EndToEndWorkflow(t *testing.T) {
 // TestFDB_JoinWithNotExists — anti-join pattern via NOT EXISTS
 func TestFDB_JoinWithNotExists(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jwne",
+	db := testkit.SetupPlanShapeDB(t, "jwne",
 		"CREATE TABLE jwne_products(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jwne_orders(id BIGINT, product_id BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jwne_products VALUES (1, 'widget'), (2, 'gadget'), (3, 'doohickey')"); err != nil {
@@ -15101,7 +15041,7 @@ func TestFDB_JoinWithNotExists(t *testing.T) {
 	}
 
 	t.Run("products_never_ordered", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name FROM jwne_products p
 			WHERE NOT EXISTS (SELECT 1 FROM jwne_orders o WHERE o.product_id = p.id)
 		`)
@@ -15111,7 +15051,7 @@ func TestFDB_JoinWithNotExists(t *testing.T) {
 	})
 
 	t.Run("products_with_orders_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM jwne_products p
 			WHERE EXISTS (SELECT 1 FROM jwne_orders o WHERE o.product_id = p.id)
 		`)
@@ -15124,12 +15064,12 @@ func TestFDB_JoinWithNotExists(t *testing.T) {
 // TestFDB_GroupByWithMaxMinAndOrder — GROUP BY with MAX-MIN range and ORDER BY
 func TestFDB_GroupByWithMaxMinAndOrder(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbmmo", "CREATE TABLE gbmmo_t(id BIGINT, team STRING, score BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "gbmmo", "CREATE TABLE gbmmo_t(id BIGINT, team STRING, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gbmmo_t VALUES
 		(1, 'A', 10), (2, 'A', 50), (3, 'B', 30), (4, 'B', 35),
 		(5, 'C', 20), (6, 'C', 80), (7, 'C', 45)
@@ -15138,7 +15078,7 @@ func TestFDB_GroupByWithMaxMinAndOrder(t *testing.T) {
 	}
 
 	t.Run("range_per_team", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT team, MAX(score) - MIN(score) AS score_range
 			FROM gbmmo_t GROUP BY team ORDER BY score_range DESC
 		`)
@@ -15157,18 +15097,18 @@ func TestFDB_GroupByWithMaxMinAndOrder(t *testing.T) {
 // TestFDB_CTEWithOrderByAndLimit — CTE query with ORDER BY and LIMIT
 func TestFDB_CTEWithOrderByAndLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ctobl", "CREATE TABLE ctobl_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "ctobl", "CREATE TABLE ctobl_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO ctobl_t VALUES (1, 50), (2, 30), (3, 70), (4, 10), (5, 90)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("cte_order_by", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH sorted AS (SELECT * FROM ctobl_t)
 			SELECT id, val FROM sorted ORDER BY val DESC
 		`)
@@ -15181,7 +15121,7 @@ func TestFDB_CTEWithOrderByAndLimit(t *testing.T) {
 	})
 
 	t.Run("cte_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH data AS (SELECT * FROM ctobl_t WHERE val > 20)
 			SELECT COUNT(*), SUM(val) FROM data
 		`)
@@ -15197,12 +15137,12 @@ func TestFDB_CTEWithOrderByAndLimit(t *testing.T) {
 // TestFDB_SelectWithMultipleAggregatesAndWhere — multiple aggregates with WHERE
 func TestFDB_SelectWithMultipleAggregatesAndWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "smaw", "CREATE TABLE smaw_t(id BIGINT, status STRING, amount BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "smaw", "CREATE TABLE smaw_t(id BIGINT, status STRING, amount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO smaw_t VALUES
 		(1, 'active', 100), (2, 'active', 200), (3, 'inactive', 50),
 		(4, 'active', 150), (5, 'inactive', 75)
@@ -15211,7 +15151,7 @@ func TestFDB_SelectWithMultipleAggregatesAndWhere(t *testing.T) {
 	}
 
 	t.Run("all_aggregates_filtered", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*), SUM(amount), MIN(amount), MAX(amount)
 			FROM smaw_t WHERE status = 'active'
 		`)
@@ -15233,12 +15173,12 @@ func TestFDB_SelectWithMultipleAggregatesAndWhere(t *testing.T) {
 // TestFDB_JoinWithGroupByCountAndLimit — JOIN + GROUP BY + COUNT + ORDER BY + LIMIT
 func TestFDB_JoinWithGroupByCountAndLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jgcl",
+	db := testkit.SetupPlanShapeDB(t, "jgcl",
 		"CREATE TABLE jgcl_authors(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jgcl_books(id BIGINT, author_id BIGINT, title STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jgcl_authors VALUES (1, 'tolkien'), (2, 'rowling'), (3, 'martin')"); err != nil {
@@ -15253,7 +15193,7 @@ func TestFDB_JoinWithGroupByCountAndLimit(t *testing.T) {
 	}
 
 	t.Run("most_prolific_author", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.name, COUNT(*) AS book_count
 			FROM jgcl_authors a JOIN jgcl_books b ON a.id = b.author_id
 			GROUP BY a.name ORDER BY book_count DESC LIMIT 1
@@ -15270,12 +15210,12 @@ func TestFDB_JoinWithGroupByCountAndLimit(t *testing.T) {
 // TestFDB_SelectWithAllColumnsAndFilter — SELECT * with WHERE
 func TestFDB_SelectWithAllColumnsAndFilter(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "sacf", "CREATE TABLE sacf_t(id BIGINT, name STRING, age BIGINT, city STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "sacf", "CREATE TABLE sacf_t(id BIGINT, name STRING, age BIGINT, city STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO sacf_t VALUES
 		(1, 'alice', 30, 'nyc'), (2, 'bob', 25, 'la'),
 		(3, 'charlie', 35, 'nyc'), (4, 'david', 28, 'sf')
@@ -15284,7 +15224,7 @@ func TestFDB_SelectWithAllColumnsAndFilter(t *testing.T) {
 	}
 
 	t.Run("select_star_where", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM sacf_t WHERE city = 'nyc' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM sacf_t WHERE city = 'nyc' ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 NYC residents, got %d", len(rows))
 		}
@@ -15294,7 +15234,7 @@ func TestFDB_SelectWithAllColumnsAndFilter(t *testing.T) {
 	})
 
 	t.Run("select_star_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM sacf_t WHERE age > 27")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM sacf_t WHERE age > 27")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("want 3 (30, 35, 28), got %v", rows[0][0])
 		}
@@ -15304,12 +15244,12 @@ func TestFDB_SelectWithAllColumnsAndFilter(t *testing.T) {
 // TestFDB_UpdateAndDeleteWithAggregate — UPDATE + DELETE then verify aggregates
 func TestFDB_UpdateAndDeleteWithAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "udwa", "CREATE TABLE udwa_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "udwa", "CREATE TABLE udwa_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO udwa_t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -15318,7 +15258,7 @@ func TestFDB_UpdateAndDeleteWithAggregate(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE udwa_t SET val = val * 2 WHERE id <= 3"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT SUM(val) FROM udwa_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM udwa_t")
 		if toInt64(rows[0][0]) != 210 {
 			t.Errorf("SUM after *2 for ids 1-3: 20+40+60+40+50 = 210, got %v", rows[0][0])
 		}
@@ -15328,7 +15268,7 @@ func TestFDB_UpdateAndDeleteWithAggregate(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "DELETE FROM udwa_t WHERE val > 45"); err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*), SUM(val) FROM udwa_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*), SUM(val) FROM udwa_t")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("COUNT after delete val>45: want 3, got %v", rows[0][0])
 		}
@@ -15338,12 +15278,12 @@ func TestFDB_UpdateAndDeleteWithAggregate(t *testing.T) {
 // TestFDB_InsertSelectFromSameTable — INSERT...SELECT from same table with filter
 func TestFDB_InsertSelectFromSameTable(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "isst",
+	db := testkit.SetupPlanShapeDB(t, "isst",
 		"CREATE TABLE isst_src(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE isst_dst(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO isst_src VALUES (1, 100), (2, 200), (3, 300)"); err != nil {
@@ -15362,7 +15302,7 @@ func TestFDB_InsertSelectFromSameTable(t *testing.T) {
 	})
 
 	t.Run("verify_dst", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM isst_dst ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM isst_dst ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d: %v", len(rows), rows)
 		}
@@ -15375,53 +15315,53 @@ func TestFDB_InsertSelectFromSameTable(t *testing.T) {
 // TestFDB_WhereComparisonOperators — all comparison operators
 func TestFDB_WhereComparisonOperators(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wco", "CREATE TABLE wco_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "wco", "CREATE TABLE wco_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO wco_t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("equal", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val = 30")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val = 30")
 		if toInt64(rows[0][0]) != 1 {
 			t.Errorf("want 1, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("not_equal", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val <> 30")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val <> 30")
 		if toInt64(rows[0][0]) != 4 {
 			t.Errorf("want 4, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("less_than", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val < 30")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val < 30")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("want 2, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("less_equal", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val <= 30")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val <= 30")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("want 3, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("greater_than", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val > 30")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val > 30")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("want 2, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("greater_equal", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val >= 30")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM wco_t WHERE val >= 30")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("want 3, got %v", rows[0][0])
 		}
@@ -15431,12 +15371,12 @@ func TestFDB_WhereComparisonOperators(t *testing.T) {
 // TestFDB_CTEWithUnionAll — CTE body uses UNION ALL
 func TestFDB_CTEWithUnionAll(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ctua",
+	db := testkit.SetupPlanShapeDB(t, "ctua",
 		"CREATE TABLE ctua_a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE ctua_b(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO ctua_a VALUES (1, 10), (2, 20)"); err != nil {
@@ -15447,7 +15387,7 @@ func TestFDB_CTEWithUnionAll(t *testing.T) {
 	}
 
 	t.Run("cte_union_all_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH combined AS (
 				SELECT val FROM ctua_a UNION ALL SELECT val FROM ctua_b
 			)
@@ -15465,12 +15405,12 @@ func TestFDB_CTEWithUnionAll(t *testing.T) {
 // TestFDB_JoinWithWhereAndCase — JOIN + WHERE + CASE WHEN in SELECT
 func TestFDB_JoinWithWhereAndCase(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jwwc",
+	db := testkit.SetupPlanShapeDB(t, "jwwc",
 		"CREATE TABLE jwwc_emp(id BIGINT, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE jwwc_dept(id BIGINT, name STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO jwwc_emp VALUES
@@ -15483,7 +15423,7 @@ func TestFDB_JoinWithWhereAndCase(t *testing.T) {
 	}
 
 	t.Run("join_where_case", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT e.name, d.name,
 				CASE WHEN e.salary >= 100 THEN 'senior' ELSE 'junior' END AS level
 			FROM jwwc_emp e JOIN jwwc_dept d ON e.dept_id = d.id
@@ -15502,12 +15442,12 @@ func TestFDB_JoinWithWhereAndCase(t *testing.T) {
 // TestFDB_GroupByCountWithFilter — GROUP BY + COUNT + WHERE + ORDER BY
 func TestFDB_GroupByCountWithFilter(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbcwf", "CREATE TABLE gbcwf_t(id BIGINT, cat STRING, active BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "gbcwf", "CREATE TABLE gbcwf_t(id BIGINT, cat STRING, active BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gbcwf_t VALUES
 		(1, 'A', 1), (2, 'A', 0), (3, 'B', 1), (4, 'B', 1),
 		(5, 'C', 0), (6, 'C', 1), (7, 'A', 1)
@@ -15516,7 +15456,7 @@ func TestFDB_GroupByCountWithFilter(t *testing.T) {
 	}
 
 	t.Run("count_active_per_category", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT cat, COUNT(*) FROM gbcwf_t
 			WHERE active = 1
 			GROUP BY cat ORDER BY COUNT(*) DESC
@@ -15533,12 +15473,12 @@ func TestFDB_GroupByCountWithFilter(t *testing.T) {
 // TestFDB_LeftJoinWithCoalesceAndHavingFull — LEFT JOIN full pipeline
 func TestFDB_LeftJoinWithCoalesceAndHavingFull(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ljchf",
+	db := testkit.SetupPlanShapeDB(t, "ljchf",
 		"CREATE TABLE ljchf_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE ljchf_b(id BIGINT, aid BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO ljchf_a VALUES (1, 'x'), (2, 'y'), (3, 'z')"); err != nil {
@@ -15549,7 +15489,7 @@ func TestFDB_LeftJoinWithCoalesceAndHavingFull(t *testing.T) {
 	}
 
 	t.Run("coalesce_sum_having_order", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.name, COALESCE(SUM(b.val), 0) AS total, COUNT(b.val) AS cnt
 			FROM ljchf_a a LEFT JOIN ljchf_b b ON a.id = b.aid
 			GROUP BY a.name
@@ -15569,12 +15509,12 @@ func TestFDB_LeftJoinWithCoalesceAndHavingFull(t *testing.T) {
 // TestFDB_SelectWithOrderByMultipleColumns — ORDER BY with 2+ columns
 func TestFDB_SelectWithOrderByMultipleColumns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "somc", "CREATE TABLE somc_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "somc", "CREATE TABLE somc_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO somc_t VALUES
 		(1, 'B', 20), (2, 'A', 30), (3, 'B', 10), (4, 'A', 10), (5, 'C', 50)
 	`); err != nil {
@@ -15582,7 +15522,7 @@ func TestFDB_SelectWithOrderByMultipleColumns(t *testing.T) {
 	}
 
 	t.Run("order_by_cat_then_val", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT cat, val FROM somc_t ORDER BY cat, val")
+		rows := testkit.CollectRows(t, db, "SELECT cat, val FROM somc_t ORDER BY cat, val")
 		if len(rows) != 5 {
 			t.Fatalf("want 5, got %d", len(rows))
 		}
@@ -15598,12 +15538,12 @@ func TestFDB_SelectWithOrderByMultipleColumns(t *testing.T) {
 // TestFDB_GroupByHavingSumMinMax — HAVING with SUM, MIN, MAX combined
 func TestFDB_GroupByHavingSumMinMax(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ghsmm", "CREATE TABLE ghsmm_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "ghsmm", "CREATE TABLE ghsmm_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO ghsmm_t VALUES
 		(1, 'A', 10), (2, 'A', 90),
 		(3, 'B', 40), (4, 'B', 60),
@@ -15613,7 +15553,7 @@ func TestFDB_GroupByHavingSumMinMax(t *testing.T) {
 	}
 
 	t.Run("having_max_gt_50", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT grp, MAX(val) FROM ghsmm_t
 			GROUP BY grp HAVING MAX(val) > 50 ORDER BY grp
 		`)
@@ -15623,7 +15563,7 @@ func TestFDB_GroupByHavingSumMinMax(t *testing.T) {
 	})
 
 	t.Run("having_sum_and_min", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT grp, SUM(val), MIN(val) FROM ghsmm_t
 			GROUP BY grp HAVING SUM(val) >= 100 AND MIN(val) >= 10 ORDER BY grp
 		`)
@@ -15636,12 +15576,12 @@ func TestFDB_GroupByHavingSumMinMax(t *testing.T) {
 // TestFDB_DeleteAllAndRepopulate — DELETE all rows, repopulate, verify
 func TestFDB_DeleteAllAndRepopulate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "darep", "CREATE TABLE darep_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "darep", "CREATE TABLE darep_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO darep_t VALUES (1, 10), (2, 20), (3, 30)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -15650,7 +15590,7 @@ func TestFDB_DeleteAllAndRepopulate(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "DELETE FROM darep_t WHERE id > 0"); err != nil {
 			t.Fatalf("DELETE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM darep_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM darep_t")
 		if toInt64(rows[0][0]) != 0 {
 			t.Errorf("want 0 after delete all, got %v", rows[0][0])
 		}
@@ -15660,7 +15600,7 @@ func TestFDB_DeleteAllAndRepopulate(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO darep_t VALUES (10, 100), (20, 200)"); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT COUNT(*), SUM(val) FROM darep_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*), SUM(val) FROM darep_t")
 		if toInt64(rows[0][0]) != 2 || toInt64(rows[0][1]) != 300 {
 			t.Errorf("want count=2 sum=300, got %v %v", rows[0][0], rows[0][1])
 		}
@@ -15670,25 +15610,25 @@ func TestFDB_DeleteAllAndRepopulate(t *testing.T) {
 // TestFDB_SumWithMultiplication — SUM(col1*col2) expression aggregate
 func TestFDB_SumWithMultiplication(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "swmul", "CREATE TABLE swmul_t(id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "swmul", "CREATE TABLE swmul_t(id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO swmul_t VALUES (1, 5, 10), (2, 3, 20), (3, 7, 15)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("sum_product", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(qty * price) FROM swmul_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(qty * price) FROM swmul_t")
 		if toInt64(rows[0][0]) != 215 {
 			t.Errorf("SUM(qty*price) = 50+60+105 = 215, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("individual_products", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, qty * price AS total FROM swmul_t ORDER BY total DESC")
+		rows := testkit.CollectRows(t, db, "SELECT id, qty * price AS total FROM swmul_t ORDER BY total DESC")
 		if toInt64(rows[0][1]) != 105 {
 			t.Errorf("max product: 7*15=105, got %v", rows[0][1])
 		}
@@ -15698,12 +15638,12 @@ func TestFDB_SumWithMultiplication(t *testing.T) {
 // TestFDB_JoinWithInPredicate — JOIN with IN filter on joined column
 func TestFDB_JoinWithInPredicate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jwip",
+	db := testkit.SetupPlanShapeDB(t, "jwip",
 		"CREATE TABLE jwip_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jwip_b(id BIGINT, aid BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jwip_a VALUES (1, 'x'), (2, 'y'), (3, 'z')"); err != nil {
@@ -15714,7 +15654,7 @@ func TestFDB_JoinWithInPredicate(t *testing.T) {
 	}
 
 	t.Run("join_with_in_on_name", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.name, b.val
 			FROM jwip_a a JOIN jwip_b b ON a.id = b.aid
 			WHERE a.name IN ('x', 'z')
@@ -15732,25 +15672,25 @@ func TestFDB_JoinWithInPredicate(t *testing.T) {
 // TestFDB_WhereWithGreaterAndLess — combined > and < in WHERE
 func TestFDB_WhereWithGreaterAndLess(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wwgl", "CREATE TABLE wwgl_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "wwgl", "CREATE TABLE wwgl_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO wwgl_t VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("range_filter", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wwgl_t WHERE val > 15 AND val < 45 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wwgl_t WHERE val > 15 AND val < 45 ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 (20,30,40), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("exclusive_range_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM wwgl_t WHERE val > 10 AND val < 50")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM wwgl_t WHERE val > 10 AND val < 50")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("want 3, got %v", rows[0][0])
 		}
@@ -15760,12 +15700,12 @@ func TestFDB_WhereWithGreaterAndLess(t *testing.T) {
 // TestFDB_UpdateWithCoalesce — UPDATE SET using COALESCE
 func TestFDB_UpdateWithCoalesce(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uwcoal", "CREATE TABLE uwcoal_t(id BIGINT, val BIGINT, backup BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "uwcoal", "CREATE TABLE uwcoal_t(id BIGINT, val BIGINT, backup BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO uwcoal_t VALUES (1, NULL, 99), (2, 50, 99), (3, NULL, NULL)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
@@ -15774,7 +15714,7 @@ func TestFDB_UpdateWithCoalesce(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE uwcoal_t SET val = COALESCE(val, backup, 0)"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT id, val FROM uwcoal_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM uwcoal_t ORDER BY id")
 		if toInt64(rows[0][1]) != 99 {
 			t.Errorf("id=1: COALESCE(NULL, 99, 0) = 99, got %v", rows[0][1])
 		}
@@ -15790,12 +15730,12 @@ func TestFDB_UpdateWithCoalesce(t *testing.T) {
 // TestFDB_JoinSumGroupByOrderDesc — JOIN + SUM + GROUP BY + ORDER BY DESC
 func TestFDB_JoinSumGroupByOrderDesc(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jsgod",
+	db := testkit.SetupPlanShapeDB(t, "jsgod",
 		"CREATE TABLE jsgod_store(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jsgod_sale(id BIGINT, store_id BIGINT, amount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jsgod_store VALUES (1, 'main'), (2, 'branch')"); err != nil {
@@ -15806,7 +15746,7 @@ func TestFDB_JoinSumGroupByOrderDesc(t *testing.T) {
 	}
 
 	t.Run("revenue_by_store_desc", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT s.name, SUM(sa.amount) AS revenue
 			FROM jsgod_store s JOIN jsgod_sale sa ON s.id = sa.store_id
 			GROUP BY s.name ORDER BY revenue DESC
@@ -15826,12 +15766,12 @@ func TestFDB_JoinSumGroupByOrderDesc(t *testing.T) {
 // TestFDB_InsertAndVerifyOrder — INSERT preserves data, ORDER BY retrieves correctly
 func TestFDB_InsertAndVerifyOrder(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "iavo", "CREATE TABLE iavo_t(id BIGINT, name STRING, score BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "iavo", "CREATE TABLE iavo_t(id BIGINT, name STRING, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO iavo_t VALUES
 		(5, 'eve', 95), (3, 'charlie', 85), (1, 'alice', 90),
 		(4, 'david', 75), (2, 'bob', 80)
@@ -15840,7 +15780,7 @@ func TestFDB_InsertAndVerifyOrder(t *testing.T) {
 	}
 
 	t.Run("order_by_id", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, name FROM iavo_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, name FROM iavo_t ORDER BY id")
 		if len(rows) != 5 {
 			t.Fatalf("want 5, got %d", len(rows))
 		}
@@ -15850,14 +15790,14 @@ func TestFDB_InsertAndVerifyOrder(t *testing.T) {
 	})
 
 	t.Run("order_by_score_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT name, score FROM iavo_t ORDER BY score DESC")
+		rows := testkit.CollectRows(t, db, "SELECT name, score FROM iavo_t ORDER BY score DESC")
 		if fmt.Sprintf("%v", rows[0][0]) != "eve" || toInt64(rows[0][1]) != 95 {
 			t.Errorf("top scorer: want eve 95, got %v %v", rows[0][0], rows[0][1])
 		}
 	})
 
 	t.Run("order_by_name", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT name FROM iavo_t ORDER BY name")
+		rows := testkit.CollectRows(t, db, "SELECT name FROM iavo_t ORDER BY name")
 		if fmt.Sprintf("%v", rows[0][0]) != "alice" {
 			t.Errorf("first alphabetically: want alice, got %v", rows[0][0])
 		}
@@ -15867,12 +15807,12 @@ func TestFDB_InsertAndVerifyOrder(t *testing.T) {
 // TestFDB_GroupByWithMaxAndOrderBy — GROUP BY + MAX + ORDER BY MAX
 func TestFDB_GroupByWithMaxAndOrderBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbmob", "CREATE TABLE gbmob_t(id BIGINT, team STRING, score BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "gbmob", "CREATE TABLE gbmob_t(id BIGINT, team STRING, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gbmob_t VALUES
 		(1, 'red', 80), (2, 'red', 95), (3, 'blue', 70), (4, 'blue', 85), (5, 'green', 90)
 	`); err != nil {
@@ -15880,7 +15820,7 @@ func TestFDB_GroupByWithMaxAndOrderBy(t *testing.T) {
 	}
 
 	t.Run("max_score_by_team", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT team, MAX(score) FROM gbmob_t GROUP BY team ORDER BY MAX(score) DESC")
+		rows := testkit.CollectRows(t, db, "SELECT team, MAX(score) FROM gbmob_t GROUP BY team ORDER BY MAX(score) DESC")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -15893,12 +15833,12 @@ func TestFDB_GroupByWithMaxAndOrderBy(t *testing.T) {
 // TestFDB_SelectCountGroupByHavingLimit — COUNT + GROUP BY + HAVING + LIMIT
 func TestFDB_SelectCountGroupByHavingLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "scghl", "CREATE TABLE scghl_t(id BIGINT, tag STRING, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "scghl", "CREATE TABLE scghl_t(id BIGINT, tag STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO scghl_t VALUES
 		(1, 'go'), (2, 'go'), (3, 'go'), (4, 'java'), (5, 'java'),
 		(6, 'python'), (7, 'rust'), (8, 'rust'), (9, 'rust'), (10, 'rust')
@@ -15907,7 +15847,7 @@ func TestFDB_SelectCountGroupByHavingLimit(t *testing.T) {
 	}
 
 	t.Run("top_2_tags_by_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT tag, COUNT(*) AS cnt FROM scghl_t
 			GROUP BY tag HAVING COUNT(*) >= 2
 			ORDER BY cnt DESC LIMIT 2
@@ -15924,18 +15864,18 @@ func TestFDB_SelectCountGroupByHavingLimit(t *testing.T) {
 // TestFDB_WhereWithMultipleBetween — multiple BETWEEN conditions with OR
 func TestFDB_WhereWithMultipleBetween(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wwmb", "CREATE TABLE wwmb_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "wwmb", "CREATE TABLE wwmb_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO wwmb_t VALUES (1, 5), (2, 15), (3, 25), (4, 35), (5, 45), (6, 55)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("two_between_with_or", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM wwmb_t WHERE val BETWEEN 10 AND 20 OR val BETWEEN 40 AND 50 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM wwmb_t WHERE val BETWEEN 10 AND 20 OR val BETWEEN 40 AND 50 ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (15, 45), got %d: %v", len(rows), rows)
 		}
@@ -15945,7 +15885,7 @@ func TestFDB_WhereWithMultipleBetween(t *testing.T) {
 	})
 
 	t.Run("between_and_eq", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM wwmb_t WHERE val BETWEEN 20 AND 40 AND id > 2")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM wwmb_t WHERE val BETWEEN 20 AND 40 AND id > 2")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("want 2 (25,35 with id>2), got %v", rows[0][0])
 		}
@@ -15955,18 +15895,18 @@ func TestFDB_WhereWithMultipleBetween(t *testing.T) {
 // TestFDB_SelectWithCaseAndAggregate — CASE in SELECT with aggregate
 func TestFDB_SelectWithCaseAndAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "scaga", "CREATE TABLE scaga_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "scaga", "CREATE TABLE scaga_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO scaga_t VALUES (1, 10), (2, 50), (3, 30), (4, 80), (5, 20)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("sum_case_when", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT SUM(CASE WHEN val > 25 THEN val ELSE 0 END) FROM scaga_t
 		`)
 		if toInt64(rows[0][0]) != 160 {
@@ -15975,7 +15915,7 @@ func TestFDB_SelectWithCaseAndAggregate(t *testing.T) {
 	})
 
 	t.Run("count_case_categories", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT
 				CASE WHEN val >= 50 THEN 'high' ELSE 'low' END AS tier,
 				COUNT(*)
@@ -15989,7 +15929,7 @@ func TestFDB_SelectWithCaseAndAggregate(t *testing.T) {
 	})
 
 	t.Run("max_of_case", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT MAX(CASE WHEN val < 50 THEN val ELSE 0 END) FROM scaga_t
 		`)
 		if toInt64(rows[0][0]) != 30 {
@@ -16001,12 +15941,12 @@ func TestFDB_SelectWithCaseAndAggregate(t *testing.T) {
 // TestFDB_JoinWithUpdateAndVerify — JOIN query, UPDATE, verify via JOIN again
 func TestFDB_JoinWithUpdateAndVerify(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jwuv",
+	db := testkit.SetupPlanShapeDB(t, "jwuv",
 		"CREATE TABLE jwuv_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jwuv_b(id BIGINT, aid BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jwuv_a VALUES (1, 'alice'), (2, 'bob')"); err != nil {
@@ -16017,7 +15957,7 @@ func TestFDB_JoinWithUpdateAndVerify(t *testing.T) {
 	}
 
 	t.Run("initial_join", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a.name, b.val FROM jwuv_a a JOIN jwuv_b b ON a.id = b.aid ORDER BY a.name")
+		rows := testkit.CollectRows(t, db, "SELECT a.name, b.val FROM jwuv_a a JOIN jwuv_b b ON a.id = b.aid ORDER BY a.name")
 		if len(rows) != 2 {
 			t.Fatalf("want 2, got %d", len(rows))
 		}
@@ -16027,7 +15967,7 @@ func TestFDB_JoinWithUpdateAndVerify(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "UPDATE jwuv_b SET val = val * 3 WHERE aid = 1"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT a.name, b.val FROM jwuv_a a JOIN jwuv_b b ON a.id = b.aid ORDER BY a.name")
+		rows := testkit.CollectRows(t, db, "SELECT a.name, b.val FROM jwuv_a a JOIN jwuv_b b ON a.id = b.aid ORDER BY a.name")
 		if toInt64(rows[0][1]) != 300 {
 			t.Errorf("alice: 100*3=300, got %v", rows[0][1])
 		}
@@ -16040,12 +15980,12 @@ func TestFDB_JoinWithUpdateAndVerify(t *testing.T) {
 // TestFDB_CombinedWhereAndGroupBy — WHERE filter before GROUP BY
 func TestFDB_CombinedWhereAndGroupBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cwagb", "CREATE TABLE cwagb_t(id BIGINT, region STRING, status STRING, amount BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "cwagb", "CREATE TABLE cwagb_t(id BIGINT, region STRING, status STRING, amount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO cwagb_t VALUES
 		(1, 'east', 'active', 100), (2, 'east', 'inactive', 50),
 		(3, 'west', 'active', 200), (4, 'west', 'active', 150),
@@ -16055,7 +15995,7 @@ func TestFDB_CombinedWhereAndGroupBy(t *testing.T) {
 	}
 
 	t.Run("where_active_group_by_region", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT region, SUM(amount) AS total
 			FROM cwagb_t WHERE status = 'active'
 			GROUP BY region ORDER BY total DESC
@@ -16075,25 +16015,25 @@ func TestFDB_CombinedWhereAndGroupBy(t *testing.T) {
 // TestFDB_SelectWithArithmeticInWhere — arithmetic expressions in WHERE clause
 func TestFDB_SelectWithArithmeticInWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "swaiw", "CREATE TABLE swaiw_t(id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "swaiw", "CREATE TABLE swaiw_t(id BIGINT, price BIGINT, qty BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO swaiw_t VALUES (1, 10, 5), (2, 20, 3), (3, 30, 2), (4, 5, 100)"); err != nil {
 		t.Fatalf("INSERT: %v", err)
 	}
 
 	t.Run("where_product_gt_50", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM swaiw_t WHERE price * qty > 50 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM swaiw_t WHERE price * qty > 50 ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 (id=2: 60, id=3: 60, id=4: 500), got %d: %v", len(rows), rows)
 		}
 	})
 
 	t.Run("where_sum_gt", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM swaiw_t WHERE price + qty > 30 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM swaiw_t WHERE price + qty > 30 ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (id=3: 32, id=4: 105), got %d: %v", len(rows), rows)
 		}
@@ -16103,12 +16043,12 @@ func TestFDB_SelectWithArithmeticInWhere(t *testing.T) {
 // TestFDB_SelectCountDistinctViaGroupBy — count distinct via GROUP BY
 func TestFDB_SelectCountDistinctViaGroupBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "scdvg", "CREATE TABLE scdvg_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
+	db := testkit.SetupPlanShapeDB(t, "scdvg", "CREATE TABLE scdvg_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO scdvg_t VALUES
 		(1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'C', 40), (5, 'B', 50)
 	`); err != nil {
@@ -16116,7 +16056,7 @@ func TestFDB_SelectCountDistinctViaGroupBy(t *testing.T) {
 	}
 
 	t.Run("group_by_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT cat, COUNT(*) FROM scdvg_t GROUP BY cat ORDER BY cat")
+		rows := testkit.CollectRows(t, db, "SELECT cat, COUNT(*) FROM scdvg_t GROUP BY cat ORDER BY cat")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 groups, got %d", len(rows))
 		}
@@ -16129,12 +16069,12 @@ func TestFDB_SelectCountDistinctViaGroupBy(t *testing.T) {
 // TestFDB_JoinWithLeftAndInnerCompare — compare LEFT vs INNER JOIN results
 func TestFDB_JoinWithLeftAndInnerCompare(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jlic",
+	db := testkit.SetupPlanShapeDB(t, "jlic",
 		"CREATE TABLE jlic_a(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jlic_b(id BIGINT, aid BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO jlic_a VALUES (1, 'x'), (2, 'y'), (3, 'z')"); err != nil {
@@ -16145,21 +16085,21 @@ func TestFDB_JoinWithLeftAndInnerCompare(t *testing.T) {
 	}
 
 	t.Run("inner_join_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM jlic_a a JOIN jlic_b b ON a.id = b.aid")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM jlic_a a JOIN jlic_b b ON a.id = b.aid")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("INNER JOIN: want 2 matched, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("left_join_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM jlic_a a LEFT JOIN jlic_b b ON a.id = b.aid")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM jlic_a a LEFT JOIN jlic_b b ON a.id = b.aid")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("LEFT JOIN: want 3 (2 matched + 1 unmatched), got %v", rows[0][0])
 		}
 	})
 
 	t.Run("left_minus_inner", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.name FROM jlic_a a LEFT JOIN jlic_b b ON a.id = b.aid
 			WHERE b.id IS NULL
 		`)
@@ -16172,12 +16112,12 @@ func TestFDB_JoinWithLeftAndInnerCompare(t *testing.T) {
 // TestFDB_MultiColumnOrderTies — ORDER BY with tied first column, break by second
 func TestFDB_MultiColumnOrderTies(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mcot",
+	db := testkit.SetupPlanShapeDB(t, "mcot",
 		"CREATE TABLE mcot_t(id BIGINT, grade STRING, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO mcot_t VALUES (1,'A',90),(2,'B',80),(3,'A',70),(4,'B',95),(5,'A',85)"); err != nil {
@@ -16185,7 +16125,7 @@ func TestFDB_MultiColumnOrderTies(t *testing.T) {
 	}
 
 	t.Run("asc_asc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grade, score FROM mcot_t ORDER BY grade, score")
+		rows := testkit.CollectRows(t, db, "SELECT grade, score FROM mcot_t ORDER BY grade, score")
 		want := []int64{70, 85, 90, 80, 95}
 		for i, w := range want {
 			if toInt64(rows[i][1]) != w {
@@ -16195,7 +16135,7 @@ func TestFDB_MultiColumnOrderTies(t *testing.T) {
 	})
 
 	t.Run("asc_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grade, score FROM mcot_t ORDER BY grade ASC, score DESC")
+		rows := testkit.CollectRows(t, db, "SELECT grade, score FROM mcot_t ORDER BY grade ASC, score DESC")
 		want := []int64{90, 85, 70, 95, 80}
 		for i, w := range want {
 			if toInt64(rows[i][1]) != w {
@@ -16205,7 +16145,7 @@ func TestFDB_MultiColumnOrderTies(t *testing.T) {
 	})
 
 	t.Run("desc_asc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grade, score FROM mcot_t ORDER BY grade DESC, score ASC")
+		rows := testkit.CollectRows(t, db, "SELECT grade, score FROM mcot_t ORDER BY grade DESC, score ASC")
 		want := []int64{80, 95, 70, 85, 90}
 		for i, w := range want {
 			if toInt64(rows[i][1]) != w {
@@ -16218,12 +16158,12 @@ func TestFDB_MultiColumnOrderTies(t *testing.T) {
 // TestFDB_AggregateMultipleGroupKeys — GROUP BY two columns
 func TestFDB_AggregateMultipleGroupKeys(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "amgk",
+	db := testkit.SetupPlanShapeDB(t, "amgk",
 		"CREATE TABLE amgk_t(id BIGINT, dept STRING, role STRING, salary BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO amgk_t VALUES (1,'eng','dev',100),(2,'eng','dev',120),(3,'eng','qa',90),(4,'sales','rep',80),(5,'sales','rep',85),(6,'sales','mgr',150)"); err != nil {
@@ -16231,7 +16171,7 @@ func TestFDB_AggregateMultipleGroupKeys(t *testing.T) {
 	}
 
 	t.Run("count_per_dept_role", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT dept, role, COUNT(*) FROM amgk_t GROUP BY dept, role ORDER BY dept, role")
+		rows := testkit.CollectRows(t, db, "SELECT dept, role, COUNT(*) FROM amgk_t GROUP BY dept, role ORDER BY dept, role")
 		if len(rows) != 4 {
 			t.Fatalf("want 4 groups, got %d", len(rows))
 		}
@@ -16253,7 +16193,7 @@ func TestFDB_AggregateMultipleGroupKeys(t *testing.T) {
 	})
 
 	t.Run("sum_per_dept_role", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT dept, role, SUM(salary) FROM amgk_t GROUP BY dept, role ORDER BY dept, role")
+		rows := testkit.CollectRows(t, db, "SELECT dept, role, SUM(salary) FROM amgk_t GROUP BY dept, role ORDER BY dept, role")
 		wantSum := []int64{220, 90, 150, 165}
 		for i, w := range wantSum {
 			if toInt64(rows[i][2]) != w {
@@ -16266,12 +16206,12 @@ func TestFDB_AggregateMultipleGroupKeys(t *testing.T) {
 // TestFDB_HavingCountThreshold — HAVING COUNT(*) >= N filters groups
 func TestFDB_HavingCountThreshold(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "hct",
+	db := testkit.SetupPlanShapeDB(t, "hct",
 		"CREATE TABLE hct_t(id BIGINT, color STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO hct_t VALUES (1,'red'),(2,'blue'),(3,'red'),(4,'green'),(5,'red'),(6,'blue')"); err != nil {
@@ -16279,7 +16219,7 @@ func TestFDB_HavingCountThreshold(t *testing.T) {
 	}
 
 	t.Run("count_ge_2", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT color, COUNT(*) FROM hct_t GROUP BY color HAVING COUNT(*) >= 2 ORDER BY color")
+		rows := testkit.CollectRows(t, db, "SELECT color, COUNT(*) FROM hct_t GROUP BY color HAVING COUNT(*) >= 2 ORDER BY color")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 groups (blue=2, red=3), got %d: %v", len(rows), rows)
 		}
@@ -16292,7 +16232,7 @@ func TestFDB_HavingCountThreshold(t *testing.T) {
 	})
 
 	t.Run("count_ge_3", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT color, COUNT(*) FROM hct_t GROUP BY color HAVING COUNT(*) >= 3")
+		rows := testkit.CollectRows(t, db, "SELECT color, COUNT(*) FROM hct_t GROUP BY color HAVING COUNT(*) >= 3")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 group (red=3), got %d: %v", len(rows), rows)
 		}
@@ -16302,7 +16242,7 @@ func TestFDB_HavingCountThreshold(t *testing.T) {
 	})
 
 	t.Run("count_eq_1", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT color, COUNT(*) FROM hct_t GROUP BY color HAVING COUNT(*) = 1 ORDER BY color")
+		rows := testkit.CollectRows(t, db, "SELECT color, COUNT(*) FROM hct_t GROUP BY color HAVING COUNT(*) = 1 ORDER BY color")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 group (green=1), got %d: %v", len(rows), rows)
 		}
@@ -16315,12 +16255,12 @@ func TestFDB_HavingCountThreshold(t *testing.T) {
 // TestFDB_UpdateConditionalArithmetic — UPDATE with CASE and arithmetic in SET
 func TestFDB_UpdateConditionalArithmetic(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uca",
+	db := testkit.SetupPlanShapeDB(t, "uca",
 		"CREATE TABLE uca_t(id BIGINT, price BIGINT, status STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO uca_t VALUES (1,100,'active'),(2,200,'inactive'),(3,50,'active'),(4,300,'inactive')"); err != nil {
@@ -16337,14 +16277,14 @@ func TestFDB_UpdateConditionalArithmetic(t *testing.T) {
 			t.Errorf("want 2 rows affected, got %d", n)
 		}
 
-		rows := collectRows(t, db, "SELECT id, price FROM uca_t WHERE status = 'active' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, price FROM uca_t WHERE status = 'active' ORDER BY id")
 		if toInt64(rows[0][1]) != 200 || toInt64(rows[1][1]) != 100 {
 			t.Errorf("want [200 100], got [%v %v]", rows[0][1], rows[1][1])
 		}
 	})
 
 	t.Run("inactive_unchanged", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, price FROM uca_t WHERE status = 'inactive' ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, price FROM uca_t WHERE status = 'inactive' ORDER BY id")
 		if toInt64(rows[0][1]) != 200 || toInt64(rows[1][1]) != 300 {
 			t.Errorf("inactive should be unchanged: got [%v %v]", rows[0][1], rows[1][1])
 		}
@@ -16354,12 +16294,12 @@ func TestFDB_UpdateConditionalArithmetic(t *testing.T) {
 // TestFDB_DeleteWithExistsSubquery — DELETE WHERE EXISTS (correlated subquery)
 func TestFDB_DeleteWithExistsSubquery(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dwe",
+	db := testkit.SetupPlanShapeDB(t, "dwe",
 		"CREATE TABLE dwe_orders(id BIGINT, customer STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE dwe_cancels(id BIGINT, order_id BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
@@ -16384,7 +16324,7 @@ func TestFDB_DeleteWithExistsSubquery(t *testing.T) {
 	})
 
 	t.Run("remaining_is_bob", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT customer FROM dwe_orders")
+		rows := testkit.CollectRows(t, db, "SELECT customer FROM dwe_orders")
 		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "bob" {
 			t.Errorf("want [bob], got %v", rows)
 		}
@@ -16394,12 +16334,12 @@ func TestFDB_DeleteWithExistsSubquery(t *testing.T) {
 // TestFDB_UpdateCaseWhenTier — UPDATE SET col = CASE WHEN ... tiered classification
 func TestFDB_UpdateCaseWhenTier(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ucwt",
+	db := testkit.SetupPlanShapeDB(t, "ucwt",
 		"CREATE TABLE ucwt_t(id BIGINT, score BIGINT, tier STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO ucwt_t VALUES (1,95,'?'),(2,75,'?'),(3,55,'?'),(4,35,'?')"); err != nil {
@@ -16419,7 +16359,7 @@ func TestFDB_UpdateCaseWhenTier(t *testing.T) {
 			t.Fatalf("UPDATE: %v", err)
 		}
 
-		rows := collectRows(t, db, "SELECT id, tier FROM ucwt_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, tier FROM ucwt_t ORDER BY id")
 		want := []string{"A", "B", "C", "D"}
 		for i, w := range want {
 			if fmt.Sprintf("%v", rows[i][1]) != w {
@@ -16432,12 +16372,12 @@ func TestFDB_UpdateCaseWhenTier(t *testing.T) {
 // TestFDB_InsertSelectCrossTable — INSERT INTO ... SELECT FROM another table
 func TestFDB_InsertSelectCrossTable(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "isct",
+	db := testkit.SetupPlanShapeDB(t, "isct",
 		"CREATE TABLE isct_src(id BIGINT, name STRING, active BOOLEAN, PRIMARY KEY(id)) "+
 			"CREATE TABLE isct_dst(id BIGINT, name STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
@@ -16458,7 +16398,7 @@ func TestFDB_InsertSelectCrossTable(t *testing.T) {
 	})
 
 	t.Run("verify_dst", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT name FROM isct_dst ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT name FROM isct_dst ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
 		}
@@ -16472,12 +16412,12 @@ func TestFDB_InsertSelectCrossTable(t *testing.T) {
 // TestFDB_GroupByWithWhereAndHaving — WHERE filters before GROUP BY, HAVING filters after
 func TestFDB_GroupByWithWhereAndHaving(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gwh",
+	db := testkit.SetupPlanShapeDB(t, "gwh",
 		"CREATE TABLE gwh_t(id BIGINT, region STRING, amount BIGINT, active BOOLEAN, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gwh_t VALUES
 		(1,'east',100,true),(2,'east',200,true),(3,'east',50,false),
@@ -16487,7 +16427,7 @@ func TestFDB_GroupByWithWhereAndHaving(t *testing.T) {
 	}
 
 	t.Run("where_active_having_sum_gt_200", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT region, SUM(amount) FROM gwh_t
 			WHERE active = true
 			GROUP BY region
@@ -16506,7 +16446,7 @@ func TestFDB_GroupByWithWhereAndHaving(t *testing.T) {
 	})
 
 	t.Run("north_excluded_by_having", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT region, SUM(amount) FROM gwh_t
 			WHERE active = true
 			GROUP BY region
@@ -16523,12 +16463,12 @@ func TestFDB_GroupByWithWhereAndHaving(t *testing.T) {
 // TestFDB_UnionAllOrderByLimit — UNION ALL with ORDER BY and LIMIT
 func TestFDB_UnionAllOrderByLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uaol",
+	db := testkit.SetupPlanShapeDB(t, "uaol",
 		"CREATE TABLE uaol_a(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE uaol_b(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO uaol_a VALUES (1,10),(2,30),(3,50)"); err != nil {
@@ -16539,7 +16479,7 @@ func TestFDB_UnionAllOrderByLimit(t *testing.T) {
 	}
 
 	t.Run("union_order_by_val", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, val FROM uaol_a
 			UNION ALL
 			SELECT id, val FROM uaol_b
@@ -16557,7 +16497,7 @@ func TestFDB_UnionAllOrderByLimit(t *testing.T) {
 	})
 
 	t.Run("union_order_limit_3", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, val FROM uaol_a
 			UNION ALL
 			SELECT id, val FROM uaol_b
@@ -16576,7 +16516,7 @@ func TestFDB_UnionAllOrderByLimit(t *testing.T) {
 	})
 
 	t.Run("union_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM (
 				SELECT val FROM uaol_a
 				UNION ALL
@@ -16592,12 +16532,12 @@ func TestFDB_UnionAllOrderByLimit(t *testing.T) {
 // TestFDB_SelfJoinPairs — self-join to find all pairs where a.val < b.val
 func TestFDB_SelfJoinPairs(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "sjp",
+	db := testkit.SetupPlanShapeDB(t, "sjp",
 		"CREATE TABLE sjp_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO sjp_t VALUES (1,10),(2,20),(3,30)"); err != nil {
@@ -16605,7 +16545,7 @@ func TestFDB_SelfJoinPairs(t *testing.T) {
 	}
 
 	t.Run("all_ascending_pairs", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.id, b.id FROM sjp_t a JOIN sjp_t b ON a.val < b.val
 			ORDER BY a.id, b.id
 		`)
@@ -16623,7 +16563,7 @@ func TestFDB_SelfJoinPairs(t *testing.T) {
 	})
 
 	t.Run("pair_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM sjp_t a JOIN sjp_t b ON a.val < b.val
 		`)
 		if toInt64(rows[0][0]) != 3 {
@@ -16635,12 +16575,12 @@ func TestFDB_SelfJoinPairs(t *testing.T) {
 // TestFDB_LargerDatasetAggregate — 50-row dataset with aggregate queries
 func TestFDB_LargerDatasetAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "lda",
+	db := testkit.SetupPlanShapeDB(t, "lda",
 		"CREATE TABLE lda_t(id BIGINT, bucket BIGINT, val BIGINT, PRIMARY KEY(id))")
 
 	var vals strings.Builder
@@ -16656,14 +16596,14 @@ func TestFDB_LargerDatasetAggregate(t *testing.T) {
 	}
 
 	t.Run("total_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM lda_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM lda_t")
 		if toInt64(rows[0][0]) != 50 {
 			t.Errorf("want 50, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("sum_all", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM lda_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM lda_t")
 		// sum of 10+20+...+500 = 10*(1+2+...+50) = 10*1275 = 12750
 		if toInt64(rows[0][0]) != 12750 {
 			t.Errorf("want 12750, got %v", rows[0][0])
@@ -16671,7 +16611,7 @@ func TestFDB_LargerDatasetAggregate(t *testing.T) {
 	})
 
 	t.Run("count_per_bucket", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT bucket, COUNT(*) FROM lda_t GROUP BY bucket ORDER BY bucket")
+		rows := testkit.CollectRows(t, db, "SELECT bucket, COUNT(*) FROM lda_t GROUP BY bucket ORDER BY bucket")
 		if len(rows) != 5 {
 			t.Fatalf("want 5 buckets, got %d", len(rows))
 		}
@@ -16683,7 +16623,7 @@ func TestFDB_LargerDatasetAggregate(t *testing.T) {
 	})
 
 	t.Run("min_max_per_bucket", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT bucket, MIN(val), MAX(val) FROM lda_t GROUP BY bucket ORDER BY bucket")
+		rows := testkit.CollectRows(t, db, "SELECT bucket, MIN(val), MAX(val) FROM lda_t GROUP BY bucket ORDER BY bucket")
 		if len(rows) != 5 {
 			t.Fatalf("want 5 buckets, got %d", len(rows))
 		}
@@ -16694,7 +16634,7 @@ func TestFDB_LargerDatasetAggregate(t *testing.T) {
 	})
 
 	t.Run("top_5_by_val", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM lda_t ORDER BY val DESC LIMIT 5")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM lda_t ORDER BY val DESC LIMIT 5")
 		if len(rows) != 5 {
 			t.Fatalf("want 5 rows, got %d", len(rows))
 		}
@@ -16707,7 +16647,7 @@ func TestFDB_LargerDatasetAggregate(t *testing.T) {
 	})
 
 	t.Run("where_range_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM lda_t WHERE val >= 200 AND val <= 300")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM lda_t WHERE val >= 200 AND val <= 300")
 		// vals 200,210,...,300 → 11 values
 		if toInt64(rows[0][0]) != 11 {
 			t.Errorf("want 11 rows in [200,300], got %v", rows[0][0])
@@ -16718,12 +16658,12 @@ func TestFDB_LargerDatasetAggregate(t *testing.T) {
 // TestFDB_NestedDerivedThreeLevels — 3 levels of derived table nesting
 func TestFDB_NestedDerivedThreeLevels(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "nd3",
+	db := testkit.SetupPlanShapeDB(t, "nd3",
 		"CREATE TABLE nd3_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO nd3_t VALUES (1,10),(2,20),(3,30),(4,40),(5,50)"); err != nil {
@@ -16731,7 +16671,7 @@ func TestFDB_NestedDerivedThreeLevels(t *testing.T) {
 	}
 
 	t.Run("triple_nest_sum", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT SUM(val) FROM (
 				SELECT val FROM (
 					SELECT val FROM nd3_t
@@ -16744,7 +16684,7 @@ func TestFDB_NestedDerivedThreeLevels(t *testing.T) {
 	})
 
 	t.Run("triple_nest_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM (
 				SELECT val FROM (
 					SELECT val FROM nd3_t WHERE val > 20
@@ -16761,7 +16701,7 @@ func TestFDB_NestedDerivedThreeLevels(t *testing.T) {
 		// derived tables by its OUTPUT name `doubled`, not a source-name
 		// reverse-map. doubled = val+val over {10,20,30,40,50} → {20,40,60,80,100},
 		// SUM = 300.
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT SUM(doubled) FROM (
 				SELECT doubled FROM (
 					SELECT val + val AS doubled FROM nd3_t
@@ -16777,12 +16717,12 @@ func TestFDB_NestedDerivedThreeLevels(t *testing.T) {
 // TestFDB_JoinThreeTablesWithAgg — 3-way JOIN with aggregate
 func TestFDB_JoinThreeTablesWithAgg(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "j3a",
+	db := testkit.SetupPlanShapeDB(t, "j3a",
 		"CREATE TABLE j3a_cust(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE j3a_orders(id BIGINT, cust_id BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE j3a_items(id BIGINT, order_id BIGINT, amount BIGINT, PRIMARY KEY(id))")
@@ -16800,7 +16740,7 @@ func TestFDB_JoinThreeTablesWithAgg(t *testing.T) {
 	}
 
 	t.Run("total_per_customer", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT c.name, SUM(i.amount) FROM j3a_cust c
 			JOIN j3a_orders o ON c.id = o.cust_id
 			JOIN j3a_items i ON o.id = i.order_id
@@ -16821,7 +16761,7 @@ func TestFDB_JoinThreeTablesWithAgg(t *testing.T) {
 	})
 
 	t.Run("order_count_per_customer", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT c.name, COUNT(*) FROM j3a_cust c
 			JOIN j3a_orders o ON c.id = o.cust_id
 			GROUP BY c.name
@@ -16839,12 +16779,12 @@ func TestFDB_JoinThreeTablesWithAgg(t *testing.T) {
 // TestFDB_CoalesceInJoin — COALESCE to provide defaults for NULL from LEFT JOIN
 func TestFDB_CoalesceInJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cij",
+	db := testkit.SetupPlanShapeDB(t, "cij",
 		"CREATE TABLE cij_emp(id BIGINT, name STRING, dept_id BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE cij_dept(id BIGINT, dname STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
@@ -16857,7 +16797,7 @@ func TestFDB_CoalesceInJoin(t *testing.T) {
 	}
 
 	t.Run("coalesce_dept_name", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT e.name, COALESCE(d.dname, 'unassigned') FROM cij_emp e
 			LEFT JOIN cij_dept d ON e.dept_id = d.id
 			ORDER BY e.id
@@ -16878,12 +16818,12 @@ func TestFDB_CoalesceInJoin(t *testing.T) {
 // TestFDB_NullAggregateEdges — aggregate behavior with all-NULL column
 func TestFDB_NullAggregateEdges(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "nae",
+	db := testkit.SetupPlanShapeDB(t, "nae",
 		"CREATE TABLE nae_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO nae_t(id) VALUES (1),(2),(3)"); err != nil {
@@ -16891,35 +16831,35 @@ func TestFDB_NullAggregateEdges(t *testing.T) {
 	}
 
 	t.Run("count_star_includes_nulls", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM nae_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM nae_t")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("COUNT(*) should count all rows including NULL val, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("count_col_excludes_nulls", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(val) FROM nae_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(val) FROM nae_t")
 		if toInt64(rows[0][0]) != 0 {
 			t.Errorf("COUNT(val) should be 0 for all-NULL column, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("sum_null_is_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM nae_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM nae_t")
 		if rows[0][0] != nil {
 			t.Errorf("SUM(NULL col) should be NULL, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("min_null_is_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT MIN(val) FROM nae_t")
+		rows := testkit.CollectRows(t, db, "SELECT MIN(val) FROM nae_t")
 		if rows[0][0] != nil {
 			t.Errorf("MIN(NULL col) should be NULL, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("coalesce_sum_zero", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COALESCE(SUM(val), 0) FROM nae_t")
+		rows := testkit.CollectRows(t, db, "SELECT COALESCE(SUM(val), 0) FROM nae_t")
 		if toInt64(rows[0][0]) != 0 {
 			t.Errorf("COALESCE(SUM(NULL), 0) should be 0, got %v", rows[0][0])
 		}
@@ -16929,12 +16869,12 @@ func TestFDB_NullAggregateEdges(t *testing.T) {
 // TestFDB_DeleteAllThenCount — DELETE all rows then verify COUNT=0
 func TestFDB_DeleteAllThenCount(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "datc",
+	db := testkit.SetupPlanShapeDB(t, "datc",
 		"CREATE TABLE datc_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO datc_t VALUES (1,10),(2,20),(3,30)"); err != nil {
@@ -16953,14 +16893,14 @@ func TestFDB_DeleteAllThenCount(t *testing.T) {
 	})
 
 	t.Run("count_is_zero", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM datc_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM datc_t")
 		if toInt64(rows[0][0]) != 0 {
 			t.Errorf("want 0 after delete all, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("select_returns_empty", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM datc_t")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM datc_t")
 		if len(rows) != 0 {
 			t.Errorf("want 0 rows, got %d", len(rows))
 		}
@@ -16970,12 +16910,12 @@ func TestFDB_DeleteAllThenCount(t *testing.T) {
 // TestFDB_InsertDuplicatePK — INSERT with duplicate PK should error or upsert
 func TestFDB_InsertDuplicatePK(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "idpk",
+	db := testkit.SetupPlanShapeDB(t, "idpk",
 		"CREATE TABLE idpk_t(id BIGINT, val STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO idpk_t VALUES (1, 'first')"); err != nil {
 		t.Fatalf("INSERT 1: %v", err)
@@ -16989,7 +16929,7 @@ func TestFDB_InsertDuplicatePK(t *testing.T) {
 	})
 
 	t.Run("count_stays_one", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM idpk_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM idpk_t")
 		if toInt64(rows[0][0]) != 1 {
 			t.Errorf("want 1 after duplicate PK insert, got %v", rows[0][0])
 		}
@@ -16999,12 +16939,12 @@ func TestFDB_InsertDuplicatePK(t *testing.T) {
 // TestFDB_BetweenOrderBy — BETWEEN filter combined with ORDER BY
 func TestFDB_BetweenOrderBy(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "btob",
+	db := testkit.SetupPlanShapeDB(t, "btob",
 		"CREATE TABLE btob_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO btob_t VALUES (1,10),(2,25),(3,30),(4,45),(5,50),(6,15),(7,35)"); err != nil {
@@ -17012,7 +16952,7 @@ func TestFDB_BetweenOrderBy(t *testing.T) {
 	}
 
 	t.Run("between_asc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT val FROM btob_t WHERE val BETWEEN 20 AND 40 ORDER BY val")
+		rows := testkit.CollectRows(t, db, "SELECT val FROM btob_t WHERE val BETWEEN 20 AND 40 ORDER BY val")
 		want := []int64{25, 30, 35}
 		if len(rows) != len(want) {
 			t.Fatalf("want %d rows, got %d", len(want), len(rows))
@@ -17025,7 +16965,7 @@ func TestFDB_BetweenOrderBy(t *testing.T) {
 	})
 
 	t.Run("between_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT val FROM btob_t WHERE val BETWEEN 20 AND 40 ORDER BY val DESC")
+		rows := testkit.CollectRows(t, db, "SELECT val FROM btob_t WHERE val BETWEEN 20 AND 40 ORDER BY val DESC")
 		want := []int64{35, 30, 25}
 		for i, w := range want {
 			if toInt64(rows[i][0]) != w {
@@ -17035,7 +16975,7 @@ func TestFDB_BetweenOrderBy(t *testing.T) {
 	})
 
 	t.Run("not_between", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT val FROM btob_t WHERE val NOT BETWEEN 20 AND 40 ORDER BY val")
+		rows := testkit.CollectRows(t, db, "SELECT val FROM btob_t WHERE val NOT BETWEEN 20 AND 40 ORDER BY val")
 		want := []int64{10, 15, 45, 50}
 		if len(rows) != len(want) {
 			t.Fatalf("want %d rows, got %d", len(want), len(rows))
@@ -17051,12 +16991,12 @@ func TestFDB_BetweenOrderBy(t *testing.T) {
 // TestFDB_MultiRowInsertAndVerify — INSERT multiple rows in one statement, verify all
 func TestFDB_MultiRowInsertAndVerify(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mriv",
+	db := testkit.SetupPlanShapeDB(t, "mriv",
 		"CREATE TABLE mriv_t(id BIGINT, name STRING, score BIGINT, PRIMARY KEY(id))")
 
 	t.Run("insert_10_rows", func(t *testing.T) {
@@ -17073,21 +17013,21 @@ func TestFDB_MultiRowInsertAndVerify(t *testing.T) {
 	})
 
 	t.Run("verify_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM mriv_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM mriv_t")
 		if toInt64(rows[0][0]) != 10 {
 			t.Errorf("want 10, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("verify_sum", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(score) FROM mriv_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(score) FROM mriv_t")
 		if toInt64(rows[0][0]) != 550 {
 			t.Errorf("want 550, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("verify_order", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT name FROM mriv_t ORDER BY name DESC LIMIT 3")
+		rows := testkit.CollectRows(t, db, "SELECT name FROM mriv_t ORDER BY name DESC LIMIT 3")
 		want := []string{"j", "i", "h"}
 		for i, w := range want {
 			if fmt.Sprintf("%v", rows[i][0]) != w {
@@ -17100,12 +17040,12 @@ func TestFDB_MultiRowInsertAndVerify(t *testing.T) {
 // TestFDB_StringOrderByLexicographic — verify strings sort lexicographically
 func TestFDB_StringOrderByLexicographic(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "sol",
+	db := testkit.SetupPlanShapeDB(t, "sol",
 		"CREATE TABLE sol_t(id BIGINT, word STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO sol_t VALUES (1,'banana'),(2,'apple'),(3,'cherry'),(4,'date'),(5,'elderberry')"); err != nil {
@@ -17113,7 +17053,7 @@ func TestFDB_StringOrderByLexicographic(t *testing.T) {
 	}
 
 	t.Run("asc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT word FROM sol_t ORDER BY word ASC")
+		rows := testkit.CollectRows(t, db, "SELECT word FROM sol_t ORDER BY word ASC")
 		want := []string{"apple", "banana", "cherry", "date", "elderberry"}
 		for i, w := range want {
 			if fmt.Sprintf("%v", rows[i][0]) != w {
@@ -17123,7 +17063,7 @@ func TestFDB_StringOrderByLexicographic(t *testing.T) {
 	})
 
 	t.Run("desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT word FROM sol_t ORDER BY word DESC")
+		rows := testkit.CollectRows(t, db, "SELECT word FROM sol_t ORDER BY word DESC")
 		want := []string{"elderberry", "date", "cherry", "banana", "apple"}
 		for i, w := range want {
 			if fmt.Sprintf("%v", rows[i][0]) != w {
@@ -17133,7 +17073,7 @@ func TestFDB_StringOrderByLexicographic(t *testing.T) {
 	})
 
 	t.Run("like_prefix_ordered", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT word FROM sol_t WHERE word LIKE 'a%' OR word LIKE 'b%' ORDER BY word")
+		rows := testkit.CollectRows(t, db, "SELECT word FROM sol_t WHERE word LIKE 'a%' OR word LIKE 'b%' ORDER BY word")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
 		}
@@ -17146,12 +17086,12 @@ func TestFDB_StringOrderByLexicographic(t *testing.T) {
 // TestFDB_GroupByHavingSumWithJoin — JOIN two tables, GROUP BY, HAVING on SUM
 func TestFDB_GroupByHavingSumWithJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ghsj",
+	db := testkit.SetupPlanShapeDB(t, "ghsj",
 		"CREATE TABLE ghsj_cat(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE ghsj_prod(id BIGINT, cat_id BIGINT, price BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
@@ -17166,7 +17106,7 @@ func TestFDB_GroupByHavingSumWithJoin(t *testing.T) {
 	}
 
 	t.Run("categories_with_total_gt_100", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT c.name, SUM(p.price) FROM ghsj_cat c
 			JOIN ghsj_prod p ON c.id = p.cat_id
 			GROUP BY c.name
@@ -17182,7 +17122,7 @@ func TestFDB_GroupByHavingSumWithJoin(t *testing.T) {
 	})
 
 	t.Run("all_categories_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT c.name, COUNT(*) FROM ghsj_cat c
 			JOIN ghsj_prod p ON c.id = p.cat_id
 			GROUP BY c.name
@@ -17204,12 +17144,12 @@ func TestFDB_GroupByHavingSumWithJoin(t *testing.T) {
 // TestFDB_WhereInWithOrderByLimit — IN predicate + ORDER BY + LIMIT
 func TestFDB_WhereInWithOrderByLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wiol",
+	db := testkit.SetupPlanShapeDB(t, "wiol",
 		"CREATE TABLE wiol_t(id BIGINT, status STRING, amount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO wiol_t VALUES
 		(1,'a',100),(2,'b',200),(3,'a',300),(4,'c',400),(5,'b',500),(6,'a',600)`); err != nil {
@@ -17217,7 +17157,7 @@ func TestFDB_WhereInWithOrderByLimit(t *testing.T) {
 	}
 
 	t.Run("in_a_order_amount_desc_limit2", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, amount FROM wiol_t
 			WHERE status IN ('a')
 			ORDER BY amount DESC
@@ -17232,7 +17172,7 @@ func TestFDB_WhereInWithOrderByLimit(t *testing.T) {
 	})
 
 	t.Run("in_a_or_b_via_or", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM wiol_t
 			WHERE status = 'a' OR status = 'b'
 		`)
@@ -17242,7 +17182,7 @@ func TestFDB_WhereInWithOrderByLimit(t *testing.T) {
 	})
 
 	t.Run("not_in_c", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM wiol_t WHERE status NOT IN ('c')
 		`)
 		if toInt64(rows[0][0]) != 5 {
@@ -17254,12 +17194,12 @@ func TestFDB_WhereInWithOrderByLimit(t *testing.T) {
 // TestFDB_CTEWithJoinAndAggregate — CTE feeds a JOIN then aggregate
 func TestFDB_CTEWithJoinAndAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cwja",
+	db := testkit.SetupPlanShapeDB(t, "cwja",
 		"CREATE TABLE cwja_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO cwja_t VALUES
 		(1,'x',10),(2,'y',20),(3,'x',30),(4,'y',40),(5,'x',50)`); err != nil {
@@ -17267,7 +17207,7 @@ func TestFDB_CTEWithJoinAndAggregate(t *testing.T) {
 	}
 
 	t.Run("cte_joined_with_base", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH high AS (SELECT id, val FROM cwja_t WHERE val >= 30)
 			SELECT t.cat, COUNT(*) FROM cwja_t t
 			JOIN high h ON t.id = h.id
@@ -17287,7 +17227,7 @@ func TestFDB_CTEWithJoinAndAggregate(t *testing.T) {
 	})
 
 	t.Run("cte_aggregate", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH totals AS (SELECT cat, SUM(val) AS total FROM cwja_t GROUP BY cat)
 			SELECT cat, total FROM totals ORDER BY cat
 		`)
@@ -17307,12 +17247,12 @@ func TestFDB_CTEWithJoinAndAggregate(t *testing.T) {
 // TestFDB_ArithmeticExpressionProjection — complex arithmetic in SELECT
 func TestFDB_ArithmeticExpressionProjection(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "aep",
+	db := testkit.SetupPlanShapeDB(t, "aep",
 		"CREATE TABLE aep_t(id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO aep_t VALUES (1,10,3),(2,20,7),(3,15,5)"); err != nil {
@@ -17320,7 +17260,7 @@ func TestFDB_ArithmeticExpressionProjection(t *testing.T) {
 	}
 
 	t.Run("add_multiply", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT a + b, a * b FROM aep_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT a + b, a * b FROM aep_t ORDER BY id")
 		wantAdd := []int64{13, 27, 20}
 		wantMul := []int64{30, 140, 75}
 		for i := range wantAdd {
@@ -17331,7 +17271,7 @@ func TestFDB_ArithmeticExpressionProjection(t *testing.T) {
 	})
 
 	t.Run("subtract_in_where", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM aep_t WHERE a - b > 10 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM aep_t WHERE a - b > 10 ORDER BY id")
 		// 10-3=7, 20-7=13, 15-5=10 → only id=2 has diff > 10
 		if len(rows) != 1 || toInt64(rows[0][0]) != 2 {
 			t.Errorf("want [2], got %v", rows)
@@ -17339,7 +17279,7 @@ func TestFDB_ArithmeticExpressionProjection(t *testing.T) {
 	})
 
 	t.Run("sum_of_expression", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(a + b) FROM aep_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(a + b) FROM aep_t")
 		// (10+3)+(20+7)+(15+5) = 13+27+20 = 60
 		if toInt64(rows[0][0]) != 60 {
 			t.Errorf("want 60, got %v", rows[0][0])
@@ -17350,12 +17290,12 @@ func TestFDB_ArithmeticExpressionProjection(t *testing.T) {
 // TestFDB_UpdateMultipleColumns — UPDATE SET on multiple columns at once
 func TestFDB_UpdateMultipleColumns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "umc",
+	db := testkit.SetupPlanShapeDB(t, "umc",
 		"CREATE TABLE umc_t(id BIGINT, name STRING, score BIGINT, active BOOLEAN, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO umc_t VALUES (1,'alice',80,true),(2,'bob',90,true),(3,'carol',70,false)"); err != nil {
@@ -17372,7 +17312,7 @@ func TestFDB_UpdateMultipleColumns(t *testing.T) {
 			t.Errorf("want 1 affected, got %d", n)
 		}
 
-		rows := collectRows(t, db, "SELECT score, active FROM umc_t WHERE id = 1")
+		rows := testkit.CollectRows(t, db, "SELECT score, active FROM umc_t WHERE id = 1")
 		if toInt64(rows[0][0]) != 85 {
 			t.Errorf("score: want 85, got %v", rows[0][0])
 		}
@@ -17382,7 +17322,7 @@ func TestFDB_UpdateMultipleColumns(t *testing.T) {
 	})
 
 	t.Run("others_unchanged", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, score FROM umc_t WHERE id > 1 ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, score FROM umc_t WHERE id > 1 ORDER BY id")
 		if toInt64(rows[0][1]) != 90 || toInt64(rows[1][1]) != 70 {
 			t.Errorf("other rows changed: got [%v %v]", rows[0][1], rows[1][1])
 		}
@@ -17392,12 +17332,12 @@ func TestFDB_UpdateMultipleColumns(t *testing.T) {
 // TestFDB_ExistsCorrelatedSubquery — WHERE EXISTS with correlated subquery
 func TestFDB_ExistsCorrelatedSubquery(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ecs",
+	db := testkit.SetupPlanShapeDB(t, "ecs",
 		"CREATE TABLE ecs_parent(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE ecs_child(id BIGINT, pid BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
@@ -17410,7 +17350,7 @@ func TestFDB_ExistsCorrelatedSubquery(t *testing.T) {
 	}
 
 	t.Run("parents_with_children", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name FROM ecs_parent p
 			WHERE EXISTS (SELECT 1 FROM ecs_child c WHERE c.pid = p.id)
 			ORDER BY p.name
@@ -17424,7 +17364,7 @@ func TestFDB_ExistsCorrelatedSubquery(t *testing.T) {
 	})
 
 	t.Run("parents_without_children", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name FROM ecs_parent p
 			WHERE NOT EXISTS (SELECT 1 FROM ecs_child c WHERE c.pid = p.id)
 		`)
@@ -17437,12 +17377,12 @@ func TestFDB_ExistsCorrelatedSubquery(t *testing.T) {
 // TestFDB_GroupByCoalesceCaseBucket — GROUP BY COALESCE for NULL regions + CASE bucketing
 func TestFDB_GroupByCoalesceCaseBucket(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbcc",
+	db := testkit.SetupPlanShapeDB(t, "gbcc",
 		"CREATE TABLE gbcc_t(id BIGINT, region STRING, amount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gbcc_t VALUES
 		(1,'east',100),(2,'west',200),(3,'east',150),(4,null,50),(5,null,75)`); err != nil {
@@ -17450,7 +17390,7 @@ func TestFDB_GroupByCoalesceCaseBucket(t *testing.T) {
 	}
 
 	t.Run("coalesce_null_region", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COALESCE(region, 'unknown'), SUM(amount)
 			FROM gbcc_t GROUP BY COALESCE(region, 'unknown')
 			ORDER BY COALESCE(region, 'unknown')
@@ -17465,7 +17405,7 @@ func TestFDB_GroupByCoalesceCaseBucket(t *testing.T) {
 	})
 
 	t.Run("case_bucket", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT CASE WHEN amount >= 150 THEN 'high' ELSE 'low' END AS bucket, COUNT(*)
 			FROM gbcc_t
 			GROUP BY CASE WHEN amount >= 150 THEN 'high' ELSE 'low' END
@@ -17487,12 +17427,12 @@ func TestFDB_GroupByCoalesceCaseBucket(t *testing.T) {
 // TestFDB_JoinSameTableTwice — join same table as two different aliases
 func TestFDB_JoinSameTableTwice(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jst2",
+	db := testkit.SetupPlanShapeDB(t, "jst2",
 		"CREATE TABLE jst2_t(id BIGINT, parent_id BIGINT, name STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO jst2_t VALUES
 		(1,0,'root'),(2,1,'child1'),(3,1,'child2'),(4,2,'grandchild1')`); err != nil {
@@ -17500,7 +17440,7 @@ func TestFDB_JoinSameTableTwice(t *testing.T) {
 	}
 
 	t.Run("parent_child_pairs", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name, c.name FROM jst2_t p
 			JOIN jst2_t c ON p.id = c.parent_id
 			ORDER BY p.name, c.name
@@ -17521,7 +17461,7 @@ func TestFDB_JoinSameTableTwice(t *testing.T) {
 	})
 
 	t.Run("count_children_per_parent", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT p.name, COUNT(*) FROM jst2_t p
 			JOIN jst2_t c ON p.id = c.parent_id
 			GROUP BY p.name
@@ -17542,12 +17482,12 @@ func TestFDB_JoinSameTableTwice(t *testing.T) {
 // TestFDB_ComplexBooleanWhere — complex boolean logic in WHERE
 func TestFDB_ComplexBooleanWhere(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cbw",
+	db := testkit.SetupPlanShapeDB(t, "cbw",
 		"CREATE TABLE cbw_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO cbw_t VALUES
 		(1,10,20,30),(2,5,25,35),(3,15,15,15),(4,20,10,30),(5,1,1,1)`); err != nil {
@@ -17555,7 +17495,7 @@ func TestFDB_ComplexBooleanWhere(t *testing.T) {
 	}
 
 	t.Run("and_or_combined", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id FROM cbw_t
 			WHERE (a > 10 OR b > 20) AND c >= 30
 			ORDER BY id
@@ -17576,7 +17516,7 @@ func TestFDB_ComplexBooleanWhere(t *testing.T) {
 	})
 
 	t.Run("not_and_or", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM cbw_t WHERE NOT (a = b AND b = c)
 		`)
 		// a=b AND b=c: id=3(15,15,15) and id=5(1,1,1) → NOT → 3 others
@@ -17586,7 +17526,7 @@ func TestFDB_ComplexBooleanWhere(t *testing.T) {
 	})
 
 	t.Run("nested_or_and", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id FROM cbw_t
 			WHERE (a >= 10 AND b >= 10) OR (c = 1)
 			ORDER BY id
@@ -17607,15 +17547,15 @@ func TestFDB_ComplexBooleanWhere(t *testing.T) {
 // TestFDB_SelectConstantExpression — SELECT with constant expressions (no table)
 func TestFDB_SelectConstantExpression(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 
-	db := setupPlanShapeDB(t, "sce",
+	db := testkit.SetupPlanShapeDB(t, "sce",
 		"CREATE TABLE sce_t(id BIGINT, PRIMARY KEY(id))")
 
 	t.Run("select_1_plus_2", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT 1 + 2 FROM sce_t")
+		rows := testkit.CollectRows(t, db, "SELECT 1 + 2 FROM sce_t")
 		// No rows in table, so no result
 		if len(rows) != 0 {
 			t.Errorf("want 0 rows from empty table, got %d", len(rows))
@@ -17627,7 +17567,7 @@ func TestFDB_SelectConstantExpression(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO sce_t VALUES (1)"); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT 42, id FROM sce_t")
+		rows := testkit.CollectRows(t, db, "SELECT 42, id FROM sce_t")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -17640,12 +17580,12 @@ func TestFDB_SelectConstantExpression(t *testing.T) {
 // TestFDB_MinMaxGroupByOrderByAggregate — MIN/MAX with GROUP BY, ORDER BY aggregate
 func TestFDB_MinMaxGroupByOrderByAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mmga",
+	db := testkit.SetupPlanShapeDB(t, "mmga",
 		"CREATE TABLE mmga_t(id BIGINT, team STRING, pts BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO mmga_t VALUES
 		(1,'a',10),(2,'a',50),(3,'a',30),
@@ -17655,7 +17595,7 @@ func TestFDB_MinMaxGroupByOrderByAggregate(t *testing.T) {
 	}
 
 	t.Run("min_per_team_order_by_min", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT team, MIN(pts) FROM mmga_t GROUP BY team ORDER BY MIN(pts)
 		`)
 		if len(rows) != 3 {
@@ -17671,7 +17611,7 @@ func TestFDB_MinMaxGroupByOrderByAggregate(t *testing.T) {
 	})
 
 	t.Run("max_per_team_order_by_max_desc", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT team, MAX(pts) FROM mmga_t GROUP BY team ORDER BY MAX(pts) DESC
 		`)
 		// a:max=50, b:max=40, c:max=35
@@ -17684,7 +17624,7 @@ func TestFDB_MinMaxGroupByOrderByAggregate(t *testing.T) {
 	})
 
 	t.Run("range_per_team", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT team, MAX(pts) - MIN(pts) AS spread FROM mmga_t
 			GROUP BY team ORDER BY team
 		`)
@@ -17701,12 +17641,12 @@ func TestFDB_MinMaxGroupByOrderByAggregate(t *testing.T) {
 // TestFDB_LikePatternVariants — LIKE with various wildcard patterns
 func TestFDB_LikePatternVariants(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "lpv",
+	db := testkit.SetupPlanShapeDB(t, "lpv",
 		"CREATE TABLE lpv_t(id BIGINT, email STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO lpv_t VALUES
 		(1,'alice@example.com'),(2,'bob@test.org'),(3,'carol@example.com'),
@@ -17715,35 +17655,35 @@ func TestFDB_LikePatternVariants(t *testing.T) {
 	}
 
 	t.Run("suffix_match", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM lpv_t WHERE email LIKE '%example.com'")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM lpv_t WHERE email LIKE '%example.com'")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("want 2 @example.com, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("prefix_match", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT email FROM lpv_t WHERE email LIKE 'alice%'")
+		rows := testkit.CollectRows(t, db, "SELECT email FROM lpv_t WHERE email LIKE 'alice%'")
 		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "alice@example.com" {
 			t.Errorf("want alice@example.com, got %v", rows)
 		}
 	})
 
 	t.Run("contains_match", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM lpv_t WHERE email LIKE '%test%'")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM lpv_t WHERE email LIKE '%test%'")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("want 2 containing 'test', got %v", rows[0][0])
 		}
 	})
 
 	t.Run("not_like", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM lpv_t WHERE email NOT LIKE '%example%'")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM lpv_t WHERE email NOT LIKE '%example%'")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("want 2 not containing 'example', got %v", rows[0][0])
 		}
 	})
 
 	t.Run("like_with_order", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT email FROM lpv_t WHERE email LIKE '%@example%' ORDER BY email")
+		rows := testkit.CollectRows(t, db, "SELECT email FROM lpv_t WHERE email LIKE '%@example%' ORDER BY email")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 @example rows, got %d", len(rows))
 		}
@@ -17756,12 +17696,12 @@ func TestFDB_LikePatternVariants(t *testing.T) {
 // TestFDB_ComparisonOperatorCoverage — systematic =, <>, <, <=, >, >= coverage
 func TestFDB_ComparisonOperatorCoverage(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "coc",
+	db := testkit.SetupPlanShapeDB(t, "coc",
 		"CREATE TABLE wco_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO wco_t VALUES (1,10),(2,20),(3,30),(4,40),(5,50)"); err != nil {
@@ -17782,7 +17722,7 @@ func TestFDB_ComparisonOperatorCoverage(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rows := collectRows(t, db, tt.query)
+			rows := testkit.CollectRows(t, db, tt.query)
 			if toInt64(rows[0][0]) != tt.want {
 				t.Errorf("%s: want %d, got %v", tt.name, tt.want, rows[0][0])
 			}
@@ -17793,12 +17733,12 @@ func TestFDB_ComparisonOperatorCoverage(t *testing.T) {
 // TestFDB_UnionAllDifferentFilters — UNION ALL with different WHERE on same table
 func TestFDB_UnionAllDifferentFilters(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uadf",
+	db := testkit.SetupPlanShapeDB(t, "uadf",
 		"CREATE TABLE uadf_t(id BIGINT, status STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO uadf_t VALUES
 		(1,'a',10),(2,'b',20),(3,'a',30),(4,'c',40),(5,'b',50)`); err != nil {
@@ -17806,7 +17746,7 @@ func TestFDB_UnionAllDifferentFilters(t *testing.T) {
 	}
 
 	t.Run("union_a_and_b", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, val FROM uadf_t WHERE status = 'a'
 			UNION ALL
 			SELECT id, val FROM uadf_t WHERE status = 'b'
@@ -17824,7 +17764,7 @@ func TestFDB_UnionAllDifferentFilters(t *testing.T) {
 	})
 
 	t.Run("sum_over_union", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT SUM(val) FROM (
 				SELECT val FROM uadf_t WHERE status = 'a'
 				UNION ALL
@@ -17841,12 +17781,12 @@ func TestFDB_UnionAllDifferentFilters(t *testing.T) {
 // TestFDB_100RowDataset — larger dataset to stress aggregation
 func TestFDB_100RowDataset(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "r100",
+	db := testkit.SetupPlanShapeDB(t, "r100",
 		"CREATE TABLE r100_t(id BIGINT, grp BIGINT, val BIGINT, PRIMARY KEY(id))")
 
 	var b strings.Builder
@@ -17861,14 +17801,14 @@ func TestFDB_100RowDataset(t *testing.T) {
 	}
 
 	t.Run("total_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM r100_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM r100_t")
 		if toInt64(rows[0][0]) != 100 {
 			t.Errorf("want 100, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("total_sum", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM r100_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM r100_t")
 		// 1+2+...+100 = 5050
 		if toInt64(rows[0][0]) != 5050 {
 			t.Errorf("want 5050, got %v", rows[0][0])
@@ -17876,7 +17816,7 @@ func TestFDB_100RowDataset(t *testing.T) {
 	})
 
 	t.Run("group_count_10_each", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grp, COUNT(*) FROM r100_t GROUP BY grp ORDER BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, COUNT(*) FROM r100_t GROUP BY grp ORDER BY grp")
 		if len(rows) != 10 {
 			t.Fatalf("want 10 groups, got %d", len(rows))
 		}
@@ -17888,7 +17828,7 @@ func TestFDB_100RowDataset(t *testing.T) {
 	})
 
 	t.Run("top_10_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT val FROM r100_t ORDER BY val DESC LIMIT 10")
+		rows := testkit.CollectRows(t, db, "SELECT val FROM r100_t ORDER BY val DESC LIMIT 10")
 		for i, w := range []int64{100, 99, 98, 97, 96, 95, 94, 93, 92, 91} {
 			if toInt64(rows[i][0]) != w {
 				t.Errorf("row %d: want %d, got %v", i, w, rows[i][0])
@@ -17900,12 +17840,12 @@ func TestFDB_100RowDataset(t *testing.T) {
 // TestFDB_LeftJoinCountSumPerDept — LEFT JOIN dept→emp, COUNT(e.id) and SUM(salary) per dept
 func TestFDB_LeftJoinCountSumPerDept(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ljcsd",
+	db := testkit.SetupPlanShapeDB(t, "ljcsd",
 		"CREATE TABLE ljcsd_dept(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE ljcsd_emp(id BIGINT, dept_id BIGINT, salary BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
@@ -17918,7 +17858,7 @@ func TestFDB_LeftJoinCountSumPerDept(t *testing.T) {
 	}
 
 	t.Run("count_per_dept_left", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT d.name, COUNT(e.id) FROM ljcsd_dept d
 			LEFT JOIN ljcsd_emp e ON d.id = e.dept_id
 			GROUP BY d.name
@@ -17937,7 +17877,7 @@ func TestFDB_LeftJoinCountSumPerDept(t *testing.T) {
 	})
 
 	t.Run("sum_salary_coalesce", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT d.name, COALESCE(SUM(e.salary), 0) FROM ljcsd_dept d
 			LEFT JOIN ljcsd_emp e ON d.id = e.dept_id
 			GROUP BY d.name
@@ -17956,12 +17896,12 @@ func TestFDB_LeftJoinCountSumPerDept(t *testing.T) {
 // TestFDB_MultipleInsertsThenAggregate — multiple INSERT batches then verify
 func TestFDB_MultipleInsertsThenAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "mita",
+	db := testkit.SetupPlanShapeDB(t, "mita",
 		"CREATE TABLE mita_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 
 	for batch := 0; batch < 5; batch++ {
@@ -17979,14 +17919,14 @@ func TestFDB_MultipleInsertsThenAggregate(t *testing.T) {
 	}
 
 	t.Run("total_50_rows", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM mita_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM mita_t")
 		if toInt64(rows[0][0]) != 50 {
 			t.Errorf("want 50, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("sum_vals", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM mita_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM mita_t")
 		// val = 2*id, sum = 2*(1+2+...+50) = 2*1275 = 2550
 		if toInt64(rows[0][0]) != 2550 {
 			t.Errorf("want 2550, got %v", rows[0][0])
@@ -17994,7 +17934,7 @@ func TestFDB_MultipleInsertsThenAggregate(t *testing.T) {
 	})
 
 	t.Run("min_max", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT MIN(val), MAX(val) FROM mita_t")
+		rows := testkit.CollectRows(t, db, "SELECT MIN(val), MAX(val) FROM mita_t")
 		if toInt64(rows[0][0]) != 2 || toInt64(rows[0][1]) != 100 {
 			t.Errorf("want min=2 max=100, got %v %v", rows[0][0], rows[0][1])
 		}
@@ -18004,12 +17944,12 @@ func TestFDB_MultipleInsertsThenAggregate(t *testing.T) {
 // TestFDB_UpdateWhereArithmetic — UPDATE with arithmetic condition in WHERE
 func TestFDB_UpdateWhereArithmetic(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uwa",
+	db := testkit.SetupPlanShapeDB(t, "uwa",
 		"CREATE TABLE uwa_t(id BIGINT, qty BIGINT, price BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO uwa_t VALUES (1,5,20),(2,10,5),(3,3,100),(4,8,15)"); err != nil {
@@ -18029,7 +17969,7 @@ func TestFDB_UpdateWhereArithmetic(t *testing.T) {
 	})
 
 	t.Run("verify_prices", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, price FROM uwa_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, price FROM uwa_t ORDER BY id")
 		wantPrice := []int64{20, 5, 110, 25}
 		for i, w := range wantPrice {
 			if toInt64(rows[i][1]) != w {
@@ -18042,12 +17982,12 @@ func TestFDB_UpdateWhereArithmetic(t *testing.T) {
 // TestFDB_CTEMultiple — multiple CTEs in one query
 func TestFDB_CTEMultiple(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ctem",
+	db := testkit.SetupPlanShapeDB(t, "ctem",
 		"CREATE TABLE ctem_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO ctem_t VALUES
 		(1,'a',10),(2,'b',20),(3,'a',30),(4,'b',40),(5,'c',50)`); err != nil {
@@ -18055,7 +17995,7 @@ func TestFDB_CTEMultiple(t *testing.T) {
 	}
 
 	t.Run("two_ctes_joined", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH
 				high AS (SELECT id, cat, val FROM ctem_t WHERE val >= 30),
 				low AS (SELECT id, cat, val FROM ctem_t WHERE val < 30)
@@ -18080,12 +18020,12 @@ func TestFDB_CTEMultiple(t *testing.T) {
 // TestFDB_GroupByWithOrderByNonAggColumn — ORDER BY group key column
 func TestFDB_GroupByWithOrderByNonAggColumn(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbon",
+	db := testkit.SetupPlanShapeDB(t, "gbon",
 		"CREATE TABLE gbon_t(id BIGINT, city STRING, revenue BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gbon_t VALUES
 		(1,'berlin',100),(2,'munich',200),(3,'berlin',150),(4,'hamburg',300),(5,'munich',50)`); err != nil {
@@ -18093,7 +18033,7 @@ func TestFDB_GroupByWithOrderByNonAggColumn(t *testing.T) {
 	}
 
 	t.Run("order_by_city_asc", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT city, SUM(revenue) FROM gbon_t GROUP BY city ORDER BY city ASC
 		`)
 		if len(rows) != 3 {
@@ -18111,7 +18051,7 @@ func TestFDB_GroupByWithOrderByNonAggColumn(t *testing.T) {
 	})
 
 	t.Run("order_by_sum_desc", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT city, SUM(revenue) FROM gbon_t GROUP BY city ORDER BY SUM(revenue) DESC
 		`)
 		// hamburg=300, berlin=250, munich=250
@@ -18124,12 +18064,12 @@ func TestFDB_GroupByWithOrderByNonAggColumn(t *testing.T) {
 // TestFDB_WhereIsNullIsNotNull — IS NULL and IS NOT NULL filters
 func TestFDB_WhereIsNullIsNotNull(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "winn",
+	db := testkit.SetupPlanShapeDB(t, "winn",
 		"CREATE TABLE winn_t(id BIGINT, val BIGINT, label STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO winn_t VALUES (1,10,'x'),(2,null,'y'),(3,30,null),(4,null,null)"); err != nil {
@@ -18137,7 +18077,7 @@ func TestFDB_WhereIsNullIsNotNull(t *testing.T) {
 	}
 
 	t.Run("val_is_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM winn_t WHERE val IS NULL ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM winn_t WHERE val IS NULL ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (ids 2,4), got %d", len(rows))
 		}
@@ -18147,21 +18087,21 @@ func TestFDB_WhereIsNullIsNotNull(t *testing.T) {
 	})
 
 	t.Run("val_is_not_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM winn_t WHERE val IS NOT NULL ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM winn_t WHERE val IS NOT NULL ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (ids 1,3), got %d", len(rows))
 		}
 	})
 
 	t.Run("both_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM winn_t WHERE val IS NULL AND label IS NULL")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM winn_t WHERE val IS NULL AND label IS NULL")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 4 {
 			t.Errorf("want [4], got %v", rows)
 		}
 	})
 
 	t.Run("either_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM winn_t WHERE val IS NULL OR label IS NULL")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM winn_t WHERE val IS NULL OR label IS NULL")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("want 3 (ids 2,3,4), got %v", rows[0][0])
 		}
@@ -18171,12 +18111,12 @@ func TestFDB_WhereIsNullIsNotNull(t *testing.T) {
 // TestFDB_JoinOnCatAndVal — JOIN ON two columns (cat AND val)
 func TestFDB_JoinOnCatAndVal(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jocv",
+	db := testkit.SetupPlanShapeDB(t, "jocv",
 		"CREATE TABLE jocv_a(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE jocv_b(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
@@ -18189,7 +18129,7 @@ func TestFDB_JoinOnCatAndVal(t *testing.T) {
 	}
 
 	t.Run("join_on_cat_and_val", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.id, b.id FROM jocv_a a
 			JOIN jocv_b b ON a.cat = b.cat AND a.val = b.val
 			ORDER BY a.id
@@ -18207,7 +18147,7 @@ func TestFDB_JoinOnCatAndVal(t *testing.T) {
 	})
 
 	t.Run("join_on_cat_only_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM jocv_a a JOIN jocv_b b ON a.cat = b.cat
 		`)
 		// x-x: 2*2=4, y-y: 1*1=1 → total 5
@@ -18220,12 +18160,12 @@ func TestFDB_JoinOnCatAndVal(t *testing.T) {
 // TestFDB_SelectStarFromTable — SELECT * returns all columns
 func TestFDB_SelectStarFromTable(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ssft",
+	db := testkit.SetupPlanShapeDB(t, "ssft",
 		"CREATE TABLE ssft_t(id BIGINT, name STRING, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO ssft_t VALUES (1,'alice',90),(2,'bob',80)"); err != nil {
@@ -18233,7 +18173,7 @@ func TestFDB_SelectStarFromTable(t *testing.T) {
 	}
 
 	t.Run("star_returns_all_cols", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM ssft_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM ssft_t ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
 		}
@@ -18246,7 +18186,7 @@ func TestFDB_SelectStarFromTable(t *testing.T) {
 	})
 
 	t.Run("star_with_where", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM ssft_t WHERE score > 85")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM ssft_t WHERE score > 85")
 		if len(rows) != 1 {
 			t.Fatalf("want 1 row, got %d", len(rows))
 		}
@@ -18256,12 +18196,12 @@ func TestFDB_SelectStarFromTable(t *testing.T) {
 // TestFDB_DerivedTableWithJoin — derived table (subquery in FROM) joined with base table
 func TestFDB_DerivedTableWithJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dtwj",
+	db := testkit.SetupPlanShapeDB(t, "dtwj",
 		"CREATE TABLE dtwj_orders(id BIGINT, cust_id BIGINT, total BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE dtwj_cust(id BIGINT, name STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
@@ -18277,7 +18217,7 @@ func TestFDB_DerivedTableWithJoin(t *testing.T) {
 		// RFC-144 TASK A: a derived table on the right of an explicit JOIN is now
 		// supported (Java-aligned). Per-customer SUM(total): alice=300, bob=150,
 		// carol=50. ORDER BY c.name → alice, bob, carol.
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT c.name, d.order_total FROM dtwj_cust c
 			JOIN (SELECT cust_id, SUM(total) AS order_total FROM dtwj_orders GROUP BY cust_id) d
 			ON c.id = d.cust_id
@@ -18301,12 +18241,12 @@ func TestFDB_DerivedTableWithJoin(t *testing.T) {
 // TestFDB_DeleteOldAndLowValue — DELETE with AND condition on status+val
 func TestFDB_DeleteOldAndLowValue(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dolv",
+	db := testkit.SetupPlanShapeDB(t, "dolv",
 		"CREATE TABLE dolv_t(id BIGINT, status STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO dolv_t VALUES
 		(1,'old',10),(2,'new',20),(3,'old',30),(4,'new',40),(5,'old',5)`); err != nil {
@@ -18326,14 +18266,14 @@ func TestFDB_DeleteOldAndLowValue(t *testing.T) {
 	})
 
 	t.Run("remaining_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM dolv_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM dolv_t")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("want 3 remaining, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("remaining_ids", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM dolv_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM dolv_t ORDER BY id")
 		wantIds := []int64{2, 3, 4}
 		for i, w := range wantIds {
 			if toInt64(rows[i][0]) != w {
@@ -18346,12 +18286,12 @@ func TestFDB_DeleteOldAndLowValue(t *testing.T) {
 // TestFDB_CountWithGroupByHavingCountEq — COUNT+HAVING with equality
 func TestFDB_CountWithGroupByHavingCountEq(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cghce",
+	db := testkit.SetupPlanShapeDB(t, "cghce",
 		"CREATE TABLE cghce_t(id BIGINT, tag STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO cghce_t VALUES
 		(1,'a'),(2,'a'),(3,'b'),(4,'b'),(5,'b'),(6,'c')`); err != nil {
@@ -18359,14 +18299,14 @@ func TestFDB_CountWithGroupByHavingCountEq(t *testing.T) {
 	}
 
 	t.Run("having_count_eq_2", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT tag FROM cghce_t GROUP BY tag HAVING COUNT(*) = 2")
+		rows := testkit.CollectRows(t, db, "SELECT tag FROM cghce_t GROUP BY tag HAVING COUNT(*) = 2")
 		if len(rows) != 1 || fmt.Sprintf("%v", rows[0][0]) != "a" {
 			t.Errorf("want [a], got %v", rows)
 		}
 	})
 
 	t.Run("having_count_gt_1", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT tag, COUNT(*) FROM cghce_t GROUP BY tag HAVING COUNT(*) > 1 ORDER BY tag")
+		rows := testkit.CollectRows(t, db, "SELECT tag, COUNT(*) FROM cghce_t GROUP BY tag HAVING COUNT(*) > 1 ORDER BY tag")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 (a=2, b=3), got %d", len(rows))
 		}
@@ -18376,12 +18316,12 @@ func TestFDB_CountWithGroupByHavingCountEq(t *testing.T) {
 // TestFDB_InsertSelectWithFilter — INSERT INTO...SELECT with WHERE filter
 func TestFDB_InsertSelectWithFilter(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "iswf",
+	db := testkit.SetupPlanShapeDB(t, "iswf",
 		"CREATE TABLE iswf_src(id BIGINT, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE iswf_dst(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
@@ -18401,7 +18341,7 @@ func TestFDB_InsertSelectWithFilter(t *testing.T) {
 	})
 
 	t.Run("verify_dst_sum", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM iswf_dst")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM iswf_dst")
 		if toInt64(rows[0][0]) != 120 {
 			t.Errorf("want 120 (30+40+50), got %v", rows[0][0])
 		}
@@ -18411,12 +18351,12 @@ func TestFDB_InsertSelectWithFilter(t *testing.T) {
 // TestFDB_NullOrderingSortBehavior — NULL sort position in ASC/DESC
 func TestFDB_NullOrderingSortBehavior(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "obn",
+	db := testkit.SetupPlanShapeDB(t, "obn",
 		"CREATE TABLE obn_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO obn_t VALUES (1,30),(2,10),(3,null),(4,20),(5,null)"); err != nil {
@@ -18424,7 +18364,7 @@ func TestFDB_NullOrderingSortBehavior(t *testing.T) {
 	}
 
 	t.Run("nulls_in_asc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM obn_t ORDER BY val ASC")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM obn_t ORDER BY val ASC")
 		if len(rows) != 5 {
 			t.Fatalf("want 5, got %d", len(rows))
 		}
@@ -18445,7 +18385,7 @@ func TestFDB_NullOrderingSortBehavior(t *testing.T) {
 	})
 
 	t.Run("nulls_in_desc", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM obn_t ORDER BY val DESC")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM obn_t ORDER BY val DESC")
 		var nonNulls []int64
 		for _, r := range rows {
 			if r[1] != nil {
@@ -18464,12 +18404,12 @@ func TestFDB_NullOrderingSortBehavior(t *testing.T) {
 // TestFDB_GroupByMultipleAggregatesAll — COUNT+SUM+MIN+MAX in single query
 func TestFDB_GroupByMultipleAggregatesAll(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbma2",
+	db := testkit.SetupPlanShapeDB(t, "gbma2",
 		"CREATE TABLE gbma2_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gbma2_t VALUES
 		(1,'a',10),(2,'a',20),(3,'a',30),
@@ -18478,7 +18418,7 @@ func TestFDB_GroupByMultipleAggregatesAll(t *testing.T) {
 	}
 
 	t.Run("all_aggs_per_group", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT grp, COUNT(*), SUM(val), MIN(val), MAX(val) FROM gbma2_t
 			GROUP BY grp ORDER BY grp
 		`)
@@ -18499,12 +18439,12 @@ func TestFDB_GroupByMultipleAggregatesAll(t *testing.T) {
 // TestFDB_WhereOrWithDifferentColumns — OR across different columns
 func TestFDB_WhereOrWithDifferentColumns(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wodc",
+	db := testkit.SetupPlanShapeDB(t, "wodc",
 		"CREATE TABLE wodc_t(id BIGINT, name STRING, age BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO wodc_t VALUES
 		(1,'alice',30),(2,'bob',25),(3,'carol',40),(4,'dave',20),(5,'alice',35)`); err != nil {
@@ -18512,7 +18452,7 @@ func TestFDB_WhereOrWithDifferentColumns(t *testing.T) {
 	}
 
 	t.Run("name_or_age", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id FROM wodc_t WHERE name = 'bob' OR age >= 35 ORDER BY id
 		`)
 		// bob(id=2), carol(id=3,age=40), alice(id=5,age=35)
@@ -18528,7 +18468,7 @@ func TestFDB_WhereOrWithDifferentColumns(t *testing.T) {
 	})
 
 	t.Run("count_name_alice_or_age_lt_25", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM wodc_t WHERE name = 'alice' OR age < 25
 		`)
 		// alice: ids 1,5; age<25: id=4(dave,20) → 3 total
@@ -18541,12 +18481,12 @@ func TestFDB_WhereOrWithDifferentColumns(t *testing.T) {
 // TestFDB_UpdateSetToNull — UPDATE setting column to NULL
 func TestFDB_UpdateSetToNull(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ustn",
+	db := testkit.SetupPlanShapeDB(t, "ustn",
 		"CREATE TABLE ustn_t(id BIGINT, val BIGINT, label STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO ustn_t VALUES (1,10,'x'),(2,20,'y'),(3,30,'z')"); err != nil {
@@ -18558,14 +18498,14 @@ func TestFDB_UpdateSetToNull(t *testing.T) {
 		if err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT val FROM ustn_t WHERE id = 2")
+		rows := testkit.CollectRows(t, db, "SELECT val FROM ustn_t WHERE id = 2")
 		if rows[0][0] != nil {
 			t.Errorf("want NULL, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("count_non_null", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(val) FROM ustn_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(val) FROM ustn_t")
 		if toInt64(rows[0][0]) != 2 {
 			t.Errorf("want 2 non-null, got %v", rows[0][0])
 		}
@@ -18575,12 +18515,12 @@ func TestFDB_UpdateSetToNull(t *testing.T) {
 // TestFDB_InsertMultipleBatchesThenDelete — multi-batch insert then selective delete
 func TestFDB_InsertMultipleBatchesThenDelete(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "imbd",
+	db := testkit.SetupPlanShapeDB(t, "imbd",
 		"CREATE TABLE imbd_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO imbd_t VALUES (1,10),(2,20),(3,30),(4,40),(5,50)"); err != nil {
@@ -18603,7 +18543,7 @@ func TestFDB_InsertMultipleBatchesThenDelete(t *testing.T) {
 	})
 
 	t.Run("remaining_sum", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM imbd_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM imbd_t")
 		// remaining: 10+30+50+70+90 = 250
 		if toInt64(rows[0][0]) != 250 {
 			t.Errorf("want 250, got %v", rows[0][0])
@@ -18611,7 +18551,7 @@ func TestFDB_InsertMultipleBatchesThenDelete(t *testing.T) {
 	})
 
 	t.Run("remaining_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM imbd_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM imbd_t")
 		if toInt64(rows[0][0]) != 5 {
 			t.Errorf("want 5, got %v", rows[0][0])
 		}
@@ -18621,12 +18561,12 @@ func TestFDB_InsertMultipleBatchesThenDelete(t *testing.T) {
 // TestFDB_CaseWhenInSelectProjection — CASE WHEN expressions in SELECT projection
 func TestFDB_CaseWhenInSelectProjection(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cwsp",
+	db := testkit.SetupPlanShapeDB(t, "cwsp",
 		"CREATE TABLE cwsp_t(id BIGINT, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO cwsp_t VALUES (1,95),(2,75),(3,55),(4,35),(5,85)"); err != nil {
@@ -18634,7 +18574,7 @@ func TestFDB_CaseWhenInSelectProjection(t *testing.T) {
 	}
 
 	t.Run("grade_labels", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, CASE
 				WHEN score >= 90 THEN 'A'
 				WHEN score >= 70 THEN 'B'
@@ -18651,7 +18591,7 @@ func TestFDB_CaseWhenInSelectProjection(t *testing.T) {
 	})
 
 	t.Run("count_passing", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM cwsp_t WHERE score >= 50
 		`)
 		if toInt64(rows[0][0]) != 4 {
@@ -18663,12 +18603,12 @@ func TestFDB_CaseWhenInSelectProjection(t *testing.T) {
 // TestFDB_UpdateArithmeticAllRows — UPDATE all rows with arithmetic
 func TestFDB_UpdateArithmeticAllRows(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uaar",
+	db := testkit.SetupPlanShapeDB(t, "uaar",
 		"CREATE TABLE uaar_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO uaar_t VALUES (1,10),(2,20),(3,30)"); err != nil {
@@ -18687,7 +18627,7 @@ func TestFDB_UpdateArithmeticAllRows(t *testing.T) {
 	})
 
 	t.Run("verify_doubled", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM uaar_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM uaar_t")
 		// original sum=60, doubled=120
 		if toInt64(rows[0][0]) != 120 {
 			t.Errorf("want 120, got %v", rows[0][0])
@@ -18699,7 +18639,7 @@ func TestFDB_UpdateArithmeticAllRows(t *testing.T) {
 		if err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT val FROM uaar_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT val FROM uaar_t ORDER BY id")
 		// 20+5=25, 40+5=45, 60+5=65
 		want := []int64{25, 45, 65}
 		for i, w := range want {
@@ -18713,12 +18653,12 @@ func TestFDB_UpdateArithmeticAllRows(t *testing.T) {
 // TestFDB_GroupByBooleanColumnAgg — GROUP BY on boolean values
 func TestFDB_GroupByBooleanColumnAgg(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gbba",
+	db := testkit.SetupPlanShapeDB(t, "gbba",
 		"CREATE TABLE gbba_t(id BIGINT, active BOOLEAN, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gbba_t VALUES
 		(1,true,10),(2,false,20),(3,true,30),(4,false,40),(5,true,50)`); err != nil {
@@ -18726,7 +18666,7 @@ func TestFDB_GroupByBooleanColumnAgg(t *testing.T) {
 	}
 
 	t.Run("count_per_boolean", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT active, COUNT(*) FROM gbba_t GROUP BY active ORDER BY active")
+		rows := testkit.CollectRows(t, db, "SELECT active, COUNT(*) FROM gbba_t GROUP BY active ORDER BY active")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 groups, got %d", len(rows))
 		}
@@ -18740,7 +18680,7 @@ func TestFDB_GroupByBooleanColumnAgg(t *testing.T) {
 	})
 
 	t.Run("sum_per_boolean", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT active, SUM(val) FROM gbba_t GROUP BY active ORDER BY active")
+		rows := testkit.CollectRows(t, db, "SELECT active, SUM(val) FROM gbba_t GROUP BY active ORDER BY active")
 		// false: 20+40=60, true: 10+30+50=90
 		if toInt64(rows[0][1]) != 60 || toInt64(rows[1][1]) != 90 {
 			t.Errorf("want [60 90], got [%v %v]", rows[0][1], rows[1][1])
@@ -18751,12 +18691,12 @@ func TestFDB_GroupByBooleanColumnAgg(t *testing.T) {
 // TestFDB_CTEReferencedTwice — single CTE used twice in main query
 func TestFDB_CTEReferencedTwice(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "crt2",
+	db := testkit.SetupPlanShapeDB(t, "crt2",
 		"CREATE TABLE crt2_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO crt2_t VALUES (1,10),(2,20),(3,30),(4,40)"); err != nil {
@@ -18764,7 +18704,7 @@ func TestFDB_CTEReferencedTwice(t *testing.T) {
 	}
 
 	t.Run("cte_self_join", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH vals AS (SELECT id, val FROM crt2_t WHERE val >= 20)
 			SELECT a.id, b.id FROM vals a JOIN vals b ON a.val < b.val
 			ORDER BY a.id, b.id
@@ -18783,12 +18723,12 @@ func TestFDB_CTEReferencedTwice(t *testing.T) {
 // TestFDB_SelectWithColumnAlias — column alias in SELECT
 func TestFDB_SelectWithColumnAlias(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "swca",
+	db := testkit.SetupPlanShapeDB(t, "swca",
 		"CREATE TABLE swca_t(id BIGINT, first_name STRING, last_name STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO swca_t VALUES (1,'alice','smith'),(2,'bob','jones')"); err != nil {
@@ -18796,7 +18736,7 @@ func TestFDB_SelectWithColumnAlias(t *testing.T) {
 	}
 
 	t.Run("alias_in_order_by", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT first_name AS fname FROM swca_t ORDER BY fname
 		`)
 		if len(rows) != 2 {
@@ -18808,7 +18748,7 @@ func TestFDB_SelectWithColumnAlias(t *testing.T) {
 	})
 
 	t.Run("count_alias", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) AS total FROM swca_t
 		`)
 		if toInt64(rows[0][0]) != 2 {
@@ -18820,12 +18760,12 @@ func TestFDB_SelectWithColumnAlias(t *testing.T) {
 // TestFDB_WhereNestedBoolean — deeply nested AND/OR boolean logic
 func TestFDB_WhereNestedBoolean(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wnb",
+	db := testkit.SetupPlanShapeDB(t, "wnb",
 		"CREATE TABLE wnb_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, d BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO wnb_t VALUES
 		(1,1,2,3,4),(2,5,6,7,8),(3,10,20,30,40),(4,0,0,0,0),(5,1,1,1,1)`); err != nil {
@@ -18833,7 +18773,7 @@ func TestFDB_WhereNestedBoolean(t *testing.T) {
 	}
 
 	t.Run("nested_and_or", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id FROM wnb_t
 			WHERE (a > 0 AND b > 0) AND (c > 5 OR d > 5)
 			ORDER BY id
@@ -18858,12 +18798,12 @@ func TestFDB_WhereNestedBoolean(t *testing.T) {
 // TestFDB_200RowDataset — stress test with 200 rows
 func TestFDB_200RowDataset(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "r200",
+	db := testkit.SetupPlanShapeDB(t, "r200",
 		"CREATE TABLE r200_t(id BIGINT, grp BIGINT, val BIGINT, PRIMARY KEY(id))")
 
 	for batch := 0; batch < 4; batch++ {
@@ -18881,14 +18821,14 @@ func TestFDB_200RowDataset(t *testing.T) {
 	}
 
 	t.Run("count_200", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM r200_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM r200_t")
 		if toInt64(rows[0][0]) != 200 {
 			t.Errorf("want 200, got %v", rows[0][0])
 		}
 	})
 
 	t.Run("sum_200", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(val) FROM r200_t")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(val) FROM r200_t")
 		// 1+2+...+200 = 20100
 		if toInt64(rows[0][0]) != 20100 {
 			t.Errorf("want 20100, got %v", rows[0][0])
@@ -18896,7 +18836,7 @@ func TestFDB_200RowDataset(t *testing.T) {
 	})
 
 	t.Run("20_groups_10_each", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT grp, COUNT(*) FROM r200_t GROUP BY grp ORDER BY grp")
+		rows := testkit.CollectRows(t, db, "SELECT grp, COUNT(*) FROM r200_t GROUP BY grp ORDER BY grp")
 		if len(rows) != 20 {
 			t.Fatalf("want 20 groups, got %d", len(rows))
 		}
@@ -18908,7 +18848,7 @@ func TestFDB_200RowDataset(t *testing.T) {
 	})
 
 	t.Run("top_1", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT val FROM r200_t ORDER BY val DESC LIMIT 1")
+		rows := testkit.CollectRows(t, db, "SELECT val FROM r200_t ORDER BY val DESC LIMIT 1")
 		if toInt64(rows[0][0]) != 200 {
 			t.Errorf("want 200, got %v", rows[0][0])
 		}
@@ -18918,12 +18858,12 @@ func TestFDB_200RowDataset(t *testing.T) {
 // TestFDB_JoinWithWhereOnBothTables — JOIN + WHERE filtering both tables
 func TestFDB_JoinWithWhereOnBothTables(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jwwb",
+	db := testkit.SetupPlanShapeDB(t, "jwwb",
 		"CREATE TABLE jwwb_a(id BIGINT, status STRING, val BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE jwwb_b(id BIGINT, aid BIGINT, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO jwwb_a VALUES
@@ -18936,7 +18876,7 @@ func TestFDB_JoinWithWhereOnBothTables(t *testing.T) {
 	}
 
 	t.Run("active_and_score_gt_60", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.id, b.score FROM jwwb_a a
 			JOIN jwwb_b b ON a.id = b.aid
 			WHERE a.status = 'active' AND b.score > 60
@@ -18952,7 +18892,7 @@ func TestFDB_JoinWithWhereOnBothTables(t *testing.T) {
 	})
 
 	t.Run("count_all_joined", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM jwwb_a a JOIN jwwb_b b ON a.id = b.aid
 		`)
 		if toInt64(rows[0][0]) != 5 {
@@ -18964,23 +18904,23 @@ func TestFDB_JoinWithWhereOnBothTables(t *testing.T) {
 // TestFDB_EmptyTableOps — operations on empty table
 func TestFDB_EmptyTableOps(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "eto",
+	db := testkit.SetupPlanShapeDB(t, "eto",
 		"CREATE TABLE eto_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 
 	t.Run("select_empty", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM eto_t")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM eto_t")
 		if len(rows) != 0 {
 			t.Errorf("want 0 rows, got %d", len(rows))
 		}
 	})
 
 	t.Run("count_empty", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM eto_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM eto_t")
 		if toInt64(rows[0][0]) != 0 {
 			t.Errorf("want 0, got %v", rows[0][0])
 		}
@@ -19012,12 +18952,12 @@ func TestFDB_EmptyTableOps(t *testing.T) {
 // TestFDB_SubqueryExistsWithAggregate — EXISTS subquery combined with aggregate in outer
 func TestFDB_SubqueryExistsWithAggregate(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "sewa",
+	db := testkit.SetupPlanShapeDB(t, "sewa",
 		"CREATE TABLE sewa_orders(id BIGINT, cust STRING, total BIGINT, PRIMARY KEY(id)) "+
 			"CREATE TABLE sewa_returns(id BIGINT, order_id BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO sewa_orders VALUES
@@ -19030,7 +18970,7 @@ func TestFDB_SubqueryExistsWithAggregate(t *testing.T) {
 	}
 
 	t.Run("orders_with_returns_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM sewa_orders o
 			WHERE EXISTS (SELECT 1 FROM sewa_returns r WHERE r.order_id = o.id)
 		`)
@@ -19040,7 +18980,7 @@ func TestFDB_SubqueryExistsWithAggregate(t *testing.T) {
 	})
 
 	t.Run("orders_without_returns_sum", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT SUM(total) FROM sewa_orders o
 			WHERE NOT EXISTS (SELECT 1 FROM sewa_returns r WHERE r.order_id = o.id)
 		`)
@@ -19054,12 +18994,12 @@ func TestFDB_SubqueryExistsWithAggregate(t *testing.T) {
 // TestFDB_GroupByWithLimitOnResult — GROUP BY then LIMIT on grouped results
 func TestFDB_GroupByWithLimitOnResult(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gblr",
+	db := testkit.SetupPlanShapeDB(t, "gblr",
 		"CREATE TABLE gblr_t(id BIGINT, cat STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gblr_t VALUES
 		(1,'a',10),(2,'b',20),(3,'c',30),(4,'d',40),(5,'e',50),
@@ -19068,7 +19008,7 @@ func TestFDB_GroupByWithLimitOnResult(t *testing.T) {
 	}
 
 	t.Run("top_3_groups_by_sum", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT cat, SUM(val) FROM gblr_t GROUP BY cat ORDER BY SUM(val) DESC LIMIT 3
 		`)
 		if len(rows) != 3 {
@@ -19081,7 +19021,7 @@ func TestFDB_GroupByWithLimitOnResult(t *testing.T) {
 	})
 
 	t.Run("bottom_2_groups", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT cat, SUM(val) FROM gblr_t GROUP BY cat ORDER BY SUM(val) ASC LIMIT 2
 		`)
 		if len(rows) != 2 {
@@ -19097,12 +19037,12 @@ func TestFDB_GroupByWithLimitOnResult(t *testing.T) {
 // TestFDB_UnionAllThreeBranches — UNION ALL with three SELECT branches
 func TestFDB_UnionAllThreeBranches(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ua3b",
+	db := testkit.SetupPlanShapeDB(t, "ua3b",
 		"CREATE TABLE ua3b_t(id BIGINT, grp STRING, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO ua3b_t VALUES
 		(1,'a',10),(2,'b',20),(3,'c',30),(4,'a',40),(5,'b',50)`); err != nil {
@@ -19110,7 +19050,7 @@ func TestFDB_UnionAllThreeBranches(t *testing.T) {
 	}
 
 	t.Run("three_branch_union", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id, val FROM ua3b_t WHERE grp = 'a'
 			UNION ALL
 			SELECT id, val FROM ua3b_t WHERE grp = 'b'
@@ -19129,7 +19069,7 @@ func TestFDB_UnionAllThreeBranches(t *testing.T) {
 	})
 
 	t.Run("three_branch_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT COUNT(*) FROM (
 				SELECT val FROM ua3b_t WHERE grp = 'a'
 				UNION ALL
@@ -19147,12 +19087,12 @@ func TestFDB_UnionAllThreeBranches(t *testing.T) {
 // TestFDB_CRUDCycle — full CRUD cycle (insert, update, verify)
 func TestFDB_CRUDCycle(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "crud",
+	db := testkit.SetupPlanShapeDB(t, "crud",
 		"CREATE TABLE crud_t(id BIGINT, name STRING, val BIGINT, PRIMARY KEY(id))")
 
 	t.Run("create", func(t *testing.T) {
@@ -19167,7 +19107,7 @@ func TestFDB_CRUDCycle(t *testing.T) {
 	})
 
 	t.Run("read", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT name, val FROM crud_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT name, val FROM crud_t ORDER BY id")
 		if len(rows) != 3 {
 			t.Fatalf("want 3, got %d", len(rows))
 		}
@@ -19181,7 +19121,7 @@ func TestFDB_CRUDCycle(t *testing.T) {
 		if err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT val FROM crud_t WHERE id = 2")
+		rows := testkit.CollectRows(t, db, "SELECT val FROM crud_t WHERE id = 2")
 		if toInt64(rows[0][0]) != 250 {
 			t.Errorf("want 250, got %v", rows[0][0])
 		}
@@ -19199,7 +19139,7 @@ func TestFDB_CRUDCycle(t *testing.T) {
 	})
 
 	t.Run("final_state", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, val FROM crud_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, val FROM crud_t ORDER BY id")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 remaining, got %d", len(rows))
 		}
@@ -19212,12 +19152,12 @@ func TestFDB_CRUDCycle(t *testing.T) {
 // TestFDB_SumFilteredGrouped — SUM filtered by WHERE then grouped
 func TestFDB_SumFilteredGrouped(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "sfg",
+	db := testkit.SetupPlanShapeDB(t, "sfg",
 		"CREATE TABLE sfg_t(id BIGINT, region STRING, year BIGINT, revenue BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO sfg_t VALUES
 		(1,'east',2024,100),(2,'west',2024,200),(3,'east',2025,150),
@@ -19226,7 +19166,7 @@ func TestFDB_SumFilteredGrouped(t *testing.T) {
 	}
 
 	t.Run("sum_2024_per_region", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT region, SUM(revenue) FROM sfg_t
 			WHERE year = 2024
 			GROUP BY region
@@ -19245,7 +19185,7 @@ func TestFDB_SumFilteredGrouped(t *testing.T) {
 	})
 
 	t.Run("sum_2025_total", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT SUM(revenue) FROM sfg_t WHERE year = 2025")
+		rows := testkit.CollectRows(t, db, "SELECT SUM(revenue) FROM sfg_t WHERE year = 2025")
 		// 150+250+300=700
 		if toInt64(rows[0][0]) != 700 {
 			t.Errorf("want 700, got %v", rows[0][0])
@@ -19253,7 +19193,7 @@ func TestFDB_SumFilteredGrouped(t *testing.T) {
 	})
 
 	t.Run("count_per_year", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT year, COUNT(*) FROM sfg_t GROUP BY year ORDER BY year
 		`)
 		if toInt64(rows[0][1]) != 3 || toInt64(rows[1][1]) != 3 {
@@ -19265,12 +19205,12 @@ func TestFDB_SumFilteredGrouped(t *testing.T) {
 // TestFDB_DeleteThenInsertSameKey — delete row then re-insert same PK
 func TestFDB_DeleteThenInsertSameKey(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "dtis",
+	db := testkit.SetupPlanShapeDB(t, "dtis",
 		"CREATE TABLE dtis_t(id BIGINT, val STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO dtis_t VALUES (1,'original')"); err != nil {
 		t.Fatalf("INSERT: %v", err)
@@ -19283,14 +19223,14 @@ func TestFDB_DeleteThenInsertSameKey(t *testing.T) {
 		if _, err := db.ExecContext(ctx, "INSERT INTO dtis_t VALUES (1,'replacement')"); err != nil {
 			t.Fatalf("INSERT: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT val FROM dtis_t WHERE id = 1")
+		rows := testkit.CollectRows(t, db, "SELECT val FROM dtis_t WHERE id = 1")
 		if fmt.Sprintf("%v", rows[0][0]) != "replacement" {
 			t.Errorf("want 'replacement', got %v", rows[0][0])
 		}
 	})
 
 	t.Run("count_still_one", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM dtis_t")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM dtis_t")
 		if toInt64(rows[0][0]) != 1 {
 			t.Errorf("want 1, got %v", rows[0][0])
 		}
@@ -19300,12 +19240,12 @@ func TestFDB_DeleteThenInsertSameKey(t *testing.T) {
 // TestFDB_JoinCountGroupByHaving — JOIN + GROUP BY + HAVING COUNT
 func TestFDB_JoinCountGroupByHaving(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jcgh",
+	db := testkit.SetupPlanShapeDB(t, "jcgh",
 		"CREATE TABLE jcgh_authors(id BIGINT, name STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jcgh_books(id BIGINT, author_id BIGINT, title STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
@@ -19320,7 +19260,7 @@ func TestFDB_JoinCountGroupByHaving(t *testing.T) {
 	}
 
 	t.Run("authors_with_2plus_books", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT a.name, COUNT(*) FROM jcgh_authors a
 			JOIN jcgh_books b ON a.id = b.author_id
 			GROUP BY a.name
@@ -19342,12 +19282,12 @@ func TestFDB_JoinCountGroupByHaving(t *testing.T) {
 // TestFDB_LimitZeroReturnsNothing — LIMIT 0 returns no rows
 func TestFDB_LimitZeroReturnsNothing(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "lzrn",
+	db := testkit.SetupPlanShapeDB(t, "lzrn",
 		"CREATE TABLE lzrn_t(id BIGINT, val BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
 		"INSERT INTO lzrn_t VALUES (1,10),(2,20),(3,30)"); err != nil {
@@ -19355,21 +19295,21 @@ func TestFDB_LimitZeroReturnsNothing(t *testing.T) {
 	}
 
 	t.Run("limit_0", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT * FROM lzrn_t LIMIT 0")
+		rows := testkit.CollectRows(t, db, "SELECT * FROM lzrn_t LIMIT 0")
 		if len(rows) != 0 {
 			t.Errorf("want 0 rows with LIMIT 0, got %d", len(rows))
 		}
 	})
 
 	t.Run("limit_1", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lzrn_t ORDER BY id LIMIT 1")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lzrn_t ORDER BY id LIMIT 1")
 		if len(rows) != 1 || toInt64(rows[0][0]) != 1 {
 			t.Errorf("want [1], got %v", rows)
 		}
 	})
 
 	t.Run("limit_exceeds_rows", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM lzrn_t LIMIT 100")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM lzrn_t LIMIT 100")
 		if len(rows) != 3 {
 			t.Errorf("want 3 (all rows), got %d", len(rows))
 		}
@@ -19379,12 +19319,12 @@ func TestFDB_LimitZeroReturnsNothing(t *testing.T) {
 // TestFDB_CoalesceThreeColumnFallback — COALESCE(a, b, c) cascading NULL fallback
 func TestFDB_CoalesceThreeColumnFallback(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "cchn",
+	db := testkit.SetupPlanShapeDB(t, "cchn",
 		"CREATE TABLE cchn_t(id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO cchn_t VALUES
 		(1,10,20,30),(2,null,20,30),(3,null,null,30),(4,null,null,null)`); err != nil {
@@ -19392,7 +19332,7 @@ func TestFDB_CoalesceThreeColumnFallback(t *testing.T) {
 	}
 
 	t.Run("coalesce_three_cols", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id, COALESCE(a, b, c) FROM cchn_t ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, COALESCE(a, b, c) FROM cchn_t ORDER BY id")
 		want := []any{int64(10), int64(20), int64(30), nil}
 		for i, w := range want {
 			if w == nil {
@@ -19406,7 +19346,7 @@ func TestFDB_CoalesceThreeColumnFallback(t *testing.T) {
 	})
 
 	t.Run("coalesce_with_constant", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COALESCE(a, b, c, 0) FROM cchn_t WHERE id = 4")
+		rows := testkit.CollectRows(t, db, "SELECT COALESCE(a, b, c, 0) FROM cchn_t WHERE id = 4")
 		if toInt64(rows[0][0]) != 0 {
 			t.Errorf("want 0 fallback, got %v", rows[0][0])
 		}
@@ -19416,12 +19356,12 @@ func TestFDB_CoalesceThreeColumnFallback(t *testing.T) {
 // TestFDB_OrderByThreeColumnsLimit — ORDER BY 3 columns with LIMIT
 func TestFDB_OrderByThreeColumnsLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "o3cl",
+	db := testkit.SetupPlanShapeDB(t, "o3cl",
 		"CREATE TABLE o3cl_t(id BIGINT, a STRING, b BIGINT, c BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO o3cl_t VALUES
 		(1,'x',1,10),(2,'x',1,20),(3,'x',2,5),(4,'y',1,15),(5,'y',2,25)`); err != nil {
@@ -19429,7 +19369,7 @@ func TestFDB_OrderByThreeColumnsLimit(t *testing.T) {
 	}
 
 	t.Run("order_a_b_c_limit3", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT id FROM o3cl_t ORDER BY a, b, c LIMIT 3")
+		rows := testkit.CollectRows(t, db, "SELECT id FROM o3cl_t ORDER BY a, b, c LIMIT 3")
 		// x,1,10(id=1) → x,1,20(id=2) → x,2,5(id=3)
 		want := []int64{1, 2, 3}
 		if len(rows) != 3 {
@@ -19446,12 +19386,12 @@ func TestFDB_OrderByThreeColumnsLimit(t *testing.T) {
 // TestFDB_WhereMultipleInPredicates — multiple IN predicates with AND
 func TestFDB_WhereMultipleInPredicates(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "wmip",
+	db := testkit.SetupPlanShapeDB(t, "wmip",
 		"CREATE TABLE wmip_t(id BIGINT, color STRING, size STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO wmip_t VALUES
 		(1,'red','S'),(2,'blue','M'),(3,'red','L'),(4,'green','S'),(5,'blue','S')`); err != nil {
@@ -19459,7 +19399,7 @@ func TestFDB_WhereMultipleInPredicates(t *testing.T) {
 	}
 
 	t.Run("color_in_and_size_in", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT id FROM wmip_t WHERE color IN ('red') AND size IN ('S')
 			ORDER BY id
 		`)
@@ -19470,7 +19410,7 @@ func TestFDB_WhereMultipleInPredicates(t *testing.T) {
 	})
 
 	t.Run("size_s_count", func(t *testing.T) {
-		rows := collectRows(t, db, "SELECT COUNT(*) FROM wmip_t WHERE size IN ('S')")
+		rows := testkit.CollectRows(t, db, "SELECT COUNT(*) FROM wmip_t WHERE size IN ('S')")
 		if toInt64(rows[0][0]) != 3 {
 			t.Errorf("want 3, got %v", rows[0][0])
 		}
@@ -19480,12 +19420,12 @@ func TestFDB_WhereMultipleInPredicates(t *testing.T) {
 // TestFDB_GroupByOrderByCountDescLimit — GROUP BY with ORDER BY COUNT DESC
 func TestFDB_GroupByOrderByCountDescLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "gocdl",
+	db := testkit.SetupPlanShapeDB(t, "gocdl",
 		"CREATE TABLE gocdl_t(id BIGINT, word STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO gocdl_t VALUES
 		(1,'the'),(2,'a'),(3,'the'),(4,'is'),(5,'the'),(6,'a'),(7,'was'),(8,'the')`); err != nil {
@@ -19493,7 +19433,7 @@ func TestFDB_GroupByOrderByCountDescLimit(t *testing.T) {
 	}
 
 	t.Run("most_frequent_word", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT word, COUNT(*) FROM gocdl_t GROUP BY word ORDER BY COUNT(*) DESC LIMIT 1
 		`)
 		if fmt.Sprintf("%v", rows[0][0]) != "the" || toInt64(rows[0][1]) != 4 {
@@ -19502,7 +19442,7 @@ func TestFDB_GroupByOrderByCountDescLimit(t *testing.T) {
 	})
 
 	t.Run("all_words_ordered", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT word, COUNT(*) FROM gocdl_t GROUP BY word ORDER BY COUNT(*) DESC
 		`)
 		if len(rows) != 4 {
@@ -19518,12 +19458,12 @@ func TestFDB_GroupByOrderByCountDescLimit(t *testing.T) {
 // TestFDB_JoinSumGroupOrderSum — JOIN + SUM + GROUP BY + ORDER BY SUM
 func TestFDB_JoinSumGroupOrderSum(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "jsgo",
+	db := testkit.SetupPlanShapeDB(t, "jsgo",
 		"CREATE TABLE jsgo_stores(id BIGINT, city STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE jsgo_sales(id BIGINT, store_id BIGINT, amount BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
@@ -19536,7 +19476,7 @@ func TestFDB_JoinSumGroupOrderSum(t *testing.T) {
 	}
 
 	t.Run("revenue_per_city_desc", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT s.city, SUM(sa.amount) FROM jsgo_stores s
 			JOIN jsgo_sales sa ON s.id = sa.store_id
 			GROUP BY s.city
@@ -19555,7 +19495,7 @@ func TestFDB_JoinSumGroupOrderSum(t *testing.T) {
 	})
 
 	t.Run("total_revenue", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			SELECT SUM(sa.amount) FROM jsgo_stores s
 			JOIN jsgo_sales sa ON s.id = sa.store_id
 		`)
@@ -19568,12 +19508,12 @@ func TestFDB_JoinSumGroupOrderSum(t *testing.T) {
 // TestFDB_CTETop3ViaOrderLimit — CTE with ORDER BY DESC LIMIT for top-N
 func TestFDB_CTETop3ViaOrderLimit(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "ct3ol",
+	db := testkit.SetupPlanShapeDB(t, "ct3ol",
 		"CREATE TABLE cwol_t(id BIGINT, score BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, `INSERT INTO cwol_t VALUES
 		(1,90),(2,70),(3,85),(4,95),(5,60),(6,80),(7,75)`); err != nil {
@@ -19581,7 +19521,7 @@ func TestFDB_CTETop3ViaOrderLimit(t *testing.T) {
 	}
 
 	t.Run("cte_order_desc", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH ranked AS (SELECT id, score FROM cwol_t)
 			SELECT id, score FROM ranked ORDER BY score DESC
 		`)
@@ -19594,7 +19534,7 @@ func TestFDB_CTETop3ViaOrderLimit(t *testing.T) {
 	})
 
 	t.Run("cte_count", func(t *testing.T) {
-		rows := collectRows(t, db, `
+		rows := testkit.CollectRows(t, db, `
 			WITH high AS (SELECT score FROM cwol_t WHERE score >= 80)
 			SELECT COUNT(*) FROM high
 		`)
@@ -19608,12 +19548,12 @@ func TestFDB_CTETop3ViaOrderLimit(t *testing.T) {
 // TestFDB_UpdateWhereNotExists — UPDATE rows that have no match in another table
 func TestFDB_UpdateWhereNotExists(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	db := setupPlanShapeDB(t, "uwne",
+	db := testkit.SetupPlanShapeDB(t, "uwne",
 		"CREATE TABLE uwne_items(id BIGINT, status STRING, PRIMARY KEY(id)) "+
 			"CREATE TABLE uwne_shipped(id BIGINT, item_id BIGINT, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx,
@@ -19633,7 +19573,7 @@ func TestFDB_UpdateWhereNotExists(t *testing.T) {
 		if err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
-		rows := collectRows(t, db, "SELECT id, status FROM uwne_items ORDER BY id")
+		rows := testkit.CollectRows(t, db, "SELECT id, status FROM uwne_items ORDER BY id")
 		// id=1: shipped → pending, id=2: not shipped → cancelled, id=3: shipped → pending
 		if fmt.Sprintf("%v", rows[1][1]) != "cancelled" {
 			t.Errorf("id 2: want cancelled, got %v", rows[1][1])

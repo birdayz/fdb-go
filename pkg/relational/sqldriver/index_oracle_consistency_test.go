@@ -12,22 +12,24 @@ import (
 	"math/rand"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_IndexOracleConsistency(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_idxoracle")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idxoracle")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_idxoracle")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_idxoracle")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE idxoracle "+
 			"CREATE TABLE t (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_k ON t (k)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idxoracle/s WITH TEMPLATE idxoracle")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXORACLE?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_idxoracle/s WITH TEMPLATE idxoracle")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_IDXORACLE?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -53,9 +55,9 @@ func TestFDB_IndexOracleConsistency(t *testing.T) {
 		}
 		model = append(model, r)
 		if r.isNull {
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", r.id))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", r.id))
 		} else {
-			mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, k) VALUES (%d, %d)", r.id, r.k))
+			testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, k) VALUES (%d, %d)", r.id, r.k))
 		}
 	}
 

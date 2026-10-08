@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -43,12 +45,12 @@ import (
 //	XT(XID,XARR): (1,[7,8]) (2,[9]) (5,[55])                -- box leg, owns array; join S.SID=XT.XID
 //	Y(YID,YK):    (1,500)                                   -- plain leg
 func TestFDB_OrderByGather(t *testing.T) {
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +103,7 @@ func TestFDB_OrderByGather(t *testing.T) {
 		for _, v := range vals {
 			elems = append(elems, protoreflect.ValueOfInt32(v))
 		}
-		setArrayField(m, d.Fields().ByName(protoreflect.Name(arrField)), elems...)
+		testkit.SetArrayField(m, d.Fields().ByName(protoreflect.Name(arrField)), elems...)
 		return m
 	}
 	mkP := func(pid, k int64, kNull bool, vals ...int32) proto.Message {
@@ -113,7 +115,7 @@ func TestFDB_OrderByGather(t *testing.T) {
 		for _, v := range vals {
 			elems = append(elems, protoreflect.ValueOfInt32(v))
 		}
-		setArrayField(m, d.Fields().ByName("ARR"), elems...)
+		testkit.SetArrayField(m, d.Fields().ByName("ARR"), elems...)
 		return m
 	}
 	mk2 := func(table, f1, f2 string, v1, v2 int64) proto.Message {
@@ -170,7 +172,7 @@ func TestFDB_OrderByGather(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})

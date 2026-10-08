@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_GroupByNestedPathKey is RFC-230's acceptance criterion, and it is
@@ -43,25 +45,25 @@ import (
 // as "the plans match".
 func TestFDB_GroupByNestedPathKey(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/gbnpk")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/gbnpk")
+	setup := testkit.OpenDB(t, "/FRL/gbnpk")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/gbnpk")
 	// The corpus schema verbatim (groupby-tests.yamsql:22-29) — a two-level
 	// struct (st3.v is an st1, whose member is z) so the key is a genuine
 	// three-segment descent, plus the index the Java plan uses.
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE gbnpk_tmpl "+
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE gbnpk_tmpl "+
 		"CREATE TYPE AS STRUCT st1(y BIGINT, z BIGINT) "+
 		"CREATE TYPE AS STRUCT st2(w BIGINT, x BIGINT) "+
 		"CREATE TYPE AS STRUCT st3(u st2, v st1) "+
 		"CREATE TYPE AS STRUCT st4(s BIGINT, t BIGINT) "+
 		"CREATE TABLE nested(id BIGINT, q st4, r st3, PRIMARY KEY(q.s, r.u.w)) "+
 		"CREATE INDEX i2 AS SELECT r.v.z FROM nested ORDER BY r.v.z")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/gbnpk/s WITH TEMPLATE gbnpk_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/gbnpk/s WITH TEMPLATE gbnpk_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/GBNPK?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/GBNPK?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -70,7 +72,7 @@ func TestFDB_GroupByNestedPathKey(t *testing.T) {
 	// The corpus rows verbatim. Two z groups (100 and 140) whose max(q.s)
 	// differ (203 and 330), so a key that collapsed to one group, or that read
 	// the struct root instead of the member, produces a different number.
-	mustExec(t, db, ctx, "INSERT INTO nested VALUES "+
+	testkit.MustExec(t, db, ctx, "INSERT INTO nested VALUES "+
 		"(1, (200, 1), ((5, 15), (10, 100))), "+
 		"(2, (201, 2), ((5, 15), (10, 100))), "+
 		"(3, (202, 3), ((5, 15), (10, 100))), "+

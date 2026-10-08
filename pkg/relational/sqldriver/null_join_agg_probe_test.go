@@ -11,23 +11,25 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_NullJoinAggProbe(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_null_agg")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_null_agg")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_null_agg")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_null_agg")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE null_agg "+
 			"CREATE TABLE a (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_null_agg/s WITH TEMPLATE null_agg")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_AGG?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_null_agg/s WITH TEMPLATE null_agg")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_NULL_AGG?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -35,17 +37,17 @@ func TestFDB_NullJoinAggProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	// a: (1,5), (2,NULL), (3,7); c: 50→a1, 51→a1, 52→a_id NULL.
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (3, 7)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (2)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 1)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c (id) VALUES (52)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id, x) VALUES (1, 5), (3, 7)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO a (id) VALUES (2)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO c (id) VALUES (52)")
 
 	pairs := func(q string) []string {
 		rows, err := db.QueryContext(ctx, q)
 		if err != nil {
 			t.Fatalf("query %q: %v", q, err)
 		}
-		return siScanRows(t, rows)
+		return testkit.ScanRowStrings(t, rows)
 	}
 	ints := func(q string) []int64 {
 		rows, err := db.QueryContext(ctx, q)
@@ -80,14 +82,14 @@ func TestFDB_NullJoinAggProbe(t *testing.T) {
 		// a2.id has no c; c52.a_id NULL matches no a.
 		got := pairs("SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id")
 		want := []string{"1|50", "1|51"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("inner join rows = %v, want %v", got, want)
 		}
 	})
 	t.Run("left_join_null_extend", func(t *testing.T) {
 		got := pairs("SELECT a.id, c.id FROM a LEFT JOIN c ON c.a_id = a.id")
 		want := []string{"1|50", "1|51", "2|NULL", "3|NULL"}
-		if !eqStrSlices(got, want) {
+		if !testkit.EqualStrings(got, want) {
 			t.Errorf("left join rows = %v, want %v", got, want)
 		}
 	})

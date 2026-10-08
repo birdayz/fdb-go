@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_ProjectedExistsRound12 pins RFC-141 R4 round-12 — the convergence
@@ -39,26 +41,26 @@ import (
 // returns a VISIBLY DIFFERENT result than the clean error each sentinel asserts.
 func TestFDB_ProjectedExistsRound12(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_pexr12")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pexr12")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr12_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_pexr12")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pexr12")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr12_tmpl "+
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pexr12/s WITH TEMPLATE pexr12_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pexr12/s WITH TEMPLATE pexr12_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PEXR12?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PEXR12?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 2)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 2)")
 
 	const unsupportedSELECT = "projected EXISTS in this query shape is not yet supported"
 
@@ -265,25 +267,25 @@ func TestFDB_ProjectedExistsRound12(t *testing.T) {
 // EXISTS-true one. Each DML table gets its own subtest dataset (DML mutates rows).
 func TestFDB_ProjectedExistsRound12_DML(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
-	setup := openTestDB(t, "/FRL/testdb_pexr12dml")
-	mustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pexr12dml")
-	mustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr12dml_tmpl "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_pexr12dml")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_pexr12dml")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pexr12dml_tmpl "+
 		"CREATE TABLE t1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE t2 (id BIGINT, fk BIGINT, PRIMARY KEY (id))")
-	mustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pexr12dml/s WITH TEMPLATE pexr12dml_tmpl")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_pexr12dml/s WITH TEMPLATE pexr12dml_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PEXR12DML?cluster_file=%s&schema=S", clusterFilePath))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_PEXR12DML?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 2)")
+	testkit.MustExec(t, db, ctx, "INSERT INTO t2 VALUES (100, 2)")
 
 	exists := "EXISTS (SELECT 1 FROM t2 WHERE t2.fk = t1.id)"
 
@@ -318,9 +320,9 @@ func TestFDB_ProjectedExistsRound12_DML(t *testing.T) {
 	}
 
 	t.Run("delete_double_not_exists", func(t *testing.T) {
-		mustExec(t, db, ctx, "DELETE FROM t1")
-		mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
-		mustExec(t, db, ctx, "DELETE FROM t1 WHERE NOT (NOT "+exists+")")
+		testkit.MustExec(t, db, ctx, "DELETE FROM t1")
+		testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
+		testkit.MustExec(t, db, ctx, "DELETE FROM t1 WHERE NOT (NOT "+exists+")")
 		if got := remaining(t); !eq(got, []int64{1, 3}) {
 			t.Fatalf("DELETE double NOT EXISTS: remaining=%v, want [1 3]", got)
 		}
@@ -328,9 +330,9 @@ func TestFDB_ProjectedExistsRound12_DML(t *testing.T) {
 
 	// Control: a DIRECT DELETE WHERE EXISTS still works (deletes only id 2).
 	t.Run("control_delete_where_exists", func(t *testing.T) {
-		mustExec(t, db, ctx, "DELETE FROM t1")
-		mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
-		mustExec(t, db, ctx, "DELETE FROM t1 WHERE "+exists)
+		testkit.MustExec(t, db, ctx, "DELETE FROM t1")
+		testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
+		testkit.MustExec(t, db, ctx, "DELETE FROM t1 WHERE "+exists)
 		if got := remaining(t); !eq(got, []int64{1, 3}) {
 			t.Fatalf("DELETE WHERE EXISTS: remaining %v want [1 3]", got)
 		}
@@ -338,9 +340,9 @@ func TestFDB_ProjectedExistsRound12_DML(t *testing.T) {
 
 	// Control: a DIRECT DELETE WHERE NOT EXISTS still works (deletes ids 1,3).
 	t.Run("control_delete_where_not_exists", func(t *testing.T) {
-		mustExec(t, db, ctx, "DELETE FROM t1")
-		mustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
-		mustExec(t, db, ctx, "DELETE FROM t1 WHERE NOT "+exists)
+		testkit.MustExec(t, db, ctx, "DELETE FROM t1")
+		testkit.MustExec(t, db, ctx, "INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30)")
+		testkit.MustExec(t, db, ctx, "DELETE FROM t1 WHERE NOT "+exists)
 		if got := remaining(t); !eq(got, []int64{2}) {
 			t.Fatalf("DELETE WHERE NOT EXISTS: remaining %v want [2]", got)
 		}

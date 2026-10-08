@@ -17,27 +17,29 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_CorrelatedScalarInPredicate_Boundary(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_corrscw")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_corrscw")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE corrscw "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_corrscw")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_corrscw")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE corrscw "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_corrscw/s WITH TEMPLATE corrscw")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRSCW?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_corrscw/s WITH TEMPLATE corrscw")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_CORRSCW?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a,b,c) VALUES (1,10,5,100),(2,3,8,100),(3,50,40,200),(4,1,2,200)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,a,b,c) VALUES (1,10,5,100),(2,3,8,100),(3,50,40,200),(4,1,2,200)")
 
 	// The supported NON-correlated form must work AND return the right rows —
 	// this is the extension the rowdiff harness exercises. Subquery MAX(b)=40
@@ -86,9 +88,9 @@ func TestFDB_CorrelatedScalarInPredicate_Boundary(t *testing.T) {
 	})
 
 	t.Run("correlated_having_still_typed_loud", func(t *testing.T) {
-		err := expectError(t, db,
+		err := testkit.ExpectError(t, db,
 			"SELECT o.c FROM t AS o GROUP BY o.c HAVING SUM(o.b) > "+
 				"(SELECT MAX(r.a) FROM t AS r WHERE r.c = o.c)")
-		requireSQLSTATE(t, err, api.ErrCodeUnsupportedQuery)
+		testkit.RequireSQLSTATE(t, err, api.ErrCodeUnsupportedQuery)
 	})
 }

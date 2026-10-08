@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // TestFDB_TwoTableOrderInvariantIndexJoin proves order-invariant, cost-optimal
@@ -19,30 +21,30 @@ import (
 // sub-product's index-probe).
 func TestFDB_TwoTableOrderInvariantIndexJoin(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_2t")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_2t")
-	mwjoMustExec(t, setup, ctx,
+	setup := testkit.OpenDB(t, "/FRL/testdb_2t")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_2t")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE t2t "+
 			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t2_by_t1 ON t2 (t1_id)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_2t/s WITH TEMPLATE t2t")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_2T?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_2t/s WITH TEMPLATE t2t")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_2T?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	defer db.Close()
-	mwjoMustExec(t, db, ctx, "INSERT INTO t1 VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 VALUES (1)")
 	for i := 1; i <= 50; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t2 VALUES (%d, 1)", i))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t2 VALUES (%d, 1)", i))
 	}
 
-	pe := mwjoExplainer(t, db, ctx)
+	pe := testkit.Explainer(t, db, ctx)
 	a := pe("SELECT t1.id FROM t1, t2 WHERE t2.t1_id = t1.id")
 	b := pe("SELECT t1.id FROM t2, t1 WHERE t2.t1_id = t1.id")
 

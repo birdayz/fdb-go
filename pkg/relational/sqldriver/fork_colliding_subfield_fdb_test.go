@@ -7,6 +7,8 @@ import (
 	"sort"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -32,12 +34,12 @@ import (
 // preceding-link rooting, colliding_fork fails with rows=[map[W:100]].
 func TestFDB_ForkCollidingSubfield(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,9 +85,9 @@ func TestFDB_ForkCollidingSubfield(t *testing.T) {
 
 	tcDesc := md.GetRecordType("TC").Descriptor
 	arrFD := tcDesc.Fields().ByName("ARR")
-	e1Desc := arrayElementMessageDescriptor(arrFD)
+	e1Desc := testkit.ArrayElementMessageDescriptor(arrFD)
 	ssFD := e1Desc.Fields().ByName("SS")
-	e2Desc := arrayElementMessageDescriptor(ssFD)
+	e2Desc := testkit.ArrayElementMessageDescriptor(ssFD)
 
 	int32Vals := func(vals []int32) []protoreflect.Value {
 		out := make([]protoreflect.Value, 0, len(vals))
@@ -96,13 +98,13 @@ func TestFDB_ForkCollidingSubfield(t *testing.T) {
 	}
 	mkE2 := func(sub2 ...int32) protoreflect.Value {
 		m := dynamicpb.NewMessage(e2Desc)
-		setArrayField(m, e2Desc.Fields().ByName("SUB2"), int32Vals(sub2)...)
+		testkit.SetArrayField(m, e2Desc.Fields().ByName("SUB2"), int32Vals(sub2)...)
 		return protoreflect.ValueOfMessage(m)
 	}
 	mkE1 := func(sub2 []int32, ss ...protoreflect.Value) protoreflect.Value {
 		m := dynamicpb.NewMessage(e1Desc)
-		setArrayField(m, e1Desc.Fields().ByName("SUB2"), int32Vals(sub2)...)
-		setArrayField(m, ssFD, ss...)
+		testkit.SetArrayField(m, e1Desc.Fields().ByName("SUB2"), int32Vals(sub2)...)
+		testkit.SetArrayField(m, ssFD, ss...)
 		return protoreflect.ValueOfMessage(m)
 	}
 
@@ -115,7 +117,7 @@ func TestFDB_ForkCollidingSubfield(t *testing.T) {
 		// {1,2}; the mis-root at Y reads {100} SILENTLY.
 		m := dynamicpb.NewMessage(tcDesc)
 		m.Set(tcDesc.Fields().ByName("ID"), protoreflect.ValueOfInt64(1))
-		setArrayField(m, arrFD, mkE1([]int32{1, 2}, mkE2(100)))
+		testkit.SetArrayField(m, arrFD, mkE1([]int32{1, 2}, mkE2(100)))
 		if _, e := store.SaveRecord(m); e != nil {
 			return nil, e
 		}
@@ -146,7 +148,7 @@ func TestFDB_ForkCollidingSubfield(t *testing.T) {
 				return nil, rErr
 			}
 			for _, r := range rows {
-				out = append(out, positionalNamedPipeSprint(r))
+				out = append(out, testkit.PositionalNamedPipeSprint(r))
 			}
 			return nil, nil
 		})

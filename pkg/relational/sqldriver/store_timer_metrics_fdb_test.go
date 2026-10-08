@@ -30,6 +30,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/dst"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
@@ -57,7 +59,7 @@ var (
 func sharedStoreTimerBackend(t *testing.T) fdb.BackendDatabase {
 	t.Helper()
 	storeTimerBackendOnce.Do(func() {
-		storeTimerBackendDB, storeTimerBackendErr = fdbclient.Open(clusterFilePath)
+		storeTimerBackendDB, storeTimerBackendErr = fdbclient.Open(testkit.ClusterFile())
 	})
 	if storeTimerBackendErr != nil {
 		t.Fatalf("open FDB: %v", storeTimerBackendErr)
@@ -137,7 +139,7 @@ func scrape(t *testing.T, timer *recordlayer.StoreTimer) map[string]float64 {
 // draws the line at the point the fixture becomes known.
 func TestFDB_StoreTimerExporter_CountsRealSQLWork(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -152,10 +154,10 @@ func TestFDB_StoreTimerExporter_CountsRealSQLWork(t *testing.T) {
 	}
 	t.Cleanup(func() { setup.Close() })
 
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sttimer")
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sttimer")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sttimer CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sttimer/s WITH TEMPLATE sttimer")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sttimer/s WITH TEMPLATE sttimer")
 
 	db, err := sql.Open("fdbsql", dsn+"&schema=S")
 	if err != nil {
@@ -165,7 +167,7 @@ func TestFDB_StoreTimerExporter_CountsRealSQLWork(t *testing.T) {
 
 	// One warm-up write, so schema resolution and store-header state are settled
 	// and the reset below starts from a steady state rather than mid-warm-up.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (0, 0)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (0, 0)")
 
 	before := scrape(t, timer)
 	if before["fdb_recordlayer_save_record_seconds_count"] == 0 {
@@ -180,7 +182,7 @@ func TestFDB_StoreTimerExporter_CountsRealSQLWork(t *testing.T) {
 
 	const rows = 7
 	for i := 1; i <= rows; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", i, i*10))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", i, i*10))
 	}
 
 	got := scrape(t, timer)
@@ -272,7 +274,7 @@ func TestFDB_StoreTimerExporter_CountsRealSQLWork(t *testing.T) {
 // uncounted, which is the same shape of gap as the record scan on the outer wrapper.
 func TestFDB_StoreTimerExporter_IndexScansAreCounted(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -287,12 +289,12 @@ func TestFDB_StoreTimerExporter_IndexScansAreCounted(t *testing.T) {
 	}
 	t.Cleanup(func() { setup.Close() })
 
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sttimer_idx")
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sttimer_idx")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sttimeridx "+
 			"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX t_v AS SELECT v, id FROM t ORDER BY v, id")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sttimer_idx/s WITH TEMPLATE sttimeridx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sttimer_idx/s WITH TEMPLATE sttimeridx")
 
 	db, err := sql.Open("fdbsql", dsn+"&schema=S")
 	if err != nil {
@@ -303,7 +305,7 @@ func TestFDB_StoreTimerExporter_IndexScansAreCounted(t *testing.T) {
 	// Five rows, all sharing v = 100, so an equality probe on the index returns a
 	// known number of entries.
 	const matching = 5
-	mwjoMustExec(t, db, ctx,
+	testkit.MustExecCtx(t, db, ctx,
 		"INSERT INTO t (id, v) VALUES (1, 100), (2, 100), (3, 100), (4, 100), (5, 100), (6, 999)")
 
 	// Warm up so per-connection catalog initialisation is not in the measurement.
@@ -357,7 +359,7 @@ func TestFDB_StoreTimerExporter_IndexScansAreCounted(t *testing.T) {
 // the second is the one where a silent no-op looks exactly like "no traffic".
 func TestFDB_StoreTimerExporter_ArmingAfterTheBackendStillInstruments(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -372,10 +374,10 @@ func TestFDB_StoreTimerExporter_ArmingAfterTheBackendStillInstruments(t *testing
 	}
 	t.Cleanup(func() { setup.Close() })
 
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sttimer_late")
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sttimer_late")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sttimerlate CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sttimer_late/s WITH TEMPLATE sttimerlate")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sttimer_late/s WITH TEMPLATE sttimerlate")
 
 	db, err := sql.Open("fdbsql", dsn+"&schema=S")
 	if err != nil {
@@ -383,12 +385,12 @@ func TestFDB_StoreTimerExporter_ArmingAfterTheBackendStillInstruments(t *testing
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (1)")
 	timer.Reset()
 
 	const rows = 3
 	for i := 2; i < 2+rows; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", i))
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", i))
 	}
 
 	if v := scrape(t, timer)["fdb_recordlayer_save_record_seconds_count"]; v != rows {
@@ -404,14 +406,14 @@ func TestFDB_StoreTimerExporter_ArmingAfterTheBackendStillInstruments(t *testing
 // different field name, and it is invisible — the metric just reads lower.
 func TestFDB_StoreTimerExporter_ExplicitTransactionIsInstrumented(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 
 	const key = "storetimer-metrics-explicit-tx"
 	// One-shot spike on the SAME database the timer is bound to.
-	clk := newLateClock(30 * time.Second)
+	clk := testkit.NewLateClock(30 * time.Second)
 	timer := armTimer(t, key, true, clk)
 
 	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_STTIMER_TX?cluster_file=%s", key)
@@ -421,10 +423,10 @@ func TestFDB_StoreTimerExporter_ExplicitTransactionIsInstrumented(t *testing.T) 
 	}
 	t.Cleanup(func() { setup.Close() })
 
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sttimer_tx")
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_sttimer_tx")
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE sttimertx CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sttimer_tx/s WITH TEMPLATE sttimertx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_sttimer_tx/s WITH TEMPLATE sttimertx")
 
 	db, err := sql.Open("fdbsql", dsn+"&schema=S")
 	if err != nil {
@@ -432,7 +434,7 @@ func TestFDB_StoreTimerExporter_ExplicitTransactionIsInstrumented(t *testing.T) 
 	}
 	t.Cleanup(func() { db.Close() })
 
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id) VALUES (1)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id) VALUES (1)")
 	timer.Reset()
 
 	// Four in-transaction statements on one read version, so this transaction
@@ -447,20 +449,20 @@ func TestFDB_StoreTimerExporter_ExplicitTransactionIsInstrumented(t *testing.T) 
 	// and `want 1 commit` meaning what they say.
 	const rows = 4
 	var attemptsRun int
-	opts := spikeOnce(clk, &attemptsRun)
+	opts := testkit.SpikeOnce(clk, &attemptsRun)
 	opts.BeforeAttempt = func(i int) {
 		attemptsRun = i
 		timer.Reset()
 	}
-	retryTx(t, db, opts, func(a txAttempt) error {
+	testkit.RetryTx(t, db, opts, func(a testkit.TxAttempt) error {
 		for i := 10; i < 10+rows; i++ {
-			if _, err := a.tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", i)); err != nil {
+			if _, err := a.Tx.ExecContext(ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", i)); err != nil {
 				return err
 			}
 		}
-		return a.tx.Commit()
+		return a.Tx.Commit()
 	})
-	mustHaveRetried(t, attemptsRun)
+	testkit.MustHaveRetried(t, attemptsRun)
 
 	got := scrape(t, timer)
 	if v := got["fdb_recordlayer_save_record_seconds_count"]; v != rows {

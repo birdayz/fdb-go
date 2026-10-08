@@ -37,15 +37,17 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DistinctOverUniqueIndexWithNulls(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_distinct_uniq", "duq",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_distinct_uniq", "duq",
 		"CREATE TABLE t (id BIGINT, u BIGINT, d DOUBLE, g BIGINT, PRIMARY KEY (id)) ",
 		"CREATE UNIQUE INDEX t_u ON t (u) CREATE UNIQUE INDEX t_d ON t (d) ")
 
@@ -152,11 +154,11 @@ func TestFDB_DistinctOverUniqueIndexWithNulls(t *testing.T) {
 // joins the exempt set, and one that stops being NULL leaves it.
 func TestFDB_DistinctOverUniqueIndexUnderMutation(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_distinct_uniq_mut", "duqm",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_distinct_uniq_mut", "duqm",
 		"CREATE TABLE t (id BIGINT, u BIGINT, g BIGINT, PRIMARY KEY (id)) ",
 		"CREATE UNIQUE INDEX t_u ON t (u) ")
 
@@ -193,11 +195,11 @@ func TestFDB_DistinctOverUniqueIndexUnderMutation(t *testing.T) {
 // here, next to the tests that depend on it, rather than assumed from the DDL.
 func TestFDB_UniqueIndexRejectsDuplicates(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_uniq_enforce", "uqe",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_uniq_enforce", "uqe",
 		"CREATE TABLE t (id BIGINT, u BIGINT, PRIMARY KEY (id)) ",
 		"CREATE UNIQUE INDEX t_u ON t (u) ")
 	w.Exec("INSERT INTO t (id, u) VALUES (1, 10), (2, NULL), (3, NULL)")
@@ -205,21 +207,21 @@ func TestFDB_UniqueIndexRejectsDuplicates(t *testing.T) {
 	// A duplicate non-exempt value must be refused on the INDEXED schema. The
 	// unindexed twin has no index and therefore accepts it, which is exactly why
 	// this case uses the raw connections instead of the twin's Exec.
-	if _, err := w.idx.ExecContext(ctx, "INSERT INTO t (id, u) VALUES (4, 10)"); err == nil {
+	if _, err := w.Idx.ExecContext(ctx, "INSERT INTO t (id, u) VALUES (4, 10)"); err == nil {
 		t.Errorf("the unique index accepted a duplicate value. Every distinct elision licensed by " +
 			"this index is now unsound: the planner drops the dedup operator on the strength of a " +
 			"uniqueness that no longer holds, and DISTINCT returns duplicates.")
 	}
 	// Repeated NULLs must still be accepted — that is what makes them exempt,
 	// and what forces the narrowed dedup to exist at all.
-	if _, err := w.idx.ExecContext(ctx, "INSERT INTO t (id, u) VALUES (5, NULL)"); err != nil {
+	if _, err := w.Idx.ExecContext(ctx, "INSERT INTO t (id, u) VALUES (5, NULL)"); err != nil {
 		t.Errorf("a repeated NULL was refused by the unique index: %v.\nIf NULLs are now unique, the "+
 			"exempt set is empty and the narrowed dedup has nothing to retain — the distinct could "+
 			"be elided outright, and the tests that expect NULLs to collapse describe a state that "+
 			"no longer exists.", err)
 	}
 	// An UPDATE into an occupied value is the other route to a duplicate.
-	if _, err := w.idx.ExecContext(ctx, "UPDATE t SET u = 10 WHERE id = 2"); err == nil {
+	if _, err := w.Idx.ExecContext(ctx, "UPDATE t SET u = 10 WHERE id = 2"); err == nil {
 		t.Errorf("an UPDATE created a duplicate in a unique index; see above for why that unsounds " +
 			"every elision licensed by it")
 	}
@@ -231,11 +233,11 @@ func TestFDB_UniqueIndexRejectsDuplicates(t *testing.T) {
 // a row count rather than as a single stray row.
 func TestFDB_DistinctOverUniqueIndexAtScale(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/FRL/testdb_distinct_uniq_scale", "duqs",
+	w := testkit.NewTwin(t, ctx, "/FRL/testdb_distinct_uniq_scale", "duqs",
 		"CREATE TABLE t (id BIGINT, u BIGINT, g BIGINT, PRIMARY KEY (id)) ",
 		"CREATE UNIQUE INDEX t_u ON t (u) ")
 

@@ -3,11 +3,13 @@ package sqldriver_test
 import (
 	"context"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_DisjunctiveExists(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	const schema = `CREATE TABLE t (id BIGINT, a BIGINT, arr BIGINT ARRAY, PRIMARY KEY(id))
@@ -43,7 +45,7 @@ func TestFDB_DisjunctiveExists(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			w := mmNewTwin(t, context.Background(), "/FRL/testdb_disj_exists_"+tc.name, "disj_exists_"+tc.name, schema, "CREATE INDEX ix_a ON t(a) CREATE INDEX ix_k ON u(k) ")
+			w := testkit.NewTwin(t, context.Background(), "/FRL/testdb_disj_exists_"+tc.name, "disj_exists_"+tc.name, schema, "CREATE INDEX ix_a ON t(a) CREATE INDEX ix_k ON u(k) ")
 			w.Exec(`INSERT INTO t VALUES (1,0,[1,9,9]),(2,9,[3,9]),(3,NULL,[]),(4,9,NULL),(5,9,[]),(6,0,[])`)
 			w.Exec(`INSERT INTO u VALUES (1,99),(2,1),(3,1),(4,3),(5,4)`)
 			w.Exec(`INSERT INTO v VALUES (2),(4)`)
@@ -54,7 +56,7 @@ func TestFDB_DisjunctiveExists(t *testing.T) {
 
 func TestFDB_DisjunctiveExistsDML(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	for _, tc := range []struct {
@@ -66,7 +68,7 @@ func TestFDB_DisjunctiveExistsDML(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			w := mmNewTwin(t, context.Background(), "/FRL/testdb_disj_dml_"+tc.name, "disj_dml_"+tc.name,
+			w := testkit.NewTwin(t, context.Background(), "/FRL/testdb_disj_dml_"+tc.name, "disj_dml_"+tc.name,
 				`CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY(id)) CREATE TABLE u (id BIGINT, k BIGINT, PRIMARY KEY(id)) `,
 				`CREATE INDEX ix_a ON t(a) CREATE INDEX ix_k ON u(k) `)
 			w.Exec(`INSERT INTO t VALUES (1,0),(2,9),(3,NULL),(4,9),(5,9),(6,0)`)

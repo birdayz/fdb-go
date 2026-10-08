@@ -11,26 +11,28 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_MetamorphicPagingAtScale(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	setup := openTestDB(t, "/FRL/testdb_mhp")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mhp")
+	setup := testkit.OpenDB(t, "/FRL/testdb_mhp")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mhp")
 	table := "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, s STRING, PRIMARY KEY (id)) "
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mhp_idx "+table+
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE mhp_idx "+table+
 		"CREATE INDEX t_a ON t (a) CREATE INDEX t_ab ON t (a, b) CREATE INDEX t_s ON t (s)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE mhp_noidx "+table)
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mhp/si WITH TEMPLATE mhp_idx")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mhp/sn WITH TEMPLATE mhp_noidx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE mhp_noidx "+table)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mhp/si WITH TEMPLATE mhp_idx")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mhp/sn WITH TEMPLATE mhp_noidx")
 
 	open := func(schema string) *sql.DB {
-		dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MHP?cluster_file=%s&schema=%s", clusterFilePath, strings.ToUpper(schema))
+		dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MHP?cluster_file=%s&schema=%s", testkit.ClusterFile(), strings.ToUpper(schema))
 		db, err := sql.Open("fdbsql", dsn)
 		if err != nil {
 			t.Fatalf("open %s: %v", schema, err)
@@ -91,15 +93,15 @@ func TestFDB_MetamorphicPagingAtScale(t *testing.T) {
 	checks := 0
 	for _, base := range bases {
 		t.Logf("paging base: %s", base)
-		full, ei := mhScanStrings(ctx, idb, base)
-		fullN, en := mhScanStrings(ctx, ndb, base)
+		full, ei := testkit.MhScanStrings(ctx, idb, base)
+		fullN, en := testkit.MhScanStrings(ctx, ndb, base)
 		if ei != nil || en != nil {
 			t.Errorf("base query failed: %s -> %v / %v", base, ei, en)
 			continue
 		}
-		if !mhEqRows(full, fullN) {
+		if !testkit.MhEqRows(full, fullN) {
 			t.Errorf("BASE ROW-DIFF\n  q: %s\n  %s\n  idx  (%d): %v\n  noidx(%d): %v",
-				base, mhFirstDiff(full, fullN), len(full), mhHead(full), len(fullN), mhHead(fullN))
+				base, testkit.MhFirstDiff(full, fullN), len(full), testkit.MhHead(full), len(fullN), testkit.MhHead(fullN))
 			continue
 		}
 		if len(full) == 0 {
@@ -117,15 +119,15 @@ func TestFDB_MetamorphicPagingAtScale(t *testing.T) {
 				want = full[sl.offset:end]
 			}
 			for name, db := range map[string]*sql.DB{"idx": idb, "noidx": ndb} {
-				got, err := mhScanStrings(ctx, db, q)
+				got, err := testkit.MhScanStrings(ctx, db, q)
 				if err != nil {
 					t.Errorf("PAGE ERROR [%s] %s: %v", name, q, err)
 					continue
 				}
 				checks++
-				if !mhEqRows(got, want) {
+				if !testkit.MhEqRows(got, want) {
 					t.Errorf("PAGE MISMATCH [%s]\n  q: %s\n  %s\n  got (%d): %v\n  want(%d): %v",
-						name, q, mhFirstDiff(got, want), len(got), mhHead(got), len(want), mhHead(want))
+						name, q, testkit.MhFirstDiff(got, want), len(got), testkit.MhHead(got), len(want), testkit.MhHead(want))
 				}
 			}
 		}

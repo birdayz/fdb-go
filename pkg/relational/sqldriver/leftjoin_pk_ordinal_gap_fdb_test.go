@@ -29,28 +29,30 @@ import (
 	"database/sql"
 	"fmt"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 func TestFDB_LeftJoinPkOrdinal_InJoinSortRegression(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := openTestDB(t, "/FRL/testdb_ljpk")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ljpk")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE ljpk "+
+	setup := testkit.OpenDB(t, "/FRL/testdb_ljpk")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_ljpk")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE ljpk "+
 		"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, PRIMARY KEY (id)) "+
 		"CREATE INDEX idx_b ON t (b) "+
 		"CREATE INDEX idx_a ON t (a)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ljpk/s WITH TEMPLATE ljpk")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LJPK?cluster_file=%s&schema=S", clusterFilePath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_ljpk/s WITH TEMPLATE ljpk")
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_LJPK?cluster_file=%s&schema=S", testkit.ClusterFile())
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id,a,b,c,s,f) VALUES "+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id,a,b,c,s,f) VALUES "+
 		"(1,2,8,3,'beta',TRUE),(2,3,5,9,'delta',FALSE),(3,7,8,1,'alpha',TRUE)")
 
 	// PK-join LEFT OUTER + R-side IN filter (lowers to an InJoin) + ORDER BY on

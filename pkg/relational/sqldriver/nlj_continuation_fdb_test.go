@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -24,7 +26,7 @@ import (
 // hard cap catches a never-advancing continuation.
 func TestFDB_NLJ_Continuation_ResumeAcrossPages(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -34,7 +36,7 @@ func TestFDB_NLJ_Continuation_ResumeAcrossPages(t *testing.T) {
 	// no index probe, so the materialized NestedLoopJoin implementation wins.
 	const q = "SELECT a.id, b.id FROM a LEFT JOIN b ON b.v = a.id"
 
-	if plan := planExplainVia(t, ctx, db, q); !strings.Contains(plan, "NestedLoopJoin(LEFT OUTER") {
+	if plan := testkit.ExplainVia(t, ctx, db, q); !strings.Contains(plan, "NestedLoopJoin(LEFT OUTER") {
 		t.Fatalf("non-indexed LEFT JOIN must plan as a materialized NestedLoopJoin (this test pins the NLJ continuation), got: %s", plan)
 	}
 
@@ -62,7 +64,7 @@ func TestFDB_NLJ_Continuation_ResumeAcrossPages(t *testing.T) {
 		t.Fatalf("unpaginated LEFT NLJ wrong:\n got  = %v\n want = %v", unpaged, want)
 	}
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		// 5 scanned rows per page: the materialized inner side (4 rows of b)
 		// re-collects each page and the budget's remainder admits ONE outer
 		// step — so the join paginates one outer row per page, resuming via
@@ -89,7 +91,7 @@ func nljContDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 	const dbPath = "/FRL/nlj_cont"
-	setup := openTestDB(t, dbPath)
+	setup := testkit.OpenDB(t, dbPath)
 	if _, err := setup.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 		t.Fatalf("db: %v", err)
 	}
@@ -101,7 +103,7 @@ func nljContDB(t *testing.T) *sql.DB {
 	if _, err := setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/main WITH TEMPLATE nlj_cont_tmpl"); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+clusterFilePath+"&schema=MAIN")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+testkit.ClusterFile()+"&schema=MAIN")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

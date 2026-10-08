@@ -23,16 +23,18 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // rfc198IndexedDB creates a table with a secondary index on v, so a predicate
 // on v has an index access path and a predicate on id has the primary-key one.
 func rfc198IndexedDB(t *testing.T, dbPath, tmpl string) *sql.DB {
 	t.Helper()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	return rfc198IndexedDBOn(t, clusterFilePath, dbPath, tmpl)
+	return rfc198IndexedDBOn(t, testkit.ClusterFile(), dbPath, tmpl)
 }
 
 // rfc198IndexedDBOn is rfc198IndexedDB against a named backend key, so a test
@@ -47,12 +49,12 @@ func rfc198IndexedDBOn(t *testing.T, key, dbPath, tmpl string) *sql.DB {
 		t.Fatalf("sql.Open setup: %v", err)
 	}
 	t.Cleanup(func() { _ = setup.Close() })
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+
 			" CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 			" CREATE INDEX idx_v ON t (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), key))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -112,14 +114,14 @@ func mustNotUseIndexScan(t *testing.T, plan, query string) {
 // silently converting this into a duplicate of the record-scan probe.
 func TestFDB_RFC198_ReadYourWritesThroughIndex(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	db := rfc198IndexedDB(t, "/FRL/testdb_rfc198_rywidx", "rfc198rywidx")
 	// A committed neighbour with a DIFFERENT v, so the index has pre-existing
 	// entries and an empty-index artifact cannot be mistaken for a pass.
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
 	// THE WHOLE TRANSACTION IS RETRYABLE, and the retry is not defensive
 	// padding — it is the contract this shape has to honour.
@@ -143,19 +145,19 @@ func TestFDB_RFC198_ReadYourWritesThroughIndex(t *testing.T) {
 	// The retry's own mechanics are pinned in tx_budget_retry_fdb_test.go, which
 	// forces the pre-emption deterministically with an injected clock rather than
 	// waiting for a loaded machine to supply one.
-	runInTxWithRetry(t, db, 3, nil, func(a txAttempt) error {
-		if _, err := a.tx.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (2, 777)"); err != nil {
+	runInTxWithRetry(t, db, 3, nil, func(a testkit.TxAttempt) error {
+		if _, err := a.Tx.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (2, 777)"); err != nil {
 			return err
 		}
 
 		const q = "SELECT id FROM t WHERE v = 777"
-		plan, err := explainInTx(ctx, a.tx, q)
+		plan, err := explainInTx(ctx, a.Tx, q)
 		if err != nil {
 			return err
 		}
 		mustUseIndexScan(t, plan, q)
 
-		rows, err := a.tx.QueryContext(ctx, q)
+		rows, err := a.Tx.QueryContext(ctx, q)
 		if err != nil {
 			return err
 		}
@@ -210,7 +212,7 @@ func TestFDB_RFC198_ReadYourWritesThroughIndex(t *testing.T) {
 // reddens loudly instead of quietly halving the coverage.
 func TestFDB_RFC198_ReadYourWritesOverClearedRange(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
@@ -222,10 +224,10 @@ func TestFDB_RFC198_ReadYourWritesOverClearedRange(t *testing.T) {
 	//
 	// Arming it for the whole test is safe because preflightTxBudget runs under
 	// `if r.tx != nil`: the seed INSERTs below are autocommit and never meet it.
-	key, clk := spikedClusterKey(t, 30*time.Second)
+	key, clk := testkit.SpikedClusterKey(t, 30*time.Second)
 	db := rfc198IndexedDBOn(t, key, "/FRL/testdb_rfc198_rywdel", "rfc198rywdel")
 	for _, v := range []struct{ id, v int64 }{{1, 100}, {2, 100}, {3, 100}, {4, 900}} {
-		mwjoMustExec(t, db, ctx,
+		testkit.MustExecCtx(t, db, ctx,
 			fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", v.id, v.v))
 	}
 
@@ -274,7 +276,7 @@ func TestFDB_RFC198_ReadYourWritesOverClearedRange(t *testing.T) {
 	}
 
 	var attemptsRun int
-	retryTx(t, db, spikeOnce(clk, &attemptsRun), func(a txAttempt) error {
+	testkit.RetryTx(t, db, testkit.SpikeOnce(clk, &attemptsRun), func(a testkit.TxAttempt) error {
 		// Reset per attempt: a partially-filled observed from a discarded
 		// attempt must never reach the assertions.
 		obs = observed{}
@@ -283,7 +285,7 @@ func TestFDB_RFC198_ReadYourWritesOverClearedRange(t *testing.T) {
 		// entries under idx_v go with them. Re-done inside EVERY attempt, which
 		// is the point of restarting the whole transaction — the clears the
 		// reads below must see belong to the transaction doing the reading.
-		res, err := a.tx.ExecContext(ctx, "DELETE FROM t WHERE id >= 1 AND id <= 3")
+		res, err := a.Tx.ExecContext(ctx, "DELETE FROM t WHERE id >= 1 AND id <= 3")
 		if err != nil {
 			return err
 		}
@@ -292,21 +294,21 @@ func TestFDB_RFC198_ReadYourWritesOverClearedRange(t *testing.T) {
 		}
 
 		const indexQ = "SELECT id FROM t WHERE v = 100"
-		if obs.indexPlan, err = explainInTx(ctx, a.tx, indexQ); err != nil {
+		if obs.indexPlan, err = explainInTx(ctx, a.Tx, indexQ); err != nil {
 			return err
 		}
-		if obs.indexIDs, err = idsInTx(a.tx, indexQ); err != nil {
+		if obs.indexIDs, err = idsInTx(a.Tx, indexQ); err != nil {
 			return err
 		}
 
 		const recordQ = "SELECT id FROM t WHERE id >= 1 AND id <= 3"
-		if obs.recordPlan, err = explainInTx(ctx, a.tx, recordQ); err != nil {
+		if obs.recordPlan, err = explainInTx(ctx, a.Tx, recordQ); err != nil {
 			return err
 		}
-		if obs.recordIDs, err = idsInTx(a.tx, recordQ); err != nil {
+		if obs.recordIDs, err = idsInTx(a.Tx, recordQ); err != nil {
 			return err
 		}
-		if obs.survivingIDs, err = idsInTx(a.tx, "SELECT id FROM t"); err != nil {
+		if obs.survivingIDs, err = idsInTx(a.Tx, "SELECT id FROM t"); err != nil {
 			return err
 		}
 
@@ -317,7 +319,7 @@ func TestFDB_RFC198_ReadYourWritesOverClearedRange(t *testing.T) {
 		}
 		return nil
 	})
-	mustHaveRetried(t, attemptsRun)
+	testkit.MustHaveRetried(t, attemptsRun)
 
 	if obs.deletedRows != 3 {
 		t.Fatalf("in-tx DELETE affected %d rows, want 3", obs.deletedRows)

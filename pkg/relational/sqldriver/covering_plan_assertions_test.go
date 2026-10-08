@@ -40,90 +40,13 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/sqltest/testkit"
 )
-
-// indexScanOfNode returns the concrete index scan a node denotes, seeing
-// through a covering wrapper. A thin alias for plans.IndexPlanOf, kept only so
-// this package's call sites read unchanged.
-//
-// It was a hand-written copy of the identical helper in package embedded, in a
-// different Go package so neither could import the other. The shared symbol is
-// exported now; the copies are not, because a structural guard maintained in
-// two places stops being one guard the first time only one copy is updated.
-//
-// Use it for questions about the SCAN — index name, direction, scan ranges,
-// uniqueness. Do NOT use it to ask whether a plan answers from the index entry:
-// that question is about the wrapper, and unwrapping erases the answer.
-func indexScanOfNode(node plans.RecordQueryPlan) (*plans.RecordQueryIndexPlan, bool) {
-	return plans.IndexPlanOf(node)
-}
-
-// walkIndexScans visits every index scan in the plan, including those held
-// inside covering wrappers. It exists so a reachability guard cannot be written
-// with the blind concrete assertion described above.
-func walkIndexScans(p plans.RecordQueryPlan, visit func(*plans.RecordQueryIndexPlan)) {
-	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
-		if idx, ok := indexScanOfNode(n); ok {
-			visit(idx)
-		}
-		return true
-	})
-}
-
-// planBindsBoundedScanOn reports whether the plan scans indexName with at least
-// one non-empty comparison range — the property "the predicate reached the
-// access path" as distinct from "a Fetch node is rendered".
-func planBindsBoundedScanOn(p plans.RecordQueryPlan, indexName string) (found, bounded bool) {
-	walkIndexScans(p, func(idx *plans.RecordQueryIndexPlan) {
-		if idx.GetIndexName() != indexName {
-			return
-		}
-		found = true
-		for _, cr := range idx.GetScanComparisons() {
-			if cr != nil && !cr.IsEmpty() {
-				bounded = true
-			}
-		}
-	})
-	return found, bounded
-}
-
-// planUsesIndex reports whether the plan scans indexName at all, seeing through
-// covering wrappers.
-func planUsesIndex(p plans.RecordQueryPlan, indexName string) bool {
-	used := false
-	walkIndexScans(p, func(idx *plans.RecordQueryIndexPlan) {
-		if idx.GetIndexName() == indexName {
-			used = true
-		}
-	})
-	return used
-}
-
-// assertScanReadsBaseRecords asserts that the scan introduced by scanPrefix
-// reads BASE RECORDS rather than answering from the index entry.
-//
-// Checked on the scan's own label, not the whole plan, so a covering scan
-// elsewhere in the tree cannot mask a regression here.
-func assertScanReadsBaseRecords(t *testing.T, plan, scanPrefix string) {
-	t.Helper()
-	label, ok := scanLabel(plan, scanPrefix)
-	if !ok {
-		t.Errorf("plan does not contain the scan %q:\n  %s", scanPrefix, plan)
-		return
-	}
-	if strings.Contains(label, "COVERING") {
-		t.Errorf("the scan %q answers from the INDEX ENTRY (covering), so the base record "+
-			"is never read — any column outside the entry would read NULL:\n  %s\n  scan: %s",
-			scanPrefix, plan, label)
-	}
-}
 
 // assertScanAnswersFromIndexEntry is the mirror: the scan must be COVERING.
 func assertScanAnswersFromIndexEntry(t *testing.T, plan, scanPrefix string) {
 	t.Helper()
-	label, ok := scanLabel(plan, scanPrefix)
+	label, ok := testkit.ScanLabel(plan, scanPrefix)
 	if !ok {
 		t.Errorf("plan does not contain the scan %q:\n  %s", scanPrefix, plan)
 		return
@@ -133,18 +56,4 @@ func assertScanAnswersFromIndexEntry(t *testing.T, plan, scanPrefix string) {
 			"index entry so it should answer from the entry alone:\n  %s\n  scan: %s",
 			scanPrefix, plan, label)
 	}
-}
-
-// scanLabel extracts the single scan label beginning at scanPrefix, up to its
-// closing paren, so an assertion applies to that scan and not the whole plan.
-func scanLabel(plan, scanPrefix string) (string, bool) {
-	i := strings.Index(plan, scanPrefix)
-	if i < 0 {
-		return "", false
-	}
-	label := plan[i:]
-	if j := strings.Index(label, ")"); j >= 0 {
-		label = label[:j+1]
-	}
-	return label, true
 }
