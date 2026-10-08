@@ -246,7 +246,7 @@ func (p *RecordQueryDistinctPlan) IsNarrowedDedup() bool {
 
 func (p *RecordQueryDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryDistinctPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren discriminates on type and the Streaming mode.
@@ -254,7 +254,7 @@ func (p *RecordQueryDistinctPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("distinctplan|")
+	hash := p.keyFor(p).Hash("distinctplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

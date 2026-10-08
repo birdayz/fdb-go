@@ -45,6 +45,7 @@ const (
 	correlationKindNamed
 	correlationKindUnique
 	correlationKindCurrent
+	correlationKindMerge
 )
 
 var uniqueCorrelationCounter atomic.Uint64
@@ -84,6 +85,20 @@ func (a *CorrelationIdentifierAllocator) Next() CorrelationIdentifier {
 func NamedCorrelationIdentifier(name string) CorrelationIdentifier {
 	return CorrelationIdentifier{name: name, kind: correlationKindNamed}
 }
+
+// MergeCorrelationIdentifier is the planner's alias for the quantifier over a
+// merged join sub-product, numbered per planning run. Nothing outside the
+// expression binding it can refer to it, so the memo may rename it.
+//
+// The name embeds a double quote, the one character no parsed SQL identifier
+// can contain (DOUBLE_QUOTE_ID: '"' ~'"'+ '"' strips its quotes), so a quoted
+// user alias such as "$m1" cannot collide with it.
+func MergeCorrelationIdentifier(ordinal uint64) CorrelationIdentifier {
+	return CorrelationIdentifier{name: `$m"` + uitoa(ordinal), kind: correlationKindMerge}
+}
+
+// IsMergeAlias reports whether c was minted by MergeCorrelationIdentifier.
+func (c CorrelationIdentifier) IsMergeAlias() bool { return c.kind == correlationKindMerge }
 
 // Name returns the underlying identifier string.
 func (c CorrelationIdentifier) Name() string { return c.name }

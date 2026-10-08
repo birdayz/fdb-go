@@ -1,7 +1,10 @@
 package plans
 
 import (
+	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -20,8 +23,13 @@ type RecordQueryUpdatePlan struct {
 	PlanExprBase
 	innerQ           expressions.Quantifier
 	targetRecordType string
-	targetType       values.ExactTypeHandle
-	transforms       []expressions.UpdateTransform
+	// targetAlias is the correlation the SET values read the target row
+	// through, apart from the stored record-type name (RFC-238 §7c,
+	// expressions.UpdateExpression.targetAlias). Zero reads it through
+	// NamedCorrelationIdentifier(targetRecordType).
+	targetAlias values.CorrelationIdentifier
+	targetType  values.ExactTypeHandle
+	transforms  []expressions.UpdateTransform
 }
 
 // NewRecordQueryUpdatePlan constructs the UPDATE plan.
@@ -65,20 +73,22 @@ func NewRecordQueryUpdatePlanFromQuantifierWithTargetType(
 	if _, ok := targetType.(*values.RecordType); !ok {
 		return nil, fmt.Errorf("RecordQueryUpdatePlan NEW type: expected record, got %v", targetType)
 	}
+	if err := checkUpdatePromotions(targetType.(*values.RecordType), transforms); err != nil {
+		return nil, err
+	}
 	exactTarget, err := values.SnapshotExactType(targetType)
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryUpdatePlan NEW type: %w", err)
 	}
 	resultType := &values.RecordType{Fields: []values.Field{
-		{Name: "OLD", Ordinal: 0, FieldType: oldType},
-		{Name: "NEW", Ordinal: 1, FieldType: exactTarget.Type()},
+		{Name: "old", Ordinal: 0, FieldType: oldType},
+		{Name: "new", Ordinal: 1, FieldType: values.WithNullability(exactTarget.Type(), true)},
 	}}
 	base, err := newPlanExprBaseForType("RecordQueryUpdatePlan", resultType)
 	if err != nil {
 		return nil, err
 	}
-	copied := make([]expressions.UpdateTransform, len(transforms))
-	copy(copied, transforms)
+	copied := expressions.CloneUpdateTransforms(transforms)
 	return &RecordQueryUpdatePlan{
 		PlanExprBase:     base,
 		innerQ:           innerQ,
@@ -88,10 +98,73 @@ func NewRecordQueryUpdatePlanFromQuantifierWithTargetType(
 	}, nil
 }
 
+// checkUpdatePromotions is the admission Java's RecordQueryUpdatePlan.updatePlan
+// makes. First checkAndPrepareOrderedFieldPaths: with the paths in ordinal
+// order, none may be a prefix of the next (SemanticException
+// UPDATE_TRANSFORM_AMBIGUOUS). Then PromoteValue.computePromotionsTrie over the
+// target type and the transformed input: each SET value must promote to its
+// field's type, or the UPDATE is refused while planning (SemanticException
+// INCOMPATIBLE_TYPE), whether or not a row would match. An untransformed field
+// is the input's own, of the target's type, and needs nothing.
+func checkUpdatePromotions(target *values.RecordType, transforms []expressions.UpdateTransform) error {
+	ordered := slices.Clone(transforms)
+	slices.SortStableFunc(ordered, func(a, b expressions.UpdateTransform) int {
+		return slices.Compare(a.FieldOrdinals, b.FieldOrdinals)
+	})
+	for i := 1; i < len(ordered); i++ {
+		if expressions.UpdateOrdinalsPrefix(ordered[i-1].FieldOrdinals, ordered[i].FieldOrdinals) {
+			return &expressions.UpdateTransformAmbiguousError{Prefix: ordered[i-1].FieldPath(), Path: ordered[i].FieldPath()}
+		}
+	}
+	for _, tr := range transforms {
+		fieldType, err := UpdateTargetFieldType(target, tr)
+		if err != nil {
+			return err
+		}
+		if err := values.CheckPromotionsTrie(fieldType, tr.NewValue.Type()); err != nil {
+			var incompatible *values.IncompatibleTypeError
+			if errors.As(err, &incompatible) && incompatible.Field == "" {
+				incompatible.Field = tr.FieldPath()
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// UpdateTargetFieldType is the type of the target field a transform assigns,
+// addressed by its resolved ordinals as Java's
+// PromoteValue.computePromotionsTrie addresses targetType.getField(ordinal),
+// level by level through struct fields. Each field on the way must carry the
+// transform's name for it: a transform whose ordinals and names disagree was
+// resolved against another type, and assigning by either would write a field
+// the statement did not name.
+func UpdateTargetFieldType(target *values.RecordType, tr expressions.UpdateTransform) (values.Type, error) {
+	if len(tr.FieldOrdinals) == 0 || len(tr.FieldOrdinals) != len(tr.FieldNames) {
+		return nil, fmt.Errorf("RecordQueryUpdatePlan: update field %q has %d ordinals for %d names", tr.FieldPath(), len(tr.FieldOrdinals), len(tr.FieldNames))
+	}
+	var t values.Type = target
+	for i, ordinal := range tr.FieldOrdinals {
+		record, ok := t.(*values.RecordType)
+		if !ok {
+			return nil, fmt.Errorf("RecordQueryUpdatePlan: update field %q: %q is not a record (%v)", tr.FieldPath(), strings.Join(tr.FieldNames[:i], "."), t)
+		}
+		if ordinal < 0 || ordinal >= len(record.Fields) {
+			return nil, fmt.Errorf("RecordQueryUpdatePlan: update field %q has ordinal %d outside %v", tr.FieldPath(), ordinal, record)
+		}
+		f := record.Fields[ordinal]
+		if f.Name != tr.FieldNames[i] {
+			return nil, fmt.Errorf("RecordQueryUpdatePlan: update field %q at ordinal %d is field %q of %v", tr.FieldPath(), ordinal, f.Name, record)
+		}
+		t = f.FieldType
+	}
+	return t, nil
+}
+
 // GetInner returns the source plan, dereferenced through the quantifier.
 func (p *RecordQueryUpdatePlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
 
-// GetResultValue returns the stable current QOV for {OLD,NEW}.
+// GetResultValue returns the stable current QOV for {old,new}.
 func (p *RecordQueryUpdatePlan) GetResultValue() values.Value {
 	return p.PlanExprBase.GetResultValue()
 }
@@ -107,6 +180,22 @@ func (p *RecordQueryUpdatePlan) GetQuantifiers() []expressions.Quantifier {
 
 // GetTargetRecordType returns the destination record-type name.
 func (p *RecordQueryUpdatePlan) GetTargetRecordType() string { return p.targetRecordType }
+
+// WithTargetAlias returns a copy whose SET values read the target row through
+// alias.
+func (p *RecordQueryUpdatePlan) WithTargetAlias(alias values.CorrelationIdentifier) *RecordQueryUpdatePlan {
+	cp := *p
+	cp.targetAlias = alias
+	return &cp
+}
+
+// GetTargetAlias is the correlation the SET values read the target row through.
+func (p *RecordQueryUpdatePlan) GetTargetAlias() values.CorrelationIdentifier {
+	if p.targetAlias.IsZero() {
+		return values.NamedCorrelationIdentifier(p.targetRecordType)
+	}
+	return p.targetAlias
+}
 
 // GetTargetType returns a defensive exact target type.
 func (p *RecordQueryUpdatePlan) GetTargetType() values.Type {
@@ -131,25 +220,29 @@ func (p *RecordQueryUpdatePlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// structuralKey folds targetRecordType + the transforms BY VALUE (FieldPath +
+// structuralKey folds targetRecordType + the transforms BY VALUE (field path ordinals +
 // semantic NewValue identity), per Java RecordQueryAbstractDataModificationPlan.
 // equalsWithoutChildren (transformationsTrie equality). Count-only comparison
 // made `SET a=1` ≡ `SET a=2` on the write path — a memo collapse that executes
-// the WRONG update. Transforms are canonicalised sorted by FieldPath at
+// the WRONG update. Transforms are canonicalised sorted by their ordinal paths at
 // construction (UpdateExpression), so pairwise comparison is order-stable.
 // Java's targetType/coercionTrie/computationValue have no Go counterpart yet;
 // they join identity when they land.
 func (p *RecordQueryUpdatePlan) structuralKey() *structuralKey {
 	k := newStructuralKey().Str(p.targetRecordType).Type(p.GetTargetType())
 	for _, tr := range p.transforms {
-		k.Str(tr.FieldPath).Value(tr.NewValue)
+		k.Int(len(tr.FieldOrdinals))
+		for _, o := range tr.FieldOrdinals {
+			k.Int(o)
+		}
+		k.Value(tr.NewValue)
 	}
 	return k
 }
 
 func (p *RecordQueryUpdatePlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryUpdatePlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mixes class + targetRecordType + per-transform
@@ -159,7 +252,7 @@ func (p *RecordQueryUpdatePlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("updateplan|")
+	hash := p.keyFor(p).Hash("updateplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }
@@ -170,7 +263,7 @@ func (p *RecordQueryUpdatePlan) Explain() string {
 	if inner := p.GetInner(); inner != nil {
 		innerLabel = inner.Explain()
 	}
-	return fmt.Sprintf("Update(%s, [%d transforms], %s)", p.targetRecordType, len(p.transforms), innerLabel)
+	return fmt.Sprintf("Update(%s, [%d transforms], %s)", explainRecordTypeName(p.targetRecordType), len(p.transforms), innerLabel)
 }
 
 var (

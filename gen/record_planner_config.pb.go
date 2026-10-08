@@ -158,22 +158,82 @@ func (PlannerConfiguration_IndexFetchMethod) EnumDescriptor() ([]byte, []int) {
 	return file_record_planner_config_proto_rawDescGZIP(), []int{0, 1}
 }
 
+type PlannerConfiguration_VectorIndexEnginePreference int32
+
+const (
+	PlannerConfiguration_NO_PREFERENCE    PlannerConfiguration_VectorIndexEnginePreference = 0
+	PlannerConfiguration_PREFER_HNSW      PlannerConfiguration_VectorIndexEnginePreference = 1
+	PlannerConfiguration_PREFER_GUARDIANN PlannerConfiguration_VectorIndexEnginePreference = 2
+)
+
+// Enum value maps for PlannerConfiguration_VectorIndexEnginePreference.
+var (
+	PlannerConfiguration_VectorIndexEnginePreference_name = map[int32]string{
+		0: "NO_PREFERENCE",
+		1: "PREFER_HNSW",
+		2: "PREFER_GUARDIANN",
+	}
+	PlannerConfiguration_VectorIndexEnginePreference_value = map[string]int32{
+		"NO_PREFERENCE":    0,
+		"PREFER_HNSW":      1,
+		"PREFER_GUARDIANN": 2,
+	}
+)
+
+func (x PlannerConfiguration_VectorIndexEnginePreference) Enum() *PlannerConfiguration_VectorIndexEnginePreference {
+	p := new(PlannerConfiguration_VectorIndexEnginePreference)
+	*p = x
+	return p
+}
+
+func (x PlannerConfiguration_VectorIndexEnginePreference) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PlannerConfiguration_VectorIndexEnginePreference) Descriptor() protoreflect.EnumDescriptor {
+	return file_record_planner_config_proto_enumTypes[2].Descriptor()
+}
+
+func (PlannerConfiguration_VectorIndexEnginePreference) Type() protoreflect.EnumType {
+	return &file_record_planner_config_proto_enumTypes[2]
+}
+
+func (x PlannerConfiguration_VectorIndexEnginePreference) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Do not use.
+func (x *PlannerConfiguration_VectorIndexEnginePreference) UnmarshalJSON(b []byte) error {
+	num, err := protoimpl.X.UnmarshalJSONEnum(x.Descriptor(), b)
+	if err != nil {
+		return err
+	}
+	*x = PlannerConfiguration_VectorIndexEnginePreference(num)
+	return nil
+}
+
+// Deprecated: Use PlannerConfiguration_VectorIndexEnginePreference.Descriptor instead.
+func (PlannerConfiguration_VectorIndexEnginePreference) EnumDescriptor() ([]byte, []int) {
+	return file_record_planner_config_proto_rawDescGZIP(), []int{0, 2}
+}
+
 type PlannerConfiguration struct {
-	state                             protoimpl.MessageState                    `protogen:"open.v1"`
-	Flags                             *int64                                    `protobuf:"varint,1,opt,name=flags" json:"flags,omitempty"` // used to collect multiple Boolean configuration flags
-	IndexScanPreference               *PlannerConfiguration_IndexScanPreference `protobuf:"varint,2,opt,name=indexScanPreference,enum=com.apple.foundationdb.record.PlannerConfiguration_IndexScanPreference" json:"indexScanPreference,omitempty"`
-	AttemptFailedInJoinAsUnionMaxSize *int32                                    `protobuf:"varint,3,opt,name=attemptFailedInJoinAsUnionMaxSize" json:"attemptFailedInJoinAsUnionMaxSize,omitempty"`
-	ComplexityThreshold               *int32                                    `protobuf:"varint,4,opt,name=complexityThreshold" json:"complexityThreshold,omitempty"`
-	MaxTaskQueueSize                  *int32                                    `protobuf:"varint,5,opt,name=maxTaskQueueSize" json:"maxTaskQueueSize,omitempty"`
-	MaxTotalTaskCount                 *int32                                    `protobuf:"varint,6,opt,name=maxTotalTaskCount" json:"maxTotalTaskCount,omitempty"`
-	MaxNumMatchesPerRuleCall          *int32                                    `protobuf:"varint,7,opt,name=maxNumMatchesPerRuleCall" json:"maxNumMatchesPerRuleCall,omitempty"`
-	SortConfiguration                 *PlannerConfiguration_SortConfiguration   `protobuf:"bytes,8,opt,name=sortConfiguration" json:"sortConfiguration,omitempty"`
-	DisabledTransformationRules       []string                                  `protobuf:"bytes,9,rep,name=disabledTransformationRules" json:"disabledTransformationRules,omitempty"`
-	IndexFetchMethod                  *PlannerConfiguration_IndexFetchMethod    `protobuf:"varint,10,opt,name=indexFetchMethod,enum=com.apple.foundationdb.record.PlannerConfiguration_IndexFetchMethod" json:"indexFetchMethod,omitempty"`
-	ValueIndexesOverScanNeeded        []string                                  `protobuf:"bytes,11,rep,name=valueIndexesOverScanNeeded" json:"valueIndexesOverScanNeeded,omitempty"`
-	MaxNumReplansForInToJoin          *int32                                    `protobuf:"varint,12,opt,name=maxNumReplansForInToJoin" json:"maxNumReplansForInToJoin,omitempty"`
-	OrToUnionMaxNumConjuncts          *int32                                    `protobuf:"varint,13,opt,name=orToUnionMaxNumConjuncts" json:"orToUnionMaxNumConjuncts,omitempty"`
-	MaxNumReplansForInUnion           *int32                                    `protobuf:"varint,14,opt,name=maxNumReplansForInUnion" json:"maxNumReplansForInUnion,omitempty"`
+	state                             protoimpl.MessageState                            `protogen:"open.v1"`
+	Flags                             *int64                                            `protobuf:"varint,1,opt,name=flags" json:"flags,omitempty"` // used to collect multiple Boolean configuration flags
+	IndexScanPreference               *PlannerConfiguration_IndexScanPreference         `protobuf:"varint,2,opt,name=indexScanPreference,enum=com.apple.foundationdb.record.PlannerConfiguration_IndexScanPreference" json:"indexScanPreference,omitempty"`
+	AttemptFailedInJoinAsUnionMaxSize *int32                                            `protobuf:"varint,3,opt,name=attemptFailedInJoinAsUnionMaxSize" json:"attemptFailedInJoinAsUnionMaxSize,omitempty"`
+	ComplexityThreshold               *int32                                            `protobuf:"varint,4,opt,name=complexityThreshold" json:"complexityThreshold,omitempty"`
+	MaxTaskQueueSize                  *int32                                            `protobuf:"varint,5,opt,name=maxTaskQueueSize" json:"maxTaskQueueSize,omitempty"`
+	MaxTotalTaskCount                 *int32                                            `protobuf:"varint,6,opt,name=maxTotalTaskCount" json:"maxTotalTaskCount,omitempty"`
+	MaxNumMatchesPerRuleCall          *int32                                            `protobuf:"varint,7,opt,name=maxNumMatchesPerRuleCall" json:"maxNumMatchesPerRuleCall,omitempty"`
+	SortConfiguration                 *PlannerConfiguration_SortConfiguration           `protobuf:"bytes,8,opt,name=sortConfiguration" json:"sortConfiguration,omitempty"`
+	DisabledTransformationRules       []string                                          `protobuf:"bytes,9,rep,name=disabledTransformationRules" json:"disabledTransformationRules,omitempty"`
+	IndexFetchMethod                  *PlannerConfiguration_IndexFetchMethod            `protobuf:"varint,10,opt,name=indexFetchMethod,enum=com.apple.foundationdb.record.PlannerConfiguration_IndexFetchMethod" json:"indexFetchMethod,omitempty"`
+	ValueIndexesOverScanNeeded        []string                                          `protobuf:"bytes,11,rep,name=valueIndexesOverScanNeeded" json:"valueIndexesOverScanNeeded,omitempty"`
+	MaxNumReplansForInToJoin          *int32                                            `protobuf:"varint,12,opt,name=maxNumReplansForInToJoin" json:"maxNumReplansForInToJoin,omitempty"`
+	OrToUnionMaxNumConjuncts          *int32                                            `protobuf:"varint,13,opt,name=orToUnionMaxNumConjuncts" json:"orToUnionMaxNumConjuncts,omitempty"`
+	MaxNumReplansForInUnion           *int32                                            `protobuf:"varint,14,opt,name=maxNumReplansForInUnion" json:"maxNumReplansForInUnion,omitempty"`
+	VectorIndexEnginePreference       *PlannerConfiguration_VectorIndexEnginePreference `protobuf:"varint,15,opt,name=vectorIndexEnginePreference,enum=com.apple.foundationdb.record.PlannerConfiguration_VectorIndexEnginePreference" json:"vectorIndexEnginePreference,omitempty"`
 	unknownFields                     protoimpl.UnknownFields
 	sizeCache                         protoimpl.SizeCache
 }
@@ -306,6 +366,13 @@ func (x *PlannerConfiguration) GetMaxNumReplansForInUnion() int32 {
 	return 0
 }
 
+func (x *PlannerConfiguration) GetVectorIndexEnginePreference() PlannerConfiguration_VectorIndexEnginePreference {
+	if x != nil && x.VectorIndexEnginePreference != nil {
+		return *x.VectorIndexEnginePreference
+	}
+	return PlannerConfiguration_NO_PREFERENCE
+}
+
 type PlannerConfiguration_SortConfiguration struct {
 	state                   protoimpl.MessageState `protogen:"open.v1"`
 	ShouldAllowNonIndexSort *bool                  `protobuf:"varint,1,opt,name=shouldAllowNonIndexSort" json:"shouldAllowNonIndexSort,omitempty"`
@@ -354,7 +421,7 @@ var File_record_planner_config_proto protoreflect.FileDescriptor
 
 const file_record_planner_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1brecord_planner_config.proto\x12\x1dcom.apple.foundationdb.record\"\xe1\t\n" +
+	"\x1brecord_planner_config.proto\x12\x1dcom.apple.foundationdb.record\"\xce\v\n" +
 	"\x14PlannerConfiguration\x12\x14\n" +
 	"\x05flags\x18\x01 \x01(\x03R\x05flags\x12y\n" +
 	"\x13indexScanPreference\x18\x02 \x01(\x0e2G.com.apple.foundationdb.record.PlannerConfiguration.IndexScanPreferenceR\x13indexScanPreference\x12L\n" +
@@ -370,7 +437,8 @@ const file_record_planner_config_proto_rawDesc = "" +
 	"\x1avalueIndexesOverScanNeeded\x18\v \x03(\tR\x1avalueIndexesOverScanNeeded\x12:\n" +
 	"\x18maxNumReplansForInToJoin\x18\f \x01(\x05R\x18maxNumReplansForInToJoin\x12:\n" +
 	"\x18orToUnionMaxNumConjuncts\x18\r \x01(\x05R\x18orToUnionMaxNumConjuncts\x128\n" +
-	"\x17maxNumReplansForInUnion\x18\x0e \x01(\x05R\x17maxNumReplansForInUnion\x1aM\n" +
+	"\x17maxNumReplansForInUnion\x18\x0e \x01(\x05R\x17maxNumReplansForInUnion\x12\x91\x01\n" +
+	"\x1bvectorIndexEnginePreference\x18\x0f \x01(\x0e2O.com.apple.foundationdb.record.PlannerConfiguration.VectorIndexEnginePreferenceR\x1bvectorIndexEnginePreference\x1aM\n" +
 	"\x11SortConfiguration\x128\n" +
 	"\x17shouldAllowNonIndexSort\x18\x01 \x01(\bR\x17shouldAllowNonIndexSort\"V\n" +
 	"\x13IndexScanPreference\x12\x0f\n" +
@@ -380,7 +448,11 @@ const file_record_planner_config_proto_rawDesc = "" +
 	"\x10IndexFetchMethod\x12\x12\n" +
 	"\x0eSCAN_AND_FETCH\x10\x00\x12\x14\n" +
 	"\x10USE_REMOTE_FETCH\x10\x01\x12\"\n" +
-	"\x1eUSE_REMOTE_FETCH_WITH_FALLBACK\x10\x02B\xe2\x01\n" +
+	"\x1eUSE_REMOTE_FETCH_WITH_FALLBACK\x10\x02\"W\n" +
+	"\x1bVectorIndexEnginePreference\x12\x11\n" +
+	"\rNO_PREFERENCE\x10\x00\x12\x0f\n" +
+	"\vPREFER_HNSW\x10\x01\x12\x14\n" +
+	"\x10PREFER_GUARDIANN\x10\x02B\xe2\x01\n" +
 	"!com.com.apple.foundationdb.recordB\x18RecordPlannerConfigProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
@@ -395,23 +467,25 @@ func file_record_planner_config_proto_rawDescGZIP() []byte {
 	return file_record_planner_config_proto_rawDescData
 }
 
-var file_record_planner_config_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_record_planner_config_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_record_planner_config_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_record_planner_config_proto_goTypes = []any{
-	(PlannerConfiguration_IndexScanPreference)(0),  // 0: com.apple.foundationdb.record.PlannerConfiguration.IndexScanPreference
-	(PlannerConfiguration_IndexFetchMethod)(0),     // 1: com.apple.foundationdb.record.PlannerConfiguration.IndexFetchMethod
-	(*PlannerConfiguration)(nil),                   // 2: com.apple.foundationdb.record.PlannerConfiguration
-	(*PlannerConfiguration_SortConfiguration)(nil), // 3: com.apple.foundationdb.record.PlannerConfiguration.SortConfiguration
+	(PlannerConfiguration_IndexScanPreference)(0),         // 0: com.apple.foundationdb.record.PlannerConfiguration.IndexScanPreference
+	(PlannerConfiguration_IndexFetchMethod)(0),            // 1: com.apple.foundationdb.record.PlannerConfiguration.IndexFetchMethod
+	(PlannerConfiguration_VectorIndexEnginePreference)(0), // 2: com.apple.foundationdb.record.PlannerConfiguration.VectorIndexEnginePreference
+	(*PlannerConfiguration)(nil),                          // 3: com.apple.foundationdb.record.PlannerConfiguration
+	(*PlannerConfiguration_SortConfiguration)(nil),        // 4: com.apple.foundationdb.record.PlannerConfiguration.SortConfiguration
 }
 var file_record_planner_config_proto_depIdxs = []int32{
 	0, // 0: com.apple.foundationdb.record.PlannerConfiguration.indexScanPreference:type_name -> com.apple.foundationdb.record.PlannerConfiguration.IndexScanPreference
-	3, // 1: com.apple.foundationdb.record.PlannerConfiguration.sortConfiguration:type_name -> com.apple.foundationdb.record.PlannerConfiguration.SortConfiguration
+	4, // 1: com.apple.foundationdb.record.PlannerConfiguration.sortConfiguration:type_name -> com.apple.foundationdb.record.PlannerConfiguration.SortConfiguration
 	1, // 2: com.apple.foundationdb.record.PlannerConfiguration.indexFetchMethod:type_name -> com.apple.foundationdb.record.PlannerConfiguration.IndexFetchMethod
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	2, // 3: com.apple.foundationdb.record.PlannerConfiguration.vectorIndexEnginePreference:type_name -> com.apple.foundationdb.record.PlannerConfiguration.VectorIndexEnginePreference
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_record_planner_config_proto_init() }
@@ -424,7 +498,7 @@ func file_record_planner_config_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_record_planner_config_proto_rawDesc), len(file_record_planner_config_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,

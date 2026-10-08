@@ -26,6 +26,11 @@ func NewImplementUniqueRule() *ImplementUniqueRule {
 
 func (r *ImplementUniqueRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *ImplementUniqueRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *ImplementUniqueRule) OnMatch(call *ImplementationRuleCall) {
 	expr := call.Bindings.Get(r.matcher).(*expressions.LogicalUniqueExpression)
 
@@ -60,8 +65,8 @@ func (r *ImplementUniqueRule) OnMatch(call *ImplementationRuleCall) {
 		// single-member final reference. A live edge could later float to a
 		// sibling without that proof and make the wrapper deduplicate against a
 		// different plan than the one verified above.
-		innerQ := expressions.ForEachQuantifier(
-			call.MemoizeFinalExpression(member),
+		innerQ := expressions.NewPhysicalQuantifier(
+			call.MemoizeFinalExpressionsFromOther(innerRef, []expressions.RelationalExpression{member}),
 		)
 		distinct, err := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(innerQ)
 		if err != nil {

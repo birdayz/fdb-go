@@ -693,7 +693,7 @@ func reanchorCurrentValueForInput(
 	// RC sees only one top-level NAME (R.NAME) and would incorrectly select that
 	// unrelated slot by the generic unique-name fallback.
 	if materializer, ok := descendantValueMaterializer(selectedChild); ok {
-		return materializer.reanchorInputValueToOutput(normalized)
+		return reanchorThroughMaterializer(materializer, normalized)
 	}
 	producer := selectedChild.GetResultValue()
 	if retained, ok := descendantRetainedResultProducer(selectedChild); ok {
@@ -726,6 +726,57 @@ type inputValueMaterializer interface {
 	reanchorInputValueToOutput(values.Value) (values.Value, error)
 }
 
+// reanchorThroughMaterializer crosses materializer lineage. A partially
+// reanchored program mixes current-row reads with source-relative fields, and
+// a materializer decides lineage per program: the current part would claim the
+// whole value and strand the rest. Each source-relative field crosses on its
+// own first.
+func reanchorThroughMaterializer(materializer inputValueMaterializer, value values.Value) (values.Value, error) {
+	correlations := values.GetCorrelatedToOfValue(value)
+	if _, current := correlations[values.CurrentCorrelation()]; current && len(correlations) > 1 {
+		split, err := mapSourceRelativeFields(value, materializer.reanchorInputValueToOutput)
+		if err != nil {
+			return nil, err
+		}
+		value = split
+	}
+	return materializer.reanchorInputValueToOutput(value)
+}
+
+// mapSourceRelativeFields applies fn to every field read rooted at a
+// non-current quantifier, rebuilding parents with checked reconstruction.
+func mapSourceRelativeFields(
+	value values.Value,
+	fn func(values.Value) (values.Value, error),
+) (values.Value, error) {
+	if field, ok := values.AsFieldValue(value); ok {
+		if root, isQOV := values.AsQuantifiedObjectValue(field.ChildValue()); isQOV &&
+			root.Correlation() != values.CurrentCorrelation() {
+			return fn(value)
+		}
+		return value, nil
+	}
+	children := value.Children()
+	var rebuilt []values.Value
+	for i, child := range children {
+		mapped, err := mapSourceRelativeFields(child, fn)
+		if err != nil {
+			return nil, err
+		}
+		if mapped != child && rebuilt == nil {
+			rebuilt = make([]values.Value, len(children))
+			copy(rebuilt, children[:i])
+		}
+		if rebuilt != nil {
+			rebuilt[i] = mapped
+		}
+	}
+	if rebuilt == nil {
+		return value, nil
+	}
+	return values.WithChildrenChecked(value, rebuilt)
+}
+
 func childValueMaterializer(plan RecordQueryPlan) (inputValueMaterializer, bool) {
 	materializer, ok := plan.(inputValueMaterializer)
 	return materializer, ok
@@ -741,11 +792,11 @@ func descendantValueMaterializer(plan RecordQueryPlan) (inputValueMaterializer, 
 		if materializer, ok := childValueMaterializer(plan); ok {
 			return materializer, true
 		}
-		unary, ok := plan.(interface{ GetInner() RecordQueryPlan })
-		if !ok {
+		quantifiers := plan.GetQuantifiers()
+		if len(quantifiers) != 1 {
 			return nil, false
 		}
-		inner := unary.GetInner()
+		inner := selectedPlanFromQuantifier(quantifiers[0])
 		if inner == nil {
 			return nil, false
 		}
@@ -778,11 +829,11 @@ func descendantRetainedResultProducer(plan RecordQueryPlan) (values.Value, bool)
 				return result, true
 			}
 		}
-		unary, ok := plan.(interface{ GetInner() RecordQueryPlan })
-		if !ok {
+		quantifiers := plan.GetQuantifiers()
+		if len(quantifiers) != 1 {
 			return nil, false
 		}
-		inner := unary.GetInner()
+		inner := selectedPlanFromQuantifier(quantifiers[0])
 		if inner == nil {
 			return nil, false
 		}
@@ -885,18 +936,6 @@ func scanComparisonCorrelations(comps []*predicates.ComparisonRange) map[values.
 		for a := range values.GetCorrelatedToOfValue(c.Operand) {
 			out[a] = struct{}{}
 		}
-		// A query-parameter (ConstantObjectValue) comparand is an execution constant
-		// bound at run time, NOT a row correlation — its constant-pool alias appears
-		// in GetCorrelatedToOfValue but must not make a `Scan(T,[k=?param])` look
-		// join-correlated to planning (B1 leg detection) or to the
-		// probe-fed-residual guard (compensationProbeCorrelations). Subtract any such
-		// aliases — the value-level twin of deletePredicateConstantObjectAliases.
-		values.WalkValue(c.Operand, func(node values.Value) bool {
-			if cov, ok := node.(*values.ConstantObjectValue); ok {
-				delete(out, cov.Alias)
-			}
-			return true
-		})
 	}
 	for _, cr := range comps {
 		if cr == nil || cr.IsEmpty() {

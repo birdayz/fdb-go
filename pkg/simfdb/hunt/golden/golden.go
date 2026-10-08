@@ -29,7 +29,7 @@ import (
 // database path is FIXED, so the key (not persisted) never perturbs the captured bytes.
 var keyCounter atomic.Uint64
 
-const dbPath = "/goldendb"
+const dbPath = "/FRL/goldendb"
 
 // Scenario is one corpus entry: a schema (CREATE TABLE / CREATE INDEX bodies for a schema
 // template), deterministic seed data, and the queries to capture. Seed drives SimFDB's clock/
@@ -96,7 +96,7 @@ func Capture(s Scenario) (string, error) {
 	unreg := sqldriver.RegisterBackend(key, simDB)
 	defer unreg()
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+key)
+	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key)
 	if err != nil {
 		return "", fmt.Errorf("open setup: %w", err)
 	}
@@ -112,7 +112,7 @@ func Capture(s Scenario) (string, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+key+"&schema=s")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key+"&schema=S")
 	if err != nil {
 		return "", fmt.Errorf("open db: %w", err)
 	}

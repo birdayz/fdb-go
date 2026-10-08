@@ -93,31 +93,12 @@ func TestParenScalar_DoubleParens_NestTwice(t *testing.T) {
 	}
 }
 
-// TestParenColumn_IsARecordButKeyedByOrdinal pins the record-vs-scalar result
-// for a parenthesised COLUMN — the shape that re-types most broadly — and, on
-// the naming axis, pins a KNOWN REMAINING DIVERGENCE rather than leaving it
-// unmeasured.
-//
-// Go keys the field by ordinal (`{_0: 10}`); the live JVM answers `{VAL: 10}`,
-// because Java takes an unnamed element's own inherent name
-// (Expressions.underlyingAsColumns, Expressions.java:269-288).
-//
-// Java can afford that only because a record built where a TARGET TYPE is in
-// scope never keeps those names — parseRecordFieldsUnderReorderings
-// (ExpressionVisitor.java:1040-1083) overwrites them with the target's fields
-// BY POSITION. Go has no target type at construction and defers that binding
-// to values.BuildStructMessage, which receives an ORDER-LESS map[string]any
-// and can recover position only from the ordinal names. So renaming here in
-// isolation is not a smaller version of the fix, it is a broken one: it was
-// MEASURED to turn `update B set b3 = coalesce(b3, (b1, b2), ...)` into
-// `record constructor for "S" carries 2 fields, 0 of which the target struct
-// declares`, because `(b1, b2)` then arrives named B1/B2 and matches nothing
-// in S.
-//
-// Closing the divergence means porting Java's construction-time target binding
-// (or making the coercion order-preserving). This assertion is what makes the
-// gap visible: change the naming without that, and this test names the reason.
-func TestParenColumn_IsARecordButKeyedByOrdinal(t *testing.T) {
+// TestParenColumn_IsARecordNamedByItsColumn pins the record-vs-scalar result
+// for a parenthesised COLUMN and its field name: Java takes an unnamed
+// element's own name (Expressions.underlyingAsColumns), so `(id)` is `{ID}`
+// (conformance/record_names_conformance_test.go). A write binds such a record
+// to its target by position, through the plan's promotion.
+func TestParenColumn_IsARecordNamedByItsColumn(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
@@ -134,11 +115,8 @@ func TestParenColumn_IsARecordButKeyedByOrdinal(t *testing.T) {
 	if len(rc.Fields) != 1 {
 		t.Fatalf("field count: got %d, want 1", len(rc.Fields))
 	}
-	if want := values.OrdinalFieldName(0); rc.Fields[0].Name != want {
-		t.Fatalf("field key: got %q, want %q. Java answers \"ID\" here; moving Go "+
-			"to the inherent name requires the construction-time target binding "+
-			"first, or the struct coercion loses the position it binds by.",
-			rc.Fields[0].Name, want)
+	if rc.Fields[0].Name != "ID" {
+		t.Fatalf("field key: got %q, want %q", rc.Fields[0].Name, "ID")
 	}
 }
 

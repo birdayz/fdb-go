@@ -42,16 +42,26 @@ func TestRun_ThreadsCallerCtxIntoTransactCtx(t *testing.T) {
 	d := &FDBDatabase{transactor: spy}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancelled before Run
+	defer cancel()
 
-	_, err := d.Run(ctx, func(*FDBRecordContext) (any, error) { return nil, nil })
-
-	if spy.gotWriteCtx != ctx {
-		t.Fatalf("Run did not thread the caller's ctx into the retry loop (got %v) — "+
-			"a cancelled/expired ctx would not bound retries", spy.gotWriteCtx)
+	if _, err := d.Run(ctx, func(*FDBRecordContext) (any, error) { return nil, nil }); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
+	if spy.gotWriteCtx != ctx {
+		t.Fatalf("Run did not thread the caller's ctx into the transactor (got %v) — "+
+			"a cancelled/expired ctx would not bound the attempt", spy.gotWriteCtx)
+	}
+
+	// A ctx that has ended before the first attempt returns its error without
+	// opening a transaction (attemptLoop's entry check).
+	spy.gotWriteCtx = nil
+	cancel()
+	_, err := d.Run(ctx, func(*FDBRecordContext) (any, error) { return nil, nil })
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("a cancelled caller ctx must surface from Run; got %v", err)
+	}
+	if spy.gotWriteCtx != nil {
+		t.Errorf("Run called the transactor on a ctx that had already ended")
 	}
 }
 

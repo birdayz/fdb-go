@@ -81,7 +81,7 @@ func newRecursiveCursor(
 		return c, nil
 	}
 	var parsed gen.RecursiveContinuation
-	if err := proto.Unmarshal(continuation, &parsed); err != nil {
+	if err := recordlayer.UnmarshalAsJava(continuation, &parsed); err != nil {
 		// Java: RecordCoreException("error parsing continuation").
 		return nil, &recordlayer.ContinuationParseError{Message: "recursive cursor: error parsing continuation", RawBytes: continuation, Cause: err}
 	}

@@ -10,6 +10,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
@@ -117,6 +118,76 @@ func TestPhysicalKeyComponentTypesDisagreeToUnknown(t *testing.T) {
 		physicalKeyComponentTypes(recordlayer.Field("key"), recordTypes),
 		values.TypeCodeUnknown,
 	)
+}
+
+// TestPhysicalKeyComponentNullabilityIsJavas pins the nullability of an index
+// key component's physical type against Java's: a field that is not repeated
+// is nullable unless REQUIRED (Type.Record.Field.fromDescriptor,
+// !isRequired()), a proto3 scalar without explicit presence included, and a
+// FAN_OUT component is one element of the repeated field, which Java's
+// FieldKeyExpression never answers NULL (no elements is an empty list), so it
+// is NOT NULL whatever the field's label.
+func TestPhysicalKeyComponentNullabilityIsJavas(t *testing.T) {
+	t.Parallel()
+	int64Kind := descriptorpb.FieldDescriptorProto_TYPE_INT64
+	field := func(name string, number int32, label descriptorpb.FieldDescriptorProto_Label, proto3Optional bool) *descriptorpb.FieldDescriptorProto {
+		f := &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(number), Label: label.Enum(), Type: &int64Kind}
+		if proto3Optional {
+			f.Proto3Optional = proto.Bool(true)
+			f.OneofIndex = proto.Int32(0)
+		}
+		return f
+	}
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	required := descriptorpb.FieldDescriptorProto_LABEL_REQUIRED
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	proto2, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name: proto.String("physical_key_nullability2.proto"), Package: proto.String("physicalkeynull2"),
+		Syntax: proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("R"), Field: []*descriptorpb.FieldDescriptorProto{
+			field("opt", 1, optional, false), field("req", 2, required, false), field("rep", 3, repeated, false),
+		}}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("proto2 descriptor: %v", err)
+	}
+	proto3, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name: proto.String("physical_key_nullability3.proto"), Package: proto.String("physicalkeynull3"),
+		Syntax: proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("R"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				field("implicit", 1, optional, false), field("explicit", 2, optional, true), field("rep", 3, repeated, false),
+			},
+			OneofDecl: []*descriptorpb.OneofDescriptorProto{{Name: proto.String("_explicit")}},
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("proto3 descriptor: %v", err)
+	}
+	for _, c := range []struct {
+		name     string
+		file     protoreflect.FileDescriptor
+		key      recordlayer.KeyExpression
+		nullable bool
+	}{
+		{"proto2 optional", proto2, recordlayer.Field("opt"), true},
+		{"proto2 required", proto2, recordlayer.Field("req"), false},
+		{"proto2 FAN_OUT element", proto2, recordlayer.FanOut("rep"), false},
+		{"proto3 without presence", proto3, recordlayer.Field("implicit"), true},
+		{"proto3 optional", proto3, recordlayer.Field("explicit"), true},
+		{"proto3 FAN_OUT element", proto3, recordlayer.FanOut("rep"), false},
+	} {
+		recordType := &recordlayer.RecordType{Name: "R", Descriptor: c.file.Messages().ByName("R"), RecordTypeIndex: 1}
+		got := physicalKeyComponentTypes(c.key, []*recordlayer.RecordType{recordType})
+		if len(got) != 1 || got[0] == nil || got[0].Code() != values.TypeCodeLong {
+			t.Errorf("%s: %v, want one LONG", c.name, got)
+			continue
+		}
+		if got[0].IsNullable() != c.nullable {
+			t.Errorf("%s: nullable = %v, want %v", c.name, got[0].IsNullable(), c.nullable)
+		}
+	}
 }
 
 func TestPrimaryCandidateTypesExcludeExecutorRecordTypePrefix(t *testing.T) {
@@ -437,6 +508,11 @@ func TestMetadataIndexDefSharedRecordTypePrefixStopsVisibleOrdering(t *testing.T
 			{Name: proto.String("Second"), Field: []*descriptorpb.FieldDescriptorProto{{
 				Name: proto.String("id"), Number: proto.Int32(1), Label: &label, Type: &longKind,
 			}}},
+			// Java requires a union (RecordMetaDataBuilder.fetchUnionDescriptor).
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("_First"), Number: proto.Int32(1), Label: &label, Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".sharedpksuffixtest.First")},
+				{Name: proto.String("_Second"), Number: proto.Int32(2), Label: &label, Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".sharedpksuffixtest.Second")},
+			}},
 		},
 	}, nil)
 	if err != nil {
@@ -482,10 +558,17 @@ func TestMetadataIndexDefSharedPrimaryKeyWidthDisagreementIsUnknown(t *testing.T
 		}
 	}
 	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
-		Name:        proto.String("shared_pk_width_test.proto"),
-		Package:     proto.String("sharedpkwidthtest"),
-		Syntax:      proto.String("proto2"),
-		MessageType: []*descriptorpb.DescriptorProto{message("FloatRecord", &floatKind), message("DoubleRecord", &doubleKind)},
+		Name:    proto.String("shared_pk_width_test.proto"),
+		Package: proto.String("sharedpkwidthtest"),
+		Syntax:  proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			message("FloatRecord", &floatKind), message("DoubleRecord", &doubleKind),
+			// Java requires a union (RecordMetaDataBuilder.fetchUnionDescriptor).
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("_FloatRecord"), Number: proto.Int32(1), Label: &label, Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".sharedpkwidthtest.FloatRecord")},
+				{Name: proto.String("_DoubleRecord"), Number: proto.Int32(2), Label: &label, Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".sharedpkwidthtest.DoubleRecord")},
+			}},
+		},
 	}, nil)
 	if err != nil {
 		t.Fatalf("build shared-width descriptor: %v", err)
@@ -541,4 +624,45 @@ func TestMetadataIndexDefPrimaryKeyTypesStayAlignedThroughMiddleTrim(t *testing.
 	requireEmbeddedPhysicalTypeCodes(
 		t, types, values.TypeCodeLong, values.TypeCodeFloat, values.TypeCodeDouble,
 	)
+}
+
+// The primary-key trim cross-check names only top-level field columns: Java's
+// Index.trimPrimaryKey compares key expressions, so a nested ADDR.ID, a
+// CARDINALITY(ID) or a version never trims the record's ID, and a covering
+// split keeps the key columns before it positionally.
+func TestIndexTrimmableKeyColumnNamesAreTopLevelFields(t *testing.T) {
+	t.Parallel()
+	key := func(expression recordlayer.KeyExpression) *gen.KeyExpression {
+		return expression.ToKeyExpression()
+	}
+	for _, test := range []struct {
+		name string
+		root *gen.KeyExpression
+		want []string
+	}{
+		{"nested leaf named like the pk", key(recordlayer.Concat(
+			recordlayer.Nest("addr", recordlayer.Field("id")), recordlayer.Field("city"))), []string{"city"}},
+		{"cardinality and version", key(recordlayer.Concat(
+			recordlayer.CardinalityExpr(recordlayer.FieldConcatenate("id")), recordlayer.VersionKey(),
+			recordlayer.Field("a"))), []string{"a"}},
+		{
+			"covering split counts every key column", key(recordlayer.KeyWithValue(recordlayer.Concat(
+				recordlayer.Nest("s", recordlayer.Field("x")), recordlayer.Field("a"), recordlayer.Field("b")), 2)),
+			[]string{"a"},
+		},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := indexTrimmableKeyColumnNames(test.root)
+			if len(got) != len(test.want) {
+				t.Fatalf("trimmable = %v, want %v", got, test.want)
+			}
+			for i := range got {
+				if got[i] != test.want[i] {
+					t.Fatalf("trimmable = %v, want %v", got, test.want)
+				}
+			}
+		})
+	}
 }

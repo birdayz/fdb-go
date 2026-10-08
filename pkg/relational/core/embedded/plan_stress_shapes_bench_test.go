@@ -12,7 +12,11 @@ package embedded
 //
 //	go test ./pkg/relational/core/embedded -run '^$' -bench BenchmarkPlanStressShape_ -benchtime=200x -count=3
 
-import "testing"
+import (
+	"testing"
+
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
+)
 
 const planStressShapesSchema = `
 CREATE TABLE customers (id BIGINT, name STRING, region STRING, PRIMARY KEY (id))
@@ -54,4 +58,21 @@ func BenchmarkPlanStressShape_SumByStatus(b *testing.B) {
 
 func BenchmarkPlanStressShape_InList(b *testing.B) {
 	benchPlanStressShape(b, "SELECT id, amount FROM orders WHERE customer_id IN (0, 1, 2, 3, 4) ORDER BY id")
+}
+
+// No task observer: the convergence test's memo census is not planner latency.
+func BenchmarkPlanFixedFactorUnionScalarSubquery(b *testing.B) {
+	const schema = "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)"
+	const sql = "SELECT * FROM t_rd WHERE (((NOT (c = 7)) AND (d = 4.0) AND (b = 2)) OR ((NOT (a BETWEEN 1 AND 4)) AND (NOT (e > 0.1)) AND (ABS(c) = 4))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.a < t_rd.a AND r.a > 9) AND c <= (SELECT MIN(a) FROM t_rd) ORDER BY b, id"
+	b.ReportAllocs()
+	var plan plans.RecordQueryPlan
+	var err error
+	for i := 0; i < b.N; i++ {
+		plan, err = PlanPhysicalForTest(sql, schema, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+	b.Log(plan.Explain())
 }

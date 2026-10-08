@@ -17,6 +17,22 @@ type RecordQueryMapPlan struct {
 	PlanExprBase
 	innerQ      expressions.Quantifier
 	resultValue values.Value
+	// distinctProofIndexName names the secondary UNIQUE index whose uniqueness
+	// licensed eliding a DISTINCT above this map (distinct_proof_stamp.go). It is
+	// part of the plan's identity: the plan's correctness rests on it.
+	distinctProofIndexName string
+}
+
+// GetDistinctProofIndexName implements DistinctProofStamped.
+func (p *RecordQueryMapPlan) GetDistinctProofIndexName() string {
+	return p.distinctProofIndexName
+}
+
+// WithDistinctProofIndexName implements DistinctProofStampable.
+func (p *RecordQueryMapPlan) WithDistinctProofIndexName(indexName string) RecordQueryPlan {
+	cp := *p
+	cp.distinctProofIndexName = indexName
+	return &cp
 }
 
 // NewRecordQueryMapPlan constructs a map plan over the given inner
@@ -70,6 +86,22 @@ func (p *RecordQueryMapPlan) GetResultValue() values.Value {
 // GetResultType returns the result value's type.
 func (p *RecordQueryMapPlan) GetResultType() values.Type { return p.resultValue.Type() }
 
+// GetCorrelatedToWithoutChildren is Java's
+// RecordQueryMapPlan.computeCorrelatedToWithoutChildren: the result value's
+// correlations. The framework subtracts the map's own inner alias, so what
+// survives is an outer quantifier the projection reads (`COUNT(*) + w.f`
+// over an aggregate), which the empty default hid from correlation-driven
+// placement.
+func (p *RecordQueryMapPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for k := range values.GetCorrelatedToOfValue(p.resultValue) {
+		out[k] = struct{}{}
+	}
+	// The reserved carrier is the row supplied to this operator, not an outer binding.
+	delete(out, values.CurrentCorrelation())
+	return out
+}
+
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryMapPlan) GetChildren() []RecordQueryPlan {
 	inner := p.GetInner()
@@ -86,19 +118,19 @@ func (p *RecordQueryMapPlan) GetChildren() []RecordQueryPlan {
 // EqualsPlanWithoutChildren and HashCodeWithoutChildren, so the two can never
 // disagree on which fields matter.
 func (p *RecordQueryMapPlan) structuralKey() *structuralKey {
-	return newStructuralKey().Value(p.resultValue)
+	return newStructuralKey().Value(p.resultValue).Str(p.distinctProofIndexName)
 }
 
 func (p *RecordQueryMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryMapPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryMapPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("mapplan|")
+	hash := p.keyFor(p).Hash("mapplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }
@@ -109,13 +141,14 @@ func (p *RecordQueryMapPlan) Explain() string {
 	if inner := p.GetInner(); inner != nil {
 		innerLabel = inner.Explain()
 	}
-	resultLabel := values.ExplainValue(p.resultValue)
-	return fmt.Sprintf("Map(%s, %s)", innerLabel, resultLabel)
+	return fmt.Sprintf("Map(%s, %s)%s", innerLabel, values.ExplainValueOverInput(p.resultValue, p.innerQ.GetAlias()),
+		explainDistinctProofSuffix(p.distinctProofIndexName))
 }
 
 var (
 	_ RecordQueryPlan                  = (*RecordQueryMapPlan)(nil)
 	_ expressions.RelationalExpression = (*RecordQueryMapPlan)(nil)
+	_ DistinctProofStampable           = (*RecordQueryMapPlan)(nil)
 )
 
 // WithInner returns a copy with the inner replaced and every other field

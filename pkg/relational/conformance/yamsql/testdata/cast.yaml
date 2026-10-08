@@ -40,13 +40,13 @@ tests:
   - query: SELECT CAST(NULL AS BIGINT) FROM t
     rows:
       - [~]
-  # Finite DOUBLE overflow saturates like Math.round(double). These retain
-  # Go's dotless-exponent spelling; the live Java probe uses 1.0E20 (RFC-256).
-  - query: SELECT CAST(1e20 AS BIGINT) FROM t
+  # Finite DOUBLE overflow saturates like Math.round(double). A dotless
+  # exponent (1e20) is Long.parseLong's NumberFormatException in both engines.
+  - query: SELECT CAST(1.0E20 AS BIGINT) FROM t
     column_types: [BIGINT]
     exact_rows:
       - [{kind: int64, value: "9223372036854775807"}]
-  - query: SELECT CAST(-1e20 AS BIGINT) FROM t
+  - query: SELECT CAST(-1.0E20 AS BIGINT) FROM t
     column_types: [BIGINT]
     exact_rows:
       - [{kind: int64, value: "-9223372036854775808"}]

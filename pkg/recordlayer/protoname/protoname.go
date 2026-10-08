@@ -86,6 +86,8 @@ func ToProtoBufCompliantName(name string) (string, error) {
 	return translated, nil
 }
 
+func (*InvalidNameError) JavaRecordCoreException() {}
+
 // CheckValidProtoBufCompliantName validates that name is a legal protobuf
 // identifier ([A-Za-z_][A-Za-z0-9_]*). Mirrors
 // ProtoUtils.checkValidProtoBufCompliantName, including Java's exact

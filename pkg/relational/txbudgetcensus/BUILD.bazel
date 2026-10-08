@@ -9,10 +9,17 @@ go_library(
 
 go_test(
     name = "txbudgetcensus_test",
-    srcs = ["census_test.go"],
+    srcs = [
+        "census_test.go",
+        "domain_registration_test.go",
+    ],
     data = [
         "//pkg/relational/core/embedded:tx_budget_census_corpus",
         "//pkg/relational/sqldriver:tx_budget_census_corpus",
+        "//pkg/relational/sqltest:corpus",
     ],
-    deps = [":txbudgetcensus"],
+    deps = [
+        ":txbudgetcensus",
+        "//pkg/relational/core/keyspace",
+    ],
 )

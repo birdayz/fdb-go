@@ -1,5 +1,12 @@
 package values
 
+import (
+	"fmt"
+
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/tupleordering"
+)
+
 // OrderedBytesDirection enumerates the four ordering modes Java's
 // `TupleOrdering.Direction` supports — combinations of (ASC|DESC) ×
 // (NULLS_FIRST|NULLS_LAST). Mirrors Java's enum verbatim so plan
@@ -44,6 +51,19 @@ func (d OrderedBytesDirection) IsAscending() bool {
 	return d == OrderedBytesAscNullsFirst || d == OrderedBytesAscNullsLast
 }
 
+// tupleDirection is the TupleOrdering.Direction the bytes are packed in.
+func (d OrderedBytesDirection) tupleDirection() tupleordering.Direction {
+	switch d {
+	case OrderedBytesAscNullsLast:
+		return tupleordering.AscNullsLast
+	case OrderedBytesDescNullsFirst:
+		return tupleordering.DescNullsFirst
+	case OrderedBytesDescNullsLast:
+		return tupleordering.DescNullsLast
+	}
+	return tupleordering.AscNullsFirst
+}
+
 // ToOrderedBytesValue encodes its child Value's evaluation as a
 // FoundationDB-compatible ordered-bytes blob suitable for use as
 // part of an index key. Mirrors Java's
@@ -54,15 +74,6 @@ func (d OrderedBytesDirection) IsAscending() bool {
 // applications — each column's ordering direction baked into the
 // produced bytes so a forward FDB scan over the index produces rows
 // in the requested SQL order.
-//
-// Java's eval calls `TupleOrdering.pack(Key.Evaluated.scalar(child),
-// direction)` — packs the child as a 1-element FDB tuple, then
-// applies direction-aware encoding (DESC inverts bits / reverses
-// NULL placement). Go's direction-aware encoding exists on the index
-// side (pkg/recordlayer/order_function_key_expression.go) but is NOT
-// wired into this Value's Evaluate — eval returns nil per the
-// non-evaluable placeholder pattern shared with VersionValue /
-// IncarnationValue / ObjectValue.
 //
 // Result type: NotNullBytes. Even when the child is NULL, the
 // encoding produces a sentinel byte sequence, so the byte output is
@@ -88,17 +99,51 @@ func (v *ToOrderedBytesValue) Children() []Value {
 // Name returns the SQL function name.
 func (*ToOrderedBytesValue) Name() string { return "to_ordered_bytes" }
 
-// Type returns NotNullBytes — the encoder produces bytes regardless
-// of input.
-func (*ToOrderedBytesValue) Type() Type { return NotNullBytes }
+// Type is nullable BYTES, Java's primitiveType(BYTES), though the encoder
+// produces bytes for every input.
+func (*ToOrderedBytesValue) Type() Type { return NullableBytes }
 
-// Evaluate is currently a placeholder — returns nil. Real eval
-// wires tuple.PackOrdered (the Go equivalent of Java's
-// TupleOrdering.pack). The Value-shape is reachable for
-// planner / matcher / serialisation work today; runtime
-// integration lands when index-key-construction port reaches
-// this branch.
-func (*ToOrderedBytesValue) Evaluate(any) (any, error) { return nil, nil }
+// Evaluate packs the child as a one-element tuple in the direction
+// (TupleOrdering.pack(Key.Evaluated.scalar(child).toTuple(), direction)).
+// The row domain widens FLOAT to float64, so a FLOAT child is narrowed back
+// to the float32 element Java packs, or the bytes would not match the index.
+func (v *ToOrderedBytesValue) Evaluate(evalCtx any) (any, error) {
+	if v.Child == nil {
+		return nil, fmt.Errorf("to_ordered_bytes: no child")
+	}
+	value, err := v.Child.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
+	element, err := rowValueToTupleElement(value, v.Child.Type())
+	if err != nil {
+		return nil, fmt.Errorf("to_ordered_bytes: %w", err)
+	}
+	return tupleordering.Pack(tuple.Tuple{element}, v.Direction.tupleDirection()), nil
+}
+
+// rowValueToTupleElement is the inverse of TupleElementToRowValue for one
+// scalar: the element Java's Key.Evaluated.scalar packs.
+func rowValueToTupleElement(value any, typ Type) (any, error) {
+	switch tv := value.(type) {
+	case nil, int64, string, []byte, bool, float32:
+		return value, nil
+	case int32:
+		return int64(tv), nil
+	case int:
+		return int64(tv), nil
+	case float64:
+		if typ != nil && typ.Code() == TypeCodeFloat {
+			return float32(tv), nil
+		}
+		return tv, nil
+	case [16]byte:
+		return tuple.UUID(tv), nil
+	case tuple.UUID:
+		return tv, nil
+	}
+	return nil, fmt.Errorf("value %T has no tuple encoding", value)
+}
 
 // CreateInverse returns the FromOrderedBytesValue that decodes the
 // ordered-bytes form back to the original value. Java's
@@ -167,7 +212,27 @@ func (v *FromOrderedBytesValue) Type() Type {
 	return WithNullability(v.TargetType, true)
 }
 
-// Evaluate is currently a placeholder — returns nil. Real eval
-// wires tuple.UnpackOrdered (the Go equivalent of Java's
-// TupleOrdering.unpack). Same gating as ToOrderedBytesValue.
-func (*FromOrderedBytesValue) Evaluate(any) (any, error) { return nil, nil }
+// Evaluate decodes the child's bytes and answers the first element in the
+// row domain (TupleOrdering.unpack(bytes, direction).get(0), then
+// tupleValueToRuntimeValue). Java requires the bytes non-null.
+func (v *FromOrderedBytesValue) Evaluate(evalCtx any) (any, error) {
+	if v.Child == nil {
+		return nil, fmt.Errorf("from_ordered_bytes: no child")
+	}
+	value, err := v.Child.Evaluate(evalCtx)
+	if err != nil {
+		return nil, err
+	}
+	packed, ok := value.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("from_ordered_bytes: child produced %T, not bytes", value)
+	}
+	t, err := tupleordering.Unpack(packed, v.Direction.tupleDirection())
+	if err != nil {
+		return nil, fmt.Errorf("from_ordered_bytes: %w", err)
+	}
+	if len(t) == 0 {
+		return nil, fmt.Errorf("from_ordered_bytes: no element in %x", packed)
+	}
+	return TupleElementToRowValue(t[0]), nil
+}

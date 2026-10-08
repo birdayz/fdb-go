@@ -28,10 +28,14 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/indexpredicate"
+	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/pkg/recordlayer/protoscope"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -84,8 +88,8 @@ type UnsupportedContinuationError struct {
 
 // FilteredIndexPlanError reports a physical query plan that attempts to read a
 // sparse/filtered index without carrying a predicate-implication proof. The
-// planner currently excludes every filtered index from query candidates, so a
-// plan that reaches this guard is hand-built or stale. Executing it would read
+// proof must match the current metadata predicate; missing or stale proofs
+// are rejected. Executing an unproved scan would read
 // only the predicate-selected subset and could silently omit records.
 //
 // Low-level record-store APIs deliberately remain able to scan filtered
@@ -166,8 +170,6 @@ func executePlanUnwrapped(
 			continuation,
 			props,
 		)
-	case *plans.RecordQueryProjectionPlan:
-		return executeProjection(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryUnionPlan:
 		return executeUnion(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryIntersectionPlan:
@@ -239,6 +241,9 @@ func executePlanUnwrapped(
 
 	case *plans.RecordQueryCoveringIndexPlan:
 		return executeCoveringIndexScan(ctx, p, store, evalCtx, continuation, props)
+
+	case *plans.RecordQueryCoveringIndexValuePlan:
+		return executeCoveringIndexValueScan(ctx, p, store, evalCtx, continuation, props)
 
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		return executeFetchFromPartialRecord(ctx, p, store, evalCtx, continuation, props)
@@ -317,7 +322,7 @@ func executeScanWithRowLayout(
 		if err != nil {
 			return nil, fmt.Errorf("executor: building PK scan execution identity: %w", err)
 		}
-		spec, err := bindScanComparisonsToRangeSet(
+		spec, err := bindScanComparisonsToRangeSetWithNaNBlocks(
 			comps,
 			p.GetKeyComponentTypes(),
 			scanBindContext(evalCtx),
@@ -393,6 +398,11 @@ func executeScanWithRowLayout(
 		if err != nil {
 			return nil, err
 		}
+		// A record's primary key carries the record-type prefix, if any,
+		// before the components the comparisons constrain.
+		stored = filterScanKeys(spec, stored,
+			func(r *recordlayer.FDBStoredRecord[proto.Message]) tuple.Tuple { return r.PrimaryKey },
+			len(recordTypePrefix))
 		mapped := recordlayer.MapCursor(stored, storedRecordToQueryResult(rowLayout))
 		return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
 	}
@@ -433,7 +443,7 @@ func openIndexEntryCursor(
 	if idx == nil {
 		return nil, fmt.Errorf("executor: index %q not found in metadata", p.GetIndexName())
 	}
-	if err := requireReadableQueryIndex(store, idx); err != nil {
+	if err := requireReadableQueryIndexWithProof(store, idx, p.GetMatchedIndexPredicate()); err != nil {
 		return nil, err
 	}
 	maintainer, err := store.GetIndexMaintainer(idx)
@@ -441,7 +451,7 @@ func openIndexEntryCursor(
 		return nil, fmt.Errorf("executor: getting index maintainer for %q: %w", p.GetIndexName(), err)
 	}
 
-	rangeSet, err := bindScanComparisonsToRangeSet(
+	rangeSet, err := bindScanComparisonsToRangeSetWithNaNBlocks(
 		p.GetScanComparisons(),
 		p.GetKeyComponentTypes(),
 		scanBindContext(evalCtx),
@@ -474,7 +484,10 @@ func openIndexEntryCursor(
 	if err != nil {
 		return nil, fmt.Errorf("executor: opening scan ranges for %q: %w", p.GetIndexName(), err)
 	}
-	return indexCursor, nil
+	// An index entry's key begins with the indexed values, aligned with the
+	// scan comparisons.
+	return filterScanKeys(rangeSet, indexCursor,
+		func(e *recordlayer.IndexEntry) tuple.Tuple { return e.Key }, 0), nil
 }
 
 // executeIndexScan runs a NON-covering index scan: every entry is resolved to
@@ -535,82 +548,54 @@ func executeCoveringIndexScan(
 		return nil, err
 	}
 
-	// The plan's PK names were validated against tuple-coordinate topology by
-	// the metadata adapter. Re-reading KeyExpression.FieldNames here would
-	// discard that proof: e.g. PK (ID, literal(7)) reports only ID, and the
-	// tail mapper below would place literal 7 in ID's logical slot.
-	pkCols := p.GetPKColumnNames()
+	// The entry reader is built for the plan's single queried record type
+	// (ScanWithFetchMatchCandidate.computeIndexEntryToLogicalRecord), whose
+	// metadata-aware row shape it fills.
+	var desc protoreflect.MessageDescriptor
 	var logicalType *values.RecordType
-	// The record's LOGICAL row shape — only authoritative when the scan serves
-	// a single record type (a multi-type covering scan has no single logical
-	// shape). Metadata-aware: a version-storing store's rows carry the trailing
-	// __ROW_VERSION pseudo-slot.
 	if rts := p.GetRecordTypes(); len(rts) == 1 {
 		if rt := store.GetMetaData().GetRecordType(rts[0]); rt != nil && rt.Descriptor != nil {
-			logicalType = PositionalTypeForRecordLayout(rt.Descriptor,
-				store.GetMetaData().IsStoreRecordVersions())
+			desc = rt.Descriptor
+			logicalType = PositionalTypeForRecordLayout(rt.Descriptor, store.GetMetaData().IsStoreRecordVersions())
 		}
 	}
-	cov := p.GetCoveringColumns()
-	posNames := make([]string, 0, len(cov)+len(pkCols))
-	for _, col := range cov {
-		posNames = append(posNames, strings.ToUpper(col))
-	}
-	for _, col := range pkCols {
-		posNames = append(posNames, strings.ToUpper(col))
-	}
-	// A covering-index row must conform to the record's LOGICAL slot order —
-	// Java's IndexKeyValueToPartialRecord builds a descriptor-shaped partial
-	// record, so a FieldValue ordinal baked against the record type reads the
-	// same slot on the base-scan and covering paths. Non-covered fields stay nil
-	// (Java: unset partial fields — the planner's covering gate guarantees they
-	// are never referenced).
-	logicalOrds := coveringLogicalOrdinals(posNames, logicalType)
-	if logicalOrds == nil {
-		// This covering scan cannot present a row in the record's LOGICAL slot
-		// order: a nested/expression index column (e.g. `ADDR.CITY`) has no
-		// top-level logical slot, and a multi-type scan has no single logical
-		// shape. Flat column references are BAKED to their logical ordinal, so an
-		// INDEX-layout covering row would read a baked ordinal at the wrong slot
-		// whenever index-order != logical-order (descriptor [ID,A,ADDR] + index
-		// row [A,ADDR.CITY,ID]: `A#1` would read ADDR.CITY — a wrong slot). Rather
-		// than serve a misread-able covering row (or fail the query loud), resolve
-		// the full record by PK — the base record layout, which a baked ordinal
-		// reads correctly.
-		//
-		// The fallback lives HERE rather than being delegated upward to the Fetch
-		// because the Fetch above may have been eliminated (the projection pushed
-		// through), in which case nothing else would make these rows whole. When a
-		// Fetch IS above, it sees a row that already carries its stored record and
-		// passes it through rather than reading it a second time — see
-		// fetchFullRecordCursor.
-		//
-		// (Java serves these shapes from the covering index via
-		// IndexKeyValueToPartialRecord's descriptor-shaped partial record;
-		// porting that would restore covering here.)
-		return applySkipLimit(&indexFetchCursor{inner: indexCursor, store: store},
-			props.Skip, props.ReturnedRowLimit), nil
+	reader, err := newCoveringEntryReader(p.GetIndexPlan().GetEntryReader(), desc, logicalType, mintedRowLayout(p))
+	if err != nil {
+		_ = indexCursor.Close()
+		return nil, fmt.Errorf("executor: covering scan of %q: %w", p.GetIndexName(), err)
 	}
 	return applySkipLimit(&coveringIndexCursor{
-		inner:       indexCursor,
-		columns:     cov,
-		pkColumns:   pkCols,
-		logicalType: logicalType,
-		logicalOrds: logicalOrds,
-		layout:      mintedRowLayout(p),
+		inner:  indexCursor,
+		reader: reader,
+		binder: entryBinder{outer: evalCtx},
 	}, props.Skip, props.ReturnedRowLimit), nil
 }
 
-// defaultVectorEfSearch is the HNSW search-quality knob used when the query
-// does not specify OPTIONS ef_search. ef_search must be >= k for a correct
-// top-K result; the executor raises it to k when the configured value is lower.
+// vectorEfSearch is the efSearch a scan runs with. A VECTOR index runs Java's
+// HnswVectorIndexEngine.efSearch over the scan limit, the option unchanged even
+// below k. SPFresh raises the option to the limit in top-k mode, and its 0
+// leaves its maintainer's own default.
+func vectorEfSearch(indexType string, explicit *int, scanLimit int, selfLimiting bool) int {
+	if indexType == recordlayer.IndexTypeVector {
+		return recordlayer.HNSWEfSearch(explicit, scanLimit)
+	}
+	efSearch := 0
+	if explicit != nil {
+		efSearch = *explicit
+	}
+	if selfLimiting && efSearch != 0 && efSearch < scanLimit {
+		efSearch = scanLimit
+	}
+	return efSearch
+}
+
+// defaultVectorEfSearch is the ordered stream's minimum scan horizon.
 const defaultVectorEfSearch = 200
 
 // executeVectorIndexScan runs a BY_DISTANCE K-NN scan over a VECTOR (HNSW)
 // index: the partition-equality prefix selects the independent HNSW graph and
 // the graph is traversed for the k nearest neighbors of the query vector.
-// Dispatches through ScanIndexByType(IndexScanByDistance), which the vector
-// index maintainer services via ScanByDistance.
+// VECTOR indexes receive typed scan options; SPFresh uses ScanIndexByType.
 func executeVectorIndexScan(
 	_ context.Context,
 	p *plans.RecordQueryVectorIndexPlan,
@@ -623,7 +608,7 @@ func executeVectorIndexScan(
 	if idx == nil {
 		return nil, fmt.Errorf("executor: vector index %q not found in metadata", p.GetIndexName())
 	}
-	if err := requireReadableQueryIndex(store, idx); err != nil {
+	if err := requireReadableVectorIndex(store, idx); err != nil {
 		return nil, err
 	}
 	if err := validateVectorPartitionPlan(idx, p); err != nil {
@@ -676,19 +661,10 @@ func executeVectorIndexScan(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 
-	// The default is the INDEX METHOD's own (HNSW efSearch=200; SPFresh's
-	// tuned kc=64 — passing 200 here silently overrode it for every SQL
-	// query). 0 = "use the maintainer's default"; only
-	// an explicit per-query efSearch overrides it.
-	efSearch := 0
-	if idx.Type == recordlayer.IndexTypeVector {
-		efSearch = defaultVectorEfSearch
-	}
-	if p.GetEfSearch() != nil {
-		efSearch = *p.GetEfSearch()
-	}
-
 	scanType := recordlayer.IndexScanByDistance
+	scanLimit := rankCap
+	selfLimiting := !p.IsOrderedStream()
+	var efSearch int
 	var makeScanRange func(tuple.Tuple) recordlayer.TupleRange
 	if p.IsOrderedStream() {
 		// RFC-156 — VBASE distance-ordered mode: do NOT self-limit to k. Stream
@@ -731,6 +707,7 @@ func executeVectorIndexScan(
 		if rankCap > horizon {
 			horizon = rankCap
 		}
+		scanLimit = horizon
 		makeScanRange = func(prefix tuple.Tuple) recordlayer.TupleRange {
 			return recordlayer.VectorDistanceScanRangeOrdered(queryVec, horizon, efSearch, horizon, prefix)
 		}
@@ -741,13 +718,11 @@ func executeVectorIndexScan(
 		// (a non-positive adjusted cap returned EMPTY there). No re-derive, and no
 		// dead ≤0 check.
 		limit := rankCap
-		if efSearch != 0 && efSearch < limit {
-			efSearch = limit
-		}
 		makeScanRange = func(prefix tuple.Tuple) recordlayer.TupleRange {
 			return recordlayer.VectorDistanceScanRangeWithPrefix(queryVec, limit, efSearch, prefix)
 		}
 	}
+	efSearch = vectorEfSearch(idx.Type, p.GetEfSearch(), scanLimit, selfLimiting)
 	invocationRange := makeScanRange(nil)
 	fingerprintSalt, err := vectorScanRangeFingerprintSalt(
 		p,
@@ -787,6 +762,11 @@ func executeVectorIndexScan(
 			if prefixErr != nil {
 				return nil, fmt.Errorf("vector index %q: %w", p.GetIndexName(), prefixErr)
 			}
+			if idx.Type == recordlayer.IndexTypeVector {
+				return store.ScanVectorIndexWithOptions(idx, prefix, queryVec, scanLimit,
+					recordlayer.VectorIndexScanOptions{EfSearch: p.GetEfSearch(), ReturnVectors: p.GetReturnVectors()},
+					innerContinuation, childProperties), nil
+			}
 			return store.ScanIndexByType(
 				idx,
 				scanType,
@@ -810,8 +790,7 @@ func executeVectorIndexScan(
 // uniqueness, cardinality, ordering, or complete coverage even when the leaf
 // itself looks like an ordinary scan. Therefore query-plan execution requires
 // both the one state Java admits to planning (strictly READABLE) and a complete
-// index. Filtered indexes remain rejected until physical plans carry a checked
-// predicate-implication proof.
+// index, or a matched predicate proof for the current filtered index.
 //
 // "Complete" is HasFilteringPredicate, not HasPredicate: a stored predicate
 // that is a PROVED tautology rejects no record, so the index holds an entry for
@@ -821,10 +800,24 @@ func executeVectorIndexScan(
 // presence of a predicate field would kill, at execution, plans the planner is
 // entitled to build and no query can route around.
 func requireReadableQueryIndex(store *recordlayer.FDBRecordStore, idx *recordlayer.Index) error {
-	state := store.GetIndexState(idx.Name)
+	return requireReadableQueryIndexWithProof(store, idx, nil)
+}
+
+func requireReadableQueryIndexWithProof(store *recordlayer.FDBRecordStore, idx *recordlayer.Index, proof []byte) error {
+	state, err := store.ReadIndexState(idx.Name)
+	if err != nil {
+		return err
+	}
 	if state == recordlayer.IndexStateReadable {
 		if idx.HasFilteringPredicate() {
-			return &FilteredIndexPlanError{IndexName: idx.Name}
+			current := idx.GetPredicateProto()
+			if len(proof) == 0 || current == nil {
+				return &FilteredIndexPlanError{IndexName: idx.Name}
+			}
+			encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(indexpredicate.Normalize(current))
+			if err != nil || !bytes.Equal(encoded, proof) {
+				return &FilteredIndexPlanError{IndexName: idx.Name}
+			}
 		}
 		return nil
 	}
@@ -832,6 +825,22 @@ func requireReadableQueryIndex(store *recordlayer.FDBRecordStore, idx *recordlay
 		IndexName:    idx.Name,
 		CurrentState: state,
 	}
+}
+
+// requireReadableVectorIndex is requireReadableQueryIndex admitting a
+// sliding-window vector index, whose K-NN answer is its window by design.
+func requireReadableVectorIndex(store *recordlayer.FDBRecordStore, idx *recordlayer.Index) error {
+	if idx.GetPredicateProto().GetRowNumberWindowPredicate() == nil {
+		return requireReadableQueryIndex(store, idx)
+	}
+	state, err := store.ReadIndexState(idx.Name)
+	if err != nil {
+		return err
+	}
+	if state != recordlayer.IndexStateReadable {
+		return &recordlayer.IndexNotReadableError{IndexName: idx.Name, CurrentState: state}
+	}
+	return nil
 }
 
 func rejectContinuationForEmptyVectorScan(continuation []byte) error {
@@ -981,6 +990,10 @@ func evalFloat64Slice(v values.Value, binder values.ParameterBinder) ([]float64,
 		return nil, err
 	}
 	switch s := ev.(type) {
+	case []byte:
+		// Prepared VECTOR parameters retain their serialized precision, just as
+		// stored vectors do when evaluated by scalar distance expressions.
+		return vectorcodec.Deserialize(s)
 	case []float64:
 		return s, nil
 	case []float32:
@@ -1172,6 +1185,16 @@ func coerceTupleElementForKey(v any, physicalType, operandType values.Type) any 
 		if f, ok := toFloat64Scalar(v); ok {
 			return f
 		}
+	case values.TypeCodeVersion:
+		// A row's __ROW_VERSION reads as its 12 serialized bytes; a version
+		// index key holds it as a tuple versionstamp.
+		if b, ok := v.([]byte); ok {
+			if version, err := recordlayer.CompleteVersionFromBytes(b); err == nil {
+				if versionstamp, err := version.ToVersionstamp(); err == nil {
+					return versionstamp
+				}
+			}
+		}
 	}
 	return v
 }
@@ -1221,43 +1244,9 @@ func toExactInt64Scalar(v any) (int64, bool) {
 	return 0, false
 }
 
-// tupleElementToRowValue normalizes a decoded tuple element read off an index
-// entry / primary key into the value layer's row domain:
-//   - tuple.UUID → the neutral [16]byte the value layer works with (cmpAny,
-//     PromoteValue, materialization); the inverse of uuidToTupleElement.
-//   - float32 → float64: a FLOAT column is stored in index keys as a 32-bit
-//     tuple float (code 0x20) and decodes as float32, but the base-record path
-//     widens FLOAT to float64 (values.ProtoScalarKindToRowValue). Java is
-//     type-consistent across access paths by construction — the covering
-//     partial record sets the tuple element back on the proto builder
-//     (IndexKeyValueToPartialRecord.FieldCopier) and every read goes through
-//     the message, surfacing the same boxed Float either way — so the Go
-//     covering row must live in the SAME domain as the base row, or
-//     comparators (compareValues), dedup keys (distinctKey, packedDedupKey)
-//     and hash-join keys split float32-vs-float64 across access paths.
-//
-// Applied at every index-entry → row boundary so a column flows downstream
-// identically regardless of whether it was sourced from a stored record
-// (protoFieldToGo) or an index entry — the two must be interchangeable for
-// residual filters, sorts, DISTINCT and join keys. Other elements pass through.
-func tupleElementToRowValue(v any) any {
-	switch tv := v.(type) {
-	case tuple.UUID:
-		return [16]byte(tv)
-	case float32:
-		return float64(tv)
-	case tuple.Versionstamp:
-		// A VERSION index's key carries the record version as a Versionstamp
-		// tuple element; the row-value form of the __ROW_VERSION pseudo-field
-		// is the version's 12 raw bytes (FDBRecordVersion.toBytes — the same
-		// carrier FromStoredRecord fills on the base-scan path, so covering
-		// and fetching reads agree byte-for-byte).
-		out := make([]byte, 0, len(tv.TransactionVersion)+2)
-		out = append(out, tv.TransactionVersion[:]...)
-		return append(out, byte(tv.UserVersion>>8), byte(tv.UserVersion))
-	}
-	return v
-}
+// tupleElementToRowValue is values.TupleElementToRowValue, applied at every
+// index-entry → row boundary.
+func tupleElementToRowValue(v any) any { return values.TupleElementToRowValue(v) }
 
 // isZeroFloatBound reports whether a scan comparand v — already run through
 // coerceTupleElementForKey, so it carries the wire Go type (float32 for FLOAT,
@@ -1443,131 +1432,6 @@ func (c *indexFetchCursor) Close() error {
 }
 
 func (c *indexFetchCursor) IsClosed() bool { return c.closed }
-
-type coveringIndexCursor struct {
-	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
-	columns   []string
-	pkColumns []string
-	// logicalType/logicalOrds shape the cursor's LOGICAL-ordinal rows:
-	// logicalType is the record's descriptor-shaped RecordType and
-	// logicalOrds[i] the logical slot of the i-th [columns..., pkColumns...]
-	// value. A covering scan whose columns cannot ALL map to a logical slot
-	// (nested/expression index, or a multi-type scan) is refused LOUD at
-	// construction, so logicalOrds is always non-nil here.
-	logicalType *values.RecordType
-	logicalOrds []int
-	// layout is the plan's provided output layout, stamped on every row this
-	// cursor mints so the output boundary checks it instead of copying the row
-	// to attach it — see mintedRowLayout.
-	layout values.OrdinalLayout
-	closed bool
-	// lastNoNext replays the terminal result on a contract-violating re-call
-	// (Java's cached no-next result) — never re-pulls the inner entry scan.
-	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
-}
-
-func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	if c.lastNoNext != nil {
-		return *c.lastNoNext, nil
-	}
-	result, err := c.inner.OnNext(ctx)
-	if err != nil {
-		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
-	}
-	if !result.HasNext() {
-		res := recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation())
-		c.lastNoNext = &res
-		return res, nil
-	}
-
-	entry := result.GetValue()
-	// logicalOrds is guaranteed non-nil (executeIndexScan refuses a non-conforming
-	// covering scan LOUD at construction), so the row is always LOGICAL-shaped.
-	primaryKey := entry.PrimaryKey()
-	// The entry's covered values in ENTRY layout order: the key part
-	// (IndexValues ends at the KeyWithValue split point — ColumnSize), then
-	// the VALUE-part columns from the entry's FDB value tuple. For a
-	// non-covering-split index entry.Value is empty and this is IndexValues
-	// alone. Positionally parallel to the plan's AllCoveredEntryColumns.
-	vals := entry.IndexValues()
-	if len(entry.Value) > 0 {
-		vals = append(append(tuple.Tuple{}, vals...), entry.Value...)
-	}
-	pos := buildCoveringLogicalRow(
-		c.columns, c.pkColumns, vals, primaryKey, c.logicalType, c.logicalOrds, c.layout)
-	return recordlayer.NewResultWithValue(
-		QueryResult{
-			Positional: pos,
-			PrimaryKey: primaryKey,
-		},
-		result.GetContinuation(),
-	), nil
-}
-
-// coveringLogicalOrdinals maps each covering-row column name to its slot in
-// the record's LOGICAL row type. Returns nil (keep the index layout) when the
-// logical type is unknown or ANY column has no logical slot — never a partial
-// mapping, so a row is either fully logical-shaped or fully index-shaped.
-func coveringLogicalOrdinals(posNames []string, logicalType *values.RecordType) []int {
-	if logicalType == nil {
-		return nil
-	}
-	ords := make([]int, len(posNames))
-	for i, name := range posNames {
-		ord, ok := logicalType.FieldIndexUnique(name)
-		if !ok {
-			return nil
-		}
-		ords[i] = ord
-	}
-	return ords
-}
-
-// buildCoveringLogicalRow constructs a covering-index row in the record's
-// LOGICAL shape: one slot per record field in descriptor order, covered
-// columns placed at their logical ordinals, non-covered fields nil (Java's
-// unset partial-record fields; the planner's covering gate guarantees they
-// are never referenced). A value-column/PK-column name collision lands on the
-// SAME logical slot with the same value — the logical row has one column.
-func buildCoveringLogicalRow(
-	columns, pkColumns []string,
-	vals, pk tuple.Tuple,
-	logicalType *values.RecordType,
-	logicalOrds []int,
-	layout values.OrdinalLayout,
-) *PositionalRow {
-	slots := make([]any, len(logicalType.Fields))
-	for i := range columns {
-		if i < len(vals) {
-			slots[logicalOrds[i]] = tupleElementToRowValue(vals[i])
-		}
-	}
-	// PrimaryKey() may include a record type key prefix (e.g., (recTypeKey, id));
-	// the user-level PK columns are at the tail. Skip the prefix.
-	pkOffset := 0
-	if len(pk) > len(pkColumns) {
-		pkOffset = len(pk) - len(pkColumns)
-	}
-	for i := range pkColumns {
-		idx := i + pkOffset
-		if idx < len(pk) {
-			slots[logicalOrds[len(columns)+i]] = tupleElementToRowValue(pk[idx])
-		}
-	}
-	// The row is minted here and has one owner, so it carries the layout its
-	// output boundary will hold it to rather than being copied to acquire it —
-	// see mintedRowLayout. A nil layout means the boundary publishes none.
-	return &PositionalRow{Type: logicalType, Slots: slots, Layout: layout}
-}
-
-func (c *coveringIndexCursor) Close() error {
-	c.closed = true
-	return c.inner.Close()
-}
-
-func (c *coveringIndexCursor) IsClosed() bool { return c.closed }
-
-var _ recordlayer.RecordCursor[QueryResult] = (*coveringIndexCursor)(nil)
 
 func executeTypeFilter(
 	ctx context.Context,
@@ -1877,12 +1741,8 @@ func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 			// cursor from this continuation). Cached in terminal so a
 			// contract-violating re-call on THIS instance replays it verbatim
 			// (Java's cached no-next result) instead of re-pulling the inner.
-			contBytes, encErr := encodeLimitContinuation(result.GetContinuation(), c.remOffset, c.remLimit)
-			if encErr != nil {
-				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
-			}
 			res := recordlayer.NewResultNoNext[QueryResult](
-				reason, recordlayer.NewBytesContinuation(contBytes),
+				reason, &limitEnvelopeContinuation{inner: result.GetContinuation(), remOffset: c.remOffset, remLimit: c.remLimit},
 			)
 			c.terminal = &res
 			return res, nil
@@ -1901,11 +1761,9 @@ func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 		if !c.unbounded {
 			c.remLimit--
 		}
-		contBytes, encErr := encodeLimitContinuation(result.GetContinuation(), 0, c.remLimit)
-		if encErr != nil {
-			return recordlayer.RecordCursorResult[QueryResult]{}, encErr
-		}
-		return recordlayer.NewResultWithValue(result.GetValue(), recordlayer.NewBytesContinuation(contBytes)), nil
+		return recordlayer.NewResultWithValue(result.GetValue(), &limitEnvelopeContinuation{
+			inner: result.GetContinuation(), remOffset: 0, remLimit: c.remLimit,
+		}), nil
 	}
 }
 
@@ -1947,6 +1805,23 @@ const limitContVersion byte = 1
 // limitContNilInner marks an absent inner continuation (start-from-begin),
 // distinct from a present-but-empty inner continuation (length 0).
 const limitContNilInner uint32 = 0xFFFFFFFF
+
+// limitEnvelopeContinuation snapshots the window without serializing its child.
+// In particular, a sort's continuation owns the remaining rows: encoding it on
+// every emission would repeatedly serialize the same tail. Like Java's
+// RowLimitedCursor and SkipCursor, retain the immutable continuation object
+// until a consumer requests bytes, independently of cursor advancement/closure.
+type limitEnvelopeContinuation struct {
+	inner     recordlayer.RecordCursorContinuation
+	remOffset int
+	remLimit  int
+}
+
+func (c *limitEnvelopeContinuation) ToBytes() ([]byte, error) {
+	return encodeLimitContinuation(c.inner, c.remOffset, c.remLimit)
+}
+
+func (c *limitEnvelopeContinuation) IsEnd() bool { return false }
 
 func encodeLimitContinuation(innerCont recordlayer.RecordCursorContinuation, remOffset, remLimit int) ([]byte, error) {
 	var innerBytes []byte
@@ -2171,7 +2046,7 @@ func executeDistinct(
 		var hasLast bool
 		if len(continuation) > 0 {
 			var dc gen.DedupContinuation
-			if uerr := dc.UnmarshalVT(continuation); uerr != nil {
+			if uerr := recordlayer.UnmarshalVTAsJava(&dc, continuation); uerr != nil {
 				return nil, fmt.Errorf("invalid streaming-distinct continuation: %w", uerr)
 			}
 			innerCont = dc.GetInnerContinuation()
@@ -2301,7 +2176,7 @@ func executeHashDistinct(
 	innerCont := continuation
 	if len(continuation) > 0 {
 		var dc gen.DistinctHashContinuation
-		if uerr := dc.UnmarshalVT(continuation); uerr != nil {
+		if uerr := recordlayer.UnmarshalVTAsJava(&dc, continuation); uerr != nil {
 			return nil, fmt.Errorf("invalid distinct-hash continuation: %w", uerr)
 		}
 		innerCont = dc.GetInnerContinuation()
@@ -2679,94 +2554,6 @@ func canonicalDistinctProtoValue(
 		canonicalizeDistinctProtoNaNs(value.Message())
 	}
 	return value, false
-}
-
-func executeProjection(
-	ctx context.Context,
-	p *plans.RecordQueryProjectionPlan,
-	store *recordlayer.FDBRecordStore,
-	evalCtx *EvaluationContext,
-	continuation []byte,
-	props recordlayer.ExecuteProperties,
-) (recordlayer.RecordCursor[QueryResult], error) {
-	// Java's RecordQueryMapPlan delegates the original request to its child
-	// before mapping. This is 1:1 and wraps no continuation; a DML child may
-	// deliberately ignore the request, which mapping must not override.
-	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
-	if err != nil {
-		return nil, err
-	}
-	inputQOV, err := requireSoleInputQOV(p)
-	if err != nil {
-		return nil, err
-	}
-
-	projections := p.GetProjections()
-	// On the positional frontier an outer correlation resolves via
-	// the eval context's binder before the bare-positional frontier fallback.
-	// A CURRENT_TIMESTAMP-family projection needs the statement clock a
-	// RowEvalContext carries — a bare frontier row would drift per row.
-	posNeedsCtx := hasBindingContext(evalCtx) || valuesDependOnStatementClock(projections)
-	// The projection owner already admitted the exact result program. Reuse its
-	// record type verbatim: reconstructing from output names would replace every
-	// slot type with UNKNOWN and make the physical row disagree with the plan's
-	// provided output layout at the very next boundary.
-	projType, ok := p.GetResultType().(*values.RecordType)
-	if !ok || projType == nil || len(projType.Fields) != len(projections) {
-		return nil, layoutBindingError(values.LayoutTypeMismatch, "projection result is not an exact record matching its slots")
-	}
-	// When the input flows a 2-way ordinal join's merged
-	// positional row, projections evaluate under the LEG WINDOWS — computed
-	// once, from the input plan's result value.
-	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
-	// The projection's rows are minted below and have exactly one owner, so they
-	// carry the boundary's handle from birth rather than being copied to acquire
-	// it — see mintedRowLayout.
-	mintLayout := mintedRowLayout(p)
-	var evalErr error
-	mapped := recordlayer.MapCursor(innerCursor, func(qr QueryResult) QueryResult {
-		if evalErr != nil {
-			return qr
-		}
-		slots := make([]any, len(projections))
-		var rowCtx any
-		if qr.Positional != nil && qr.Positional.Layout != nil {
-			rowCtx, evalErr = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx, inputQOV)
-			if evalErr != nil {
-				return qr
-			}
-		} else if qr.Positional != nil && windowsOK {
-			// The merged positional row of a gated 2-way
-			// ordinal join — a leg reference QOV(leg).col needs its
-			// leg window (unconditional; see executeFilter).
-			rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
-		} else if qr.Positional != nil {
-			// The non-join frontier flows an authoritative ordinal
-			// row — resolve projections by ordinal (loud on a miss).
-			rowCtx, evalErr = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx, inputQOV)
-			if evalErr != nil {
-				return qr
-			}
-		}
-		for i, proj := range projections {
-			val, err := proj.Evaluate(rowCtx)
-			if err != nil {
-				evalErr = fmt.Errorf("projection slot %d (%s), physical input %s: %w", i, values.ExplainValue(proj), values.ExplainValue(inputQOV), err)
-				return qr
-			}
-			slots[i] = val // dense positional slot (kept even on dup names)
-		}
-		// A projection's output IS a PositionalRow — ALWAYS emit it, built by
-		// parallel construction from the projected values, named by the output
-		// schema (projType).
-		return QueryResult{
-			Positional: &PositionalRow{Type: projType, Slots: slots, Layout: mintLayout},
-			Record:     qr.Record,
-			PrimaryKey: qr.PrimaryKey,
-		}
-	})
-	errCursor := &errCheckCursor{inner: mapped, err: &evalErr}
-	return errCursor, nil
 }
 
 type errCheckCursor struct {
@@ -3246,7 +3033,7 @@ func executeFlatMap(
 	var outerCont, innerCont, checkValue []byte
 	if len(continuation) > 0 {
 		var fmc gen.FlatMapContinuation
-		if err := proto.Unmarshal(continuation, &fmc); err != nil {
+		if err := recordlayer.UnmarshalAsJava(continuation, &fmc); err != nil {
 			// Java: RecordCursor.flatMapPipelined —
 			//   throw new RecordCoreException("error parsing continuation", ex).
 			// A corrupt continuation must fail, not silently restart from
@@ -3263,12 +3050,13 @@ func executeFlatMap(
 		return nil, err
 	}
 
-	cursor, err := newFlatMapCursorWithOuterProperties(
+	cursor, err := newFlatMapCursorForPlan(
 		outerCursor, p.GetOuter(), p.GetInner(), store, evalCtx,
 		p.GetOuterAlias(), p.GetInnerAlias(),
 		p.GetResultValue(),
 		nestedProps,
 		p.InheritOuterRecordProperties(),
+		p.NullSupplyingOuter(),
 	)
 	if err != nil {
 		outerCursor.Close()
@@ -3521,6 +3309,42 @@ func nestedLoopJoinOutputSourceOrigins(
 				childSource:        claimedSource,
 				childNullSupplying: claimedNullSupplying,
 			}
+			continue
+		}
+		// No child binds the source itself: it is buried in a null-supplying
+		// leg's retained box (the layout inherited the leg's edge for it), and
+		// the child that implements the box need not keep it as its own row.
+		// Its presence is the leg's.
+		buriedIn := -1
+		for legIndex, leg := range legs {
+			if leg.alias.IsZero() || !leg.nullSupplying {
+				continue
+			}
+			var legWindow values.QuantifiedObjectValue
+			for _, source := range outputLayout.WindowSources() {
+				if source.Correlation() == leg.alias {
+					legWindow = source
+					break
+				}
+			}
+			if legWindow == nil {
+				continue
+			}
+			within, withinErr := values.LayoutWindowWithin(outputLayout, outputSource, legWindow)
+			if withinErr != nil {
+				return nil, fmt.Errorf("nested-loop join buried output source: %w", withinErr)
+			}
+			if !within {
+				continue
+			}
+			if buriedIn >= 0 {
+				return nil, layoutBindingError(values.LayoutInvalidWindow,
+					"two nested-loop join legs enclose one retained output source")
+			}
+			buriedIn = legIndex
+		}
+		if buriedIn >= 0 {
+			origins[outputSource.Correlation()] = outputSourceOrigin{topLegAlias: legs[buriedIn].alias}
 		}
 	}
 	if len(origins) == 0 {
@@ -3725,13 +3549,27 @@ func executeAggregation(
 	// cursor plus the single in-progress group's partial state, and builds the
 	// aggregate cursor. Mirrors Java's
 	// RecordQueryStreamingAggregationPlan.executePlan().
+	for _, agg := range aggregates {
+		// finalizeGroup has a case per accumulated function and nothing else:
+		// an aggregate it has no accumulator for would come out NULL on every
+		// group. ImplementStreamingAggregationRule never builds such a plan; a
+		// plan arriving another way is refused here, loudly.
+		if !agg.Function.HasStreamingAccumulator() {
+			return nil, fmt.Errorf("streaming aggregation has no accumulator for %s", agg.Function)
+		}
+	}
 	buildAgg := func(aggCont []byte) (recordlayer.RecordCursor[QueryResult], error) {
 		var innerContinuation []byte
 		var priorGroupKey string
 		var priorState *groupState
 
 		if aggCont != nil {
-			ic, gk, gs, decErr := decodeAggregateContinuation(aggCont, len(aggregates))
+			var md *recordlayer.RecordMetaData
+			if store != nil {
+				md = store.GetRecordMetaData()
+			}
+			resolve := continuationMessageResolver(md, plan)
+			ic, gk, gs, decErr := decodeAggregateContinuation(aggCont, groupingKeys, aggregates, resolve)
 			if decErr != nil {
 				return nil, fmt.Errorf("invalid aggregate continuation: %w", decErr)
 			}
@@ -3801,23 +3639,6 @@ func executeAggregation(
 	return applySkipLimit(orElse, props.Skip, props.ReturnedRowLimit), nil
 }
 
-func toFloat64(v any) float64 {
-	switch n := v.(type) {
-	case int64:
-		return float64(n)
-	case float64:
-		return n
-	case int:
-		return float64(n)
-	case int32:
-		return float64(n)
-	case float32:
-		return float64(n)
-	default:
-		return math.NaN()
-	}
-}
-
 // aggKeyName delegates to the single naming authority
 // (expressions.AggregateKeyColumnName): the executor's emitted slot name and the
 // translator's baked ordinal must derive from ONE rule or they drift.
@@ -3848,6 +3669,15 @@ func aggResultName(agg expressions.AggregateSpec) string {
 	return expressions.AggregateResultColumnName(agg)
 }
 
+// enforceSerializable is QueryPlanUtils.enforceSerializable: a
+// data-modification plan refuses SNAPSHOT isolation before opening its child.
+func enforceSerializable(props recordlayer.ExecuteProperties, plan string) error {
+	if props.IsolationLevel != recordlayer.SerializableIsolation {
+		return &recordlayer.RecordCoreArgumentError{Message: "Cannot execute plan at SNAPSHOT isolation level", Plan: plan}
+	}
+	return nil
+}
+
 func executeDelete(
 	ctx context.Context,
 	p *plans.RecordQueryDeletePlan,
@@ -3856,6 +3686,9 @@ func executeDelete(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	if err := enforceSerializable(props, "RecordQueryDeletePlan"); err != nil {
+		return nil, err
+	}
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
@@ -3925,6 +3758,9 @@ func executeInsert(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	if err := enforceSerializable(props, "RecordQueryInsertPlan"); err != nil {
+		return nil, err
+	}
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
@@ -4058,14 +3894,26 @@ func executeInsert(
 func buildInsertRecord(desc protoreflect.MessageDescriptor, datum map[string]any) (proto.Message, error) {
 	msg := dynamicpb.NewMessage(desc)
 	refl := msg.ProtoReflect()
+	// An exact key wins; the folded match is a fallback only for a key no
+	// other datum key folds to, so quoted columns differing only in case
+	// ("COLUMN", "column") each keep their own value as in Java.
 	folded := make(map[string]any, len(datum))
+	foldedCount := make(map[string]int, len(datum))
 	for k, v := range datum {
-		folded[strings.ToLower(k)] = v
+		lk := strings.ToLower(k)
+		folded[lk] = v
+		foldedCount[lk]++
 	}
 	fields := desc.Fields()
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
-		v, ok := folded[strings.ToLower(string(fd.Name()))]
+		v, ok := datum[string(fd.Name())]
+		if !ok {
+			lk := strings.ToLower(string(fd.Name()))
+			if foldedCount[lk] == 1 {
+				v, ok = folded[lk]
+			}
+		}
 		if !ok || v == nil {
 			continue // absent / NULL → leave field unset (SQL NULL)
 		}
@@ -4145,23 +3993,50 @@ func rematerializeProtoScalar(fd protoreflect.FieldDescriptor, value protoreflec
 		return protoreflect.Value{}, fmt.Errorf("executor: copying composite insert value: %w", err)
 	}
 	target := dynamicpb.NewMessage(fd.Message())
-	if err := (proto.UnmarshalOptions{AllowPartial: true}).Unmarshal(wireBytes, target); err != nil {
+	// Read as the target type's record value is read (proto_closed_enums.go): a
+	// closed enum's undeclared number the source held as an unknown field is
+	// not taken back into the field by the re-parse.
+	if err := recordlayer.UnmarshalRecordAsJava(wireBytes, target, true); err != nil {
 		return protoreflect.Value{}, fmt.Errorf("executor: copying composite insert value: %w", err)
 	}
 	return protoreflect.ValueOfMessage(target), nil
 }
 
-// fieldByNameFold resolves a proto field by name, case-insensitively.
-// Computed-row datums key columns by the SQL identifier casing, which
-// need not match the proto descriptor's field-name casing.
-func fieldByNameFold(fields protoreflect.FieldDescriptors, name string) protoreflect.FieldDescriptor {
-	for i := 0; i < fields.Len(); i++ {
-		fd := fields.Get(i)
-		if strings.EqualFold(string(fd.Name()), name) {
-			return fd
-		}
+// updateTargetField is the message and descriptor field an UPDATE assigns,
+// addressed by the transform's resolved ordinals as Java's
+// MessageHelpers.transformMessage addresses targetDescriptor.getFields().get(index),
+// level by level through struct fields. A struct on the way that is NULL is
+// created, as Java's transformation builds the nested message whether or not
+// the current one is null. The descriptor carries storage names
+// (ProtoUtils.toProtoBufCompliantName escapes '.', '$' and a leading '__');
+// each field at an ordinal must be the one the transform names, its user
+// identifier decoded once, or the record is not of the type the statement was
+// planned over.
+func updateTargetField(msg protoreflect.Message, t expressions.UpdateTransform) (protoreflect.Message, protoreflect.FieldDescriptor, error) {
+	if len(t.FieldOrdinals) == 0 || len(t.FieldOrdinals) != len(t.FieldNames) {
+		return nil, nil, fmt.Errorf("executor: update field %q has %d ordinals for %d names", t.FieldPath(), len(t.FieldOrdinals), len(t.FieldNames))
 	}
-	return nil
+	for i, ordinal := range t.FieldOrdinals {
+		fields := msg.Descriptor().Fields()
+		if ordinal < 0 || ordinal >= fields.Len() {
+			return nil, nil, fmt.Errorf("executor: update field %q has ordinal %d outside the descriptor's %d fields", t.FieldPath(), ordinal, fields.Len())
+		}
+		fd := fields.Get(ordinal)
+		if name := protoname.ToUserIdentifier(string(fd.Name())); name != t.FieldNames[i] {
+			return nil, nil, fmt.Errorf("executor: update field %q at ordinal %d is field %q of the descriptor", t.FieldPath(), ordinal, name)
+		}
+		if i == len(t.FieldOrdinals)-1 {
+			return msg, fd, nil
+		}
+		// Only a struct is descended (the resolver's and the plan's rule): not
+		// an array, a map, a UUID or a nullable array's wrapper message.
+		if fd.Kind() != protoreflect.MessageKind || fd.IsList() || fd.IsMap() ||
+			string(fd.Message().FullName()) == uuidProtoMessageName || values.IsWrappedArrayDescriptor(fd.Message()) {
+			return nil, nil, fmt.Errorf("executor: update field %q: %q is not a struct", t.FieldPath(), t.FieldNames[i])
+		}
+		msg = msg.Mutable(fd).Message()
+	}
+	return nil, nil, fmt.Errorf("executor: update field %q is empty", t.FieldPath())
 }
 
 func executeUpdate(
@@ -4172,6 +4047,9 @@ func executeUpdate(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
+	if err := enforceSerializable(props, "RecordQueryUpdatePlan"); err != nil {
+		return nil, err
+	}
 	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
 	if err != nil {
 		return nil, err
@@ -4179,14 +4057,25 @@ func executeUpdate(
 	defer innerCursor.Close()
 
 	transforms := p.GetTransforms()
+	// Each transform's field type, read off the planned target type once: the
+	// NULL assignment check needs its nullability.
+	targetRecord, ok := p.GetTargetType().(*values.RecordType)
+	if !ok {
+		return nil, fmt.Errorf("executor: update target type %v is not a record", p.GetTargetType())
+	}
+	leafTypes := make([]values.Type, len(transforms))
+	for i, t := range transforms {
+		leaf, err := plans.UpdateTargetFieldType(targetRecord, t)
+		if err != nil {
+			return nil, err
+		}
+		leafTypes[i] = leaf
+	}
 	inputQOV, err := requireSoleInputQOV(p)
 	if err != nil {
 		return nil, fmt.Errorf("update input owner: %w", err)
 	}
-	targetQOV, err := values.NewQuantifiedObjectValue(
-		values.NamedCorrelationIdentifier(p.GetTargetRecordType()),
-		p.GetTargetType(),
-	)
+	targetQOV, err := values.NewQuantifiedObjectValue(p.GetTargetAlias(), p.GetTargetType())
 	if err != nil {
 		return nil, fmt.Errorf("update target owner: %w", err)
 	}
@@ -4224,7 +4113,6 @@ func executeUpdate(
 
 		msg := proto.Clone(qr.Record.Record)
 		refl := msg.ProtoReflect()
-		desc := refl.Descriptor()
 		if qr.Positional == nil {
 			return nil, layoutBindingError(values.LayoutRuntimeShape,
 				"update target carries no positional row")
@@ -4242,26 +4130,29 @@ func executeUpdate(
 			return nil, fmt.Errorf("update target binding: %w", err)
 		}
 
-		for _, t := range transforms {
-			fd := desc.Fields().ByName(protoreflect.Name(strings.ToLower(t.FieldPath)))
-			if fd == nil {
-				fd = fieldByNameFold(desc.Fields(), t.FieldPath)
-			}
-			if fd == nil {
-				return nil, fmt.Errorf("executor: update field %q not found in descriptor", t.FieldPath)
+		for i, t := range transforms {
+			owner, fd, err := updateTargetField(refl, t)
+			if err != nil {
+				return nil, err
 			}
 			newVal, err := t.NewValue.Evaluate(rowCtx)
 			if err != nil {
 				return nil, err
 			}
 			if newVal == nil {
-				refl.Clear(fd)
+				// Java's coerceObject refuses a NULL for a slot whose type is
+				// not nullable (SemanticException NULL_ASSIGNMENT), when the
+				// row is transformed.
+				if !leafTypes[i].IsNullable() {
+					return nil, &values.NullAssignmentError{Field: t.FieldPath(), To: leafTypes[i]}
+				}
+				owner.Clear(fd)
 			} else {
 				pv, err := goToProtoValue(fd, newVal)
 				if err != nil {
-					return nil, fmt.Errorf("executor: converting update value for %q: %w", t.FieldPath, err)
+					return nil, fmt.Errorf("executor: converting update value for %q: %w", t.FieldPath(), err)
 				}
-				refl.Set(fd, pv)
+				owner.Set(fd, pv)
 			}
 		}
 
@@ -4280,7 +4171,7 @@ func executeUpdate(
 	// settled before the first write).
 	resultType, ok := p.GetResultType().(*values.RecordType)
 	if !ok || resultType == nil || len(resultType.Fields) != 2 {
-		return nil, layoutBindingError(values.LayoutTypeMismatch, "update result is not exact {OLD,NEW}")
+		return nil, layoutBindingError(values.LayoutTypeMismatch, "update result is not exact {old,new}")
 	}
 	results := make([]QueryResult, 0, len(built))
 	for _, pending := range built {
@@ -4341,12 +4232,8 @@ func goToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value,
 		}
 		for _, e := range elems {
 			if e == nil {
-				// Java forbids NULL elements in collections
-				// (MessageHelpers.coerceArray, SemanticException
-				// UNSUPPORTED — surfaces as an internal error;
-				// tracked upstream as fdb-record-layer#3646).
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInternalError,
-					"NULL as elements of a collection are currently not supported")
+				// A write backstop: admission refuses NULL elements first.
+				return protoreflect.Value{}, &values.NullArrayElementError{}
 			}
 			pv, err := goToProtoScalarValue(inner, e)
 			if err != nil {
@@ -4389,21 +4276,21 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			return protoreflect.ValueOfInt64(int64(n)), nil
 		}
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// An INT column holding a signed Integer in the target (see
+		// functions.ConvertToProtoValue): the INT range, stored as its 32 bits.
 		switch n := v.(type) {
 		case int64:
-			if n < 0 || n > math.MaxUint32 {
+			if n < math.MinInt32 || n > math.MaxInt32 {
 				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
 			}
-			return protoreflect.ValueOfUint32(uint32(n)), nil
+			return protoreflect.ValueOfUint32(uint32(int32(n))), nil
 		case uint32:
 			return protoreflect.ValueOfUint32(n), nil
 		}
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		// A signed Long in the target: every int64 is stored as its 64 bits.
 		switch n := v.(type) {
 		case int64:
-			if n < 0 {
-				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
-			}
 			return protoreflect.ValueOfUint64(uint64(n)), nil
 		case uint64:
 			return protoreflect.ValueOfUint64(n), nil
@@ -4411,7 +4298,11 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 	case protoreflect.FloatKind:
 		switch n := v.(type) {
 		case float64:
-			if n > math.MaxFloat32 || n < -math.MaxFloat32 {
+			// Narrowing a FLOAT's widened carrier is exact, ±Infinity included;
+			// only a finite value beyond the float32 range would change, and no
+			// FLOAT-typed value is one (functions.ConvertToProtoValue's FLOAT
+			// arm, which answers the same).
+			if !math.IsInf(n, 0) && (n > math.MaxFloat32 || n < -math.MaxFloat32) {
 				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
 			}
 			return protoreflect.ValueOfFloat32(float32(n)), nil
@@ -4450,12 +4341,27 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 	case protoreflect.BytesKind:
 		switch b := v.(type) {
 		case []byte:
+			if target, ok := values.FieldTypeForProtoField(fd).(*values.VectorType); ok {
+				_, payload, stride, valid := vectorcodec.Payload(b)
+				if !valid || stride*8 != target.Precision || len(payload) != target.Dimensions*stride {
+					return protoreflect.Value{}, api.NewError(api.ErrCodeCannotConvertType, "Vector precision or dimensions do not match the target column")
+				}
+			}
 			return protoreflect.ValueOfBytes(b), nil
 		}
 	case protoreflect.EnumKind:
 		switch n := v.(type) {
 		case int64:
+			// The enum carrier: an enum-typed value holds its declared number.
 			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
+		case string:
+			// A string assigned to an enum column is promoted as Java's
+			// STRING_TO_ENUM does (the INSERT … VALUES converter's rule).
+			num, err := values.StringToEnumNumber(fd.Enum(), n)
+			if err != nil {
+				return protoreflect.Value{}, api.NewError(api.ErrCodeInternalError, err.Error())
+			}
+			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(num)), nil
 		}
 	case protoreflect.MessageKind:
 		// A UUID column is the tuple_fields.UUID message. UPDATE SET uuid_col =
@@ -4471,10 +4377,10 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			case uuid.UUID:
 				return uuidBytesToProtoMessage(fd, u)
 			case string:
-				parsed, perr := uuid.Parse(u)
-				if perr != nil {
-					return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-						"Invalid UUID value for the UUID type %s", u)
+				parsed, ok := values.ParseJavaUUID(u)
+				if !ok {
+					invalid := &values.InvalidUUIDValueError{Value: u}
+					return protoreflect.Value{}, api.WrapError(api.ErrCodeInternalError, invalid.Error(), invalid)
 				}
 				return uuidBytesToProtoMessage(fd, parsed)
 			}
@@ -4675,6 +4581,13 @@ func executeTableFunction(
 	if sv == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
+	if rv, ok := sv.(*values.RangeValue); ok {
+		cursor, err := newRangeCursor(rv, evalCtx, continuation)
+		if err != nil {
+			return nil, err
+		}
+		return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+	}
 	result, err := sv.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
@@ -4702,6 +4615,64 @@ func executeTableFunction(
 	}
 	return applySkipLimit(recordlayer.FromListWithContinuation(items, continuation), props.Skip, props.ReturnedRowLimit), nil
 }
+
+// rangeCursor is Java's RangeValue.Cursor: rows (ID) from nextPosition by step,
+// each continuation a RangeCursorContinuation carrying the following position.
+type rangeCursor struct {
+	rowType   *values.RecordType
+	next, end int64
+	step      int64
+	closed    bool
+}
+
+func newRangeCursor(rv *values.RangeValue, evalCtx *EvaluationContext, continuation []byte) (*rangeCursor, error) {
+	begin, end, step, err := rv.Bounds(evalCtx)
+	if err != nil {
+		return nil, rangeBoundsError(err)
+	}
+	if continuation != nil {
+		var c gen.RangeCursorContinuation
+		if err := proto.Unmarshal(continuation, &c); err != nil {
+			return nil, fmt.Errorf("invalid range continuation: %w", err)
+		}
+		begin = c.GetNextPosition()
+		if err := values.CheckRangeBounds(begin, end, step); err != nil {
+			return nil, rangeBoundsError(err)
+		}
+	}
+	return &rangeCursor{rowType: rv.Type().(*values.RecordType), next: begin, end: end, step: step}, nil
+}
+
+// rangeBoundsError surfaces Java's RecordCoreException as SQLSTATE XXXXX.
+func rangeBoundsError(err error) error {
+	var rbe *values.RangeBoundsError
+	if errors.As(err, &rbe) {
+		return api.NewError(api.ErrCodeUnknown, rbe.Message)
+	}
+	return err
+}
+
+func (c *rangeCursor) OnNext(context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
+	if c.closed || c.next >= c.end {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), nil
+	}
+	row := QueryResult{Positional: &PositionalRow{Type: c.rowType, Slots: []any{c.next}}}
+	c.next += c.step
+	var cont recordlayer.RecordCursorContinuation = &recordlayer.EndContinuation{}
+	// Java's Continuation.isEnd: nextPosition >= endExclusive + step.
+	if c.next < c.end+c.step {
+		b, err := proto.Marshal(&gen.RangeCursorContinuation{NextPosition: proto.Int64(c.next)})
+		if err != nil {
+			return recordlayer.RecordCursorResult[QueryResult]{}, err
+		}
+		cont = recordlayer.NewBytesContinuation(b)
+	}
+	return recordlayer.NewResultWithValue(row, cont), nil
+}
+
+func (c *rangeCursor) Close() error { c.closed = true; return nil }
+
+func (c *rangeCursor) IsClosed() bool { return c.closed }
 
 // executeExplode mirrors Java RecordQueryExplodePlan.executePlan: the
 // collection re-evaluates from the bindings and the cursor is
@@ -4742,11 +4713,12 @@ func executeExplode(
 	}
 	list, ok := result.([]any)
 	if !ok {
-		// A non-list scalar yields a single row. With ordinality it gets
-		// ordinal 1 (the SQL standard's 1-based position of the sole element).
+		// A non-list scalar yields a single row. With ordinality it gets the
+		// first ordinal (1, the SQL standard's position of the sole element, or
+		// 0 for a zero-based explode).
 		if p.IsWithOrdinality() {
 			return applySkipLimit(
-				recordlayer.FromListWithContinuation([]QueryResult{explodeOrdinalityResult(ordType, result, 1)}, continuation),
+				recordlayer.FromListWithContinuation([]QueryResult{explodeOrdinalityResult(ordType, result, p.FirstOrdinal())}, continuation),
 				props.Skip, props.ReturnedRowLimit,
 			), nil
 		}
@@ -4759,12 +4731,13 @@ func executeExplode(
 	for i, elem := range list {
 		if p.IsWithOrdinality() {
 			// WITH ORDINALITY: each element becomes a 2-field anonymous record
-			// {_0: element, _1: i+1}. The ordinal is the element's 1-based
-			// position in THIS array (the cursor re-runs per outer row, so the
-			// counter naturally resets per outer binding — Java's
-			// IntStream.rangeClosed(1, list.size())). Mirrors
-			// RecordQueryExplodePlan.executePlan's DynamicMessage(field0,field1).
-			items[i] = explodeOrdinalityResult(ordType, elem, i+1)
+			// {_0: element, _1: first+i}. The ordinal is the element's position in
+			// THIS array, from 1 (or 0 when zero-based), assigned over the whole
+			// list before the continuation and skip/limit apply, so a resume never
+			// renumbers (the cursor re-runs per outer row, so the counter resets
+			// per outer binding). Mirrors RecordQueryExplodePlan.executePlan's
+			// `firstOrdinal + i`.
+			items[i] = explodeOrdinalityResult(ordType, elem, p.FirstOrdinal()+i)
 			continue
 		}
 		row, rowErr := explodePlanElementRow(p, elementHandle, elem, i)
@@ -5111,15 +5084,9 @@ func executeRecursiveLevelUnion(
 	if distinct {
 		seen = newBoundedSet[string](props.State)
 		seenCharge = seen.Charged
-		// Dedup on the CTE's OUTPUT columns. Prefer the seed plan's projection
-		// OUTPUT schema: after the temp table is keyed under OUTPUT names, the
-		// seed row can carry INERT extra columns (e.g. the source column a rename
-		// projects from — {SRC, N} for `reach(n)` seeded by `SELECT src`). Those
-		// inert columns are absent from the recursive leg's rows, so keying ALL
-		// seed columns would wrongly treat a recursive row and a seed row with the
-		// same OUTPUT value as distinct (breaking cycle detection). The projection
-		// schema restricts the dedup to the real output columns. Fall back to
-		// the first row's layout when the seed has no projection (e.g. SELECT *).
+		// Dedup on the CTE's OUTPUT columns, the seed plan's result row; the
+		// first row's layout is the fallback for a seed whose result is not a
+		// record.
 		canonicalCols := recursiveUnionOutputColumns(p.GetInitialState())
 		if len(canonicalCols) == 0 && len(items) > 0 && items[0].Positional != nil {
 			// Positional column order is already deterministic (ordinal order),
@@ -5332,12 +5299,8 @@ func executeRecursiveDfsJoinDistinctEager(
 	// buffer (one key per distinct visited row) — charge each NEW key via
 	// boundedSet.
 	var seen *boundedSet[string]
-	// For UNION DISTINCT, dedup on the CTE's OUTPUT columns. Prefer the root
-	// plan's projection OUTPUT schema: after the temp table is keyed under OUTPUT
-	// names, the root row can carry INERT extra columns (the source column a rename
-	// projects from), absent from the recursive rows — keying ALL root columns
-	// would then treat equal-output rows as distinct and break cycle detection.
-	// Fall back to the first row's layout when there is no projection (SELECT *).
+	// For UNION DISTINCT, dedup on the CTE's OUTPUT columns, the root plan's
+	// result row (the first root row's layout when it is not a record).
 	var keyer *cteDedupKeyer
 	if p.IsDistinct() {
 		seen = newBoundedSet[string](props.State)
@@ -5635,12 +5598,16 @@ func comparePKTuples(a, b tuple.Tuple) int {
 
 // sortEvalRow returns the row a sort-key Value expression should be evaluated
 // against: the authoritative ordinal positional row (Value.Evaluate then
-// resolves by ordinal, loud on a miss).
-func sortEvalRow(qr QueryResult, edges ...values.QuantifiedObjectValue) (any, error) {
+// resolves by ordinal, loud on a miss), chained to the evaluation context. A
+// sort under a correlated FlatMap inner — a grouped derived body ordering by
+// an enclosing row's value (`ORDER BY COUNT(*) - w.f`) — reads that value
+// from the context's bindings, exactly as the projection and filter above it
+// do; without the context the enclosing QOV is unbound.
+func sortEvalRow(qr QueryResult, evalCtx *EvaluationContext, edges ...values.QuantifiedObjectValue) (any, error) {
 	if qr.Positional == nil {
 		return nil, nil
 	}
-	return frontierRowContext(qr.Positional, nil, false, edges...)
+	return frontierRowContext(qr.Positional, evalCtx, evalCtx != nil, edges...)
 }
 
 // valueReadsOnlyExactCarrier reports whether every QOV leaf in value is the
@@ -5720,14 +5687,14 @@ func executeInMemorySort(
 		// (concrete-type identity with fresh rows, which the %T-keyed
 		// group/dedup paths depend on): a generated message (flag 0) restores
 		// via protoregistry.GlobalTypes; a *dynamicpb.Message (flag 1) restores
-		// via this metadata resolver — never across representations. A nil
-		// store leaves the resolver nil: a buffer with dynamic struct slots
-		// then fails the resume loudly rather than leaking a descriptor-less
-		// placeholder into the row domain.
-		var resolve protoDescriptorResolver
+		// via the selected plan's computed descriptors or stored metadata —
+		// never across representations. An unknown descriptor fails loudly
+		// rather than leaking a descriptor-less placeholder into the row domain.
+		var md *recordlayer.RecordMetaData
 		if store != nil {
-			resolve = metadataMessageResolver(store.GetRecordMetaData())
+			md = store.GetRecordMetaData()
 		}
+		resolve := continuationMessageResolver(md, inner)
 		// The continuation buffer contains CHILD rows: sort keys are evaluated
 		// before the materialization boundary and therefore use the child's exact
 		// layout/current handle. Attach the fresh sort output layout only when the
@@ -5777,7 +5744,7 @@ func executeInMemorySort(
 		}
 		// The authoritative ordinal row on the non-join frontier (loud on a
 		// miss via FieldValue.evaluateOrdinal).
-		arg, err := sortEvalRow(qr, inputQOV)
+		arg, err := sortEvalRow(qr, evalCtx, inputQOV)
 		if err != nil {
 			return nil, err
 		}
@@ -5878,35 +5845,22 @@ func executeInMemorySort(
 }
 
 // recursiveUnionOutputColumns returns the OUTPUT column names of a recursive
-// union leg by walking to its outermost projection plan and reading each slot's
-// alias (or the projection column name when unaliased), VERBATIM. Returns nil
-// when no single-child path reaches a projection (e.g. a SELECT * seed), so the
-// caller falls back to the first row's layout. Used to restrict UNION DISTINCT
-// dedup to the CTE's real output columns (cteDedupKeyer), ignoring inert extra
-// columns the temp-table normalization may carry.
-//
-// Two things it must not do, and it did both. It upper-folded, which made the
-// dedup key ask a verbatim-named row for a name it does not carry — see
-// cteDedupKeyer for the wrong answer that produced. And it wrote the folded
-// names back into the slice `GetOutputNames()` handed out, mutating the PLAN's
-// own output schema from an executor helper: a defensive copy is not a
-// tidiness preference here, it is the difference between reading a plan and
-// rewriting one.
+// union leg, VERBATIM: the leg plan's result row, which is the CTE body's
+// SELECT list. Used to restrict UNION DISTINCT dedup to the CTE's output
+// columns (cteDedupKeyer). A copy, so the plan's own schema is never written.
 func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
-	for cur := p; cur != nil; {
-		if proj, ok := cur.(*plans.RecordQueryProjectionPlan); ok {
-			names := proj.GetOutputNames()
-			out := make([]string, len(names))
-			copy(out, names)
-			return out
-		}
-		children := cur.GetChildren()
-		if len(children) != 1 {
-			return nil
-		}
-		cur = children[0]
+	if p == nil {
+		return nil
 	}
-	return nil
+	row, ok := p.GetResultType().(*values.RecordType)
+	if !ok || row == nil {
+		return nil
+	}
+	out := make([]string, len(row.Fields))
+	for i, f := range row.Fields {
+		out[i] = f.Name
+	}
+	return out
 }
 
 // cteDedupKeyer builds the recursive-CTE UNION-DISTINCT dedup key by reading
@@ -6145,7 +6099,7 @@ func copyElement(tfd, sfd protoreflect.FieldDescriptor, v protoreflect.Value) (p
 		tgtVal := tfd.Enum().Values().ByName(srcVal.Name())
 		if tgtVal == nil {
 			return protoreflect.Value{}, api.NewErrorf(api.ErrCodeCannotConvertType,
-				"enum value %s is not declared by %s", srcVal.Name(), tfd.Enum().FullName())
+				"enum value %s is not declared by %s", srcVal.Name(), protoscope.JavaFullName(tfd.Enum()))
 		}
 		return protoreflect.ValueOfEnum(tgtVal.Number()), nil
 	default:

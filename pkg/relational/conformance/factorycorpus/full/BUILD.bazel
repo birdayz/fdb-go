@@ -1,9 +1,7 @@
 load("@rules_go//go:def.bzl", "go_test")
 
-# The FULL committed RFC-201 factory corpus, run as ORDINARY suite content —
-# every `just test`, every non-race CI run (owner ruling 2026-08-01, recorded in
-# rfcs/201-layered-test-corpus.md §7). The nightly corpus job re-runs the same
-# target on master as the scheduled heartbeat nightly-reconcile.yml checks.
+# The full committed RFC-201 corpus runs in `just test-full` and non-race CI.
+# The nightly corpus job re-runs it on master as a scheduled heartbeat.
 #
 # One container, one top-level test function, a t.Parallel() subtest per
 # scenario.
@@ -27,7 +25,10 @@ go_test(
     # corpus growth, and cmd/test-budget now reports the utilisation every run
     # so the growth is visible before it is a timeout.
     timeout = "eternal",
-    srcs = ["full_corpus_fdb_test.go"],
+    srcs = [
+        "domain_registration_test.go",
+        "full_corpus_fdb_test.go",
+    ],
     data = ["//pkg/relational/conformance/factorycorpus:testdata"],
     # keep at 1: Bazel shards by TOP-LEVEL TEST FUNCTION, and this package has
     # exactly one (TestFDB_FactoryCorpusFull). The corpus's parallelism is
@@ -40,9 +41,11 @@ go_test(
     tags = [
         "exclusive",
         "resources:memory:2600",
+        "test-full",
     ],
     deps = [
         "//pkg/relational/conformance/factorycorpus",
+        "//pkg/relational/core/keyspace",
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",
     ],

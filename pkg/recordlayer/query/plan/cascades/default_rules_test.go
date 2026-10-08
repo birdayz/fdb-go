@@ -34,30 +34,43 @@ func TestDefaultRules_NotEmpty(t *testing.T) {
 // updated the constant.
 //
 // DefaultImplementationRules already appends
-// GoExtensionImplementationRules, and NormalizationRules already
-// prepends DeMorgan onto DefaultSimplifyRules — listing the composites
+// GoExtensionImplementationRules, and ConstantFoldingRules already
+// carries queryPredicateSimplificationRules — listing the composites
 // covers the parts. FinalizeExpressionsRule is listed explicitly: it is
 // instantiated directly by NewPlanner (the REWRITING-phase
 // rewritingImplRules), not by a set constructor.
 func productionRuleSets() map[string][]any {
 	return map[string][]any{
-		"DefaultExpressionRules":     anySlice(DefaultExpressionRules()),
-		"PlanningExplorationRules":   anySlice(PlanningExplorationRules()),
-		"BatchAExpressionRules":      anySlice(BatchAExpressionRules()),
-		"DMLImplementationRules":     anySlice(DMLImplementationRules()),
-		"RewritingRules":             anySlice(RewritingRules()),
-		"MatchingRules":              anySlice(MatchingRules()),
-		"DefaultImplementationRules": anySlice(DefaultImplementationRules()),
-		"DefaultSimplifyRules":       anySlice(DefaultSimplifyRules()),
-		"NormalizationRules":         anySlice(NormalizationRules()),
-		"planner rewritingImplRules": {NewFinalizeExpressionsRule()},
+		"DefaultExpressionRules":           anySlice(DefaultExpressionRules()),
+		"PlanningExplorationRules":         anySlice(PlanningExplorationRules()),
+		"BatchAExpressionRules":            anySlice(BatchAExpressionRules()),
+		"DMLImplementationRules":           anySlice(DMLImplementationRules()),
+		"RewritingRules":                   anySlice(RewritingRules()),
+		"MatchingRules":                    anySlice(MatchingRules()),
+		"DefaultImplementationRules":       anySlice(DefaultImplementationRules()),
+		"ConstantFoldingRules":             anySlice(ConstantFoldingRules()),
+		"TranslatorConstantPredicateRules": anySlice(TranslatorConstantPredicateRules()),
+		"RewritingImplementationRules":     anySlice(RewritingImplementationRules()),
 	}
 }
 
+// anySlice lists a rule set's rules, a conditional rule as its inner rules
+// (Java's RewritingRuleSet.expandConditionalRules).
 func anySlice[T any](in []T) []any {
-	out := make([]any, len(in))
-	for i, v := range in {
-		out[i] = v
+	out := make([]any, 0, len(in))
+	for _, v := range in {
+		switch cond := any(v).(type) {
+		case *conditionalExpressionRule:
+			for _, r := range cond.rules {
+				out = append(out, r)
+			}
+		case *conditionalImplementationRule:
+			for _, r := range cond.rules {
+				out = append(out, r)
+			}
+		default:
+			out = append(out, v)
+		}
 	}
 	return out
 }
@@ -100,7 +113,7 @@ func TestRuleSets_NoDuplicateRuleTypes(t *testing.T) {
 }
 
 // TestRuleRegistry_ResolvesEveryRegisteredSetRule asserts that every
-// rule in the four set constructors the package init registers
+// rule in the set constructors the package init registers
 // (registerDefaultRules / registerBatchARules / registerMatchingRules /
 // registerRewritingRules) resolves via LookupRule under its short type
 // name. Diagnostic / explain output relies on LookupRule(name) → rule,
@@ -116,10 +129,11 @@ func TestRuleSets_NoDuplicateRuleTypes(t *testing.T) {
 func TestRuleRegistry_ResolvesEveryRegisteredSetRule(t *testing.T) {
 	t.Parallel()
 	registered := map[string][]ExpressionRule{
-		"DefaultExpressionRules": DefaultExpressionRules(),
-		"BatchAExpressionRules":  BatchAExpressionRules(),
-		"MatchingRules":          MatchingRules(),
-		"RewritingRules":         RewritingRules(),
+		"DefaultExpressionRules":   DefaultExpressionRules(),
+		"PlanningExplorationRules": PlanningExplorationRules(),
+		"BatchAExpressionRules":    BatchAExpressionRules(),
+		"MatchingRules":            MatchingRules(),
+		"RewritingRules":           RewritingRules(),
 	}
 	fromSets := map[string]struct{}{}
 	for setName, rules := range registered {
@@ -623,18 +637,27 @@ func TestDefaultRules_EndToEndOptimisation(t *testing.T) {
 	// Reaching it requires the full FilterMerge + 2× NoOpFilter +
 	// DistinctMerge chain, so finding the shape pins the composition.
 	foundShape := false
-	for _, m := range ref.Members() {
+	for _, m := range ref.AllMembers() {
 		d, ok := m.(*expressions.LogicalDistinctExpression)
 		if !ok {
 			continue
 		}
-		inner := d.GetInner().GetRangesOver().Get()
-		if _, ok := inner.(*expressions.FullUnorderedScanExpression); ok {
-			foundShape = true
-			break
+		for _, inner := range d.GetInner().GetRangesOver().AllMembers() {
+			if _, ok := inner.(*expressions.FullUnorderedScanExpression); ok {
+				foundShape = true
+				break
+			}
 		}
 	}
 	if !foundShape {
+		for _, member := range ref.Members() {
+			t.Logf("root member: %T", member)
+			for _, quantifier := range member.GetQuantifiers() {
+				for _, child := range quantifier.GetRangesOver().Members() {
+					t.Logf("child member: %T", child)
+				}
+			}
+		}
 		t.Fatalf("after exploration, Reference has no Distinct(Scan) member — members=%d", len(ref.Members()))
 	}
 }

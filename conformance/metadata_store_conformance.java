@@ -109,6 +109,41 @@ class MetaDataStoreSteps extends ConformanceBase {
         });
     }
 
+    @ConformanceStep("saveStoredQueryMetaDataJava")
+    public Map<String, Object> saveStoredQueryMetaDataJava(String clusterFile, byte[] subspace, int version) {
+        return runInContext(clusterFile, null, context -> {
+            RecordMetaDataBuilder builder = RecordMetaData.newBuilder().setRecords(createTestMetaData().toProto());
+            builder.addStoredQuery("warm_orders", "SELECT * FROM Order WHERE price > minimum_price()",
+                    List.of("CREATE TEMPORARY FUNCTION minimum_price() AS 100",
+                            "CREATE TEMPORARY FUNCTION maximum_price() AS 1000"));
+            builder.addStoredQuery("warm_customers", "SELECT * FROM Customer", List.of());
+            builder.setVersion(version);
+            byte[] serialized = builder.build().toProto().toByteArray();
+            SplitHelper.saveWithSplit(context, new Subspace(subspace), Tuple.from((Object) null), serialized, null);
+            return Map.of("savedBytes", serialized.length);
+        });
+    }
+
+    @ConformanceStep("loadStoredQueryMetaDataJava")
+    public Map<String, Object> loadStoredQueryMetaDataJava(String clusterFile, byte[] subspace) {
+        return runInContext(clusterFile, null, context -> {
+            byte[] data = context.ensureActive().get(new Subspace(subspace).pack(Tuple.from((Object) null, 0L))).join();
+            if (data == null) {
+                throw new IllegalStateException("stored-query metadata is missing");
+            }
+            final RecordMetaData metaData;
+            try {
+                metaData = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(data, EXTENSION_REGISTRY));
+            } catch (InvalidProtocolBufferException e) {
+                throw new RuntimeException("Failed to parse stored-query metadata", e);
+            }
+            Map<String, Object> queries = new HashMap<>();
+            metaData.getStoredQueries().forEach((name, query) -> queries.put(name,
+                    Map.of("query", query.getQuery(), "tempFunctions", query.getTempFunctions())));
+            return Map.of("version", metaData.getVersion(), "queries", queries);
+        });
+    }
+
     /**
      * Save historical metadata version using Java's SplitHelper.
      */
@@ -1043,5 +1078,214 @@ class MetaDataStoreSteps extends ConformanceBase {
                 throw new RuntimeException("unsupported field type " + fd.getJavaType()
                     + " for field " + fd.getName());
         }
+    }
+
+    /**
+     * Save each record in its own transaction into a store built from the
+     * meta-data proto, and report each save's verdict ("ok", or the root
+     * exception's full class name: a unique index's violation surfaces at
+     * commit), then every index key-value pair the saves wrote (the store's
+     * INDEX and INDEX_SECONDARY_SPACE keyspaces, 2 and 3), as hex relative to
+     * the store subspace. Records are
+     * serialized messages of recordTypeName. The store's IndexMaintenanceFilter
+     * is filter's.
+     */
+    @ConformanceStep("saveRecordsAndDumpIndexesJava")
+    public Map<String, Object> saveRecordsAndDumpIndexesJava(String clusterFile, byte[] subspace, byte[] metaData,
+                                                             String recordTypeName, byte[][] records, String filter)
+            throws InvalidProtocolBufferException {
+        // filter: absent or "NORMAL" is IndexMaintenanceFilter.NORMAL, "NO_NULLS" its NO_NULLS.
+        final com.apple.foundationdb.record.provider.foundationdb.IndexMaintenanceFilter maintenanceFilter =
+                "NO_NULLS".equals(filter)
+                ? com.apple.foundationdb.record.provider.foundationdb.IndexMaintenanceFilter.NO_NULLS
+                : com.apple.foundationdb.record.provider.foundationdb.IndexMaintenanceFilter.NORMAL;
+        final RecordMetaData md = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(metaData, EXTENSION_REGISTRY));
+        final Descriptors.Descriptor descriptor = md.getRecordType(recordTypeName).getDescriptor();
+        final Subspace ss = new Subspace(subspace);
+        final List<String> verdicts = new ArrayList<>();
+        for (byte[] rec : records) {
+            final DynamicMessage msg = DynamicMessage.parseFrom(descriptor, rec);
+            try {
+                runInContext(clusterFile, null, context -> {
+                    FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context).setSubspace(ss)
+                            .setIndexMaintenanceFilter(maintenanceFilter)
+                            .setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen().saveRecord(msg);
+                    return null;
+                });
+                verdicts.add("ok");
+            } catch (RuntimeException ex) {
+                Throwable t = ex;
+                while ((t instanceof java.util.concurrent.CompletionException || t instanceof java.util.concurrent.ExecutionException)
+                        && t.getCause() != null) {
+                    t = t.getCause();
+                }
+                verdicts.add(t.getClass().getName());
+            }
+        }
+        final Map<String, Object> result = new HashMap<>();
+        result.put("verdicts", verdicts);
+        result.put("kvs", dumpIndexSpaces(clusterFile, ss));
+        result.put("records", dumpSpaces(clusterFile, ss, 1L));
+        return result;
+    }
+
+    /**
+     * Opens the store at subspace under metaData, whose indexes the ALWAYS_READABLE_CHECKER has
+     * FDBRecordStore.checkVersion rebuild in the open's transaction over the records already
+     * stored, and returns the index key-value pairs (spaces 2 and 3) relative to the subspace: an
+     * index Java builds from the stored record bytes.
+     */
+    @ConformanceStep("openStoreAndDumpIndexesJava")
+    public Map<String, Object> openStoreAndDumpIndexesJava(String clusterFile, byte[] subspace, byte[] metaData)
+            throws InvalidProtocolBufferException {
+        final RecordMetaData md = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(metaData, EXTENSION_REGISTRY));
+        final Subspace ss = new Subspace(subspace);
+        runInContext(clusterFile, null, context -> FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context)
+                .setSubspace(ss).setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen());
+        final Map<String, Object> result = new HashMap<>();
+        result.put("kvs", dumpIndexSpaces(clusterFile, ss));
+        return result;
+    }
+
+    /**
+     * Loads each record with primary key 1..count from the store at subspace under metaData and
+     * saves it unchanged (the default serializer: the record read back is a DynamicMessage), then
+     * returns the stored records (space 1) and the index key-value pairs (spaces 2 and 3), each
+     * relative to the subspace: the bytes a Java load-then-save writes.
+     */
+    @ConformanceStep("resaveRecordsJava")
+    public Map<String, Object> resaveRecordsJava(String clusterFile, byte[] subspace, byte[] metaData, long count)
+            throws InvalidProtocolBufferException {
+        final RecordMetaData md = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(metaData, EXTENSION_REGISTRY));
+        final Subspace ss = new Subspace(subspace);
+        for (long pk = 1; pk <= count; pk++) {
+            final Tuple primaryKey = Tuple.from(pk);
+            runInContext(clusterFile, null, context -> {
+                final FDBRecordStore store = FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context)
+                        .setSubspace(ss).setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen();
+                store.saveRecord(store.loadRecord(primaryKey).getRecord());
+                return null;
+            });
+        }
+        final List<List<String>> records = runInContext(clusterFile, null, context -> {
+            final byte[] prefix = ss.getKey();
+            final List<List<String>> out = new ArrayList<>();
+            for (com.apple.foundationdb.KeyValue kv : context.ensureActive().getRange(ss.range(Tuple.from(1L))).asList().join()) {
+                final byte[] rel = java.util.Arrays.copyOfRange(kv.getKey(), prefix.length, kv.getKey().length);
+                out.add(List.of(java.util.HexFormat.of().formatHex(rel), java.util.HexFormat.of().formatHex(kv.getValue())));
+            }
+            return out;
+        });
+        final Map<String, Object> result = new HashMap<>();
+        result.put("records", records);
+        result.put("kvs", dumpIndexSpaces(clusterFile, ss));
+        return result;
+    }
+
+    /**
+     * Loads the record with each primary key in pks from the store at subspace under metaData and
+     * reports, per record, "ok " and the hex of the loaded record's bytes (the message the default
+     * serializer parsed, as a DynamicMessage, serialized again), "none" when there is no record, or
+     * the root exception's full class name and message: Java's reading of stored record bytes.
+     */
+    @ConformanceStep("loadRecordVerdictsJava")
+    public Map<String, Object> loadRecordVerdictsJava(String clusterFile, byte[] subspace, byte[] metaData, long[] pks)
+            throws InvalidProtocolBufferException {
+        final RecordMetaData md = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(metaData, EXTENSION_REGISTRY));
+        final Subspace ss = new Subspace(subspace);
+        final List<String> verdicts = new ArrayList<>();
+        for (long pk : pks) {
+            try {
+                verdicts.add(runInContext(clusterFile, null, context -> {
+                    final FDBRecordStore store = FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context)
+                            .setSubspace(ss).setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen();
+                    final var rec = store.loadRecord(Tuple.from(pk));
+                    return rec == null ? "none" : "ok " + java.util.HexFormat.of().formatHex(rec.getRecord().toByteArray());
+                }));
+            } catch (RuntimeException ex) {
+                Throwable t = ex;
+                while (t.getCause() != null && t.getCause() != t) {
+                    t = t.getCause();
+                }
+                verdicts.add(t.getClass().getName() + ": " + t.getMessage());
+            }
+        }
+        final Map<String, Object> result = new HashMap<>();
+        result.put("verdicts", verdicts);
+        return result;
+    }
+
+    private List<List<String>> dumpIndexSpaces(String clusterFile, Subspace ss) {
+        return dumpSpaces(clusterFile, ss, 2L, 3L);
+    }
+
+    /** The key-value pairs of the store at ss under each of spaces (1: records), relative to ss. */
+    private List<List<String>> dumpSpaces(String clusterFile, Subspace ss, long... spaces) {
+        return runInContext(clusterFile, null, context -> {
+            final byte[] prefix = ss.getKey();
+            final List<List<String>> out = new ArrayList<>();
+            for (long space : spaces) {
+                for (com.apple.foundationdb.KeyValue kv : context.ensureActive().getRange(ss.range(Tuple.from(space))).asList().join()) {
+                    final byte[] rel = java.util.Arrays.copyOfRange(kv.getKey(), prefix.length, kv.getKey().length);
+                    out.add(List.of(java.util.HexFormat.of().formatHex(rel),
+                            java.util.HexFormat.of().formatHex(kv.getValue())));
+                }
+            }
+            return out;
+        });
+    }
+
+    /**
+     * Saves three Orders and two Customers under metaData (whose record types' primary keys lead
+     * with the record type key), marks indexName disabled, builds it with the OnlineIndexer
+     * without marking it readable, and returns the index's range-set key-value pairs (IndexRangeSpace,
+     * 6) relative to the subspace: the records range the build presets (IndexingCommon
+     * .computeRecordsRange, ordered by Tuple.compareTo for any record type key) and the ranges it
+     * built.
+     */
+    @ConformanceStep("buildIndexDumpRangeSetJava")
+    public Map<String, Object> buildIndexDumpRangeSetJava(String clusterFile, byte[] subspace, byte[] metaData,
+                                                          String indexName) throws InvalidProtocolBufferException {
+        final RecordMetaData md = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(metaData, EXTENSION_REGISTRY));
+        final Subspace ss = new Subspace(subspace);
+        runInContext(clusterFile, null, context -> {
+            final FDBRecordStore store = FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context)
+                    .setSubspace(ss).setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen();
+            // Saved as DynamicMessages of the meta-data's own descriptors, which
+            // a meta-data built from proto does not share with the generated classes.
+            try {
+                for (long i = 1; i <= 3; i++) {
+                    store.saveRecord(DynamicMessage.parseFrom(md.getRecordType("Order").getDescriptor(),
+                            Order.newBuilder().setOrderId(i).setPrice((int) (10 * i)).build().toByteString()));
+                }
+                for (long i = 101; i <= 102; i++) {
+                    store.saveRecord(DynamicMessage.parseFrom(md.getRecordType("Customer").getDescriptor(),
+                            RecordLayerDemo.Customer.newBuilder().setCustomerId(i).build().toByteString()));
+                }
+            } catch (InvalidProtocolBufferException e) {
+                throw new IllegalStateException(e);
+            }
+            store.markIndexDisabled(indexName).join();
+            return null;
+        });
+        try (var indexer = com.apple.foundationdb.record.provider.foundationdb.OnlineIndexer.newBuilder()
+                .setDatabase(createDatabase(clusterFile)).setMetaData(md).setSubspace(ss)
+                .setIndex(indexName).build()) {
+            indexer.buildIndex(false);
+        }
+        final Object subspaceKey = md.getIndex(indexName).getSubspaceKey();
+        final List<List<String>> kvs = runInContext(clusterFile, null, context -> {
+            final byte[] prefix = ss.getKey();
+            final List<List<String>> out = new ArrayList<>();
+            for (com.apple.foundationdb.KeyValue kv : context.ensureActive()
+                    .getRange(ss.range(Tuple.from(6L, subspaceKey))).asList().join()) {
+                final byte[] rel = java.util.Arrays.copyOfRange(kv.getKey(), prefix.length, kv.getKey().length);
+                out.add(List.of(java.util.HexFormat.of().formatHex(rel), java.util.HexFormat.of().formatHex(kv.getValue())));
+            }
+            return out;
+        });
+        final Map<String, Object> result = new HashMap<>();
+        result.put("kvs", kvs);
+        return result;
     }
 }

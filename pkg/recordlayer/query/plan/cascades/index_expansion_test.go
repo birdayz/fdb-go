@@ -303,64 +303,72 @@ func TestValueIndexScanMatchCandidate_UnknownMetadataFailsClosed(t *testing.T) {
 	}
 }
 
-func TestExpandValueIndex_PreBuiltScalarNestingFailsClosed(t *testing.T) {
+// A scalar nested leaf is read by its full path (KeyExpressionExpansionVisitor
+// pushes the parent onto the field-name prefix), so an index on ADDR.CITY over
+// a row that also has a top-level CITY binds, orders and covers ADDR.CITY and
+// never CITY.
+func TestExpandValueIndex_ScalarNestingReadsTheFullPath(t *testing.T) {
 	t.Parallel()
-	addressType := values.NewRecordType("Address", false, []values.Field{
+	addressType := values.NewRecordType("Address", true, []values.Field{
 		{Name: "CITY", FieldType: values.NullableString, Ordinal: 0},
 	})
 	itemType := values.NewRecordType("Item", false, []values.Field{
-		{Name: "ADDR", FieldType: addressType, Ordinal: 0},
-		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "CITY", FieldType: values.NullableString, Ordinal: 1},
+		{Name: "ADDR", FieldType: addressType, Ordinal: 2},
 	})
-
-	scalar := gen.Field_SCALAR
-	nestedScalar := &gen.KeyExpression{Nesting: &gen.Nesting{
-		Parent: &gen.Field{
-			FieldName: proto.String("ADDR"),
-			FanType:   &scalar,
-		},
-		Child: keyExpressionField("CITY", gen.Field_SCALAR),
+	nestedCity := &gen.KeyExpression{Nesting: &gen.Nesting{
+		Parent: &gen.Field{FieldName: proto.String("ADDR"), FanType: gen.Field_SCALAR.Enum()},
+		Child:  keyExpressionField("CITY", gen.Field_SCALAR),
 	}}
-	mixed := &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
-		nestedScalar,
-		keyExpressionField("TAGS", gen.Field_FAN_OUT),
-	}}}
+	alias := values.UniqueCorrelationIdentifier()
+	distinct := false
+	candidate := NewValueIndexScanMatchCandidateWithFunctions(
+		"idx_addr_city", []string{"Item"}, []string{"CITY"}, nil,
+		[]values.CorrelationIdentifier{alias}, itemType, false, []string{"ID"}, &distinct,
+	).WithRootKeyExpression(nestedCity)
 
-	for _, tc := range []struct {
-		name    string
-		columns []string
-		root    *gen.KeyExpression
-	}{
-		{name: "scalar_nesting", columns: []string{"CITY"}, root: nestedScalar},
-		{
-			name:    "mixed_scalar_nesting_and_fanout",
-			columns: []string{"CITY", "TAGS"},
-			root:    mixed,
-		},
-	} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			aliases := make([]values.CorrelationIdentifier, len(tc.columns))
-			for i := range aliases {
-				aliases[i] = values.UniqueCorrelationIdentifier()
-			}
-			createsDuplicates := false
-			candidate := NewValueIndexScanMatchCandidateWithFunctions(
-				"idx_"+tc.name,
-				[]string{"Item"},
-				tc.columns,
-				nil,
-				aliases,
-				itemType,
-				false,
-				nil,
-				&createsDuplicates,
-			).WithRootKeyExpression(tc.root)
-			if traversal := candidate.GetTraversal(); traversal != nil {
-				t.Fatal("prebuilt candidate flattened a scalar nested leaf")
-			}
-		})
+	top := fanoutExpansionTopSelect(t, candidate.GetTraversal())
+	preds := top.GetPredicates()
+	if len(preds) != 1 {
+		t.Fatalf("predicates = %d, want the one placeholder", len(preds))
+	}
+	placeholder := preds[0].(*predicates.Placeholder)
+	field, ok := values.AsFieldValue(placeholder.Value)
+	if !ok || !slices.Equal(field.Path().Ordinals(), []int{2, 0}) {
+		t.Fatalf("placeholder value = %#v, want ADDR.CITY (ordinals [2 0])", placeholder.Value)
+	}
+	column, ok := values.AsFieldValue(candidate.ColumnValue(0, nil))
+	if !ok || !slices.Equal(column.Path().Ordinals(), []int{2, 0}) {
+		t.Fatalf("column value = %#v, want ADDR.CITY", candidate.ColumnValue(0, nil))
+	}
+	if got := candidate.trimmableKeyColumnNames(); len(got) != 0 {
+		t.Fatalf("a nested leaf trims primary-key columns %v; it is no top-level field", got)
+	}
+
+	source, target := values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()
+	if _, ok := candidate.PushValueThroughFetch(indexExpansionField(t, source, itemType, 1), source, target); ok {
+		t.Fatal("the top-level CITY was covered by an index on ADDR.CITY")
+	}
+	translated, ok := candidate.PushValueThroughFetch(indexExpansionField(t, source, itemType, 2, 0), source, target)
+	if !ok {
+		t.Fatal("ADDR.CITY is in the entry and must be covered")
+	}
+	if field, _ := values.AsFieldValue(translated); field == nil || !slices.Equal(field.Path().Ordinals(), []int{2, 0}) {
+		t.Fatalf("translated = %#v, want ADDR.CITY over the target", translated)
+	}
+	if _, ok := candidate.PushValueThroughFetch(indexExpansionField(t, source, itemType, 2), source, target); ok {
+		t.Fatal("the whole ADDR struct was covered by one of its leaves")
+	}
+
+	parts := candidate.ComputeMatchedOrderingParts(
+		NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil),
+		[]values.CorrelationIdentifier{alias}, false)
+	if len(parts) == 0 {
+		t.Fatal("no ordering parts for the nested key column")
+	}
+	if field, _ := values.AsFieldValue(parts[0].GetValue()); field == nil || !slices.Equal(field.Path().Ordinals(), []int{2, 0}) {
+		t.Fatalf("ordering part 0 = %#v, want ADDR.CITY", parts[0].GetValue())
 	}
 }
 
@@ -904,17 +912,17 @@ func tautologyPredicateProto() *gen.Predicate {
 // predicate at all — the state every downstream gate reads.
 //
 // The classification has to happen where the predicate ENTERS the candidate,
-// because "is this candidate sparse?" is asked in four places and only ONE of
+// because "is this candidate sparse?" is asked in three places and only ONE of
 // them converts the predicate first:
 //
-//   - ExpandValueIndex's fan-out arm drops the candidate outright,
 //   - AbstractDataAccessRule restricts it to root-reference matches,
 //   - candidatePreservesBaseRecordCardinality refuses cardinality shortcuts,
-//   - expandFlatValueIndex attaches it (and DOES check for a tautology).
+//   - the expansion attaches it to the candidate graph (and DOES check for a
+//     tautology).
 //
-// A tautology check at the one converting site leaves the other three treating
-// a complete index as filtered, so `WHERE TRUE` on a fan-out index yields no
-// candidate at all. Normalizing at the boundary is what makes the four agree.
+// A tautology check at the one converting site leaves the other two treating
+// a complete index as filtered. Normalizing at the boundary is what makes the
+// three agree.
 func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 	t.Parallel()
 
@@ -974,8 +982,18 @@ func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 		if cand.GetPredicateProto() == nil {
 			t.Fatal("WHERE FALSE indexes nothing and must stay a sparse candidate")
 		}
-		if cand.GetTraversal() != nil {
-			t.Fatal("a genuinely sparse fan-out candidate must still fail closed")
+		// The candidate graph carries the stored predicate beside the fan-out
+		// expansion (ValueIndexExpansionVisitor.java:138-162), so the matcher
+		// accounts for the filter instead of treating the index as full.
+		top := fanoutExpansionTopSelect(t, cand.GetTraversal())
+		carriesFilter := false
+		for _, pred := range top.GetPredicates() {
+			if _, isPlaceholder := pred.(*predicates.Placeholder); !isPlaceholder {
+				carriesFilter = true
+			}
+		}
+		if !carriesFilter {
+			t.Fatal("a genuinely sparse fan-out candidate graph lost its stored predicate")
 		}
 		scalarCand := newCandidate(keyExpressionField("TAGS", gen.Field_SCALAR), false).
 			WithPredicateProto(filtering)
@@ -983,4 +1001,100 @@ func TestCandidateBoundaryClassifiesTautologyAsNoPredicate(t *testing.T) {
 			t.Fatal("a sparse index omits records and cannot preserve base-record cardinality")
 		}
 	})
+}
+
+// A plain CONCATENATE key column is the whole repeated field as one column:
+// Java's visitor reads it as FieldValue.ofFieldNames like a scalar field
+// (KeyExpressionExpansionVisitor.java:162-176), so the index is a candidate
+// whose placeholder is the array-typed field. Its entry holds the list as a
+// nested tuple, which the covering row does not decode, so it is not covered.
+func TestExpandValueIndex_ConcatenateColumnIsTheWholeField(t *testing.T) {
+	t.Parallel()
+	arrayType := values.NewArrayType(true, values.NotNullString)
+	itemType := values.NewRecordType("Item", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "TAGS", FieldType: arrayType, Ordinal: 1},
+	})
+	alias := values.UniqueCorrelationIdentifier()
+	distinct := false
+	cand := NewValueIndexScanMatchCandidateWithFunctions(
+		"idx_tags", []string{"Item"}, []string{"TAGS"}, nil,
+		[]values.CorrelationIdentifier{alias}, itemType, false, []string{"ID"}, &distinct,
+	).WithRootKeyExpression(keyExpressionField("TAGS", gen.Field_CONCATENATE)).WithPrimaryKeyEntryOrdinals([]int{1})
+
+	top := fanoutExpansionTopSelect(t, cand.GetTraversal())
+	preds := top.GetPredicates()
+	if len(preds) != 1 {
+		t.Fatalf("predicates = %d, want the one placeholder", len(preds))
+	}
+	placeholder, ok := preds[0].(*predicates.Placeholder)
+	if !ok || placeholder.ParameterAlias != alias {
+		t.Fatalf("predicate = %#v, want the placeholder of %s", preds[0], alias)
+	}
+	field, ok := values.AsFieldValue(placeholder.Value)
+	if !ok || !slices.Equal(field.Path().Ordinals(), []int{1}) {
+		t.Fatalf("placeholder value = %#v, want the TAGS field", placeholder.Value)
+	}
+	if _, isArray := placeholder.Value.Type().(*values.ArrayType); !isArray {
+		t.Fatalf("placeholder type = %v, want the array", placeholder.Value.Type())
+	}
+
+	source, target := values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()
+	if _, ok := cand.PushValueThroughFetch(indexExpansionField(t, source, itemType, 1), source, target); ok {
+		t.Fatal("a CONCATENATE column was covered from its nested-tuple entry")
+	}
+	if _, ok := cand.PushValueThroughFetch(indexExpansionField(t, source, itemType, 0), source, target); !ok {
+		t.Fatal("control: the primary key must stay covered")
+	}
+}
+
+// A long-arithmetic key expands to the arithmetic of its logical operator over
+// its argument Values (LongArithmethicFunctionKeyExpression.toValue). Two keys
+// Go declines (DIVERGENCES.md): an entry size stored as long_value, for which
+// the bitmap functions have no lane (Java's VerifyException fails the query),
+// and an argument that is not INT or LONG, whose entries hold the truncated
+// long rather than the query expression's value.
+func TestExpandValueIndex_LongArithmeticKey(t *testing.T) {
+	t.Parallel()
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "D", FieldType: values.NullableDouble, Ordinal: 1},
+	})
+	key := func(function, field string, literal *gen.Value) *gen.KeyExpression {
+		return &gen.KeyExpression{Function: &gen.Function{
+			Name: proto.String(function),
+			Arguments: &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
+				keyExpressionField(field, gen.Field_SCALAR),
+				{Value: literal},
+			}}},
+		}}
+	}
+	candidate := func(root *gen.KeyExpression, function string) *ValueIndexScanMatchCandidate {
+		distinct := false
+		return NewValueIndexScanMatchCandidateWithFunctions(
+			"idx", []string{"T"}, []string{""}, []string{function},
+			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+			rowType, false, []string{"ID"}, &distinct,
+		).WithRootKeyExpression(root)
+	}
+
+	intSize := candidate(key("bitmap_bucket_offset", "ID", &gen.Value{IntValue: proto.Int32(10000)}), "bitmap_bucket_offset")
+	top := fanoutExpansionTopSelect(t, intSize.GetTraversal())
+	placeholder := top.GetPredicates()[0].(*predicates.Placeholder)
+	arithmetic, ok := placeholder.Value.(*values.ArithmeticValue)
+	if !ok || arithmetic.Op != values.OpBitmapBucketOffset {
+		t.Fatalf("placeholder = %#v, want bitmap_bucket_offset(ID, 10000)", placeholder.Value)
+	}
+	if lane, ok := arithmetic.Lane(); !ok || lane.Result != values.TypeCodeLong {
+		t.Fatalf("lane = %+v, %v; want the LONG lane of (LONG, INT)", lane, ok)
+	}
+
+	longSize := candidate(key("bitmap_bucket_offset", "ID", &gen.Value{LongValue: proto.Int64(10000)}), "bitmap_bucket_offset")
+	if longSize.GetTraversal() != nil || longSize.ToScanPlan(nil, false) != nil {
+		t.Fatal("a long_value entry size has no bitmap lane; the index must not be a candidate")
+	}
+	double := candidate(key("add", "D", &gen.Value{IntValue: proto.Int32(1)}), "add")
+	if double.GetTraversal() != nil || double.ToScanPlan(nil, false) != nil {
+		t.Fatal("an arithmetic key over a DOUBLE argument must not be a candidate")
+	}
 }

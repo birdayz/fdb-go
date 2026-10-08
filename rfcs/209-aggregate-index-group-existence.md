@@ -1,6 +1,11 @@
 # RFC-209 — Group existence for aggregate indexes
 
-- **Status:** **ACCEPTED AND IMPLEMENTED.** This document landed as PR #605
+- **Status:** **WITHDRAWN 2026-10-05.** The owner ruled that SUM and COUNT
+  aggregate indexes answer exactly as Java's do (TODO.md section 7). The
+  companion indexes, the `GroupExistenceMerge` operator, the COUNT(*) zero drop
+  and the SUM-residue gate are deleted; the index answers alone, Java's
+  residue and missing groups included. The design below is history.
+- **Previous status:** **ACCEPTED AND IMPLEMENTED.** This document landed as PR #605
   (`329db80fd`); the design it describes landed as PR #612 (`a56472861`),
   companion discovery and the `GroupExistenceMerge` operator included. It read
   `PROPOSED` for some time after that — the rot this port names explicitly, a

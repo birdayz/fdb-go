@@ -78,105 +78,42 @@ func TestNormalizeRecursiveLegUsesExactOrdinalAuthority(t *testing.T) {
 	if normalizedExpr == nil {
 		t.Fatalf("normalize recursive leg: %v", tr.translateErr)
 	}
-	normalized, ok := normalizedExpr.(*expressions.LogicalProjectionExpression)
-	if !ok {
-		t.Fatalf("normalized leg = %T, want logical projection", normalizedExpr)
+	normalized, columns := blockColumns(t, normalizedExpr)
+	if len(columns) != 2 || columns[0].Name != "A.B" || columns[1].Name != "(T.RIGHT)" {
+		t.Fatalf("normalization output names = %v", columns)
 	}
-	aliases := normalized.GetAliases()
-	if len(aliases) != 2 || aliases[0] != "A.B" || aliases[1] != "(T.RIGHT)" {
-		t.Fatalf("normalization aliases = %v", aliases)
-	}
-	for ordinal, value := range normalized.GetProjectedValues() {
-		field := exactTestFieldView(t, value)
+	for ordinal, column := range columns {
+		field := exactTestFieldView(t, column.Value)
 		if got := field.Path().Ordinals(); len(got) != 1 || got[0] != ordinal {
 			t.Fatalf("normalized slot %d path = %v, want [%d]", ordinal, got, ordinal)
 		}
 		owner, ownerOK := values.AsQuantifiedObjectValue(field.ChildValue())
-		if !ownerOK || owner.Correlation() != normalized.GetInner().GetAlias() {
+		if !ownerOK || owner.Correlation() != normalized.GetQuantifiers()[0].GetAlias() {
 			t.Fatalf("normalized slot %d owner = %v, want inner quantifier %s",
-				ordinal, owner, normalized.GetInner().GetAlias())
+				ordinal, owner, normalized.GetQuantifiers()[0].GetAlias())
 		}
 	}
 }
 
-func TestRecursiveCTEConsumerBridgeWidensOnlyTheDeclaredPositionalRoot(t *testing.T) {
-	t.Parallel()
-	declaredRow := &values.RecordType{Fields: []values.Field{
-		{Name: "NAME", Ordinal: 0, FieldType: values.NullableString},
-		{Name: "LEVEL", Ordinal: 1, FieldType: values.NotNullInt},
-	}}
-	commonRow := &values.RecordType{Fields: []values.Field{
-		{Name: "NAME", Ordinal: 0, FieldType: values.NullableString},
-		{Name: "LEVEL", Ordinal: 1, FieldType: values.NullableInt},
-	}}
-	declaration := exactTestQOV(t, "ORG_LEVELS", declaredRow)
-	target := exactTestQOV(t, "ORG_LEVELS", commonRow)
-
-	for ordinal, wantType := range []values.Type{values.NullableString, values.NullableInt} {
-		original := exactTestField(t, declaration, ordinal)
-		translated, err := translateRecursiveCTEConsumerValue(original, declaration, target)
-		if err != nil {
-			t.Fatalf("translate slot %d: %v", ordinal, err)
-		}
-		field := exactTestFieldView(t, translated)
-		if !field.ResultType().Equals(wantType) {
-			t.Fatalf("translated slot %d type = %s, want %s", ordinal, field.ResultType(), wantType)
-		}
-		owner, ok := values.AsQuantifiedObjectValue(field.ChildValue())
-		if !ok || !owner.FlowedType().Equals(commonRow) {
-			t.Fatalf("translated slot %d owner = %v, want exact common row %s", ordinal, owner, commonRow)
-		}
+// blockColumns is the block SelectExpression expr and its result columns.
+func blockColumns(t *testing.T, expr expressions.RelationalExpression) (*expressions.SelectExpression, []values.RecordConstructorField) {
+	t.Helper()
+	block, ok := expr.(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("expression = %T, want a block SelectExpression", expr)
 	}
-
-	nestedDeclared := &values.RecordType{Fields: []values.Field{{
-		Name: "PAYLOAD", Ordinal: 0, FieldType: &values.RecordType{Fields: []values.Field{{
-			Name: "LEVEL", Ordinal: 0, FieldType: values.NotNullInt,
-		}}},
-	}}}
-	nestedCommon := &values.RecordType{Fields: []values.Field{{
-		Name: "PAYLOAD", Ordinal: 0, FieldType: &values.RecordType{Fields: []values.Field{{
-			Name: "LEVEL", Ordinal: 0, FieldType: values.NullableInt,
-		}}},
-	}}}
-	nestedDeclaration := exactTestQOV(t, "NESTED_LEVELS", nestedDeclared)
-	nestedTarget := exactTestQOV(t, "NESTED_LEVELS", nestedCommon)
-	nested, err := translateRecursiveCTEConsumerValue(
-		exactTestField(t, nestedDeclaration, 0, 0), nestedDeclaration, nestedTarget)
-	if err != nil {
-		t.Fatalf("translate nested LEVEL: %v", err)
+	columns, ok := block.GetResultValue().(*values.RecordConstructorValue)
+	if !ok {
+		t.Fatalf("block result = %T, want a record of columns", block.GetResultValue())
 	}
-	nestedField := exactTestFieldView(t, nested)
-	if got := nestedField.Path().Ordinals(); len(got) != 2 || got[0] != 0 || got[1] != 0 ||
-		!nestedField.ResultType().Equals(values.NullableInt) {
-		t.Fatalf("nested LEVEL path/type = %v/%s, want [0 0]/nullable INT", got, nestedField.ResultType())
-	}
-
-	foreign := exactTestField(t, exactTestQOV(t, "FOREIGN", declaredRow), 1)
-	unchanged, err := translateRecursiveCTEConsumerValue(foreign, declaration, target)
-	if err != nil || unchanged != foreign {
-		t.Fatalf("foreign window = (%v, %v), want pointer-stable unchanged", unchanged, err)
-	}
-
-	reordered := &values.RecordType{Fields: []values.Field{
-		{Name: "LEVEL", Ordinal: 0, FieldType: values.NullableInt},
-		{Name: "NAME", Ordinal: 1, FieldType: values.NullableString},
-	}}
-	if translated, translateErr := translateRecursiveCTEConsumerValue(
-		exactTestField(t, declaration, 1), declaration, exactTestQOV(t, "ORG_LEVELS", reordered)); translated != nil || translateErr == nil {
-		t.Fatalf("reordered common row = (%v, %v), want exact rejection", translated, translateErr)
-	}
-
-	incompatible := &values.RecordType{Fields: []values.Field{
-		{Name: "NAME", Ordinal: 0, FieldType: values.NullableString},
-		{Name: "LEVEL", Ordinal: 1, FieldType: values.NotNullString},
-	}}
-	if translated, translateErr := translateRecursiveCTEConsumerValue(
-		exactTestField(t, declaration, 1), declaration, exactTestQOV(t, "ORG_LEVELS", incompatible)); translated != nil || translateErr == nil {
-		t.Fatalf("incompatible common row = (%v, %v), want exact rejection", translated, translateErr)
-	}
+	return block, columns.Fields
 }
 
-func TestRecursiveCTECommonRowPrecedesSelfScanAndConsumerBinding(t *testing.T) {
+// TestRecursiveCTESeedRowPrecedesSelfScanAndConsumerBinding pins Java's
+// fixed point: every iteration keeps the seed's row (SemanticAnalyzer
+// .getRecursiveCteType), so `0 AS level` stays NOT NULL for the self scan, the
+// union and the consumer, and the nullable `level + 1` is narrowed on write.
+func TestRecursiveCTESeedRowPrecedesSelfScanAndConsumerBinding(t *testing.T) {
 	t.Parallel()
 	constantInt := func(value int32) values.Value {
 		return &values.ConstantValue{Value: value, Typ: values.NotNullInt}
@@ -205,25 +142,20 @@ func TestRecursiveCTECommonRowPrecedesSelfScanAndConsumerBinding(t *testing.T) {
 	if translated == nil {
 		t.Fatalf("translate nullable recursive CTE: %v", tr.translateErr)
 	}
-	projection, ok := translated.(*expressions.LogicalProjectionExpression)
-	if !ok {
-		t.Fatalf("main expression = %T, want logical projection", translated)
-	}
-	mainLevel := exactTestFieldView(t, projection.GetProjectedValues()[0])
-	if !mainLevel.ResultType().Equals(values.NullableInt) {
-		t.Fatalf("main LEVEL type = %s, want nullable INT", mainLevel.ResultType())
+	projection, mainColumns := blockColumns(t, translated)
+	mainLevel := exactTestFieldView(t, mainColumns[0].Value)
+	if !mainLevel.ResultType().Equals(values.NotNullInt) {
+		t.Fatalf("main LEVEL type = %s, want NOT NULL INT", mainLevel.ResultType())
 	}
 	mainOwner, ok := values.AsQuantifiedObjectValue(mainLevel.ChildValue())
-	if !ok || !mainOwner.FlowedType().Equals(&values.RecordType{Fields: []values.Field{
-		{Name: "LEVEL", Ordinal: 0, FieldType: values.NullableInt},
-	}}) {
-		t.Fatalf("main LEVEL owner = %v, want exact common nullable row", mainOwner)
+	if !ok || !mainOwner.FlowedType().Equals(declaredRow) {
+		t.Fatalf("main LEVEL owner = %v, want the seed row", mainOwner)
 	}
 
-	recursiveUnion, ok := projection.GetInner().GetRangesOver().Get().(*expressions.RecursiveUnionExpression)
+	recursiveUnion, ok := projection.GetQuantifiers()[0].GetRangesOver().Get().(*expressions.RecursiveUnionExpression)
 	if !ok {
 		t.Fatalf("main child = %T, want RecursiveUnionExpression",
-			projection.GetInner().GetRangesOver().Get())
+			projection.GetQuantifiers()[0].GetRangesOver().Get())
 	}
 	if !recursiveUnion.GetResultValue().Type().Equals(mainOwner.FlowedType()) {
 		t.Fatalf("recursive union type = %s, want main common owner %s",
@@ -247,22 +179,51 @@ func TestRecursiveCTECommonRowPrecedesSelfScanAndConsumerBinding(t *testing.T) {
 	}
 	findTempScan(recursiveUnion.GetRecursiveState().GetRangesOver().Get())
 	if tempScan == nil || !tempScan.GetResultValue().Type().Equals(mainOwner.FlowedType()) {
-		t.Fatalf("recursive self scan = %v, want common nullable row %s", tempScan, mainOwner.FlowedType())
+		t.Fatalf("recursive self scan = %v, want the seed row %s", tempScan, mainOwner.FlowedType())
+	}
+	if narrowed := recursiveLegSlot(t, recursiveUnion, 0); !narrowed.Target.Equals(values.NotNullInt) {
+		t.Fatalf("recursive LEVEL slot = %v, want narrowed to NOT NULL INT", narrowed)
 	}
 
 	incompatibleRecursive := logical.NewProject(scan("WALK", "w"), []string{"LEVEL"}, nil)
 	incompatibleRecursive.ProjectedValues = []values.Value{
 		&values.ConstantValue{Value: "wrong", Typ: values.NotNullString},
 	}
-	incompatibleCTE := logical.NewCTE("WALK",
-		logical.NewUnion([]logical.LogicalOperator{seed, incompatibleRecursive}, false), main, true)
-	incompatibleTranslator := newGateTranslator(t)
-	if got := incompatibleTranslator.translateRecursiveCTE(incompatibleCTE); got != nil ||
-		incompatibleTranslator.translateErr == nil ||
-		!strings.Contains(incompatibleTranslator.translateErr.Error(), "incompatible") {
-		t.Fatalf("incompatible recursive leg = (%T, %v), want typed rejection",
-			got, incompatibleTranslator.translateErr)
+	// Fresh seed and main: the first translation bound their scans to its own
+	// producer.
+	incompatibleSeed := logical.NewProject(scan("Order", "o"), []string{"LEVEL"}, nil)
+	incompatibleSeed.ProjectedValues = []values.Value{constantInt(0)}
+	incompatibleConsumer := logical.NewProject(scan("WALK", "r"), []string{"LEVEL"}, nil)
+	incompatibleConsumer.ProjectedValues = []values.Value{
+		exactTestField(t, exactTestQOV(t, "R", declaredRow), 0),
 	}
+	incompatibleCTE := logical.NewCTE("WALK",
+		logical.NewUnion([]logical.LogicalOperator{incompatibleSeed, incompatibleRecursive}, false), incompatibleConsumer, true)
+	incompatibleTranslator := newGateTranslator(t)
+	incompatibleMain, ok := incompatibleTranslator.translateRecursiveCTE(incompatibleCTE).(*expressions.SelectExpression)
+	if !ok {
+		t.Fatalf("incompatible recursive leg: %v", incompatibleTranslator.translateErr)
+	}
+	incompatibleUnion := incompatibleMain.GetQuantifiers()[0].GetRangesOver().Get().(*expressions.RecursiveUnionExpression)
+	if narrowed := recursiveLegSlot(t, incompatibleUnion, 0); narrowed.Child.Type().Code() != values.TypeCodeString ||
+		!narrowed.Target.Equals(values.NotNullInt) {
+		t.Fatalf("a STRING written to the INT seed slot = %v, want it narrowed to NOT NULL INT", narrowed)
+	}
+}
+
+// recursiveLegSlot is the narrowed value the recursive leg writes to slot i.
+func recursiveLegSlot(t *testing.T, union *expressions.RecursiveUnionExpression, i int) *values.NarrowValue {
+	t.Helper()
+	insert, ok := union.GetRecursiveState().GetRangesOver().Get().(*expressions.TempTableInsertExpression)
+	if !ok {
+		t.Fatalf("recursive state = %T, want a temp table insert", union.GetRecursiveState().GetRangesOver().Get())
+	}
+	_, columns := blockColumns(t, insert.GetInner().GetRangesOver().Get())
+	narrowed, ok := columns[i].Value.(*values.NarrowValue)
+	if !ok {
+		t.Fatalf("recursive leg slot %d = %T, want a NarrowValue", i, columns[i].Value)
+	}
+	return narrowed
 }
 
 // TestRecursiveBodyGatesOrdinal is a structural sentinel over the actual

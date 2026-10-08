@@ -88,7 +88,14 @@ func TestAsSelectValueIndex_KeyExpressionGoldens(t *testing.T) {
 		// literal leaves become value() expressions (generator :576-577).
 		{
 			"constant_arithmetic", "CREATE INDEX gidx AS SELECT 5+1 FROM t1",
-			fn("add", concat(lit(int64(5)), lit(int64(1)))), recordlayer.IndexTypeValue,
+			fn("add", concat(lit(int32(5)), lit(int32(1)))), recordlayer.IndexTypeValue,
+		},
+		// An integer literal outside the int32 range is LONG-typed, as Java's
+		// ParseHelpers.parseDecimal types it, and so stays a long_value; the INT
+		// literals above narrow to int_value.
+		{
+			"long_literal", "CREATE INDEX gidx AS SELECT a1 + 3000000000 FROM t1",
+			fn("add", concat(f("A1"), lit(int64(3000000000)))), recordlayer.IndexTypeValue,
 		},
 		// IndexTest.java createIndexWithFieldSumInProjection: arithmetic over
 		// fields → function(<op>, concat(args)) (generator :567-575).
@@ -100,7 +107,7 @@ func TestAsSelectValueIndex_KeyExpressionGoldens(t *testing.T) {
 		// lowercased (bitand), literal operand.
 		{
 			"bit_mask", "CREATE INDEX gidx AS SELECT a1 & 4 FROM t1",
-			fn("bitand", concat(f("A1"), lit(int64(4)))), recordlayer.IndexTypeValue,
+			fn("bitand", concat(f("A1"), lit(int32(4)))), recordlayer.IndexTypeValue,
 		},
 		// IndexTest.java:597-613 createIndexWithMultipleFunctionsInProjection
 		// (subset): each function is its own component of the concat.

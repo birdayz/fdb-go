@@ -3,6 +3,9 @@ package metadata
 import (
 	"sort"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 )
@@ -15,10 +18,9 @@ import (
 // underlying RecordMetaData is assumed immutable (matching Java's
 // RecordMetaData invariant).
 //
-// Views / invoked routines / temporary routines are stub-empty —
-// record-layer has no native equivalents, and the SQL-level stores
-// for them land in a later phase (catalog storage layer). Same for
-// the transaction-bound diagnostic string.
+// Views, routines and stored queries are read from the stored metadata as
+// Java's RecordMetadataDeserializer reads them. Temporary routines and the
+// transaction-bound diagnostic string are empty.
 type RecordLayerSchemaTemplate struct {
 	name       string
 	version    int
@@ -52,6 +54,9 @@ func NewRecordLayerSchemaTemplate(name string, md *recordlayer.RecordMetaData) (
 func NewRecordLayerSchemaTemplateWithVersion(name string, md *recordlayer.RecordMetaData, version int) (*RecordLayerSchemaTemplate, error) {
 	if md == nil {
 		return nil, api.NewError(api.ErrCodeInvalidSchemaTemplate, "record metadata is nil")
+	}
+	if err := checkTableGenerations(md); err != nil {
+		return nil, err
 	}
 	tmpl := &RecordLayerSchemaTemplate{
 		name:       name,
@@ -99,6 +104,39 @@ func NewRecordLayerSchemaTemplateWithVersion(name string, md *recordlayer.Record
 	sort.Strings(tmpl.indexNames)
 
 	return tmpl, nil
+}
+
+// checkTableGenerations is the check Java's RecordMetadataDeserializer makes
+// while it turns the union's fields into table generations
+// (RecordLayerTable.Builder.addGeneration): each message field of the union is
+// a generation of the table its message names, and two generations of one
+// table may share neither a field number nor their FieldOptions. Equal options
+// are TABLE_ALREADY_EXISTS "Duplicated options for different generations of
+// Table <name>". The options compare as protobuf messages do in Java, so an
+// extension (or an unknown field) is what tells two generations apart.
+func checkTableGenerations(md *recordlayer.RecordMetaData) error {
+	union := md.GetUnionDescriptor()
+	if union == nil {
+		return nil
+	}
+	options := map[string][]proto.Message{}
+	fields := union.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		if f.Kind() != protoreflect.MessageKind {
+			continue
+		}
+		table := recordlayer.ToUserIdentifier(string(f.Message().Name()))
+		opts := f.Options()
+		for _, seen := range options[table] {
+			if proto.Equal(seen, opts) {
+				return api.NewErrorf(api.ErrCodeTableAlreadyExists,
+					"Duplicated options for different generations of Table %s", table)
+			}
+		}
+		options[table] = append(options[table], opts)
+	}
+	return nil
 }
 
 // MetadataName returns the template name provided at construction.
@@ -151,11 +189,25 @@ func (s *RecordLayerSchemaTemplate) FindTable(name string) (api.Table, error) {
 	return t, nil
 }
 
-// Views always returns nil — record-layer has no views today.
-func (s *RecordLayerSchemaTemplate) Views() ([]api.View, error) { return nil, nil }
+// Views returns the stored views, each described by its definition.
+func (s *RecordLayerSchemaTemplate) Views() ([]api.View, error) {
+	var out []api.View
+	for _, v := range s.underlying.Views() {
+		out = append(out, &storedView{name: v.GetName(), description: v.GetDefinition()})
+	}
+	return out, nil
+}
 
-// FindView returns (nil, nil) — same rationale as Views.
-func (s *RecordLayerSchemaTemplate) FindView(_ string) (api.View, error) { return nil, nil }
+// FindView returns the stored view of that name, or nil.
+func (s *RecordLayerSchemaTemplate) FindView(name string) (api.View, error) {
+	views, _ := s.Views()
+	for _, v := range views {
+		if v.MetadataName() == name {
+			return v, nil
+		}
+	}
+	return nil, nil
+}
 
 // TableIndexMapping returns a map of tableName → index names.
 // Deterministic: both outer keys and inner slices are sorted.
@@ -178,16 +230,58 @@ func (s *RecordLayerSchemaTemplate) Indexes() ([]string, error) {
 	return s.indexNames, nil
 }
 
-// InvokedRoutines is always empty — stored routines (UDFs) are a
-// SQL-layer concept not backed by record-layer.
+// InvokedRoutines returns the stored SQL functions. A SQL-bodied function is
+// described by its stored definition; a macro by its name, where Java renders
+// the macro object's identity (DIVERGENCES.md, "Macro routine description").
 func (s *RecordLayerSchemaTemplate) InvokedRoutines() ([]api.InvokedRoutine, error) {
+	var out []api.InvokedRoutine
+	for _, f := range s.underlying.UserDefinedFunctions() {
+		if sql := f.GetSqlFunction(); sql != nil {
+			out = append(out, &storedRoutine{name: sql.GetName(), description: sql.GetDefinition()})
+		} else if m := f.GetUserDefinedMacroFunction(); m != nil {
+			out = append(out, &storedRoutine{name: m.GetFunctionName(), description: m.GetFunctionName()})
+		}
+	}
+	return out, nil
+}
+
+// FindInvokedRoutine returns the stored routine of that name, or nil.
+func (s *RecordLayerSchemaTemplate) FindInvokedRoutine(name string) (api.InvokedRoutine, error) {
+	routines, _ := s.InvokedRoutines()
+	for _, r := range routines {
+		if r.MetadataName() == name {
+			return r, nil
+		}
+	}
 	return nil, nil
 }
 
-// FindInvokedRoutine returns (nil, nil).
-func (s *RecordLayerSchemaTemplate) FindInvokedRoutine(_ string) (api.InvokedRoutine, error) {
-	return nil, nil
+// StoredQueries returns the stored queries by name.
+func (s *RecordLayerSchemaTemplate) StoredQueries() (map[string]api.StoredQuery, error) {
+	out := map[string]api.StoredQuery{}
+	for _, q := range s.underlying.StoredQueries() {
+		out[q.GetName()] = api.StoredQuery{Query: q.GetQuery(), TempFunctions: q.GetTempFunctions()}
+	}
+	return out, nil
 }
+
+// storedView and storedRoutine are Java's RecordLayerView and
+// RecordLayerInvokedRoutine as the deserializer builds them: never temporary,
+// and a stored routine has no normalized description.
+type storedView struct{ name, description string }
+
+func (v *storedView) MetadataName() string   { return v.name }
+func (v *storedView) Accept(vis api.Visitor) { vis.VisitView(v) }
+func (v *storedView) Description() string    { return v.description }
+func (v *storedView) IsTemporary() bool      { return false }
+
+type storedRoutine struct{ name, description string }
+
+func (r *storedRoutine) MetadataName() string          { return r.name }
+func (r *storedRoutine) Accept(vis api.Visitor)        { vis.VisitInvokedRoutine(r) }
+func (r *storedRoutine) Description() string           { return r.description }
+func (r *storedRoutine) NormalizedDescription() string { return "" }
+func (r *storedRoutine) IsTemporary() bool             { return false }
 
 // TemporaryInvokedRoutines is always empty.
 func (s *RecordLayerSchemaTemplate) TemporaryInvokedRoutines() ([]api.InvokedRoutine, error) {
@@ -227,8 +321,6 @@ func (s *RecordLayerSchemaTemplate) Accept(v api.Visitor) {
 	for _, t := range s.tables {
 		t.Accept(v)
 	}
-	// Invoked routines + views are empty in this bridge today —
-	// leaving the loops in so the pattern survives when we add them.
 	if rs, _ := s.InvokedRoutines(); rs != nil {
 		for _, r := range rs {
 			r.Accept(v)

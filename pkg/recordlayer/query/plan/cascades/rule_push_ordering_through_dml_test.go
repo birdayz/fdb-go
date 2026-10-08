@@ -206,7 +206,8 @@ func dmlOrderingUpdate(inputQ expressions.Quantifier) *expressions.UpdateExpress
 		"MyRecord",
 		dmlOrderingRowType(),
 		[]expressions.UpdateTransform{{
-			FieldPath: "NAME",
+			FieldNames:    []string{"NAME"},
+			FieldOrdinals: []int{1},
 			NewValue: &values.ConstantValue{
 				Value: "updated",
 				Typ:   values.NotNullString,
@@ -221,7 +222,7 @@ func TestPushRequestedOrderingThroughUpdate_PropagatesConstraint(t *testing.T) {
 	inputQ := dmlOrderingQuantifier("update_input")
 	update := dmlOrderingUpdate(inputQ)
 	updateRef := expressions.InitialOf(update)
-	// UPDATE emits {OLD,NEW}. An order requested on OLD.ID must be translated
+	// UPDATE emits {old,new}. An order requested on old.ID must be translated
 	// through that exact two-level result, not blindly copied as an output path.
 	oldID := dmlOrderingOutputField(inputQ.GetAlias(), update.GetResultValue(), 0, 0)
 	inputID := dmlOrderingField(inputQ, 0)

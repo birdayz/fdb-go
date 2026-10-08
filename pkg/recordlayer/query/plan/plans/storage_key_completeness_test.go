@@ -234,7 +234,7 @@ func TestStorageKeyCompleteness_DoesNotSurvivePrefixing(t *testing.T) {
 		values.NewRecordConstructorValue(
 			values.RecordConstructorField{Name: "A", Value: keys[0]},
 		),
-		upper)
+		upper, nil)
 	if err != nil {
 		t.Fatalf("PullUpThroughValue: %v", err)
 	}

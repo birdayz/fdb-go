@@ -57,9 +57,31 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	// the caller has already been told succeeded. On the GRV path a refusal is
 	// merely conservative; here it costs read-your-committed-writes, the
 	// invariant the floor exists to hold.
+	// Captured BEFORE the proxy load, so a topology change that lands between
+	// the load and the wait below is not missed.
+	noProxyChanged := input.db.waitProxiesChanged()
 	proxy, commitEpoch, err := input.db.getCommitProxy()
 	if err != nil {
-		return result, &wire.FDBError{Code: ErrAllProxiesUnreachable}
+		// No commit proxy is known. C++ load-balances the commit over the
+		// empty set, which is Never() (LoadBalance.actor.h:752-762, reached from
+		// tryCommit through getCommitProxies, NativeAPI.actor.cpp:2768-2774,
+		// :6637-6643), raced against onProxiesChanged() (:6646-6649); a change
+		// throws request_maybe_delivered, which tryCommit turns into
+		// commit_unknown_result after its self-conflicting fence (:6730-6772).
+		// So the commit waits for the proxy set to change, bounded by its
+		// context, and fails as maybe-delivered through the same fence. (Go used
+		// to fail at once with a Go-internal 1200, which a bounded retry owner
+		// counted as an attempt during a recovery libfdb_c waits through.)
+		input.db.kickTopology()
+		select {
+		case <-noProxyChanged:
+		case <-ctx.Done():
+		}
+		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
+		if !input.isDummy {
+			input.commitDummyTransaction(ctx)
+		}
+		return result, commitErr
 	}
 	result.epoch = commitEpoch
 
@@ -288,11 +310,10 @@ func dummyRetryBackoff(d time.Duration, rand01 float64) time.Duration {
 //     NativeAPI::onError; Go has no MVC layer so OnError owns it — MAYBE_COMMITTED,
 //     made idempotency-safe by the self-conflicting deep-copy. Do NOT "fix" this
 //     to the literal NativeAPI behavior; it would break cluster-version-change retry.
-//   - all_proxies_unreachable (1200): Go-internal Layer-2 error (NOT C++ 1200).
 //   - throttled_hot_shard (1235), range_locked (1242): FDB 7.4+, forward-compat.
 //
 // fdb.IsRetryable is a DIFFERENT predicate (fdb_error_predicate, 12 codes — it
-// EXCLUDES 1079/1200/1235/1242 and includes only the C-API contract set); do not
+// EXCLUDES 1079/1235/1242 and includes only the C-API contract set); do not
 // conflate the two.
 func onErrorRetryable(code int) bool {
 	switch code {
@@ -300,7 +321,7 @@ func onErrorRetryable(code int) bool {
 		ErrNotCommitted, ErrDatabaseLocked, ErrProcessBehind,
 		ErrBatchTransactionThrottled, ErrTagThrottled, ErrProxyTagThrottled,
 		ErrThrottledHotShard, ErrRangeLocked, ErrBlobGranuleRequestFailed,
-		ErrAllProxiesUnreachable, ErrCommitUnknownResult, ErrClusterVersionChanged,
+		ErrCommitUnknownResult, ErrClusterVersionChanged,
 		ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit:
 		return true
 	default:

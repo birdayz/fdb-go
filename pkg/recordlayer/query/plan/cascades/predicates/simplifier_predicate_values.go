@@ -13,21 +13,32 @@ import (
 // can rely on the pointer-equality short-circuit (`if out != p { ... }`)
 // to detect "did anything change?".
 //
-// Why a separate pass from Simplify: Simplify drives the QueryPredicate-
-// level rule fixpoint (ComparisonConstantSimplifyRule, AndFlatten, …);
-// it doesn't fold expression-level constants inside ComparisonPredicate
-// operands. `name = 1+2` survives Simplify with the `1+2` ArithmeticValue
-// intact; SimplifyPredicateValues collapses it to `name = 3`.
+// It is the value half of Java's ValuePredicateSimplificationRule, which
+// cascades.ConstantFoldingRules applies to each leaf inside the
+// QueryPredicate-level fixpoint: `name = 1+2` becomes `name = 3`.
 func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
+	return mapPredicateLeafValues(p, values.SimplifyPredicateValue)
+}
+
+// EvaluatePredicateComparands is SimplifyPredicateValues with
+// values.EvaluateConstantComparand at the leaves: every constant composite
+// becomes a literal. It is for a predicate STORED with literal comparands --
+// the sparse-index predicate, Java's IndexComparison taking
+// `comparison.getComparand(null, null)` -- never for a query plan.
+func EvaluatePredicateComparands(p QueryPredicate) QueryPredicate {
+	return mapPredicateLeafValues(p, values.EvaluateConstantComparand)
+}
+
+func mapPredicateLeafValues(p QueryPredicate, leaf func(values.Value) values.Value) QueryPredicate {
 	if p == nil {
 		return nil
 	}
 	switch q := p.(type) {
 	case *ComparisonPredicate:
-		op := values.SimplifyValue(q.Operand)
+		op := leaf(q.Operand)
 		var rhs values.Value
 		if q.Comparison.Operand != nil {
-			rhs = values.SimplifyValue(q.Comparison.Operand)
+			rhs = leaf(q.Comparison.Operand)
 		}
 		if op == q.Operand && rhs == q.Comparison.Operand {
 			return q
@@ -44,7 +55,7 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 			Comparison: cmp,
 		}
 	case *ValuePredicate:
-		v := values.SimplifyValue(q.Value)
+		v := leaf(q.Value)
 		if v == q.Value {
 			return q
 		}
@@ -53,7 +64,7 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 		simpler := make([]QueryPredicate, len(q.SubPredicates))
 		anyChanged := false
 		for i, sp := range q.SubPredicates {
-			simpler[i] = SimplifyPredicateValues(sp)
+			simpler[i] = mapPredicateLeafValues(sp, leaf)
 			if simpler[i] != sp {
 				anyChanged = true
 			}
@@ -61,12 +72,12 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 		if !anyChanged {
 			return q
 		}
-		return &AndPredicate{SubPredicates: simpler}
+		return &AndPredicate{SubPredicates: simpler, atomic: q.atomic}
 	case *OrPredicate:
 		simpler := make([]QueryPredicate, len(q.SubPredicates))
 		anyChanged := false
 		for i, sp := range q.SubPredicates {
-			simpler[i] = SimplifyPredicateValues(sp)
+			simpler[i] = mapPredicateLeafValues(sp, leaf)
 			if simpler[i] != sp {
 				anyChanged = true
 			}
@@ -74,18 +85,19 @@ func SimplifyPredicateValues(p QueryPredicate) QueryPredicate {
 		if !anyChanged {
 			return q
 		}
-		return &OrPredicate{SubPredicates: simpler}
+		return &OrPredicate{SubPredicates: simpler, atomic: q.atomic}
 	case *NotPredicate:
-		c := SimplifyPredicateValues(q.Child)
+		c := mapPredicateLeafValues(q.Child, leaf)
 		if c == q.Child {
 			return q
 		}
-		return &NotPredicate{Child: c}
+		return &NotPredicate{Child: c, atomic: q.atomic}
 	case *PredicateWithValueAndRanges:
-		if folded := foldPredicateWithRanges(q); folded != nil {
+		simplified := TransformEmbeddedValues(q, leaf).(*PredicateWithValueAndRanges)
+		if folded := foldPredicateWithRanges(simplified); folded != nil {
 			return folded
 		}
-		return q
+		return simplified
 	}
 	return p
 }
@@ -104,33 +116,36 @@ func foldPredicateWithRanges(p *PredicateWithValueAndRanges) QueryPredicate {
 		return nil
 	}
 	if len(comps) == 1 {
-		return foldSingleComparison(p.value, comps[0])
-	}
-	// Multi-constraint: fold each comparison, then AND the results.
-	var results []TriBool
-	for _, c := range comps {
-		folded := foldSingleComparison(p.value, c)
-		if folded == nil {
-			return nil
-		}
-		cp, ok := folded.(*ConstantPredicate)
-		if !ok {
-			return nil
-		}
-		results = append(results, cp.Value)
+		return FoldComparisonMaybe(p.value, comps[0])
 	}
 	combined := TriTrue
-	for _, r := range results {
-		combined = triBoolAnd(combined, r)
+	unknown := false
+	for _, c := range comps {
+		folded := FoldComparisonMaybe(p.value, c)
+		cp, ok := folded.(*ConstantPredicate)
+		if !ok {
+			unknown = true
+			continue
+		}
+		if cp.Value == TriFalse {
+			return cp
+		}
+		combined = triBoolAnd(combined, cp.Value)
+	}
+	if unknown {
+		return nil
 	}
 	return &ConstantPredicate{Value: combined}
 }
 
-func foldSingleComparison(lhsValue values.Value, comp Comparison) QueryPredicate {
+// FoldComparisonMaybe is Java's ConstantPredicateFoldingUtil.foldComparisonMaybe:
+// the constant a comparison of lhsValue folds to over EFFECTIVE constants, or
+// nil when it does not fold. IS [NOT] NULL is decided by a NULL or a NOT NULL
+// operand; a binary comparison with a NULL side is NULL; EQUALS and NOT_EQUALS
+// over two known literals (TRUE, FALSE, NULL) compare them; anything else,
+// including a comparison of two non-boolean literals, does not fold.
+func FoldComparisonMaybe(lhsValue values.Value, comp Comparison) QueryPredicate {
 	lhs := effectiveConstant(lhsValue)
-	if lhs == ecUnknown {
-		return nil
-	}
 
 	if comp.Type == ComparisonIsNull {
 		switch lhs {
@@ -153,24 +168,23 @@ func foldSingleComparison(lhsValue values.Value, comp Comparison) QueryPredicate
 		}
 	}
 
+	if comp.ParameterName != "" || comp.Operand == nil {
+		return nil
+	}
+	rhs := effectiveConstant(comp.Operand)
+	switch comp.Type {
+	case ComparisonEquals, ComparisonNotEquals, ComparisonLessThan, ComparisonLessThanOrEq,
+		ComparisonGreaterThan, ComparisonGreaterThanEq, ComparisonStartsWith:
+		if lhs == ecNull || rhs == ecNull {
+			return &ConstantPredicate{Value: TriUnknown}
+		}
+	default:
+		return nil
+	}
+	if lhs == ecUnknown || rhs == ecUnknown || lhs == ecNotNull || rhs == ecNotNull {
+		return nil
+	}
 	if comp.Type != ComparisonEquals && comp.Type != ComparisonNotEquals {
-		return nil
-	}
-
-	var rhs effectiveConstantKind
-	if comp.Operand != nil {
-		rhs = effectiveConstant(comp.Operand)
-	} else {
-		rhs = ecUnknown
-	}
-	if rhs == ecUnknown {
-		return nil
-	}
-
-	if lhs == ecNull || rhs == ecNull {
-		return &ConstantPredicate{Value: TriUnknown}
-	}
-	if lhs == ecNotNull || rhs == ecNotNull {
 		return nil
 	}
 
@@ -197,6 +211,13 @@ const (
 	ecUnknown
 )
 
+// effectiveConstant is Java's EffectiveConstant.from(Value)
+// (ConstantPredicateFoldingUtil.java:282-301): a NullValue (or a nil / NULL
+// literal) is NULL, a BOOLEAN literal is its value, and anything else is
+// NOT_NULL when its type is NOT NULL and UNKNOWN otherwise. A non-boolean
+// literal takes the type arm like every other value (a non-nil ConstantValue
+// is typed NOT NULL, as a target literal is). Java's Object overload, for a
+// SimpleComparison's literal comparand, has no Go planning caller.
 func effectiveConstant(v values.Value) effectiveConstantKind {
 	if v == nil {
 		return ecNull
@@ -223,6 +244,8 @@ func effectiveConstant(v values.Value) effectiveConstantKind {
 			}
 			return ecFalse
 		}
+	}
+	if typ := v.Type(); typ != nil && !typ.IsNullable() {
 		return ecNotNull
 	}
 	return ecUnknown

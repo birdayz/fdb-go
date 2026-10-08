@@ -12,9 +12,8 @@ is the authority. This page is scoped to the multi-tenant question and carries a
 citation for every claim, because an operator guide is worthless unless every sentence in it is
 checkable.
 
-**Verified against:** Java `fdb-record-layer-core` **4.12.11.0** (the wire-compat spec), the
-FoundationDB **7.3.77** client protocol, Go **1.26.x**. These are drift-guarded — this page is on
-`pkg/docscheck`'s `livingDocs` list, so a version bump that leaves it behind fails the build.
+**Verified against:** Java `fdb-record-layer-core` **4.14.2.0** (the wire-compat spec), the
+FoundationDB **7.3.77** client protocol, Go **1.26.x**.
 
 **Read this first.** Three properties of this deployment shape are not negotiable and are not
 enforced by the engine:
@@ -780,9 +779,9 @@ strength of "the data is just a key range".
 
 ### Index builds fan out across a fleet — but not within one tenant
 
-**This gap is now partly closed.** `frl index build --all-schemas --database /tenants` builds every
+**This gap is now partly closed.** `frl index build --all-schemas --database /FRL/tenants` builds every
 pending index across every schema in a database in one invocation, and
-`frl meta catalog repair --all-schemas --database /tenants` is the migration equivalent (rebind
+`frl meta catalog repair --all-schemas --database /FRL/tenants` is the migration equivalent (rebind
 every tenant onto the latest template version). Passing an index name narrows the roll-out to that
 one index; omitting it builds whatever each tenant owes. The library primitive is
 `pkg/relational/core/fleet` if you want it in your own control plane rather than via the CLI.
@@ -835,14 +834,10 @@ that path.** They do *by default* — the relational metadata builder deliberate
 record-count key, because the stored template bytes must match Java's
 (`pkg/relational/core/metadata/builder.go:489`), and that default is pinned by
 `pkg/relational/sqldriver/evolution_added_index_gate_fdb_test.go:8`. But SQL *can* create a COUNT
-index, two ways:
-
-- explicitly — `CREATE INDEX <n> AS SELECT COUNT(*) FROM t GROUP BY g`
-  (`pkg/relational/core/parser/grammar/RelationalParser.g4:172` →
-  `pkg/relational/core/metadata/builder.go:1177`), pinned e2e by
-  `pkg/relational/conformance/yamsql/testdata/aggregate_index_count_star.yaml:13`;
-- implicitly — any grouped aggregate index drags in an auto-emitted `__GROUP_COUNT` companion
-  (`builder.go:660`).
+index, explicitly — `CREATE INDEX <n> AS SELECT COUNT(*) FROM t GROUP BY g`
+(`pkg/relational/core/parser/grammar/RelationalParser.g4:172` →
+`pkg/relational/core/metadata/builder.go:1177`), pinned e2e by
+`pkg/relational/conformance/yamsql/testdata/aggregate_index_count_star.yaml:13`.
 
 Relational primary keys are record-type-prefixed unless the template declares `INTERMINGLE TABLES`
 (`builder.go:1232`, conditional at `:1239-1240`, mode threaded from `:128` into `buildPrimaryKeyExpression` at `:552`), which satisfies
@@ -902,7 +897,7 @@ the new template version — because no SQL DDL reaches it.
 ### No online index scrubber — a detection API, not a fleet tool
 
 Java has `OnlineIndexScrubber` with `scrubDanglingIndexEntries()` and `scrubMissingIndexEntries()`
-(Java source at tag 4.12.11.0,
+(Java source at tag 4.14.2.0,
 `fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/OnlineIndexScrubber.java:43`,
 `:92`, `:103`) — chunked, throttled, resumable, and repairing. **Go has no equivalent**, and says so
 at `pkg/recordlayer/index_state.go:567` ("the scrubbing subspaces (Go has no index scrubbing)").
@@ -1040,7 +1035,7 @@ Two narrowings worth knowing, both **refuting** the corresponding watch-list phr
 ### DDL surprises
 
 - **`DROP SCHEMA IF EXISTS` ignores `IF EXISTS`** and errors on a missing schema:
-  `42F51 schema /mydb/ghost does not exist`
+  `42F51 schema /FRL/mydb/ghost does not exist`
   (`pkg/relational/core/catalog/fdb_store_catalog.go:416-417`,
   `pkg/relational/api/errcode.go:117`). This is deliberate replication of Java's bug — its
   `DdlVisitor.visitDropSchemaStatement` never reads `ctx.ifExists()` — and the code comment forbids

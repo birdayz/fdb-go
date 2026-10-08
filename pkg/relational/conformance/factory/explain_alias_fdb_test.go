@@ -29,12 +29,9 @@ import (
 // fires only when kept == 0, so a harness whose precondition was satisfied by
 // nothing but counter drift would report a healthy, well-exercised oracle.
 //
-// Exact result-owner display may instead suppress an ownership-only scalar
-// alias, rendering `(SCALAR_SUBQUERY)`. That is also safe, but only when the
-// two raw plans are then identical. This test accepts those two safety
-// mechanisms and no middle state: either both raw plans expose different
-// generated aliases which normalization removes, or neither exposes one and
-// the raw plans already compare equal.
+// Explain now numbers a plan's generated correlations by position (q$0, …), so
+// the two plannings render alike although their internal aliases differ; the
+// normalization must keep them equal and still tell different plans apart.
 //
 // A scalar subquery is not an exotic shape here. rowdiff draws one on roughly a
 // fifth of its plain queries, so this reaches the factory on its own.
@@ -46,8 +43,12 @@ func TestFDB_SecondPlanPreconditionIgnoresGeneratedAliases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
+	// U has no secondary index, so both connections plan the alias query the
+	// same way: with an index, PREFER_INDEX reads it whole on the default
+	// connection (F-7c) while the second-plan rules scan the table.
 	const ddl = "CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) " +
-		"CREATE INDEX idx_a ON t (a)"
+		"CREATE INDEX idx_a ON t (a) " +
+		"CREATE TABLE u (id BIGINT, b BIGINT, PRIMARY KEY (id))"
 	db := openFactorySchema(t, ctx, "zzalias", ddl)
 
 	defaultConn, err := factory.PinConn(ctx, db, nil)
@@ -63,24 +64,20 @@ func TestFDB_SecondPlanPreconditionIgnoresGeneratedAliases(t *testing.T) {
 	if _, err := defaultConn.ExecContext(ctx, "INSERT INTO t VALUES (1,5,10),(2,3,20)"); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
+	if _, err := defaultConn.ExecContext(ctx, "INSERT INTO u VALUES (1,10),(2,20)"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
 
-	const query = "SELECT (SELECT MIN(b) FROM t) FROM t"
+	const query = "SELECT (SELECT MIN(b) FROM u) FROM u"
 
 	rawBase := explainVia(t, ctx, defaultConn, query)
 	rawAlt := explainVia(t, ctx, altConn, query)
 	if !strings.Contains(rawBase, "SCALAR_SUBQUERY") || !strings.Contains(rawAlt, "SCALAR_SUBQUERY") {
 		t.Fatalf("query stopped producing the scalar-subquery shape whose second-plan precondition this test pins:\n  baseline: %s\n  second:   %s", rawBase, rawAlt)
 	}
-	baseHasGeneratedAlias := strings.Contains(rawBase, "$")
-	altHasGeneratedAlias := strings.Contains(rawAlt, "$")
-	if baseHasGeneratedAlias != altHasGeneratedAlias {
-		t.Fatalf("Explain exposed a generated alias on only one planning of the same scalar-subquery shape:\n  baseline: %s\n  second:   %s", rawBase, rawAlt)
-	}
-	if baseHasGeneratedAlias && rawBase == rawAlt {
-		t.Fatalf("both plans expose a generated alias but the independent plannings rendered identically, so this run cannot prove normalization removes process-global counter drift: %s", rawBase)
-	}
-	if !baseHasGeneratedAlias && rawBase != rawAlt {
-		t.Fatalf("Explain suppressed generated aliases but the otherwise identical plans still drifted:\n  baseline: %s\n  second:   %s", rawBase, rawAlt)
+	if rawBase != rawAlt {
+		t.Fatalf("the same plan rendered differently across two plannings; Explain must number "+
+			"generated correlations by position:\n  baseline: %s\n  second:   %s", rawBase, rawAlt)
 	}
 	t.Logf("raw baseline: %s", rawBase)
 	t.Logf("raw second:   %s", rawAlt)

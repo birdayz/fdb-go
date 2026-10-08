@@ -7,10 +7,8 @@ import (
 // LogicalUnionExpression represents the bag-union (UNION ALL) of its N
 // children. Java's class is marked `ChildrenAsSet` (so is Go's — see
 // ChildrenAsSet below): the planner may permute children, and
-// SemanticEquals matches ChildrenAsSet operators permutation-aware
-// (matchChildrenPermuted, capped at MaxPermutationChildren; beyond the
-// cap it falls back to positional pairing — dedup may then keep
-// permuted duplicates, never merges distinct semantics).
+// SemanticEquals matches ChildrenAsSet operators with dependency-aware
+// permutation search, pruning incompatible prefixes.
 //
 // Ports the structural surface of Java's
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.LogicalUnionExpression`.

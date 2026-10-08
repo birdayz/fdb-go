@@ -53,15 +53,23 @@ type aggregateCursor struct {
 	groupingKeys []values.Value
 	aggregates   []expressions.AggregateSpec
 
+	// scalarInputLayout is the input's provided layout when that input flows a
+	// SCALAR (a non-ordinal Explode's element: a correlated array as a block's
+	// first FROM item, `(SELECT SUM(x) FROM p.arr x)`), nil otherwise. A key or
+	// operand over such an input reads the element as the input QOV itself, so
+	// it is bound to the unwrapped scalar, as executeFilter and executeMap
+	// bind it.
+	scalarInputLayout values.OrdinalLayout
+
 	// evalCtx carries params/subqueries/outer bindings so a group-key / operand
 	// reference resolves against the inner PositionalRow the SAME way
-	// executeFilter / executeProjection do (frontierRowContext → evaluateOrdinal,
+	// executeFilter / executeMap do (frontierRowContext → evaluateOrdinal,
 	// by the baked plan-time ordinal), robust to a covering-index layout — never
 	// a name-keyed read. flatFrontierInput is true when the input bottoms out at
 	// a SINGLE-SOURCE flat producer (base-table scan/index, a nested
 	// StreamingAgg) beneath any number of layout-preserving / reshaping
 	// single-child nodes — the group-by SORT, a filter, a LIMIT/fetch, a
-	// projection / derived table / CTE (RecordQueryProjectionPlan/MapPlan), a
+	// projection / derived table / CTE (RecordQueryMapPlan), a
 	// DISTINCT, a WHERE-EXISTS semi-join (identity-over-outer FlatMap). Every such
 	// producer emits a flat single-source output row with an unambiguous plan-time
 	// layout, so keys/operands resolve positionally. It is FALSE the moment the
@@ -82,7 +90,7 @@ type aggregateCursor struct {
 	// (downstreamLegWindows unwraps the layout-preserving passthroughs down to
 	// the join and derives its leg windows), a QUALIFIED group-key / operand
 	// reference (D.DNAME, E.SALARY) resolves LEG-LOCALLY off the merged row
-	// through legWindowRowContext — the SAME spanAwareRow resolver executeProjection /
+	// through legWindowRowContext — the SAME spanAwareRow resolver executeMap /
 	// executeFilter use over the same merge.
 	// joinWindowsOK is true only for a genuine gated ordinal join input; a reshaping /
 	// non-join input keeps windowsOK false and resolves through the general
@@ -141,6 +149,9 @@ type groupState struct {
 	allInt  []bool
 	mins    []any
 	maxs    []any
+	// arrays holds each ARRAY_AGG's collected elements.
+	arrays  [][]any
+	bitmaps [][]byte
 }
 
 func newAggregateCursorWithOutputType(
@@ -157,7 +168,15 @@ func newAggregateCursorWithOutputType(
 	if inputQOV != nil {
 		inputEdges = []values.QuantifiedObjectValue{inputQOV}
 	}
+	var scalarInputLayout values.OrdinalLayout
+	if innerPlan != nil {
+		if layout, err := innerPlan.ProvidedOutputLayout(); err == nil && layout != nil &&
+			layout.CarrierKind() == values.OrdinalCarrierScalar {
+			scalarInputLayout = layout
+		}
+	}
 	return &aggregateCursor{
+		scalarInputLayout: scalarInputLayout,
 		inner:             inner,
 		groupingKeys:      groupingKeys,
 		aggregates:        aggregates,
@@ -184,7 +203,7 @@ func newAggregateCursorWithOutputType(
 // aggregateInputIsFlatFrontier reports whether the streaming aggregate's input
 // bottoms out at a SINGLE-SOURCE flat producer whose emitted PositionalRow's
 // columns are unambiguous — so a group-key / operand name resolves against it by
-// its baked plan-time ordinal exactly as executeFilter / executeProjection resolve
+// its baked plan-time ordinal exactly as executeFilter / executeMap resolve
 // theirs (robust to a covering-index column order).
 //
 // It walks single-child nodes down to the leaf:
@@ -244,8 +263,6 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 			input = p.GetInner()
 		case *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
 			input = p.GetInner()
-		case *plans.RecordQueryProjectionPlan:
-			input = p.GetInner()
 		case *plans.RecordQueryMapPlan:
 			input = p.GetInner()
 		case *plans.RecordQueryFlatMapPlan:
@@ -265,28 +282,11 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 // continuation. Mirrors Java's StreamGrouping constructor with
 // PartialAggregationResult parameter.
 //
-// The saved groupKey bytes are DELIBERATELY NOT the resumed key. They were
-// packed by whichever binary minted the token, under whatever group-key
-// encoding that binary had, and the very next row is keyed by THIS binary's
-// encoder — so installing them verbatim compares two different encodings and
-// reports a group break that is not one.
-//
-// That is not hypothetical: canonicalizing NaN in the group key changed the
-// encoding, and Go's own math.NaN() is 0x7ff8000000000001 rather than the
-// canonical 0x7ff8000000000000, so an ordinary mid-group token minted before
-// that change carries a key this binary would never produce. Resuming it
-// verbatim finalizes the partial group on its own and emits the same group
-// TWICE — a wrong answer produced purely by upgrading.
-//
-// So the key is RE-DERIVED from the continuation's decoded keyVals, which ride
-// typed and lossless precisely so this is possible. The saved bytes are used
-// for nothing. A future encoding change is then automatically compatible for
-// the same reason, rather than needing its own migration.
-//
-// Re-derivation can fail only if a keyVal is unencodable, which
-// encodeAggGroupKey already refuses to write; on that path the saved bytes are
-// the best remaining answer and are used unchanged rather than dropping the
-// partial group.
+// The group key is re-derived from the decoded keyVals, never taken from a
+// legacy token's packed bytes: those were packed under the encoding of the
+// binary that minted the token (NaN canonicalization changed it once), and a
+// stale key reports a false group break that emits the group twice. Packing
+// fails only for a keyVal no token can carry; the decoded key is kept then.
 func (c *aggregateCursor) withPartialState(groupKey string, keyVals []any, gs *groupState) {
 	c.currentGroupKey = groupKey
 	if !c.scalarMode && len(keyVals) > 0 {
@@ -335,7 +335,7 @@ func (c *aggregateCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorR
 			// AggregateCursorContinuation with PartialAggregationResult.
 			contBytes, encErr := encodeAggregateContinuation(
 				result.GetContinuation(),
-				c.currentGroupKey, c.currentKeyVals, c.current,
+				c.groupingKeys, c.currentKeyVals, c.current,
 				c.aggregates,
 			)
 			if encErr != nil {
@@ -443,7 +443,7 @@ type aggregateCursorContinuation struct {
 }
 
 func (w *aggregateCursorContinuation) ToBytes() ([]byte, error) {
-	return encodeAggregateContinuation(w.innerCont, "", nil, nil, nil)
+	return encodeAggregateContinuation(w.innerCont, nil, nil, nil, nil)
 }
 
 func (w *aggregateCursorContinuation) IsEnd() bool { return false }
@@ -451,10 +451,14 @@ func (w *aggregateCursorContinuation) IsEnd() bool { return false }
 // aggregateEvalArg is the eval argument for a GROUP-BY key / aggregate operand.
 //
 // The streaming aggregate reads its keys / operands off the inner row exactly
-// the way executeFilter / executeProjection read their predicate / projected
+// the way executeFilter / executeMap read their predicate / projected
 // values — the ONE frontier dispatch, so the aggregate input resolves
 // positionally on the same shapes those do.
 //
+//   - A BARE SCALAR input (scalarInputLayout: a non-ordinal Explode's element,
+//     the correlated array a block's first FROM item unnests) binds the
+//     unwrapped element to the input QOV, which is what a key or operand over
+//     it reads (`SUM(x)` is SUM over QOV(x)).
 //   - A POSITIONALLY-BAKED value (a FieldValue with a resolved ordinal — the
 //     gathered-seed un-collapse's qualifier-honoring group key/operand) reads the
 //     flat seed row it was baked against: a bare positional context, no
@@ -471,7 +475,7 @@ func (w *aggregateCursorContinuation) IsEnd() bool { return false }
 //     MERGED positional row through passthroughs only): a qualified group-key /
 //     operand reference QOV(leg).col (or its flat DOTTED "D.DNAME" spelling)
 //     resolves LEG-LOCALLY through its window, exactly as
-//     executeProjection / executeFilter resolve theirs over the same merge.
+//     executeMap / executeFilter resolve theirs over the same merge.
 //     Unconditional on a windowed input: even with no param/subquery/outer binding,
 //     the leg windows are required (the bare merged row misreads leg-relative
 //     ordinals — a wrong-slot hazard).
@@ -480,6 +484,15 @@ func (w *aggregateCursorContinuation) IsEnd() bool { return false }
 func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) (any, error) {
 	if row.Positional == nil {
 		return nil, nil
+	}
+	if c.scalarInputLayout != nil {
+		scalar, err := isBareScalarRow(row.Positional)
+		if err != nil {
+			return nil, err
+		}
+		if scalar {
+			return scalarLayoutRowContext(c.scalarInputLayout, row.Positional, c.evalCtx, c.inputEdges...)
+		}
 	}
 	if valueReadsBakedOrdinal(v) {
 		// A baked ordinal operand reads plan-time-resolved slots directly off the
@@ -598,14 +611,9 @@ func packGroupKey(keyParts []any) (string, error) {
 		// ([]any{"a b"} vs []any{"a","b"}) and merged distinct groups
 		// (RFC-180 C3).
 		//
-		// The packed key rides through the aggregate continuation as raw bytes
-		// (encodeAggGroupKey, not a JSON string) and is compared byte-for-byte
-		// on resume to detect a group change. Those saved bytes are NOT trusted
-		// as the resumed key: withPartialState re-derives it from the
-		// continuation's keyVals through this same function, so a token minted
-		// by an older binary under an older encoding still compares against
-		// keys built by this one. The group's surfaced VALUE rides separately
-		// in keyVals (typed, lossless), which is what makes that possible.
+		// On resume withPartialState re-derives the key from the continuation's
+		// typed keyVals through this same function, so a token minted under an
+		// older encoding still compares against keys built by this one.
 		//
 		// FLOAT/DOUBLE grouping identity is java.lang.Double.equals, and it says
 		// two different things that must BOTH be honoured. Java's streaming
@@ -677,6 +685,8 @@ func (c *aggregateCursor) newGroupState() *groupState {
 		allInt:  allIntInit,
 		mins:    make([]any, len(c.aggregates)),
 		maxs:    make([]any, len(c.aggregates)),
+		arrays:  make([][]any, len(c.aggregates)),
+		bitmaps: make([][]byte, len(c.aggregates)),
 	}
 }
 
@@ -705,11 +715,35 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 		if err != nil {
 			return err
 		}
+		if agg.Function == expressions.AggArrayAgg {
+			if err := accumulateArrayAgg(gs, i, agg, val); err != nil {
+				return err
+			}
+			continue
+		}
 		if val == nil {
 			continue
 		}
 		gs.counts[i]++
 		switch agg.Function {
+		case expressions.AggBitmapConstructAgg:
+			n, ok := asInt64(val)
+			if !ok {
+				return fmt.Errorf("bitmap aggregate requires an integer, got %T", val)
+			}
+			// Java LONG narrows via Long.intValue before setting the BitSet.
+			position := int32(n)
+			if position < 0 || position >= 250000 {
+				return &BitmapAggregatePositionError{Position: position}
+			}
+			size := int(position)/8 + 1
+			if size < 1250 {
+				size = 1250
+			}
+			if len(gs.bitmaps[i]) < size {
+				gs.bitmaps[i] = append(gs.bitmaps[i], make([]byte, size-len(gs.bitmaps[i]))...)
+			}
+			gs.bitmaps[i][position/8] |= 1 << (uint32(position) % 8)
 		case expressions.AggSum, expressions.AggAvg:
 			if !isNumeric(val) {
 				return fmt.Errorf("cannot aggregate non-numeric value of type %T", val)
@@ -728,7 +762,11 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 				gs.allInt[i] = false
 				continue
 			}
-			num := toFloat64(val)
+			num, ok := asFloat64(val)
+			if !ok {
+				// Unreachable after isNumeric; an error, never a NaN, if not.
+				return fmt.Errorf("cannot aggregate non-numeric value of type %T", val)
+			}
 			// Java NumericAccumulator seeds from the first non-NULL partial.
 			// Adding it to an implicit +0 would change SUM/AVG(-0) to +0.
 			// The non-NULL count also preserves this distinction on resume.
@@ -769,6 +807,23 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 			gs.maxs[i] = aggMinMax(gs.maxs[i], val, false)
 		}
 	}
+	return nil
+}
+
+// accumulateArrayAgg is Java's ArrayAccumulator.accumulate: past the LIMIT a
+// row is consumed but dropped, IGNORE NULLS drops a NULL, and RESPECT NULLS
+// refuses one because an array element is never NULL.
+func accumulateArrayAgg(gs *groupState, i int, agg expressions.AggregateSpec, val any) error {
+	if agg.Limit != values.ArrayAggNoLimit && len(gs.arrays[i]) >= agg.Limit {
+		return nil
+	}
+	if val == nil {
+		if agg.IgnoreNulls {
+			return nil
+		}
+		return &values.NullArrayElementError{}
+	}
+	gs.arrays[i] = append(gs.arrays[i], val)
 	return nil
 }
 
@@ -830,17 +885,16 @@ func aggMinMax(acc, val any, isMin bool) any {
 	case aIsF32 || vIsF32:
 		// FLOAT lane (Java MIN_F/MAX_F over the float-promoted operand). An int
 		// side converts directly to float32 (Java's (float) promotion, one
-		// rounding); the min/max itself computes in float64 — exact for float32
-		// operands — and narrows back to one of them (or canonical NaN).
+		// rounding); the result is one of the two operands, bits included.
 		a, aok := asFloat32(acc)
 		v, vok := asFloat32(val)
 		if !aok || !vok {
 			return acc // contract guard
 		}
 		if isMin {
-			return float32(javaMinF64(float64(a), float64(v)))
+			return javaMinF32(a, v)
 		}
-		return float32(javaMaxF64(float64(a), float64(v)))
+		return javaMaxF32(a, v)
 	}
 	// Integer numerics (int64/int32/int). Row integers arrive int64 via the
 	// tupleElementToRowValue canonicalization; int32/int are accepted for
@@ -937,10 +991,18 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 			} else {
 				val = gs.sums[i]
 			}
+		case expressions.AggBitmapConstructAgg:
+			if gs.counts[i] > 0 {
+				val = bytes.Clone(gs.bitmaps[i])
+			}
 		case expressions.AggMin:
 			val = gs.mins[i]
 		case expressions.AggMax:
 			val = gs.maxs[i]
+		case expressions.AggArrayAgg:
+			// A group that saw rows yields an array, empty if every row was
+			// dropped.
+			val = append([]any{}, gs.arrays[i]...)
 		case expressions.AggAvg:
 			if gs.counts[i] > 0 {
 				if gs.allInt[i] {
@@ -1382,7 +1444,7 @@ func (c *nljCursor) pairBinder(outer, inner values.OrdinalRow) *twoLegBinder {
 	return &twoLegBinder{
 		outerID: c.outerCorr, innerID: c.innerCorr,
 		outer: outer, inner: inner,
-		outerType: c.build.legType(c.outerCorr), innerType: c.build.legType(c.innerCorr),
+		outerType: c.build.legValueType(c.outerCorr), innerType: c.build.legValueType(c.innerCorr),
 		base: correlationBase(c.evalCtx),
 	}
 }
@@ -1432,7 +1494,7 @@ func (c *nljCursor) tryBuildHashIndex(innerAlias values.CorrelationIdentifier) {
 		if !ok {
 			// An operand that cannot resolve against the leg row — or whose
 			// key has no hashable promotion-stable canonical form ([]byte,
-			// message shapes, time.Time, NaN) — declines the fast path
+			// message shapes, NaN) — declines the fast path
 			// entirely: the linear path evaluates (and loud-errors) the same
 			// predicate per pair via cmpAny, which handles all of them.
 			return
@@ -1555,10 +1617,8 @@ func evalLegHashKey(val values.Value, corr values.CorrelationIdentifier, leg val
 //     would nuke the fast path for any leg with one NULL key.
 //   - Everything else declines. []byte and message/list shapes are
 //     unhashable map keys (a []byte key PANICKED the build at exactly 100
-//     inner rows: "hash of unhashable type: []uint8"). time.Time is hashable
-//     but its map == is wall+monotonic+location identity, not the instant
-//     equality cmpAny uses — and strings cross-match time.Time via
-//     ParseTimestamp, which no string-keyed bucket can represent.
+//     inner rows: "hash of unhashable type: []uint8"). DATE and TIMESTAMP
+//     values are text, so a probe key is never a time.Time.
 func normalizeNLJHashKey(v any) (any, bool) {
 	if v == nil {
 		return nil, true
@@ -1772,13 +1832,11 @@ func (c *nljCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[
 					c.innerCandidateCount = len(c.innerCandidateIndices)
 				} else {
 					// A probe that cannot resolve — or whose key has no
-					// hashable promotion-stable canonical form (time.Time,
-					// NaN, a cross-typed []byte) — degrades this outer row to
-					// an identity view over every inner row: the per-pair
+					// hashable promotion-stable canonical form (NaN, a
+					// cross-typed []byte) — degrades this outer row to an
+					// identity view over every inner row: the per-pair
 					// predicate evaluation is the semantics of record and
-					// will surface any real failure (or match, e.g.
-					// string-typed inner keys against a time.Time probe via
-					// ParseTimestamp).
+					// will surface any real failure.
 					c.innerCandidateCount = len(c.innerRows)
 				}
 			}
@@ -2059,7 +2117,7 @@ func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resum
 		return nil, nil, nil
 	}
 	fmc := &gen.FlatMapContinuation{}
-	if uerr := proto.Unmarshal(continuation, fmc); uerr != nil {
+	if uerr := recordlayer.UnmarshalAsJava(continuation, fmc); uerr != nil {
 		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (unrecognized continuation bytes)"}
 	}
 	if len(fmc.GetOuterContinuation()) == 0 && len(fmc.GetInnerContinuation()) == 0 && len(fmc.GetCheckValue()) == 0 {
@@ -2154,16 +2212,75 @@ var (
 // check the infinity special cases FIRST, so Min(-Inf, NaN) = -Inf and
 // Max(+Inf, NaN) = +Inf — an evaluated-aggregate divergence from Java
 // whenever a set contains both an infinity and a NaN.
+//
+// They are Math.min(double, double) and Math.max line for line (JDK
+// Math.java), so a NaN
+// result is the NaN OPERAND with its own bits (Java's `if (a != a) return a`,
+// and `a <= b` is false for a NaN b, which returns b): a MIN over the NaN of
+// 0.0/0.0 stores 0xfff8000000000000 in both engines, never Go's
+// math.NaN(). -0.0 is below +0.0.
 func javaMinF64(a, b float64) float64 {
-	if math.IsNaN(a) || math.IsNaN(b) {
-		return math.NaN()
+	if a != a {
+		return a
 	}
-	return math.Min(a, b)
+	if a == 0 && b == 0 && math.Float64bits(b) == 1<<63 {
+		return b
+	}
+	if a <= b {
+		return a
+	}
+	return b
 }
 
 func javaMaxF64(a, b float64) float64 {
-	if math.IsNaN(a) || math.IsNaN(b) {
-		return math.NaN()
+	if a != a {
+		return a
 	}
-	return math.Max(a, b)
+	if a == 0 && b == 0 && math.Float64bits(a) == 1<<63 {
+		return b
+	}
+	if a >= b {
+		return a
+	}
+	return b
+}
+
+// javaMinF32 and javaMaxF32 are Math.min(float, float) and Math.max: the same
+// algorithm in binary32, so a FLOAT NaN operand keeps its exact bits (a trip
+// through float64 would quiet a signaling payload).
+func javaMinF32(a, b float32) float32 {
+	if a != a {
+		return a
+	}
+	if a == 0 && b == 0 && math.Float32bits(b) == 1<<31 {
+		return b
+	}
+	if a <= b {
+		return a
+	}
+	return b
+}
+
+func javaMaxF32(a, b float32) float32 {
+	if a != a {
+		return a
+	}
+	if a == 0 && b == 0 && math.Float32bits(a) == 1<<31 {
+		return b
+	}
+	if a >= b {
+		return a
+	}
+	return b
+}
+
+// BitmapAggregatePositionError rejects a negative bit or a result exceeding
+// Java BitmapValueIndexMaintainer.MAX_ENTRY_SIZE, before allocating that result.
+type BitmapAggregatePositionError struct{ Position int32 }
+
+func (e *BitmapAggregatePositionError) Error() string {
+	if e.Position < 0 {
+		return fmt.Sprintf("bitIndex < 0: %d", e.Position)
+	}
+	return "entry size option is too large"
 }

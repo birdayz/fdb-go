@@ -36,8 +36,8 @@ func NewEuclideanDistanceRowNumberValue(partitioningValues, argumentValues []Val
 // Name returns the value name matching Java's NAME constant.
 func (*EuclideanDistanceRowNumberValue) Name() string { return "EuclideanDistanceRowNumber" }
 
-// Type returns NotNullLong — ROW_NUMBER is always populated, 1-based.
-func (*EuclideanDistanceRowNumberValue) Type() Type { return NotNullLong }
+// Type is nullable LONG, Java's primitiveType(LONG).
+func (*EuclideanDistanceRowNumberValue) Type() Type { return NullableLong }
 
 // IsIndexOnly returns true — K-NN row numbers are computed during
 // HNSW index traversal and cannot be reproduced from base records.

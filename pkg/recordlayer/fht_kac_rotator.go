@@ -21,7 +21,8 @@ type fhtKacRotator struct {
 	signs         [][]bool // signs[round][dim]: true = +1, false = -1
 }
 
-const invSqrt2 = 1.0 / math.Sqrt2
+// Java rounds the square root before dividing, not the reciprocal afterward.
+var invSqrt2 = 1.0 / math.Sqrt(2.0)
 
 // newFhtKacRotator creates a new FHT-KAC rotator matching Java's constructor.
 // seed is used to initialize a Java-compatible java.util.Random for sign generation.

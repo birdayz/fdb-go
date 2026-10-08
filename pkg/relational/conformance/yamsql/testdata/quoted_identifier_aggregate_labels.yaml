@@ -23,6 +23,7 @@ schema_template: |
     PRIMARY KEY (id)
   )
   CREATE INDEX sum_by_region AS SELECT SUM("Amount") FROM sales GROUP BY "Region"
+  CREATE INDEX cnt_amount_by_region AS SELECT COUNT("Amount") FROM sales GROUP BY "Region"
 setup:
   - INSERT INTO sales VALUES (1, 'US', 100, 1)
   - INSERT INTO sales VALUES (2, 'US', 200, 2)

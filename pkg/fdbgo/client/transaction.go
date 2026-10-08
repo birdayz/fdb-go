@@ -52,7 +52,6 @@ const (
 	ErrAllAlternativesFailed     = 1006 // all_alternatives_failed (Layer 2 only)
 	ErrRequestMaybeDelivered     = 1030 // request_maybe_delivered — an in-flight RPC's connection died (transport teardown); reads retry another alternative, commit maps it to 1021
 	ErrBrokenPromise             = 1100 // broken_promise — the peer dropped the reply promise; same maybeDelivered class as 1030 (LoadBalance.actor.h:344)
-	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2 (NOT C++ 1200=recruitment_failed)
 	ErrInvertedRange             = 2005 // inverted_range (begin > end)
 	ErrRangeLimitsInvalid        = 2012 // range_limits_invalid (e.g. a row limit < -1)
 	ErrInvalidMutationType       = 2018 // invalid_mutation_type (a non-atomic op passed to Atomic())
@@ -1937,14 +1936,14 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 
 	if len(shipMuts) == 0 && len(sizeConflicts) == 0 {
 		// Read-only transaction — no commit needed.
-		// Still set hasCommitted so GetCommittedVersion returns 0 (not error 2015).
+		// NativeAPI commitMutations resets the committed version to invalidVersion.
 		// Preserve Go's auto-reuse behavior; C++ API >=410 does not reset here.
-		// RFC-170 (#8): activate pending watches at the READ version (committedVersion is 0 for a
+		// RFC-170 (#8): activate pending watches at the READ version (committedVersion is -1 for a
 		// no-commit txn — C++ setupWatches' ternary falls back to getReadVersion). Fire BEFORE
 		// postCommitReset clears the read version.
 		completion.finishNoWrite()
 		op.lease.release()
-		tx.publishCommit(op.inc, op.lease, commitOutcome{})
+		tx.publishCommit(op.inc, op.lease, commitOutcome{version: -1})
 		return nil
 	}
 
@@ -2077,8 +2076,8 @@ func (tx *Transaction) Cancel() {
 
 // Reset resets the transaction to a clean state, as if newly created from Database.
 // Unlike the internal reset() used by OnError (which preserves retryCount/backoff),
-// this clears everything including retry state. Options set via Set*() are preserved
-// across Reset, matching C++ ReadYourWritesTransaction::reset() + applyPersistentOptions.
+// this clears retry state and restores options to database defaults, matching
+// C++ ReadYourWritesTransaction::reset(). The last committed version is preserved.
 // Updates creationTime so the timeout budget restarts (matches C++ reset() behavior).
 //
 // In-flight Watch() calls ARE cancelled by Reset() (via reset()→cancelWatches(), below), but they
@@ -2326,9 +2325,6 @@ func (tx *Transaction) newWatchCtx(parent context.Context) (context.Context, con
 
 // GetCommittedVersion returns the version at which this transaction committed.
 func (tx *Transaction) stateGetCommittedVersion() (int64, error) {
-	if !tx.hasCommitted {
-		return 0, &wire.FDBError{Code: 2015} // future_not_set / not yet committed
-	}
 	return tx.committedVersion, nil
 }
 
@@ -3579,7 +3575,7 @@ func (tx *Transaction) resetFields(userReset bool) {
 	tx.userSetReadVersion = false // C++ creates fresh state on reset
 	tx.readVersion = 0
 	tx.readVersionMu.Unlock()
-	tx.committedVersion = 0
+	// NativeAPI TransactionState::cloneAndReset preserves the last committed version.
 	tx.hasCommitted = false
 	tx.txnBatchId = 0
 	tx.lastVersionstamp = nil

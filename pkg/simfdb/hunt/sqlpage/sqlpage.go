@@ -39,7 +39,7 @@ import (
 // dbPath is fixed because the SQL layer bakes the database path into stored keys; a per-run path
 // would make the keyspace (and the determinism fingerprint) vary. Isolation comes from the unique
 // backend cache key instead.
-const dbPath = "/sqlpagedb"
+const dbPath = "/FRL/sqlpagedb"
 
 // keyCounter uniquifies each run's backend cache key so concurrent runs never share a SimFDB.
 var keyCounter atomic.Uint64
@@ -315,7 +315,7 @@ func newHarness(seed uint64) (*harness, error) {
 	h := &harness{simDB: simDB}
 	h.closes = append(h.closes, sqldriver.RegisterBackend(key, simDB))
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+key)
+	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key)
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open setup: %w", err)
@@ -338,7 +338,7 @@ func newHarness(seed uint64) (*harness, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+key+"&schema=s")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key+"&schema=S")
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open db: %w", err)

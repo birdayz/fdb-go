@@ -119,7 +119,7 @@ func (p *RecordQueryDefaultOnEmptyPlan) GetInner() RecordQueryPlan {
 func (p *RecordQueryDefaultOnEmptyPlan) reanchorInputValueToOutput(
 	value values.Value,
 ) (values.Value, error) {
-	return reanchorDefaultInputValueToOutput(p, p.GetInner(), value)
+	return reanchorDefaultInputValueToOutput(p, selectedPlanFromQuantifier(p.innerQ), value)
 }
 
 // reanchorDefaultInputValueToOutput crosses only proven child lineage. An
@@ -222,14 +222,14 @@ func (p *RecordQueryDefaultOnEmptyPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryDefaultOnEmptyPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryDefaultOnEmptyPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryDefaultOnEmptyPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("defaultonemptyplan|")
+	hash := p.keyFor(p).Hash("defaultonemptyplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

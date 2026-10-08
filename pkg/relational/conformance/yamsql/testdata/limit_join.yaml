@@ -12,7 +12,7 @@ setup:
   - INSERT INTO orders VALUES (10, 1, 100), (20, 1, 200), (30, 2, 300), (40, 3, 50), (50, 3, 75)
 tests:
   - query: SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id ORDER BY o.id LIMIT 3
-    plan_contains: "Limit(3, Project([_current.ID#0, _current.NAME#4], FlatMap("
+    plan_contains: "Limit(3, FlatMap(outer=Scan(ORDERS), inner=Scan(CUSTOMERS, [=])))"
     plan_not_contains: "NestedLoopJoin"
     rows:
       - [10, "Alice"]

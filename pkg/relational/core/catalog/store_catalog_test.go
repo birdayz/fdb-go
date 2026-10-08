@@ -83,7 +83,7 @@ func TestStoreCatalog_SaveAndLoadSchema(t *testing.T) {
 	tx := NewInMemoryTransaction()
 
 	tmpl := buildTestTemplate(t, "demo")
-	schema := tmpl.GenerateSchema("/db1", "public")
+	schema := tmpl.GenerateSchema("/FRL/db1", "public")
 
 	// Saving without the database present and without
 	// createDatabaseIfNecessary must error with
@@ -97,7 +97,7 @@ func TestStoreCatalog_SaveAndLoadSchema(t *testing.T) {
 	if err := c.SchemaTemplateCatalog().CreateTemplate(tx, tmpl); err != nil {
 		t.Fatalf("pre-seed template: %v", err)
 	}
-	err := c.SaveSchema(tx, schema, false)
+	err := c.SaveSchema(tx, schema, false, api.SchemaExistsError)
 	if err == nil {
 		t.Fatal("save without database should error")
 	}
@@ -107,27 +107,27 @@ func TestStoreCatalog_SaveAndLoadSchema(t *testing.T) {
 	}
 
 	// With createDatabaseIfNecessary, save succeeds and creates the db.
-	if err := c.SaveSchema(tx, schema, true); err != nil {
+	if err := c.SaveSchema(tx, schema, true, api.SchemaExistsError); err != nil {
 		t.Fatalf("SaveSchema: %v", err)
 	}
-	if ok, _ := c.DoesDatabaseExist(tx, "/db1"); !ok {
+	if ok, _ := c.DoesDatabaseExist(tx, "/FRL/db1"); !ok {
 		t.Error("database not auto-created")
 	}
 
 	// LoadSchema returns what we saved.
-	got, err := c.LoadSchema(tx, "/db1", "public")
+	got, err := c.LoadSchema(tx, "/FRL/db1", "public")
 	if err != nil {
 		t.Fatalf("LoadSchema: %v", err)
 	}
 	if got.MetadataName() != "public" {
 		t.Errorf("got schema %q, want public", got.MetadataName())
 	}
-	if got.DatabaseName() != "/db1" {
+	if got.DatabaseName() != "/FRL/db1" {
 		t.Errorf("got database %q, want /db1", got.DatabaseName())
 	}
 
 	// LoadSchema on a missing schema errors.
-	_, err = c.LoadSchema(tx, "/db1", "missing")
+	_, err = c.LoadSchema(tx, "/FRL/db1", "missing")
 	if err == nil {
 		t.Fatal("LoadSchema(missing) should error")
 	}
@@ -139,7 +139,7 @@ func TestStoreCatalog_SaveAndLoadSchema(t *testing.T) {
 	// (matching Java: loadSchema collapses db-missing and
 	// schema-missing into the same ErrorCode — the primary-key lookup
 	// can't distinguish the two).
-	_, err = c.LoadSchema(tx, "/nope", "public")
+	_, err = c.LoadSchema(tx, "/FRL/nope", "public")
 	if err == nil {
 		t.Fatal("LoadSchema(missing db) should error")
 	}
@@ -166,7 +166,7 @@ func TestStoreCatalog_SaveSchemaValidation(t *testing.T) {
 	mockTmplEmpty.EXPECT().Version().Return(0).AnyTimes()
 	schemaEmptyTmpl := api.NewMockSchema(ctrl)
 	schemaEmptyTmpl.EXPECT().MetadataName().Return("s1").AnyTimes()
-	schemaEmptyTmpl.EXPECT().DatabaseName().Return("/db").AnyTimes()
+	schemaEmptyTmpl.EXPECT().DatabaseName().Return("/FRL/db").AnyTimes()
 	schemaEmptyTmpl.EXPECT().SchemaTemplate().Return(mockTmplEmpty).AnyTimes()
 
 	mockTmplNeg := api.NewMockSchemaTemplate(ctrl)
@@ -174,7 +174,7 @@ func TestStoreCatalog_SaveSchemaValidation(t *testing.T) {
 	mockTmplNeg.EXPECT().Version().Return(-1).AnyTimes()
 	schemaNegVer := api.NewMockSchema(ctrl)
 	schemaNegVer.EXPECT().MetadataName().Return("s1").AnyTimes()
-	schemaNegVer.EXPECT().DatabaseName().Return("/db").AnyTimes()
+	schemaNegVer.EXPECT().DatabaseName().Return("/FRL/db").AnyTimes()
 	schemaNegVer.EXPECT().SchemaTemplate().Return(mockTmplNeg).AnyTimes()
 
 	cases := []struct {
@@ -182,7 +182,7 @@ func TestStoreCatalog_SaveSchemaValidation(t *testing.T) {
 		schema api.Schema
 	}{
 		{"nil schema", nil},
-		{"empty schema name", tmpl.GenerateSchema("/db", "")},
+		{"empty schema name", tmpl.GenerateSchema("/FRL/db", "")},
 		{"empty database name", tmpl.GenerateSchema("", "s1")},
 		{"empty template name", schemaEmptyTmpl},
 		{"negative version", schemaNegVer},
@@ -190,7 +190,7 @@ func TestStoreCatalog_SaveSchemaValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := c.SaveSchema(tx, tc.schema, true)
+			err := c.SaveSchema(tx, tc.schema, true, api.SchemaExistsError)
 			if err == nil {
 				t.Fatalf("SaveSchema(%s) succeeded", tc.name)
 			}
@@ -210,9 +210,9 @@ func TestStoreCatalog_SaveSchemaRequiresKnownTemplate(t *testing.T) {
 	c := NewInMemoryStoreCatalog()
 	tx := NewInMemoryTransaction()
 	tmpl := buildTestTemplate(t, "unregistered")
-	schema := tmpl.GenerateSchema("/db", "s1")
+	schema := tmpl.GenerateSchema("/FRL/db", "s1")
 
-	err := c.SaveSchema(tx, schema, true)
+	err := c.SaveSchema(tx, schema, true, api.SchemaExistsError)
 	if err == nil {
 		t.Fatal("SaveSchema with unregistered template should error")
 	}
@@ -225,7 +225,7 @@ func TestStoreCatalog_SaveSchemaRequiresKnownTemplate(t *testing.T) {
 	if err := c.SchemaTemplateCatalog().CreateTemplate(tx, tmpl); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SaveSchema(tx, schema, true); err != nil {
+	if err := c.SaveSchema(tx, schema, true, api.SchemaExistsError); err != nil {
 		t.Errorf("SaveSchema after template register: %v", err)
 	}
 }
@@ -233,15 +233,15 @@ func TestStoreCatalog_SaveSchemaRequiresKnownTemplate(t *testing.T) {
 func TestStoreCatalog_DoesSchemaExist(t *testing.T) {
 	t.Parallel()
 	c, tx, tmpl := newSeededCatalog(t, "demo")
-	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s1"), true)
+	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s1"), true, api.SchemaExistsError)
 
 	for _, tc := range []struct {
 		db, schema string
 		want       bool
 	}{
-		{"/db", "s1", true},
-		{"/db", "s2", false},
-		{"/other", "s1", false},
+		{"/FRL/db", "s1", true},
+		{"/FRL/db", "s2", false},
+		{"/FRL/other", "s1", false},
 	} {
 		got, err := c.DoesSchemaExist(tx, tc.db, tc.schema)
 		if err != nil {
@@ -257,17 +257,17 @@ func TestStoreCatalog_DoesSchemaExist(t *testing.T) {
 func TestStoreCatalog_DeleteSchema(t *testing.T) {
 	t.Parallel()
 	c, tx, tmpl := newSeededCatalog(t, "demo")
-	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s1"), true)
+	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s1"), true, api.SchemaExistsError)
 
-	if err := c.DeleteSchema(tx, "/db", "s1"); err != nil {
+	if err := c.DeleteSchema(tx, "/FRL/db", "s1"); err != nil {
 		t.Fatalf("DeleteSchema: %v", err)
 	}
-	if ok, _ := c.DoesSchemaExist(tx, "/db", "s1"); ok {
+	if ok, _ := c.DoesSchemaExist(tx, "/FRL/db", "s1"); ok {
 		t.Error("DoesSchemaExist = true after Delete")
 	}
 
 	// Delete of missing schema errors with UndefinedSchema.
-	err := c.DeleteSchema(tx, "/db", "s1")
+	err := c.DeleteSchema(tx, "/FRL/db", "s1")
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUndefinedSchema {
 		t.Errorf("Code = %q, want %q", apiErr.Code, api.ErrCodeUndefinedSchema)
@@ -277,16 +277,16 @@ func TestStoreCatalog_DeleteSchema(t *testing.T) {
 func TestStoreCatalog_RepairSchema(t *testing.T) {
 	t.Parallel()
 	c, tx, tmpl := newSeededCatalog(t, "demo")
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	// Happy path: refresh an existing schema. For the in-memory impl
 	// this re-generates from the same template, so the stored Schema
 	// points to the same template object.
-	if err := c.RepairSchema(tx, "/db", "s"); err != nil {
+	if err := c.RepairSchema(tx, "/FRL/db", "s"); err != nil {
 		t.Fatalf("RepairSchema: %v", err)
 	}
-	refreshed, err := c.LoadSchema(tx, "/db", "s")
+	refreshed, err := c.LoadSchema(tx, "/FRL/db", "s")
 	if err != nil {
 		t.Fatalf("LoadSchema after repair: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestStoreCatalog_RepairSchema(t *testing.T) {
 func TestStoreCatalog_RepairSchemaMissingSchema(t *testing.T) {
 	t.Parallel()
 	c, tx, _ := newSeededCatalog(t, "demo")
-	err := c.RepairSchema(tx, "/db", "missing")
+	err := c.RepairSchema(tx, "/FRL/db", "missing")
 	if err == nil {
 		t.Fatal("RepairSchema of missing schema should error")
 	}
@@ -313,13 +313,13 @@ func TestStoreCatalog_RepairSchemaMissingTemplate(t *testing.T) {
 	// Seed a schema then delete its template. Repair must fail with
 	// ErrCodeUnknownSchemaTemplate since there's nothing to re-bind to.
 	c, tx, tmpl := newSeededCatalog(t, "demo")
-	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s"), true); err != nil {
+	if err := c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s"), true, api.SchemaExistsError); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.SchemaTemplateCatalog().DeleteTemplate(tx, tmpl.MetadataName(), true); err != nil {
 		t.Fatal(err)
 	}
-	err := c.RepairSchema(tx, "/db", "s")
+	err := c.RepairSchema(tx, "/FRL/db", "s")
 	if err == nil {
 		t.Fatal("RepairSchema after template delete should error")
 	}
@@ -335,9 +335,9 @@ func TestStoreCatalog_ListSchemasAcrossDatabases(t *testing.T) {
 	// Out-of-order inserts across three databases; listing must sort
 	// by (database_name, schema_name).
 	for _, pair := range [][2]string{
-		{"/c", "z"}, {"/a", "m"}, {"/b", "p"}, {"/a", "a"}, {"/b", "q"},
+		{"/FRL/c", "z"}, {"/FRL/a", "m"}, {"/FRL/b", "p"}, {"/FRL/a", "a"}, {"/FRL/b", "q"},
 	} {
-		if err := c.SaveSchema(tx, tmpl.GenerateSchema(pair[0], pair[1]), true); err != nil {
+		if err := c.SaveSchema(tx, tmpl.GenerateSchema(pair[0], pair[1]), true, api.SchemaExistsError); err != nil {
 			t.Fatalf("SaveSchema(%s, %s): %v", pair[0], pair[1], err)
 		}
 	}
@@ -354,7 +354,7 @@ func TestStoreCatalog_ListSchemasAcrossDatabases(t *testing.T) {
 		got = append(got, [2]string{db, s})
 	}
 	want := [][2]string{
-		{"/a", "a"}, {"/a", "m"}, {"/b", "p"}, {"/b", "q"}, {"/c", "z"},
+		{"/FRL/a", "a"}, {"/FRL/a", "m"}, {"/FRL/b", "p"}, {"/FRL/b", "q"}, {"/FRL/c", "z"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d rows, want %d: %v", len(got), len(want), got)
@@ -369,10 +369,10 @@ func TestStoreCatalog_ListSchemasAcrossDatabases(t *testing.T) {
 func TestStoreCatalog_DeleteDatabase(t *testing.T) {
 	t.Parallel()
 	c, tx, tmpl := newSeededCatalog(t, "demo")
-	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s1"), true)
-	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s2"), false)
+	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s1"), true, api.SchemaExistsError)
+	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s2"), false, api.SchemaExistsError)
 
-	ok, err := c.DeleteDatabase(tx, "/db", true)
+	ok, err := c.DeleteDatabase(tx, "/FRL/db", true)
 	if err != nil {
 		t.Fatalf("DeleteDatabase: %v", err)
 	}
@@ -381,20 +381,20 @@ func TestStoreCatalog_DeleteDatabase(t *testing.T) {
 	}
 
 	// All schemas should be gone too.
-	if exists, _ := c.DoesSchemaExist(tx, "/db", "s1"); exists {
+	if exists, _ := c.DoesSchemaExist(tx, "/FRL/db", "s1"); exists {
 		t.Error("s1 still exists after DeleteDatabase")
 	}
-	if exists, _ := c.DoesSchemaExist(tx, "/db", "s2"); exists {
+	if exists, _ := c.DoesSchemaExist(tx, "/FRL/db", "s2"); exists {
 		t.Error("s2 still exists after DeleteDatabase")
 	}
 
 	// Delete of missing database with throwIfDoesNotExist=true errors;
 	// with throwIfDoesNotExist=false is a no-op.
-	_, err = c.DeleteDatabase(tx, "/db", true)
+	_, err = c.DeleteDatabase(tx, "/FRL/db", true)
 	if err == nil {
 		t.Error("DeleteDatabase(missing, throw) did not error")
 	}
-	ok, err = c.DeleteDatabase(tx, "/db", false)
+	ok, err = c.DeleteDatabase(tx, "/FRL/db", false)
 	if err != nil {
 		t.Errorf("DeleteDatabase(missing, no-throw): %v", err)
 	}
@@ -407,7 +407,7 @@ func TestStoreCatalog_ListDatabases(t *testing.T) {
 	t.Parallel()
 	c := NewInMemoryStoreCatalog()
 	tx := NewInMemoryTransaction()
-	for _, dbURI := range []string{"/c", "/a", "/b"} {
+	for _, dbURI := range []string{"/FRL/c", "/FRL/a", "/FRL/b"} {
 		if err := c.CreateDatabase(tx, dbURI); err != nil {
 			t.Fatalf("CreateDatabase(%s): %v", dbURI, err)
 		}
@@ -428,7 +428,7 @@ func TestStoreCatalog_ListDatabases(t *testing.T) {
 		}
 		got = append(got, s)
 	}
-	want := []string{"/a", "/b", "/c"}
+	want := []string{"/FRL/a", "/FRL/b", "/FRL/c"}
 	if len(got) != len(want) {
 		t.Fatalf("got %d rows, want %d: %v", len(got), len(want), got)
 	}
@@ -442,13 +442,13 @@ func TestStoreCatalog_ListDatabases(t *testing.T) {
 func TestStoreCatalog_ListSchemasInDatabase(t *testing.T) {
 	t.Parallel()
 	c, tx, tmpl := newSeededCatalog(t, "demo")
-	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/db", "c"), true)
-	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/db", "a"), false)
-	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/db", "b"), false)
+	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "c"), true, api.SchemaExistsError)
+	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "a"), false, api.SchemaExistsError)
+	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "b"), false, api.SchemaExistsError)
 	// Different DB — MUST NOT appear in a narrowed list.
-	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/other", "x"), true)
+	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/other", "x"), true, api.SchemaExistsError)
 
-	rs, err := c.ListSchemasInDatabase(tx, "/db", nil)
+	rs, err := c.ListSchemasInDatabase(tx, "/FRL/db", nil)
 	if err != nil {
 		t.Fatalf("ListSchemasInDatabase: %v", err)
 	}
@@ -467,7 +467,7 @@ func TestStoreCatalog_ListSchemasInDatabase(t *testing.T) {
 		rows = append(rows, [2]string{db, schema})
 	}
 
-	want := [][2]string{{"/db", "a"}, {"/db", "b"}, {"/db", "c"}}
+	want := [][2]string{{"/FRL/db", "a"}, {"/FRL/db", "b"}, {"/FRL/db", "c"}}
 	if len(rows) != len(want) {
 		t.Fatalf("got %d rows, want %d: %v", len(rows), len(want), rows)
 	}
@@ -484,7 +484,7 @@ func TestStoreCatalog_ClosedTransactionFails(t *testing.T) {
 	tx := NewInMemoryTransaction()
 	_ = tx.Commit()
 
-	err := c.CreateDatabase(tx, "/db")
+	err := c.CreateDatabase(tx, "/FRL/db")
 	if err == nil {
 		t.Fatal("CreateDatabase on closed tx succeeded")
 	}
@@ -505,7 +505,7 @@ func TestStoreCatalog_WrongTransactionType(t *testing.T) {
 	// The in-memory catalog calls Unwrap() first; return the mock itself
 	// so it can't possibly satisfy the *InMemoryTransaction assertion.
 	wrongTx.EXPECT().Unwrap().Return(wrongTx).AnyTimes()
-	err := c.CreateDatabase(wrongTx, "/db")
+	err := c.CreateDatabase(wrongTx, "/FRL/db")
 	if err == nil {
 		t.Fatal("CreateDatabase(wrong tx) succeeded")
 	}
@@ -518,8 +518,8 @@ func TestStoreCatalog_WrongTransactionType(t *testing.T) {
 func TestStoreCatalog_ListResultSetColumnNames(t *testing.T) {
 	t.Parallel()
 	c, tx, tmpl := newSeededCatalog(t, "demo")
-	_ = c.CreateDatabase(tx, "/db")
-	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/db", "s1"), true)
+	_ = c.CreateDatabase(tx, "/FRL/db")
+	_ = c.SaveSchema(tx, tmpl.GenerateSchema("/FRL/db", "s1"), true, api.SchemaExistsError)
 
 	t.Run("ListDatabases", func(t *testing.T) {
 		t.Parallel()
@@ -535,8 +535,8 @@ func TestStoreCatalog_ListResultSetColumnNames(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StringByName(%q): %v", ColDatabaseID, err)
 		}
-		if v != "/db" {
-			t.Errorf("got %q, want /db", v)
+		if v != "/FRL/db" {
+			t.Errorf("got %q, want /FRL/db", v)
 		}
 	})
 
@@ -553,14 +553,14 @@ func TestStoreCatalog_ListResultSetColumnNames(t *testing.T) {
 		dbID, _ := rs.StringByName(ColDatabaseID)
 		sname, _ := rs.StringByName(ColSchemaName)
 		tname, _ := rs.StringByName(ColTemplateName)
-		if dbID != "/db" || sname != "s1" || tname != "demo" {
-			t.Errorf("got (%q, %q, %q), want (/db, s1, demo)", dbID, sname, tname)
+		if dbID != "/FRL/db" || sname != "s1" || tname != "demo" {
+			t.Errorf("got (%q, %q, %q), want (/FRL/db, s1, demo)", dbID, sname, tname)
 		}
 	})
 
 	t.Run("ListSchemasInDatabase", func(t *testing.T) {
 		t.Parallel()
-		rs, err := c.ListSchemasInDatabase(tx, "/db", nil)
+		rs, err := c.ListSchemasInDatabase(tx, "/FRL/db", nil)
 		if err != nil {
 			t.Fatalf("ListSchemasInDatabase: %v", err)
 		}
@@ -570,8 +570,8 @@ func TestStoreCatalog_ListResultSetColumnNames(t *testing.T) {
 		}
 		dbID, _ := rs.StringByName(ColDatabaseID)
 		sname, _ := rs.StringByName(ColSchemaName)
-		if dbID != "/db" || sname != "s1" {
-			t.Errorf("got (%q, %q), want (/db, s1)", dbID, sname)
+		if dbID != "/FRL/db" || sname != "s1" {
+			t.Errorf("got (%q, %q), want (/FRL/db, s1)", dbID, sname)
 		}
 	})
 }

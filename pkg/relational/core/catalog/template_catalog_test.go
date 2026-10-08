@@ -86,10 +86,17 @@ func TestTemplateCatalog_LoadLatestVersion(t *testing.T) {
 	t.Parallel()
 	c := NewInMemorySchemaTemplateCatalog()
 	tx := NewInMemoryTransaction()
-	for _, v := range []int{1, 3, 2} {
+	for _, v := range []int{1, 3} {
 		if err := c.CreateTemplate(tx, buildTemplateAtVersion(t, "demo", v)); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// A version below the latest stored one is refused (a declared Go
+	// extension: Java's createTemplate refuses only an exact duplicate).
+	err := c.CreateTemplate(tx, buildTemplateAtVersion(t, "demo", 2))
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidSchemaTemplate {
+		t.Fatalf("CreateTemplate(demo, 2) under 3: %v, want %s", err, api.ErrCodeInvalidSchemaTemplate)
 	}
 	got, err := c.LoadSchemaTemplate(tx, "demo")
 	if err != nil {
@@ -198,10 +205,15 @@ func TestTemplateCatalog_ListTemplates(t *testing.T) {
 	t.Parallel()
 	c := NewInMemorySchemaTemplateCatalog()
 	tx := NewInMemoryTransaction()
-	// Insert out of order; the listing must sort by (name, version).
-	_ = c.CreateTemplate(tx, buildTemplateAtVersion(t, "zulu", 1))
-	_ = c.CreateTemplate(tx, buildTemplateAtVersion(t, "alpha", 2))
-	_ = c.CreateTemplate(tx, buildTemplateAtVersion(t, "alpha", 1))
+	// Insert out of name order; the listing must sort by (name, version).
+	for _, nv := range []struct {
+		name    string
+		version int
+	}{{"zulu", 1}, {"alpha", 1}, {"alpha", 2}} {
+		if err := c.CreateTemplate(tx, buildTemplateAtVersion(t, nv.name, nv.version)); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	rs, err := c.ListTemplates(tx)
 	if err != nil {

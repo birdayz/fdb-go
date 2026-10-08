@@ -27,6 +27,139 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+var _ = Describe("FixedFactorUnionRangeJava", func() {
+	It("plans the indexed disjunction beside a correlated range EXISTS", func() {
+		ctx := context.Background()
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, fmt.Sprintf("unionrange_%s", uuid.New().String()))
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = env.Cleanup(ctx) }()
+		srv, err := NewIsolatedJavaInvoker()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = srv.Close() }()
+		var trace map[string]any
+		request := map[string]any{
+			"clusterFile":    env.ClusterFile,
+			"schemaTemplate": "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY(id)) CREATE INDEX idx_a ON T_RD(a) CREATE INDEX idx_e ON T_RD(e) CREATE INDEX idx_s ON T_RD(s)",
+			"setupSqls":      []string{},
+			"querySql":       "SELECT * FROM t_rd WHERE (((s IS NOT NULL) AND (a=8) AND (e BETWEEN 3.0 AND 4.0)) OR ((d IN (2,5)) AND (COALESCE(a,8)<5))) AND EXISTS (SELECT 1 FROM t_rd AS r WHERE r.c<t_rd.c) ORDER BY c DESC NULLS FIRST,id",
+			"rules":          []string{"NormalizePredicatesRule", "PredicateToLogicalUnionRule", "PartitionBinarySelectRule", "ImplementFilterRule"},
+		}
+		err = srv.InvokeAs(ctx, "planRuleTrace", request, &trace)
+		var javaErr *JavaError
+		Expect(errors.As(err, &javaErr)).To(BeTrue(), "Java has no access path ordered by C")
+		Expect(javaErr.ExceptionClass).To(Equal("UnableToPlanException"))
+		Expect(javaErr.SQLState).To(Equal("0AF00"))
+		request["querySql"] = "SELECT * FROM t_rd WHERE (((s IS NOT NULL) AND (a=8) AND (e BETWEEN 3.0 AND 4.0)) OR ((d IN (2,5)) AND (COALESCE(a,8)<5))) AND EXISTS (SELECT 1 FROM t_rd AS r WHERE r.c<t_rd.c)"
+		err = srv.InvokeAs(ctx, "planRuleTrace", request, &trace)
+		fmt.Fprintf(GinkgoWriter, "UNIONRANGE unordered trace=%v error=%v\n", trace, err)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(trace["explain"]).NotTo(BeEmpty())
+	})
+})
+
+var _ = Describe("FixedFactorUnionScalarJava", func() {
+	It("pins front-end rejection and the equivalent relational planner failure", func() {
+		ctx := context.Background()
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, fmt.Sprintf("unionscalar_%s", uuid.New().String()))
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = env.Cleanup(ctx) }()
+		srv, err := NewIsolatedJavaInvoker()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = srv.Close() }()
+		var trace map[string]any
+		err = srv.InvokeAs(ctx, "planRuleTraceOutcome", map[string]any{
+			"clusterFile":    env.ClusterFile,
+			"schemaTemplate": "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)",
+			"setupSqls":      []string{},
+			"querySql":       "SELECT * FROM t_rd WHERE (((NOT (c = 7)) AND (d = 4.0) AND (b = 2)) OR ((NOT (a BETWEEN 1 AND 4)) AND (NOT (e > 0.1)) AND (ABS(c) = 4))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.a < t_rd.a AND r.a > 9) AND c <= (SELECT MIN(a) FROM t_rd) ORDER BY b, id",
+			"rules":          []string{"TASK-COUNT", "NormalizePredicatesRule", "PredicateToLogicalUnionRule", "PartitionBinarySelectRule", "ImplementFilterRule"},
+		}, &trace)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(trace["sqlState"]).To(Equal("42601"))
+		Expect(trace["error"]).NotTo(BeEmpty())
+		Expect(trace["tasksPerPhase"]).To(BeEmpty())
+		const schema = "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)"
+		const pairedSQL = "SELECT t_rd.* FROM t_rd, (SELECT MIN(a) AS min_a FROM t_rd) AS m WHERE (((NOT (c = 7)) AND (d = 4.0) AND (b = 2)) OR ((NOT (a BETWEEN 1 AND 4)) AND (NOT (e > 0.1)) AND (c = 4 OR c = -4))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.a < t_rd.a AND r.a > 9) AND c <= m.min_a"
+		for _, order := range []string{" ORDER BY b, id", " ORDER BY b, id", "", ""} {
+			trace = nil
+			err = srv.InvokeAs(ctx, "planRuleTraceOutcome", map[string]any{
+				"clusterFile": env.ClusterFile, "schemaTemplate": schema, "setupSqls": []string{},
+				"querySql": pairedSQL + order,
+				"rules":    []string{"TASK-COUNT", "NormalizePredicatesRule", "PredicateToLogicalUnionRule", "PartitionBinarySelectRule", "ImplementFilterRule"},
+			}, &trace)
+			fmt.Fprintf(GinkgoWriter, "UNIONSCALAR order=%q trace=%v error=%v\n", order, trace, err)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(trace["tasksPerKind"]).NotTo(BeEmpty())
+			Expect(trace["exceptionClass"]).To(Equal("StackOverflowError"))
+			Expect(trace["explain"]).To(BeEmpty())
+		}
+	})
+})
+
+var _ = Describe("FixedFactorUnionAccessJava", func() {
+	DescribeTable("records the bounded anti-EXISTS planning outcome", func(term, outcome string, taskLimit int) {
+		ctx := context.Background()
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, fmt.Sprintf("unionaccess_%s", uuid.New().String()))
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = env.Cleanup(ctx) }()
+		srv, err := NewIsolatedJavaInvoker()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = srv.Close() }()
+		sql := "SELECT * FROM t_rd WHERE (((NOT (c = 7)) AND (d = 4.0) AND (b = 2)) OR ((NOT (a BETWEEN 1 AND 4)) AND (NOT (e > 0.1)) AND (" + term + "))) AND NOT EXISTS (SELECT 1 FROM t_rd AS r WHERE r.a < t_rd.a AND r.a > 9)"
+		if term == "" {
+			sql = "SELECT * FROM t_rd WHERE a = 1"
+		}
+		var trace map[string]any
+		err = srv.InvokeAs(ctx, "planRuleTraceWithinBudget", map[string]any{
+			"clusterFile":    env.ClusterFile,
+			"schemaTemplate": "CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)",
+			"setupSqls":      []string{},
+			"querySql":       sql,
+			"rules":          []string{"TASK-COUNT", "REWRITING-RESULT", "NormalizePredicatesRule", "PredicateToLogicalUnionRule", "PartitionBinarySelectRule", "ImplementFilterRule"},
+			"taskLimit":      taskLimit,
+		}, &trace)
+		fmt.Fprintf(GinkgoWriter, "UNIONACCESS term=%q trace=%v error=%v\n", term, trace, err)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(trace["traceTaskLimit"]).To(Equal(float64(taskLimit)))
+		tasks := 0.0
+		for _, count := range trace["tasksPerPhase"].(map[string]any) {
+			tasks += count.(float64)
+		}
+		switch outcome {
+		case "unsupported":
+			Expect(trace["traceTaskLimitReached"]).To(BeFalse())
+			Expect(trace["sqlState"]).To(Equal("0AF00"))
+			Expect(trace["error"]).To(ContainSubstring("Unsupported operator ABS"))
+			Expect(tasks).To(BeZero())
+		case "stack":
+			Expect(trace["traceTaskLimitReached"]).To(BeFalse())
+			Expect(trace["exceptionClass"]).To(Equal("StackOverflowError"))
+			Expect(tasks).To(BeNumerically(">", 0))
+		case "budget":
+			Expect(trace["traceTaskLimitReached"]).To(BeTrue())
+			Expect(tasks).To(Equal(float64(taskLimit)))
+			Expect(trace).NotTo(HaveKey("exceptionClass"), "a probe stop is not a Java planning error")
+		case "planned":
+			Expect(trace["traceTaskLimitReached"]).To(BeFalse())
+			Expect(trace["explain"]).NotTo(BeEmpty())
+			Expect(tasks).To(BeNumerically(">", 0))
+			Expect(tasks).To(BeNumerically("<", taskLimit))
+		default:
+			Fail("unrecognized oracle outcome")
+		}
+		if outcome != "planned" {
+			Expect(trace["explain"]).To(BeEmpty())
+		}
+	},
+		Entry("absolute value", "ABS(c) = 4", "unsupported", 5000),
+		Entry("equivalent disjunction", "c = 4 OR c = -4", "stack", 5000),
+		Entry("single comparison", "c = 4", "budget", 5000),
+		Entry("single comparison at Go budget", "c = 4", "budget", 150000),
+		Entry("completed control", "", "planned", 5000),
+		Entry("stopped control", "", "budget", 1),
+	)
+})
+
 var _ = Describe("ProjectedExistsOverLeftJoinJavaProbe", func() {
 	It("measures Java's outcome for projected EXISTS over LEFT JOIN", func() {
 		ctx := context.Background()

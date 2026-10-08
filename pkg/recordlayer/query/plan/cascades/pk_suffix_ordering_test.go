@@ -10,8 +10,8 @@ package cascades
 // Pinned bug: `SELECT id FROM t WHERE status = 'active' ORDER BY id` (index
 // on status, PK id) planned InMemorySort(Fetch(IndexScan)) because the scan's
 // derived ordering stopped at the index key ([STATUS FIXED]) — the ID suffix
-// was missing, so the sort was not elided and MergeProjectionAndFetchRule
-// (Project directly over Fetch) could not fire to produce the covering scan.
+// was missing, so the sort was not elided and the block's Map (directly over
+// the Fetch) could not be pushed through it to produce the covering scan.
 // Sibling bug: `WHERE a = 1 ORDER BY a DESC` over PK (a, b) kept the sort
 // because the eq-bound PK prefix read as directional ASC instead of FIXED.
 

@@ -18,8 +18,8 @@ func TestBuildFDBSQLDSN(t *testing.T) {
 	}{
 		{
 			name:   "path only",
-			dbPath: "/myapp",
-			want:   "fdbsql:///myapp",
+			dbPath: "/FRL/myapp",
+			want:   "fdbsql:///FRL/myapp",
 		},
 		{
 			// url.Values.Encode percent-encodes `/` as `%2F`. The
@@ -27,26 +27,26 @@ func TestBuildFDBSQLDSN(t *testing.T) {
 			// correct even though it's uglier to read.
 			name:        "with cluster file",
 			clusterFile: "/etc/fdb/prod.cluster",
-			dbPath:      "/myapp",
-			want:        "fdbsql:///myapp?cluster_file=%2Fetc%2Ffdb%2Fprod.cluster",
+			dbPath:      "/FRL/myapp",
+			want:        "fdbsql:///FRL/myapp?cluster_file=%2Fetc%2Ffdb%2Fprod.cluster",
 		},
 		{
 			name:   "with schema",
-			dbPath: "/myapp",
+			dbPath: "/FRL/myapp",
 			schema: "main",
-			want:   "fdbsql:///myapp?schema=main",
+			want:   "fdbsql:///FRL/myapp?schema=main",
 		},
 		{
 			name:        "both options",
 			clusterFile: "/c",
-			dbPath:      "/myapp",
+			dbPath:      "/FRL/myapp",
 			schema:      "main",
-			want:        "fdbsql:///myapp?cluster_file=%2Fc&schema=main",
+			want:        "fdbsql:///FRL/myapp?cluster_file=%2Fc&schema=main",
 		},
 		{
 			name:   "strips leading slash on path",
-			dbPath: "myapp",
-			want:   "fdbsql:///myapp",
+			dbPath: "FRL/myapp",
+			want:   "fdbsql:///FRL/myapp",
 		},
 		{
 			// Cluster file paths with spaces / special chars would corrupt
@@ -55,8 +55,8 @@ func TestBuildFDBSQLDSN(t *testing.T) {
 			// the original value.
 			name:        "cluster file with space percent-encoded",
 			clusterFile: "/home/user/my project/fdb.cluster",
-			dbPath:      "/myapp",
-			want:        "fdbsql:///myapp?cluster_file=%2Fhome%2Fuser%2Fmy+project%2Ffdb.cluster",
+			dbPath:      "/FRL/myapp",
+			want:        "fdbsql:///FRL/myapp?cluster_file=%2Fhome%2Fuser%2Fmy+project%2Ffdb.cluster",
 		},
 	}
 	for _, tc := range cases {

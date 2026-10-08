@@ -55,9 +55,8 @@ func (v *ArrayDistinctValue) Type() Type {
 // Evaluate returns the deduped array (first-seen order). Returns
 // nil if Child evaluates to nil or non-slice.
 //
-// Element equality uses bytes.Equal for []byte and Go's == for
-// other types (matching values.equalsAny semantics — see
-// value_in.go for the byte-slice-safe contract).
+// Element equality uses bytes.Equal for []byte and comparableEqual for
+// other types, including protobuf message value equality.
 func (v *ArrayDistinctValue) Evaluate(evalCtx any) (any, error) {
 	if v.Child == nil {
 		return nil, nil
@@ -83,8 +82,7 @@ func (v *ArrayDistinctValue) Evaluate(evalCtx any) (any, error) {
 }
 
 // arrayContainsByValue reports whether `arr` contains `target` by
-// value. Uses bytes.Equal for []byte (slices not comparable via ==),
-// Go's == for other types.
+// value. Uses bytes.Equal for []byte and comparableEqual for other types.
 func arrayContainsByValue(arr []any, target any) bool {
 	if tb, ok := target.([]byte); ok {
 		for _, e := range arr {

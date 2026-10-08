@@ -89,9 +89,21 @@ type PrimaryScanMatchCandidate struct {
 	// baseType is the record type flowing through the scan.
 	baseType values.Type
 
+	// commonPrimaryKey is the structural primary key the scan plan reports
+	// (RecordQueryScanPlan.WithCommonPrimaryKey), or nil.
+	commonPrimaryKey []values.Value
 	// primaryKeyValues is computed lazily — the PK columns as Value objects.
 	primaryKeyValues     []values.Value
 	primaryKeyValuesOnce sync.Once
+}
+
+// WithCommonPrimaryKey sets the structural primary key the scan plan reports.
+func (c *PrimaryScanMatchCandidate) WithCommonPrimaryKey(pk []values.Value) *PrimaryScanMatchCandidate {
+	c.commonPrimaryKey = append([]values.Value(nil), pk...)
+	if pk == nil {
+		c.commonPrimaryKey = nil
+	}
+	return c
 }
 
 // NewPrimaryScanMatchCandidate constructs a primary-scan match candidate.
@@ -344,9 +356,14 @@ func (c *PrimaryScanMatchCandidate) ComputeBoundParameterPrefixMap(
 			return prefix
 		}
 		if candidateRangeHasKnownConstantNaN(cr, c.keyComponentTypes, i) {
-			// Leave every visible NaN comparison as residual compensation. A
-			// single FDB tuple payload is neither exact equality nor an exact
-			// ordered endpoint for the comparator's canonical NaN value.
+			// A single FDB tuple payload is not an exact ordered endpoint for
+			// the comparator's canonical NaN, so an ordered NaN comparison stays
+			// residual. A NaN EQUALITY binds as the terminal component: the
+			// executor reads both NaN key blocks (RFC-257 WS-E 5.3), and the
+			// components after it stay residual.
+			if cr.GetRangeType() == predicates.ComparisonRangeEquality {
+				prefix[alias] = cr
+			}
 			return prefix
 		}
 		switch cr.GetRangeType() {
@@ -398,6 +415,9 @@ func (c *PrimaryScanMatchCandidate) ToScanPlan(
 	// Attach primary key values if available.
 	if pkVals := c.GetPrimaryKeyValues(); len(pkVals) > 0 {
 		scanPlan = scanPlan.WithPrimaryKey(pkVals)
+	}
+	if c.commonPrimaryKey != nil {
+		scanPlan = scanPlan.WithCommonPrimaryKey(c.commonPrimaryKey)
 	}
 	// Physical key types govern both bound probes and the ordering of an
 	// entirely unbound primary scan. Stamp them independently of whether a

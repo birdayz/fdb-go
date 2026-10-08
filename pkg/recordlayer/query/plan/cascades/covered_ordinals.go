@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"strconv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -87,4 +88,31 @@ func pushCoveredOrdinalWithType(
 		return 0, values.OrdinalDomain{}, nil, false
 	}
 	return 0, values.OrdinalDomain{}, nil, false
+}
+
+func resolveUpperOrdinalPath(record *values.RecordType, path []string) ([]int, bool) {
+	ordinals := make([]int, len(path))
+	for i, name := range path {
+		if record == nil {
+			return nil, false
+		}
+		ordinal, unique := uniqueUpperFieldIndex(record, name)
+		if !unique {
+			return nil, false
+		}
+		ordinals[i] = ordinal
+		record, _ = record.Fields[ordinal].FieldType.(*values.RecordType)
+	}
+	return ordinals, true
+}
+
+func ordinalPathKey(ordinals []int) string {
+	var b strings.Builder
+	for i, ordinal := range ordinals {
+		if i > 0 {
+			b.WriteByte('.')
+		}
+		b.WriteString(strconv.Itoa(ordinal))
+	}
+	return b.String()
 }

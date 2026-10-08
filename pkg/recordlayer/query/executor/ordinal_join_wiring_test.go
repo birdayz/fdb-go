@@ -16,7 +16,7 @@ import (
 
 // This file pins the ordinal-join wiring: the ordinal-BUILD state on the
 // NLJ/flatMap cursors, the build-time predicate context, and the downstream
-// leg-window dispatch in executeFilter/executeProjection/
+// leg-window dispatch in executeFilter/
 // executePredicatesFilter/executeMap. These tests hand-build the
 // plans/cursors rather than driving them through a full query, so each wiring
 // point can be pinned in isolation.
@@ -852,10 +852,10 @@ func TestFlatMap_ComputeResult_OrdinalBuild(t *testing.T) {
 	legA, legB, qovA, qovB, seed := ojWiringLegs(t)
 	newCursor := func(t *testing.T) *flatMapCursor {
 		t.Helper()
-		c, err := newFlatMapCursorWithOuterProperties(nil, nil, nil, nil, EmptyEvaluationContext(),
-			qovA.Correlation(), qovB.Correlation(), seed, recordlayer.ExecuteProperties{}, false)
+		c, err := newFlatMapCursorForPlan(nil, nil, nil, nil, EmptyEvaluationContext(),
+			qovA.Correlation(), qovB.Correlation(), seed, recordlayer.ExecuteProperties{}, false, false)
 		if err != nil {
-			t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
+			t.Fatalf("newFlatMapCursorForPlan: %v", err)
 		}
 		return c
 	}
@@ -1003,7 +1003,7 @@ func TestDownstreamLegWindows(t *testing.T) {
 		predicatesFilter = ojWiringMustConstruct(t, predicatesFilter, err)
 		inJoin, err := plans.NewRecordQueryInJoinPlan(nlj, "iv", false, false)
 		inJoin = ojWiringMustConstruct(t, inJoin, err)
-		inUnion, err := plans.NewRecordQueryInUnionPlan(nlj, []string{"iv"}, nil, false)
+		inUnion, err := plans.NewRecordQueryInUnionPlan(nlj, []string{"iv"}, nil, false, plans.UnboundedInUnionSize)
 		inUnion = ojWiringMustConstruct(t, inUnion, err)
 		wrappers := map[string]plans.RecordQueryPlan{
 			"in-memory sort":    inMemorySort,
@@ -1171,7 +1171,7 @@ func TestNLJ_FoldedRVDroppedLeg_PredTypes(t *testing.T) {
 // that DROPS the outer leg leaves the build typeless for it even though the
 // inner plan still references it — a leg row built by name (aggregate-box
 // shape) then bound zero-width and the baked SARG died loudly on a
-// legitimate plan. newFlatMapCursorWithOuterProperties must widen LegTypes from the inner
+// legitimate plan. newFlatMapCursorForPlan must widen LegTypes from the inner
 // plan's predicate surfaces.
 func TestFlatMap_FoldedRVDroppedLeg_PlanTypes(t *testing.T) {
 	t.Parallel()
@@ -1196,11 +1196,11 @@ func TestFlatMap_FoldedRVDroppedLeg_PlanTypes(t *testing.T) {
 	)
 	innerPlan = ojWiringMustConstruct(t, innerPlan, err)
 
-	c, err := newFlatMapCursorWithOuterProperties(nil, nil, innerPlan, nil, EmptyEvaluationContext(),
+	c, err := newFlatMapCursorForPlan(nil, nil, innerPlan, nil, EmptyEvaluationContext(),
 		outerCorr, values.NamedCorrelationIdentifier("B"), foldedRV,
-		recordlayer.ExecuteProperties{}, false)
+		recordlayer.ExecuteProperties{}, false, false)
 	if err != nil {
-		t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
+		t.Fatalf("newFlatMapCursorForPlan: %v", err)
 	}
 	// The build must know the dropped OUTER leg's type from the inner plan's
 	// baked reference…

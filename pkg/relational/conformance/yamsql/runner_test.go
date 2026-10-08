@@ -193,14 +193,14 @@ func execScenario(path, name string) scenarioOutcome {
 	}
 
 	// Unique DSN path + template per test to keep parallel runs isolated.
-	dbPath := "/_conf_" + sanitize(name)
+	dbPath := "/FRL/_conf_" + sanitize(name)
 	tmplName := "CONF_TMPL_" + strings.ToUpper(sanitize(name))
 	schemaName := "conf"
 	// schema= is a lazy default — the schema need not exist at sql.Open
 	// time; the driver resolves it on the first DML statement. DDL
 	// (CREATE DATABASE / SCHEMA / TEMPLATE) runs on the catalog path and
 	// ignores schema=, so one DSN serves both setup and test phases.
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schemaName)
+	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schemaName))
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {
 		o.OpenErr = err

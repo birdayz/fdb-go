@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -75,6 +76,7 @@ func TestScalarCodecRejectsMalformed(t *testing.T) {
 		`{kind: bytes, value: "a"}`, `{kind: bytes, value: "zz"}`,
 		`{kind: mystery, value: "x"}`, `{kind: string, value: "x", ignored: "y"}`,
 		`{kind: string, kind: string, value: "x"}`, `{kind: string, value: null}`,
+		`{kind: time, value: "2024-01-01"}`, `{kind: time, value: "2024-01-01 00:00:00"}`,
 	} {
 		t.Run(input, func(t *testing.T) {
 			t.Parallel()
@@ -208,4 +210,21 @@ func FuzzScalarRoundTripAndMultiset(f *testing.F) {
 			t.Fatal("ordered comparator accepted swapped rows")
 		}
 	})
+}
+
+// A time parameter keeps its instant and its offset, as the caller's
+// time.Time would.
+func TestScalarTimeParameter(t *testing.T) {
+	t.Parallel()
+	got, err := tagged("time", "2024-01-01T00:00:00.5+02:00").decode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok || !tm.Equal(time.Date(2023, 12, 31, 22, 0, 0, 5e8, time.UTC)) {
+		t.Fatalf("decode = %#v", got)
+	}
+	if _, offset := tm.Zone(); offset != 2*3600 {
+		t.Fatalf("offset = %d, want +02:00 kept", offset)
+	}
 }

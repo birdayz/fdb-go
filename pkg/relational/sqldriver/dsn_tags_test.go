@@ -34,7 +34,7 @@ func tagsFromDSN(t *testing.T, dsn string) ([]string, error) {
 
 func TestDSNTransactionTagsSingle(t *testing.T) {
 	t.Parallel()
-	tags, err := tagsFromDSN(t, "fdbsql:///db?transaction_tags=tenant-a")
+	tags, err := tagsFromDSN(t, "fdbsql:///FRL/db?transaction_tags=tenant-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestDSNTransactionTagsSingle(t *testing.T) {
 
 func TestDSNTransactionTagsMultipleAreSorted(t *testing.T) {
 	t.Parallel()
-	tags, err := tagsFromDSN(t, "fdbsql:///db?transaction_tags=gamma,alpha,beta")
+	tags, err := tagsFromDSN(t, "fdbsql:///FRL/db?transaction_tags=gamma,alpha,beta")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestDSNTransactionTagsMultipleAreSorted(t *testing.T) {
 // an unset option is what keeps the default option set identical to Java's.
 func TestDSNTransactionTagsAbsent(t *testing.T) {
 	t.Parallel()
-	tags, err := tagsFromDSN(t, "fdbsql:///db")
+	tags, err := tagsFromDSN(t, "fdbsql:///FRL/db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestDSNTransactionTagsAbsent(t *testing.T) {
 
 func TestDSNTransactionTagsTrailingCommaIsNotAnError(t *testing.T) {
 	t.Parallel()
-	tags, err := tagsFromDSN(t, "fdbsql:///db?transaction_tags=a,b,")
+	tags, err := tagsFromDSN(t, "fdbsql:///FRL/db?transaction_tags=a,b,")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestDSNTransactionTagsTrailingCommaIsNotAnError(t *testing.T) {
 // not on some later request's first statement.
 func TestDSNTransactionTagsRejectsTooMany(t *testing.T) {
 	t.Parallel()
-	_, err := tagsFromDSN(t, "fdbsql:///db?transaction_tags=a,b,c,d,e,f")
+	_, err := tagsFromDSN(t, "fdbsql:///FRL/db?transaction_tags=a,b,c,d,e,f")
 	if err == nil {
 		t.Fatal("6 tags must be rejected at DSN parse time")
 	}
@@ -98,7 +98,7 @@ func TestDSNTransactionTagsRejectsTooMany(t *testing.T) {
 
 func TestDSNTransactionTagsRejectsTooLong(t *testing.T) {
 	t.Parallel()
-	_, err := tagsFromDSN(t, "fdbsql:///db?transaction_tags="+strings.Repeat("x", 17))
+	_, err := tagsFromDSN(t, "fdbsql:///FRL/db?transaction_tags="+strings.Repeat("x", 17))
 	if err == nil {
 		t.Fatal("17-character tag must be rejected at DSN parse time")
 	}
@@ -119,14 +119,14 @@ func TestOpenConnectorRejectsAnInvalidTagWithoutDocker(t *testing.T) {
 	d := &Driver{}
 
 	if _, err := d.OpenConnector(
-		"fdbsql:///db?transaction_tags=" + strings.Repeat("x", 17),
+		"fdbsql:///FRL/db?transaction_tags=" + strings.Repeat("x", 17),
 	); err == nil {
 		t.Error("OpenConnector must reject an over-long tag, not defer it to Connect")
 	} else if !strings.Contains(err.Error(), "Tag must be 16 characters or shorter") {
 		t.Errorf("error = %q, want the record layer's wording", err)
 	}
 
-	if _, err := d.OpenConnector("fdbsql:///db?transaction_tags=a,b,c,d,e,f"); err == nil {
+	if _, err := d.OpenConnector("fdbsql:///FRL/db?transaction_tags=a,b,c,d,e,f"); err == nil {
 		t.Error("OpenConnector must reject a 6-tag set")
 	} else if !strings.Contains(err.Error(), "At most 5 tags allowed") {
 		t.Errorf("error = %q, want Java's wording", err)
@@ -134,7 +134,7 @@ func TestOpenConnectorRejectsAnInvalidTagWithoutDocker(t *testing.T) {
 
 	// Control: a valid tag set must NOT make OpenConnector fail, or the
 	// assertions above would pass for the wrong reason.
-	if _, err := d.OpenConnector("fdbsql:///db?transaction_tags=tenant-a,bulk"); err != nil {
+	if _, err := d.OpenConnector("fdbsql:///FRL/db?transaction_tags=tenant-a,bulk"); err != nil {
 		t.Errorf("a valid tag set must open cleanly, got %v", err)
 	}
 }

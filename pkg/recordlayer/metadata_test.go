@@ -285,7 +285,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		Expect(md).To(BeNil())
 		var mdErr *MetaDataError
 		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(ContainSubstring("has no primary key set"))
+		Expect(mdErr.Message).To(Equal("Record type Customer must have a primary key"))
 	})
 
 	It("Build returns error when one record type lacks primary key", func() {
@@ -297,7 +297,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		Expect(md).To(BeNil())
 		var mdErr *MetaDataError
 		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(ContainSubstring("has no primary key set"))
+		Expect(mdErr.Message).To(Equal("Record type Customer must have a primary key"))
 	})
 
 	It("Build succeeds when all primary keys are set", func() {
@@ -313,8 +313,10 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 	})
 
 	It("Build rejects primary key with fan-out (createsDuplicates)", func() {
+		// Over a repeated field, so the key validates and createsDuplicates
+		// is what refuses it.
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-		builder.GetRecordType("Order").SetPrimaryKey(FanOut("order_id"))
+		builder.GetRecordType("Order").SetPrimaryKey(FanOut("tags"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		md, err := builder.Build()
@@ -322,7 +324,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		Expect(md).To(BeNil())
 		var mdErr *MetaDataError
 		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(ContainSubstring("create duplicates"))
+		Expect(mdErr.Message).To(Equal("Primary key for Order can generate more than one entry"))
 	})
 
 	It("Build rejects duplicate record type keys", func() {
@@ -338,7 +340,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		Expect(md).To(BeNil())
 		var mdErr *MetaDataError
 		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(ContainSubstring("same record type key"))
+		Expect(mdErr.Message).To(Equal("Same record type key 42 used by both Order and Customer"))
 	})
 
 	It("Build rejects duplicate index subspace keys", func() {
@@ -357,7 +359,8 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		Expect(md).To(BeNil())
 		var mdErr *MetaDataError
 		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(ContainSubstring("same subspace key"))
+		// Java's MetaDataValidator message; indexes are visited in name order.
+		Expect(mdErr.Message).To(Equal("Same subspace key 99 used by both idx_price and idx_order_id"))
 	})
 
 	It("Build rejects former index with addedVersion > removedVersion", func() {
@@ -379,6 +382,6 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		Expect(md).To(BeNil())
 		var mdErr *MetaDataError
 		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(ContainSubstring("addedVersion"))
+		Expect(mdErr.Message).To(Equal("Former index temp_idx has added version 100 which is greater than the removed version 50"))
 	})
 })

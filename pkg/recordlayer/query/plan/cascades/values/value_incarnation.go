@@ -43,9 +43,9 @@ func (*IncarnationValue) Children() []Value { return []Value{} }
 // `get_versionstamp_incarnation` SQL function name.
 func (*IncarnationValue) Name() string { return "get_versionstamp_incarnation" }
 
-// Type returns NotNullInt — every record store has a non-null
-// incarnation (zero is a valid initial value, not absence).
-func (*IncarnationValue) Type() Type { return NotNullInt }
+// Type is nullable INT, Java's primitiveType(INT): Evaluate returns NULL
+// without an incarnation in its context.
+func (*IncarnationValue) Type() Type { return NullableInt }
 
 // Evaluate returns the incarnation from the evalCtx if present.
 // Mirrors VersionValue's row-shape harness pattern: when evalCtx is

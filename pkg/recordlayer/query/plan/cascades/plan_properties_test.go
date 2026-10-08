@@ -56,6 +56,50 @@ func planPropertiesValues() *plans.RecordQueryValuesPlan {
 	return mustPropertiesConstruct(plans.NewRecordQueryValuesPlan(nil))
 }
 
+func TestReferencePruningRestrictsPlanProperties(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"single", "subset", "clear"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			first := planPropertiesScan("FIRST")
+			middle := planPropertiesScan("MIDDLE")
+			last := planPropertiesScan("LAST")
+			ref := expressions.InitialOf(first)
+			for _, member := range []expressions.RelationalExpression{first, middle, last} {
+				ref.InsertFinal(member)
+			}
+			computeRefPlanProperties(ref)
+			before := GetRefPlanPropertiesMap(ref)
+			if len(before.Expressions()) != 3 {
+				t.Fatal("fixture must populate three final property entries")
+			}
+			var want []expressions.RelationalExpression
+			switch operation {
+			case "single":
+				ref.PruneWith(middle)
+				want = []expressions.RelationalExpression{middle}
+			case "subset":
+				ref.PruneToSet(map[expressions.RelationalExpression]struct{}{first: {}, last: {}})
+				want = []expressions.RelationalExpression{first, last}
+			case "clear":
+				ref.ClearFinalMembers()
+			}
+			after := GetRefPlanPropertiesMap(ref)
+			if after == nil || len(after.Expressions()) != len(want) || len(after.All()) != len(want) {
+				t.Fatalf("properties must retain exactly the surviving finals: got %v, want %v", after, want)
+			}
+			for i, member := range want {
+				if after.Expressions()[i] != member || !after.GetProperties(member).GetBool(properties.PropDistinctRecords) {
+					t.Fatalf("survivor %d lost its order or stored properties", i)
+				}
+			}
+			if !ref.ContainsExactly(first) {
+				t.Fatal("pruning final properties must not remove exploratory members")
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // computeDistinctRecords
 // ---------------------------------------------------------------------------
@@ -140,6 +184,44 @@ func TestComputeDistinctRecords_StreamingAggIsFalse(t *testing.T) {
 	got := computeDistinctRecords(aggPlan, aggPlan)
 	if got {
 		t.Fatal("streaming aggregation should NOT produce distinct records")
+	}
+}
+
+// TestComputeDistinctRecords_AggregateIndexIsTrue: an aggregate index entry is
+// one group, so its rows are distinct (DistinctRecordsProperty
+// .visitAggregateIndexPlan).
+func TestComputeDistinctRecords_AggregateIndexIsTrue(t *testing.T) {
+	t.Parallel()
+	idx := mustPropertiesConstruct(plans.NewRecordQueryIndexPlan("AGG_IDX", nil, []string{"T"}, planPropertiesRowType(), false))
+	resultType := values.NewRecordType("AGG_RESULT", false, []values.Field{
+		{Name: "G", FieldType: values.NullableLong},
+		{Name: "COUNT", FieldType: values.NullableLong},
+	})
+	agg := mustPropertiesConstruct(plans.NewRecordQueryAggregateIndexPlan(idx, "T", resultType, "COUNT"))
+	if !computeDistinctRecords(agg, agg) {
+		t.Fatal("an aggregate index scan yields one row per group")
+	}
+}
+
+// TestCoveringIndexValuePlan_PropertiesLookThroughToTheIndexPlan ports
+// propertiesLookThroughToTheIndexPlan: distinctness and the primary key are
+// the index plan's, and the record is a stored record.
+func TestCoveringIndexValuePlan_PropertiesLookThroughToTheIndexPlan(t *testing.T) {
+	t.Parallel()
+	pk := []values.Value{planPropertiesField("id", 0)}
+	idx := mustPropertiesConstruct(plans.NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, planPropertiesRowType(), false)).
+		WithDistinctRecordsSignal(false).WithCommonPrimaryKey(pk)
+	leaf := mustPropertiesConstruct(values.NewIndexEntryObjectValue(values.CurrentCorrelation(), values.TupleSourceKey, []int{0}, values.NullableLong))
+	plan := mustPropertiesConstruct(plans.NewRecordQueryCoveringIndexValuePlan(idx, "T",
+		values.NewRecordConstructorValue(values.RecordConstructorField{Name: "A", Value: leaf})))
+	if got, want := computeDistinctRecords(plan, plan), computeDistinctRecords(idx, idx); !got || got != want {
+		t.Fatalf("distinct records = %v, the index plan's %v", got, want)
+	}
+	if !computeStoredRecord(plan) {
+		t.Fatal("a covering-value scan yields stored records")
+	}
+	if got, ok := computePrimaryKey(plan).([]values.Value); !ok || len(got) != 1 || got[0] != pk[0] {
+		t.Fatalf("primary key = %v, want the index plan's", got)
 	}
 }
 
@@ -394,7 +476,7 @@ func TestComputeDistinctRecords_InUnionIsTrue(t *testing.T) {
 	// The InUnion is its own physical expression now (RFC-184 W2) — it IS the
 	// physicalPlanExpression computeDistinctRecords inspects.
 	iup := mustPropertiesConstruct(plans.NewRecordQueryInUnionPlan(
-		scan, []string{"b"}, nil, false))
+		scan, []string{"b"}, nil, false, plans.UnboundedInUnionSize))
 	if !computeDistinctRecords(iup, iup) {
 		t.Fatal("InUnion should be distinct")
 	}
@@ -484,6 +566,7 @@ func TestComputeCardinalities_InUnionLiteralFanout(t *testing.T) {
 				test.bindings,
 				nil,
 				false,
+				plans.UnboundedInUnionSize,
 			))
 			inUnion = inUnion.WithInSources(test.sources)
 			got := computeCardinalities(inUnion, inUnion)
@@ -500,7 +583,7 @@ func TestComputeCardinalities_InUnionMultipliesChildAndDegradesOverflow(t *testi
 	child := planPropertiesValues()
 	newInUnion := func(bindings []string, sources [][]any, childCardinality int64) *plans.RecordQueryInUnionPlan {
 		inUnion := mustPropertiesConstruct(plans.NewRecordQueryInUnionPlan(
-			child, bindings, nil, false))
+			child, bindings, nil, false, plans.UnboundedInUnionSize))
 		inUnion = inUnion.WithInSources(sources)
 		childRef := inUnion.GetInnerQuantifier().GetRangesOver()
 		pm := NewPlanPropertiesMap()

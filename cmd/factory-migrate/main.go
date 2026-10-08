@@ -38,7 +38,7 @@ import (
 	"fdb.dev/pkg/relational/conformance/yamsql"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 
-	_ "fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/relational/sqldriver"
 )
 
 const (
@@ -48,6 +48,7 @@ const (
 )
 
 func main() {
+	sqldriver.RegisterDomainIfNotExists("FRL")
 	var oldDir, outDir, censusPath string
 	flag.StringVar(&oldDir, "old", "pkg/relational/conformance/factorycorpus/testdata", "directory holding the v1 fc_*.yaml corpus")
 	flag.StringVar(&outDir, "out", "", "directory the .yamsql family files are written into (must not equal -old)")
@@ -115,8 +116,8 @@ func run(oldDir, outDir, censusPath string) int {
 	}
 	tmp.Close()
 
-	const dbPath = "/factorymigrate"
-	setupDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, tmp.Name()))
+	const dbPath = "/FRL/factorymigrate"
+	setupDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), tmp.Name()))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: open: %v\n", err)
 		return exitInfra

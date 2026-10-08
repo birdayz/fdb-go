@@ -196,7 +196,7 @@ func OrElseWithContinuation[T any](
 
 	if len(continuation) > 0 {
 		var cont gen.OrElseContinuation
-		if err := cont.UnmarshalVT(continuation); err != nil {
+		if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: throw new RecordCoreException("error parsing continuation", ex)
 			//           .addLogInfo("raw_bytes", ...)  (OrElseCursor's constructor).
 			// A corrupt continuation must fail, not silently restart from scratch.
@@ -234,6 +234,8 @@ type UnknownOrElseCursorStateError struct{}
 func (e *UnknownOrElseCursorStateError) Error() string {
 	return "unknown state for OrElseCursor"
 }
+
+func (*UnknownOrElseCursorStateError) JavaRecordCoreException() {}
 
 type orElseCursor[T any] struct {
 	primary            RecordCursor[T]
@@ -391,7 +393,7 @@ func ConcatCursors[T any](first, second CursorFactory[T], continuation []byte) R
 
 	if len(continuation) > 0 {
 		var cont gen.ConcatContinuation
-		if err := cont.UnmarshalVT(continuation); err != nil {
+		if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: throw new RecordCoreException("Error parsing ConcatCursor continuation", ex)
 			//           .addLogInfo("raw_bytes", ...)  (ConcatCursor's constructor).
 			// A corrupt continuation must fail, not silently restart from scratch:
@@ -635,7 +637,7 @@ func FlatMapPipelinedWithCheck[T, V any](
 
 	if len(continuation) > 0 {
 		var cont gen.FlatMapContinuation
-		if err := cont.UnmarshalVT(continuation); err != nil {
+		if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: RecordCursor.flatMapPipelined:
 			//   throw new RecordCoreException("error parsing continuation", ex)
 			//       .addLogInfo("raw_bytes", ...).
@@ -966,14 +968,17 @@ func (c *autoContinuingCursor[T]) onNextWithRetry(ctx context.Context, attempt i
 	return result, nil
 }
 
-// isRetryableForContinuation extends isRetryableError with transaction_timed_out
-// (1031). Normally 1031 is not retryable — retrying the same transaction won't
-// help. But AutoContinuingCursor creates a NEW transaction with a saved
-// continuation, so it's safe to retry from the last successful position. This
-// handles the case where a scan hits FDB's 5-second transaction timeout before
-// the application-level time limit fires.
+// isRetryableForContinuation is AutoContinuingCursor's rule, Java's
+// FDBExceptions.isRetriable (the first FDB error in the chain, or a
+// RecordCoreRetriableTransactionException; isRetriableFirstCause), extended
+// with transaction_timed_out (1031), which the target excludes. Normally 1031
+// is not retryable — retrying the same transaction won't help. But
+// AutoContinuingCursor creates a NEW transaction with a saved continuation, so
+// it's safe to retry from the last successful position. This handles the case
+// where a scan hits FDB's 5-second transaction timeout before the
+// application-level time limit fires (DIVERGENCES.md).
 func (c *autoContinuingCursor[T]) isRetryableForContinuation(err error) bool {
-	if isRetryableError(err) {
+	if isRetriableFirstCause(err) {
 		return true
 	}
 	var fdbErr fdb.Error

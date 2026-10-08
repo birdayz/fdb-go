@@ -29,6 +29,23 @@ func fullChainPlanner() *Planner {
 		WithImplementationRules(DefaultImplementationRules())
 }
 
+func logCorrelationPath(t testing.TB, expr expressions.RelationalExpression, alias values.CorrelationIdentifier, seen map[expressions.RelationalExpression]bool) {
+	t.Helper()
+	if seen[expr] {
+		return
+	}
+	seen[expr] = true
+	t.Logf("correlation path %T own=%v", expr, expr.GetCorrelatedToWithoutChildren())
+	for _, q := range expr.GetQuantifiers() {
+		for _, child := range q.GetRangesOver().AllMembers() {
+			if _, present := expressions.GetCorrelatedToOfExpression(child)[alias]; present {
+				t.Logf("through edge %v", q.GetAlias())
+				logCorrelationPath(t, child, alias, seen)
+			}
+		}
+	}
+}
+
 // planChainTasks plans an n-table chain through the full pipeline and returns the
 // deterministic total task count. tasksRun is the metric the interning
 // sub-product sharing shows up in — plandiff is blind to it (byte-identical
@@ -36,9 +53,31 @@ func fullChainPlanner() *Planner {
 func planChainTasks(t *testing.T, n int) int {
 	t.Helper()
 	ref := expressions.InitialOf(buildOrdinalChainSelect(t, n))
-	_, tasks, err := fullChainPlanner().Plan(ref)
+	planner := fullChainPlanner()
+	_, tasks, err := planner.Plan(ref)
 	if err != nil {
 		t.Fatalf("%d-table chain Plan: %v (tasks=%d)", n, err, tasks)
+	}
+	for group := range planner.memo.References() {
+		members := group.Members()
+		if len(members) == 0 {
+			continue
+		}
+		required := expressions.GetCorrelatedToOfExpression(members[0])
+		for _, alternative := range group.AllMembers() {
+			for alias := range expressions.GetCorrelatedToOfExpression(alternative) {
+				if _, bound := required[alias]; !bound {
+					logCorrelationPath(t, alternative, alias, make(map[expressions.RelationalExpression]bool))
+					t.Fatalf("group %d seed %T needs %v; alternative %T adds %#v", group.ID(), members[0], required, alternative, alias)
+				}
+			}
+		}
+	}
+	if free := ref.GetCorrelatedTo(); len(free) != 0 {
+		for _, alternative := range ref.AllMembers() {
+			t.Logf("root alternative %T correlations %v", alternative, expressions.GetCorrelatedToOfExpression(alternative))
+		}
+		t.Fatalf("closed %d-table chain acquired external correlations: %v", n, free)
 	}
 	return tasks
 }
@@ -312,8 +351,27 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 		// predicate rebuild restores 1524/11237 exactly and reproduces the three
 		// executor.layout type-mismatch witnesses; the enabled path is deterministic
 		// and removes only that invalid work.
-		{3, 1484},
-		{4, 10965},
+		// Match-driven union exploration does not schedule OR-free joins.
+		// Duplicate implementation yields also schedule no follow-up work.
+		// Spanning predicates enumerate eligible correlated lower partitions.
+		// Impossible root patterns, inputless work, and completed pins enqueue no idle tasks.
+		// Subsumed SELECT orderings enqueue no transform (see TestSelectOrderingAdmissionPreservesJoinExploration).
+		// The memo removes exact replicas: a member differing from another only in
+		// a planner merge alias is that member, and PLANNING merges groups holding
+		// the same expression: 905→559 / 8915→2381, and 5 tables converge.
+		// A filter over one same-typed leg no longer claims another leg's pinned
+		// outer read as its own row (ReanchorOwnedValueForLayout): 559→564,
+		// 2381→2367, 14163→13968.
+		// A re-exploration re-queues only the rules whose declared constraint
+		// changed (Java's dependency gate, RFC-257 WS-F D2): 564→546,
+		// 2367→2219, 13968→12985.
+		// ImplementTypeFilterRule yields a scan the filter already covers bare
+		// rather than wrapping it (Java's per-partition rule, WS-F F-8), so
+		// the memo holds one plan fewer per covered scan: 546→526, 2219→2155,
+		// 12985→12775.
+		{3, 526},
+		{4, 2155},
+		{5, 12775},
 	}
 	for _, tc := range cases {
 		got := planChainTasks(t, tc.tables)
@@ -322,5 +380,53 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 			t.Errorf("%d-table chain tasksRun=%d, want %d ±2%% ([%d,%d]) — join re-enumeration interning changed",
 				tc.tables, got, tc.expected, tc.expected-tol, tc.expected+tol)
 		}
+	}
+}
+
+func TestUnionExplorationSchedulingCost(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		build         func() expressions.RelationalExpression
+		before, after int
+	}{
+		// SelectMerge over pruned finals instead of in exploration: 4 fewer each.
+		// Java's dependency gate on re-exploration (WS-F D2): 558→546,
+		// 2361→2219, 2553→2379.
+		// Covered scans yielded without a type filter (WS-F F-8): 546→526,
+		// 2219→2155, 2379→2355.
+		{"chain3", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 3) }, 526, 526},
+		{"chain4", func() expressions.RelationalExpression { return buildOrdinalChainSelect(t, 4) }, 2155, 2155},
+		{"star3", func() expressions.RelationalExpression { return buildOrdinalStar(t, 3) }, 2355, 2355},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, oldPhase := range []bool{false, true} {
+				p := fullChainPlanner()
+				want := tc.after
+				if oldPhase {
+					var rewriting []ExpressionRule
+					for _, r := range DefaultExpressionRules() {
+						rewriting = append(rewriting, r)
+						if _, anchor := r.(*NoOpLimitElimRule); anchor {
+							rewriting = append(rewriting, NewNormalizePredicatesRule(), NewPredicateToLogicalUnionRule())
+						}
+					}
+					p = NewPlanner(rewriting, nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
+					var rules []ExpressionRule
+					for _, r := range p.planningExpressionRules {
+						if _, union := r.(*PredicateToLogicalUnionRule); !union {
+							rules = append(rules, r)
+						}
+					}
+					p.planningExpressionRules = rules
+					want = tc.before
+				}
+				_, tasks, err := p.Plan(expressions.InitialOf(tc.build()))
+				if err != nil || tasks != want {
+					t.Errorf("oldPhase=%v tasks=%d want=%d: %v", oldPhase, tasks, want, err)
+				}
+			}
+		})
 	}
 }

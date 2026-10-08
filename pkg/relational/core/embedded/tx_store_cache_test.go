@@ -49,7 +49,7 @@ func TestStoreCache_PagesDoNotCostStoreOpens(t *testing.T) {
 	b := newSimBackend(t, 101)
 	conn := b.connect("")
 	bootstrapTwoTemplates(t, conn)
-	conn.SetDefaultSchema("s")
+	conn.SetDefaultSchema("S")
 
 	const rows = 20
 	var sb strings.Builder
@@ -163,7 +163,7 @@ func TestStoreCache_OwnDDLDropsTheStoreAndTheSnapshotHolds(t *testing.T) {
 	b := newSimBackend(t, 103)
 	conn := b.connect("")
 	bootstrapTwoTemplates(t, conn)
-	conn.SetDefaultSchema("s")
+	conn.SetDefaultSchema("S")
 	if _, err := conn.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (1, 1)", nil); err != nil {
 		t.Fatalf("seed insert: %v", err)
 	}
@@ -189,8 +189,8 @@ func TestStoreCache_OwnDDLDropsTheStoreAndTheSnapshotHolds(t *testing.T) {
 	// it in its own transaction; invalidateSchemaCache is what must reach the
 	// store the transaction is still holding.
 	for _, stmt := range []string{
-		"DROP SCHEMA /simdb/s",
-		"CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl_indexed",
+		"DROP SCHEMA /FRL/simdb/s",
+		"CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl_indexed",
 	} {
 		if _, err := conn.ExecContext(ctx, stmt, nil); err != nil {
 			t.Fatalf("%s: %v", stmt, err)

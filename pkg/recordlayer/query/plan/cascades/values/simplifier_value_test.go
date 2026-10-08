@@ -31,6 +31,27 @@ func TestSimplifyValue_LeafConstantsUnchanged(t *testing.T) {
 	}
 }
 
+// TestSimplifyValue_EvaluatesNothing pins Java's value sets: no constant
+// composite is evaluated by a simplification; `1 + 2` stays for the plan to
+// compute (RFC-257 WS-E 5.4(b)). The *Fold tests below exercise
+// EvaluateConstantComparand, the stored-comparand evaluation.
+func TestSimplifyValue_EvaluatesNothing(t *testing.T) {
+	t.Parallel()
+	for _, v := range []Value{
+		&ArithmeticValue{Op: OpAdd, Left: &ConstantValue{Value: int64(1), Typ: NullableLong}, Right: &ConstantValue{Value: int64(2), Typ: NullableLong}},
+		NewCastValue(&ConstantValue{Value: int64(3), Typ: NullableLong}, TypeString),
+		NewScalarFunctionValue("UPPER", TypeString, &ConstantValue{Value: "Hi", Typ: TypeString}),
+		NewPromoteValue(&ConstantValue{Value: int64(3), Typ: NullableLong}, NullableDouble),
+	} {
+		if got := SimplifyValue(v); got != v {
+			t.Errorf("SimplifyValue(%s) = %s, want it unchanged", ExplainValue(v), ExplainValue(got))
+		}
+		if got := SimplifyPredicateValue(v); got != v {
+			t.Errorf("SimplifyPredicateValue(%s) = %s, want it unchanged", ExplainValue(v), ExplainValue(got))
+		}
+	}
+}
+
 func TestSimplifyValue_ArithmeticFold(t *testing.T) {
 	t.Parallel()
 	// 1 + 2 → 3
@@ -39,7 +60,7 @@ func TestSimplifyValue_ArithmeticFold(t *testing.T) {
 		Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
 		Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 	}
-	got := SimplifyValue(a)
+	got := EvaluateConstantComparand(a)
 	cv, ok := got.(*ConstantValue)
 	if !ok {
 		t.Fatalf("expected *ConstantValue, got %T", got)
@@ -64,7 +85,7 @@ func TestSimplifyValue_NestedArithmeticFold(t *testing.T) {
 		},
 		Right: &ConstantValue{Value: int64(3), Typ: NullableLong},
 	}
-	got := SimplifyValue(v)
+	got := EvaluateConstantComparand(v)
 	cv := got.(*ConstantValue)
 	if cv.Value != int64(9) {
 		t.Fatalf("(1+2)*3: got %v, want 9", cv.Value)
@@ -85,7 +106,7 @@ func TestSimplifyValue_PartialFold(t *testing.T) {
 			Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 		},
 	}
-	got := SimplifyValue(v).(*ArithmeticValue)
+	got := EvaluateConstantComparand(v).(*ArithmeticValue)
 	if got.Op != OpAdd {
 		t.Fatalf("outer Op: got %v, want OpAdd", got.Op)
 	}
@@ -126,7 +147,7 @@ func TestSimplifyValue_CastFold(t *testing.T) {
 		},
 		TypeString,
 	)
-	got := SimplifyValue(v)
+	got := EvaluateConstantComparand(v)
 	cv, ok := got.(*ConstantValue)
 	if !ok {
 		t.Fatalf("expected *ConstantValue, got %T", got)
@@ -145,7 +166,7 @@ func TestSimplifyValue_ScalarFunctionFold(t *testing.T) {
 	v := NewScalarFunctionValue("UPPER", TypeString,
 		NewScalarFunctionValue("LOWER", TypeString,
 			&ConstantValue{Value: "Hi", Typ: TypeString}))
-	got := SimplifyValue(v)
+	got := EvaluateConstantComparand(v)
 	cv, ok := got.(*ConstantValue)
 	if !ok {
 		t.Fatalf("expected *ConstantValue, got %T", got)
@@ -167,7 +188,7 @@ func TestSimplifyValue_ScalarFunctionPartialFold(t *testing.T) {
 	w := NewScalarFunctionValue("LENGTH", NullableLong,
 		NewScalarFunctionValue("LOWER", TypeString,
 			&ConstantValue{Value: "Hello", Typ: TypeString}))
-	if got, ok := SimplifyValue(w).(*ConstantValue); !ok || got.Value != int64(5) {
+	if got, ok := EvaluateConstantComparand(w).(*ConstantValue); !ok || got.Value != int64(5) {
 		t.Fatalf("LENGTH(LOWER('Hello')): got %v %T, want ConstantValue 5", got, got)
 	}
 }
@@ -208,7 +229,7 @@ func TestSimplifyValue_PromoteFold(t *testing.T) {
 		},
 		NullableDouble,
 	)
-	got := SimplifyValue(v)
+	got := EvaluateConstantComparand(v)
 	cv, ok := got.(*ConstantValue)
 	if !ok {
 		t.Fatalf("expected *ConstantValue, got %T", got)
@@ -218,7 +239,7 @@ func TestSimplifyValue_PromoteFold(t *testing.T) {
 	if cv.Value != float64(3) {
 		t.Fatalf("Value: got %v (%T), want float64(3)", cv.Value, cv.Value)
 	}
-	if cv.Typ != NullableDouble {
+	if !cv.Typ.Equals(NullableDouble) {
 		t.Fatalf("Typ: got %v, want NullableDouble (preserved from PROMOTE target)", cv.Typ)
 	}
 }
@@ -251,26 +272,39 @@ func TestSimplifyValue_CoalesceAllNulls(t *testing.T) {
 	t.Parallel()
 	v := NewScalarFunctionValue("COALESCE", NullableLong,
 		NewNullValue(NullableLong), NewNullValue(NullableLong))
-	got := SimplifyValue(v)
+	got := SimplifyPredicateValue(v)
 	if _, ok := got.(*NullValue); !ok {
 		t.Fatalf("COALESCE(NULL, NULL) = %T, want NullValue", got)
 	}
 }
 
+// TestSimplifyValue_CoalesceFirstNonNullConstant pins Java's
+// EvaluateConstantCoalesceRule in the predicate set: leading NULL heads are
+// skipped and the first BOOLEAN literal replaces the COALESCE; an INT literal
+// head is a constant object Java does not dereference, so the COALESCE stays
+// and evaluates every argument (RFC-257 WS-E 5.4(d)).
 func TestSimplifyValue_CoalesceFirstNonNullConstant(t *testing.T) {
 	t.Parallel()
-	v := NewScalarFunctionValue("COALESCE", NullableLong,
+	v := NewScalarFunctionValue("COALESCE", NullableBoolean,
+		NewNullValue(NullableBoolean),
+		&ConstantValue{Value: true, Typ: NotNullBoolean},
+		&fieldValue{Field: "x", Typ: NullableBoolean},
+	)
+	got := SimplifyPredicateValue(v)
+	c, ok := got.(*ConstantValue)
+	if !ok {
+		t.Fatalf("COALESCE(NULL, TRUE, x) = %T, want ConstantValue", got)
+	}
+	if c.Value != true {
+		t.Fatalf("COALESCE(NULL, TRUE, x) = %v, want true", c.Value)
+	}
+	intHead := NewScalarFunctionValue("COALESCE", NullableLong,
 		NewNullValue(NullableLong),
 		&ConstantValue{Value: int64(42), Typ: NullableLong},
 		&fieldValue{Field: "x", Typ: NullableLong},
 	)
-	got := SimplifyValue(v)
-	c, ok := got.(*ConstantValue)
-	if !ok {
-		t.Fatalf("COALESCE(NULL, 42, x) = %T, want ConstantValue", got)
-	}
-	if c.Value != int64(42) {
-		t.Fatalf("COALESCE(NULL, 42, x) = %v, want 42", c.Value)
+	if got := SimplifyPredicateValue(intHead); got != Value(intHead) {
+		t.Fatalf("COALESCE(NULL, 42, x) = %v, want it unchanged (an INT head does not fold)", got)
 	}
 }
 
@@ -280,7 +314,7 @@ func TestSimplifyValue_CoalesceRemoveRedundantNulls(t *testing.T) {
 	y := &fieldValue{Field: "y", Typ: NullableLong}
 	v := NewScalarFunctionValue("COALESCE", NullableLong,
 		x, NewNullValue(NullableLong), y, NewNullValue(NullableLong))
-	got := SimplifyValue(v)
+	got := SimplifyPredicateValue(v)
 	sf, ok := got.(*ScalarFunctionValue)
 	if !ok {
 		t.Fatalf("COALESCE(x, NULL, y, NULL) = %T, want ScalarFunctionValue", got)
@@ -301,21 +335,18 @@ func TestSimplifyValue_CoalesceNoChangeNeeded(t *testing.T) {
 	}
 }
 
-// TestCannotFoldCoalesce_BooleanNil verifies that cannotFoldCoalesce
-// correctly classifies BooleanValue(nil) as non-foldable.
-// BooleanValue{nil} represents SQL UNKNOWN — nullable, not the same
-// as a non-null boolean literal. This is the cannotFoldCoalesce fix:
-// without it, BooleanValue{nil} would be treated as a foldable
-// constant and COALESCE(NULL_bool, x) would incorrectly skip the
-// NULL_bool.
+// TestCannotFoldCoalesce_BooleanNil classifies COALESCE heads as Java's rule
+// does after the dereference. A NULL constant, BOOLEAN or not, is a NULL head
+// (Java dereferences a NULL constant object to a NullValue): it is skipped,
+// never returned as the COALESCE's value. A BOOLEAN literal folds; a constant
+// of any other type does not (RFC-257 WS-E 5.4(d)).
 func TestCannotFoldCoalesce_BooleanNil(t *testing.T) {
 	t.Parallel()
 
-	// BooleanValue(nil) = SQL UNKNOWN: cannotFoldCoalesce must return
-	// true (cannot fold — it's nullable/unknown).
+	// BooleanValue(nil) = SQL UNKNOWN: a NULL head, skipped, never the result.
 	boolNil := &BooleanValue{Value: nil}
-	if !cannotFoldCoalesce(boolNil) {
-		t.Error("cannotFoldCoalesce(BooleanValue{nil}) = false, want true")
+	if cannotFoldCoalesce(boolNil) || !isCoalesceNullHead(boolNil) {
+		t.Error("BooleanValue{nil} must be a NULL head")
 	}
 
 	// BooleanValue with non-nil *bool = concrete TRUE/FALSE: can fold.
@@ -335,18 +366,19 @@ func TestCannotFoldCoalesce_BooleanNil(t *testing.T) {
 		t.Error("cannotFoldCoalesce(NullValue) = true, want false")
 	}
 
-	// ConstantValue with non-nil payload is foldable.
+	// A non-BOOLEAN constant does not fold; a BOOLEAN one does.
 	cv := &ConstantValue{Value: int64(42), Typ: NullableLong}
-	if cannotFoldCoalesce(cv) {
-		t.Error("cannotFoldCoalesce(ConstantValue{42}) = true, want false")
+	if !cannotFoldCoalesce(cv) {
+		t.Error("cannotFoldCoalesce(ConstantValue{42}) = false, want true")
+	}
+	if cannotFoldCoalesce(&ConstantValue{Value: true, Typ: NotNullBoolean}) {
+		t.Error("cannotFoldCoalesce(ConstantValue{true}) = true, want false")
 	}
 
-	// ConstantValue with nil payload is NOT foldable (typed NULL is
-	// represented as ConstantValue{Value: nil}, which is not guaranteed
-	// non-null).
+	// A NULL constant is a NULL head.
 	cvNil := &ConstantValue{Value: nil, Typ: NullableLong}
-	if !cannotFoldCoalesce(cvNil) {
-		t.Error("cannotFoldCoalesce(ConstantValue{nil}) = false, want true")
+	if cannotFoldCoalesce(cvNil) || !isCoalesceNullHead(cvNil) {
+		t.Error("ConstantValue{nil} must be a NULL head")
 	}
 
 	// FieldValue is non-constant — cannot fold.
@@ -527,3 +559,19 @@ func TestSimplifyValue_FieldOverRecordConstructor_NotFound(t *testing.T) {
 // composeFieldOverConstructor (TestSimplifyValue_FieldOverRecordConstructor*) with
 // no opaque-merge ambiguity to canonicalize. The two tests that pinned the retired
 // rule were deleted.
+
+// A COALESCE in a result value is never folded: Java evaluates every argument
+// there, so COALESCE(42, x) must keep x (which may raise).
+func TestSimplifyValue_CoalesceNotFoldedOutsidePredicates(t *testing.T) {
+	t.Parallel()
+	v := NewScalarFunctionValue("COALESCE", NullableBoolean,
+		&ConstantValue{Value: true, Typ: NotNullBoolean},
+		&fieldValue{Field: "x", Typ: NullableBoolean},
+	)
+	if got := SimplifyValue(v); got != Value(v) {
+		t.Fatalf("SimplifyValue(COALESCE(TRUE, x)) = %v, want it unchanged", got)
+	}
+	if _, ok := SimplifyPredicateValue(v).(*ConstantValue); !ok {
+		t.Fatal("SimplifyPredicateValue(COALESCE(TRUE, x)) did not fold")
+	}
+}

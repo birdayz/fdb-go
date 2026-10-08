@@ -69,6 +69,7 @@ var CostedPlanPrototypes = []CostedPlan{
 	(*RecordQueryScanPlan)(nil),
 	(*RecordQueryIndexPlan)(nil),
 	(*RecordQueryCoveringIndexPlan)(nil),
+	(*RecordQueryCoveringIndexValuePlan)(nil),
 	(*RecordQueryVectorIndexPlan)(nil),
 	(*RecordQueryAggregateIndexPlan)(nil),
 	(*RecordQueryValuesPlan)(nil),
@@ -84,7 +85,6 @@ var CostedPlanPrototypes = []CostedPlan{
 	(*RecordQueryDistinctPlan)(nil),
 	(*RecordQueryUnorderedPrimaryKeyDistinctPlan)(nil),
 	(*RecordQueryMapPlan)(nil),
-	(*RecordQueryProjectionPlan)(nil),
 	(*RecordQueryDefaultOnEmptyPlan)(nil),
 	(*RecordQueryTempTableInsertPlan)(nil),
 	(*RecordQueryLimitPlan)(nil),
@@ -111,7 +111,6 @@ var (
 	_ properties.OrderingHinter = (*RecordQueryTypeFilterPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryDistinctPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryUnorderedPrimaryKeyDistinctPlan)(nil)
-	_ properties.OrderingHinter = (*RecordQueryProjectionPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryMapPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryLimitPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryDefaultOnEmptyPlan)(nil)
@@ -119,6 +118,7 @@ var (
 	_ properties.OrderingHinter = (*RecordQueryScanPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryIndexPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryCoveringIndexPlan)(nil)
+	_ properties.OrderingHinter = (*RecordQueryCoveringIndexValuePlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryInMemorySortPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryMergeSortUnionPlan)(nil)
 	_ properties.OrderingHinter = (*RecordQueryIntersectionPlan)(nil)
@@ -147,6 +147,7 @@ var (
 	_ properties.RichOrderingHinter = (*RecordQueryScanPlan)(nil)
 	_ properties.RichOrderingHinter = (*RecordQueryIndexPlan)(nil)
 	_ properties.RichOrderingHinter = (*RecordQueryCoveringIndexPlan)(nil)
+	_ properties.RichOrderingHinter = (*RecordQueryCoveringIndexValuePlan)(nil)
 	_ properties.RichOrderingHinter = (*RecordQueryVectorIndexPlan)(nil)
 	_ properties.RichOrderingHinter = (*RecordQueryFetchFromPartialRecordPlan)(nil)
 )

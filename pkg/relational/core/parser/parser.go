@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/antlr4-go/antlr/v4"
 
@@ -33,6 +34,9 @@ import (
 // ParseHelpers.underlineParsingError to produce the underline. Downstream
 // errors after a syntax failure are usually cascade noise.
 func Parse(sql string) (ctx antlrgen.IRootContext, err error) {
+	if err := checkSQLText(sql); err != nil {
+		return nil, err
+	}
 	if maxNesting(sql) > 500 {
 		return nil, &api.Error{
 			Code:    api.ErrCodeSyntaxError,
@@ -87,6 +91,9 @@ func maxNesting(sql string) int {
 // otherwise panic ("cannot consume EOF" from ANTLR); guard by peeking
 // the stream and reporting a clean syntax error instead.
 func ParseFunction(sql string) (ctx antlrgen.ISqlInvokedFunctionContext, err error) {
+	if err := checkSQLText(sql); err != nil {
+		return nil, err
+	}
 	// ANTLR's generated rules and tokenization can panic on genuinely
 	// adversarial input. Surface any such panic as a syntax error rather than
 	// propagating it to the caller.
@@ -122,6 +129,9 @@ func ParseFunction(sql string) (ctx antlrgen.ISqlInvokedFunctionContext, err err
 // QueryParser.parseView. Any ANTLR-internal panic on adversarial
 // token streams is converted to a clean ErrCodeSyntaxError.
 func ParseView(sql string) (ctx antlrgen.IQueryContext, err error) {
+	if err := checkSQLText(sql); err != nil {
+		return nil, err
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			ctx = nil
@@ -148,6 +158,9 @@ func ParseView(sql string) (ctx antlrgen.IQueryContext, err error) {
 // explain) treat USING exactly like ON. Any ANTLR-internal panic on
 // adversarial input is converted to a clean ErrCodeSyntaxError.
 func ParseExpression(sql string) (ctx antlrgen.IExpressionContext, err error) {
+	if err := checkSQLText(sql); err != nil {
+		return nil, err
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			ctx = nil
@@ -176,6 +189,16 @@ func ValidateNoPreparedParams(tree antlr.ParseTree) error {
 	antlr.ParseTreeWalkerDefault.Walk(v, tree)
 	if v.found {
 		return api.NewError(api.ErrCodeSyntaxError, "found prepared parameter(s) in SQL statement")
+	}
+	return nil
+}
+
+// checkSQLText refuses text that is not valid UTF-8 before the lexer's rune
+// conversion would replace the bad bytes with U+FFFD. Go-only: a Java String is
+// UTF-16 and cannot hold such text.
+func checkSQLText(sql string) error {
+	if !utf8.ValidString(sql) {
+		return api.NewError(api.ErrCodeCharacterNotInRepertoire, "SQL text is not valid UTF-8")
 	}
 	return nil
 }
@@ -218,7 +241,7 @@ func newParser(
 			releasePredictionState()
 		}
 	}()
-	lexerState = relationalLexerPredictionStates.acquire(lexer.Interpreter.ATN())
+	lexerState = relationalLexerPredictionStates.acquire()
 	useLexerPredictionState(lexer, lexerState)
 
 	listener := &collectingErrorListener{sql: sql}
@@ -231,7 +254,7 @@ func newParser(
 	}
 
 	p = antlrgen.NewRelationalParser(tokens)
-	parserState = relationalParserPredictionStates.acquire(p.Interpreter.ATN())
+	parserState = relationalParserPredictionStates.acquire()
 	useParserPredictionState(p, parserState)
 	p.RemoveErrorListeners()
 	p.AddErrorListener(listener)
@@ -251,7 +274,11 @@ type predictionState struct {
 	sharedContextCache *antlr.PredictionContextCache
 }
 
+// predictionStatePool leases prediction state, each with its own ATN: the
+// runtime locks the ATN on every DFA edge it adds, so leases sharing one ATN
+// would serialize every concurrent parse.
 type predictionStatePool struct {
+	newATN    func() *antlr.ATN
 	mu        sync.Mutex
 	available []*predictionState
 }
@@ -262,23 +289,20 @@ type predictionStatePool struct {
 var maxRetainedPredictionStates = min(runtime.GOMAXPROCS(0), 8)
 
 var (
-	relationalLexerPredictionStates  predictionStatePool
-	relationalParserPredictionStates predictionStatePool
+	relationalLexerPredictionStates  = predictionStatePool{newATN: antlrgen.NewRelationalLexerATN}
+	relationalParserPredictionStates = predictionStatePool{newATN: antlrgen.NewRelationalParserATN}
 )
 
-func (pool *predictionStatePool) acquire(atn *antlr.ATN) *predictionState {
+func (pool *predictionStatePool) acquire() *predictionState {
 	pool.mu.Lock()
-	for len(pool.available) > 0 {
-		last := len(pool.available) - 1
+	if last := len(pool.available) - 1; last >= 0 {
 		state := pool.available[last]
 		pool.available = pool.available[:last]
-		if state.atn == atn {
-			pool.mu.Unlock()
-			return state
-		}
+		pool.mu.Unlock()
+		return state
 	}
 	pool.mu.Unlock()
-	return newPredictionState(atn)
+	return newPredictionState(pool.newATN())
 }
 
 func newPredictionState(atn *antlr.ATN) *predictionState {

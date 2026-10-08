@@ -1,0 +1,101 @@
+# escaped_column_index.yaml
+#
+# AN ESCAPED COLUMN PLANS AS ITS UNESCAPED TWIN DOES.
+#
+# A column whose name escapes is stored under its protobuf identifier --
+# "c$1" is the field c__1, "i.d" is i__2d -- and the index metadata names it
+# that way: a key expression carries the DESCRIPTOR's spelling. The planner's
+# row layouts carry the decoded name (values.FieldNameForProtoField), and
+# every name a candidate offers is resolved against such a layout. Java
+# decodes on that boundary: KeyExpressionExpansionVisitor and
+# ScalarTranslationVisitor read ProtoUtils.toUserIdentifier(getFieldName()).
+# Go now does the same once, where index and primary-key metadata enters the
+# planner (embedded.layoutNames, coveredPrimaryKeyColumns), and re-encodes a
+# name only where it spells a key expression back (cascades.storedFieldName).
+#
+# Before, measured against the unescaped twin of each query (same DDL with C1,
+# ID2, G1, V1):
+#
+#   WHERE "c$1" > 100 ORDER BY "c$1"   InMemorySort over the index scan
+#   ORDER BY "i.d" (the PK)            InMemorySort over the primary scan
+#   WHERE "c$1" = 100 ORDER BY id      InMemorySort (the PK suffix)
+#   GROUP BY "g$1" over a SUM index    StreamingAgg over a full scan + sort
+#   two equality-bound indexes         one index scan and a residual
+#   CREATE INDEX ... ON t ("c$1")      42703 could not find c$1
+#
+# Each now has its twin's plan, and the rows prove the index entries the
+# maintainer wrote under the stored names are the ones the scans read.
+#
+# idx_c orders by the primary key too, as Java's corpus does whenever an index
+# projects it: a PK column projected but NOT ordered lands in the KeyWithValue
+# value part, buildPrimaryKeyComponentPositions still finds it there (Java's
+# normalizeKeyForPositions reads the whole inner key), and the entry key drops
+# it -- two rows with one "c$1" then share one entry, in both engines.
+name: escaped_column_index
+schema_template: |
+  CREATE TABLE "MY$TABLE" ("i.d" BIGINT, name STRING, "c$1" BIGINT, "b$1" BIGINT, "g$1" BIGINT, "v.1" BIGINT, PRIMARY KEY ("i.d"))
+  CREATE INDEX idx_c AS SELECT "c$1", "i.d" FROM "MY$TABLE" ORDER BY "c$1", "i.d"
+  CREATE INDEX idx_on ON "MY$TABLE" ("b$1")
+  CREATE INDEX agg AS SELECT "g$1", SUM("v.1") FROM "MY$TABLE" GROUP BY "g$1"
+setup:
+  - INSERT INTO "MY$TABLE" VALUES (1, 'a', 300, 7, 1, 10), (2, 'b', 100, 8, 1, 20), (3, 'c', 200, 7, 2, 30), (4, 'd', 100, 9, 2, 40)
+tests:
+  # The index orders the stream: no sort above it.
+  - query: SELECT "i.d" FROM "MY$TABLE" WHERE "c$1" >= 100 ORDER BY "c$1", "i.d"
+    plan_contains: "IndexScan(IDX_C, [<>, *] COVERING)"
+    plan_not_contains: "InMemorySort"
+    rows:
+      - [2]
+      - [4]
+      - [3]
+      - [1]
+
+  # The primary key orders the scan, forward and reverse.
+  - query: SELECT "i.d" FROM "MY$TABLE" ORDER BY "i.d"
+    plan_not_contains: "InMemorySort"
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+
+  - query: SELECT "i.d" FROM "MY$TABLE" WHERE "i.d" > 1 ORDER BY "i.d" DESC
+    plan_contains: "Scan(MY$TABLE, [<>]) REVERSE"
+    rows:
+      - [4]
+      - [3]
+      - [2]
+
+  # An equality on the index column leaves the PK suffix ordered.
+  - query: SELECT "i.d" FROM "MY$TABLE" WHERE "c$1" = 100 ORDER BY "i.d"
+    plan_contains: "IndexScan(IDX_C, [=, *] COVERING)"
+    plan_not_contains: "InMemorySort"
+    rows:
+      - [2]
+      - [4]
+
+  # CREATE INDEX ... ON resolved the SQL name against the decoded layout.
+  - query: SELECT "i.d" FROM "MY$TABLE" WHERE "b$1" = 7
+    plan_contains: "IndexScan(IDX_ON, [=] COVERING)"
+    unordered: true
+    rows:
+      - [1]
+      - [3]
+
+  # Two equality-bound indexes intersect on the escaped primary key.
+  - query: SELECT "i.d" FROM "MY$TABLE" WHERE "b$1" = 7 AND "c$1" = 200
+    plan_contains: "Intersection("
+    rows:
+      - [3]
+
+  # The SUM index answers its grouping, and an equality-bound group.
+  - query: SELECT "g$1", SUM("v.1") FROM "MY$TABLE" GROUP BY "g$1"
+    plan_contains: "AggregateIndex(SUM, AGG, [g$1], MY$TABLE)"
+    rows:
+      - [1, 30]
+      - [2, 70]
+
+  - query: SELECT SUM("v.1") FROM "MY$TABLE" WHERE "g$1" = 2 GROUP BY "g$1"
+    plan_contains: "AggregateIndex(SUM, AGG, [g$1], MY$TABLE)"
+    rows:
+      - [70]

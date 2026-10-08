@@ -226,6 +226,49 @@ func TestImplementIntersectionRule_PicksOrderedSibling(t *testing.T) {
 	}
 }
 
+// TestImplementIntersectionRule_LegKeepsEverySatisfyingMember pins that the
+// rule pre-selects no member (RFC-257 WS-F F-8): a leg ranges over every
+// member of its group that provides the comparison-key ordering, as Java's
+// leg ranges over its whole stored-record partition, and drops only the
+// member that cannot feed the merge.
+func TestImplementIntersectionRule_LegKeepsEverySatisfyingMember(t *testing.T) {
+	t.Parallel()
+	rt := intersectionRuleRecordType()
+	orderedA := intersectionRuleOrderedScan(rt, false)
+	widerA := mustIntersectionRuleConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T", "U"}, rt, false)).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithPrimaryKey([]values.Value{intersectionRuleKey(rt)})
+	reverseOnly := intersectionRuleOrderedScan(rt, true)
+	refA := expressions.InitialOf(orderedA)
+	refA.Insert(widerA)
+	refA.Insert(reverseOnly)
+	if got := len(refA.AllMembers()); got != 3 {
+		t.Fatalf("fixture leg holds %d members, want 3", got)
+	}
+	intr := intersectionRuleExpression(
+		[]expressions.Quantifier{
+			expressions.ForEachQuantifier(refA),
+			expressions.ForEachQuantifier(expressions.InitialOf(intersectionRuleOrderedScan(rt, false))),
+		},
+		[]values.Value{intersectionRuleKey(rt)},
+	)
+
+	yielded := mustFireIntersectionRule(t, NewImplementIntersectionRule(), expressions.InitialOf(intr))
+	if len(yielded) != 1 {
+		t.Fatalf("ImplementIntersectionRule yielded %d, want 1", len(yielded))
+	}
+	leg := yielded[0].(*plans.RecordQueryIntersectionPlan).GetQuantifiers()[0].GetRangesOver().AllMembers()
+	if len(leg) != 2 {
+		t.Fatalf("leg ranges over %d members, want the 2 ascending scans", len(leg))
+	}
+	for _, member := range leg {
+		if member.(*plans.RecordQueryScanPlan).IsReverse() {
+			t.Fatal("leg kept the reverse scan, which cannot feed an ascending merge")
+		}
+	}
+}
+
 // TestImplementIntersectionRule_DeclinesStaleBakedOrdinal pins that the
 // RFC-232 resolver rejects a same-name key baked to PAYLOAD's slot, and that
 // the implementation rule also declines the only admissible representation

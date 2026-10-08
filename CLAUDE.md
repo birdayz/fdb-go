@@ -44,7 +44,7 @@ Filing it feels responsible. It is not. A TODO entry ships nothing, deletes the 
 
 Worse, deferred findings **rot into invisibility**. Write a live defect into the prose of an item you then mark `- [x]` and it is unreachable work: the execution rule is "pick the lowest-numbered UNCHECKED item", so nothing will ever pick it up. That has happened here — a redundant in-memory sort on `WHERE pk IN (...) ORDER BY pk`, fully diagnosed with a reproducer, was written into a completed item and would have sat there indefinitely. DFS'ing it instead removed the sort.
 
-**NEVER PROPOSE — RESEARCH, DECIDE, IMPLEMENT.** Writing up options and asking which one to take is deferral wearing a lab coat. An RFC that says "here are three paths, please rule" has shipped nothing and has moved the decision to someone with less context than you had while writing it. You did the research; you are the one who knows which path is right. Pick it, say why the others lose, and build it. An RFC is for *recording the design you are implementing* — the reasoning, the measurements, the rejected alternatives — not for outsourcing the choice.
+**NEVER PROPOSE — RESEARCH, DECIDE, IMPLEMENT.** Writing up options and asking which one to take is deferral wearing a lab coat. An RFC that says "here are three paths, please rule" has shipped nothing and has moved the decision to someone with less context than you had while writing it. You did the research; you are the one who knows which path is right. Pick it, say why the others lose, and build it. Do not write an RFC or design doc unless the owner asks for one.
 
 "Long-term correct" is the only selection criterion. Not smallest diff, not least blast radius, not what the existing structure makes convenient. If the right answer requires changing a cost formula, deleting a Go-only extension, or reworking a mechanism three commits old, that is the answer. A smaller change that leaves the architecture incoherent is a bigger cost paid later, by someone with none of the context.
 
@@ -97,11 +97,15 @@ If you can't write the e2e test, the feature isn't done. Period.
 
 **NEVER detect SQL features by string-matching on SQL text or GetText() output.** The ANTLR parse tree has typed nodes — use them. `strings.Contains(sql, "CROSS JOIN")` is forbidden. `GetText()` concatenates tokens without whitespace and produces garbage like `labelISDISTINCTFROMnull`. Magic length limits (`lparen > 12`) are fragile trash that breaks on `CHARACTER_LENGTH`. Walk the parse tree or Value tree. If you need to detect a function call, find `FunctionCallExpressionAtomContext` / `ScalarFunctionValue` in the tree — don't regex the text.
 
-## QUERY-ENGINE CHANGES REQUIRE A GRAEFE ACK — RFC AND IMPL
+## CODE FIRST — REVIEW ONCE, AT THE END (owner ruling 2026-09-28)
 
-**Any change to the Cascades query engine (planner, optimizer, cost model, matching/data-access infra, physical wrappers, executor) needs a Graefe ACK on BOTH the RFC and the implementation before merge. Never merge a query-engine change Graefe hasn't reviewed.** Torvalds + @claude + codex are the other gates — never merge with a NAK from any.
+**Write the code. No design documents, RFC review rounds or reviewer gates while the work is in progress.** Read Java, port it, test it, commit, push. One review (Graefe/Torvalds/codex/@claude as fits) runs when the whole body of work is done (for the RFC-257 upgrade: the finished migration), and its Medium-or-higher findings are fixed then. This overrides the review steps in the skills (query-engine, todo-worker, fdb-client-engineer, fdb-client-review): skip their RFC and review phases until that final review.
 
-**Review cadence is MILESTONE-LEVEL, not per-commit (owner ruling 2026-07-18):** RFC → review → implement → review. Graefe+Torvalds ACK the RFC before implementation starts; implementation gets ONE joint review lap at workstream/phase completion (the review unit for an umbrella RFC is the workstream/phase, e.g. one lap for all of WS-P, one per WS-N phase), plus codex at the same granularity. Intermediate commits need green tests only — do NOT launch reviewer laps per commit. An ACK covers only the HEAD it reviewed, so review findings get folded and the FINAL head gets one DELTA re-confirmation — not a fresh full lap per fix commit. Codex runs (owner ruling 2026-07-18): for a large span, ONE run with a generous --timeout (2h), never split into scoped fragments; codex banks nothing on timeout, so pick a budget it can actually finish in. Holds always-on, not just when a skill is loaded; mechanics in `.claude/skills/query-engine/` (impl) and `.claude/skills/todo-worker/` (RFC). PR #201 shipped a latent 0-row planner bug because it skipped Graefe entirely — the gate is mandatory; its FREQUENCY is milestone-level.
+**Keep paperwork minimal.** Commit messages of 10 lines or fewer. No evidence READMEs, md5 records, gate transcripts or per-step design-doc updates. CHANGELOG: one line per user-visible change. TODO.md: only genuinely deferred work.
+
+**Code comments: short, and only what the code cannot say.** A comment states a non-obvious WHY (a Java quirk being matched, a wire constraint, a trap) in one or two lines. No restating what the code does, no history of earlier attempts, no measurement narratives, no enumerations of tested shapes — those belong in the test or the commit message.
+
+**Verification per commit:** the pre-commit hook (`just test`, the fast lane; see `AGENTS.md` → Efficient validation). A touched test in a `test-full`-tagged target runs under `just test-full`. A regression test is written before its fix, so its red is observed while fixing; do not re-run tests at historical commits to manufacture reds. CI runs on the PR.
 
 ---
 
@@ -118,7 +122,7 @@ If you're tempted to add a 5-line note explaining a divergence, write it as a co
 
 **Never put shift tags in code comments.** No `nightshift-65`, no `swingshift-64`, no `landed in shift X`. Shift refs rot the moment the codebase outlives the shift naming scheme and they leak ephemeral process state into permanent files. Code comments explain WHY the code is the way it is — not WHEN it got there or WHO did it. That belongs in `shifts/*.md` handovers and PR descriptions. Old shift-tag refs already in the codebase are cleanup fodder; don't add new ones.
 
-**Never attribute code comments to a reviewer or a review artifact.** No `Graefe condition 1`, no `Torvalds R1 positive`, no `per @claude`, no `codex finding 3`, no `review round 2`. Reviewer names and review-cycle labels are ephemeral process state exactly like shift tags — they rot and they leak WHO/WHEN into permanent files. Keep the *reasoning* the reviewer surfaced (that's the WHY), drop the attribution: write "an asserted bridge, never a silent fallback", not "(Graefe condition 1: an asserted bridge…)". This is enforced — `pkg/docscheck`'s `TestSourceCommentHygiene` fails the build on reviewer/shift attribution in comments; a genuinely load-bearing exception goes on its `hygieneAllowlist` with sign-off, not inline. RFC numbers are fine (they name durable design docs, not people).
+**Never attribute code comments to a reviewer or a review artifact.** No `Graefe condition 1`, no `Torvalds R1 positive`, no `per @claude`, no `codex finding 3`, no `review round 2`. Reviewer names and review-cycle labels are ephemeral process state exactly like shift tags — they rot and they leak WHO/WHEN into permanent files. Keep the *reasoning* the reviewer surfaced (that's the WHY), drop the attribution: write "an asserted bridge, never a silent fallback", not "(Graefe condition 1: an asserted bridge…)". RFC numbers are fine (they name durable design docs, not people).
 
 ## Testing
 
@@ -133,7 +137,7 @@ If you're tempted to add a 5-line note explaining a divergence, write it as a co
 **A GREEN FROM AN EMPTY SET IS THE DOMINANT FALSE POSITIVE — AND IT WEARS AT LEAST FIFTEEN FACES.** The narrowed-filter case above is one instance of a general failure: a reporting layer that cannot distinguish *passed* from *never ran* renders both as success, so the absence of a result reads as the absence of a problem. Fifteen confirmed here:
 
 - a `--test.run` pattern matching no function (`TestFieldNameDecision` for a test actually named `TestFieldNameNeverDecides` — `PASS`, zero `=== RUN` lines);
-- Bazel serving a cached result, printing `Executed 0 out of 1 test: 1 test passes` — a green that ran nothing this invocation. Re-run with `--nocache_test_results` before banking it;
+- Bazel serving a cached result, printing `Executed 0 out of 1 test: 1 test passes` — a green that ran nothing this invocation. That green is REAL (owner ruling: the Bazel cache is correct, keep it on, never force an uncached run to verify): a cached pass is the pass of those exact inputs. The trap is only in the CLAIM — say "cached pass", and when you need proof the test covers your change, confirm your edit is among its inputs (a changed input re-executes it) rather than forcing a rerun. If you suspect the cache itself is wrong, that is a cache bug: root-cause and fix it, never route around it with `--nocache_test_results`. (Timing measurements such as the stress workflow below are different: the run IS the measurement.);
 - CI runs held at `action_required` awaiting approval, which `gh pr checks` reports as *"no checks reported"* — indistinguishable from never triggered. All 3 bot-authored PRs in this repo's history ran zero checks and **one of them merged that way**, because `mergeStateStatus` was `UNSTABLE`, not blocked;
 - a `gh` JSON query whose `statusCheckRollup` is empty, so a filter for failing checks returns nothing and reads as "all green";
 - a PR whose `mergeStateStatus` is `DIRTY`, also reported by `gh pr checks` as *"no checks reported"*. GitHub cannot compute `refs/pull/N/merge` on a conflict, so `pull_request` workflows never fire **at all** — and that is rendered identically to "queued" and to "never triggered". Actions status, workflow triggers and repo permissions all read healthy while nothing runs. Check `mergeStateStatus` before diagnosing a missing check; merging the base fires every workflow within seconds;
@@ -184,14 +188,14 @@ Vollkonti continuous 24/7 shifts via `/vollkonti`. Handovers in `shifts/`. One b
 
 `TODO.md` is the authoritative execution order — numbered items in 6 sequential phases, items inside a phase run in parallel unless gated. **At shift start, pick the lowest-numbered unchecked item whose gates are satisfied.** Handover follow-ups are suggestions, not the priority list. Finish what you start before moving on.
 
-**Working rhythm:** one thing at a time. Implement → `just test` → commit → push → next. One logical change per commit; don't batch unrelated features. Don't push unless asked.
+**Working rhythm:** one thing at a time. Implement → `just test` → commit → push → next. One logical change per commit; don't batch unrelated features.
 
 **High-output patterns (proven in swingshift-70, 11k+ LOC/shift):**
 - **Commit constantly.** Every green test = commit + push. Small commits (5-50 LOC each) maintain momentum and make rollback trivial. 80+ commits/shift is normal when you're flowing.
 - **Read Java first, write Go second.** Read the Java source file completely before porting. Understand the algorithm, then translate idiomatically — don't transliterate line-by-line.
 - **Tests find bugs.** Write the test BEFORE assuming the implementation is correct. swingshift-70 found 3 real bugs via tests (InJoin chain flat, UnorderedUnion early return, DistinctUnion ascending-only). Tests are not padding — they're debugging tools.
 - **Fuzz is non-negotiable.** Run fuzz targets (`bazelisk test ... --test_arg="-test.fuzz=FuzzXxx" --test_arg="-test.fuzztime=15s" --test_arg="-test.fuzzcachedir=/tmp/fuzz-cache" --sandbox_writable_path=/tmp/fuzz-cache`) on new infrastructure. 200k+ execs should produce 0 panics.
-- **Prove with FDB.** Integration tests against real FoundationDB (testcontainers) are the gold standard. A unit test proves the code compiles; an FDB test proves it works. `bazelisk test //pkg/relational/sqldriver:sqldriver_test --test_arg="--test.run=TestFDB_Xxx"` runs specific FDB tests.
+- **Prove with FDB.** Integration tests against real FoundationDB (testcontainers) are the gold standard. A unit test proves the code compiles; an FDB test proves it works. The fast lane's FDB-backed targets (yamsql scenarios, embedded, recordlayer) run in `just test`; the end-to-end SQL suite and the other `test-full` targets run in `just test-full`. That suite is one package per area under `pkg/relational/sqltest/` (helpers in `sqltest/testkit`): a new end-to-end SQL test goes in the matching area package, never in `pkg/relational/sqldriver`, which holds only the driver's own tests (the sqltest guard enforces both). The census floors are asserted only by `//pkg/relational/sqltest/census:census_test` (manual; `just census`), which runs the whole corpus as one binary.
 - **Subagents for boilerplate.** Delegate test writing, wrapper creation, and mechanical porting to subagents. Keep the critical path (algorithms, rule logic, architectural decisions) in the main context.
 - **Don't pad tests, do find gaps.** Use `bazelisk coverage //path:target --combined_report=lcov` to find actual coverage gaps. Only write tests that exercise uncovered code paths or prove new behavior.
 - **100% Java alignment unless there's a good reason.** Never simplify "for now" — the simplified version rots and the next shift inherits technical debt. Port the full algorithm, handle all edge cases, match the error messages.
@@ -209,7 +213,7 @@ Never rationalize a divergence as "intentional" without first reading the Java c
 
 **Delegation:** principal-engineer mindset. Delegate mechanical/boilerplate work to subagents with full context (file paths, snippets, patterns). Critical/tricky pieces: do yourself. Never run two big implementation subagents in parallel.
 
-**Build & verify:** always `just test`. Bazel cache makes incremental runs fast. After Go file/dep changes: `just gazelle` then `bazel mod tidy`. Proto codegen: `buf generate` (not in Bazel). **Always `bazelisk`, never `bazel`** when invoking directly. Never `--no-verify` — investigate hook failures.
+**Build & verify:** always `just test` (fast lane), `just test-full` at workstream/PR boundaries; never a hand-picked target list (`AGENTS.md`). Bazel cache makes incremental runs fast. After Go file/dep changes: `just gazelle` then `bazel mod tidy`. Proto codegen: `buf generate` (not in Bazel). **Always `bazelisk`, never `bazel`** when invoking directly. Never `--no-verify` — investigate hook failures.
 
 Update TODO.md as work completes (`- [x]` with a short note).
 
@@ -341,7 +345,7 @@ Wire-level compatibility is the whole point. These match Java exactly: subspace 
 
 FDB constraints: 5s tx limit, 100KB value limit, 10MB tx limit, ~10KB key limit. Cursors need `TimeScanLimiter` + continuations; values use split records.
 
-Java source at `fdb-record-layer/` (gitignored, tag **4.12.11.0**, matches MODULE.bazel pins).
+Java source at `fdb-record-layer/` (gitignored, tag **4.14.2.0**, matches MODULE.bazel pins).
 
 ## Design principles
 

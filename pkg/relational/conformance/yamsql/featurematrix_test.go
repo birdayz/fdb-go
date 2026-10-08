@@ -13,7 +13,7 @@ import (
 // file differs. This is what makes the matrix "generated" rather than a
 // hand-maintained doc that silently goes stale (P1.7). No Docker needed.
 //
-// File location mirrors pkg/docscheck: testdata is read via the package-relative
+// File location: testdata is read via the package-relative
 // glob (staged into runfiles by `data`), and FEATURE_MATRIX.md is found by
 // walking up to MODULE.bazel (staged as a `data` dep at the runfiles root).
 func TestFeatureMatrixUpToDate(t *testing.T) {

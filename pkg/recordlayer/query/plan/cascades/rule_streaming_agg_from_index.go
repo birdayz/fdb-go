@@ -109,7 +109,7 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		for i, gk := range groupingKeys {
 			// Full accessor path, not leaf name (RFC-187 S8): a nested grouping
 			// key must not match a same-leaf-named top-level index column.
-			if !aggColumnMatches(gk, colNames[i]) {
+			if !aggColumnMatches(gk, []string{colNames[i]}) {
 				matches = false
 				break
 			}
@@ -123,11 +123,12 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		// when ORDER BY DESC is present above the GroupBy.
 		scanPlan := cand.ToScanPlan(emptyPrefix, false)
 		idxPlan := extractIndexPlan(scanPlan)
-		if idxPlan == nil {
+		if idxPlan == nil || idxPlan.GetEntryReader() == nil {
 			continue
 		}
 
-		if !aggregatesCoveredByIndex(gb.GetAggregates(), colNames) {
+		if !aggregatesCoveredByIndex(gb.GetAggregates(), colNames) ||
+			!groupByReadsOnlyCoveredFields(cand, gb, inputAlias) {
 			continue
 		}
 		// Coveringness is a plan TYPE wrapping the scan (RFC-220), not a flag on
@@ -145,13 +146,38 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		// a winner), so carry the LIVE shared-group edge over it (RFC-184 W2, no
 		// physicalStreamingAggWrapper).
 		innerQ := expressions.NamedPhysicalQuantifier(inputAlias, call.MemoizeExpression(coveringPlan))
-		aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, groupingKeys, gb.GetAggregates())
+		aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanForGroupBy(innerQ, groupingKeys, gb.GetAggregates(), gb.OutputColumnNames())
 		if err != nil {
 			call.Fail(err)
 			return
 		}
 		call.Yield(aggPlan)
 	}
+}
+
+// groupByReadsOnlyCoveredFields reports whether every grouping key and field
+// operand pushes through the candidate's fetch, i.e. the entry reader fills it:
+// the aggregate reads them straight off the covering rows.
+func groupByReadsOnlyCoveredFields(cand MatchCandidate, gb *expressions.GroupByExpression, inputAlias values.CorrelationIdentifier) bool {
+	pusher, ok := cand.(interface {
+		PushValueThroughFetch(values.Value, values.CorrelationIdentifier, values.CorrelationIdentifier) (values.Value, bool)
+	})
+	if !ok {
+		return false
+	}
+	target := values.UniqueCorrelationIdentifier()
+	read := append([]values.Value(nil), gb.GetGroupingKeys()...)
+	for _, a := range gb.GetAggregates() {
+		if fv, isField := values.AsFieldValue(a.Operand); isField {
+			read = append(read, fv)
+		}
+	}
+	for _, v := range read {
+		if _, ok := pusher.PushValueThroughFetch(v, inputAlias, target); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // aggregatesCoveredByIndex returns true when every field referenced by
@@ -172,7 +198,7 @@ func aggregatesCoveredByIndex(aggs []expressions.AggregateSpec, indexCols []stri
 		}
 		found := false
 		for _, col := range indexCols {
-			if aggColumnMatches(fv, col) {
+			if aggColumnMatches(fv, []string{col}) {
 				found = true
 				break
 			}

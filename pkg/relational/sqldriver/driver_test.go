@@ -13,15 +13,15 @@ import (
 
 func TestParseDSN_Embedded(t *testing.T) {
 	t.Parallel()
-	dsn, err := ParseDSN("fdbsql:///mydb")
+	dsn, err := ParseDSN("fdbsql:///FRL/mydb")
 	if err != nil {
 		t.Fatalf("ParseDSN: %v", err)
 	}
 	if dsn.Mode != ModeEmbedded {
 		t.Errorf("Mode = %v, want ModeEmbedded", dsn.Mode)
 	}
-	if dsn.Path != "/mydb" {
-		t.Errorf("Path = %q, want %q", dsn.Path, "/mydb")
+	if dsn.Path != "/FRL/mydb" {
+		t.Errorf("Path = %q, want %q", dsn.Path, "/FRL/mydb")
 	}
 	if dsn.Host != "" {
 		t.Errorf("Host = %q, want empty", dsn.Host)
@@ -33,7 +33,7 @@ func TestParseDSN_Embedded(t *testing.T) {
 
 func TestParseDSN_EmbeddedWithOptions(t *testing.T) {
 	t.Parallel()
-	dsn, err := ParseDSN("fdbsql:///mydb?cluster_file=/etc/fdb.cluster&foo=bar")
+	dsn, err := ParseDSN("fdbsql:///FRL/mydb?cluster_file=/etc/fdb.cluster&foo=bar")
 	if err != nil {
 		t.Fatalf("ParseDSN: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestParseDSN_EmbeddedWithOptions(t *testing.T) {
 
 func TestParseDSN_EngineOption(t *testing.T) {
 	t.Parallel()
-	dsn, err := ParseDSN("fdbsql:///mydb?schema=myschema&engine=cascades")
+	dsn, err := ParseDSN("fdbsql:///FRL/mydb?schema=myschema&engine=cascades")
 	if err != nil {
 		t.Fatalf("ParseDSN: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestParseDSN_EngineOption(t *testing.T) {
 
 func TestParseDSN_Remote(t *testing.T) {
 	t.Parallel()
-	dsn, err := ParseDSN("fdbsql://sqlserver.example.com:50051/mydb")
+	dsn, err := ParseDSN("fdbsql://sqlserver.example.com:50051/FRL/mydb")
 	if err != nil {
 		t.Fatalf("ParseDSN: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestParseDSN_Remote(t *testing.T) {
 	if dsn.Host != "sqlserver.example.com:50051" {
 		t.Errorf("Host = %q", dsn.Host)
 	}
-	if dsn.Path != "/mydb" {
+	if dsn.Path != "/FRL/mydb" {
 		t.Errorf("Path = %q", dsn.Path)
 	}
 }
@@ -86,10 +86,10 @@ func TestParseDSN_Errors(t *testing.T) {
 		dsn  string
 	}{
 		{"empty", ""},
-		{"wrong scheme", "postgres:///mydb"},
+		{"wrong scheme", "postgres:///FRL/mydb"},
 		{"missing path embedded", "fdbsql:///"},
 		{"missing path remote", "fdbsql://host:123"},
-		{"no scheme", "///mydb"},
+		{"no scheme", "///FRL/mydb"},
 	}
 	for _, c := range cases {
 		c := c
@@ -114,7 +114,7 @@ func TestParseDSN_URLEncodedOptions(t *testing.T) {
 	t.Parallel()
 	// cluster_file paths on Windows / with spaces need URL encoding.
 	// Verify the parser unescapes correctly.
-	dsn, err := ParseDSN("fdbsql:///mydb?cluster_file=%2Fetc%2Ffdb%2Ffdb.cluster&comment=hello%20world")
+	dsn, err := ParseDSN("fdbsql:///FRL/mydb?cluster_file=%2Fetc%2Ffdb%2Ffdb.cluster&comment=hello%20world")
 	if err != nil {
 		t.Fatalf("ParseDSN: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestParseDSN_URLEncodedOptions(t *testing.T) {
 func TestParseDSN_EmptyOptionValue(t *testing.T) {
 	t.Parallel()
 	// Query param with no value (e.g. ?debug&other=1) has empty string.
-	dsn, err := ParseDSN("fdbsql:///mydb?debug")
+	dsn, err := ParseDSN("fdbsql:///FRL/mydb?debug")
 	if err != nil {
 		t.Fatalf("ParseDSN: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestParseDSN_EmptyOptionValue(t *testing.T) {
 func TestParseDSN_OptionWithEquals(t *testing.T) {
 	t.Parallel()
 	// URL-encoded "=" in a value.
-	dsn, err := ParseDSN("fdbsql:///mydb?x=a%3Db")
+	dsn, err := ParseDSN("fdbsql:///FRL/mydb?x=a%3Db")
 	if err != nil {
 		t.Fatalf("ParseDSN: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestParseDSN_DuplicateOption(t *testing.T) {
 	t.Parallel()
 	// Duplicate keys — first value wins (matches Java's
 	// JDBCURI.getFirstValue behavior).
-	dsn, err := ParseDSN("fdbsql:///mydb?x=first&x=second")
+	dsn, err := ParseDSN("fdbsql:///FRL/mydb?x=first&x=second")
 	if err != nil {
 		t.Fatalf("ParseDSN: %v", err)
 	}
@@ -166,8 +166,8 @@ func TestParseDSN_DuplicateOption(t *testing.T) {
 func TestDSN_StringRoundTrip(t *testing.T) {
 	t.Parallel()
 	cases := []string{
-		"fdbsql:///mydb",
-		"fdbsql:///mydb?a=1&b=2&c=3",
+		"fdbsql:///FRL/mydb",
+		"fdbsql:///FRL/mydb?a=1&b=2&c=3",
 		"fdbsql://host:1234/mydb",
 	}
 	for _, in := range cases {
@@ -201,29 +201,29 @@ func TestDSN_StringExact(t *testing.T) {
 	}{
 		{
 			name: "embedded no options",
-			dsn:  &DSN{Mode: ModeEmbedded, Path: "/mydb"},
-			want: "fdbsql:///mydb",
+			dsn:  &DSN{Mode: ModeEmbedded, Path: "/FRL/mydb"},
+			want: "fdbsql:///FRL/mydb",
 		},
 		{
 			name: "embedded with options (sorted)",
 			dsn: &DSN{
-				Mode: ModeEmbedded, Path: "/mydb",
+				Mode: ModeEmbedded, Path: "/FRL/mydb",
 				Options: map[string]string{"z": "1", "a": "2"},
 			},
-			want: "fdbsql:///mydb?a=2&z=1",
+			want: "fdbsql:///FRL/mydb?a=2&z=1",
 		},
 		{
 			name: "remote host:port",
-			dsn:  &DSN{Mode: ModeRemote, Host: "h:1234", Path: "/mydb"},
-			want: "fdbsql://h:1234/mydb",
+			dsn:  &DSN{Mode: ModeRemote, Host: "h:1234", Path: "/FRL/mydb"},
+			want: "fdbsql://h:1234/FRL/mydb",
 		},
 		{
 			name: "remote with options",
 			dsn: &DSN{
-				Mode: ModeRemote, Host: "h:1234", Path: "/mydb",
+				Mode: ModeRemote, Host: "h:1234", Path: "/FRL/mydb",
 				Options: map[string]string{"tls": "true"},
 			},
-			want: "fdbsql://h:1234/mydb?tls=true",
+			want: "fdbsql://h:1234/FRL/mydb?tls=true",
 		},
 	}
 	for _, c := range cases {
@@ -240,7 +240,7 @@ func TestDSN_StringExact(t *testing.T) {
 func TestDSN_StringDeterministicOrder(t *testing.T) {
 	t.Parallel()
 	// Options map iteration is randomized; String() must sort keys.
-	dsn := &DSN{Mode: ModeEmbedded, Path: "/x", Options: map[string]string{
+	dsn := &DSN{Mode: ModeEmbedded, Path: "/FRL/x", Options: map[string]string{
 		"z": "1", "a": "2", "m": "3",
 	}}
 	s1 := dsn.String()
@@ -250,7 +250,7 @@ func TestDSN_StringDeterministicOrder(t *testing.T) {
 		}
 	}
 	// And the sort is actually alphabetical.
-	want := "fdbsql:///x?a=2&m=3&z=1"
+	want := "fdbsql:///FRL/x?a=2&m=3&z=1"
 	if s1 != want {
 		t.Errorf("String() = %q, want %q", s1, want)
 	}
@@ -279,7 +279,7 @@ func TestDriverOpenLegacy(t *testing.T) {
 	// Use a nonexistent cluster file so Connect reliably fails
 	// regardless of whether FDB is running on the host.
 	d := &Driver{}
-	_, err := d.Open("fdbsql:///mydb?cluster_file=/nonexistent/fdb.cluster")
+	_, err := d.Open("fdbsql:///FRL/mydb?cluster_file=/nonexistent/fdb.cluster")
 	if err == nil {
 		t.Fatal("expected Open to fail (no FDB available)")
 	}
@@ -293,7 +293,7 @@ func TestDriverOpenLegacy(t *testing.T) {
 func TestConnectorAccessors(t *testing.T) {
 	t.Parallel()
 	d := &Driver{}
-	c, err := d.OpenConnector("fdbsql:///mydb?cluster_file=/tmp/fdb.cluster")
+	c, err := d.OpenConnector("fdbsql:///FRL/mydb?cluster_file=/tmp/fdb.cluster")
 	if err != nil {
 		t.Fatalf("OpenConnector: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestConnectorAccessors(t *testing.T) {
 		t.Error("Driver() should return the parent driver")
 	}
 	dsn := conn.DSN()
-	if dsn == nil || dsn.Path != "/mydb" {
+	if dsn == nil || dsn.Path != "/FRL/mydb" {
 		t.Errorf("DSN() returned unexpected value: %+v", dsn)
 	}
 	if dsn.Options["cluster_file"] != "/tmp/fdb.cluster" {
@@ -322,7 +322,7 @@ func TestDriverOpenConnector_BadDSN(t *testing.T) {
 func TestDriverOpenConnector_GoodDSN(t *testing.T) {
 	t.Parallel()
 	d := &Driver{}
-	c, err := d.OpenConnector("fdbsql:///mydb?cluster_file=/nonexistent/fdb.cluster")
+	c, err := d.OpenConnector("fdbsql:///FRL/mydb?cluster_file=/nonexistent/fdb.cluster")
 	if err != nil {
 		t.Fatalf("OpenConnector: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestDriverOpenConnector_GoodDSN(t *testing.T) {
 func TestConnectRespectsCtxCancel(t *testing.T) {
 	t.Parallel()
 	d := &Driver{}
-	c, err := d.OpenConnector("fdbsql:///mydb")
+	c, err := d.OpenConnector("fdbsql:///FRL/mydb")
 	if err != nil {
 		t.Fatalf("OpenConnector: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestConnectRespectsCtxCancel(t *testing.T) {
 func TestConnectRespectsCtxDeadline(t *testing.T) {
 	t.Parallel()
 	d := &Driver{}
-	c, err := d.OpenConnector("fdbsql:///mydb")
+	c, err := d.OpenConnector("fdbsql:///FRL/mydb")
 	if err != nil {
 		t.Fatalf("OpenConnector: %v", err)
 	}

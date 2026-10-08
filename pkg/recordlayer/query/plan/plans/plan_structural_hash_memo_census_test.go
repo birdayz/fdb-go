@@ -544,3 +544,41 @@ func TestMemoCensusObserverCanSeeAllThreeOutcomes(t *testing.T) {
 		}
 	}
 }
+
+// TestStructuralKeyIsBuiltOncePerPlan pins the key memo: a plan answers every
+// equality from one key, and a copy sharing its cell never answers with the
+// original's key, whichever of the two asks first.
+func TestStructuralKeyIsBuiltOncePerPlan(t *testing.T) {
+	t.Parallel()
+	for _, copyFirst := range []bool{false, true} {
+		original := memoTestIndexPlan(t)
+		variant := original.WithScanComparisons([]*predicates.ComparisonRange{
+			scanCostRange(t, predicates.ComparisonEquals, int64(77)),
+		})
+		if variant.hashMemo != original.hashMemo {
+			t.Fatal("the copy got its own cell, so this test is not exercising sharing")
+		}
+		if copyFirst {
+			variant.keyFor(variant)
+		}
+		key := original.keyFor(original)
+		variantKey := variant.keyFor(variant)
+		if !key.Equal(original.structuralKey()) || !variantKey.Equal(variant.structuralKey()) {
+			t.Fatalf("copyFirst=%t: a plan answered with another plan's key", copyFirst)
+		}
+		if key.Equal(variantKey) {
+			t.Fatal("the two plans' keys are equal, so a swapped answer would be undetectable")
+		}
+		owner, other := original, variant
+		if copyFirst {
+			owner, other = variant, original
+		}
+		claimed := owner.keyFor(owner)
+		if again := owner.keyFor(owner); again != claimed {
+			t.Fatalf("copyFirst=%t: the plan that claimed the cell rebuilt its key", copyFirst)
+		}
+		if other.keyFor(other) == claimed {
+			t.Fatalf("copyFirst=%t: the sharer was handed the owner's key", copyFirst)
+		}
+	}
+}

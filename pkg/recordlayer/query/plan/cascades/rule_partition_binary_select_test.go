@@ -427,18 +427,10 @@ func TestPartitionBinarySelectRule_PartitionWhenOneSideNotInResultValue(t *testi
 	}
 }
 
-func TestPartitionBinarySelectRule_SkipsExistentialQuantifiers(t *testing.T) {
+func TestPartitionBinarySelectRule_PartitionsExistentialQuantifiers(t *testing.T) {
 	t.Parallel()
-
-	// Go's PartitionBinarySelectRule explicitly skips expressions with
-	// existential quantifiers (see guard at lines 64-68 of the rule).
-	// This covers Java's partitionUncorrelatedExistential,
-	// partitionPredicatesWithExists, and
-	// partitionPredicateWhereCorrelationComesBelowExists -- all of which
-	// involve existential quantifiers and would fire in Java but not in Go.
-	//
-	// The Go rule will handle these in a future shift when Memo-level
-	// dedup prevents the aliasing issues documented in the rule source.
+	// The ForEach predicate can drive an index without changing the live
+	// existential carrier and its predicate.
 
 	tQ := baseT()
 	tauLower := baseTau()
@@ -462,8 +454,19 @@ func TestPartitionBinarySelectRule_SkipsExistentialQuantifiers(t *testing.T) {
 	ref := expressions.InitialOf(sel)
 
 	yielded := mustFirePartitionExpressionRule(t, NewPartitionBinarySelectRule(), ref)
-	if len(yielded) != 0 {
-		t.Fatalf("expected 0 yields (existential quantifiers are skipped by Go rule), got %d", len(yielded))
+	if len(yielded) != 1 {
+		t.Fatalf("expected outer predicate partition, got %d", len(yielded))
+	}
+	upper := yielded[0].(*expressions.SelectExpression)
+	if len(upper.GetPredicates()) != 1 || !predicates.ContainsExistentialPredicate(upper.GetPredicates()[0]) {
+		t.Fatal("existential predicate must remain at its original scope")
+	}
+	if upper.GetQuantifiers()[1].GetAlias() != tauQ.GetAlias() || upper.GetQuantifiers()[1].GetRangesOver() != tauQ.GetRangesOver() || upper.GetQuantifiers()[1].Kind() != expressions.QuantifierExistential {
+		t.Fatal("existential edge changed")
+	}
+	lower := upper.GetQuantifiers()[0].GetRangesOver().Get().(*expressions.SelectExpression)
+	if len(lower.GetPredicates()) != 1 {
+		t.Fatal("outer predicate was not pushed")
 	}
 }
 

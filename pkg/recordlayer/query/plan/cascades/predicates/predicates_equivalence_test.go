@@ -1,22 +1,6 @@
 package predicates
 
-// Tests inspired by Java's QueryPredicateTest.testOrEquivalence /
-// testAndEquivalence / testAndOrEquivalence, adapted to pin the
-// CURRENT behaviour of our PredicateEquals — positional, not
-// multiset.
-//
-// JAVA-DIVERGENCE: Java's AndPredicate.and / OrPredicate.or treat
-// children as a multiset for equality + hash. Our PredicateEquals
-// uses positional comparison via predicateListsEqual (line 230 of
-// predicates.go). The semantic gap is intentional pinning here so a
-// future change to multiset semantics is a deliberate decision
-// flagged by failing tests, not a silent regression.
-//
-// When the Cascades port lands the rules that depend on multiset
-// AND/OR equality (e.g. AndAbsorbOrRule, OrAbsorbAndRule today only
-// fire on canonically-ordered inputs), this test file is the trigger
-// to update PredicateEquals + predicateListsEqual to set semantics.
-// Java's PredicateEquals does this; ours should too eventually.
+// Java's QueryPredicateTest exercises AND/OR identity as sets of children.
 
 import (
 	"testing"
@@ -53,12 +37,7 @@ func TestPredicateEquals_ExistentialValuePredicate(t *testing.T) {
 	}
 }
 
-// TestPredicateEquals_OrPositional pins the documented positional
-// behaviour for OR. `Or(p1, p2, p3)` is NOT equal to `Or(p3, p2, p1)`
-// under our PredicateEquals — Java's `OrPredicate.or(p1,p2,p3) ==
-// OrPredicate.or(p3,p2,p1)` returns true because Java treats children
-// as a multiset.
-func TestPredicateEquals_OrPositional(t *testing.T) {
+func TestPredicateEquals_OrSet(t *testing.T) {
 	t.Parallel()
 	p1 := mkValuePred(t, "a", "Hello")
 	p2 := mkValuePred(t, "b", "World")
@@ -67,10 +46,8 @@ func TestPredicateEquals_OrPositional(t *testing.T) {
 	or123 := &OrPredicate{SubPredicates: []QueryPredicate{p1, p2, p3}}
 	or321 := &OrPredicate{SubPredicates: []QueryPredicate{p3, p2, p1}}
 
-	// JAVA-DIVERGENCE: Java says these are equal.
-	if PredicateEquals(or123, or321) {
-		t.Fatal("CURRENT behaviour is positional — Or(p1,p2,p3) should NOT equal Or(p3,p2,p1) under our PredicateEquals. " +
-			"Java treats them as multiset-equal. If this test starts failing, multiset semantics has been adopted; update Java-divergence comment.")
+	if !PredicateEquals(or123, or321) {
+		t.Fatal("OR child order must not affect equality")
 	}
 	// Same order — equal.
 	or123Same := &OrPredicate{SubPredicates: []QueryPredicate{p1, p2, p3}}
@@ -79,8 +56,7 @@ func TestPredicateEquals_OrPositional(t *testing.T) {
 	}
 }
 
-// TestPredicateEquals_AndPositional pins the same gap for AND.
-func TestPredicateEquals_AndPositional(t *testing.T) {
+func TestPredicateEquals_AndSet(t *testing.T) {
 	t.Parallel()
 	p1 := mkValuePred(t, "a", "Hello")
 	p2 := mkValuePred(t, "b", "World")
@@ -88,18 +64,12 @@ func TestPredicateEquals_AndPositional(t *testing.T) {
 
 	and123 := &AndPredicate{SubPredicates: []QueryPredicate{p1, p2, p3}}
 	and321 := &AndPredicate{SubPredicates: []QueryPredicate{p3, p2, p1}}
-	if PredicateEquals(and123, and321) {
-		t.Fatal("CURRENT behaviour is positional — And(p1,p2,p3) should NOT equal And(p3,p2,p1) under our PredicateEquals. " +
-			"Java treats them as multiset-equal.")
+	if !PredicateEquals(and123, and321) {
+		t.Fatal("AND child order must not affect equality")
 	}
 }
 
-// TestPredicateEquals_NestedAndOrPositional pins the same gap for
-// nested AndOr trees. `And(p1, Or(p2,p3))` is NOT equal to
-// `And(Or(p3,p2), p1)` under our PredicateEquals. Java's would
-// consider these equal because both AND order and OR order are
-// multiset-irrelevant.
-func TestPredicateEquals_NestedAndOrPositional(t *testing.T) {
+func TestPredicateEquals_NestedAndOrSet(t *testing.T) {
 	t.Parallel()
 	p1 := mkValuePred(t, "a", "Hello")
 	p2 := mkValuePred(t, "b", "World")
@@ -113,25 +83,19 @@ func TestPredicateEquals_NestedAndOrPositional(t *testing.T) {
 		&OrPredicate{SubPredicates: []QueryPredicate{p3, p2}},
 		p1,
 	}}
-	if PredicateEquals(left, right) {
-		t.Fatal("CURRENT positional behaviour: nested AndOr trees with reordered children should NOT match. " +
-			"Java's testAndOrEquivalence says they should — this is the documented Java-divergence.")
+	if !PredicateEquals(left, right) {
+		t.Fatal("nested AND/OR permutations must compare equal")
 	}
 }
 
-// TestPredicateEquals_DuplicateChildren pins another corollary of
-// positional comparison: `And(p1, p1, p2)` is NOT equal to
-// `And(p2, p1)` under multiset-style dedup, BUT it's also not equal
-// to `And(p1, p2)` under positional comparison (different lengths).
-// Confirms our equality is strictly positional with NO dedup.
 func TestPredicateEquals_DuplicateChildren(t *testing.T) {
 	t.Parallel()
 	p1 := mkValuePred(t, "a", "Hello")
 	p2 := mkValuePred(t, "b", "World")
 	withDup := &AndPredicate{SubPredicates: []QueryPredicate{p1, p1, p2}}
 	noDup := &AndPredicate{SubPredicates: []QueryPredicate{p1, p2}}
-	if PredicateEquals(withDup, noDup) {
-		t.Fatal("predicates with different child counts should not be equal regardless of dedup")
+	if !PredicateEquals(withDup, noDup) {
+		t.Fatal("duplicate children must not affect set equality")
 	}
 }
 

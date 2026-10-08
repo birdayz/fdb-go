@@ -52,7 +52,7 @@ func TestConstraintPropagation_DistinctUnionPushesToLegs(t *testing.T) {
 	}))
 	unionRef := expressions.InitialOf(union)
 
-	distinct := mustConstraintE2EConstruct(expressions.NewLogicalDistinctExpression(
+	distinct := mustConstraintE2EConstruct(expressions.NewRequiredLogicalUniqueExpression(
 		expressions.ForEachQuantifier(unionRef)))
 	rootRef := expressions.InitialOf(distinct)
 

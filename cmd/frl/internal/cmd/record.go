@@ -45,8 +45,8 @@ func newRecordGetCmd() *cobra.Command {
 		Short: "Load a single record by primary key",
 		Example: `  frl record get 42
   frl record get customer-0001
-  frl record get 1,1 --database /myapp --schema main   # PK as shown by record scan
-  frl record get 1 --type ITEMS --database /myapp --schema main`,
+  frl record get 1,1 --database /FRL/myapp --schema main   # PK as shown by record scan
+  frl record get 1 --type ITEMS --database /FRL/myapp --schema main`,
 		Long: "The primary key is comma-separated tuple elements — exactly " +
 			"the form `record scan` prints in its primary_key field, so scan " +
 			"output round-trips into get. Each element parses as int64 if it " +
@@ -113,7 +113,7 @@ func newRecordScanCmd() *cobra.Command {
 		Example: `  frl record scan --limit 10
   frl record scan --type Order --limit 100 | jq -s .
   frl record scan --reverse --limit 5         # last 5 by PK order
-  frl record scan --database /myapp --schema main --limit 10`,
+  frl record scan --database /FRL/myapp --schema main --limit 10`,
 		Long: "Scan over the whole store (or a single --type) in primary-key " +
 			"order. Use --reverse to walk the tail first — useful for tail-style " +
 			"inspection of the most recently-keyed records. Output is one " +

@@ -93,3 +93,25 @@ func TestArrayDistinctValue_NilChildReturnsNil(t *testing.T) {
 		t.Fatalf("nil child = %v, want nil", got)
 	}
 }
+
+func TestArrayDistinctValue_ConstructedRecords(t *testing.T) {
+	t.Parallel()
+	constructor := NewRecordConstructorValue(
+		RecordConstructorField{Name: "A", Value: &ConstantValue{Value: int64(1), Typ: NotNullLong}},
+		RecordConstructorField{Name: "B", Value: &ConstantValue{Value: int64(2), Typ: NotNullLong}},
+	)
+	stampRecordConstructorForMessageTest(t, constructor)
+	first, err := constructor.Evaluate(nil)
+	require.NoError(t, err)
+	duplicate, err := constructor.Evaluate(nil)
+	require.NoError(t, err)
+	constructor.Fields[1].Value = &ConstantValue{Value: int64(3), Typ: NotNullLong}
+	different, err := constructor.Evaluate(nil)
+	require.NoError(t, err)
+	got, err := NewArrayDistinctValue(LiteralValue([]any{first, duplicate, different, first})).Evaluate(nil)
+	require.NoError(t, err)
+	out := got.([]any)
+	require.Len(t, out, 2, "separately constructed equal protobuf records must not multiply IN join rows")
+	require.Same(t, first, out[0])
+	require.Same(t, different, out[1])
+}

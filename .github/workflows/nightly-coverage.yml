@@ -64,11 +64,8 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # The permitted band, declared as two explicit hours so it is
-          # machine-readable: pkg/docscheck's TestNightlyWindowAdmitsMeasuredLandings
-          # parses these and replays against them every job-allocation hour this net
-          # has ever actually been given. WINDOW_START > WINDOW_END means the band
-          # WRAPS midnight.
+          # The permitted band, as two explicit hours. WINDOW_START > WINDOW_END means
+          # the band WRAPS midnight.
           #
           # Sized from measured allocation, not from the cron hour, which predicts
           # nothing: GitHub's own scheduled-trigger dispatch on this repo is late by
@@ -121,7 +118,7 @@ jobs:
       - name: Run tests with coverage
         if: steps.window.outputs.ok == 'true'
         id: coverage
-        run: bazelisk coverage //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --combined_report=lcov --test_summary=detailed
+        run: bazelisk coverage //... //cmd/fdb-stacktester/bindingtester:bindingtester_test //pkg/relational/sqltest/census:census_test --combined_report=lcov --test_summary=detailed
 
       - name: Race detector (FDB client + record layer)
         # `!cancelled()`, not the implicit success(): the step immediately above
@@ -140,10 +137,11 @@ jobs:
         #
         # --local_resources=memory does NOT prevent that, which is the trap: it
         # bounds Bazel's memory ACCOUNTING and leaves the job COUNT alone.
-        # Measured on Bazel 9.0.1 with a six-test fixture at --local_test_jobs=4:
-        # no tag and `--local_resources=memory=4500` still ran 4 concurrently,
-        # while `tags=["resources:memory:2000"]` against the same budget ran 2.
-        # The flag alone was never the cap it reads as.
+        # Measured on Bazel 9.0.1: the budget gates only targets that declare
+        # `tags=["resources:memory:N"]`, and only when --local_test_jobs is 0 —
+        # four memory:2000 tests against a 4500 budget ran 2-wide without the
+        # flag and 4-wide under --local_test_jobs=4. The flag alone was never the
+        # cap it reads as.
         run: |
           bazelisk shutdown
           bazelisk --output_base=$HOME/.cache/bazel/_race_output_base \
@@ -154,6 +152,7 @@ jobs:
             //pkg/recordlayer:recordlayer_test \
             //pkg/recordlayer/chaos:chaos_test \
             //conformance:conformance_test \
+            //conformance:conformance_corpora_test \
             --@rules_go//go/config:race \
             --build_event_json_file=.bazel-bep.race.jsonl \
             --local_resources=memory=HOST_RAM*0.6 \

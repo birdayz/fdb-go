@@ -27,7 +27,7 @@ import (
 
 var keyCounter atomic.Uint64
 
-const dbPath = "/mmdb"
+const dbPath = "/FRL/mmdb"
 
 // Scenario is a schema + seed data + equivalence groups. Field tags let the LLM generator emit it
 // as JSON.
@@ -199,7 +199,7 @@ func setup(s Scenario) (*harness, error) {
 	h := &harness{}
 	h.closes = append(h.closes, sqldriver.RegisterBackend(key, simDB))
 
-	setupConn, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+key)
+	setupConn, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key)
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open setup: %w", err)
@@ -217,7 +217,7 @@ func setup(s Scenario) (*harness, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+key+"&schema=s")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key+"&schema=S")
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open db: %w", err)

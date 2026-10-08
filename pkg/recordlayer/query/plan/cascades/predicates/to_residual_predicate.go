@@ -114,7 +114,7 @@ func ToResidualPredicate(p QueryPredicate) (QueryPredicate, error) {
 		if !changed {
 			return p, nil
 		}
-		return residualConjunctionOf(subs), nil
+		return WithAtomicity(residualConjunctionOf(subs), pred.atomic), nil
 
 	case *OrPredicate:
 		subs, changed, err := residualChildren(pred.SubPredicates)
@@ -124,7 +124,7 @@ func ToResidualPredicate(p QueryPredicate) (QueryPredicate, error) {
 		if !changed {
 			return p, nil
 		}
-		return residualDisjunction(subs), nil
+		return WithAtomicity(residualDisjunction(subs), pred.atomic), nil
 
 	case *NotPredicate:
 		newChild, err := ToResidualPredicate(pred.Child)
@@ -134,7 +134,7 @@ func ToResidualPredicate(p QueryPredicate) (QueryPredicate, error) {
 		if newChild == pred.Child {
 			return p, nil
 		}
-		return NewNot(newChild), nil
+		return WithAtomicity(NewNot(newChild), pred.atomic), nil
 
 	default:
 		// Leaves and predicates that are already residual answer for themselves,

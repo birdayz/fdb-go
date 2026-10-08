@@ -15,9 +15,10 @@ tests:
   # BIGINT literal vs STRING column → 42804.
   - query: SELECT id FROM t WHERE s = 5
     error_code: "42804"
-  # String in IN-list against BIGINT column → 42804.
+  # String in IN-list against BIGINT column → 22000: the IN promotes its probe
+  # to the list's element type (Java INCOMPATIBLE_TYPE; InComparandSourceJavaProbe).
   - query: SELECT id FROM t WHERE n IN ('text', 'other')
-    error_code: "42804"
+    error_code: "22000"
   # BETWEEN with incompatible bound → 42804.
   - query: SELECT id FROM t WHERE n BETWEEN 1 AND 'text'
     error_code: "42804"

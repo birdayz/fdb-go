@@ -22,3 +22,6 @@ var errNoCgo = errors.New(
 
 // Open reports that the libfdb_c backend is not available in a non-cgo build.
 func Open(string) (fdb.BackendDatabase, error) { return nil, errNoCgo }
+
+// SetKnob reports that the libfdb_c backend is not available in a non-cgo build.
+func SetKnob(string) error { return errNoCgo }

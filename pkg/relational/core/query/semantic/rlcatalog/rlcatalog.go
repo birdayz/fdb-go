@@ -28,6 +28,8 @@ func Wrap(md *recordlayer.RecordMetaData) semantic.Catalog {
 	if md != nil {
 		c.storeRowVersions = md.IsStoreRecordVersions()
 		c.byFoldedName = make(map[string]*recordlayer.RecordType, len(md.RecordTypes()))
+		c.byUserName = make(map[string]*recordlayer.RecordType, len(md.RecordTypes()))
+		c.foldedAmbiguous = map[string]bool{}
 		for rtName, rt := range md.RecordTypes() {
 			// The SQL surface speaks USER identifiers; the descriptor
 			// (and every wire address derived from it) speaks STORAGE
@@ -41,7 +43,16 @@ func Wrap(md *recordlayer.RecordMetaData) semantic.Catalog {
 			// is what lets `SELECT … FROM "foo$table"` find the record
 			// type stored as FOO__1TABLE; without it the table exists on
 			// the wire and is unreachable from SQL (42F01).
-			c.byFoldedName[semantic.NewUnquoted(recordlayer.ToUserIdentifier(rtName)).Name()] = rt
+			user := recordlayer.ToUserIdentifier(rtName)
+			c.byUserName[user] = rt
+			folded := semantic.NewUnquoted(user).Name()
+			if prior, taken := c.byFoldedName[folded]; taken && prior != rt {
+				// Two tables whose names differ only in case (`Table1` and
+				// `TaBlE1`, legal with quoted or case-sensitive names): the
+				// folded key names neither.
+				c.foldedAmbiguous[folded] = true
+			}
+			c.byFoldedName[folded] = rt
 		}
 	}
 	return c
@@ -60,6 +71,11 @@ type wrappedCatalog struct {
 	// byFoldedName indexes RecordTypes by case-folded key for O(1)
 	// LookupTable — computed once at Wrap time.
 	byFoldedName map[string]*recordlayer.RecordType
+	// byUserName indexes RecordTypes by their exact user name, which a
+	// lookup tries first; foldedAmbiguous marks folded keys several types
+	// share, which then resolve only exactly.
+	byUserName      map[string]*recordlayer.RecordType
+	foldedAmbiguous map[string]bool
 	// storeRowVersions mirrors md.IsStoreRecordVersions(): when set, every
 	// table exposes the trailing __ROW_VERSION pseudo-column (Java:
 	// RecordMetaData.getPlannerType appends Type.Record.addPseudoFields,
@@ -68,7 +84,7 @@ type wrappedCatalog struct {
 }
 
 // LookupTable implements semantic.Catalog. RecordMetaData has no
-// schema qualifier — qualified names don't match anything. Hits the
+// template qualifier — qualified names don't match anything. Hits the
 // pre-built case-folded index so lookup is O(1).
 func (w *wrappedCatalog) LookupTable(name semantic.QualifiedName) (semantic.Table, bool) {
 	if w.md == nil {
@@ -77,9 +93,15 @@ func (w *wrappedCatalog) LookupTable(name semantic.QualifiedName) (semantic.Tabl
 	if name.IsQualified() {
 		return nil, false
 	}
-	rt, ok := w.byFoldedName[name.Name()]
+	rt, ok := w.byUserName[name.Name()]
 	if !ok {
-		return nil, false
+		folded := name.Name()
+		if w.foldedAmbiguous[folded] {
+			return nil, false
+		}
+		if rt, ok = w.byFoldedName[folded]; !ok {
+			return nil, false
+		}
 	}
 	return &recordTypeTable{rt: rt, name: name, storeRowVersions: w.storeRowVersions}, true
 }
@@ -335,6 +357,12 @@ func columnForField(f protoreflect.FieldDescriptor, enclosing []protoreflect.Ful
 		Nullable: nullable,
 		IsArray:  isArr,
 	}
+	if vt, ok := values.ScalarTypeForProtoKind(elemF).(*values.VectorType); ok {
+		col.Type = "VECTOR"
+		col.VectorPrecision = vt.Precision
+		col.VectorDimensions = vt.Dimensions
+		return col
+	}
 	if col.Type == "ENUM" {
 		// Use the stored-row authority, including its LONG representation for
 		// protobuf number aliases. An enum declaration must never describe a
@@ -411,26 +439,21 @@ func protoKindToSQL(k protoreflect.Kind) string {
 	switch k {
 	case protoreflect.BoolKind:
 		return "BOOL"
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		// Genuine 32-bit INTEGER: Java types these INT and runs the
 		// int32-bounded arithmetic lane. The old all-integers→"INT"
 		// conflation was harmless only while "INT" aliased to the LONG
 		// type; with real width typing it would have put BIGINT columns
-		// on the int32 lane.
+		// on the int32 lane. The 32-bit unsigned kinds are INT too
+		// (Type.java:909-914): protobuf-java reads them as a signed Integer,
+		// and so does every Go reader (values.ProtoScalarKindToRowValue), so
+		// a value never exceeds the 32-bit bound. Record-metadata validation
+		// refuses unsigned fields in record types (as Java's validateRecords),
+		// so this arm only keeps a descriptor that bypassed it consistent.
 		return "INTEGER"
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		return "BIGINT"
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
 		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		// Deliberate divergence for the 32-bit unsigned kinds: Java maps
-		// UINT32/FIXED32 → TypeCode.INT (Type.java
-		// fromProtobufFieldDescriptor), which is sound there only because
-		// Java protobuf wraps uint32 into a Java int. Go decodes unsigned
-		// kinds as genuine unsigned values (up to 2^32-1), so an "INTEGER"
-		// typing would put values beyond MaxInt32 under a false 32-bit
-		// arithmetic bound. BIGINT keeps them on the long lane. Reachable
-		// only defensively: record-metadata validation rejects unsigned
-		// fields in record types (matching Java).
 		return "BIGINT"
 	case protoreflect.FloatKind:
 		return "FLOAT"
@@ -446,4 +469,17 @@ func protoKindToSQL(k protoreflect.Kind) string {
 		return "RECORD"
 	}
 	return "UNKNOWN"
+}
+
+// LookupMacro returns the schema's SQL macro function of that name.
+func (w *wrappedCatalog) LookupMacro(name string) (*values.MacroFunction, error) {
+	if w.md == nil {
+		return nil, nil
+	}
+	for _, f := range w.md.UserDefinedFunctions() {
+		if m := f.GetUserDefinedMacroFunction(); m != nil && m.GetFunctionName() == name {
+			return values.MacroFunctionFromProto(m)
+		}
+	}
+	return nil, nil
 }

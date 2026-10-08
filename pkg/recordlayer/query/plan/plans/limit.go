@@ -88,12 +88,9 @@ func (p *RecordQueryLimitPlan) GetChildren() []RecordQueryPlan {
 	return []RecordQueryPlan{inner}
 }
 
-// GetInner exposes the single child so generic single-inner walkers
-// (deriveColumnsFromPlan, findScanPlan, findIndexPlan, …) can descend
-// through the limit — it is a row-count cap, transparent to column
-// derivation and ordering. Without this the LIMIT plan, when it sits at
-// the root (RFC-128 made the top-level LIMIT a real operator), is opaque
-// to column derivation and the result columns resolve wrong.
+// GetInner exposes the single child so generic single-inner walkers can
+// descend through the limit — it is a row-count cap, transparent to the row
+// and its ordering.
 func (p *RecordQueryLimitPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
 
 func (p *RecordQueryLimitPlan) GetLimit() int64  { return p.limit }
@@ -116,14 +113,14 @@ func (p *RecordQueryLimitPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryLimitPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryLimitPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryLimitPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("limit|")
+	hash := p.keyFor(p).Hash("limit|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

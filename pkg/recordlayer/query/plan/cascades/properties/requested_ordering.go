@@ -58,6 +58,41 @@ func (s RequestedSortOrder) IsCounterflowNulls() bool {
 	return s == RequestedSortOrderAscendingNullsLast || s == RequestedSortOrderDescendingNullsFirst
 }
 
+// Mirrored is the order a reversed scan provides for this one: each direction
+// flips together with its NULL placement, so the natural placements stay
+// natural and the counterflow ones counterflow.
+func (s RequestedSortOrder) Mirrored() RequestedSortOrder {
+	switch s {
+	case RequestedSortOrderAscending:
+		return RequestedSortOrderDescending
+	case RequestedSortOrderDescending:
+		return RequestedSortOrderAscending
+	case RequestedSortOrderAscendingNullsLast:
+		return RequestedSortOrderDescendingNullsFirst
+	case RequestedSortOrderDescendingNullsFirst:
+		return RequestedSortOrderAscendingNullsLast
+	default:
+		return s
+	}
+}
+
+// ToProvidedSortOrder ports Java RequestedSortOrder.toProvidedSortOrder. Only a
+// directional order has a provided counterpart.
+func (s RequestedSortOrder) ToProvidedSortOrder() (ProvidedSortOrder, bool) {
+	switch s {
+	case RequestedSortOrderAscending:
+		return ProvidedSortOrderAscending, true
+	case RequestedSortOrderDescending:
+		return ProvidedSortOrderDescending, true
+	case RequestedSortOrderAscendingNullsLast:
+		return ProvidedSortOrderAscendingNullsLast, true
+	case RequestedSortOrderDescendingNullsFirst:
+		return ProvidedSortOrderDescendingNullsFirst, true
+	default:
+		return ProvidedSortOrderChoose, false
+	}
+}
+
 // RequestedOrderingPart is a (Value, RequestedSortOrder) pair specifying
 // one element of a requested ordering. Mirrors Java's
 // OrderingPart.RequestedOrderingPart.
@@ -82,6 +117,33 @@ type RequestedOrdering struct {
 	parts        []RequestedOrderingPart
 	distinctness Distinctness
 	exhaustive   bool
+	// sortable marks a request whose consumer sorts in memory when no access
+	// provides the order (Go's sort and aggregation extensions; Java has no
+	// in-memory sort). The data-access rules keep a match that satisfies no
+	// request when one is sortable; nothing else reads the mark.
+	sortable bool
+}
+
+// Sortable is a copy of this request marked as consumed by an in-memory sort.
+func (o *RequestedOrdering) Sortable() *RequestedOrdering {
+	if o.sortable || o.IsPreserve() {
+		return o
+	}
+	cp := *o
+	cp.sortable = true
+	return &cp
+}
+
+// IsSortable reports whether the request's consumer sorts in memory.
+func (o *RequestedOrdering) IsSortable() bool { return o.sortable }
+
+// CarrySortable is o carrying from's mark: a request rebuilt from another
+// keeps its consumer.
+func (o *RequestedOrdering) CarrySortable(from *RequestedOrdering) *RequestedOrdering {
+	if from == nil || !from.sortable {
+		return o
+	}
+	return o.Sortable()
 }
 
 // NewRequestedOrdering creates a new RequestedOrdering.
@@ -93,6 +155,16 @@ func NewRequestedOrdering(parts []RequestedOrderingPart, d Distinctness, exhaust
 		distinctness: d,
 		exhaustive:   exhaustive,
 	}
+}
+
+// Mirrored is this request with every part's direction mirrored: what a plan
+// must provide for its reverse to satisfy this request.
+func (o *RequestedOrdering) Mirrored() *RequestedOrdering {
+	parts := make([]RequestedOrderingPart, len(o.parts))
+	for i, part := range o.parts {
+		parts[i] = RequestedOrderingPart{Value: part.Value, SortOrder: part.SortOrder.Mirrored()}
+	}
+	return &RequestedOrdering{parts: parts, distinctness: o.distinctness, exhaustive: o.exhaustive, sortable: o.sortable}
 }
 
 // Preserve returns a RequestedOrdering that preserves the incoming order.
@@ -121,7 +193,7 @@ func (o *RequestedOrdering) Exhaustive() *RequestedOrdering {
 	if o.exhaustive {
 		return o
 	}
-	return NewRequestedOrdering(o.parts, o.distinctness, true)
+	return NewRequestedOrdering(o.parts, o.distinctness, true).CarrySortable(o)
 }
 
 // IsDistinct returns true if the ordering requires distinct records.
@@ -192,6 +264,11 @@ func CombineRequestedOrderings(current, added []*RequestedOrdering) ([]*Requeste
 			if n.IsDistinct() != cur.IsDistinct() {
 				continue
 			}
+			// A sortable request is not covered by an unsortable one: the
+			// mark exempts its reference's matches from the data-access skip.
+			if n.sortable && !cur.sortable {
+				continue
+			}
 			if !cur.IsExhaustive() && n.IsExhaustive() {
 				continue
 			}
@@ -212,7 +289,7 @@ func CombineRequestedOrderings(current, added []*RequestedOrdering) ([]*Requeste
 			// pushed batch collapse too.
 			dup := false
 			for _, f := range fresh {
-				if f.IsDistinct() == n.IsDistinct() && f.IsExhaustive() == n.IsExhaustive() && PartsEqual(f.parts, n.parts) {
+				if f.IsDistinct() == n.IsDistinct() && f.IsExhaustive() == n.IsExhaustive() && f.sortable == n.sortable && PartsEqual(f.parts, n.parts) {
 					dup = true
 					break
 				}
@@ -263,5 +340,5 @@ func (o *RequestedOrdering) PushDownThroughValue(resultValue values.Value, upper
 	if len(newParts) == 0 {
 		return PreserveOrdering()
 	}
-	return NewRequestedOrdering(newParts, DistinctnessPreserveDistinctness, o.exhaustive)
+	return NewRequestedOrdering(newParts, DistinctnessPreserveDistinctness, o.exhaustive).CarrySortable(o)
 }

@@ -14,6 +14,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // setupVectorStore builds a store whose Order type has a 2-d VECTOR (HNSW)
@@ -260,5 +261,111 @@ func TestIntegration_VectorIndexScan_ContinuationPK(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("tx: %v", err)
+	}
+}
+
+func TestIntegration_VectorIndexScan_ReturnVectors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := setupVectorStore(t)
+	insertOrders(t, store, &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20)})
+	_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		s, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(testSubspace(t)).Open()
+		if err != nil {
+			return nil, err
+		}
+		yes, no := true, false
+		for _, ordered := range []bool{false, true} {
+			var unsetPlan *plans.RecordQueryVectorIndexPlan
+			var unsetFingerprint string
+			for _, option := range []*bool{nil, &no, &yes} {
+				plan := mustExecutorConstruct(plans.NewRecordQueryVectorIndexPlan("vec_pq", nil,
+					&values.ConstantValue{Value: []float64{10, 20}, Typ: values.NewArrayType(false, values.NotNullDouble)},
+					&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}, predicates.ComparisonDistanceRankLessThanOrEq,
+					nil, option, []string{"Order"}, PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false)))
+				if ordered {
+					plan = plan.WithOrderedStream()
+				}
+				fingerprint, err := vectorScanRangeFingerprintSalt(plan, recordlayer.IndexTypeVector, recordlayer.IndexScanByDistance, []float64{10, 20}, 1, 1, 200, recordlayer.VectorDistanceScanRangeWithPrefix([]float64{10, 20}, 1, 200, nil))
+				if err != nil {
+					return nil, err
+				}
+				if option == nil {
+					unsetFingerprint = fingerprint
+				} else if fingerprint == unsetFingerprint {
+					t.Error("return-vector override must change continuation identity")
+				}
+				if option == nil {
+					unsetPlan = plan
+				} else if !*option && plan.EqualsPlanWithoutChildren(unsetPlan) {
+					t.Error("explicit false must differ from the engine-default return-vector option")
+				}
+				cursor, err := executeVectorIndexScan(ctx, plan, s, EmptyEvaluationContext(), nil, recordlayer.ExecuteProperties{})
+				if err != nil {
+					return nil, err
+				}
+				// Inspect the production scan before indexFetchCursor discards the index payload.
+				fetch, ok := cursor.(*indexFetchCursor)
+				if !ok {
+					t.Fatalf("unexpected cursor %T", cursor)
+				}
+				result, err := fetch.inner.OnNext(ctx)
+				cursor.Close()
+				if err != nil {
+					return nil, err
+				}
+				if !result.HasNext() {
+					t.Fatal("missing vector result")
+				}
+				payload := result.GetValue().Value[0]
+				if option != nil && !*option {
+					if payload != nil {
+						t.Errorf("explicit false returned %v", payload)
+					}
+				} else if raw, ok := payload.([]byte); !ok || !bytes.Equal(raw, vectorcodec.Serialize([]float64{10, 20})) {
+					t.Errorf("default/true returned %v", payload)
+				}
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEvalFloat64SliceSerializedVector(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		data    []byte
+		want    []float64
+		wantErr string
+	}{
+		{"half", []byte{0, 0x3c, 0x01, 0xc0, 0}, []float64{1.0009765625, -2}, ""},
+		{"single", []byte{1, 0x3f, 0x80, 0, 0, 0xc0, 0, 0, 0}, []float64{1, -2}, ""},
+		{"double", []byte{2, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0}, []float64{1}, ""},
+		{"empty", nil, nil, "empty vector data"},
+		{"unknown", []byte{255}, nil, "unsupported vector type"},
+		{"quantized", []byte{3}, nil, "RaBitQ"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := evalFloat64Slice(&values.ConstantValue{Value: tc.data}, nil)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("got %v, want error containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || len(got) != len(tc.want) {
+				t.Fatalf("got %v, %v; want %v", got, err, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("component %d: got %v, want %v", i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }

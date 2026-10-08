@@ -28,7 +28,9 @@ func aggregateDataRowType(recordName string) *values.RecordType {
 	return values.NewRecordType(recordName, false, []values.Field{
 		{Name: "region", FieldType: values.NullableString},
 		{Name: "status", FieldType: values.NullableString},
-		{Name: "amount", FieldType: values.NullableLong},
+		// NOT NULL: a SUM over it is never a residue, so it needs no COUNT(col)
+		// companion (aggregate_sum_non_null_companion_test.go).
+		{Name: "amount", FieldType: values.NotNullLong},
 		{Name: "id", FieldType: values.NotNullLong},
 		{Name: "year", FieldType: values.NullableString},
 		{Name: "price", FieldType: values.NullableLong},
@@ -85,24 +87,22 @@ func aggregateDataCandidate(
 	)
 }
 
-func aggregateDataProjectedInner(
+// aggregateDataPublishedPlan returns the yielded aggregate plan after checking
+// it publishes the GroupBy's row itself, with nothing renaming it.
+func aggregateDataPublishedPlan(
 	t *testing.T,
 	expression expressions.RelationalExpression,
 	expectedType values.Type,
 ) plans.RecordQueryPlan {
 	t.Helper()
-	projection, ok := expression.(*plans.RecordQueryProjectionPlan)
+	plan, ok := expression.(plans.RecordQueryPlan)
 	if !ok {
-		t.Fatalf("expected exact aggregate-output projection, got %T", expression)
+		t.Fatalf("expected a physical aggregate plan, got %T", expression)
 	}
-	if got := projection.GetResultType(); !got.Equals(expectedType) {
-		t.Fatalf("projected aggregate type = %s, want %s", got, expectedType)
+	if got := plan.GetResultType(); !got.Equals(expectedType) {
+		t.Fatalf("published aggregate type = %s, want the GroupBy's %s", got, expectedType)
 	}
-	inner := projection.GetInner()
-	if inner == nil {
-		t.Fatal("aggregate-output projection has no inner plan")
-	}
-	return inner
+	return plan
 }
 
 func TestAggregateDataAccessRule_Fires(t *testing.T) {
@@ -133,7 +133,7 @@ func TestAggregateDataAccessRule_Fires(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("AggregateDataAccessRule didn't fire")
 	}
-	inner := aggregateDataProjectedInner(t, results[0], gb.GetResultValue().Type())
+	inner := aggregateDataPublishedPlan(t, results[0], gb.GetResultValue().Type())
 	if !IsPhysicalAggregateIndex(inner) {
 		t.Fatalf("expected aggregate-index inner plan, got %T", inner)
 	}
@@ -274,7 +274,7 @@ func TestAggregateDataAccessRule_MultiAggregateIntersection(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 multi-intersection result, got %d", len(results))
 	}
-	inner := aggregateDataProjectedInner(t, results[0], gb.GetResultValue().Type())
+	inner := aggregateDataPublishedPlan(t, results[0], gb.GetResultValue().Type())
 	if !IsPhysicalMultiIntersection(inner) {
 		t.Fatalf("expected multi-intersection inner plan, got %T", inner)
 	}
@@ -391,7 +391,7 @@ func TestAggregateDataAccessRule_MultiAggregateThreeWay(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 multi-intersection result, got %d", len(results))
 	}
-	inner := aggregateDataProjectedInner(t, results[0], gb.GetResultValue().Type())
+	inner := aggregateDataPublishedPlan(t, results[0], gb.GetResultValue().Type())
 	if !IsPhysicalMultiIntersection(inner) {
 		t.Fatalf("expected multi-intersection inner plan, got %T", inner)
 	}
@@ -435,5 +435,23 @@ func TestAggregateDataAccessRule_WrongRecordType(t *testing.T) {
 	)
 	if len(results) != 0 {
 		t.Fatal("AggregateDataAccessRule should NOT fire for wrong record type")
+	}
+}
+
+func TestBitmapCandidateArithmeticEntrySize(t *testing.T) {
+	t.Parallel()
+	gb := aggregateDataGroupBy(nil, aggregateDataSpec{function: expressions.AggBitmapConstructAgg, ordinal: aggregateDataID})
+	operand := gb.GetAggregates()[0].Operand
+	c := NewAggregateIndexMatchCandidate("bm", []string{"Orders"}, []string{"bucket"}, expressions.AggBitmapConstructAgg, "id", aggregateDataRowType("Orders"), []values.Type{values.NotNullLong}, 1).WithBitmapEntrySize(10000)
+	for _, size := range []int64{10000, 100, 0} {
+		position := mustAggregateDataConstruct(values.NewArithmeticValue(values.OpBitmapBitPosition, operand, &values.ConstantValue{Value: size, Typ: values.NullableInt}))
+		bucket := mustAggregateDataConstruct(values.NewArithmeticValue(values.OpBitmapBucketOffset, operand, &values.ConstantValue{Value: size, Typ: values.NullableInt}))
+		want := size == 10000
+		if c.aggregateOperandMatches(position) != want || c.groupKeyMatches(bucket, 0) != want {
+			t.Fatalf("size %d: position or bucket matched incorrectly", size)
+		}
+		if c.aggregateOperandMatches(bucket) || c.groupKeyMatches(position, 0) {
+			t.Fatal("interchanged bitmap operators matched")
+		}
 	}
 }

@@ -111,7 +111,16 @@ type PushUnorderedUnionThroughFetchRule struct {
 
 func NewPushUnorderedUnionThroughFetchRule() *PushUnorderedUnionThroughFetchRule {
 	return &PushUnorderedUnionThroughFetchRule{
-		matcher: NewExpressionMatcher[*plans.RecordQueryUnorderedUnionPlan]("phys_unordered_union_over_fetches"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryUnorderedUnionPlan]("phys_unordered_union_over_fetches").WithInputPredicate(
+			func(plan *plans.RecordQueryUnorderedUnionPlan) bool {
+				fetchLegs := 0
+				for _, q := range plan.GetQuantifiers() {
+					if referenceHasMemberOfType[*plans.RecordQueryFetchFromPartialRecordPlan](q.GetRangesOver()) {
+						fetchLegs++
+					}
+				}
+				return fetchLegs > 1
+			}),
 	}
 }
 
@@ -213,7 +222,7 @@ func (r *PushInUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 			if err != nil {
 				return nil, err
 			}
-			np = np.WithInSources(old.GetInSources())
+			np = np.WithInSources(old.GetInSources()).WithInComparands(old.GetInComparands())
 			return np, nil
 		},
 		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
@@ -229,7 +238,7 @@ func (r *PushInUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 			if err != nil {
 				return nil, err
 			}
-			np = np.WithInSources(old.GetInSources())
+			np = np.WithInSources(old.GetInSources()).WithInComparands(old.GetInComparands())
 			return np, nil
 		},
 	})
@@ -345,9 +354,16 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	// is a broken derivation path — decline everything, exactly when Java
 	// does. Splitting this into filter-then-agree would let a
 	// disagreeing leg exit via a later failure before the disagreement
-	// is seen. The Go translation functions match by covered-column
-	// name, so the aliases are placeholders.
-	sourceAlias := values.UniqueCorrelationIdentifier()
+	// is seen.
+	//
+	// The source alias is the one the required values are stated over: a
+	// set operation's comparison keys read each leg's current row
+	// (`_current`), where Java rebases them onto its fresh source alias
+	// (getRequiredValues(sourceAlias, ...)). A value-index fetch's
+	// translation pushes only a field of exactly that root, so a fresh
+	// placeholder here made every comparison key untranslatable and no keyed
+	// set operation ever pushed below its fetch (WS-F 4.3 item 3).
+	sourceAlias := values.CurrentCorrelation()
 	targetAlias := values.UniqueCorrelationIdentifier()
 	alive := make(map[int]bool, len(legs))
 	for _, leg := range legs {
@@ -471,7 +487,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	newQuants := make([]expressions.Quantifier, len(pushable))
 	for i, leg := range pushable {
 		innerPlans[i] = leg.innerPlan
-		newQuants[i] = expressions.ForEachQuantifier(expressions.FinalOf(leg.innerExpr))
+		newQuants[i] = expressions.NewPhysicalQuantifier(expressions.FinalOf(leg.innerExpr))
 	}
 	newSetOpPlan, err := p.rebuildPlan(innerPlans)
 	if err != nil {
@@ -516,7 +532,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	// The merged fetch is its own cascades expression carrying the live setOpRef
 	// edge (RFC-184 W2).
 	newFetchPlan, err := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
-		expressions.ForEachQuantifier(setOpRef), combined, resultType, fetchIndexRecords,
+		expressions.NewPhysicalQuantifier(setOpRef), combined, resultType, fetchIndexRecords,
 	)
 	if err != nil {
 		call.Fail(err)
@@ -545,7 +561,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	}
 	outerPlans := []plans.RecordQueryPlan{newFetchPlan}
 	outerQuants := []expressions.Quantifier{
-		expressions.ForEachQuantifier(call.MemoizeFinalExpression(newFetchPlan)),
+		expressions.NewPhysicalQuantifier(call.MemoizeFinalExpression(newFetchPlan)),
 	}
 	for i, q := range p.quants {
 		if isPushed[i] {
@@ -560,7 +576,7 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 			return
 		}
 		outerPlans = append(outerPlans, ph.GetRecordQueryPlan())
-		outerQuants = append(outerQuants, expressions.ForEachQuantifier(expressions.FinalOf(resExpr)))
+		outerQuants = append(outerQuants, expressions.NewPhysicalQuantifier(expressions.FinalOf(resExpr)))
 	}
 	outerPlan, err := p.rebuildPlan(outerPlans)
 	if err != nil {

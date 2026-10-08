@@ -31,17 +31,18 @@ func (r *DistinctMergeRule) Matcher() matching.BindingMatcher { return r.matcher
 // inner. Otherwise, declines.
 func (r *DistinctMergeRule) OnMatch(call *ExpressionRuleCall) {
 	outer := matching.Get[*expressions.LogicalDistinctExpression](call.Bindings, r.matcher)
-	innerExpr := outer.GetInner().GetRangesOver().Get()
-	inner, ok := innerExpr.(*expressions.LogicalDistinctExpression)
-	if !ok {
-		return
+	for _, innerExpr := range outer.GetInner().GetRangesOver().AllMembers() {
+		inner, ok := innerExpr.(*expressions.LogicalDistinctExpression)
+		if !ok {
+			continue
+		}
+		rewritten, err := expressions.NewLogicalDistinctExpression(inner.GetInner())
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(rewritten)
 	}
-	rewritten, err := expressions.NewLogicalDistinctExpression(inner.GetInner())
-	if err != nil {
-		call.Fail(err)
-		return
-	}
-	call.Yield(rewritten)
 }
 
 var _ ExpressionRule = (*DistinctMergeRule)(nil)

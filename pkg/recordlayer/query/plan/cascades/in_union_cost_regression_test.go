@@ -20,13 +20,13 @@ func TestPlanningCostModel_InUnionRepeatedFullScanCannotWinScalarFallback(t *tes
 		scan = mustConstruct(t, scan, err)
 		filter, err := plans.NewRecordQueryPredicatesFilterPlan(
 			scan,
-			[]predicates.QueryPredicate{
-				predicates.NewConstantPredicate(predicates.TriTrue),
-			},
+			// A real conjunct: TRUE counts no residual conjunct, as in Java's
+			// NormalizedResidualPredicateProperty.
+			[]predicates.QueryPredicate{rungPredicate("K")},
 		)
 		return mustConstruct(t, filter, err)
 	}
-	plain, err := plans.NewRecordQueryProjectionPlan(nil, filteredScan())
+	plain, err := newProjectionMapOverForTest(nil, filteredScan())
 	plain = mustConstruct(t, plain, err)
 	repeatedInner := filteredScan()
 	inUnion, err := plans.NewRecordQueryInUnionPlan(
@@ -34,10 +34,11 @@ func TestPlanningCostModel_InUnionRepeatedFullScanCannotWinScalarFallback(t *tes
 		[]string{"in_value"},
 		nil,
 		false,
+		plans.UnboundedInUnionSize,
 	)
 	inUnion = mustConstruct(t, inUnion, err)
 	inUnion = inUnion.WithInSources([][]any{{int64(1), int64(2)}})
-	repeated, err := plans.NewRecordQueryProjectionPlan(nil, inUnion)
+	repeated, err := newProjectionMapOverForTest(nil, inUnion)
 	repeated = mustConstruct(t, repeated, err)
 
 	if _, applicable := compareInOperator(plain); applicable {

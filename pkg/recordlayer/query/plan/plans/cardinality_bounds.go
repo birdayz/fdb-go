@@ -66,11 +66,6 @@ func (p *RecordQueryMapPlan) ProvenCardinalities(child []properties.Cardinalitie
 	return provenChild(child)
 }
 
-// ProvenCardinalities: projection is cardinality-preserving.
-func (p *RecordQueryProjectionPlan) ProvenCardinalities(child []properties.Cardinalities) properties.Cardinalities {
-	return provenChild(child)
-}
-
 // ProvenCardinalities: a temp-table insert emits what it consumed.
 func (p *RecordQueryTempTableInsertPlan) ProvenCardinalities(child []properties.Cardinalities) properties.Cardinalities {
 	return provenChild(child)
@@ -230,6 +225,13 @@ func (p *RecordQueryVectorIndexPlan) ProvenCardinalities(_ []properties.Cardinal
 // ProvenCardinalities: the group count an aggregate index materializes is data,
 // not structure.
 func (p *RecordQueryAggregateIndexPlan) ProvenCardinalities(_ []properties.Cardinalities) properties.Cardinalities {
+	// CardinalitiesVisitor.visitRecordQueryAggregateIndexPlan: an ungrouped
+	// candidate folds every record into one group. Its equality-bound-grouping
+	// arm compares the grouping record against per-column values, never equal,
+	// so a grouped candidate is unbounded there too.
+	if p != nil && p.candidateGroupingKnown && p.candidateGroupingCount == 0 {
+		return properties.AtMostOne()
+	}
 	return properties.UnknownMaxCardinality()
 }
 
@@ -274,14 +276,6 @@ func (p *RecordQueryIntersectionPlan) ProvenCardinalities(child []properties.Car
 // ProvenCardinalities: an intersection is bounded by its smallest leg, and can
 // be empty whenever two legs are independently bounded.
 func (p *RecordQueryMultiIntersectionOnValuesPlan) ProvenCardinalities(child []properties.Cardinalities) properties.Cardinalities {
-	if driving := p.DrivingStreamIndex(); driving >= 0 && driving < len(child) {
-		// An OUTER merge emits one row per DRIVING-stream row regardless of what
-		// the other legs hold, so its bounds are the driving leg's. Intersecting
-		// would claim a maximum below the number of rows this plan actually
-		// produces — precisely the groups the merge adds back — and any consumer
-		// trusting that bound would be wrong about them.
-		return child[driving]
-	}
 	return properties.IntersectCardinalities(child)
 }
 

@@ -9,8 +9,8 @@ import (
 func TestDistanceRowNumberValue_Type(t *testing.T) {
 	t.Parallel()
 	v := NewDistanceRowNumberValue(DistanceEuclidean, nil, nil, nil, nil)
-	if !v.Type().Equals(NotNullLong) {
-		t.Fatalf("Type = %v, want NotNullLong", v.Type())
+	if !v.Type().Equals(NullableLong) {
+		t.Fatalf("Type = %v, want NullableLong", v.Type())
 	}
 }
 

@@ -143,7 +143,7 @@ func TestImplementUpdateRule_FiresAfterScanImplemented(t *testing.T) {
 	scan := dmlRuleScan()
 	innerRef := expressions.InitialOf(scan)
 	transforms := []expressions.UpdateTransform{
-		{FieldPath: "qty", NewValue: &values.ConstantValue{Value: int64(0), Typ: values.NotNullLong}},
+		{FieldNames: []string{"qty"}, FieldOrdinals: []int{1}, NewValue: &values.ConstantValue{Value: int64(0), Typ: values.NotNullLong}},
 	}
 	upd := mustDMLRuleConstruct(expressions.NewUpdateExpression(
 		expressions.ForEachQuantifier(innerRef),

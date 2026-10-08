@@ -189,3 +189,27 @@ func TestWalk_RowNumberRejects(t *testing.T) {
 		})
 	}
 }
+
+func TestWalk_WindowClauseErrors(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		sql  string
+		code api.ErrorCode
+	}{
+		{"SELECT id FROM users WHERE ROW_NUMBER() OVER (ORDER BY euclidean_distance(id, id)) <= 1", api.ErrCodeWindowingError},
+		{"SELECT id FROM users WHERE id > 0 AND ROW_NUMBER() OVER (ORDER BY euclidean_distance(id, id)) <= 1", api.ErrCodeWindowingError},
+		{"SELECT id FROM users WHERE ROW_NUMBER() OVER (ORDER BY euclidean_distance(id, id) DESC) <= 1", api.ErrCodeUnsupportedSort},
+		{"SELECT id FROM users WHERE ROW_NUMBER() OVER (ORDER BY euclidean_distance(id, id) NULLS LAST) <= 1", api.ErrCodeUnsupportedSort},
+	} {
+		t.Run(tc.sql, func(t *testing.T) {
+			t.Parallel()
+			a, s := buildScope(t)
+			r := expr.New(a, s)
+			_, err := r.WalkPredicate(parseFirstWhereExpr(t, tc.sql))
+			var e *api.Error
+			if !errors.As(err, &e) || e.Code != tc.code {
+				t.Fatalf("got %v, want %s", err, tc.code)
+			}
+		})
+	}
+}

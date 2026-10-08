@@ -28,11 +28,15 @@ go_test(
     size = "large",
     srcs = [
         "distinct_continuation_test.go",
+        "domain_registration_test.go",
         "injoin_continuation_test.go",
         "limited_join_continuation_test.go",
         "sqlpage_test.go",
         "unionall_continuation_test.go",
     ],
     embed = [":sqlpage"],
-    deps = ["//pkg/relational/api"],
+    deps = [
+        "//pkg/relational/api",
+        "//pkg/relational/core/keyspace",
+    ],
 )

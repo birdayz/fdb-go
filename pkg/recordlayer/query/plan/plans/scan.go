@@ -3,6 +3,7 @@ package plans
 import (
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -48,6 +49,10 @@ type RecordQueryScanPlan struct {
 	// distinctProofIndexName names the secondary UNIQUE index whose uniqueness
 	// licensed eliding a DISTINCT above this scan (distinct_proof_stamp.go).
 	distinctProofIndexName string
+	// commonPrimaryKeyValues is the record type's primary key in the structural
+	// encoding an index plan reports (RecordQueryIndexPlan), so the primary-key
+	// property of a scan and of an index over one type agree, as Java's do.
+	commonPrimaryKeyValues []values.Value
 }
 
 // NewRecordQueryScanPlan builds a scan over the given record types
@@ -114,6 +119,22 @@ func (p *RecordQueryScanPlan) GetScanComparisons() []*predicates.ComparisonRange
 
 // GetPrimaryKeyValues returns the primary key values, or nil if not set.
 func (p *RecordQueryScanPlan) GetPrimaryKeyValues() []values.Value { return p.primaryKeyVals }
+
+// WithCommonPrimaryKey returns a copy carrying the structural common primary key.
+func (p *RecordQueryScanPlan) WithCommonPrimaryKey(pk []values.Value) *RecordQueryScanPlan {
+	cp := *p
+	cp.commonPrimaryKeyValues = append([]values.Value(nil), pk...)
+	if pk == nil {
+		cp.commonPrimaryKeyValues = nil
+	}
+	return &cp
+}
+
+// GetCommonPrimaryKeyValues returns the structural common primary key, or nil
+// when unknown.
+func (p *RecordQueryScanPlan) GetCommonPrimaryKeyValues() []values.Value {
+	return p.commonPrimaryKeyValues
+}
 
 // GetRecordTypes returns the canonical record-type-name list.
 func (p *RecordQueryScanPlan) GetRecordTypes() []string { return p.recordTypes }
@@ -196,16 +217,41 @@ func normalizePrimaryKeyComponentTypes(types []values.Type, size int) []values.T
 
 func (p *RecordQueryScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryScanPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryScanPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("scanplan|")
+	hash := p.keyFor(p).Hash("scanplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
+}
+
+// scanComparisonGlyph renders one scan component of an Explain label: `=` an
+// equality, `≡` a null-safe equality (Java's [NOT_DISTINCT_FROM …] bound, which
+// also selects the null key), `<>` an inequality range and `*` no bound.
+func scanComparisonGlyph(cr *predicates.ComparisonRange) string {
+	switch cr.GetRangeType() {
+	case predicates.ComparisonRangeEquality:
+		if c := cr.GetEqualityComparison(); c != nil && c.Type == predicates.ComparisonNotDistinctFrom {
+			return "≡"
+		}
+		return "="
+	case predicates.ComparisonRangeInequality:
+		return "<>"
+	}
+	return "*"
+}
+
+// explainRecordTypeName is the spelling EXPLAIN shows for a stored record-type
+// name: its user identifier, as Java's RecordTypeComparison.explain renders
+// ProtoUtils.toUserIdentifier (`SCAN([IS foo.table$nested])` over the stored
+// `foo__2table__1nested`). The plan itself carries the stored name (RFC-238
+// §7c).
+func explainRecordTypeName(name string) string {
+	return protoname.ToUserIdentifier(name)
 }
 
 // Explain renders a one-line label.
@@ -216,7 +262,7 @@ func (p *RecordQueryScanPlan) Explain() string {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString(name)
+		b.WriteString(explainRecordTypeName(name))
 	}
 	if len(p.scanComparisons) > 0 {
 		b.WriteString(", [")
@@ -224,14 +270,7 @@ func (p *RecordQueryScanPlan) Explain() string {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			switch cr.GetRangeType() {
-			case predicates.ComparisonRangeEmpty:
-				b.WriteString("*")
-			case predicates.ComparisonRangeEquality:
-				b.WriteString("=")
-			case predicates.ComparisonRangeInequality:
-				b.WriteString("<>")
-			}
+			b.WriteString(scanComparisonGlyph(cr))
 		}
 		b.WriteString("]")
 	}

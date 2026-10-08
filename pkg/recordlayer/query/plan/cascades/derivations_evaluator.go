@@ -57,6 +57,8 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	// empty legs yield a zero-column result.
 	case *plans.RecordQueryCoveringIndexPlan:
 		return derivationsForIndexScan(w.GetIndexPlan())
+	case *plans.RecordQueryCoveringIndexValuePlan:
+		return derivationsForIndexScan(w.GetIndexPlan())
 
 	case *scanPlanExpression:
 		if sp, ok := w.plan.(*plans.RecordQueryScanPlan); ok {
@@ -108,12 +110,6 @@ func ComputeDerivations(expr expressions.RelationalExpression) *properties.Deriv
 	// A map/projection is its own physical expression now (RFC-184 W2).
 	case *plans.RecordQueryMapPlan:
 		return derivationsForMap(w)
-
-	// --- Projection: translate through child results ---
-
-	// The projection is its own cascades expression now (RFC-184 W2).
-	case *plans.RecordQueryProjectionPlan:
-		return derivationsFromSingleChildExpr(w)
 
 	// --- TypeFilter: restrict QueriedValue record types ---
 

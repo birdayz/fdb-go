@@ -21,7 +21,7 @@ Before production, pin a commit, run the conformance, differential, and stress s
 
 Against the reference, in CI, on real FoundationDB (testcontainers). No mocks.
 
-- **Java conformance suite.** The same operations run against Java Record Layer 4.12.11.0, and records must round-trip between the two engines.
+- **Java conformance suite.** The same operations run against Java Record Layer 4.14.2.0, and records must round-trip between the two engines.
 - **Cross-backend differential.** The pure-Go and `libfdb_c` clients run in one process against one cluster, and every read, write, index entry, and continuation must be byte-identical.
 - **Binding-stress tester.** Randomized operation sequences validated against `libfdb_c`, replayable by seed.
 - **Model-based chaos testing.** An in-memory model shadows the store while fault injection runs at transaction boundaries.
@@ -31,7 +31,7 @@ Against the reference, in CI, on real FoundationDB (testcontainers). No mocks.
 | Component | Version |
 |---|---|
 | FoundationDB wire protocol | 7.3 (validated against 7.3.77) |
-| Java Record Layer | 4.12.11.0 |
+| Java Record Layer | 4.14.2.0 |
 | Go | 1.26+ |
 
 FDB 8.0 is future work. The wire protocol is not a stable third-party contract and changes between releases.

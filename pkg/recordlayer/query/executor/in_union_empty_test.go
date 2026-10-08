@@ -39,6 +39,7 @@ func TestExecuteInUnion_KnownEmptySourceSkipsInner(t *testing.T) {
 				bindings,
 				nil,
 				false,
+				plans.UnboundedInUnionSize,
 			))
 			inUnion = inUnion.WithInSources(test.sources)
 
@@ -83,6 +84,7 @@ func TestExecuteInUnion_MultiBindingSingletonBindsCompleteContext(t *testing.T) 
 		[]string{firstBinding, secondBinding},
 		nil,
 		false,
+		plans.UnboundedInUnionSize,
 	))
 	inUnion = inUnion.WithInSources([][]any{{int64(11)}, {int64(22)}})
 
@@ -117,8 +119,8 @@ func TestExecuteInUnion_PreservesUniqueBindingIdentity(t *testing.T) {
 	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		mustTestQOV(t, binding, values.NotNullLong),
 	}))
-	inUnion := mustExecutorConstruct(plans.NewRecordQueryInUnionPlanWithBindingAliases(
-		inner, []values.CorrelationIdentifier{binding}, nil, false))
+	inUnion := mustExecutorConstruct(plans.NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize(
+		inner, []values.CorrelationIdentifier{binding}, nil, false, plans.UnboundedInUnionSize))
 	inUnion = inUnion.WithInSources([][]any{{int64(11), int64(22)}})
 	aliases := inUnion.GetBindingAliases()
 	if len(aliases) != 1 || aliases[0] != binding {
@@ -177,6 +179,7 @@ func TestExecuteInUnion_SingletonAppliesSkip(t *testing.T) {
 				test.bindings,
 				nil,
 				false,
+				plans.UnboundedInUnionSize,
 			))
 			inUnion = inUnion.WithInSources(test.sources)
 
@@ -231,6 +234,7 @@ func TestExecuteInUnion_RejectsMismatchedDimensions(t *testing.T) {
 				test.bindings,
 				nil,
 				false,
+				plans.UnboundedInUnionSize,
 			))
 			inUnion = inUnion.WithInSources(test.sources)
 			if _, err := executeInUnion(
@@ -336,7 +340,7 @@ func TestExecuteMappedValues_RequestSkipAvoidsEvaluation(t *testing.T) {
 				}
 				var plan plans.RecordQueryPlan
 				if kind == "projection" {
-					plan = mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{division}, inner))
+					plan = mustExecutorConstruct(newProjectionMapOverForTest([]values.Value{division}, inner))
 				} else {
 					plan = mustExecutorConstruct(plans.NewRecordQueryMapPlan(inner, division))
 				}
@@ -387,7 +391,7 @@ func TestExecuteMappedPages_ChildContinuation(t *testing.T) {
 				field := mustTestFieldOrdinal(t, inner.GetResultValue(), 0)
 				var plan plans.RecordQueryPlan
 				if kind == "projection" {
-					plan = mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{field}, inner))
+					plan = mustExecutorConstruct(newProjectionMapOverForTest([]values.Value{field}, inner))
 				} else {
 					plan = mustExecutorConstruct(plans.NewRecordQueryMapPlan(inner, field))
 				}
@@ -460,7 +464,7 @@ func TestExecuteMappedTempTableInsert_DelegatesRequest(t *testing.T) {
 				field := mustTestFieldOrdinal(t, inner.GetResultValue(), 0)
 				var plan plans.RecordQueryPlan
 				if kind == "projection" {
-					plan = mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{field}, inner))
+					plan = mustExecutorConstruct(newProjectionMapOverForTest([]values.Value{field}, inner))
 				} else {
 					plan = mustExecutorConstruct(plans.NewRecordQueryMapPlan(inner, field))
 				}
@@ -491,4 +495,77 @@ func TestExecuteMappedTempTableInsert_DelegatesRequest(t *testing.T) {
 			})
 		}
 	}
+}
+
+// Two binding dimensions run one child per combination, the first source most
+// significant (Java RecordQueryInUnionPlan.getValuesContexts).
+func TestExecuteInUnion_MultiBindingRunsEveryCombination(t *testing.T) {
+	t.Parallel()
+
+	const (
+		firstBinding  = "first"
+		secondBinding = "second"
+	)
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
+		mustTestQOV(t, values.NamedCorrelationIdentifier(firstBinding), values.NotNullLong),
+		mustTestQOV(t, values.NamedCorrelationIdentifier(secondBinding), values.NotNullLong),
+	}))
+	run := func(t *testing.T, comparisonKeys []values.Value, reverse bool) [][]any {
+		t.Helper()
+		inUnion := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(
+			inner, []string{firstBinding, secondBinding}, comparisonKeys, reverse, plans.UnboundedInUnionSize))
+		inUnion = inUnion.WithInSources([][]any{{int64(2), int64(1)}, {int64(20), int64(10), int64(30)}})
+		ctx := context.Background()
+		cursor, err := executeInUnion(ctx, inUnion, nil, EmptyEvaluationContext(), nil, recordlayer.ExecuteProperties{})
+		if err != nil {
+			t.Fatalf("executeInUnion() error = %v", err)
+		}
+		results, err := CollectAll(ctx, cursor)
+		if err != nil {
+			t.Fatalf("CollectAll() error = %v", err)
+		}
+		rows := make([][]any, 0, len(results))
+		for _, r := range results {
+			if r.Positional == nil {
+				t.Fatalf("result %+v is not positional", r)
+			}
+			rows = append(rows, append([]any(nil), r.Positional.Slots...))
+		}
+		return rows
+	}
+
+	t.Run("concat", func(t *testing.T) {
+		t.Parallel()
+		got := run(t, nil, false)
+		want := [][]any{
+			{int64(2), int64(20)},
+			{int64(2), int64(10)},
+			{int64(2), int64(30)},
+			{int64(1), int64(20)},
+			{int64(1), int64(10)},
+			{int64(1), int64(30)},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("rows = %v, want %v", got, want)
+		}
+	})
+	t.Run("merge", func(t *testing.T) {
+		t.Parallel()
+		keys := []values.Value{
+			mustTestFieldOrdinal(t, inner.GetResultValue(), 1),
+			mustTestFieldOrdinal(t, inner.GetResultValue(), 0),
+		}
+		got := run(t, keys, false)
+		want := [][]any{
+			{int64(1), int64(10)},
+			{int64(2), int64(10)},
+			{int64(1), int64(20)},
+			{int64(2), int64(20)},
+			{int64(1), int64(30)},
+			{int64(2), int64(30)},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("rows = %v, want %v", got, want)
+		}
+	})
 }

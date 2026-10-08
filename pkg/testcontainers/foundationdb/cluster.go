@@ -137,7 +137,7 @@ func (c *Cluster) waitForCluster(ctx context.Context, expected int) error {
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		output, err := c.Coordinator.FDBCLIExec(ctx, "status minimal")
-		if err == nil && (strings.Contains(output, "Healthy") || strings.Contains(output, "available")) {
+		if err == nil && DatabaseAvailable(output) {
 			// Count processes in status details.
 			details, _ := c.Coordinator.FDBCLIExec(ctx, "status details")
 			processes := countProcessesInStatus(details)
@@ -150,12 +150,12 @@ func (c *Cluster) waitForCluster(ctx context.Context, expected int) error {
 	return fmt.Errorf("timed out waiting for %d processes in cluster", expected)
 }
 
-// waitForHealthy waits until fdbcli reports "Healthy" or "available".
+// waitForHealthy waits until fdbcli reports the database available.
 func (c *Cluster) waitForHealthy(ctx context.Context) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		output, err := c.Coordinator.FDBCLIExec(ctx, "status minimal")
-		if err == nil && (strings.Contains(output, "Healthy") || strings.Contains(output, "available")) {
+		if err == nil && DatabaseAvailable(output) {
 			return nil
 		}
 		time.Sleep(2 * time.Second)

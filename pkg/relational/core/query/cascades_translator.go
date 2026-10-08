@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -63,12 +64,37 @@ func TranslateToCascadesWithSubqueries(op logical.LogicalOperator, md *recordlay
 // RFC-142) that a bare nil ref (untranslatable → UNSUPPORTED_QUERY) cannot.
 // The caller surfaces it verbatim instead of the generic "could not plan".
 func TranslateToCascadesWithError(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan, error) {
-	return translateWithOwnedInputs(op, md, nil)
+	return translateWithOwnedInputs(op, md, nil, translateQuery)
 }
 
-func translateWithOwnedInputs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, owned map[logical.LogicalOperator]*logical.ExistsInput) (*expressions.Reference, []ScalarSubqueryPlan, error) {
+// TranslateSubqueryToCascades translates a subquery planned on its own (a
+// scalar subquery, an EXISTS body): not a top level, so no sort is stated
+// above it.
+func TranslateSubqueryToCascades(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan, error) {
+	return translateWithOwnedInputs(op, md, nil, translateSubquery)
+}
+
+// TranslateIndexDefinitionToCascades translates an index definition's query.
+// Java's QueryVisitor leaves an index definition's COUNT unadjusted
+// (isForDdl), so its aggregate stays the index's aggregate.
+func TranslateIndexDefinitionToCascades(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan, error) {
+	return translateWithOwnedInputs(op, md, nil, translateIndexDefinition)
+}
+
+// translation is what a translated operator tree is: a top-level query, an
+// index definition (also top level), or a subquery.
+type translation int
+
+const (
+	translateSubquery translation = iota
+	translateQuery
+	translateIndexDefinition
+)
+
+func translateWithOwnedInputs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, owned map[logical.LogicalOperator]*logical.ExistsInput, mode translation) (*expressions.Reference, []ScalarSubqueryPlan, error) {
 	logical.BindCTESources(op, logical.CTERegistry{})
 	t := &cascadesTranslator{
+		forDDL:          mode == translateIndexDefinition,
 		ownedInputs:     owned,
 		md:              md,
 		cteScope:        logical.CTERegistry{},
@@ -76,16 +102,101 @@ func translateWithOwnedInputs(op logical.LogicalOperator, md *recordlayer.Record
 		cteColumnsScope: make(map[*logical.CTEProducer][]values.Field),
 	}
 	ref := t.translateRef(op)
+	if ref != nil && t.translateErr == nil {
+		bodies := t.scopeBodies()
+		bound, err := readSiblingsThroughRows(ref, bodies)
+		if err != nil {
+			return nil, t.scalarSubqueries, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"a source buried in a join cannot be read through it: %v", err)
+		}
+		// Nothing downstream binds a buried source: a read that survived would
+		// evaluate NULL at execution and drop or null-extend rows silently. The
+		// RFC-141 guards name the unsupported EXISTS shapes among such reads.
+		if violations := buriedReadViolations(bound, bodies); len(violations) > 0 {
+			if existsErr := CheckProjectedExistsFolded(bound); existsErr != nil {
+				return nil, t.scalarSubqueries, api.NewError(api.ErrCodeUnsupportedQuery, existsErr.Error())
+			}
+			if buriedErr := CheckBuriedExistentialPredicate(bound); buriedErr != nil {
+				return nil, t.scalarSubqueries, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
+			}
+			return nil, t.scalarSubqueries, api.NewErrorf(api.ErrCodeInternalError,
+				"translated graph reads a buried source: %s", strings.Join(violations, "; "))
+		}
+		ref = bound
+		if mode != translateSubquery {
+			if ref, err = t.topLevelSort(ref); err != nil {
+				return nil, t.scalarSubqueries, err
+			}
+		}
+	}
 	return ref, t.scalarSubqueries, t.translateErr
 }
 
+// topLevelSort states the top of a query as Java's generateSelect does for
+// the top level: the sort of its ORDER BY, or an unsorted sort over a top
+// without one. Go's LIMIT, which Java's SQL lacks, stays above the sort.
+func (t *cascadesTranslator) topLevelSort(ref *expressions.Reference) (*expressions.Reference, error) {
+	top := ref.Get()
+	if limit, ok := top.(*expressions.LogicalLimitExpression); ok {
+		inner, err := t.topLevelSort(limit.GetInner().GetRangesOver())
+		if err != nil {
+			return nil, err
+		}
+		if inner == limit.GetInner().GetRangesOver() {
+			return ref, nil
+		}
+		limited, err := limit.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(inner)})
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "LIMIT over the query's sort: %v", err)
+		}
+		return expressions.InitialOf(limited), nil
+	}
+	if _, sorted := top.(*expressions.LogicalSortExpression); sorted {
+		return ref, nil
+	}
+	if sel, ok := top.(*expressions.SelectExpression); ok && len(sel.GetQuantifiers()) == 1 {
+		if sort, isSort := sel.GetQuantifiers()[0].GetRangesOver().Get().(*expressions.LogicalSortExpression); isSort && t.orderBySorts[sort] {
+			return ref, nil
+		}
+	}
+	switch top.(type) {
+	case *expressions.FullUnorderedScanExpression, *expressions.LogicalTypeFilterExpression:
+		// A bare table read (`SELECT * FROM t`) is still a query block: Java's
+		// generateSelect states it as a Select returning its quantifier's row
+		// under the sort, and the data-access rules match the index candidates
+		// against that Select (`SELECT * FROM T1` reads ISCAN(I1 <,>) under
+		// PREFER_INDEX). Without it the read only ever planned as the primary
+		// scan.
+		q := expressions.ForEachQuantifier(ref)
+		row, err := q.RequireFlowedObjectValue()
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "query has no exact result row: %v", err)
+		}
+		block, err := expressions.NewSelectExpression(row, []expressions.Quantifier{q}, nil)
+		if err != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "query block over a table read: %v", err)
+		}
+		ref = expressions.InitialOf(block)
+	}
+	sort, err := expressions.UnsortedLogicalSortExpression(expressions.ForEachQuantifier(ref))
+	if err != nil {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery, "query has no exact result row: %v", err)
+	}
+	return expressions.InitialOf(sort), nil
+}
+
 type cascadesTranslator struct {
-	md           *recordlayer.RecordMetaData
+	md *recordlayer.RecordMetaData
+	// orderBySorts are the sorts of blocks whose ORDER BY reads a column the
+	// SELECT list drops: the block is a Select over the sort.
+	orderBySorts map[*expressions.LogicalSortExpression]bool
+	// forDDL translates an index definition, whose COUNT is not adjusted.
+	forDDL       bool
 	cteScope     logical.CTERegistry
 	producerRefs map[*logical.CTEProducer]*expressions.Reference
-	// Recursive lowering publishes this immutable row pair with its shared
-	// reference. Each consumer installs its own scoped correlation bridge.
-	recursiveProducerRows map[*logical.CTEProducer]recursiveCTEConsumerRow
+	// recursiveProducerRows is the row a lowered recursive producer's shared
+	// reference publishes to its consumers.
+	recursiveProducerRows map[*logical.CTEProducer]*values.RecordType
 	// ownedInputs are explicit retained edges of an existential composition,
 	// not a translation cache. A child already lowered by its owner keeps its
 	// Reference and exact layout when a containing EXISTS becomes a product.
@@ -99,16 +210,8 @@ type cascadesTranslator struct {
 	// (FieldValue(QOV(cteAlias), col) per column). nil/absent entry → not
 	// column-derivable → the leg cannot anchor (a join over it is untranslatable;
 	// the opaque-merge fallback was retired in RFC-077 7.6).
-	cteColumnsScope map[*logical.CTEProducer][]values.Field
-	// recursiveCTEConsumerRows records the seed-declared and common exact rows
-	// for aliases of a recursive CTE while its main query is translated. The
-	// logical resolver necessarily runs before the recursive fixed point is
-	// typed, so consumer Values can still carry the narrower seed row (most
-	// visibly, a NOT NULL seed literal whose recursive expression is nullable).
-	// The scoped bridge is consulted only when the physical input publishes the
-	// exact common row; unrelated same-named windows and joined carriers decline.
-	recursiveCTEConsumerRows map[values.CorrelationIdentifier][]recursiveCTEConsumerRow
-	scalarSubqueries         []ScalarSubqueryPlan
+	cteColumnsScope  map[*logical.CTEProducer][]values.Field
+	scalarSubqueries []ScalarSubqueryPlan
 	// translateErr records the FIRST translation error that carries a
 	// specific SQL error code the bare nil-ref signal cannot (RFC-142:
 	// AT-ordinality on a non-array source → ErrCodeWrongObjectType). Set once
@@ -234,11 +337,6 @@ type cascadesTranslator struct {
 	wedgeGate map[*logical.LogicalJoin]wedgeGateDecision
 }
 
-type recursiveCTEConsumerRow struct {
-	declaration *values.RecordType
-	common      *values.RecordType
-}
-
 // setTranslateErr records a translation error (first writer wins) so a
 // specific SQL error code survives to the caller. RFC-142.
 func (t *cascadesTranslator) setTranslateErr(err error) {
@@ -293,87 +391,189 @@ func (t *cascadesTranslator) exactFilter(
 	return filter
 }
 
-func (t *cascadesTranslator) exactProjectionWithOutputSchema(
-	projected []values.Value,
-	aliases []string,
-	aliasMinted []bool,
-	aliasSources []values.ProjectionAliasSource,
-	outputNames []string,
-	inner expressions.Quantifier,
-) expressions.RelationalExpression {
-	if outputNames != nil {
-		// A scalar leg is represented by its whole QOV. When the SQL item names
-		// a different column within that leg (UNNEST AT is the canonical case),
-		// record the SQL name as a machinery alias as well as in the frozen
-		// schema. That makes the semantic name visible to memo identity instead
-		// of folding alpha-renamable internal binder spellings into the hash.
-		derived, derivedErr := values.ProjectionResultValue(projected, aliases)
-		if derivedErr == nil && len(derived.Fields) == len(outputNames) {
-			for i := range projected {
-				alias := ""
-				if i < len(aliases) {
-					alias = aliases[i]
-				}
-				if alias != "" || !values.QuantifierFlowsAScalarRow(projected[i]) ||
-					derived.Fields[i].Name == outputNames[i] {
-					continue
-				}
-				if len(aliases) < len(projected) {
-					grown := make([]string, len(projected))
-					copy(grown, aliases)
-					aliases = grown
-				} else {
-					aliases = slices.Clone(aliases)
-				}
-				if len(aliasMinted) < len(projected) {
-					grown := make([]bool, len(projected))
-					copy(grown, aliasMinted)
-					aliasMinted = grown
-				} else {
-					aliasMinted = slices.Clone(aliasMinted)
-				}
-				if len(aliasSources) < len(projected) {
-					grown := make([]values.ProjectionAliasSource, len(projected))
-					copy(grown, aliasSources)
-					aliasSources = grown
-				} else {
-					aliasSources = slices.Clone(aliasSources)
-				}
-				aliases[i] = outputNames[i]
-				aliasMinted[i] = true
-				aliasSources[i] = projectionAliasSourceFromValue(projected[i])
-			}
+// scopeBodies is every derived-table and CTE body translated so far; a body is
+// translated before any block reading it.
+func (t *cascadesTranslator) scopeBodies() scopeBodies {
+	bodies := scopeBodies{}
+	for _, ref := range t.producerRefs {
+		for _, member := range ref.AllMembers() {
+			bodies[member] = true
 		}
 	}
-	projection, err := expressions.NewLogicalProjectionExpressionWithOutputSchema(
-		projected, aliases, aliasMinted, outputNames, inner)
-	if err != nil {
-		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"projection has no exact result row: %v", err))
-		return nil
-	}
-	projection, err = projection.WithAliasSources(aliasSources)
-	if err != nil {
-		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"projection has invalid structured alias sources: %v", err))
-		return nil
-	}
-	return projection
+	return bodies
 }
 
-// projectionAliasSourceFromValue captures a source from a structured Value
-// tree at the instant translator machinery mints a new alias. Later physical
-// Values are not consulted because their root may correctly be `_current`.
-func projectionAliasSourceFromValue(v values.Value) values.ProjectionAliasSource {
-	if qov, ok := values.AsQuantifiedObjectValue(v); ok {
-		return values.NewProjectionAliasSource(qov.Correlation())
+// blockSelect states a SELECT list as Java's query block does
+// (LogicalOperator.generateSimpleSelect): one SelectExpression owning the
+// block's FROM quantifiers and WHERE predicates, whose result value is the
+// projected row. Go builds the WHERE as a filter and a join as its own select
+// below the list; both fold in here when the list reads what they own.
+func (t *cascadesTranslator) blockSelectOf(result values.Value, inner expressions.Quantifier) expressions.RelationalExpression {
+	if sorted, ok := t.sortedBlock(result, inner); ok {
+		return sorted
 	}
-	if fv, ok := values.AsFieldValue(v); ok {
-		if qov, qovOK := values.AsQuantifiedObjectValue(fv.ChildValue()); qovOK {
-			return values.NewProjectionAliasSource(qov.Correlation())
+	return t.foldedBlock(result, inner)
+}
+
+// sortedBlock states an ORDER BY as Java's generateSelect does: the sort ranges
+// over the block's Select, its keys pulled up onto the Select's result
+// (OrderByExpression.pullUp). A key the SELECT list does not project is
+// appended to the block, and one more Select above the sort drops it again.
+func (t *cascadesTranslator) sortedBlock(result values.Value, inner expressions.Quantifier) (expressions.RelationalExpression, bool) {
+	ref := inner.GetRangesOver()
+	if ref == nil || len(ref.AllMembers()) != 1 {
+		return nil, false
+	}
+	sort, ok := ref.Get().(*expressions.LogicalSortExpression)
+	if !ok || sort.IsUnsorted() {
+		return nil, false
+	}
+	list, ok := result.(*values.RecordConstructorValue)
+	if !ok {
+		return nil, false
+	}
+	// The list reads the sort's row through inner; the same row is from's.
+	// The translation is by exact edge (alias and row type), since inner may
+	// share its alias with a source the list reads below it.
+	from := sort.GetInner()
+	innerRow, err := inner.RequireFlowedObjectValue()
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "ORDER BY block input has no exact row: %v", err))
+		return nil, true
+	}
+	fromRow, err := from.RequireFlowedObjectValue()
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "ORDER BY sort input has no exact row: %v", err))
+		return nil, true
+	}
+	// The keys join the list before the block folds, so both are stated in
+	// the folded block's terms (a key reading the input row by ordinal and an
+	// item reading the source through it become the same read). A key equal
+	// to a list item sorts by that item; any other key stays as a column.
+	keys := sort.GetSortKeys()
+	fields := make([]values.RecordConstructorField, 0, len(list.Fields)+len(keys))
+	for _, f := range list.Fields {
+		rebased, rebaseErr := values.TranslateDeclaredEdgeRoot(f.Value, innerRow, fromRow)
+		if rebaseErr != nil {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"ORDER BY block column %q cannot be stated over the sort's input: %v", f.Name, rebaseErr))
+			return nil, true
+		}
+		fields = append(fields, values.RecordConstructorField{Name: f.Name, Value: rebased})
+	}
+	for _, k := range keys {
+		fields = append(fields, values.RecordConstructorField{Name: values.OrdinalFieldName(len(fields)), Value: k.Value})
+	}
+	folded, ok := t.foldedBlock(values.NewRecordConstructorValue(fields...), from).(*expressions.SelectExpression)
+	if !ok || folded == nil {
+		return nil, true
+	}
+	foldedRow, ok := folded.GetResultValue().(*values.RecordConstructorValue)
+	if !ok || len(foldedRow.Fields) != len(fields) {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery, "ORDER BY block folded to a different row"))
+		return nil, true
+	}
+	kept := slices.Clone(foldedRow.Fields[:len(list.Fields)])
+	keyOrdinals := make([]int, len(keys))
+	for i := range keys {
+		key := foldedRow.Fields[len(list.Fields)+i]
+		keyOrdinals[i] = -1
+		for j := range list.Fields {
+			if values.SemanticEqualsUnderAliasMap(key.Value, kept[j].Value, values.EmptyAliasMap()) {
+				keyOrdinals[i] = j
+				break
+			}
+		}
+		if keyOrdinals[i] < 0 {
+			keyOrdinals[i] = len(kept)
+			kept = append(kept, values.RecordConstructorField{Name: values.OrdinalFieldName(len(kept)), Value: key.Value})
 		}
 	}
-	return values.ProjectionAliasSource{}
+	block, err := folded.WithTranslatedValues(values.NewRecordConstructorValue(kept...), folded.GetQuantifiers(), folded.GetPredicates())
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "ORDER BY block has no exact row: %v", err))
+		return nil, true
+	}
+	blockQ := expressions.ForEachQuantifier(expressions.InitialOf(block))
+	blockRow, err := blockQ.RequireFlowedObjectValue()
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "ORDER BY block has no exact row: %v", err))
+		return nil, true
+	}
+	pulledKeys := make([]expressions.SortKey, len(keyOrdinals))
+	for i, k := range keys {
+		pulled, pullErr := values.ResolveFieldOrdinals(blockRow, []int{keyOrdinals[i]})
+		if pullErr != nil {
+			t.setTranslateErr(pullErr)
+			return nil, true
+		}
+		pulledKeys[i] = expressions.SortKey{Value: pulled, Reverse: k.Reverse, NullsFirst: k.NullsFirst}
+	}
+	sorted := t.exactSort(pulledKeys, blockQ)
+	if sorted == nil || len(kept) == len(list.Fields) {
+		return sorted, true
+	}
+	if t.orderBySorts == nil {
+		t.orderBySorts = map[*expressions.LogicalSortExpression]bool{}
+	}
+	t.orderBySorts[sorted.(*expressions.LogicalSortExpression)] = true
+	sortQ := expressions.ForEachQuantifier(expressions.InitialOf(sorted))
+	sortRow, err := sortQ.RequireFlowedObjectValue()
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "ORDER BY sort has no exact row: %v", err))
+		return nil, true
+	}
+	output := make([]values.RecordConstructorField, len(list.Fields))
+	for i, f := range list.Fields {
+		column, colErr := values.ResolveFieldOrdinals(sortRow, []int{i})
+		if colErr != nil {
+			t.setTranslateErr(colErr)
+			return nil, true
+		}
+		output[i] = values.RecordConstructorField{Name: f.Name, Value: column}
+	}
+	return t.foldedBlock(values.NewRecordConstructorValue(output...), sortQ), true
+}
+
+// foldedBlock is the block Select publishing result over inner, folded with the
+// filter or join Select it owns.
+func (t *cascadesTranslator) foldedBlock(result values.Value, inner expressions.Quantifier) expressions.RelationalExpression {
+	sel, err := foldBlock(result, inner, t.scopeBodies())
+	if err != nil {
+		// A projected EXISTS whose existential this block does not own leaves
+		// that read unbound; name the RFC-141 shape rather than the read.
+		if unfolded, selErr := expressions.NewSelectExpression(result, []expressions.Quantifier{inner}, nil); selErr == nil {
+			if existsErr := CheckProjectedExistsFolded(expressions.InitialOf(unfolded)); existsErr != nil {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery, existsErr.Error()))
+				return nil
+			}
+		}
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"query block has no exact result row: %v", err))
+		return nil
+	}
+	return sel
+}
+
+// blockResult is the row a SELECT list publishes: each slot named by its frozen
+// output name when one is given, else by its alias or its own name.
+func (t *cascadesTranslator) blockResult(projected []values.Value, aliases, outputNames []string) values.Value {
+	result, err := values.ProjectionResultValueForOutputSchema(projected, aliases, outputNames)
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"query block has no exact result row: %v", err))
+		return nil
+	}
+	return result
+}
+
+// blockOf is the query block publishing projected over inner.
+func (t *cascadesTranslator) blockOf(projected []values.Value, aliases, outputNames []string, inner expressions.Quantifier) expressions.RelationalExpression {
+	result := t.blockResult(projected, aliases, outputNames)
+	if result == nil {
+		return nil
+	}
+	return t.blockSelectOf(result, inner)
 }
 
 func exactLogicalProjectionOutputNames(p *logical.LogicalProject, projected []values.Value) ([]string, error) {
@@ -393,18 +593,32 @@ func exactLogicalProjectionOutputNames(p *logical.LogicalProject, projected []va
 	return names, nil
 }
 
+// isColumnOrRowReference reports a SELECT item named after what it reads: a
+// column or a whole row.
+func isColumnOrRowReference(v values.Value) bool {
+	if _, isColumn := values.AsFieldValue(v); isColumn {
+		return true
+	}
+	_, isRow := values.AsQuantifiedObjectValue(v)
+	return isRow
+}
+
 // exactLogicalProjectionSlotName is shared by logical row publication and
 // Cascades projection construction. Published aliases and Value slot names,
-// not the executor keys in Projections, determine the physical row. The SQL
-// frontend supplies ordinal aliases for anonymous computed outputs.
+// not the executor keys in Projections, determine the physical row.
 func exactLogicalProjectionSlotName(p *logical.LogicalProject, i int, projectedValue values.Value) string {
 	alias := ""
 	if i < len(p.Aliases) {
 		alias = p.Aliases[i]
 	}
 	// values.ProjectionSlotName is this rule; it is named there so the
-	// consumer that re-derives the natural schema (deriveColumnsFromProjection)
+	// consumer that re-derives the natural schema (the former column derivation)
 	// cannot drift from it.
+	if alias == "" && !isColumnOrRowReference(projectedValue) {
+		// Java leaves a computed item unnamed and its record type names the
+		// field by position (Type.Record.normalizeFields).
+		return values.OrdinalFieldName(i)
+	}
 	name := values.ProjectionSlotName(projectedValue, alias)
 	if alias == "" {
 		// A COLUMN REFERENCE takes the DISPLAY name. The dotted rendering
@@ -462,49 +676,7 @@ func (t *cascadesTranslator) exactProjectionForLogicalProject(
 			"projection has no exact logical output schema: %v", err))
 		return nil
 	}
-	projection := t.exactProjectionWithOutputSchema(
-		projected, p.Aliases, p.AliasMinted, p.AliasSources, outputNames, inner)
-	typed, ok := projection.(*expressions.LogicalProjectionExpression)
-	if !ok || typed == nil {
-		return projection
-	}
-
-	// A named WITH-CTE remains registered while its Main query is translated.
-	// Its authored qualifier is a load-bearing LOGICAL discriminator: without
-	// C.ID, a projection over the CTE can coalesce with an isomorphic derived
-	// projection and later select a child carrying a different exact row. It is
-	// not, however, the SQL result label — unaliased `SELECT C.ID` publishes the
-	// bare leaf ID. Keep those two contracts separate: outputNames above shape
-	// the emitted row, while authoredNames below participate only in memo
-	// identity. Resolve against p.Input as well as cteScope so a real table alias
-	// shadowing an unused same-named CTE is not misclassified.
-	authoredNames := slices.Clone(outputNames)
-	hasAuthoredOverride := false
-	for i := range authoredNames {
-		if i < len(p.Aliases) && p.Aliases[i] != "" {
-			continue
-		}
-		ref := projectionRefAt(p, i)
-		if !ref.Present || !ref.Qualified {
-			continue
-		}
-		scan := logical.FindVisibleScan(p.Input, ref.Qualifier)
-		if scan == nil || logical.ResolveScan(scan, t.cteScope) == nil {
-			continue
-		}
-		authoredNames[i] = strings.ToUpper(ref.Qualifier) + "." + ref.Bare
-		hasAuthoredOverride = authoredNames[i] != outputNames[i] || hasAuthoredOverride
-	}
-	if !hasAuthoredOverride {
-		return typed
-	}
-	withIdentity, identityErr := typed.WithAuthoredOutputIdentity(authoredNames)
-	if identityErr != nil {
-		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"projection has no exact authored output identity: %v", identityErr))
-		return nil
-	}
-	return withIdentity
+	return t.blockOf(projected, p.Aliases, outputNames, inner)
 }
 
 func (t *cascadesTranslator) exactSort(
@@ -574,6 +746,20 @@ func (t *cascadesTranslator) tableColumns(table string) []values.Field {
 // result is DETERMINISTIC even in the (metadata-invalid) case of two record types
 // that differ only by case — map iteration order is not stable. In well-formed
 // metadata proto names are unique, so at most one name matches and the order is moot.
+// storageName is the stored protobuf record-type name of a SQL table, Java's
+// Type.Record.getStorageName (RFC-238 §7c): the plan tree names record types
+// by it at the scan leaf and the DML targets. A table the metadata does not
+// hold keeps its SQL name, and the caller's own resolution reports it.
+func (t *cascadesTranslator) storageName(table string) string {
+	if t.md == nil {
+		return table
+	}
+	if rt := t.resolveRecordType(table); rt != nil {
+		return rt.Name
+	}
+	return table
+}
+
 func (t *cascadesTranslator) resolveRecordType(table string) *recordlayer.RecordType {
 	if rt := t.md.GetRecordType(table); rt != nil {
 		return rt
@@ -632,16 +818,26 @@ func TargetElementType(fd protoreflect.FieldDescriptor) values.Type {
 			fields := make([]values.Field, msg.Fields().Len())
 			for i := range fields {
 				sub := msg.Fields().Get(i)
-				fields[i] = values.Field{
-					Name:      string(sub.Name()),
-					FieldType: TargetTypeForFD(sub),
-					Ordinal:   i,
-				}
+				fields[i] = TargetField(sub, i)
 			}
 			return values.NewRecordType(string(msg.Name()), true, fields)
 		}
 	}
 	return scalarTypeForKind(fd)
+}
+
+// TargetField is a struct field as Java's Type.Record.Field.fromDescriptor
+// (preserving names) has it: the user identifier, the protobuf number and the
+// storage name.
+func TargetField(fd protoreflect.FieldDescriptor, ordinal int) values.Field {
+	f := values.Field{
+		Name:      values.FieldNameForProtoField(fd),
+		FieldType: TargetTypeForFD(fd),
+		Ordinal:   ordinal,
+		Index:     int32(fd.Number()),
+	}
+	f.StorageName = values.ExplicitStorageName(f.Name, string(fd.Name()))
+	return f
 }
 
 // FieldTypeForFD maps a protoreflect.FieldDescriptor to a values.Type, mirroring
@@ -692,8 +888,10 @@ func scalarTypeForKind(fd protoreflect.FieldDescriptor) values.Type {
 // load-bearing for name-based resolution.
 func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Field {
 	switch o := op.(type) {
+	case *logical.LogicalSingleton:
+		return []values.Field{}
 	case *logical.LogicalInlineValues:
-		exact, err := ExactLogicalResultType(o, t.md)
+		exact, err := exactLogicalResultTypeFor(o, t.md, t.forDDL)
 		if err != nil {
 			return nil
 		}
@@ -711,7 +909,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 			return cols
 		}
 		if row, ok := t.recursiveProducerRows[producer]; ok {
-			return row.common.Fields
+			return row.Fields
 		}
 		var cols []values.Field
 		t.inCTEDefiningScope(producer, func() {
@@ -789,7 +987,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		return fields
 	case *logical.LogicalProject:
 		if len(o.Projections) == 0 {
-			return nil
+			return []values.Field{}
 		}
 		// A machinery projection can be positional: aggregate/output-strip
 		// projections deliberately leave ProjectedValues nil and state their
@@ -801,7 +999,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// laundering its one exact slot to UNKNOWN makes the ordinal seed decline
 		// even though the projection has a complete positional contract.
 		var exactFields []values.Field
-		if exactType, err := ExactLogicalResultType(o, t.md); err == nil {
+		if exactType, err := exactLogicalResultTypeFor(o, t.md, t.forDDL); err == nil {
 			if recordType, ok := exactType.(*values.RecordType); ok && len(recordType.Fields) == len(o.Projections) {
 				exactFields = recordType.Fields
 			}
@@ -849,7 +1047,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 	case *logical.LogicalAggregate:
 		// Output columns = the GROUP BY keys followed by the aggregate output
 		// column names (alias when present, else the aggregate text), mirroring
-		// extractOutputColumns / buildAggColumns.
+		// extractOutputColumns / the former column derivation.
 		return t.aggregateOutputColumns(o)
 	case *logical.LogicalCTE:
 		// A CTE-wrapped derived table used as a JOIN LEG (e.g. FROM a,
@@ -913,9 +1111,11 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 // for an underivable shape.
 func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []values.Field {
 	switch o := op.(type) {
+	case *logical.LogicalSingleton:
+		return []values.Field{}
 	case *logical.LogicalProject:
 		if len(o.Projections) == 0 {
-			return nil
+			return []values.Field{}
 		}
 		// Prefer the projection's exact whole-object authority. In particular,
 		// machinery projections may carry InputOrdinals with intentionally nil
@@ -923,7 +1123,7 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 		// derived/CTE unnest collection executable instead of laundering it back
 		// to UNKNOWN at this boundary.
 		var exactFields []values.Field
-		if exactType, err := ExactLogicalResultType(o, t.md); err == nil {
+		if exactType, err := exactLogicalResultTypeFor(o, t.md, t.forDDL); err == nil {
 			if recordType, ok := exactType.(*values.RecordType); ok && len(recordType.Fields) == len(o.Projections) {
 				exactFields = recordType.Fields
 			}
@@ -1253,6 +1453,11 @@ func bindPostAggregateNode(
 		}
 		if matches == 1 {
 			ordinal = first
+		} else if agg.CorrelatedOnlyToOuter(node) {
+			// An enclosing block's value pulls up unchanged: Java's
+			// Expressions.pullUp leaves a constantAliases-correlated value
+			// as it is. It is bound at runtime by the outer quantifier.
+			return node, nil
 		} else if field, isField := values.AsFieldValue(node); isField {
 			if owner, hasOwner := values.AsQuantifiedObjectValue(field.ChildValue()); hasOwner &&
 				owner.Correlation() == outputOwner.Correlation() &&
@@ -1278,6 +1483,29 @@ func bindPostAggregateNode(
 			ordinal, node.Type(), resolved.Type())
 	}
 	return resolved, nil
+}
+
+// adjustCountOnEmpty is Java's LogicalOperator.adjustCountOnEmpty: in an
+// ungrouped query each COUNT becomes COALESCE(count, 0) (SQL 4.16.4), each
+// instance once.
+func adjustCountOnEmpty(v values.Value) values.Value {
+	visited := map[values.Value]bool{}
+	return values.Replace(v, func(node values.Value) values.Value {
+		if visited[node] {
+			return node
+		}
+		visited[node] = true
+		if av, ok := node.(*values.AggregateValue); ok && (av.Op == values.AggCount || av.Op == values.AggCountStar) {
+			return countOnEmpty(av)
+		}
+		return node
+	})
+}
+
+func countOnEmpty(count values.Value) values.Value {
+	args := []values.Value{count, &values.ConstantValue{Value: int64(0), Typ: values.NotNullLong}}
+	typ, _ := values.ScalarFunctionResultType("COALESCE", args)
+	return values.NewScalarFunctionValue("COALESCE", typ, args...)
 }
 
 func aggregateValueNativeOrdinal(av *values.AggregateValue, agg *logical.LogicalAggregate) int {
@@ -1357,7 +1585,7 @@ func underlyingGroupBy(expr expressions.RelationalExpression) *expressions.Group
 }
 
 func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressions.Reference {
-	if input := t.ownedInputs[op]; input != nil {
+	if input := t.ownedInputs[op]; input != nil && input.Reference() != nil {
 		for _, scalar := range input.Scalars() {
 			t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{Alias: scalar.Alias, Plan: scalar.Plan})
 		}
@@ -1390,11 +1618,14 @@ func (t *cascadesTranslator) translateSubqueryRef(op logical.LogicalOperator) *e
 
 // --- Lateral array UNNEST (RFC-142) --------------------------------------
 
-// translateCorrelatedPrimaryUnnest lowers the standalone unnest used by a
-// correlated EXISTS primary source. Its collection was resolved in the outer
-// semantic scope and therefore carries the exact external correlation that the
-// enclosing ForEach quantifier binds. Regular lateral FROM unnests carry
-// the same binding and are translated through translateUnnestJoin.
+// translateCorrelatedPrimaryUnnest lowers the standalone unnest a query block's
+// first FROM item is when it names an enclosing query's array (an EXISTS or
+// scalar subquery over its outer row, a derived table over the FROM's prior
+// sources). Its collection was resolved in the enclosing semantic scope and
+// therefore carries the exact external correlation that the enclosing ForEach
+// quantifier binds: Java's generateCorrelatedFieldAccess, an Explode — with
+// ordinality under AT — as the block's one quantifier. Regular lateral FROM
+// unnests carry the same binding and are translated through translateUnnestJoin.
 func (t *cascadesTranslator) translateCorrelatedPrimaryUnnest(
 	u *logical.LogicalUnnest,
 ) expressions.RelationalExpression {
@@ -1403,18 +1634,52 @@ func (t *cascadesTranslator) translateCorrelatedPrimaryUnnest(
 			"a standalone array unnest requires a resolved outer collection"))
 		return nil
 	}
-	if u.Alias == "" || u.AtAlias != "" {
-		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-			"a correlated EXISTS array source requires one element alias without ordinality"))
-		return nil
-	}
-	explode, err := expressions.NewExplodeExpressionWithOrdinality(u.CorrelatedCollection, false)
+	explode, err := unnestExplode(u.CorrelatedCollection, u)
 	if err != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"correlated array source has no exact exploded element type: %v", err))
 		return nil
 	}
 	return explode
+}
+
+// unnestOwnedByLeft reports whether a lateral unnest's collection is read from
+// a source of the join's left leg. A collection an enclosing query owns
+// (`EXISTS (SELECT 1 FROM h, w.arr AS v)` over an outer w) depends on no source
+// of this FROM: Java's generateCorrelatedFieldAccess makes it one more ForEach
+// quantifier of the block's select, an Explode over the value correlated to
+// the outer query, which is what the bound collection already is
+// (unnestSeedCollection). An unbound collection answers true, so the caller
+// reports it.
+func unnestOwnedByLeft(left logical.LogicalOperator, u *logical.LogicalUnnest) bool {
+	owner, _, _ := boundUnnestCollection(u)
+	if owner == nil {
+		return true
+	}
+	name := owner.Correlation().Name()
+	for binding := range outerBoundAliases(left) {
+		if strings.EqualFold(binding, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// unnestSeedCollection is the collection a lateral unnest's Explode reads
+// beside its left leg: the bound collection rebound onto the left leg's
+// physical row when a source of that leg owns it (unnestBakedRootCollection),
+// else, when the binder resolved it to an enclosing query's source
+// (LogicalUnnest.EnclosingOwner), the bound collection itself, correlated to
+// that query. Any other owner is bound nowhere this FROM can see: nil, a
+// decline.
+func (t *cascadesTranslator) unnestSeedCollection(left logical.LogicalOperator, leftCorr values.CorrelationIdentifier, u *logical.LogicalUnnest) values.Value {
+	if !unnestOwnedByLeft(left, u) {
+		if !u.EnclosingOwner {
+			return nil
+		}
+		return u.CorrelatedCollection
+	}
+	return t.unnestBakedRootCollection(left, leftCorr, u, -1)
 }
 
 // outerBoundAliases collects the source aliases bound by the outer leg of a
@@ -1514,7 +1779,9 @@ func (t *cascadesTranslator) unnestExistsSeedSafe(left logical.LogicalOperator, 
 	if t.unnestExistsScopeCollision {
 		return false
 	}
-	return len(outerBoundAliases(left)) == 1 || t.boxGatesFresh(left)
+	// A pure spine's existential correlation bakes over its merged row like
+	// any of its WHERE refs (rebaseSpineElementRefs + the leg windows).
+	return pureSpine || len(outerBoundAliases(left)) == 1 || t.boxGatesFresh(left)
 }
 
 // nonExistsConjunctRefsOuterLeg reports whether any NON-EXISTS conjunct of pred
@@ -1575,7 +1842,7 @@ func existsInnerScopeCollidesOuter(esqs []logical.ExistsSubquery, outerLegs map[
 		// rename can re-identify contributes no collision. There is no
 		// cross-scope predicate to mis-serve, the plan's internal refs are
 		// self-contained (built by the full planner without outer scopes),
-		// and existsInnerCorrelation rebinds the FOD under esq.Alias — a
+		// and the existential attachment binds the FOD under esq.Alias — a
 		// generated name no SQL leg shares — so the runtime interface is
 		// collision-free even though the plan's SOURCE alias may equal an
 		// outer leg's. A JoinPredicate-nil inner the rename DECLINES (a
@@ -1679,6 +1946,14 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	prevEnclosure := t.inInnerCluster
 	t.inInnerCluster = true
 	defer func() { t.inInnerCluster = prevEnclosure }()
+	// An explicit INNER join's ON over an unnest leg is a WHERE conjunct, and
+	// the builder lifts it there (foldInnerOnExistsIntoWhere); this lowering
+	// reads no ON, so one still on the join would be dropped. Refuse it.
+	if j.OnPredicate != nil || j.OnText != "" {
+		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+			"a lateral unnest joined with an ON clause the builder could not fold into the WHERE"))
+		return nil
+	}
 	owner, _, array := boundUnnestCollection(u)
 	if owner == nil {
 		t.setTranslateErr(boundUnnestBindingError(u))
@@ -1688,26 +1963,23 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		t.setTranslateErr(err)
 		return nil
 	}
-	if !t.unnestUnderExistential && isChainedUnnest(j.Left, u) {
+	if isSpineLink(j.Left, u) {
 		return t.translateChainedUnnestJoin(j, u, prevEnclosure)
 	}
 	outerAlias := sourceBinding(j.Left)
 	elementType := array.ElementType
 
-	// CHAINED unnest (`FROM t, t.arr1 AS v1, t.arr2 AS v2`) lowers to a nested
-	// FlatMap whose inner Explode correlates to the OUTERMOST scan while its
-	// outer is the first unnest's FlatMap — Java's `q3._0._1` deep-tuple shape.
-	// Go's name-keyed merged-row model does not yet thread the first unnest's
-	// element/ordinal columns through the second FlatMap's merged outer row, so
-	// rather than emit silently-wrong rows we reject the multi-unnest shape
-	// cleanly. Single-array unnest (the R5 core) is fully supported.
-	//
-	// This guard runs ONLY now that the right side is confirmed a VALID array
-	// unnest (past the !isArray validation above): a genuine SECOND array unnest
-	// → UNSUPPORTED_QUERY here; an AT-on-non-array or scalar candidate after a
-	// prior unnest already returned the faithful WRONG_OBJECT_TYPE above, so it
-	// never reaches this guard. RFC-142.
-	if containsLateralUnnest(j.Left) {
+	// A further unnest over a left side that already holds one is a spine link
+	// — owned by a prior element, by the spine's single-source bottom (a
+	// sibling, `FROM t, t.arr1 AS v1, t.arr2 AS v2`) or by an enclosing row —
+	// and took the chained lowering above (isSpineLink). What reaches here is
+	// one owned by a source the spine cannot root it at (a leg of a box bottom
+	// other than its single source), refused rather than read off the wrong
+	// window. A standalone first-item unnest on the left is one leg whose
+	// element the seed composes directly (unnestOrdinalSeed's standalone arm),
+	// so a second unnest beside it — over an enclosing array too — is the
+	// ordinary binary shape, not a second link over a merged row.
+	if containsLateralUnnest(j.Left) && standaloneUnnestLeg(j.Left) == nil {
 		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
 			"multiple lateral array unnests in one FROM clause are not yet supported"))
 		return nil
@@ -1800,7 +2072,6 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// The ordinal bake states the same fact structurally — the leg's own
 	// window offset — so the ambiguity never arises and the prefix has nothing
 	// to encode.
-	withOrdinality := u.AtAlias != ""
 	outerQ := expressions.NamedForEachQuantifier(outerCorr, outerRef)
 	var innerQ expressions.Quantifier
 
@@ -1851,8 +2122,8 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		// build, so a name-keyed collection read has nothing to resolve
 		// against (the runtime name fallback is deleted).
 		if resultValue != nil {
-			if baked := t.unnestBakedRootCollection(j.Left, outerCorr, u, -1); baked != nil {
-				bakedExplode, explodeErr := expressions.NewExplodeExpressionWithOrdinality(baked, withOrdinality)
+			if baked := t.unnestSeedCollection(j.Left, outerCorr, u); baked != nil {
+				bakedExplode, explodeErr := unnestExplode(baked, u)
 				if explodeErr != nil {
 					t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 						"lateral unnest collection has no exact element type: %v", explodeErr))
@@ -1988,7 +2259,7 @@ func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnes
 			return node
 		})
 	}
-	return mapPredicateValues(p, rewriteValue)
+	return predicates.TransformEmbeddedValues(p, rewriteValue)
 }
 
 // buriedUnnestLegs collects every lateral-unnest leg in `op` whose element/ordinal
@@ -2145,78 +2416,6 @@ func pushBuriedUnnestPredicateDown(f *logical.LogicalFilter) *logical.LogicalFil
 	}
 }
 
-// mapPredicateValues applies fn to every Value operand of a predicate tree,
-// reconstructing the predicate. Mirrors the shapes the cascades NLJ rule's
-// rebaseOuterLegRefsToMerged handles (Comparison/Value/And/Or/Not); other
-// shapes pass through unchanged. RFC-142.
-func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) values.Value) predicates.QueryPredicate {
-	if p == nil {
-		return p
-	}
-	switch pred := p.(type) {
-	case *predicates.ComparisonPredicate:
-		newOperand := fn(pred.Operand)
-		newCompOperand := pred.Comparison.Operand
-		if newCompOperand != nil {
-			newCompOperand = fn(newCompOperand)
-		}
-		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
-			return p
-		}
-		// Copy the whole Comparison and replace ONLY the rebased RHS operand,
-		// preserving Escape (the LIKE escape rune) AND every other Comparison
-		// subclass field (ParameterName, the Text* tokenizer/analyzer/distance
-		// fields, the DistanceRank vector fields). A partial {Type, Operand,
-		// Escape} reconstruction would silently drop the rest. RFC-142.
-		cmp := pred.Comparison
-		cmp.Operand = newCompOperand
-		return &predicates.ComparisonPredicate{
-			Operand:    newOperand,
-			Comparison: cmp,
-		}
-	case *predicates.ValuePredicate:
-		newVal := fn(pred.Value)
-		if newVal == pred.Value {
-			return p
-		}
-		return predicates.NewValuePredicate(newVal)
-	case *predicates.AndPredicate:
-		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
-		changed := false
-		for i, s := range pred.SubPredicates {
-			subs[i] = mapPredicateValues(s, fn)
-			if subs[i] != s {
-				changed = true
-			}
-		}
-		if !changed {
-			return p
-		}
-		return predicates.NewAnd(subs...)
-	case *predicates.OrPredicate:
-		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
-		changed := false
-		for i, s := range pred.SubPredicates {
-			subs[i] = mapPredicateValues(s, fn)
-			if subs[i] != s {
-				changed = true
-			}
-		}
-		if !changed {
-			return p
-		}
-		return predicates.NewOr(subs...)
-	case *predicates.NotPredicate:
-		newChild := mapPredicateValues(pred.Child, fn)
-		if newChild == pred.Child {
-			return p
-		}
-		return predicates.NewNot(newChild)
-	default:
-		return p
-	}
-}
-
 // unnestSourceCorrelation is the correlation the unnest's WHERE references are
 // qualified by — the AS alias, else the AT alias (mirroring
 // unnestScopeSourceAdder's correlation-name choice). RFC-142.
@@ -2255,6 +2454,8 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 		}
 	}
 	switch o := op.(type) {
+	case *logical.LogicalSingleton:
+		return t.translateSingleton()
 	case *logical.LogicalInlineValues:
 		return t.translateInlineValues(o)
 	case *logical.LogicalScan:
@@ -2334,7 +2535,7 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 			// to the explicit bare projection of its boundary labels — exactly
 			// what the user would write by hand — so it translates as the
 			// verified BARE-PROJECTED derived-boundary class. The wrapper's
-			// LogicalProjectionExpression is a SelectMergeRule boundary; without
+			// block Select carries the boundary's labels; without
 			// it the body's SelectExpression MERGES into a gated parent select
 			// and the dissolved qualified reads fall into the name-model $m
 			// partition machinery, which mis-serves them over the positional
@@ -2412,17 +2613,15 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 			"scan %q has no exact catalog row type", s.Table))
 		return nil
 	}
-	// s.Table is the SQL identifier, and passing it here is the OPEN HALF of
-	// RFC-238 §7c. buildMatchCandidates registers every match candidate under
-	// the STORED protobuf name, and FullUnorderedScanExpression.
-	// EqualsWithoutChildren compares the two record-type lists as strings, so a
-	// table whose name escapes (`MY$TABLE` stored as `MY__1TABLE`) matches no
-	// candidate: no primary-key pushdown, no index access path, ever. Java
-	// translates HERE -- LogicalOperator.generateTableAccess builds its scan
-	// from getAllTableStorageNames -- and that is the decided fix. Pinned, at
-	// the wrong value on purpose, by the two escaped-name yamsql scenarios.
+	// The scan carries the table's STORED protobuf name, as Java's
+	// LogicalOperator.generateTableAccess builds its scan from
+	// getAllTableStorageNames (RFC-238 §7c). buildMatchCandidates registers every
+	// match candidate under the stored name and FullUnorderedScanExpression.
+	// EqualsWithoutChildren compares the record-type lists as strings, so a table
+	// whose name escapes (`MY$TABLE` stored as `MY__1TABLE`) matches its
+	// candidates only through the stored spelling.
 	scan, err := expressions.NewFullUnorderedScanExpression(
-		[]string{s.Table}, values.NewRecordType("", false, cols))
+		[]string{t.storageName(s.Table)}, values.NewRecordType("", false, cols))
 	if err != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"scan %q has no exact result row: %v", s.Table, err))
@@ -2441,7 +2640,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	f = t.foldKnownExists(f)
 	// Every successfully substituted alias was removed from ExistsSubqueries.
 	// Any KnownTruth that remains is an unsupported consumer/boolean shape (for
-	// example a synthetic projected-EXISTS carrier or an EXISTS below OR).
+	// example a synthetic projected-EXISTS carrier).
 	// Raw-semi-joining it would reintroduce the aggregate/pagination cardinality
 	// bug, so decline typed-loud.
 	if hasKnownExistsTruth(f.ExistsSubqueries) {
@@ -2516,6 +2715,26 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	// subtree-derivable); its decouple to a downward enclosure parameter is booked in
 	// TODO.md. translateProjectOverExistsFilter documents why retiring that producer
 	// (`=false`) hands an enclosed derived body this gathered path correct-direction.
+	// A leading unnest over an ENCLOSING query's array takes its root form
+	// first, exactly as translateJoin would commute it: left buried, the push
+	// below would wrap it in a Filter that hides it from that commute.
+	if join, isJ := f.Input.(*logical.LogicalJoin); isJ && f.Predicate != nil {
+		if commuted := commuteLeadingEnclosingUnnest(join); commuted != nil {
+			copied := *f
+			copied.Input = commuted
+			f = &copied
+		}
+	}
+	// A link separated from its owner link joins it first (see
+	// hoistInterleavedSpineLinks), before any probe below reads the input.
+	if join, isJ := f.Input.(*logical.LogicalJoin); isJ && f.Predicate != nil {
+		if hoisted, ok := hoistInterleavedSpineLinks(join); ok {
+			copied := *f
+			copied.Input = hoisted
+			f = &copied
+		}
+	}
+
 	enclosedGathered := false
 	if f.Predicate != nil && len(f.ExistsSubqueries) == 0 && !t.inInnerCluster && !t.unnestUnderExistential {
 		if join, isJ := f.Input.(*logical.LogicalJoin); isJ {
@@ -2575,6 +2794,15 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 					ScalarSubqueries:           f.ScalarSubqueries,
 					CorrelatedScalarSubqueries: f.CorrelatedScalarSubqueries,
 				}
+			}
+		}
+	}
+	// Lateral legs over a spine tip take the WHERE into their one select.
+	if f.Predicate != nil && len(f.ExistsSubqueries) == 0 && len(f.ScalarSubqueries) == 0 &&
+		len(f.CorrelatedScalarSubqueries) == 0 && !t.inInnerCluster && !t.unnestUnderExistential {
+		if join, isJ := f.Input.(*logical.LogicalJoin); isJ {
+			if sel, applies := t.translateLateralLegsOverSpine(join, f.Predicate); applies {
+				return sel
 			}
 		}
 	}
@@ -2715,7 +2943,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			// leg projections, element/AT WHERE, deeper links) carry no box-leg
 			// conjunct and never trip this. Ordinalizing the straddle is a
 			// booked reach extension (TODO.md).
-			if isChainedUnnest(join.Left, bu) {
+			if isSpineLink(join.Left, bu) {
 				if boxJoin := chainedSpineBottomOuterBox(join.Left); boxJoin != nil &&
 					nonExistsConjunctRefsOuterLeg(f.Predicate, outerBoundAliases(boxJoin)) {
 					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
@@ -2866,26 +3094,12 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 				}
 				mergedCorr := values.NamedCorrelationIdentifier(sourceBinding(join.Left))
 				outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
-				if isChainedUnnest(join.Left, u) {
-					// CHAINED unnest (`FROM t, t.a AS x, x.b AS y`): rebase outer-col refs PER
-					// conjunct, gated on PUSHABLE-TO-SCAN (correlated-to ⊆ outer base legs). A
-					// conjunct referencing an in-chain element (x/y) is NOT scan-pushable — it bakes
-					// POSITIONALLY over ordinalLegType(join.Left) (the outer QOV's own type) so an
-					// ofOrdinal resolves on the ordinal row at every level CNF + pushdown lands it
-					// (a name key would strand ordinal -1, so an ordinalized OR malformed-plans). An
-					// outer-col-ONLY conjunct stays lazy (SARG on Scan(t)). A seed with no positional
-					// authority → decline to name-model (correct-or-loud). This path is
-					// linearity-agnostic: ordinalLegType accumulates every link's columns in spine
-					// order regardless of ownership topology, so fork spines rebase identically.
-					// The rebase FORM: every RC seed is ORDINAL now (the name-model
-					// NewAnchoredJoinRecord fallback was deleted with its producer)
-					// and takes the POSITIONAL bake (ofOrdinal).
-					_, ordinalSeed := sel.GetResultValue().(*values.RecordConstructorValue)
+				if isSpineLink(join.Left, u) {
 					// (The box-leg-WHERE-over-a-chained-OUTER-box straddle never reaches
 					// this rebase: the check above loud-rejects it BEFORE the join
 					// translates — see the hoisted check at the top of this merge arm —
 					// so the doomed translation never runs its name-model fallback.)
-					baked, ok := rebaseChainedOuterLegPredicate(pred, outerLegs, mergedCorr, t.ordinalLegType(join.Left), ordinalSeed)
+					baked, ok := t.chainedSpineConjunct(join, sel, pred)
 					if !ok {
 						return nil
 					}
@@ -3193,7 +3407,17 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 		// over an anchored seed and the leg ref strands unbound → 0 rows (review-caught:
 		// the enclosed-CTE-leg regression, this cluster used as a name-model CTE leg).
 		seedWindowed, _ := windowedOrdinalSeed(sel)
-		if recorded, hasRecord := t.unnestGatherBoxLegTypes[join]; hasRecord && gatheredHere {
+		if isSpineLink(join.Left, u) {
+			// A spine link's select is the chained one, exactly as without the
+			// EXISTS beside these conjuncts.
+			for _, p := range rewritten {
+				baked, ok := t.chainedSpineConjunct(join, sel, p)
+				if !ok {
+					return nil
+				}
+				merged = append(merged, baked)
+			}
+		} else if recorded, hasRecord := t.unnestGatherBoxLegTypes[join]; hasRecord && gatheredHere {
 			delete(t.unnestGatherBoxLegTypes, join)
 			toMerge, drift := bakeGatedJoinPredicatesChecked(rewritten, recorded)
 			if drift {
@@ -3300,8 +3524,16 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	//     ever becomes reachable, rather than silently mis-routing it leg-relative.
 	seedWindowed := false
 	var ordMergedType *values.RecordType
+	// A windowless ORDINAL seed — a record element, whose bare whole-object slot
+	// states no executor window — still flows a positional row: an outer-leg ref
+	// bakes at plan time over the seed's own row, where a name key would read
+	// nothing. Element refs stay leg-relative; the FlatMap binds the element.
+	var windowlessSeedType *values.RecordType
 	if s, ok := unnestExpr.(*expressions.SelectExpression); ok {
 		seedWindowed, ordMergedType = windowedOrdinalSeed(s)
+		if _, isRC := s.GetResultValue().(*values.RecordConstructorValue); isRC && !seedWindowed {
+			windowlessSeedType, _ = s.GetResultValue().Type().(*values.RecordType)
+		}
 	}
 	// E-1a: a windowed INNER flat cluster (admitted by
 	// admitExistentialGather) bakes BOTH the JoinPredicate channel AND the buried
@@ -3325,57 +3557,31 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	if planTimeBake {
 		innerElementSlots = unnestSeedElementSlots(unnestExpr)
 	}
+	// Over a spine, the merged row holds every link's element in one
+	// whole-object slot: those refs re-root through the spine's layout before
+	// any leg rebase reads the row by column name.
+	spineElements := func(p predicates.QueryPredicate) (predicates.QueryPredicate, bool) {
+		return p, true
+	}
+	if isSpineLink(join.Left, u) {
+		spineType, _ := unnestExpr.GetResultValue().Type().(*values.RecordType)
+		spineElements = func(p predicates.QueryPredicate) (predicates.QueryPredicate, bool) {
+			return t.rebaseSpineElementRefs(p, join, mergedCorr, spineType)
+		}
+	}
 	existsSubqueries := f.ExistsSubqueries
 	if len(outerLegs) > 0 && mergedCorr.Name() != "" {
 		existsSubqueries = make([]logical.ExistsSubquery, len(f.ExistsSubqueries))
 		for i, esq := range f.ExistsSubqueries {
-			// A MULTI-TABLE EXISTS inner whose correlation references the unnest
-			// ELEMENT (or ordinal) has no working evaluation path: the conjunct
-			// must evaluate below the FirstOrDefault against the inner join's
-			// rows with the element bound from the OUTER row, and the
-			// multi-table threading for that binding does not exist yet — the
-			// predicate silently evaluated NULL and dropped every inner row
-			// (EXISTS ≡ false for all outers). Decline LOUDLY (CORRECT-or-LOUD);
-			// the element-scoped multi-table threading is tracked follow-on work.
-			if len(outerBoundAliases(esq.Plan)) > 1 && esq.JoinPredicate != nil {
-				corrs := predicates.GetCorrelatedToOfPredicate(esq.JoinPredicate)
-				for c := range corrs {
-					name := strings.ToUpper(c.Name())
-					if (u.Alias != "" && name == strings.ToUpper(u.Alias)) ||
-						(u.AtAlias != "" && name == strings.ToUpper(u.AtAlias)) {
-						t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-							"EXISTS with a multi-table FROM referencing the unnest element is not supported"))
-						return nil
-					}
-				}
-			}
-			// A BURIED subquery-internal OUTER-ONLY filter (buildCorrelatedExists
-			// keeps an outer-only conjunct INSIDE the subquery so it evaluates
-			// under the ∃ in both polarities — the NOT-EXISTS pre-filter fix).
-			// Below the FOD an outer-LEG ref has no direct binding here (the
-			// unnest FlatMap binds its merged output, never the leg alias), and
-			// the executor's positional hoist covers RULE-level predicates only —
-			// a buried leg ref would fall to the alias-unchecked frontier
-			// fallback and silently read the INNER row. Make it bindable IN
-			// PLACE, keeping the under-∃ placement:
-			//   - WINDOWED ordinal seed: BAKE the leg ref to an ofOrdinal over
-			//     the typed merged QOV. For the single-alias outer (the only
-			//     reachable shape today) the leg IS the pristine prefix at offset
-			//     0, so the leg-type ordinal IS the merged ordinal; for a
-			//     multi-alias outer (a box, when the guard lifts) the slot is
-			//     resolved WITHIN the qualifier's rt.Legs window
-			//     (rebaseUnnestOuterLegPredicateOrdinal → ordinalSlotInLegWindow),
-			//     so a dup-named column bakes the right alias's slot. A baked
-			//     FrontierPinned outer ref inside an existential inner plan is
-			//     exactly the shape the disabled-build probe binds positionally.
-			//     The translator is the SINGLE rebase authority for buried refs
-			//     (the hoist never sees them), so this cannot double-rebase.
-			//   - ANCHORED seed: the qualified "LEG.COL" read off the merged
-			//     binding — the same rebase the JoinPredicate channel gets.
+			// Rebase external reads inside the child WHERE, including mixed
+			// inner/outer predicates; FirstOrDefault must see the filtered input.
 			if lf, isLF := esq.Plan.(*logical.LogicalFilter); isLF &&
-				len(lf.ExistsSubqueries) == 0 && len(lf.ScalarSubqueries) == 0 &&
-				predicateIsOuterOnly(lf.Predicate, outerBoundAliases(lf.Input)) {
+				len(lf.ExistsSubqueries) == 0 && len(lf.ScalarSubqueries) == 0 && lf.Predicate != nil {
 				rebase := func(original predicates.QueryPredicate) (predicates.QueryPredicate, bool) {
+					original, ok := spineElements(original)
+					if !ok {
+						return nil, false
+					}
 					var rebased predicates.QueryPredicate
 					armCensus := unnestLegMintEnabled()
 					if armCensus {
@@ -3420,6 +3626,15 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 							return nil, false
 						}
 						rebased = baked
+					} else if windowlessSeedType != nil {
+						if armCensus {
+							RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmOrdinalTwin)
+						}
+						baked, ok := t.bakeWindowlessSeedLegRefs(original, join.Left, windowlessSeedType, outerLegs, mergedCorr)
+						if !ok {
+							return nil, false
+						}
+						rebased = baked
 					} else {
 						if armCensus {
 							RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmName)
@@ -3458,11 +3673,24 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			// the translator BAKES the leg ref alias-aware over the seed's windows
 			// here, exactly as the buried refs above (ordinalSlotInLegWindow resolves
 			// each dup-named leg's own slot).
+			var spineOK bool
+			if esq.JoinPredicate, spineOK = spineElements(esq.JoinPredicate); !spineOK {
+				return nil
+			}
 			jpCensus := unnestLegMintEnabled()
 			if jpCensus {
 				RecordUnnestLegMintBranchReached(UnnestLegMintSiteJoinPredNotWindowed)
 			}
-			if !seedWindowed {
+			if windowlessSeedType != nil {
+				if jpCensus {
+					RecordUnnestLegMintArm(UnnestLegMintSiteJoinPredNotWindowed, UnnestLegMintArmOrdinalTwin)
+				}
+				baked, ok := t.bakeWindowlessSeedLegRefs(esq.JoinPredicate, join.Left, windowlessSeedType, outerLegs, mergedCorr)
+				if !ok {
+					return nil
+				}
+				esq.JoinPredicate = baked
+			} else if !seedWindowed {
 				if jpCensus {
 					RecordUnnestLegMintArm(UnnestLegMintSiteJoinPredNotWindowed, UnnestLegMintArmName)
 				}
@@ -3623,7 +3851,7 @@ func rebaseUnnestOuterLegPredicate(
 			return resolved
 		})
 	}
-	return mapPredicateValues(p, rewrite), ok
+	return predicates.TransformEmbeddedValues(p, rewrite), ok
 }
 
 // rebaseChainedOuterLegPredicate rebases outer-leg references PER CONJUNCT for a CHAINED
@@ -3655,21 +3883,51 @@ func rebaseUnnestOuterLegPredicate(
 // ordinalizing 2-CHAIN; a 3+-link chain's ordinalization + its mixed-inner-ref placement (the
 // strand living in pushBuriedUnnestPredicateDown/rewriteUnnestPredicate) is the deeper-nesting
 // slice.
+// chainedSpineConjunct re-roots a WHERE conjunct merged into a spine link's
+// select (join = the spine below the link ⋈ the link; sel = its translation),
+// its element/AT refs already rewritten to what the link's Explode flows.
+//
+// CHAINED unnest (`FROM t, t.a AS x, x.b AS y`): rebase outer-col refs PER
+// conjunct, gated on PUSHABLE-TO-SCAN (correlated-to ⊆ outer base legs). A
+// conjunct referencing an in-chain element (x/y) is NOT scan-pushable — it bakes
+// POSITIONALLY over ordinalLegType(join.Left) (the outer QOV's own type) so an
+// ofOrdinal resolves on the ordinal row at every level CNF + pushdown lands it
+// (a name key would strand ordinal -1, so an ordinalized OR malformed-plans). An
+// outer-col-ONLY conjunct stays lazy (SARG on Scan(t)). A seed with no positional
+// authority → decline (correct-or-loud). This path is linearity-agnostic:
+// ordinalLegType accumulates every link's columns in spine order regardless of
+// ownership topology, so fork spines rebase identically.
+func (t *cascadesTranslator) chainedSpineConjunct(
+	join *logical.LogicalJoin,
+	sel *expressions.SelectExpression,
+	pred predicates.QueryPredicate,
+) (predicates.QueryPredicate, bool) {
+	mergedCorr := values.NamedCorrelationIdentifier(sourceBinding(join.Left))
+	outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
+	_, ordinalSeed := sel.GetResultValue().(*values.RecordConstructorValue)
+	ordType := t.ordinalLegType(join.Left)
+	bakeElements := func(p predicates.QueryPredicate) (predicates.QueryPredicate, bool) {
+		return t.rebaseSpineElementRefs(p, join.Left, mergedCorr, ordType)
+	}
+	return rebaseChainedOuterLegPredicate(pred, outerLegs, mergedCorr, ordType, ordinalSeed, bakeElements)
+}
+
 func rebaseChainedOuterLegPredicate(
 	p predicates.QueryPredicate,
 	outerLegs map[string]struct{},
 	mergedCorr values.CorrelationIdentifier,
 	ordType *values.RecordType,
 	ordinalSeed bool,
+	bakeElements func(predicates.QueryPredicate) (predicates.QueryPredicate, bool),
 ) (predicates.QueryPredicate, bool) {
-	if p == nil || len(outerLegs) == 0 {
+	if p == nil {
 		return p, true
 	}
 	if and, isAnd := p.(*predicates.AndPredicate); isAnd {
 		newSubs := make([]predicates.QueryPredicate, len(and.SubPredicates))
 		changed := false
 		for i, s := range and.SubPredicates {
-			sub, ok := rebaseChainedOuterLegPredicate(s, outerLegs, mergedCorr, ordType, ordinalSeed)
+			sub, ok := rebaseChainedOuterLegPredicate(s, outerLegs, mergedCorr, ordType, ordinalSeed, bakeElements)
 			if !ok {
 				return p, false
 			}
@@ -3685,6 +3943,12 @@ func rebaseChainedOuterLegPredicate(
 	}
 	if chainedPredScanPushable(p, outerLegs) {
 		return p, true // outer-base-leg refs only → pushed to Scan(t); leave lazy (SARG)
+	}
+	// A spine link's element occupies a whole-object slot, not a run of named
+	// columns, so its refs re-root through the spine's own layout first.
+	p, ok := bakeElements(p)
+	if !ok || len(outerLegs) == 0 {
+		return p, ok
 	}
 	// A non-pushable conjunct (references an in-chain element): rebase its outer-leg refs onto
 	// the merged row. Over an ORDINAL seed, bake POSITIONALLY over ordType so an ofOrdinal
@@ -3929,7 +4193,7 @@ func rebaseUnnestOuterLegPredicateOrdinal(
 			return baked
 		})
 	}
-	np := mapPredicateValues(p, rewrite)
+	np := predicates.TransformEmbeddedValues(p, rewrite)
 	return np, ok
 }
 
@@ -4011,7 +4275,7 @@ func bakeUnnestElementRefOrdinal(
 			return baked
 		})
 	}
-	return mapPredicateValues(p, rewrite)
+	return predicates.TransformEmbeddedValues(p, rewrite)
 }
 
 // unnestExistsRefSurvivesUnbaked reports whether any OUTER-leg or ELEMENT (merged
@@ -4020,6 +4284,22 @@ func bakeUnnestElementRefOrdinal(
 // predicateRefsBuriedLeg assert). Over the INNER cluster's NLJ layout such a ref
 // mis-resolves SILENTLY (0 rows), so the caller declines to name-model rather than
 // ship a half-baked tree. Inner-table refs pass through (they resolve inside ∃).
+// bakeWindowlessSeedLegRefs bakes an existential correlation's outer-leg refs
+// over a windowless ordinal seed's row, failing closed when one survives.
+func (t *cascadesTranslator) bakeWindowlessSeedLegRefs(
+	p predicates.QueryPredicate,
+	leftJoin logical.LogicalOperator,
+	seedType *values.RecordType,
+	outerLegs map[string]struct{},
+	mergedCorr values.CorrelationIdentifier,
+) (predicates.QueryPredicate, bool) {
+	baked, ok := rebaseUnnestOuterLegPredicateOrdinal(p, t.ordinalLegType(leftJoin), seedType, outerLegs, mergedCorr)
+	if !ok || unnestExistsRefSurvivesUnbaked(baked, outerLegs, values.CorrelationIdentifier{}) {
+		return p, false
+	}
+	return baked, true
+}
+
 func unnestExistsRefSurvivesUnbaked(
 	p predicates.QueryPredicate,
 	outerLegs map[string]struct{},
@@ -4060,18 +4340,10 @@ func unnestExistsRefSurvivesUnbaked(
 			return true
 		})
 	}
-	// Read-only walk (no throwaway tree): WalkPredicate descends And/Or/Not; the
-	// value-carrying leaves are ComparisonPredicate + ValuePredicate (mirroring
-	// mapPredicateValues' value sites).
-	predicates.WalkPredicate(p, func(qp predicates.QueryPredicate) bool {
-		switch pred := qp.(type) {
-		case *predicates.ComparisonPredicate:
-			scanVal(pred.Operand)
-			scanVal(pred.Comparison.Operand)
-		case *predicates.ValuePredicate:
-			scanVal(pred.Value)
-		}
-		return !survives
+	// Inspect the same embedded values as the rewriter, without rebuilding.
+	predicates.TransformEmbeddedValues(p, func(v values.Value) values.Value {
+		scanVal(v)
+		return v
 	})
 	return survives
 }
@@ -4105,27 +4377,6 @@ func (t *cascadesTranslator) bakeInnerExistsPredicateOrdinal(
 		return p, false
 	}
 	return baked, true
-}
-
-// predicateIsOuterOnly reports whether a predicate references at least one
-// correlation and NONE of them is in innerAliases — the discriminator for a
-// subquery-internal OUTER-ONLY filter (buildCorrelatedExists places one; an
-// UNCORRELATED subquery's own filter references its inner sources and must
-// never match). Nil/reference-free predicates are not outer-only.
-func predicateIsOuterOnly(p predicates.QueryPredicate, innerAliases map[string]struct{}) bool {
-	if p == nil {
-		return false
-	}
-	corrs := predicates.GetCorrelatedToOfPredicate(p)
-	if len(corrs) == 0 {
-		return false
-	}
-	for c := range corrs {
-		if _, isInner := innerAliases[strings.ToUpper(c.Name())]; isInner {
-			return false
-		}
-	}
-	return true
 }
 
 // andOf combines predicates into a single QueryPredicate: nil for an empty list,
@@ -4205,14 +4456,7 @@ func (t *cascadesTranslator) buildExistentialSelect(
 		}
 		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
 		quantifiers = append(quantifiers, existQ)
-		// Register the existential inner under its UNIQUE alias (esq.Alias) and
-		// rebase the join predicate onto it, so the inner correlation can never
-		// collide with the outer source alias (the alias-shadow regression).
-		innerCorrName, joinPred := t.existsInnerCorrelation(esq)
-		innerCorrNames = append(innerCorrNames, innerCorrName)
-		if joinPred != nil {
-			allPreds = append(allPreds, joinPred)
-		}
+		innerCorrNames = append(innerCorrNames, esq.Alias.Name())
 	}
 
 	var sourceAliases []string
@@ -4399,11 +4643,7 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 					return nil
 				}
 				quants = append(quants, expressions.NamedExistentialQuantifier(esq.Alias, subRef))
-				innerCorrName, joinPred := t.existsInnerCorrelation(esq)
-				if joinPred != nil {
-					preds = append(preds, joinPred)
-				}
-				srcAliases = append(srcAliases, innerCorrName)
+				srcAliases = append(srcAliases, esq.Alias.Name())
 			}
 			return t.exactSelectWithAliases(resultValue, quants, preds, srcAliases)
 		}
@@ -4475,11 +4715,7 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 			}
 			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
 			quantifiers = append(quantifiers, existQ)
-			innerCorrName, joinPred := t.existsInnerCorrelation(esq)
-			if joinPred != nil {
-				allPreds = append(allPreds, joinPred)
-			}
-			sourceAliases = append(sourceAliases, innerCorrName)
+			sourceAliases = append(sourceAliases, esq.Alias.Name())
 		}
 	}
 
@@ -4642,14 +4878,14 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 		} else if _, isField := values.AsFieldValue(v); !isField {
 			// An UNALIASED COMPUTED (non-field) expression — `id + 1`, `COUNT(*)`,
 			// CASE, etc. The normal projection path names it with the GENERATED
-			// positional `_i` (deriveProjectionColumnDef's `_idx` rule;
-			// executeProjection also stores the value under the `_i` key). Using the
+			// positional `_i` (the former column derivation's `_idx` rule;
+			// executeMap also stores the value under the `_i` key). Using the
 			// expression TEXT (`ID + 1`) here would change Rows.Columns() from `_0`
 			// to `ID + 1` purely because an EXISTS was added — and break a downstream
 			// positional reference to the generated column. Use the SAME positional
 			// name so the folded column's record key + Name + Label are identical to
 			// the non-EXISTS control on every axis (RecordConstructorValue.Evaluate
-			// keys the row by f.Name; foldedColumnDef derives Name/Label from it).
+			// keys the row by f.Name; the former column derivation derives Name/Label from it).
 			name = "_" + strconv.Itoa(i)
 		}
 		fields[i] = values.RecordConstructorField{Name: name, Value: v}
@@ -4811,8 +5047,6 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 		}
 		projVals := make([]values.Value, outputCount)
 		projAliases := make([]string, outputCount)
-		projMinted := make([]bool, outputCount)
-		projSources := make([]values.ProjectionAliasSource, outputCount)
 		for i := 0; i < outputCount; i++ {
 			// FieldValue.Field MUST equal the fold's f.Name exactly: the folded
 			// output record is keyed by f.Name and FieldValue.Evaluate does an
@@ -4832,16 +5066,6 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			if i < len(p.Aliases) {
 				projAliases[i] = p.Aliases[i]
 			}
-			// The alias is reused, so its PROVENANCE is reused with it —
-			// truncated to the same outputCount. Copying the name without the
-			// marker would relabel a machinery datum key as something the user
-			// asked for.
-			if i < len(p.AliasMinted) {
-				projMinted[i] = p.AliasMinted[i]
-			}
-			if i < len(p.AliasSources) {
-				projSources[i] = p.AliasSources[i]
-			}
 		}
 		outputNames, outputErr := exactLogicalProjectionOutputNames(p, projVals)
 		if outputErr != nil {
@@ -4849,8 +5073,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 				"projected-EXISTS cleanup has no exact logical output schema: %v", outputErr))
 			return nil
 		}
-		expr = t.exactProjectionWithOutputSchema(
-			projVals, projAliases, projMinted, projSources, outputNames, cleanupQ)
+		expr = t.blockOf(projVals, projAliases, outputNames, cleanupQ)
 		if expr == nil {
 			return nil
 		}
@@ -5741,12 +5964,27 @@ func commonUnionResultRow(records []*values.RecordType) (*values.RecordType, boo
 		fields[ordinal] = values.Field{Name: name, Ordinal: ordinal, FieldType: common}
 	}
 	commonRow := &values.RecordType{Fields: fields}
+	aligned := true
 	for _, record := range records {
 		if !record.Equals(commonRow) {
-			return commonRow, true, nil
+			aligned = false
+			break
 		}
 	}
-	return commonRow, false, nil
+	if aligned {
+		return commonRow, false, nil
+	}
+	// The normalization projection uses unique physical field names. Derive
+	// the same private row contract here; repeated SQL labels remain in
+	// ExactLogicalOutputLabels and are never replaced by these datum keys.
+	names := make([]string, len(fields))
+	for i, field := range fields {
+		names[i] = field.Name
+	}
+	for i, name := range values.DedupFieldNames(names) {
+		fields[i].Name = name
+	}
+	return commonRow, true, nil
 }
 
 // normalizeUnionLeg re-emits one branch by exact ordinal under the UNION's
@@ -5780,28 +6018,20 @@ func (t *cascadesTranslator) normalizeUnionLeg(
 		}
 		outputNames[i] = field.Name
 	}
-	projection, err := expressions.NewLogicalProjectionExpressionWithOutputSchema(
-		projected, nil, nil, outputNames, q)
-	if err != nil {
-		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"UNION leg normalization has no exact result row: %v", err))
+	result := t.blockResult(projected, nil, outputNames)
+	if result == nil {
 		return nil
 	}
-	if !projection.GetResultValue().Type().Equals(commonRow) {
+	if !result.Type().Equals(commonRow) {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"UNION leg normalization produced %s, want %s",
-			projection.GetResultValue().Type(), commonRow))
+			"UNION leg normalization produced %s, want %s", result.Type(), commonRow))
 		return nil
 	}
-	return projection
+	return t.blockSelectOf(result, q)
 }
 
 // exactUnionSlotValue injects the implicit promotion to a UNION column's
-// maximum type. PromoteValue deliberately preserves a NOT NULL child's
-// nullability. When another leg makes the common column nullable, a fixed-arm
-// PickValue with an unreachable typed-NULL alternative states that exact
-// common CASE result without changing the selected value or using CAST
-// semantics.
+// maximum type, including the target's nullability (PromoteValue.getResultType).
 func exactUnionSlotValue(value values.Value, target values.Type) (values.Value, error) {
 	if value == nil || target == nil {
 		return nil, fmt.Errorf("source Value or target type is nil")
@@ -5811,20 +6041,9 @@ func exactUnionSlotValue(value values.Value, target values.Type) (values.Value, 
 		if maximum := values.MaximumType(result.Type(), target); maximum == nil || !maximum.Equals(target) {
 			return nil, fmt.Errorf("source type %s is not promotable to %s", result.Type(), target)
 		}
-		result = values.NewPromoteValue(result, target)
+		return values.NewPromoteValueChecked(result, target)
 	}
-	if result.Type().Equals(target) {
-		return result, nil
-	}
-	if !target.IsNullable() || result.Type().IsNullable() ||
-		!values.WithNullability(result.Type(), true).Equals(target) {
-		return nil, fmt.Errorf("promotion produced %s instead of %s", result.Type(), target)
-	}
-	return values.NewPickValue(
-		values.LiteralValue(int64(0)),
-		[]values.Value{result, values.NewNullValue(target)},
-		target,
-	), nil
+	return result, nil
 }
 
 // gatheredSeedBake carries the positional-bake context for a gathered ordinal-seed
@@ -6075,7 +6294,26 @@ func findWindowedSeed(expr expressions.RelationalExpression, seen map[*expressio
 				return rc, slots, true
 			}
 		}
-		quants = e.GetQuantifiers()
+		// A derived lateral source wraps its Explode in a projection/filter,
+		// but the enclosing Select still publishes the same ordinal leg seed.
+		// Pull its source fields onto the combined row just as for a bare
+		// Explode; otherwise the group's right-leg alias binds the entire row.
+		if rc, ok := e.GetResultValue().(*values.RecordConstructorValue); ok {
+			if windows, _ := values.OrdinalSeedLegWindows(rc); windows != nil {
+				return rc, nil, true
+			}
+		}
+		// Only an identity result preserves a child's row coordinates. In
+		// particular, existential quantifiers publish witnesses, not this row.
+		owner, identity := values.AsQuantifiedObjectValue(e.GetResultValue())
+		if !identity {
+			return nil, nil, false
+		}
+		for _, q := range e.GetQuantifiers() {
+			if q.GetAlias() == owner.Correlation() {
+				quants = append(quants, q)
+			}
+		}
 	case *expressions.LogicalDistinctExpression:
 		quants = e.GetQuantifiers()
 	case *expressions.LogicalSortExpression:
@@ -6129,8 +6367,6 @@ func positionalGatherUnbaked(expr expressions.RelationalExpression, seen map[*ex
 		quants = e.GetQuantifiers()
 	case *expressions.LogicalDistinctExpression:
 		quants = e.GetQuantifiers()
-	case *expressions.LogicalProjectionExpression:
-		quants = e.GetQuantifiers()
 	case *expressions.LogicalLimitExpression:
 		quants = e.GetQuantifiers()
 	case *expressions.LogicalSortExpression:
@@ -6158,60 +6394,6 @@ func positionalGatherUnbaked(expr expressions.RelationalExpression, seen map[*ex
 	return false
 }
 
-// governingProjection returns the outermost LogicalProjectionExpression that determines the
-// aggregate input row's column names, reachable through passthrough wrappers (a passthrough
-// Select, DISTINCT, LIMIT), or nil when none governs (a pure positional gather — whose
-// unresolved name read the executor already refuses LOUD, so the aggregate floor need not).
-func governingProjection(expr expressions.RelationalExpression, seen map[*expressions.Reference]bool) *expressions.LogicalProjectionExpression {
-	if expr == nil {
-		return nil
-	}
-	if p, ok := expr.(*expressions.LogicalProjectionExpression); ok {
-		return p
-	}
-	var quants []expressions.Quantifier
-	switch e := expr.(type) {
-	case *expressions.SelectExpression:
-		quants = e.GetQuantifiers()
-	case *expressions.LogicalDistinctExpression:
-		quants = e.GetQuantifiers()
-	case *expressions.LogicalLimitExpression:
-		quants = e.GetQuantifiers()
-	case *expressions.LogicalSortExpression:
-		quants = e.GetQuantifiers()
-	case *expressions.LogicalUnionExpression:
-		quants = e.GetQuantifiers()
-	default:
-		return nil
-	}
-	for _, q := range quants {
-		ref := q.GetRangesOver()
-		if seen[ref] {
-			continue
-		}
-		seen[ref] = true
-		if p := governingProjection(ref.Get(), seen); p != nil {
-			return p
-		}
-	}
-	return nil
-}
-
-// projectionOutputColumnNames returns the output-column names a projection emits,
-// VERBATIM — the alias when present, else the derived name of the projected Value
-// (values.OutputColumnName, the same authority the physical projection uses).
-// These are the names a name-model group key resolves against.
-//
-// "UPPER-cased" is what this said, and it was never this function's decision to
-// make: it returns GetOutputNames() unchanged, and that method's own doc says
-// "the exact… slot names". The sentence mattered because it is the `cols` side
-// of nameResolvesInColumns four lines below — a reader trusting it would
-// conclude that folding the KEY alone was symmetric, which is precisely the
-// mistake that gate shipped.
-func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) []string {
-	return proj.GetOutputNames()
-}
-
 // expressionOutputColumns derives the OUTPUT column names, in ordinal order, of
 // a translated expression's row — the plan-time layout authority baked
 // consumer references resolve flat references against (Java's
@@ -6224,9 +6406,6 @@ func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) 
 // takes the doc at its word.
 //
 // Coverage:
-//   - LogicalProjectionExpression: the projection's output names
-//     (values.OutputColumnName — the same authority the executor's posNames
-//     derivation reads, so the baked ordinal and the emitted slot agree).
 //   - GroupByExpression: [groupKeys..., aggregates...] via
 //     GroupByOutputColumnNames (the aggregateCursor's emission order).
 //   - LogicalUnion/RecursiveUnion: the FIRST leg's layout (legs are
@@ -6238,14 +6417,12 @@ func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) 
 func expressionOutputColumns(expr expressions.RelationalExpression) []string {
 	for expr != nil {
 		switch e := expr.(type) {
-		case *expressions.LogicalProjectionExpression:
-			return projectionOutputColumnNames(e)
 		case *expressions.GroupByExpression:
-			return expressions.GroupByOutputColumnNames(e.GetGroupingKeys(), e.GetAggregates())
+			return e.OutputColumnNames()
 		case *expressions.SelectExpression:
 			// A SELECT whose result value is a RECORD CONSTRUCTOR flows one
 			// output column per RC field, named by the field (the RC is the
-			// row authority — executeProjection/computeResultLegs emit slots
+			// row authority — executeMap/computeResultLegs emit slots
 			// in RC field order). A non-RC result value (a bare QOV
 			// passthrough) has no derivable flat layout here.
 			if rc, isRC := e.GetResultValue().(*values.RecordConstructorValue); isRC {
@@ -6335,60 +6512,6 @@ func projectionRefAt(p *logical.LogicalProject, i int) logical.ColumnRef {
 	return p.ProjectionRefs[i]
 }
 
-// nameResolvesInColumns reports whether the group-key name resolves EXACTLY
-// against the input row's output columns.
-//
-// THE RULE IS "A GATE FOLDS EXACTLY AS THE READ IT GUARDS FOLDS", and getting
-// that wrong in either direction is a bug this function has now had both ways.
-// The read it guards is fieldRequestByName (values/field_value.go), which is
-// `fields[i].name == request.name` — byte-exact. So this must be byte-exact
-// too:
-//
-//   - It used to fold ONE side, `strings.ToUpper(key)` against a raw `cols`.
-//     That worked only while every output name was already upper. A projection
-//     publishes its columns verbatim now, so a `Region` key missed a `Region`
-//     column and hard-refused with `no exact output-slot binding` — a query
-//     Java answers. Loud, not a wrong answer, which is why it went unseen.
-//   - Folding BOTH sides fixes that case and buys a worse one: it is strictly
-//     WIDER than the guarded read, so a `REGION` key over a `Region` column is
-//     admitted here and then MISSES down there. A gate that admits what its
-//     read refuses moves the failure somewhere less legible.
-//
-// "It is a presence gate, so it may fold" was the argument for EqualFold, and
-// it is the wrong invariant twice over. The question is not what KIND of
-// predicate this is but which read it stands in front of — and this is not a
-// lookup at all, it is a FAIL-CLOSED REFUSAL (see the caller): loosening it
-// does not make a query resolve, it moves the query out of a loud refusal into
-// the name-model fallback, which is only safe if that fallback folds the same
-// way. Nothing established that.
-//
-// AGREEING WITH THAT READ TAKES MORE THAN BYTE-EXACTNESS, which is the part a
-// previous revision of this comment got wrong while congratulating itself on
-// the rest. fieldRequestByName COUNTS matches and refuses `>1` with
-// FieldAmbiguousName. A first-match bool therefore answers "resolves" for a row
-// carrying the name TWICE, and the read below then refuses it — the same
-// "admits what its read refuses" failure the fold produced, surviving at
-// exactness. So this counts too, and resolves only on exactly one.
-//
-// The duplicate is reachable, and NOT because of folding: a projection may
-// legitimately publish two slots with one name (the aggregate's native row
-// documents exactly that, leaving SQL de-duplication to the projection above).
-// An earlier note here framed multiplicity as something the verbatim conversion
-// unmasked; it was always there, and only the case-differing pair was new.
-//
-// Every arm is pinned in TestNameResolvesInColumns. It had no test at all when
-// it was loosened, which is how a one-line change to a gate became two
-// regressions in two directions.
-func nameResolvesInColumns(key string, cols []string) bool {
-	matches := 0
-	for _, c := range cols {
-		if c == key {
-			matches++
-		}
-	}
-	return matches == 1
-}
-
 func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.RelationalExpression {
 	// The translator's INPUT CONTRACT: a Sort never arrives over a Project.
 	// Every logical builder defers the SELECT-list projection PAST the sort
@@ -6454,7 +6577,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	sortGB := underlyingGroupBy(innerRef.Get())
 	var sortGBNames []string
 	if sortGB != nil {
-		sortGBNames = expressions.GroupByOutputColumnNames(sortGB.GetGroupingKeys(), sortGB.GetAggregates())
+		sortGBNames = sortGB.OutputColumnNames()
 	}
 	// A sort NEVER sits over the grouped select's reshaping projection: both
 	// builders defer that projection PAST the sort (`postSortStripProj`), which
@@ -6783,14 +6906,6 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	if innerRef == nil {
 		return nil
 	}
-	// A retained recursive producer can be lowered lazily by this input scan,
-	// without a declaration envelope enclosing the projection. Its row bridge
-	// belongs to these selected consumers for the duration of this projection.
-	var recursiveBindings []values.CorrelationIdentifier
-	for producer, row := range t.recursiveProducerRows {
-		recursiveBindings = append(recursiveBindings, t.pushRecursiveCTEConsumerRows(p.Input, producer, row.declaration, row.common)...)
-	}
-	defer t.popRecursiveCTEConsumerRows(recursiveBindings)
 	projectionQ := t.namedQuantifier(sourceBinding(p.Input), innerRef)
 	projectionInput, flowedErr := projectionQ.RequireFlowedObjectValue()
 	if flowedErr != nil {
@@ -6828,23 +6943,6 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 			"projection slot %d has no resolved Value", i))
 		return nil
 	}
-	// A recursive CTE's main query was resolved against the seed declaration
-	// before the recursive fixed point could widen it. Retarget only that
-	// explicitly scoped source onto the physical common row. The bridge
-	// re-resolves complete ordinal paths and admits MaximumType widening only;
-	// ordinary derived/name normalization below remains exact-name-only.
-	for i := range projected {
-		if projected[i] == nil {
-			continue
-		}
-		normalized, normalizeErr := t.normalizeRecursiveCTEConsumerValue(projected[i])
-		if normalizeErr != nil {
-			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-				"recursive CTE projection slot %d cannot adopt its common output row: %v", i, normalizeErr))
-			return nil
-		}
-		projected[i] = normalized
-	}
 	// A derived boundary may publish SQL output names in its logical contract
 	// that differ from the physical projection's producer-local names. Duplicate
 	// aliases ([X, X, Y] -> [X, X_2, Y]) and a delimited lower-case alias
@@ -6854,7 +6952,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	// proves that correlation, width, ordinals, record/leaf nullability, and every
 	// exact leaf type agree; only top-level field names may differ.
 	if logicalDerivedProjectionInput(p.Input) {
-		logicalInputType, logicalTypeErr := ExactLogicalResultType(p.Input, t.md)
+		logicalInputType, logicalTypeErr := exactLogicalResultTypeFor(p.Input, t.md, t.forDDL)
 		if logicalTypeErr == nil && !values.FlowedTypeEquals(projectionInput, logicalInputType) {
 			declaration, declarationErr := values.NewQuantifiedObjectValue(
 				projectionInput.Correlation(), logicalInputType)
@@ -6914,11 +7012,12 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 				"post-aggregate projection has no GroupBy output row"))
 			return nil
 		}
-		if names := expressions.GroupByOutputColumnNames(gb.GetGroupingKeys(), gb.GetAggregates()); len(names) != nativeWidth {
+		if names := gb.OutputColumnNames(); len(names) != nativeWidth {
 			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
 				"post-aggregate projection disagrees with the GroupBy output width"))
 			return nil
 		}
+		adjust := !t.forDDL && len(exactAggregate.GroupKeys) == 0
 		for i, ordinal := range p.AggregateOutputOrdinals {
 			switch {
 			case ordinal >= 0 && ordinal < nativeWidth:
@@ -6928,12 +7027,18 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 						"post-aggregate projection slot %d does not resolve: %v", ordinal, err))
 					return nil
 				}
+				if adjust && ordinal >= len(exactAggregate.GroupKeys) && strings.EqualFold(exactAggregate.Calls[ordinal-len(exactAggregate.GroupKeys)].Func, "COUNT") {
+					resolved = countOnEmpty(resolved)
+				}
 				projected[i] = resolved
 			case ordinal == -1:
 				if projected[i] == nil {
 					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
 						"computed post-aggregate output did not resolve to a Value"))
 					return nil
+				}
+				if adjust {
+					projected[i] = adjustCountOnEmpty(projected[i])
 				}
 				bound, err := bindPostAggregateValue(projected[i], exactAggregate, projectionInput)
 				if err != nil {
@@ -7613,7 +7718,6 @@ func (t *cascadesTranslator) translateFilterWithCorrelatedScalar(f *logical.Logi
 	// machinery-named — no `AS` reached this projection. Where that internal
 	// name is a leg-qualified key, the result-set label must still report the
 	// bare column, which is what the provenance buys.
-	aliasMinted := make([]bool, len(outerType.Fields))
 	for i := range outerType.Fields {
 		fv, err := values.ResolveFieldOrdinals(outputQOV, []int{i})
 		if err != nil {
@@ -7623,20 +7727,8 @@ func (t *cascadesTranslator) translateFilterWithCorrelatedScalar(f *logical.Logi
 		}
 		projected[i] = fv
 		aliases[i] = outerType.Fields[i].Name
-		aliasMinted[i] = true
 	}
-	projection, err := expressions.NewLogicalProjectionExpressionWithAliasProvenance(
-		projected,
-		aliases,
-		aliasMinted,
-		outputQ,
-	)
-	if err != nil {
-		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"correlated scalar WHERE cleanup has no exact output row: %v", err))
-		return nil
-	}
-	return projection
+	return t.blockOf(projected, aliases, nil, outputQ)
 }
 
 func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expressions.RelationalExpression {
@@ -7790,33 +7882,6 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			}
 		}
 	}
-	// Correct-or-loud floor for the PROJECTING-CTE-aggregate class: the bake was SKIPPED
-	// (findWindowedSeed couldn't reach an identity-wrapped seed) but the input is a
-	// POSITIONAL ordinal gather under a RESHAPING projection. The name-model fallback reads
-	// each group key by NAME over the projection's output columns — which is CORRECT for a
-	// BARE projection (`SELECT "AID"` names the output "AID", matching the D-stripped key
-	// "AID") but silently NULL for a QUALIFIED/mis-naming one (`SELECT A."AID"` names the
-	// output "A.AID", which the key "AID" cannot match). So refuse LOUD only when a group
-	// key does NOT resolve against the governing projection's output-column names; a
-	// name-resolvable (bare) projection is kept (pre-existing correct behavior,
-	// review-caught). Both sub-cases still need projected-output-layout
-	// ordinalization (Java answers GROUP BY over a projecting derived source,
-	// GroupByQueryTests:699) — booked as a TODO.
-	if bake.seedQOV == nil && positionalGatherUnbaked(innerRef.Get(), map[*expressions.Reference]bool{}) {
-		if proj := governingProjection(innerRef.Get(), map[*expressions.Reference]bool{}); proj != nil {
-			names := projectionOutputColumnNames(proj)
-			for i, key := range a.GroupKeys {
-				if projectedCTEKeys[i] {
-					continue
-				}
-				if key.Value == nil || !nameResolvesInColumns(key.Display, names) {
-					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-						"aggregate GROUP BY over a projected ordinal gather has no exact output-slot binding"))
-					return nil
-				}
-			}
-		}
-	}
 	aggSpecs := make([]expressions.AggregateSpec, 0, len(a.Calls))
 	for i := range a.Calls {
 		// STRUCTURED aggregate info only (RFC-180 F-1): the builders capture
@@ -7837,7 +7902,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			// established error surface.
 			return nil
 		}
-		spec := expressions.AggregateSpec{Function: fn, OperandName: call.Operand}
+		spec := expressions.AggregateSpec{Function: fn, OperandName: call.Operand, IgnoreNulls: call.IgnoreNulls, Limit: call.Limit}
 		// The resolved operand (set by upgradeAggregateOperands /
 		// buildCorrelatedScalar via resolver.WalkExpression) is the sole
 		// source of truth. COUNT(*) is represented by a nil operand, which is
@@ -7894,6 +7959,28 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		// are numeric). COUNT accepts any type (CountValue, not
 		// NumericAggregationValue) and is not gated. Unknown static type falls
 		// through to the runtime backstop.
+		if spec.Function == expressions.AggArrayAgg && spec.Operand != nil {
+			if ot := spec.Operand.Type(); ot == nil || ot.Code() == values.TypeCodeUnknown || ot.Code() == values.TypeCodeNull {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnknownType, "Cannot resolve the argument type of ARRAY_AGG()"))
+				return nil
+			}
+			// Java's visitSelectElements refuses an array-of-array element.
+			if values.IsArray(spec.Operand.Type()) {
+				t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedOperation, "nested arrays are not supported"))
+				return nil
+			}
+		}
+		if spec.Function == expressions.AggBitmapConstructAgg && spec.Operand != nil {
+			// Java's operator map holds BITMAP_CONSTRUCT_AGG over INT and LONG
+			// only; any other operand has no operator.
+			if ot := spec.Operand.Type(); ot != nil {
+				if code := ot.Code(); code != values.TypeCodeUnknown && code != values.TypeCodeInt && code != values.TypeCodeLong {
+					t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedOperation,
+						"unable to encapsulate aggregate operation due to type mismatch(es)"))
+					return nil
+				}
+			}
+		}
 		if aggregateRejectsNonNumericOperand(spec.Function) && spec.Operand != nil {
 			if ot := spec.Operand.Type(); ot != nil {
 				if code := ot.Code(); code != values.TypeCodeUnknown && !code.IsNumeric() {
@@ -7948,6 +8035,9 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 		return nil
 	}
 	havingPred, havingBindErr := predicates.TransformEmbeddedValuesChecked(a.HavingPredicate, func(v values.Value) (values.Value, error) {
+		if !t.forDDL && len(a.GroupKeys) == 0 {
+			v = adjustCountOnEmpty(v)
+		}
 		return bindPostAggregateValue(v, a, havingQOV)
 	})
 	if havingBindErr != nil {
@@ -8023,9 +8113,91 @@ func aggregateFunctionByName(name string) (expressions.AggregateFunction, bool) 
 		return expressions.AggMax, true
 	case "AVG":
 		return expressions.AggAvg, true
+	// Java's function catalog resolves these three into the same graph
+	// (SqlFunctionCatalogImpl: MIN_EVER, MAX_EVER, BITMAP_CONSTRUCT_AGG). An
+	// index definition is built from that graph; a query over one has no
+	// streaming accumulator in Go (AggregateFunction.HasStreamingAccumulator).
+	case "MIN_EVER":
+		return expressions.AggMinEver, true
+	case "MAX_EVER":
+		return expressions.AggMaxEver, true
+	case "BITMAP_CONSTRUCT_AGG":
+		return expressions.AggBitmapConstructAgg, true
+	case "ARRAY_AGG":
+		return expressions.AggArrayAgg, true
 	default:
 		return 0, false
 	}
+}
+
+// commuteLeadingEnclosingUnnest rebuilds an INNER join spine whose first FROM
+// item is a standalone unnest over an ENCLOSING query's array (`EXISTS (SELECT
+// v FROM w.arr AS v, h WHERE …)` over an outer w; LogicalUnnest.EnclosingOwner)
+// with that unnest as the root's right-hand lateral source: Join(rest, unnest),
+// every ON conjunct of the spine on the root. Java makes the item one more
+// ForEach quantifier of the block's select either way
+// (generateCorrelatedFieldAccess), and the root form is the one
+// translateUnnestJoin and the enclosed gather already lower (`FROM h, w.arr AS
+// v`). The commute moves the unnest in the LOGICAL spine only; it is sound for
+// inner joins because execution order is decided by correlation, not by that
+// order. The collection reads no source of this FROM, and a later leg that
+// reads the element is correlated to the unnest's binding, so the planner
+// makes it the inner of a FlatMap over the Explode: `EXISTS (SELECT 1 FROM
+// w.arr AS v, (SELECT h.id FROM h WHERE h.f + 3 = v) AS d)` plans
+// FlatMap(outer=Explode, inner=d) and answers Java's rows (measured,
+// conformance/ws_f_table_qualifier_conformance_test.go). Every leg keeps its
+// binding, which is what every reference resolves through. nil when the spine
+// is not that shape.
+func commuteLeadingEnclosingUnnest(j *logical.LogicalJoin) *logical.LogicalJoin {
+	if j.Kind != logical.JoinInner {
+		return nil
+	}
+	var spine []*logical.LogicalJoin
+	var leaf logical.LogicalOperator = j
+	for {
+		nj, isJoin := leaf.(*logical.LogicalJoin)
+		if !isJoin {
+			break
+		}
+		if nj.Kind != logical.JoinInner {
+			return nil
+		}
+		if _, rightUnnest := nj.Right.(*logical.LogicalUnnest); rightUnnest {
+			return nil // a lateral link above the leaf: the chained/gathered paths own it
+		}
+		if _, structured := nj.OnPredicate.(predicates.QueryPredicate); !structured && (nj.OnPredicate != nil || nj.OnText != "") {
+			return nil // an ON with no structured predicate cannot ride the root
+		}
+		spine = append(spine, nj)
+		leaf = nj.Left
+	}
+	u, isUnnest := leaf.(*logical.LogicalUnnest)
+	if !isUnnest || !u.EnclosingOwner || u.CorrelatedCollection == nil {
+		return nil
+	}
+	// spine is root-first; the bottom join's right is the first other source.
+	var rest logical.LogicalOperator
+	var ons []predicates.QueryPredicate
+	for i := len(spine) - 1; i >= 0; i-- {
+		nj := spine[i]
+		if rest == nil {
+			rest = nj.Right
+		} else {
+			rest = logical.NewJoin(rest, nj.Right, logical.JoinInner, "")
+		}
+		if qp, isQP := nj.OnPredicate.(predicates.QueryPredicate); isQP && qp != nil {
+			ons = append(ons, qp)
+		}
+	}
+	var on predicates.QueryPredicate
+	switch len(ons) {
+	case 0:
+	case 1:
+		on = ons[0]
+	default:
+		on = predicates.NewAnd(ons...)
+	}
+	return logical.NewJoinWithPredicate(rest, u, logical.JoinInner, on)
 }
 
 func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.RelationalExpression {
@@ -8047,11 +8219,22 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// semantics. This matches the standard approach — Java's Cascades
 	// doesn't distinguish RIGHT from LEFT either; the planner
 	// normalises RIGHT → LEFT with swapped children.
+	if hoisted, ok := hoistInterleavedSpineLinks(j); ok {
+		return t.translateJoin(hoisted)
+	}
+	if !t.inInnerCluster && !t.unnestUnderExistential {
+		if sel, applies := t.translateLateralLegsOverSpine(j, nil); applies {
+			return sel
+		}
+	}
 	// Lateral array UNNEST (`FROM t, t.arr AS x [AT ord]`): the right child is
 	// a LogicalUnnest. Lower it to a correlated FlatMap-over-Explode rather
 	// than a generic join (RFC-142).
 	if u, ok := j.Right.(*logical.LogicalUnnest); ok {
 		return t.translateUnnestJoin(j, u)
+	}
+	if rotated := commuteLeadingEnclosingUnnest(j); rotated != nil {
+		return t.translateJoin(rotated)
 	}
 
 	// The ENCLOSED unnest class (`FROM A, A.arr AS x, B`
@@ -8157,7 +8340,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 		// (correct-or-loud; the ordinal seed is the only representation for
 		// duplicate legs — the differential carve-out class).
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"duplicate FROM alias: leg %s requires the ordinal seed; the name-model join cannot serve it (%s)",
+			"leg %s is bound under a minted correlation (a duplicate FROM alias or a lateral binding) that only the ordinal seed carries; the name-model join cannot serve it (%s)",
 			leg, gateDecision.Reason))
 		return nil
 	}
@@ -8245,13 +8428,37 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	)
 }
 
+// flattenLegIsOneQuantifier reports whether an existential flatten's leg is
+// ONE quantifier of the flat select whatever the gate's cluster arity counts
+// through it: a scan, or a non-recursive derived table. The gate walks through
+// a derived carrier and counts its body's legs, so `FROM (SELECT … FROM w, g)
+// AS a, h AS d WHERE EXISTS (…)` reads as arity 3; but a derived table is one
+// quantifier over its own block (Java's visitSubqueryTableItem), the flatten
+// builds it as one leg typed by what ordinalLegType derives for it (a
+// projection-less join body's own row; a projected, star-unnest or
+// column-list body's boundary columns), and SelectMergeRule does not dissolve
+// the body into the flat select — a projected body is no Select, and a
+// projection-less join body would re-tile the row
+// (expressions.LegTableConflictsWith) — so the two-leg seed is the row the plan
+// flows. The flatten's legs then translate fresh, and the body's own join
+// gates on its own arity. Measured in the join spec for each body kind.
+func flattenLegIsOneQuantifier(op logical.LogicalOperator) bool {
+	switch o := op.(type) {
+	case *logical.LogicalScan:
+		return true
+	case *logical.LogicalCTE:
+		return !o.Recursive()
+	}
+	return false
+}
+
 // translateJoinWithExists builds a flat SelectExpression from a LogicalJoin
 // + LogicalFilter that carries EXISTS subqueries. Instead of nesting one
 // SelectExpression (the join) inside another (the EXISTS filter), this
 // method produces a single SelectExpression with ForEach(left),
 // ForEach(right), and Existential quantifiers. The combined predicate
-// covers both the join ON and the filter WHERE. The NLJ rule's
-// the existential peel path handles this 2+1 pattern.
+// covers both the join ON and the filter WHERE. PartitionSelectRule peels
+// the existential off this 2+1 pattern (RFC-235).
 func (t *cascadesTranslator) translateJoinWithExists(
 	j *logical.LogicalJoin,
 	f *logical.LogicalFilter,
@@ -8286,14 +8493,18 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	//     nested-cluster leg would seed a 2-leg concat whose windows
 	//     disagree with the arity SelectMergeRule's flattening produces.
 	//     The DECLINE is the safety mechanism itself. The N-way flatten
-	//     rides the gathered-cluster machinery instead.
+	//     rides the gathered-cluster machinery instead. The one exception
+	//     is a gate arity counted THROUGH a leg that is nonetheless one
+	//     quantifier of the flat select (flattenLegIsOneQuantifier: a scan
+	//     or a derived table, whose body the merge does not dissolve), where
+	//     the two-leg seed is the row the plan flows.
 	//   - No existential-alias collisions: an EXISTS alias colliding with a
 	//     leg alias (or another EXISTS alias) makes the flat select's
 	//     correlations indistinguishable — fail toward the name model, the
 	//     gate's unclassifiable direction.
 	gateDecision := t.ordinalWedgeGateDecide(j)
 	gatedFlatten := gateDecision.Gated
-	if gatedFlatten && gateDecision.Arity != 2 {
+	if gatedFlatten && gateDecision.Arity != 2 && !(flattenLegIsOneQuantifier(left) && flattenLegIsOneQuantifier(right)) {
 		gatedFlatten = false
 		gateDecision = wedgeGateDecision{
 			Arity:  gateDecision.Arity,
@@ -8374,7 +8585,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 		// "fail toward the name model" is not a safe direction for a
 		// duplicate-alias query.
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"duplicate FROM alias: leg %s requires the gated existential flatten; narrowed to the name model (%s)",
+			"leg %s is bound under a minted correlation (a duplicate FROM alias or a lateral binding) that only the gated existential flatten carries; narrowed to the name model (%s)",
 			leg, gateDecision.Reason))
 		return nil
 	}
@@ -8423,11 +8634,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 			}
 			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
 			quantifiers = append(quantifiers, existQ)
-			innerCorrName, joinPred := t.existsInnerCorrelation(esq)
-			if joinPred != nil {
-				allPreds = append(allPreds, joinPred)
-			}
-			sourceAliases = append(sourceAliases, innerCorrName)
+			sourceAliases = append(sourceAliases, esq.Alias.Name())
 		}
 	}
 
@@ -8492,11 +8699,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 // FALSE absorbs the entire AND. The corresponding subquery plan is removed, so
 // neither correlation routing nor execution can perturb the constant result.
 //
-// The existential lowering supports these markers as top-level AND conjuncts.
-// For robustness, an alias is folded only when every occurrence in the whole
-// predicate is one of those direct conjuncts. An occurrence nested under OR or
-// another unsupported boolean shape leaves the filter unchanged for that alias
-// rather than orphaning a marker by dropping its quantifier.
+// Boolean consumers are folded recursively without splitting disjunctions.
 func (t *cascadesTranslator) foldKnownExists(f *logical.LogicalFilter) *logical.LogicalFilter {
 	if f == nil || f.Predicate == nil || len(f.ExistsSubqueries) == 0 {
 		return f
@@ -8511,113 +8714,58 @@ func (t *cascadesTranslator) foldKnownExists(f *logical.LogicalFilter) *logical.
 		return f
 	}
 
-	// Count every marker occurrence, stopping at a recognized NOT-EXISTS so its
-	// existential child is not counted a second time.
-	allOccurrences := make(map[values.CorrelationIdentifier]int)
-	predicates.WalkPredicate(f.Predicate, func(p predicates.QueryPredicate) bool {
+	foldedAliases := make(map[values.CorrelationIdentifier]struct{})
+	var fold func(predicates.QueryPredicate) predicates.QueryPredicate
+	fold = func(p predicates.QueryPredicate) predicates.QueryPredicate {
 		if alias, ok := predicates.IsExistentialPredicate(p); ok {
-			allOccurrences[alias]++
-			return false
-		}
-		if alias, ok := predicates.IsNotExistentialPredicate(p); ok {
-			allOccurrences[alias]++
-			return false
-		}
-		return true
-	})
-
-	var conjuncts []predicates.QueryPredicate
-	var flattenAnd func(predicates.QueryPredicate)
-	flattenAnd = func(p predicates.QueryPredicate) {
-		if and, ok := p.(*predicates.AndPredicate); ok {
-			for _, sub := range and.SubPredicates {
-				flattenAnd(sub)
-			}
-			return
-		}
-		conjuncts = append(conjuncts, p)
-	}
-	flattenAnd(f.Predicate)
-
-	type marker struct {
-		alias   values.CorrelationIdentifier
-		negated bool
-		ok      bool
-	}
-	markers := make([]marker, len(conjuncts))
-	directOccurrences := make(map[values.CorrelationIdentifier]int)
-	for i, conjunct := range conjuncts {
-		if alias, ok := predicates.IsExistentialPredicate(conjunct); ok {
-			if _, isKnown := known[alias]; isKnown {
-				markers[i] = marker{alias: alias, ok: true}
-				directOccurrences[alias]++
-			}
-			continue
-		}
-		if alias, ok := predicates.IsNotExistentialPredicate(conjunct); ok {
-			if _, isKnown := known[alias]; isKnown {
-				markers[i] = marker{alias: alias, negated: true, ok: true}
-				directOccurrences[alias]++
+			if truth, known := known[alias]; known {
+				foldedAliases[alias] = struct{}{}
+				return predicates.NewConstantPredicate(truth)
 			}
 		}
-	}
-
-	eligible := make(map[values.CorrelationIdentifier]struct{})
-	for alias, direct := range directOccurrences {
-		if direct > 0 && direct == allOccurrences[alias] {
-			eligible[alias] = struct{}{}
+		switch p := p.(type) {
+		case *predicates.AndPredicate:
+			copy := *p
+			copy.SubPredicates = make([]predicates.QueryPredicate, len(p.SubPredicates))
+			for i, child := range p.SubPredicates {
+				copy.SubPredicates[i] = fold(child)
+			}
+			return &copy
+		case *predicates.OrPredicate:
+			copy := *p
+			copy.SubPredicates = make([]predicates.QueryPredicate, len(p.SubPredicates))
+			for i, child := range p.SubPredicates {
+				copy.SubPredicates[i] = fold(child)
+			}
+			return &copy
+		case *predicates.NotPredicate:
+			copy := *p
+			copy.Child = fold(p.Child)
+			return &copy
+		default:
+			return p
 		}
 	}
-	if len(eligible) == 0 {
+	rewritten := fold(f.Predicate)
+	if len(foldedAliases) == 0 {
 		return f
 	}
-
-	keptPredicates := make([]predicates.QueryPredicate, 0, len(conjuncts))
-	foldedAliases := make(map[values.CorrelationIdentifier]struct{})
-	for i, conjunct := range conjuncts {
-		m := markers[i]
-		if !m.ok {
-			keptPredicates = append(keptPredicates, conjunct)
-			continue
-		}
-		if _, canFold := eligible[m.alias]; !canFold {
-			keptPredicates = append(keptPredicates, conjunct)
-			continue
-		}
-		foldedAliases[m.alias] = struct{}{}
-		truth := *known[m.alias]
-		if m.negated {
-			truth = !truth
-		}
-		if !truth {
-			f2 := *f
-			// FALSE absorbs every EXISTS conjunct, so none of their quantifiers
-			// need to be built. EXISTS has no side effects.
-			f2.ExistsSubqueries = nil
-			f2.Predicate = predicates.NewConstantPredicate(predicates.TriFalse)
-			return &f2
-		}
-		// TRUE disappears from an AND.
+	rewritten, err := cascades.Simplify(rewritten, cascades.TranslatorConstantPredicateRules())
+	if err != nil {
+		t.setTranslateErr(err)
+		return f
 	}
-
-	keptSubqueries := make([]logical.ExistsSubquery, 0, len(f.ExistsSubqueries))
-	for _, esq := range f.ExistsSubqueries {
-		if _, folded := foldedAliases[esq.Alias]; !folded {
-			keptSubqueries = append(keptSubqueries, esq)
-		}
-	}
-	var rewritten predicates.QueryPredicate
-	switch len(keptPredicates) {
-	case 0:
-		rewritten = predicates.NewConstantPredicate(predicates.TriTrue)
-	case 1:
-		rewritten = keptPredicates[0]
-	default:
-		rewritten = predicates.NewAnd(keptPredicates...)
-	}
+	remaining := predicates.GetCorrelatedToOfPredicate(rewritten)
 	f2 := *f
-	f2.ExistsSubqueries = keptSubqueries
 	f2.Predicate = rewritten
+	f2.ExistsSubqueries = nil
+	for _, esq := range f.ExistsSubqueries {
+		_, folded := foldedAliases[esq.Alias]
+		_, stillUsed := remaining[esq.Alias]
+		if !predicates.IsContradiction(rewritten) && (!folded || stillUsed) {
+			f2.ExistsSubqueries = append(f2.ExistsSubqueries, esq)
+		}
+	}
 	return &f2
 }
 
@@ -8630,11 +8778,8 @@ func hasKnownExistsTruth(subqueries []logical.ExistsSubquery) bool {
 	return false
 }
 
-// splitNonExistsPredicates extracts the non-EXISTS parts of a predicate
-// tree. EXISTS predicates (and NOT EXISTS) are dropped — they're
-// represented by the Existential quantifier in the SelectExpression.
-// Compound AND predicates are flattened: AND(ExistentialValuePredicate, c.id < 10)
-// yields just [c.id < 10].
+// splitNonExistsPredicates extracts conjuncts without existential consumers.
+// Their complement is retained intact by extractExistsPredicates.
 func splitNonExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryPredicate {
 	if pred == nil {
 		return nil
@@ -8652,13 +8797,14 @@ func splitNonExistsPredicates(pred predicates.QueryPredicate) []predicates.Query
 		}
 		return result
 	}
+	if predicates.ContainsExistentialPredicate(pred) {
+		return nil
+	}
 	return []predicates.QueryPredicate{pred}
 }
 
-// extractExistsPredicates returns the EXISTS-related predicates that
-// splitNonExistsPredicates drops: bare ExistentialValuePredicate or
-// NOT(ExistentialValuePredicate). The rule's implementExistentialSelect
-// needs these to detect EXISTS vs NOT EXISTS.
+// extractExistsPredicates retains whole conjuncts that consume an existential
+// binding. OR siblings must remain together above FirstOrDefault.
 func extractExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryPredicate {
 	if pred == nil {
 		return nil
@@ -8676,6 +8822,9 @@ func extractExistsPredicates(pred predicates.QueryPredicate) []predicates.QueryP
 		}
 		return result
 	}
+	if predicates.ContainsExistentialPredicate(pred) {
+		return []predicates.QueryPredicate{pred}
+	}
 	return nil
 }
 
@@ -8686,89 +8835,6 @@ func (t *cascadesTranslator) namedQuantifier(alias string, ref *expressions.Refe
 		)
 	}
 	return expressions.ForEachQuantifier(ref)
-}
-
-// existsInnerCorrelation registers an existential subquery's inner correlation
-// under the existential quantifier's UNIQUE alias (esq.Alias, minted by
-// values.UniqueCorrelationIdentifier()) rather than the subquery's SOURCE table
-// name (sourceAlias(esq.Plan)). It returns:
-//
-//   - the source alias string to register in the SelectExpression's
-//     GetSourceAliases() (the unique alias name), so the NLJ rule derives the
-//     existential INNER correlation from it; and
-//   - the join predicate with its inner-leg references rebased from the source
-//     alias to the unique alias, so the predicate's QOV correlation MATCHES the
-//     FlatMap inner binding (the join-pred filter binds under the same alias).
-//
-// Java gives every existential quantifier its own unique correlation identity;
-// the inner correlation predicate references THAT identity, never the source
-// table's name. Since the collision mint, buildCorrelatedExists already builds
-// a single-table catalog inner under its own unique correlation (the scan
-// alias and the join predicate's inner refs carry the minted name), so for the
-// minted class this rename is pure identity PLUMBING — it rebases the build-
-// time mint onto esq.Alias so the NLJ binding and the predicate agree on ONE
-// name. The rename remains load-bearing for the residual single-table shapes
-// that reach here under their SQL source name (e.g. the clean-build
-// non-correlated path): there the name can equal an outer source alias
-// (`... FROM t WHERE id > 1 AND EXISTS (SELECT 1 FROM t ...)`), and without
-// the rename the FlatMap would bind both the outer row and the FirstOrDefault
-// inner under the SAME correlation (the inner clobbers the outer → NULL
-// pass-through row), and an outer-only predicate (`id > 1`, correlated to the
-// shared name) would be misclassified as an INNER join predicate and pushed
-// below the FOD. Routing the existential inner through the unique alias makes
-// outer and inner correlations distinct by construction, so neither the
-// binding nor the predicate classification can collide. The source table's
-// columns still flow up under their bare names inside the subquery plan; only
-// the JOIN-LEVEL correlation identity changes, so field lookups (bm["COL"])
-// are unaffected.
-func (t *cascadesTranslator) existsInnerCorrelation(esq logical.ExistsSubquery) (string, predicates.QueryPredicate) {
-	// The rename is ONLY safe when the inner has ONE well-defined source alias
-	// (existsInnerSafeToRename) — a plain single-table scan, optionally under
-	// further filters, INCLUDING a nested EXISTS: the rebase below touches only
-	// esq.JoinPredicate, a value tree entirely separate from esq.Plan, so it can
-	// neither reach nor need to reach a correlation buried inside esq.Plan (that
-	// reference resolves in the nested plan's own re-translation, over the same
-	// unchanged scan alias). The one inner shape that DOES carry a reference the
-	// rename cannot reach is a JOIN inner: it emits a MERGED row resolved by
-	// qualified leg keys (T2.ID, T3.T2_ID, …), never a single-alias binding
-	// (executePredicatesFilter: producesMergedRows ⇒ bindAlias=false); pointing
-	// the predicate at a `<uniqueAlias>.*` namespace nothing writes yields NULL.
-	// That keeps the leg/source-alias routing — the merged-row inner routes by
-	// distinct qualified keys and cannot clobber the outer binding.
-	if !existsInnerSafeToRename(esq.Plan) {
-		return sourceBinding(esq.Plan), esq.JoinPredicate
-	}
-	uniqueAlias := esq.Alias
-	srcAlias := values.NamedCorrelationIdentifier(sourceBinding(esq.Plan))
-	joinPred := esq.JoinPredicate
-	if joinPred != nil && srcAlias != uniqueAlias {
-		aliasMap, err := values.NewAliasMap([]values.AliasPair{{Source: srcAlias, Target: uniqueAlias}})
-		if err != nil {
-			t.setTranslateErr(api.NewErrorf(api.ErrCodeInternalError,
-				"invalid EXISTS correlation rebase from %s to %s: %v", srcAlias.Name(), uniqueAlias.Name(), err))
-			return "", nil
-		}
-		// CHECKED, and this is the site where the error-less spelling is most
-		// dangerous. It "fails closed with nil" — but nil is not closed HERE: it
-		// is the NO-JOIN-PREDICATE sentinel this function's own caller tests
-		// (`if joinPred != nil { preds = append(...) }`). A failed rebase would
-		// therefore drop the correlation entirely and turn a correlated EXISTS
-		// into one that matches EVERY outer row, silently and with the right
-		// row count for the uncorrelated reading. The arm just above already
-		// routes its error this way; this one has to match it.
-		//
-		// RFC-232 is what makes this reachable rather than theoretical: the
-		// failure originates in values.RebaseValueChecked, and exact types are
-		// precisely what gave value reconstruction something to reject.
-		rebased, rerr := predicates.RebasePredicateChecked(joinPred, aliasMap)
-		if rerr != nil {
-			t.setTranslateErr(api.NewErrorf(api.ErrCodeInternalError,
-				"EXISTS correlation rebase from %s to %s: %v", srcAlias.Name(), uniqueAlias.Name(), rerr))
-			return "", nil
-		}
-		joinPred = rebased
-	}
-	return uniqueAlias.Name(), joinPred
 }
 
 // existsInnerSafeToRename reports whether an existential subquery's plan has
@@ -8980,7 +9046,7 @@ func (t *cascadesTranslator) cteTranslationBody(c *logical.CTEProducer) logical.
 			// A nested WITH can end in a bare scan of its local CTE. Its
 			// complete query still declares an exact row even though neither
 			// the projection walk nor the catalog-only star walk sees it.
-			if typ, err := ExactLogicalResultType(body, t.md); err == nil {
+			if typ, err := exactLogicalResultTypeFor(body, t.md, t.forDDL); err == nil {
 				if row, ok := typ.(*values.RecordType); ok {
 					origCols = make([]string, len(row.Fields))
 					for i, field := range row.Fields {
@@ -9157,7 +9223,7 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 // multiple times.
 func cteBodyWidthIsExact(op logical.LogicalOperator) bool {
 	switch o := op.(type) {
-	case *logical.LogicalProject:
+	case *logical.LogicalProject, *logical.LogicalSingleton:
 		return true
 	case *logical.LogicalDistinct:
 		return cteBodyWidthIsExact(o.Input)
@@ -9197,8 +9263,7 @@ func validateCTEAliasAritiesInGraph(op logical.LogicalOperator, producers map[*l
 	}
 	if c, ok := op.(*logical.LogicalCTE); ok {
 		if len(c.ColumnAliases()) > 0 && !c.Recursive() {
-			if origCols := extractOutputColumns(c.Body()); len(origCols) > 0 &&
-				len(origCols) != len(c.ColumnAliases()) && cteBodyWidthIsExact(c.Body()) {
+			if origCols := extractOutputColumns(c.Body()); len(origCols) != len(c.ColumnAliases()) && cteBodyWidthIsExact(c.Body()) {
 				return api.NewErrorf(api.ErrCodeInvalidColumnReference,
 					"cte query has %d column(s), however %d aliases defined",
 					len(origCols), len(c.ColumnAliases()))
@@ -9221,11 +9286,12 @@ func validateCTEAliasAritiesInGraph(op logical.LogicalOperator, producers map[*l
 	return nil
 }
 
-// recursiveCTECommonResultRow derives the exact positional row that both
-// recursive-union inserts and the intervening temp-table scan must publish.
-// Output names are seed-authoritative; branch-local names do not participate in
-// compatibility. Each slot is folded through SQL's implicit-promotion lattice,
-// including nullability widening, before the recursive branch is translated.
+// recursiveCTECommonResultRow is the row both recursive-union inserts and the
+// intervening temp-table scan publish: the seed's, named by the output list.
+// Java types the temporary table by the non-recursive leg
+// (SemanticAnalyzer.getRecursiveCteType) and the union by its first leg
+// (RecordQuerySetPlan.mergeValues); a recursive value is fitted to it per slot
+// (recursiveSlotValue).
 func (t *cascadesTranslator) recursiveCTECommonResultRow(
 	seed *values.RecordType,
 	recursiveBranches []logical.LogicalOperator,
@@ -9242,13 +9308,11 @@ func (t *cascadesTranslator) recursiveCTECommonResultRow(
 			FieldType: seed.Fields[i].FieldType,
 		}
 	}
-	resultNullable := seed.Nullable
 	for branchIndex, branch := range recursiveBranches {
 		var branchFields []values.Field
-		if branchType, err := ExactLogicalResultType(branch, t.md); err == nil {
+		if branchType, err := exactLogicalResultTypeFor(branch, t.md, t.forDDL); err == nil {
 			if record, ok := branchType.(*values.RecordType); ok {
 				branchFields = record.Fields
-				resultNullable = resultNullable || record.Nullable
 			}
 		}
 		// A projection-less self-reference cannot be derived by the metadata-only
@@ -9262,195 +9326,37 @@ func (t *cascadesTranslator) recursiveCTECommonResultRow(
 			return nil, fmt.Errorf("recursive branch %d has width %d, want %d",
 				branchIndex, len(branchFields), len(fields))
 		}
-		for ordinal := range fields {
-			common := values.MaximumType(fields[ordinal].FieldType, branchFields[ordinal].FieldType)
-			if common == nil {
-				return nil, fmt.Errorf("recursive branch %d column %d types %s and %s are incompatible",
-					branchIndex, ordinal+1, fields[ordinal].FieldType, branchFields[ordinal].FieldType)
-			}
-			fields[ordinal].FieldType = common
-		}
 	}
-	row := &values.RecordType{Nullable: resultNullable, Fields: fields}
+	row := &values.RecordType{Nullable: seed.Nullable, Fields: fields}
 	if _, err := values.SnapshotExactType(row); err != nil {
 		return nil, fmt.Errorf("recursive CTE common row is not exact: %w", err)
 	}
 	return row, nil
 }
 
-// recursiveCTEMainBindings returns the exact correlations under which scans of
-// cteName are visible in the main query. A nested same-named CTE shadows the
-// outer definition, so its complete subtree is excluded. Binding identifiers
-// win over display aliases exactly as they do at quantifier construction.
-func recursiveCTEMainBindings(
-	op logical.LogicalOperator,
-	producer *logical.CTEProducer,
-	bindings map[values.CorrelationIdentifier]struct{},
-) {
-	if op == nil {
-		return
+// recursiveSlotValue fits a value to a slot of a recursive CTE's seed-typed
+// row: promoted where its type promotes, otherwise narrowed, so a NULL into a
+// NOT NULL slot or a value of another type fails when it is written.
+func recursiveSlotValue(value values.Value, target values.Type) (values.Value, error) {
+	if value == nil || target == nil {
+		return nil, fmt.Errorf("source Value or target type is nil")
 	}
-	switch current := op.(type) {
-	case *logical.LogicalScan:
-		if current.Source.Producer() == producer {
-			binding := sourceBinding(current)
-			if binding != "" {
-				bindings[values.NamedCorrelationIdentifier(binding)] = struct{}{}
-			}
-		}
-		return
-	case *logical.LogicalCTE:
-		if current.CTEProducer == producer {
-			return
-		}
-	}
-	for _, child := range op.Children() {
-		recursiveCTEMainBindings(child, producer, bindings)
-	}
-	for _, attached := range logical.AttachedPlans(op) {
-		recursiveCTEMainBindings(attached, producer, bindings)
-	}
-}
-
-// pushRecursiveCTEConsumerRows scopes the seed-declared/common-row pair to
-// each main-query alias of one recursive CTE. The returned bindings are popped
-// after main translation; stacks preserve an enclosing recursive definition.
-func (t *cascadesTranslator) pushRecursiveCTEConsumerRows(
-	main logical.LogicalOperator,
-	producer *logical.CTEProducer,
-	declaration *values.RecordType,
-	common *values.RecordType,
-) []values.CorrelationIdentifier {
-	bindings := make(map[values.CorrelationIdentifier]struct{})
-	recursiveCTEMainBindings(main, producer, bindings)
-	if len(bindings) == 0 {
-		return nil
-	}
-	if t.recursiveCTEConsumerRows == nil {
-		t.recursiveCTEConsumerRows = make(map[values.CorrelationIdentifier][]recursiveCTEConsumerRow)
-	}
-	result := make([]values.CorrelationIdentifier, 0, len(bindings))
-	for binding := range bindings {
-		t.recursiveCTEConsumerRows[binding] = append(
-			t.recursiveCTEConsumerRows[binding],
-			recursiveCTEConsumerRow{declaration: declaration, common: common},
-		)
-		result = append(result, binding)
-	}
-	return result
-}
-
-func (t *cascadesTranslator) popRecursiveCTEConsumerRows(bindings []values.CorrelationIdentifier) {
-	for _, binding := range bindings {
-		stack := t.recursiveCTEConsumerRows[binding]
-		if len(stack) <= 1 {
-			delete(t.recursiveCTEConsumerRows, binding)
-			continue
-		}
-		t.recursiveCTEConsumerRows[binding] = stack[:len(stack)-1]
-	}
-}
-
-// translateRecursiveCTEConsumerValue retargets one seed-declared logical Value
-// onto the recursive fixed point's exact common row. Admission is intentionally
-// narrower than a generic phase-root translation: the correlation and complete
-// declaration row must match, the physical target must equal the recorded
-// common row, every field is re-resolved by its full ordinal path, and the new
-// leaf/whole-value types may only be the MaximumType widening of the old ones.
-// Foreign windows, a reordered row, or an incompatible type remain outside the
-// bridge rather than being inferred from a display name.
-func translateRecursiveCTEConsumerValue(
-	value values.Value,
-	declaration values.QuantifiedObjectValue,
-	target values.QuantifiedObjectValue,
-) (values.Value, error) {
-	if value == nil || declaration == nil || target == nil {
-		return nil, fmt.Errorf("recursive CTE consumer bridge has a nil Value or root")
-	}
-	commonRoot := values.MaximumType(declaration.FlowedType(), target.FlowedType())
-	if commonRoot == nil || !values.FlowedTypeEquals(target, commonRoot) {
-		return nil, fmt.Errorf("recursive CTE declared row %s does not widen exactly to %s",
-			declaration.FlowedType(), target.FlowedType())
-	}
-
-	var rewriteErr error
-	rewritten := values.Replace(value, func(node values.Value) values.Value {
-		if rewriteErr != nil {
-			return node
-		}
-		if field, isField := values.AsFieldValue(node); isField {
-			root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
-			if !isRoot || root.Correlation() != declaration.Correlation() ||
-				!values.FlowedTypesEqual(root, declaration) {
-				return node
-			}
-			resolved, err := values.ResolveFieldOrdinals(target, field.Path().Ordinals())
-			if err != nil {
-				rewriteErr = fmt.Errorf("recursive CTE field path %v does not resolve on the common row: %w",
-					field.Path().Ordinals(), err)
-				return node
-			}
-			commonLeaf := values.MaximumType(field.ResultType(), resolved.Type())
-			if commonLeaf == nil || !commonLeaf.Equals(resolved.Type()) {
-				rewriteErr = fmt.Errorf("recursive CTE field path %v changes incompatibly from %s to %s",
-					field.Path().Ordinals(), field.ResultType(), resolved.Type())
-				return node
-			}
-			return resolved
-		}
-		if root, isRoot := values.AsQuantifiedObjectValue(node); isRoot &&
-			root.Correlation() == declaration.Correlation() &&
-			values.FlowedTypesEqual(root, declaration) {
-			return target
-		}
-		return node
-	})
-	if rewriteErr != nil {
-		return nil, rewriteErr
-	}
-	if rewritten == value {
+	if value.Type().Equals(target) {
 		return value, nil
 	}
-	if rewritten == nil || rewritten.Type() == nil {
-		return nil, fmt.Errorf("recursive CTE consumer bridge produced no exact Value")
+	if maximum := values.MaximumType(value.Type(), target); maximum != nil && maximum.Equals(target) {
+		return values.NewPromoteValueChecked(value, target)
 	}
-	commonResult := values.MaximumType(value.Type(), rewritten.Type())
-	if commonResult == nil || !commonResult.Equals(rewritten.Type()) {
-		return nil, fmt.Errorf("recursive CTE consumer Value changes incompatibly from %s to %s",
-			value.Type(), rewritten.Type())
-	}
-	return rewritten, nil
-}
-
-func (t *cascadesTranslator) normalizeRecursiveCTEConsumerValue(
-	value values.Value,
-) (values.Value, error) {
-	if value == nil {
-		return value, nil
-	}
-	result := value
-	for binding, stack := range t.recursiveCTEConsumerRows {
-		if len(stack) == 0 {
-			continue
-		}
-		scope := stack[len(stack)-1]
-		if scope.declaration == nil || scope.common == nil {
-			continue
-		}
-		declaration, err := values.NewQuantifiedObjectValue(binding, scope.declaration)
-		if err != nil {
-			return nil, fmt.Errorf("recursive CTE consumer declaration is not exact: %w", err)
-		}
-		target, err := values.NewQuantifiedObjectValue(binding, scope.common)
-		if err != nil {
-			return nil, fmt.Errorf("recursive CTE consumer common row is not exact: %w", err)
-		}
-		result, err = translateRecursiveCTEConsumerValue(result, declaration, target)
+	nullableTarget := values.WithNullability(target, true)
+	if maximum := values.MaximumType(value.Type(), nullableTarget); maximum != nil && maximum.Equals(nullableTarget) &&
+		!value.Type().Equals(nullableTarget) {
+		promoted, err := values.NewPromoteValueChecked(value, nullableTarget)
 		if err != nil {
 			return nil, err
 		}
+		value = promoted
 	}
-	return result, nil
+	return values.NewNarrowValue(value, target), nil
 }
 
 // translateRecursiveCTE translates a WITH RECURSIVE CTE into a
@@ -9468,9 +9374,6 @@ func (t *cascadesTranslator) normalizeRecursiveCTEConsumerValue(
 func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
 	logical.BindCTESources(c, t.cteScope)
 	if ref := t.producerRefs[c.CTEProducer]; ref != nil {
-		row := t.recursiveProducerRows[c.CTEProducer]
-		bindings := t.pushRecursiveCTEConsumerRows(c.Main, c.CTEProducer, row.declaration, row.common)
-		defer t.popRecursiveCTEConsumerRows(bindings)
 		return t.translateOp(c.Main)
 	}
 	previousExpr, hadExpr := t.cteExprScope[c.CTEProducer]
@@ -9544,10 +9447,11 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		return nil
 	}
 
-	// outCols: the CTE's OUTPUT column names — the schema every reference to
-	// the CTE resolves against (the recursive branch's self-reference predicates
-	// AND the Main query). Standard SQL: the seed's projection defines these
-	// names, overridden by an explicit column-alias list `WITH RECURSIVE d(a, b)`.
+	// outCols: the column names of the temporary table the self-reference
+	// reads, defined by the seed's projection. An explicit column-alias list
+	// `WITH RECURSIVE d(a, b)` renames only what the Main query sees (mainCols);
+	// Java's handleRecursiveNamedQuery types the temporary scan by the seed and
+	// renames the finished named operator.
 	//
 	// The temp table is keyed under these OUTPUT names. Identifier resolution
 	// keeps OUTPUT names (the source-name reverse-map has been retired), so a
@@ -9561,12 +9465,9 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// publishes as the CTE's output schema, keying the temp table the
 	// self-reference scans.
 	//
-	// It is live through the NO-ALIAS path only: with an explicit column-alias
-	// list OF MATCHING LENGTH, `outCols` below takes the aliases and seedOut
-	// never reaches the key. The length condition is load-bearing and is not a
-	// technicality: an alias list of the wrong arity leaves seedOut in place,
-	// which is how the width disagreement gets reported against the seed's own
-	// labels rather than against a list that does not describe it.
+	// An alias list of the wrong arity is ignored here, so a width disagreement
+	// is reported against the seed's own labels rather than against a list
+	// that does not describe it.
 	seedOut := append([]string(nil), extractOutputProjectionNames(seedBranches[0])...)
 	// A projection-less seed (`SELECT * FROM t`) exposes no projection names,
 	// which silently DROPPED an explicit CTE column-alias list
@@ -9606,16 +9507,22 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		}
 	}
 	outCols := seedOut
+	// The union's quantifier names a repeated or unnamed seed column by its
+	// position (QuantifierColumnNames over the seed's SQL labels).
+	if labels, err := ExactLogicalOutputLabels(seedBranches[0], t.md, nil); err == nil && len(labels) == len(outCols) {
+		if names := QuantifierColumnNames(labels); !slices.Equal(names, labels) {
+			outCols = names
+		}
+	}
+	var mainCols []string
 	if len(c.ColumnAliases()) > 0 && len(c.ColumnAliases()) == len(outCols) {
-		outCols = c.ColumnAliases() // normalized once, at the parse capture
+		mainCols = c.ColumnAliases() // normalized once, at the parse capture
 	}
 
 	// Derive the exact positional row shared by every iteration BEFORE creating
-	// the self-reference scan. SQL UNION compatibility is positional: names come
-	// from the seed/output alias list, while each slot uses Type.maximumType over
-	// the seed and recursive branches. In particular, `0 AS level` is NOT NULL
-	// but `level + 1` is nullable; publishing the seed's narrower row on the temp
-	// scan would make later iterations disagree with the recursive insert.
+	// the self-reference scan: the seed's row, which every later iteration is
+	// fitted to slot by slot (`0 AS level` keeps level NOT NULL, and a NULL
+	// `level + 1` fails when written).
 	seedResult := seedExpr.GetResultValue()
 	if seedResult == nil || seedResult.Type() == nil {
 		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
@@ -9650,10 +9557,6 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 			Ordinal:   i,
 		}
 	}
-	declaredRow := &values.RecordType{
-		Nullable: seedType.Nullable,
-		Fields:   append([]values.Field(nil), seedFields...),
-	}
 	t.cteColumnsScope[c.CTEProducer] = seedFields
 	commonRow, commonErr := t.recursiveCTECommonResultRow(seedType, recursiveBranches, outCols)
 	if commonErr != nil {
@@ -9666,8 +9569,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	t.cteColumnsScope[c.CTEProducer] = tempFields
 
 	// Normalize the seed onto that exact row. This is a no-op for the common
-	// same-schema case, preserving its plan shape; a rename, promotion, or
-	// nullability widening becomes an explicit ordinal projection.
+	// same-schema case, preserving its plan shape; a rename becomes an explicit
+	// ordinal projection.
 	if !seedType.Equals(commonRow) {
 		seedExpr = t.normalizeRecursiveLegToOutputRow(seedExpr, commonRow)
 		if seedExpr == nil {
@@ -9690,9 +9593,9 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		return nil
 	}
 
-	// The self-reference temp table carries the COMMON CTE row, including any
-	// nullability/type widening. Thus a recursive join leg anchors on the same
-	// exact contract that both inserts publish (RFC-077 7.6).
+	// The self-reference temp table carries the COMMON CTE row. Thus a
+	// recursive join leg anchors on the same exact contract that both inserts
+	// publish (RFC-077 7.6).
 	tempScan, err := expressions.NewTempTableScanExpression(scanAlias, commonRow)
 	if err != nil {
 		delete(t.cteColumnsScope, c.CTEProducer)
@@ -9702,41 +9605,32 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	}
 	t.cteExprScope[c.CTEProducer] = tempScan
 	t.cteColumnsScope[c.CTEProducer] = tempFields
-	var recursiveConsumerBindings []values.CorrelationIdentifier
-	for _, branch := range recursiveBranches {
-		recursiveConsumerBindings = append(recursiveConsumerBindings,
-			t.pushRecursiveCTEConsumerRows(branch, c.CTEProducer, declaredRow, commonRow)...)
-	}
 	var recursiveExpr expressions.RelationalExpression
 	if len(recursiveBranches) == 1 {
 		recursiveExpr = t.translateOp(recursiveBranches[0])
 	} else {
 		recursiveExpr = t.translateUnion(&logical.LogicalUnion{Inputs: recursiveBranches, Distinct: false})
 	}
-	t.popRecursiveCTEConsumerRows(recursiveConsumerBindings)
 	delete(t.cteExprScope, c.CTEProducer)
 	delete(t.cteColumnsScope, c.CTEProducer)
 	if recursiveExpr == nil {
 		return nil
 	}
 
-	// Normalize the recursive leg's output columns to the CTE's OUTPUT schema
-	// (outCols). In standard SQL, the CTE's output column names are defined by
-	// the seed (and any column-alias list). The recursive branch often uses
+	// Normalize the recursive leg's output columns to the temporary table's
+	// schema (outCols), which the seed's names define. The recursive branch often uses
 	// qualified column references (e.g. SELECT b.id, b.parent) which produce
 	// datum keys like "B.ID"; without this normalization the outer query (and
 	// DFS recursion) can't find the expected columns, yielding NULL for every row.
 	//
 	// The temp table is keyed under outCols so it agrees with the recursive
-	// predicates, which read the CTE's OUTPUT columns (the source-name reverse-map
+	// predicates, which read the seed's columns (the source-name reverse-map
 	// has been retired). recursiveRemapValues never persists a qualified key:
 	// each read is FieldValue{Field: <bare>, Child: QOV(<qualifier>)} — it reads
 	// the qualified datum key ("B.ID") while projectionColumnName returns the BARE
 	// field, so the qualified key (which would collide with the next recursion
 	// level's same-qualified join side and stall the recursion one level early) is
-	// never copied in. executeProjection also emits the value under the bare body
-	// column; when that differs from the OUTPUT name it is an INERT extra key
-	// (unqualified, re-qualified under the scan alias at the next level).
+	// never copied in.
 	recCols := extractOuterProjectionColumns(recursiveBranches[0])
 	if len(outCols) > 0 && len(recCols) > 0 && len(outCols) == len(recCols) {
 		recursiveExpr = t.normalizeRecursiveLegToOutputRow(recursiveExpr, commonRow)
@@ -9803,32 +9697,45 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		return nil
 	}
 
-	// No outward rename projection is needed: the temp table (and therefore the
-	// recursive union's output) is already keyed under the CTE's OUTPUT column
-	// names (outCols) — the column-alias list, when present, was baked into
-	// outCols and applied to BOTH legs before the temp-table inserts.
-	cteResult := recUnion
+	// The column-alias list renames the finished union for the Main query, as
+	// translateCTE's renaming Project does for a non-recursive body.
+	var cteResult expressions.RelationalExpression = recUnion
+	mainCommon := commonRow
+	if mainCols != nil {
+		mainCommon = recordWithFieldNames(commonRow, mainCols)
+		cteResult = t.normalizeRecursiveLegToOutputRow(recUnion, mainCommon)
+		if cteResult == nil {
+			return nil
+		}
+	}
 	if t.producerRefs == nil {
 		t.producerRefs = make(map[*logical.CTEProducer]*expressions.Reference)
 	}
 	if t.recursiveProducerRows == nil {
-		t.recursiveProducerRows = make(map[*logical.CTEProducer]recursiveCTEConsumerRow)
+		t.recursiveProducerRows = make(map[*logical.CTEProducer]*values.RecordType)
 	}
 	t.producerRefs[c.CTEProducer] = expressions.InitialOf(cteResult)
-	t.recursiveProducerRows[c.CTEProducer] = recursiveCTEConsumerRow{declaration: declaredRow, common: commonRow}
+	t.recursiveProducerRows[c.CTEProducer] = mainCommon
 
 	// Register the result so the Main query's scan of the CTE name resolves to
-	// it. The OUTWARD column schema is outCols — so a CTE reference used as a JOIN
-	// LEG in the Main query anchors instead of falling back to the opaque merge
-	// (RFC-077 7.6).
+	// it. The OUTWARD column schema is mainCommon — so a CTE reference used as a
+	// JOIN LEG in the Main query anchors instead of falling back to the opaque
+	// merge (RFC-077 7.6).
 	t.cteExprScope[c.CTEProducer] = cteResult
-	t.cteColumnsScope[c.CTEProducer] = tempFields
-	consumerBindings := t.pushRecursiveCTEConsumerRows(c.Main, c.CTEProducer, declaredRow, commonRow)
+	t.cteColumnsScope[c.CTEProducer] = append([]values.Field(nil), mainCommon.Fields...)
 	result := t.translateOp(c.Main)
-	t.popRecursiveCTEConsumerRows(consumerBindings)
 	delete(t.cteExprScope, c.CTEProducer)
 	delete(t.cteColumnsScope, c.CTEProducer)
 	return result
+}
+
+// recordWithFieldNames is row with its fields renamed positionally.
+func recordWithFieldNames(row *values.RecordType, names []string) *values.RecordType {
+	fields := append([]values.Field(nil), row.Fields...)
+	for i := range fields {
+		fields[i].Name = names[i]
+	}
+	return &values.RecordType{Nullable: row.Nullable, Fields: fields}
 }
 
 // extractOuterProjectionColumns returns the SOURCE column names from the
@@ -9907,20 +9814,12 @@ func (t *cascadesTranslator) normalizeLegToOutputColumns(
 			return nil
 		}
 	}
-	projection, err := expressions.NewLogicalProjectionExpressionWithAliases(
-		projected, append([]string(nil), outCols...), q)
-	if err != nil {
-		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"recursive CTE normalization has no exact result row: %v", err))
-		return nil
-	}
-	return projection
+	return t.blockOf(projected, append([]string(nil), outCols...), nil, q)
 }
 
 // normalizeRecursiveLegToOutputRow re-emits one recursive-CTE leg under the
 // exact common positional row derived for the recursion. Resolving by ordinal
-// preserves source identity, while exactUnionSlotValue applies only the SQL
-// implicit promotion/nullability widening already proven by MaximumType.
+// preserves source identity, and recursiveSlotValue fits each slot to it.
 func (t *cascadesTranslator) normalizeRecursiveLegToOutputRow(
 	leg expressions.RelationalExpression,
 	outputRow *values.RecordType,
@@ -9946,7 +9845,7 @@ func (t *cascadesTranslator) normalizeRecursiveLegToOutputRow(
 				"recursive CTE output slot %d does not resolve: %v", i, resolveErr))
 			return nil
 		}
-		projected[i], err = exactUnionSlotValue(resolved, field.FieldType)
+		projected[i], err = recursiveSlotValue(resolved, field.FieldType)
 		if err != nil {
 			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 				"recursive CTE output slot %d cannot adopt the common type: %v", i, err))
@@ -9954,20 +9853,16 @@ func (t *cascadesTranslator) normalizeRecursiveLegToOutputRow(
 		}
 		outputNames[i] = field.Name
 	}
-	projection, err := expressions.NewLogicalProjectionExpressionWithOutputSchema(
-		projected, nil, nil, outputNames, q)
-	if err != nil {
-		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"recursive CTE normalization has no exact result row: %v", err))
+	result := t.blockResult(projected, nil, outputNames)
+	if result == nil {
 		return nil
 	}
-	if !projection.GetResultValue().Type().Equals(outputRow) {
+	if !result.Type().Equals(outputRow) {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"recursive CTE normalization produced %v, want %v",
-			projection.GetResultValue().Type(), outputRow))
+			"recursive CTE normalization produced %v, want %v", result.Type(), outputRow))
 		return nil
 	}
-	return projection
+	return t.blockSelectOf(result, q)
 }
 
 func (t *cascadesTranslator) translateInsert(ins *logical.LogicalInsert) expressions.RelationalExpression {
@@ -10003,7 +9898,7 @@ func (t *cascadesTranslator) translateInsert(ins *logical.LogicalInsert) express
 			"INSERT target %q has no exact catalog row type", ins.Table))
 		return nil
 	}
-	insert, err := expressions.NewInsertExpression(q, ins.Table, &values.RecordType{Fields: targetFields})
+	insert, err := expressions.NewInsertExpression(q, t.storageName(ins.Table), &values.RecordType{Fields: targetFields})
 	if err != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"INSERT has no exact result row: %v", err))
@@ -10020,19 +9915,6 @@ func (t *cascadesTranslator) translateUpdate(upd *logical.LogicalUpdate) express
 			return nil
 		}
 	}
-	transforms := make([]expressions.UpdateTransform, len(upd.Sets))
-	for i, a := range upd.Sets {
-		newVal := a.Value
-		if newVal == nil {
-			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
-				"UPDATE assignment %q has no resolved exact Value", a.Column))
-			return nil
-		}
-		transforms[i] = expressions.UpdateTransform{
-			FieldPath: strings.ToUpper(a.Column),
-			NewValue:  newVal,
-		}
-	}
 	if innerRef == nil {
 		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
 			"UPDATE has no exact input row"))
@@ -10045,13 +9927,43 @@ func (t *cascadesTranslator) translateUpdate(upd *logical.LogicalUpdate) express
 			"UPDATE target %q has no exact catalog row type", upd.Target))
 		return nil
 	}
-	update, err := expressions.NewUpdateExpression(q, upd.Target, &values.RecordType{Fields: targetFields}, transforms)
+	// Each SET column was resolved once, by the catalog-aware builder, to a
+	// field path in the same descriptor tableColumns reads; the transform
+	// carries its ordinals and names. The column the path starts at must be
+	// the one tableColumns has at that ordinal: an assignment never resolved
+	// (no path) or resolved against another descriptor is refused, never
+	// written to whatever field its ordinal happens to name.
+	transforms := make([]expressions.UpdateTransform, len(upd.Sets))
+	for i, a := range upd.Sets {
+		newVal := a.Value
+		if newVal == nil {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"UPDATE assignment %q has no resolved exact Value", a.Column))
+			return nil
+		}
+		if len(a.FieldOrdinals) == 0 || len(a.FieldOrdinals) != len(a.FieldNames) ||
+			a.FieldOrdinals[0] < 0 || a.FieldOrdinals[0] >= len(targetFields) ||
+			targetFields[a.FieldOrdinals[0]].Name != a.FieldNames[0] {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"UPDATE assignment %q has no resolved target column", a.Column))
+			return nil
+		}
+		transforms[i] = expressions.UpdateTransform{
+			FieldOrdinals: slices.Clone(a.FieldOrdinals),
+			FieldNames:    slices.Clone(a.FieldNames),
+			NewValue:      newVal,
+		}
+	}
+	// The target is the stored record-type name (Java's QueryVisitor sets
+	// targetRecordType from getStorageName()); the SET values read the target
+	// row through the SQL name their scope was built under (RFC-238 §7c).
+	update, err := expressions.NewUpdateExpression(q, t.storageName(upd.Target), &values.RecordType{Fields: targetFields}, transforms)
 	if err != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"UPDATE has no exact result row: %v", err))
 		return nil
 	}
-	return update
+	return update.WithTargetAlias(values.NamedCorrelationIdentifier(upd.Target))
 }
 
 func (t *cascadesTranslator) translateDelete(del *logical.LogicalDelete) expressions.RelationalExpression {
@@ -10067,7 +9979,7 @@ func (t *cascadesTranslator) translateDelete(del *logical.LogicalDelete) express
 			"DELETE has no exact input row"))
 		return nil
 	}
-	deleteExpr, err := expressions.NewDeleteExpression(expressions.ForEachQuantifier(innerRef), del.Target)
+	deleteExpr, err := expressions.NewDeleteExpression(expressions.ForEachQuantifier(innerRef), t.storageName(del.Target))
 	if err != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"DELETE has no exact result row: %v", err))

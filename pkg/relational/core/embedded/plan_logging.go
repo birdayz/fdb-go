@@ -66,6 +66,12 @@ type PlanGenerationInfo struct {
 	// SlowQuery is true when PlanningDuration exceeded the connection's
 	// slow-query threshold.
 	SlowQuery bool
+	// LogQuery is true when the statement's OPTIONS (LOG QUERY) or the
+	// connection's LOG_QUERY option asked for this statement to be logged. Java
+	// logs a successful record at INFO when LogQuery or SlowQuery holds and at
+	// DEBUG otherwise (RelationalLoggingUtil.publishPlanGenerationLogs); the
+	// handler applies its own level policy to the same two flags.
+	LogQuery bool
 	// Err is the planning error, or nil on success.
 	Err error
 }
@@ -105,6 +111,8 @@ type planLogScope struct {
 	start time.Time
 	plan  plans.RecordQueryPlan
 	cache PlanCacheEvent
+
+	logQuery bool
 }
 
 // beginPlanLog starts a logging scope, or returns nil when no logger is
@@ -129,6 +137,13 @@ func (s *planLogScope) setPlan(p plans.RecordQueryPlan) {
 	}
 }
 
+// setLogQuery records whether the statement's options ask for it to be logged.
+func (s *planLogScope) setLogQuery(logQuery bool) {
+	if s != nil {
+		s.logQuery = logQuery
+	}
+}
+
 // setCache records how the plan cache participated.
 func (s *planLogScope) setCache(e PlanCacheEvent) {
 	if s != nil {
@@ -147,6 +162,7 @@ func (s *planLogScope) finish(err error) {
 		SQL:              truncateSQL(s.sql),
 		PlanningDuration: time.Since(s.start),
 		Cache:            s.cache,
+		LogQuery:         s.logQuery,
 		Err:              err,
 	}
 	if s.plan != nil {
@@ -157,7 +173,7 @@ func (s *planLogScope) finish(err error) {
 	// only for HIT/MISS (the cache was consulted/mutated); SKIP and
 	// INCONCLUSIVE carry 0.
 	if s.g.cache != nil && (s.cache == PlanCacheHit || s.cache == PlanCacheMiss) {
-		info.CacheNumEntries = s.g.cache.Len()
+		info.CacheNumEntries = s.g.cache.numEntries()
 	}
 	if thresh := s.g.c.slowQueryThresholdMicros; thresh > 0 {
 		info.SlowQuery = info.PlanningDuration.Microseconds() > thresh

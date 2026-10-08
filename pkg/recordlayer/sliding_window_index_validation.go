@@ -1,12 +1,23 @@
 package recordlayer
 
-import (
-	"fmt"
-)
+// isSlidingWindowIndex reports whether an index gets sliding-window decoration.
+// Matches Java's SlidingWindowIndexMaintainerFactory.isSlidingWindowIndex
+// (:91-93): VECTOR type AND a row-number window predicate reachable through AND.
+//
+// canonicalIndexType is used rather than a raw string compare so that the
+// index-type aliases the rest of the dispatch honours are honoured here too;
+// a decoration decision that disagreed with createIndexMaintainer's switch
+// would validate one index and maintain a different one.
+func isSlidingWindowIndex(idx *Index) bool {
+	return canonicalIndexType(idx.Type) == IndexTypeVector && idx.HasRowNumberWindowPredicate()
+}
 
-// validateSlidingWindowIndexes is the port of Java's
+// validateSlidingWindowIndex is the port of Java's
 // SlidingWindowIndexMaintainerFactory.SlidingWindowIndexValidator.validate
-// (SlidingWindowIndexMaintainerFactory.java:212-236).
+// (SlidingWindowIndexMaintainerFactory.java:212-238), over the index's record
+// types. Its checks run first in the index's validation, and it ends by
+// running the VECTOR index's own validator, whose steps validateIndex runs
+// after it.
 //
 // Java reaches this validator only through the registry, which installs it
 // exactly when isSlidingWindowIndex(index) holds — VECTOR type AND a row-number
@@ -25,52 +36,24 @@ import (
 // safe to read: the row-window arm is never folded to a tautology, and
 // indexPredicateToQueryPredicate refuses to convert it, so the planner excludes
 // the candidate rather than serving it as a full index.
-func validateSlidingWindowIndexes(md *RecordMetaData) error {
-	for _, idx := range md.indexes {
-		if !isSlidingWindowIndex(idx) {
-			continue
-		}
-		if err := validateSlidingWindowIndex(md, idx); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// isSlidingWindowIndex reports whether an index gets sliding-window decoration.
-// Matches Java's SlidingWindowIndexMaintainerFactory.isSlidingWindowIndex
-// (:91-93): VECTOR type AND a row-number window predicate reachable through AND.
-//
-// canonicalIndexType is used rather than a raw string compare so that the
-// index-type aliases the rest of the dispatch honours are honoured here too;
-// a decoration decision that disagreed with createIndexMaintainer's switch
-// would validate one index and maintain a different one.
-func isSlidingWindowIndex(idx *Index) bool {
-	return canonicalIndexType(idx.Type) == IndexTypeVector && idx.HasRowNumberWindowPredicate()
-}
-
-func validateSlidingWindowIndex(md *RecordMetaData, idx *Index) error {
-	recordTypes := md.RecordTypesForIndex(idx)
-
+func validateSlidingWindowIndex(recordTypes []*RecordType, idx *Index) error {
 	if len(recordTypes) == 0 {
 		return &MetaDataError{Message: "sliding window index delegate is defined on an empty set of types"}
 	}
 	if len(recordTypes) != 1 {
-		return &MetaDataError{Message: fmt.Sprintf(
-			"sliding window index delegate has multiple types (index %s)", idx.Name)}
+		return &MetaDataError{Message: "sliding window index delegate has multiple types"}
 	}
 	// Java's third arm. RecordType.IsSynthetic() is a constant false in this
 	// port (synthetic record types are not modelled), so this arm cannot fire —
 	// but the shape it guards against is refused EARLIER and more loudly:
 	// indexFromProto rejects an index naming a record type that is not in the
-	// union descriptor with "unknown record type %q referenced by index %q", and
+	// union descriptor with "Unknown record type <name>", and
 	// a joined/unnested type never becomes a *RecordType. Ported for 1:1
 	// fidelity so that modelling synthetic types later re-arms the check
 	// automatically rather than leaving a hole nobody remembers.
 	for _, rt := range recordTypes {
 		if rt.IsSynthetic() {
-			return &MetaDataError{Message: fmt.Sprintf(
-				"sliding window index is on synthetic record types (index %s)", idx.Name)}
+			return &MetaDataError{Message: "sliding window index is on synthetic record types"}
 		}
 	}
 	// Defensive: restates the decoration gate above.
@@ -87,18 +70,15 @@ func validateSlidingWindowIndex(md *RecordMetaData, idx *Index) error {
 	if err := validateRowNumberWindowPlacement(idx.predicateProto); err != nil {
 		return err
 	}
-	// Java's LAST line: delegateIndexValidator.validate(metaDataValidator)
-	// (SlidingWindowIndexMaintainerFactory.java:238). The decorator does not
+	// Java's LAST line is delegateIndexValidator.validate(metaDataValidator)
+	// (SlidingWindowIndexMaintainerFactory.java:238): the decorator does not
 	// replace the wrapped index's own validation, it runs it — a windowed VECTOR
-	// is still a VECTOR and its options still have to parse.
-	return validateVectorIndexOptionsAtBuild(idx)
+	// is still a VECTOR and its options still have to parse. validateIndex runs
+	// that validator's steps right after this returns.
+	return nil
 
-	// NOTHING BEYOND WHAT JAVA'S VALIDATOR DOES BELONGS HERE — which includes
-	// the delegate call above, and once did not. This read "NOTHING ELSE BELONGS
-	// HERE" for a while, a sentence that was both wrong and load-bearing in the
-	// wrong direction: Java's validator ENDS by delegating to the wrapped
-	// index's own validator, so the delegation belonged here all along and the
-	// sentence forbade adding it.
+	// NOTHING BEYOND WHAT JAVA'S VALIDATOR DOES BELONGS HERE, the delegation
+	// aside, which validateIndex does.
 	//
 	// The temptation the rule is actually about is real: the maintainer
 	// constructor rejects declarations this validator lets through — a window

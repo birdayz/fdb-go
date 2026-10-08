@@ -8,33 +8,45 @@ import (
 )
 
 // TestImplementTypeFilterRule_FiresAfterScanImplemented pins the
-// LogicalTypeFilterExpression → TypeFilterPlan implementation chain.
+// LogicalTypeFilterExpression implementation as Java's ImplementTypeFilterRule
+// does it: a scan whose record types the filter already covers is yielded as
+// it is, with no type filter; a scan producing a type the filter drops gets a
+// TypeFilterPlan keeping the types it shares with the filter.
 func TestImplementTypeFilterRule_FiresAfterScanImplemented(t *testing.T) {
 	t.Parallel()
-	scan := smallImplementScan("Order")
-	innerRef := expressions.InitialOf(scan)
-	tf := mustSmallImplementConstruct(expressions.NewLogicalTypeFilterExpression(
-		[]string{"Order"},
-		expressions.ForEachQuantifier(innerRef),
-	))
-	topRef := expressions.InitialOf(tf)
-
-	fireSmallImplementRule(t, NewPrimaryScanRule(), innerRef)
-
-	yielded := fireSmallImplementRule(t, NewImplementTypeFilterRule(), topRef)
-	if len(yielded) != 1 {
-		t.Fatalf("ImplementTypeFilterRule yielded %d, want 1", len(yielded))
+	implement := func(scanTypes, filterTypes []string) []expressions.RelationalExpression {
+		scan := mustSmallImplementConstruct(expressions.NewFullUnorderedScanExpression(scanTypes, smallImplementRowType()))
+		innerRef := expressions.InitialOf(scan)
+		tf := mustSmallImplementConstruct(expressions.NewLogicalTypeFilterExpression(
+			filterTypes,
+			expressions.ForEachQuantifier(innerRef),
+		))
+		fireSmallImplementRule(t, NewPrimaryScanRule(), innerRef)
+		return fireSmallImplementRule(t, NewImplementTypeFilterRule(), expressions.InitialOf(tf))
 	}
-	plan, ok := yielded[0].(*plans.RecordQueryTypeFilterPlan)
+
+	covered := implement([]string{"Order"}, []string{"Order"})
+	if len(covered) != 1 {
+		t.Fatalf("covered: ImplementTypeFilterRule yielded %d, want 1", len(covered))
+	}
+	if _, ok := covered[0].(*plans.RecordQueryScanPlan); !ok {
+		t.Fatalf("covered: yield = %T, want the scan itself (no type filter needed)", covered[0])
+	}
+
+	filtered := implement([]string{"Customer", "Order"}, []string{"Order"})
+	if len(filtered) != 1 {
+		t.Fatalf("filtered: ImplementTypeFilterRule yielded %d, want 1", len(filtered))
+	}
+	plan, ok := filtered[0].(*plans.RecordQueryTypeFilterPlan)
 	if !ok {
-		t.Fatalf("yield = %T, want *plans.RecordQueryTypeFilterPlan", yielded[0])
+		t.Fatalf("filtered: yield = %T, want *plans.RecordQueryTypeFilterPlan", filtered[0])
 	}
 	rts := plan.GetRecordTypes()
 	if len(rts) != 1 || rts[0] != "Order" {
-		t.Fatalf("record types = %v, want [Order]", rts)
+		t.Fatalf("filtered: record types = %v, want [Order]", rts)
 	}
 	if _, ok := plan.GetInner().(*plans.RecordQueryScanPlan); !ok {
-		t.Fatalf("inner = %T, want *RecordQueryScanPlan", plan.GetInner())
+		t.Fatalf("filtered: inner = %T, want *RecordQueryScanPlan", plan.GetInner())
 	}
 }
 

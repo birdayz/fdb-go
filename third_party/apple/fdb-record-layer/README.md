@@ -5,19 +5,21 @@ Apple's [fdb-record-layer](https://github.com/FoundationDB/fdb-record-layer),
 Copyright Apple Inc. and the FoundationDB project authors, licensed under the
 Apache License, Version 2.0.
 
-The pinned upstream tag is recorded in [`VERSION`](VERSION) and matches the tag
-the Go port is written against (see `CLAUDE.md`).
+The pinned upstream tag is recorded in [`VERSION`](VERSION).
 
 ## Provenance
 
 | | |
 |---|---|
-| Upstream path | `yaml-tests/src/test/resources/` |
-| Local path | `yaml-tests/src/test/resources/` (mirrored exactly) |
-| Files | `*.yamsql` only |
+| Upstream path | `yaml-tests/src/` |
+| Local path | `yaml-tests/src/` (mirrored exactly) |
+| Files | `*.yamsql` under `test/resources/`; the yaml-tests protos (`main/proto/`, `test/proto/`) and the metadata JSON files (`*.json` under `main/resources/` and `test/resources/`) that the `load schema template` command reads |
 
 The corpus is the input to `pkg/relational/conformance/javayamsql`, which parses
-every file and asserts the directive/tag surface has not drifted.
+every file and asserts the directive/tag surface has not drifted. The protos are
+built by `BUILD.bazel` into descriptor sets under Java's file names; with the
+JSON files they serve the `load schema template` / `set schema state` commands
+(`pkg/relational/conformance/javacorpus/schemacommand.go`).
 
 ## Never edit these files
 
@@ -35,9 +37,8 @@ config. They describe the Java planner's search, carry no cross-engine meaning,
 and would rot on every upstream planner change without ever failing usefully
 here.
 
-Also excluded, as they are not corpus data: `log4j2-test.properties`,
-`serialization-keys.p12`, `valid_identifiers_metadata.json`,
-`import-schema-template/with_included_dependencies_metadata.json`.
+Also excluded, as they are not corpus data: `log4j2-test.properties` and
+`serialization-keys.p12` (a key store; the corpus test writes an equivalent).
 
 ## Re-sync procedure
 
@@ -48,9 +49,9 @@ then rsync `.yamsql` files only:
 git -C fdb-record-layer checkout <tag>
 
 rsync -a --delete --prune-empty-dirs \
-  --include='*/' --include='*.yamsql' --exclude='*' \
-  fdb-record-layer/yaml-tests/src/test/resources/ \
-  third_party/apple/fdb-record-layer/yaml-tests/src/test/resources/
+  --include='*/' --include='*.yamsql' --include='*.json' --include='*.proto' --exclude='*' \
+  fdb-record-layer/yaml-tests/src/ \
+  third_party/apple/fdb-record-layer/yaml-tests/src/
 
 echo '<tag>' > third_party/apple/fdb-record-layer/VERSION
 ```

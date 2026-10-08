@@ -8,164 +8,159 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
-// TestBuildCoveringLogicalRow pins covering-index row conformance: a covering
-// scan's row is shaped by the record's LOGICAL RecordType (descriptor field
-// order — Java's IndexKeyValueToPartialRecord partial record), NOT the index
-// layout [covered..., pk...]. A FieldValue ordinal baked against the record
-// type must read the same slot on the base-scan and covering paths; with the
-// index-layout row, a baked read of a value column silently served the PK
-// column (SUM(b) summing ids — the TestFDB_MultiColumnIndex regression).
-func TestBuildCoveringLogicalRow(t *testing.T) {
-	t.Parallel()
-
-	// mci_t(id, a, b, c) with index (a, b): logical order [ID A B C],
-	// index layout [A B ID].
-	logical := exactTestRowType(
-		values.Field{Name: "ID", FieldType: values.NotNullLong},
-		values.Field{Name: "A", FieldType: values.NotNullString},
-		values.Field{Name: "B", FieldType: values.NotNullLong},
-		values.Field{Name: "C", FieldType: values.NullableString},
-	)
-	posNames := []string{"A", "B", "ID"}
-
-	ords := coveringLogicalOrdinals(posNames, logical)
-	if ords == nil {
-		t.Fatal("coveringLogicalOrdinals: want a full mapping, got nil")
+// coveringTestDescriptor is T(id, a, s{x, y}, f float) and its row type.
+func coveringTestDescriptor(t *testing.T) (protoreflect.MessageDescriptor, *values.RecordType) {
+	t.Helper()
+	opt := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	field := func(name string, num int32, typ descriptorpb.FieldDescriptorProto_Type, typeName string) *descriptorpb.FieldDescriptorProto {
+		f := &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(num), Label: &opt, Type: &typ}
+		if typeName != "" {
+			f.TypeName = proto.String(typeName)
+		}
+		return f
 	}
-	if ords[0] != 1 || ords[1] != 2 || ords[2] != 0 {
-		t.Fatalf("logical ordinals = %v, want [1 2 0]", ords)
-	}
-
-	// PK carries a record-type prefix; the user PK is the tail (pkOffset skip).
-	row := buildCoveringLogicalRow(
-		[]string{"a", "b"}, []string{"id"},
-		tuple.Tuple{"x", int64(20)}, tuple.Tuple{int64(7), int64(5)},
-		logical, ords, nil)
-
-	if row.Type != logical {
-		t.Fatal("covering row must carry the LOGICAL record type")
-	}
-	if v, _ := row.Get(0); v != int64(5) {
-		t.Fatalf("Get(0)=ID: got %v, want 5 (pk tail, not the type-prefix 7)", v)
-	}
-	if v, _ := row.Get(1); v != "x" {
-		t.Fatalf("Get(1)=A: got %v, want x", v)
-	}
-	if v, _ := row.Get(2); v != int64(20) {
-		t.Fatalf("Get(2)=B: got %v, want 20 — the index-layout row served ID here", v)
-	}
-	if v, _ := row.Get(3); v != nil {
-		t.Fatalf("Get(3)=C (non-covered): got %v, want nil (Java's unset partial field)", v)
-	}
-
-	// The regression axis: a reference baked to B's LOGICAL ordinal (2)
-	// evaluates to the b value, not the id.
-	bRef := mustTestFieldOrdinal(t,
-		mustTestQOV(t, values.NamedCorrelationIdentifier("covering-logical-row"), logical), 2)
-	got, err := bRef.Evaluate(values.OrdinalRow(row))
+	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:    proto.String("covering_reader_test.proto"),
+		Package: proto.String("coveringreader"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			{Name: proto.String("S"), Field: []*descriptorpb.FieldDescriptorProto{
+				field("x", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""),
+				field("y", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING, ""),
+			}},
+			{Name: proto.String("T"), Field: []*descriptorpb.FieldDescriptorProto{
+				field("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""),
+				field("a", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING, ""),
+				field("s", 3, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".coveringreader.S"),
+				field("f", 4, descriptorpb.FieldDescriptorProto_TYPE_FLOAT, ""),
+			}},
+		},
+	}, nil)
 	if err != nil {
-		t.Fatalf("baked read: %v", err)
+		t.Fatalf("descriptor: %v", err)
 	}
-	if got != int64(20) {
-		t.Fatalf("baked B read = %v, want 20", got)
-	}
-
-	// The row's TYPE names slots identically to the base-scan path, so a
-	// plan-time bake against it lands on the same slot.
-	if idx, ok := row.Type.FieldIndexUnique("B"); !ok || idx != 2 {
-		t.Fatalf("FieldIndexUnique(B) = (%d, %v), want (2, true)", idx, ok)
-	}
+	desc := file.Messages().ByName("T")
+	return desc, PositionalTypeForDescriptor(desc)
 }
 
-func TestBuildCoveringLogicalRowDoesNotGuessUnsafePrimaryKeyNames(t *testing.T) {
-	t.Parallel()
-
-	// PK (ID, literal(7)) has FieldNames()==[ID], but ID is not the tuple tail.
-	// An index whose root is ID can still cover ID directly. The metadata adapter
-	// stamps no PK coverage names, and the executor must honor that empty list;
-	// re-deriving FieldNames would write the literal after the correct index value
-	// and silently change ID from 42 to 7.
-	logical := exactTestRowType(
-		values.Field{Name: "ID", FieldType: values.NotNullLong},
-		values.Field{Name: "PRICE", FieldType: values.NullableDouble},
-	)
-	ords := coveringLogicalOrdinals([]string{"ID"}, logical)
-	row := buildCoveringLogicalRow(
-		[]string{"ID"}, nil,
-		tuple.Tuple{int64(42)}, tuple.Tuple{int64(42), int64(7)},
-		logical, ords, nil,
-	)
-	if id, _ := row.Get(0); id != int64(42) {
-		t.Fatalf("unsafe PK tail overwrote covered ID with %v, want 42", id)
+func coveringLeaf(t *testing.T, source values.TupleSource, ordinal int, typ values.Type) values.Value {
+	t.Helper()
+	leaf, err := values.NewIndexEntryObjectValue(values.CurrentCorrelation(), source, []int{ordinal}, typ)
+	if err != nil {
+		t.Fatalf("leaf: %v", err)
 	}
-	if price, _ := row.Get(1); price != nil {
-		t.Fatalf("uncovered PRICE = %v, want nil", price)
-	}
+	return leaf
 }
 
-func TestCoveringIndexCursor_PropagatesFullPrimaryKey(t *testing.T) {
-	t.Parallel()
-	index := recordlayer.NewIndex("covering_pk", recordlayer.Field("a"))
-	entry := &recordlayer.IndexEntry{
-		Index: index,
-		Key:   tuple.Tuple{"covered", "record_type", int64(42)},
-	}
-	expectedPrimaryKey := tuple.Tuple{"record_type", int64(42)}
-	logicalType := exactTestRowType(
-		values.Field{Name: "ID", FieldType: values.NotNullLong},
-		values.Field{Name: "A", FieldType: values.NotNullString},
+// coveringTestReader reads an entry of an index on (f, s.y) with primary key
+// id: KEY (f, s.y, id).
+func coveringTestReader(t *testing.T) (*coveringEntryReader, *values.RecordType) {
+	t.Helper()
+	desc, rowType := coveringTestDescriptor(t)
+	sType := rowType.Fields[2].FieldType.(*values.RecordType)
+	reader := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "id", Value: coveringLeaf(t, values.TupleSourceKey, 2, values.NullableLong)},
+		values.RecordConstructorField{Name: "a", Value: values.NewNullValue(values.NullableString)},
+		values.RecordConstructorField{Name: "s", Value: values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "x", Value: values.NewNullValue(sType.Fields[0].FieldType)},
+			values.RecordConstructorField{Name: "y", Value: coveringLeaf(t, values.TupleSourceKey, 1, values.NullableString)},
+		)},
+		values.RecordConstructorField{Name: "f", Value: coveringLeaf(t, values.TupleSourceKey, 0, values.NullableFloat)},
 	)
-	cursor := &coveringIndexCursor{
-		inner:       recordlayer.FromList([]*recordlayer.IndexEntry{entry}),
-		columns:     []string{"A"},
-		pkColumns:   []string{"ID"},
-		logicalType: logicalType,
-		logicalOrds: coveringLogicalOrdinals(
-			[]string{"A", "ID"},
-			logicalType,
-		),
+	r, err := newCoveringEntryReader(reader, desc, rowType, nil)
+	if err != nil {
+		t.Fatalf("reader: %v", err)
 	}
+	return r, rowType
+}
+
+// TestCoveringIndexCursor_ReadsTheRecordFromTheEntry: covered fields land in
+// their slots of the record's row (FLOAT widened to the base-scan float64), a
+// nested covered field in a message of the stored nested descriptor, the rest
+// unset; the full primary key rides along.
+func TestCoveringIndexCursor_ReadsTheRecordFromTheEntry(t *testing.T) {
+	t.Parallel()
+	reader, rowType := coveringTestReader(t)
+	index := recordlayer.NewIndex("covering_reader", recordlayer.Concat(recordlayer.Field("f"), recordlayer.Nest("s", recordlayer.Field("y"))))
+	entry := &recordlayer.IndexEntry{Index: index, Key: tuple.Tuple{float32(2.5), "why", int64(42)}}
+	cursor := &coveringIndexCursor{inner: recordlayer.FromList([]*recordlayer.IndexEntry{entry}), reader: reader}
 	defer cursor.Close()
 
 	result, err := cursor.OnNext(context.Background())
 	if err != nil || !result.HasNext() {
 		t.Fatalf("covering cursor result = %#v, err = %v", result, err)
 	}
-	if got := result.GetValue().PrimaryKey; !bytes.Equal(
-		got.Pack(),
-		expectedPrimaryKey.Pack(),
-	) {
-		t.Fatalf("covering primary key = %v, want full key %v", got, expectedPrimaryKey)
+	row := result.GetValue().Positional
+	if row.Type != rowType {
+		t.Fatal("covering row must carry the record's row type")
+	}
+	if id, _ := row.Get(0); id != int64(42) {
+		t.Fatalf("ID = %v, want 42", id)
+	}
+	if a, _ := row.Get(1); a != nil {
+		t.Fatalf("uncovered A = %v, want nil", a)
+	}
+	if f, _ := row.Get(3); f != float64(2.5) {
+		t.Fatalf("FLOAT = %T:%v, want float64 2.5", f, f)
+	}
+	s, _ := row.Get(2)
+	msg, ok := s.(proto.Message)
+	if !ok {
+		t.Fatalf("nested S = %T, want a message", s)
+	}
+	m := msg.ProtoReflect()
+	if got := m.Get(m.Descriptor().Fields().ByName("y")).String(); got != "why" {
+		t.Fatalf("S.Y = %q, want why", got)
+	}
+	if m.Has(m.Descriptor().Fields().ByName("x")) {
+		t.Fatal("uncovered S.X must stay unset")
+	}
+	if got := result.GetValue().PrimaryKey; !bytes.Equal(got.Pack(), tuple.Tuple{int64(42)}.Pack()) {
+		t.Fatalf("primary key = %v, want (42)", got)
 	}
 }
 
-// TestCoveringLogicalOrdinals_Fallback pins the all-or-nothing mapping rule and
-// its CORRECT-or-LOUD consequence: a nil result (any covering column without a
-// top-level logical slot — a nested/expression index column — or a multi-type
-// scan with no single logical shape) means the scan cannot present a LOGICAL row.
-// With flat refs baked to their logical ordinal, an index-layout row would misread
-// a top-level sibling projection (descriptor [ID,A,ADDR] + index row [A,ADDR.CITY,
-// ID]: A#1 reads ADDR.CITY — silent wrong rows). executeIndexScan therefore refuses
-// such a covering scan LOUD at construction rather than serve the misread-able row;
-// coveringIndexCursor.OnNext is logical-only. This test pins the DETECTION (nil)
-// that the loud guard keys on; the guard itself is `if logicalOrds == nil { return
-// error }` at the construction site.
-func TestCoveringLogicalOrdinals_Fallback(t *testing.T) {
+// TestCoveringEntryReader_RefusesAMismatchedRow: a reader that does not
+// describe the record's row is refused when the scan opens, never read into
+// the wrong slots.
+func TestCoveringEntryReader_RefusesAMismatchedRow(t *testing.T) {
 	t.Parallel()
-	logical := exactTestRowType(
-		values.Field{Name: "ID", FieldType: values.NotNullLong},
-		values.Field{Name: "A", FieldType: values.NotNullString},
-	)
-	if got := coveringLogicalOrdinals([]string{"A", "ADDR.CITY", "ID"}, logical); got != nil {
-		t.Fatalf("unmappable (nested) column must yield nil (→ loud refusal), got %v", got)
+	desc, rowType := coveringTestDescriptor(t)
+	short := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "id", Value: coveringLeaf(t, values.TupleSourceKey, 0, values.NullableLong)})
+	if _, err := newCoveringEntryReader(short, desc, rowType, nil); err == nil {
+		t.Fatal("a one-field reader over a four-field row was admitted")
 	}
-	if got := coveringLogicalOrdinals([]string{"A"}, nil); got != nil {
-		t.Fatalf("nil logical type (multi-type scan) must yield nil (→ loud refusal), got %v", got)
+	if _, err := newCoveringEntryReader(nil, desc, rowType, nil); err == nil {
+		t.Fatal("a covering scan without a reader was admitted")
 	}
-	// The mappable case still yields a full mapping (the scan is served logical).
-	if got := coveringLogicalOrdinals([]string{"A", "ID"}, logical); got == nil {
-		t.Fatal("a fully-mappable covering scan must yield logical ordinals, got nil")
+}
+
+// A covering FLOAT and a base FLOAT of the same number must key alike, or
+// DISTINCT/UNION across a covering leg and a base leg would never dedup.
+func TestDistinctKey_CoveringAndBaseFloatRowsDedup(t *testing.T) {
+	t.Parallel()
+	reader, rowType := coveringTestReader(t)
+	index := recordlayer.NewIndex("covering_reader", recordlayer.Concat(recordlayer.Field("f"), recordlayer.Nest("s", recordlayer.Field("y"))))
+	pos, err := reader.row(&entryBinder{entry: &recordlayer.IndexEntry{Index: index, Key: tuple.Tuple{float32(2.5), nil, int64(1)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pos.Slots[2] = nil
+	base := QueryResult{Positional: &PositionalRow{Type: rowType, Slots: []any{int64(1), nil, nil, float64(2.5)}}}
+	if mustDistinctKey(t, QueryResult{Positional: pos}) != mustDistinctKey(t, base) {
+		t.Fatal("covering row and base row of one record key differently")
+	}
+}
+
+func TestTupleElementToRowValue_BytesPassThrough(t *testing.T) {
+	t.Parallel()
+	b := []byte{0x01}
+	if got, ok := tupleElementToRowValue(b).([]byte); !ok || &got[0] != &b[0] {
+		t.Fatalf("[]byte should pass through unchanged")
 	}
 }

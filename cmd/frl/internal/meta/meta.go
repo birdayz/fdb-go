@@ -15,8 +15,6 @@ import (
 	"fmt"
 	"os"
 
-	"google.golang.org/protobuf/proto"
-
 	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -155,7 +153,7 @@ func buildFromBytes(data []byte, sourceName string) (*recordlayer.RecordMetaData
 		return nil, fmt.Errorf("%s is empty; expected a serialized RecordMetaDataProto.MetaData", sourceName)
 	}
 	mdProto := &gen.MetaData{}
-	if err := proto.Unmarshal(data, mdProto); err != nil {
+	if err := recordlayer.UnmarshalAsJava(data, mdProto); err != nil {
 		return nil, fmt.Errorf("%s: unmarshal MetaData: %w", sourceName, err)
 	}
 	return buildFromProto(mdProto, sourceName)

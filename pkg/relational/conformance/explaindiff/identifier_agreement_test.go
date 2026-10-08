@@ -1,6 +1,7 @@
 package explaindiff_test
 
 import (
+	"database/sql/driver"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -170,6 +171,12 @@ func TestIdentifierAgreementOverCorpus(t *testing.T) {
 			if !isPlannable || tc.EffectiveErrorCode() != "" {
 				continue
 			}
+			// Both spellings plan with the scenario's bound arguments, as
+			// the runner executes them; an unbound `?` does not plan.
+			args, argErr := explaindiff.StatementArgs(&s.Tests[i])
+			if argErr != nil {
+				t.Fatalf("%s#%d: %v", base, i, argErr)
+			}
 			plannable++
 			twin, n, perr := quoteEveryUnquotedIdentifier(tc.Query)
 			switch {
@@ -180,13 +187,13 @@ func TestIdentifierAgreementOverCorpus(t *testing.T) {
 				noIdent++
 				continue
 			}
-			want := agreementPlanText(plan, tc.Query, s.SchemaTemplate)
+			want := agreementPlanText(plan, tc.Query, s.SchemaTemplate, args)
 			if strings.HasPrefix(want, agreementErrMarker) {
 				baseFailed++
 				continue
 			}
 			perturbed++
-			if got := agreementPlanText(plan, twin, s.SchemaTemplate); got != want {
+			if got := agreementPlanText(plan, twin, s.SchemaTemplate, args); got != want {
 				disagree = append(disagree, fmt.Sprintf(
 					"%s#%d\n    sql:      %s\n    twin:     %s\n    baseline: %s\n    twin got: %s",
 					base, i, collapseSQL(tc.Query), collapseSQL(twin), want, got))
@@ -238,7 +245,7 @@ func agreementHarness(stmt string) (agreementPlanner, bool) {
 // perturbation must not be able to crash the planner either, and a crash that
 // vanished into a failed test binary would take the whole gate's verdict with
 // it.
-func agreementPlanText(which agreementPlanner, sql, schemaTemplate string) (out string) {
+func agreementPlanText(which agreementPlanner, sql, schemaTemplate string, args []driver.NamedValue) (out string) {
 	defer func() {
 		if r := recover(); r != nil {
 			out = fmt.Sprintf("%s PANIC %v>", agreementErrMarker, r)
@@ -250,9 +257,9 @@ func agreementPlanText(which agreementPlanner, sql, schemaTemplate string) (out 
 	)
 	switch which {
 	case agreementDML:
-		p, err = embedded.PlanPhysicalDMLForTest(sql, schemaTemplate, nil)
+		p, err = embedded.PlanPhysicalDMLForTestWithArgs(sql, schemaTemplate, args, nil, nil)
 	default:
-		p, err = embedded.PlanPhysicalForTest(sql, schemaTemplate, nil)
+		p, err = embedded.PlanPhysicalForTestWithArgs(sql, schemaTemplate, args, nil, nil)
 	}
 	if err != nil {
 		return agreementErrMarker + " " + collapseSQL(err.Error()) + ">"

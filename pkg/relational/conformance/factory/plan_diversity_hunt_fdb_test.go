@@ -61,7 +61,6 @@ var portfolio = []perturbation{
 	// --- ordering perturbations ----------------------------------------
 	{name: "ImplementSortRule", opts: disableRules("ImplementSortRule")},
 	{name: "ImplementInMemorySortRule", opts: disableRules("ImplementInMemorySortRule")},
-	{name: "no-ordered-scan", opts: disableRules("OrderedIndexScanRule", "OrderedPrimaryScanRule")},
 	// --- predicate-shape perturbations ---------------------------------
 	{name: "NormalizePredicatesRule", opts: disableRules("NormalizePredicatesRule")},
 	{name: "InComparisonToExplodeRule", opts: disableRules("InComparisonToExplodeRule")},
@@ -341,7 +340,7 @@ func huntSeed(t *testing.T, seed uint64, worker int) huntStats {
 	}
 
 	ctx := context.Background()
-	dbPath := fmt.Sprintf("/HUNT_%d_%d", worker, seed)
+	dbPath := fmt.Sprintf("/FRL/HUNT_%d_%d", worker, seed)
 	schema := fmt.Sprintf("hs_%d_%d", worker, seed)
 	tmpl := schema + "t"
 
@@ -370,7 +369,7 @@ func huntSeed(t *testing.T, seed uint64, worker int) huntStats {
 	defer setupDB.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA %s/%s", dbPath, schema)) //nolint:errcheck
 	defer setupDB.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA TEMPLATE %s", tmpl))     //nolint:errcheck
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schema))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schema)))
 	if err != nil {
 		t.Errorf("seed %d: open: %v", seed, err)
 		return res

@@ -28,12 +28,12 @@ schema_template: |
   CREATE TABLE rp (
     id BIGINT,
     region STRING,
-    plan STRING,
+    plan_name STRING,
     tier BIGINT,
     PRIMARY KEY (id)
   )
-  CREATE INDEX idx_region_plan ON rp (region, plan)
-  CREATE INDEX idx_region_plan_tier ON rp (region, plan, tier)
+  CREATE INDEX idx_region_plan ON rp (region, plan_name)
+  CREATE INDEX idx_region_plan_tier ON rp (region, plan_name, tier)
 setup:
   - INSERT INTO rp VALUES
       (1, 'us', 'pro', 1),
@@ -48,7 +48,7 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id FROM rp WHERE region = 'us' ORDER BY id
-    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *])"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_REGION_PLAN, [=, *] COVERING), {ID: _current.ID#0}))"
     plan_not_contains: "Scan(RP)"
     rows:
       - [1]
@@ -69,7 +69,7 @@ tests:
   # Leading col mismatch → prefix doesn't apply, falls through to
   # full type scan. Verifies the branch isn't firing when leading
   # col has no equality.
-  - query: SELECT id FROM rp WHERE plan = 'pro' ORDER BY id
+  - query: SELECT id FROM rp WHERE plan_name = 'pro' ORDER BY id
     plan_contains: "PredicatesFilter(Scan(RP)"
     plan_not_contains: IndexScan
     rows:
@@ -83,7 +83,7 @@ tests:
   # -------------------------------------------------------------------
 
   - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY id
-    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *])"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_REGION_PLAN, [=, *] COVERING), {ID: _current.ID#0}))"
     plan_not_contains: "Scan(RP)"
     rows:
       - [4]
@@ -94,7 +94,7 @@ tests:
   # idx_region_plan (2-col) and idx_region_plan_tier (3-col) depends
   # on iteration order of GetIndexesForRecordType — whichever is
   # picked first; both are correct.
-  - query: SELECT id FROM rp WHERE region = 'us' AND plan = 'pro' ORDER BY id
+  - query: SELECT id FROM rp WHERE region = 'us' AND plan_name = 'pro' ORDER BY id
     plan_contains: "[=, =]"
     plan_not_contains: "Scan(RP)"
     rows:
@@ -106,7 +106,7 @@ tests:
   # full-equality branch (trySecondaryIndexFromWhere) should catch
   # this, not the composite-prefix branch. Composite-prefix explicitly
   # bails when every col is equated.
-  - query: SELECT id FROM rp WHERE region = 'us' AND plan = 'pro' AND tier = 1 ORDER BY id
+  - query: SELECT id FROM rp WHERE region = 'us' AND plan_name = 'pro' AND tier = 1 ORDER BY id
     plan_contains: "IndexScan(IDX_REGION_PLAN_TIER, [=, =, =]"
     plan_not_contains: "Scan(RP)"
     rows:
@@ -130,7 +130,7 @@ tests:
     rowcount: 2
 
   - query: SELECT id, tier FROM rp WHERE region = 'eu' ORDER BY id
-    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *])"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_REGION_PLAN_TIER, [=, *, *] COVERING), {ID: _current.ID#0, TIER: _current.TIER#3}))"
     plan_not_contains: "Scan(RP)"
     rows:
       - [4, 99]
@@ -140,6 +140,6 @@ tests:
     rowcount: 2
 
   - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY id
-    plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *])"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_REGION_PLAN, [=, *] COVERING), {ID: _current.ID#0}))"
     plan_not_contains: "Scan(RP)"
     rows: []

@@ -135,7 +135,7 @@ func newMetaEvolveCheckCmd() *cobra.Command {
 	c.Flags().StringVar(&newPath, "new", "", "path to the proposed MetaData.pb (required)")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	c.Flags().BoolVar(&allowNoVersionChange, "allow-no-version-change", false,
-		"accept evolutions where the metadata version hasn't advanced")
+		"accept an unchanged metadata version (a lower one is still refused)")
 	c.Flags().BoolVar(&allowIndexRebuilds, "allow-index-rebuilds", false,
 		"accept changes that trigger a full index rebuild")
 	c.Flags().BoolVar(&allowUnsplitToSplit, "allow-unsplit-to-split", false,

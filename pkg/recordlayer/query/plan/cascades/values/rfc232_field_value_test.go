@@ -341,8 +341,8 @@ func TestRFC232FieldValueCollapsesExactExistsRecordConstructorSlot(t *testing.T)
 	if resolved != exists {
 		t.Fatalf("record-constructor collapse returned %T, want the exact *ExistsValue slot", resolved)
 	}
-	if !resolved.Type().Equals(values.NotNullBoolean) {
-		t.Fatalf("collapsed EXISTS type = %v, want %v", resolved.Type(), values.NotNullBoolean)
+	if !resolved.Type().Equals(values.NullableBoolean) {
+		t.Fatalf("collapsed EXISTS type = %v, want %v", resolved.Type(), values.NullableBoolean)
 	}
 }
 
@@ -738,7 +738,9 @@ func TestRFC232FieldValueProtoEvaluationUsesDeclarationOrdinalsAndCanonicalConve
 		want    any
 	}{
 		{0, int64(73)},
-		{1, int64(41)},
+		// Unset, with a declared default of 41: a query reads NULL, as Java's
+		// does (ProtoFieldReadsValue).
+		{1, nil},
 		{2, []any{"a", "b"}},
 		{3, int64(1)},
 	}

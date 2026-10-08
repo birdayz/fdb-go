@@ -13,7 +13,10 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 )
@@ -54,9 +57,9 @@ import (
 //   - *big.Int / big.Int — an integer beyond the uint64 range a tuple key can
 //     carry. Not producible from a proto scalar field today (those cap at uint64),
 //     but encoded losslessly (sign + magnitude) so it can never silently round;
-//   - time.Time — DATE/TIMESTAMP values flow through the row domain as STRINGS
-//     today (so a time.Time key is not currently reachable), but a time.Time is
-//     encoded losslessly (MarshalBinary) rather than left to round-trip wrong.
+//   - tag 12 — a time.Time an earlier Go build encoded (MarshalBinary). DATE
+//     and TIMESTAMP values are text now, so nothing encodes it; it decodes to
+//     the instant's canonical TIMESTAMP text, the value that key now has.
 //   - []any — an ARRAY column slot (values.ProtoFieldToRowValue turns a repeated
 //     field into []any): uvarint element count + each element recursively, so a
 //     nested array (struct arrays' element lists) round-trips too;
@@ -100,7 +103,7 @@ const (
 	contValInt      byte = 9  // platform int, restored as int
 	contValUint64   byte = 10 // index-sourced integer in (2^63, 2^64)
 	contValBigInt   byte = 11 // *big.Int / big.Int, sign byte + big-endian magnitude
-	contValTime     byte = 12 // time.Time via MarshalBinary
+	contValTime     byte = 12 // decode only: an earlier build's time.Time
 	contValList     byte = 13 // []any: uvarint count + each element recursively
 	contValProtoMsg byte = 14 // proto.Message: full type name + proto.Marshal bytes
 	// Tag 15 was contValJSON — the deleted lossy JSON fallback — and is
@@ -150,14 +153,6 @@ func appendContValue(buf []byte, v any) ([]byte, error) {
 		return appendContBigInt(buf, t), nil
 	case big.Int:
 		return appendContBigInt(buf, &t), nil
-	case time.Time:
-		mb, err := t.MarshalBinary()
-		if err != nil {
-			return nil, fmt.Errorf("continuation: cannot encode time.Time value: %w", err)
-		}
-		buf = append(buf, contValTime)
-		buf = binary.AppendUvarint(buf, uint64(len(mb)))
-		return append(buf, mb...), nil
 	case []any:
 		// An ARRAY column slot. Elements recurse through appendContValue, so
 		// nested lists and struct elements work; an unencodable element
@@ -328,7 +323,7 @@ func readContValueDepth(b []byte, depth int) (any, []byte, error) {
 		if uErr := tm.UnmarshalBinary(run); uErr != nil {
 			return nil, nil, fmt.Errorf("continuation: bad time.Time value (tag %d): %w", tag, uErr)
 		}
-		return tm, rest, nil
+		return values.CanonicalTimestampText(tm), rest, nil
 	case contValFloat64:
 		if err := need(8); err != nil {
 			return nil, nil, err
@@ -485,7 +480,10 @@ func resolvePendingProtoValuesDepth(v any, resolve protoDescriptorResolver, dept
 				return nil, fmt.Errorf("continuation: proto message type %q was encoded from a generated message but is not registered in this binary — cannot rebuild it", t.TypeName)
 			}
 			msg := mt.New().Interface()
-			if uErr := proto.Unmarshal(t.Bytes, msg); uErr != nil {
+			// Read as the row it was buffered from read: a record's value, as
+			// protobuf-java parses a record (proto_closed_enums.go), so a closed
+			// enum's undeclared number the row held as unknown stays unknown.
+			if uErr := recordlayer.UnmarshalRecordAsJava(t.Bytes, msg, false); uErr != nil {
 				return nil, fmt.Errorf("continuation: cannot unmarshal buffered proto message of type %q: %w", t.TypeName, uErr)
 			}
 			return msg, nil
@@ -506,7 +504,7 @@ func resolvePendingProtoValuesDepth(v any, resolve protoDescriptorResolver, dept
 			return nil, fmt.Errorf("continuation: descriptor resolver returned no descriptor for proto message type %q", t.TypeName)
 		}
 		msg := dynamicpb.NewMessage(desc)
-		if uErr := proto.Unmarshal(t.Bytes, msg); uErr != nil {
+		if uErr := recordlayer.UnmarshalRecordAsJava(t.Bytes, msg, false); uErr != nil {
 			return nil, fmt.Errorf("continuation: cannot unmarshal buffered proto message of type %q: %w", t.TypeName, uErr)
 		}
 		return msg, nil
@@ -566,7 +564,7 @@ func validateAggExtremum(v any) error {
 }
 
 // metadataMessageResolver builds a protoDescriptorResolver over the store's
-// RecordMetaData: a dynamic schema's message descriptors are dynamicpb-built
+// RecordMetaData and optional computed files: a dynamic schema's descriptors are dynamicpb-built
 // from store metadata (usually not in protoregistry.GlobalTypes — and a
 // flag-1 slot must rebuild from metadata even when its name IS registered),
 // so a buffered dynamic STRUCT value's descriptor is found in the metadata's
@@ -579,60 +577,74 @@ func validateAggExtremum(v any) error {
 // O(rows × schema) on a struct-heavy buffer. The returned closure memoizes
 // without a lock: it serves a single sequential decode pass and is NOT safe
 // for concurrent use.
-func metadataMessageResolver(md *recordlayer.RecordMetaData) protoDescriptorResolver {
+func metadataMessageResolver(md *recordlayer.RecordMetaData, computedFiles ...protoreflect.FileDescriptor) protoDescriptorResolver {
 	var index map[protoreflect.FullName]protoreflect.MessageDescriptor
+	var indexErr error
 	return func(fullName string) (protoreflect.MessageDescriptor, error) {
-		if md == nil {
-			return nil, fmt.Errorf("no record metadata available to resolve message descriptors")
+		if md == nil && len(computedFiles) == 0 {
+			return nil, fmt.Errorf("no record metadata or computed types available to resolve message descriptors")
 		}
 		if index == nil {
-			index = buildMetadataMessageIndex(md)
+			index, indexErr = buildMetadataMessageIndex(md, computedFiles...)
+		}
+		if indexErr != nil {
+			return nil, indexErr
 		}
 		if found, ok := index[protoreflect.FullName(fullName)]; ok {
 			return found, nil
 		}
-		return nil, fmt.Errorf("message type %q not found in the store's record metadata descriptors", fullName)
+		return nil, fmt.Errorf("message type %q not found in the store's record metadata descriptors or the selected plan's computed descriptors", fullName)
 	}
 }
 
 // buildMetadataMessageIndex walks the metadata's record-type file descriptors
 // — top-level and nested messages, plus transitive imports — into a full-name
-// → descriptor map. First registration wins (files are visited in record-type
-// order, matching the pre-index resolver's first-match file scan).
-func buildMetadataMessageIndex(md *recordlayer.RecordMetaData) map[protoreflect.FullName]protoreflect.MessageDescriptor {
+// → descriptor map, including files bound to the selected plan. Equivalent
+// definitions share the first descriptor; conflicting named shapes are errors.
+func buildMetadataMessageIndex(md *recordlayer.RecordMetaData, computedFiles ...protoreflect.FileDescriptor) (map[protoreflect.FullName]protoreflect.MessageDescriptor, error) {
 	index := make(map[protoreflect.FullName]protoreflect.MessageDescriptor)
-	seen := make(map[string]bool)
+	var conflict error
+	seen := make(map[protoreflect.FileDescriptor]bool)
 	var addMsgs func(msgs protoreflect.MessageDescriptors)
 	addMsgs = func(msgs protoreflect.MessageDescriptors) {
 		for i := 0; i < msgs.Len(); i++ {
 			m := msgs.Get(i)
-			if _, dup := index[m.FullName()]; !dup {
+			if prior, dup := index[m.FullName()]; !dup {
 				index[m.FullName()] = m
+			} else if conflict == nil && !proto.Equal(protodesc.ToDescriptorProto(prior), protodesc.ToDescriptorProto(m)) {
+				// The token names the message, not its descriptor graph. Two
+				// shapes with that name cannot be decoded unambiguously.
+				conflict = fmt.Errorf("conflicting continuation descriptors for message %q", m.FullName())
 			}
 			addMsgs(m.Messages())
 		}
 	}
 	var addFile func(fd protoreflect.FileDescriptor)
 	addFile = func(fd protoreflect.FileDescriptor) {
-		if fd == nil || seen[fd.Path()] {
+		if fd == nil || seen[fd] {
 			return
 		}
-		seen[fd.Path()] = true
+		seen[fd] = true
 		addMsgs(fd.Messages())
 		imports := fd.Imports()
 		for i := 0; i < imports.Len(); i++ {
 			addFile(imports.Get(i).FileDescriptor)
 		}
 	}
-	for _, rt := range md.RecordTypes() {
-		if rt.Descriptor != nil {
-			addFile(rt.Descriptor.ParentFile())
+	for _, file := range computedFiles {
+		addFile(file)
+	}
+	if md != nil {
+		for _, rt := range md.RecordTypes() {
+			if rt.Descriptor != nil {
+				addFile(rt.Descriptor.ParentFile())
+			}
+		}
+		if ud := md.GetUnionDescriptor(); ud != nil {
+			addFile(ud.ParentFile())
 		}
 	}
-	if ud := md.GetUnionDescriptor(); ud != nil {
-		addFile(ud.ParentFile())
-	}
-	return index
+	return index, conflict
 }
 
 // readContBytes reads a uvarint-length-prefixed byte run, returning a subslice
@@ -691,19 +703,8 @@ func readContSlice(b []byte) ([]any, []byte, error) {
 	return out, b, nil
 }
 
-// encodeAggGroupKey packs the in-progress group's identity into the
-// PartialAggregationResult.group_key bytes: the packed group-key bytes VERBATIM
-// (raw, not a JSON string — arbitrary tuple bytes must survive to match the
-// recomputed key on resume) followed by the typed keyVals (carried unchanged into
-// finalizeGroup's output row, so their Go type and precision are preserved). An
-// unencodable keyVal errors (correct-or-loud) rather than silently lose type.
-func encodeAggGroupKey(groupKey string, keyVals []any) ([]byte, error) {
-	buf := binary.AppendUvarint(nil, uint64(len(groupKey)))
-	buf = append(buf, groupKey...)
-	return appendContSlice(buf, keyVals)
-}
-
-// decodeAggGroupKey is the inverse of encodeAggGroupKey.
+// decodeAggGroupKey reads the legacy group key: the packed key bytes, then
+// the typed key values.
 func decodeAggGroupKey(b []byte) (groupKey string, keyVals []any, err error) {
 	n, m := binary.Uvarint(b)
 	if m <= 0 {
@@ -722,13 +723,12 @@ func decodeAggGroupKey(b []byte) (groupKey string, keyVals []any, err error) {
 	return groupKey, keyVals, nil
 }
 
-// encodeAggregateContinuation serializes the streaming aggregate
-// cursor's partial state using Java's AggregateCursorContinuation proto.
-// Carries the inner cursor position + the single in-progress group's
-// partial accumulator state.
+// encodeAggregateContinuation is AggregateCursor.AggregateCursorContinuation:
+// the inner cursor position and, for a group in progress, its partial state in
+// Java's payload (see aggregate_state_codec.go).
 func encodeAggregateContinuation(
 	innerCont recordlayer.RecordCursorContinuation,
-	groupKey string,
+	groupingKeys []values.Value,
 	keyVals []any,
 	gs *groupState,
 	aggregates []expressions.AggregateSpec,
@@ -741,92 +741,88 @@ func encodeAggregateContinuation(
 			return nil, err
 		}
 	}
-
-	msg := &gen.AggregateCursorContinuation{
-		Continuation: innerBytes,
-	}
-
+	msg := &gen.AggregateCursorContinuation{Continuation: innerBytes}
 	if gs != nil {
-		var states []*gen.AccumulatorState
-		as := &gen.AccumulatorState{}
-
-		// Pack: count, then per-aggregate (count_i, sum_i, sumsI_i, allInt_i, min_i, max_i)
-		as.State = append(as.State, &gen.OneOfTypedState{
-			State: &gen.OneOfTypedState_Int64State{Int64State: gs.count},
-		})
-		for i := range aggregates {
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_Int64State{Int64State: gs.counts[i]},
-			})
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_DoubleState{DoubleState: gs.sums[i]},
-			})
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_Int64State{Int64State: gs.sumsI[i]},
-			})
-			allIntVal := int64(0)
-			if gs.allInt[i] {
-				allIntVal = 1
-			}
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_Int64State{Int64State: allIntVal},
-			})
-			// min_i / max_i: one typed value each (nil → a lone nil tag). The
-			// typed codec preserves int64/float64 exactly — JSON collapsed both to
-			// float64 and then re-narrowed integral doubles to int64, flipping a
-			// DOUBLE MIN/MAX's type on resume. An unencodable partial errors
-			// (correct-or-loud) rather than silently lose its type on resume.
-			minBytes, err := appendContValue(nil, gs.mins[i])
-			if err != nil {
-				return nil, fmt.Errorf("failed to encode MIN state for aggregate continuation: %w", err)
-			}
-			maxBytes, err := appendContValue(nil, gs.maxs[i])
-			if err != nil {
-				return nil, fmt.Errorf("failed to encode MAX state for aggregate continuation: %w", err)
-			}
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_BytesState{BytesState: minBytes},
-			})
-			as.State = append(as.State, &gen.OneOfTypedState{
-				State: &gen.OneOfTypedState_BytesState{BytesState: maxBytes},
-			})
-		}
-		states = append(states, as)
-
-		gkBytes, err := encodeAggGroupKey(groupKey, keyVals)
+		types, err := newAggregateStateTypes(groupingKeys, aggregates)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encode group key for aggregate continuation: %w", err)
+			return nil, fmt.Errorf("aggregate continuation: %w", err)
 		}
-		msg.PartialAggregationResults = &gen.PartialAggregationResult{
-			GroupKey:          gkBytes,
-			AccumulatorStates: states,
+		par, err := types.encodeJavaPartial(keyVals, gs, aggregates)
+		if err != nil {
+			return nil, fmt.Errorf("aggregate continuation: %w", err)
 		}
+		msg.PartialAggregationResults = par
 	}
-
 	return proto.Marshal(msg)
 }
 
-// decodeAggregateContinuation deserializes the AggregateCursorContinuation
-// proto. Returns the inner continuation and the partial group state.
-func decodeAggregateContinuation(data []byte, numAggs int) (
+// decodeAggregateContinuation reads an AggregateCursorContinuation: the inner
+// continuation and the partial group, in Java's payload or in the layout Go
+// wrote before it (one AccumulatorState of 1+6n slots, which Java's one state
+// per aggregate never matches).
+func decodeAggregateContinuation(data []byte, groupingKeys []values.Value, aggregates []expressions.AggregateSpec, resolve protoDescriptorResolver) (
 	innerContinuation []byte,
 	groupKey string,
 	gs *groupState,
 	err error,
 ) {
 	msg := &gen.AggregateCursorContinuation{}
-	if err := proto.Unmarshal(data, msg); err != nil {
+	if err := recordlayer.UnmarshalAsJava(data, msg); err != nil {
 		return nil, "", nil, fmt.Errorf("failed to unmarshal aggregate continuation: %w", err)
 	}
-
 	innerContinuation = msg.Continuation
-
-	if msg.PartialAggregationResults == nil {
+	par := msg.PartialAggregationResults
+	if par == nil {
 		return innerContinuation, "", nil, nil
 	}
+	if isLegacyAggregatePartial(par, aggregates) {
+		groupKey, gs, err = decodeLegacyAggregatePartial(par, aggregates, resolve)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		return innerContinuation, groupKey, gs, nil
+	}
+	types, err := newAggregateStateTypes(groupingKeys, aggregates)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("aggregate continuation: %w", err)
+	}
+	keyVals, gs, err := types.decodeJavaPartial(par, aggregates)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("aggregate continuation: %w", err)
+	}
+	if len(groupingKeys) > 0 {
+		if groupKey, err = packGroupKey(keyVals); err != nil {
+			return nil, "", nil, fmt.Errorf("aggregate continuation: %w", err)
+		}
+	}
+	return innerContinuation, groupKey, gs, nil
+}
 
-	par := msg.PartialAggregationResults
+// legacyAggregateSlots is the slot count of the pre-Java Go layout.
+func legacyAggregateSlots(aggregates []expressions.AggregateSpec) int {
+	want := 1 + 6*len(aggregates)
+	for _, agg := range aggregates {
+		if agg.Function == expressions.AggArrayAgg || agg.Function == expressions.AggBitmapConstructAgg {
+			want++
+		}
+	}
+	return want
+}
 
+func isLegacyAggregatePartial(par *gen.PartialAggregationResult, aggregates []expressions.AggregateSpec) bool {
+	states := par.GetAccumulatorStates()
+	return len(states) == 1 && len(states[0].GetState()) == legacyAggregateSlots(aggregates)
+}
+
+// decodeLegacyAggregatePartial reads the partial group in the layout Go wrote
+// before it wrote Java's: [count] ++ per aggregate [count, sum, sumI, allInt,
+// min, max] ++ one slot per ARRAY_AGG ++ one per BITMAP_CONSTRUCT_AGG, and a
+// group key of the packed key bytes followed by its typed values.
+func decodeLegacyAggregatePartial(par *gen.PartialAggregationResult, aggregates []expressions.AggregateSpec, resolve protoDescriptorResolver) (
+	groupKey string,
+	gs *groupState,
+	err error,
+) {
 	// Decode groupKey + keyVals from the typed payload. Unparseable bytes are a
 	// corrupt continuation and must error: silently coercing them to a raw group
 	// key would resume aggregation under a key that never matches the recomputed
@@ -836,7 +832,7 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		var gkErr error
 		groupKey, keyVals, gkErr = decodeAggGroupKey(par.GroupKey)
 		if gkErr != nil {
-			return nil, "", nil, fmt.Errorf("failed to decode group key in aggregate continuation: %w", gkErr)
+			return "", nil, fmt.Errorf("failed to decode group key in aggregate continuation: %w", gkErr)
 		}
 		// Group keys are SCALARS — the aggregate encoder never writes a
 		// contValProtoMsg key, so a pendingProtoRowValue here is a crafted or
@@ -846,13 +842,13 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		// leak a placeholder into the resumed group's output row.
 		for ki := range keyVals {
 			if gErr := rejectPendingProtoValues(keyVals[ki]); gErr != nil {
-				return nil, "", nil, fmt.Errorf("invalid group-key value %d in aggregate continuation: %w", ki, gErr)
+				return "", nil, fmt.Errorf("invalid group-key value %d in aggregate continuation: %w", ki, gErr)
 			}
 		}
 	}
 
 	if len(par.AccumulatorStates) == 0 {
-		return innerContinuation, groupKey, nil, nil
+		return groupKey, nil, nil
 	}
 
 	as := par.AccumulatorStates[0]
@@ -870,10 +866,21 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 	// rejects external continuations with ErrCodeUnsupportedOperation, and the
 	// record-layer executor is Go's own engine — but correct-or-loud, never
 	// silent.)
-	if want := 1 + 6*numAggs; len(as.State) != want {
-		return nil, "", nil, fmt.Errorf(
-			"aggregate continuation: accumulator has %d typed states, expected %d (1 + 6*%d aggregates) — not a Go-format continuation",
-			len(as.State), want, numAggs)
+	numAggs := len(aggregates)
+	numArrays := 0
+	numBitmaps := 0
+	for _, agg := range aggregates {
+		if agg.Function == expressions.AggBitmapConstructAgg {
+			numBitmaps++
+		}
+		if agg.Function == expressions.AggArrayAgg {
+			numArrays++
+		}
+	}
+	if want := 1 + 6*numAggs + numArrays + numBitmaps; len(as.State) != want {
+		return "", nil, fmt.Errorf(
+			"aggregate continuation: accumulator has %d typed states, expected %d (1 + 6*%d aggregates + %d ARRAY_AGG + %d BITMAP_CONSTRUCT_AGG) — not a Go-format continuation",
+			len(as.State), want, numAggs, numArrays, numBitmaps)
 	}
 
 	gs = &groupState{
@@ -884,6 +891,8 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		allInt:  make([]bool, numAggs),
 		mins:    make([]any, numAggs),
 		maxs:    make([]any, numAggs),
+		arrays:  make([][]any, numAggs),
+		bitmaps: make([][]byte, numAggs),
 	}
 
 	// Positional decode, correct-or-loud: each slot MUST carry the type the
@@ -908,21 +917,21 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 		return v.DoubleState, nil
 	}
 	if gs.count, err = int64At("count"); err != nil {
-		return nil, "", nil, err
+		return "", nil, err
 	}
 	for i := 0; i < numAggs; i++ {
 		if gs.counts[i], err = int64At("agg-count"); err != nil {
-			return nil, "", nil, err
+			return "", nil, err
 		}
 		if gs.sums[i], err = doubleAt("agg-sum"); err != nil {
-			return nil, "", nil, err
+			return "", nil, err
 		}
 		if gs.sumsI[i], err = int64At("agg-sumI"); err != nil {
-			return nil, "", nil, err
+			return "", nil, err
 		}
 		allIntVal, aiErr := int64At("agg-allInt")
 		if aiErr != nil {
-			return nil, "", nil, aiErr
+			return "", nil, aiErr
 		}
 		gs.allInt[i] = allIntVal != 0
 		// min_i / max_i: one BYTES slot each (the encoder always writes
@@ -951,14 +960,53 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 			return val, nil
 		}
 		if gs.mins[i], err = extremum("MIN"); err != nil {
-			return nil, "", nil, err
+			return "", nil, err
 		}
 		if gs.maxs[i], err = extremum("MAX"); err != nil {
-			return nil, "", nil, err
+			return "", nil, err
 		}
 	}
+	for i, agg := range aggregates {
+		if agg.Function != expressions.AggArrayAgg {
+			continue
+		}
+		v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState)
+		if !ok {
+			return "", nil, fmt.Errorf("aggregate continuation: ARRAY_AGG slot %d is not bytes — not a Go-format continuation", idx)
+		}
+		idx++
+		val, _, dErr := readContValue(v.BytesState)
+		if dErr != nil {
+			return "", nil, fmt.Errorf("failed to decode ARRAY_AGG state in aggregate continuation: %w", dErr)
+		}
+		elems, ok := val.([]any)
+		if !ok {
+			return "", nil, fmt.Errorf("aggregate continuation: ARRAY_AGG state is %T, want a list", val)
+		}
+		resolved, rErr := resolvePendingProtoValues(elems, resolve)
+		if rErr != nil {
+			return "", nil, fmt.Errorf("failed to rebuild ARRAY_AGG state in aggregate continuation: %w", rErr)
+		}
+		gs.arrays[i] = resolved.([]any)
+	}
 
-	return innerContinuation, groupKey, gs, nil
+	for i, agg := range aggregates {
+		if agg.Function != expressions.AggBitmapConstructAgg {
+			continue
+		}
+		v, ok := as.State[idx].State.(*gen.OneOfTypedState_BytesState)
+		if !ok {
+			return "", nil, fmt.Errorf("aggregate continuation: bitmap slot %d is not bytes", idx)
+		}
+		idx++
+		size := len(v.BytesState)
+		if (gs.counts[i] == 0 && size != 0) || (gs.counts[i] != 0 && (size < 1250 || size > 31250)) {
+			return "", nil, fmt.Errorf("aggregate continuation: invalid bitmap size %d for count %d", size, gs.counts[i])
+		}
+		gs.bitmaps[i] = append([]byte(nil), v.BytesState...)
+	}
+
+	return groupKey, gs, nil
 }
 
 // sortInnerExhaustedMarker rides the proto's minimum_key field as the Go-owned
@@ -1186,7 +1234,7 @@ func decodeSortContinuation(
 		}
 	}
 	msg := &gen.MemorySortContinuation{}
-	if err := proto.Unmarshal(data, msg); err != nil {
+	if err := recordlayer.UnmarshalAsJava(data, msg); err != nil {
 		return nil, nil, false, fmt.Errorf("failed to unmarshal sort continuation: %w", err)
 	}
 	innerExhausted = len(msg.MinimumKey) > 0
@@ -1196,7 +1244,7 @@ func decodeSortContinuation(
 		// corrupt buffered record must fail the resume, not silently drop a
 		// row from the sorted output (wrong results, no error).
 		sr := &gen.SortedRecord{}
-		if pErr := proto.Unmarshal(srBytes, sr); pErr != nil {
+		if pErr := recordlayer.UnmarshalAsJava(srBytes, sr); pErr != nil {
 			return nil, nil, false, fmt.Errorf("failed to unmarshal sorted record %d in continuation: %w", i, pErr)
 		}
 		// SINGLE payload format (RFC-180 H6 — the pre-release tolerance
@@ -1349,6 +1397,23 @@ func validateContinuationDatum(value any, expected values.Type) error {
 		if _, ok := value.([]byte); ok {
 			return nil
 		}
+	case values.TypeCodeVector:
+		vectorType, ok := expected.(*values.VectorType)
+		if !ok {
+			return fmt.Errorf("selected plan has an erased VECTOR shape")
+		}
+		data, ok := value.([]byte)
+		if !ok {
+			break
+		}
+		// The continuation carries the same tagged RealVector bytes as a
+		// stored field. Match both its precision and its exact component count
+		// to the selected plan before publishing a buffered row.
+		_, payload, stride, ok := vectorcodec.Payload(data)
+		if !ok || stride*8 != vectorType.Precision || len(payload)%stride != 0 || len(payload)/stride != vectorType.Dimensions {
+			return fmt.Errorf("vector payload does not match %s", expected)
+		}
+		return nil
 	case values.TypeCodeUuid:
 		switch value.(type) {
 		case [16]byte, tuple.UUID:
@@ -1383,4 +1448,26 @@ func validateContinuationDatum(value any, expected values.Type) error {
 		return nil
 	}
 	return fmt.Errorf("runtime value %T does not match %s", value, expected)
+}
+
+// continuationMessageResolver restores dynamic messages with the descriptors
+// already bound to the selected plan, then falls back to stored metadata.
+// Collection remains lazy: ordinary scalar continuations do not walk the plan.
+func continuationMessageResolver(md *recordlayer.RecordMetaData, plan plans.RecordQueryPlan) protoDescriptorResolver {
+	var resolve protoDescriptorResolver
+	return func(name string) (protoreflect.MessageDescriptor, error) {
+		if resolve == nil {
+			var files []protoreflect.FileDescriptor
+			seen := map[protoreflect.FileDescriptor]bool{}
+			plans.ForEachPlanMessageDescriptor(plan, func(desc protoreflect.MessageDescriptor) {
+				file := desc.ParentFile()
+				if !seen[file] {
+					seen[file] = true
+					files = append(files, file)
+				}
+			})
+			resolve = metadataMessageResolver(md, files...)
+		}
+		return resolve(name)
+	}
 }

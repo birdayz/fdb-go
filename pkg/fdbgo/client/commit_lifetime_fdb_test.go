@@ -138,8 +138,8 @@ func TestFDBDetachedCommitResetPreservesBothGenerations(t *testing.T) {
 	tx.SetPriority(PrioritySystemImmediate)
 	tx.SetReadVersion(newRV)
 	tx.Set(newKey, []byte("new-value"))
-	if got, err := tx.GetCommittedVersion(); err == nil || got != 0 {
-		requireCommitLifetimeCode(t, err, 2015, "replacement committed version before either completion")
+	if got, err := tx.GetCommittedVersion(); err != nil || got != -1 {
+		t.Fatalf("replacement committed version before either completion: %d, %v", got, err)
 	}
 	if got := readCommitLifetimeValue(t, ctx, db, newKey); got != nil {
 		t.Fatalf("replacement write escaped before its commit: %q", got)
@@ -153,8 +153,8 @@ func TestFDBDetachedCommitResetPreservesBothGenerations(t *testing.T) {
 	if got := readCommitLifetimeValue(t, ctx, db, newKey); got != nil {
 		t.Fatalf("replacement write escaped after old completion: %q", got)
 	}
-	if got, err := tx.GetCommittedVersion(); err == nil || got != 0 {
-		requireCommitLifetimeCode(t, err, 2015, "stale completion published into replacement")
+	if got, err := tx.GetCommittedVersion(); err != nil || got != -1 {
+		t.Fatalf("stale completion published into replacement: %d, %v", got, err)
 	}
 	if _, err := tx.GetVersionstamp(); err == nil {
 		t.Fatal("stale completion published a versionstamp into replacement")

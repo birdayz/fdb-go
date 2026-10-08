@@ -192,13 +192,14 @@ func TestMergeBuild_MixedUpper(t *testing.T) {
 func TestMergeBuild_FlatMapBuilds(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, _ := ojWiringLegs(t)
-	c, err := newFlatMapCursorWithOuterProperties(
+	c, err := newFlatMapCursorForPlan(
 		recordlayer.FromList([]QueryResult{}), nil, nil, nil, EmptyEvaluationContext(),
 		qovA.Correlation(), qovB.Correlation(),
 		s3MergeRC(qovA, qovB), recordlayer.ExecuteProperties{}, false,
+		false,
 	)
 	if err != nil {
-		t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
+		t.Fatalf("newFlatMapCursorForPlan: %v", err)
 	}
 	defer c.Close()
 	if !c.build.enabled() || c.build.WindowsOK {

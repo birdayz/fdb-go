@@ -74,7 +74,7 @@ func diagnosticLogLines(buf *lockedDiagnosticBuffer) []string {
 }
 
 func diagnosticLogicalCounts(plan plans.RecordQueryPlan, ctx PlanContext) expressionCounts {
-	logical := mustDiagnosticConstruct(expressions.NewLogicalProjectionExpression(
+	logical := mustDiagnosticConstruct(newBlockSelectForTest(
 		nil,
 		expressions.ForEachQuantifier(
 			expressions.FinalOfAtStage(plan, expressions.StageCanonical),
@@ -288,7 +288,7 @@ func TestCostModelDiagnosticsCoverLogicalFallbackWalks(t *testing.T) {
 	logger, buf := newCostModelDiagnosticLogger(slog.LevelWarn)
 	ctx := WithCostModelDiagnostics(EmptyPlanContext(), logger)
 	unknown := &unclassifiedCostModelTestPlan{}
-	logical := mustDiagnosticConstruct(expressions.NewLogicalProjectionExpression(
+	logical := mustDiagnosticConstruct(newBlockSelectForTest(
 		nil,
 		expressions.ForEachQuantifier(
 			expressions.FinalOfAtStage(unknown, expressions.StageCanonical),
@@ -488,7 +488,9 @@ func TestCostModelDiagnosticPlumbingPreservesComparatorContextSemantics(t *testi
 	index := mustDiagnosticConstruct(plans.NewRecordQueryIndexPlan(
 		"idx", nil, []string{"T"}, diagnosticRowType(), false))
 
-	noStatsBaseline := NewPlanningCostModelLess(nil)
+	// RFC-257 WS-F F-7a: without statistics the comparators rank with the
+	// whole context too, its configuration included, as Java's rule calls
+	// read call.getContext(); they used to strip it to the diagnostic sink.
 	noStatsComparators := []struct {
 		name string
 		less func(expressions.RelationalExpression, expressions.RelationalExpression) bool
@@ -498,11 +500,8 @@ func TestCostModelDiagnosticPlumbingPreservesComparatorContextSemantics(t *testi
 		{name: "implementation rule", less: (&ImplementationRuleCall{Context: wrapped}).CostModel()},
 	}
 	for _, tc := range noStatsComparators {
-		if got, want := tc.less(primary, index), noStatsBaseline(primary, index); got != want {
-			t.Fatalf("%s no-stats primary<index = %t, want historical nil-context %t", tc.name, got, want)
-		}
-		if got, want := tc.less(index, primary), noStatsBaseline(index, primary); got != want {
-			t.Fatalf("%s no-stats index<primary = %t, want historical nil-context %t", tc.name, got, want)
+		if !tc.less(index, primary) || tc.less(primary, index) {
+			t.Fatalf("%s no-stats comparator did not rank with the wrapped PreferIndex context", tc.name)
 		}
 	}
 
@@ -649,7 +648,6 @@ func TestClassifyConcretePlanExhaustiveTaxonomy(t *testing.T) {
 			count:    concreteCountPredicatesFilter,
 			residual: concreteResidualPredicateCNF,
 		},
-		{name: "Projection", plan: (*plans.RecordQueryProjectionPlan)(nil)},
 		{name: "RecursiveDfsJoin", plan: (*plans.RecordQueryRecursiveDfsJoinPlan)(nil)},
 		{name: "RecursiveLevelUnion", plan: (*plans.RecordQueryRecursiveLevelUnionPlan)(nil)},
 		{name: "Scan", plan: (*plans.RecordQueryScanPlan)(nil), count: concreteCountScan},
@@ -669,8 +667,8 @@ func TestClassifyConcretePlanExhaustiveTaxonomy(t *testing.T) {
 		{name: "VectorIndex", plan: (*plans.RecordQueryVectorIndexPlan)(nil), count: concreteCountVectorIndex},
 	}
 
-	if len(cases) != 41 {
-		t.Fatalf("taxonomy fixture contains %d plan types, want 41", len(cases))
+	if len(cases) != 40 {
+		t.Fatalf("taxonomy fixture contains %d plan types, want 40", len(cases))
 	}
 	for _, tc := range cases {
 		classification, known := classifyConcretePlan(tc.plan)

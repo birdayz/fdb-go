@@ -118,7 +118,7 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 		call.Fail(err)
 		return
 	}
-	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering})
+	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering.Sortable()})
 
 	// Guard: only yield the sort if the inner group has a physical plan to sort.
 	// The plan is not baked here — the collapsed sort ranges over innerRef LIVE
@@ -154,7 +154,7 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	// Ranging over innerRef (not InitialOf(firstMember)) also keeps the good
 	// orders-driven join order the group won rather than pinning a re-scan loser
 	// (RFC-069).
-	innerQ := expressions.ForEachQuantifier(innerRef)
+	innerQ := expressions.NewPhysicalQuantifier(innerRef)
 	logicalEdge, err := s.GetInner().RequireFlowedObjectValue()
 	if err != nil {
 		call.Fail(err)

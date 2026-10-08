@@ -182,15 +182,15 @@ func hasLeftOuterNLJ(plan plans.RecordQueryPlan) bool {
 // TestRFC153_AggregateInner_DeclinesToMaterializedNLJ — the fail-closed axis (the
 // dimension that was previously unpinned). The null-supplying side is an AGGREGATE whose
 // grouping correlates to the buried preserved alias A. Its inner carries a node
-// (StreamingAgg) the buried-merge rebaser does NOT rewrite, so the verifier fail-CLOSES
-// → the LEFT OUTER DECLINES the probe → materialized NestedLoopJoin (LEFT OUTER), NOT a
-// correlated probe on the aggregate. (Confirmed via instrumentation that this exercises
-// the decline; the unit test pins the verifier logic.)
+// (StreamingAgg) the buried-merge rebaser does NOT rewrite, so the verifier fail-CLOSES:
+// the LEFT OUTER never probes the aggregate. It null-extends either as a materialized
+// NestedLoopJoin (LEFT OUTER) or per preserved row, filtering the aggregate's output
+// under a DefaultOnEmpty (the shape the block's own select plans to).
 func TestRFC153_AggregateInner_DeclinesToMaterializedNLJ(t *testing.T) {
 	t.Parallel()
 	plan := planRFC153mx(t, "SELECT a.id FROM a JOIN b ON b.a_id = a.id LEFT JOIN (SELECT a_id, COUNT(*) cnt FROM c GROUP BY a_id) g ON g.a_id = a.id")
-	if !hasLeftOuterNLJ(plan) {
-		t.Errorf("aggregate-inner LEFT OUTER must DECLINE to a materialized NLJ (fail-closed on the StreamingAgg inner), got: %s", plan.Explain())
+	if !hasLeftOuterNLJ(plan) && !strings.Contains(plan.Explain(), "DefaultOnEmpty(Map(PredicatesFilter(StreamingAgg(") {
+		t.Errorf("aggregate-inner LEFT OUTER must null-extend over the unprobed aggregate (materialized NLJ or a filter above it under DefaultOnEmpty), got: %s", plan.Explain())
 	}
 	if indexProbes(plan, "c_a_id") {
 		t.Errorf("aggregate-inner LEFT OUTER must NOT correlated-probe the aggregate side via c_a_id — it declined: %s", plan.Explain())

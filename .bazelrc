@@ -1,12 +1,6 @@
 # Don't inherit shell environment into actions — use Bazel's fixed defaults
 build --incompatible_strict_action_env
 
-# (Earlier drafts used --experimental_isolated_extension_usages for a
-# second isolated go_deps extension over cmd/frl/go.mod. Dropped: isolated
-# extensions duplicate every transitive dep, which broke the linker when
-# cmd/frl imports the root module. Bazel now uses ONE go_deps extension
-# fed by root go.mod; cmd/frl's direct deps are mirrored into root go.mod.)
-
 # Use remote JDK — no system Java dependency required
 build --java_runtime_version=remotejdk_21
 
@@ -55,7 +49,10 @@ coverage --instrumentation_filter="^//pkg/fdbgo/client[/:],^//pkg/fdbgo/fdb[/:],
 # Limit concurrent test targets to prevent Docker socket contention.
 # 9 test targets all create FDB testcontainers (socat + FDB + network each).
 # Docker socket can't handle 9× parallel container creation → timeouts/hangs.
-# 4 concurrent test targets works well on machines with 12+ cores.
+# 4 concurrent test targets is right for CI's 4-vCPU runners; `just test` and
+# `just test-full` raise it to a third of the cores on bigger machines.
+# Any non-zero value also makes Bazel IGNORE tags = ["resources:memory:N"] on
+# tests (measured, Bazel 9.0.1), which is why heavy suites need "exclusive".
 test --local_test_jobs=4
 # `bazelrunfiles`: runfiles-only suites (conformance, bindingtester) — excluded from
 #   a plain `go test ./...` so it doesn't panic looking for Bazel runfiles.

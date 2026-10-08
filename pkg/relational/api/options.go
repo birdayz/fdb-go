@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"sync"
@@ -99,6 +100,14 @@ const (
 	// join that would otherwise exhaust the planner's task budget converges,
 	// at the cost of possibly missing the cheapest shape.
 	OptPlanRightDeep OptionName = "PLAN_RIGHT_DEEP"
+	// OptVectorIndexEnginePreference is Java's VECTOR_INDEX_ENGINE_PREFERENCE:
+	// which engine the planner favors when an HNSW and a GuardiANN index can
+	// both answer a nearest-neighbor query.
+	OptVectorIndexEnginePreference OptionName = "VECTOR_INDEX_ENGINE_PREFERENCE"
+	// OptIsolationLevelSnapshot executes SELECT reads at snapshot isolation
+	// (no read-conflict ranges); a DML statement under it is refused (0A000).
+	// The statement option ISOLATION LEVEL SNAPSHOT sets it for one statement.
+	OptIsolationLevelSnapshot OptionName = "ISOLATION_LEVEL_SNAPSHOT"
 	// OptPlannerStatistics lets the cost model use per-record-type row counts
 	// gathered by the offline collector (RFC-236, `frl stats collect`). Boolean,
 	// default FALSE, and Go-only — Java has no planner statistics at all, so
@@ -111,11 +120,10 @@ const (
 	// outer. Anything missing, stale or unreadable degrades to the constant, so
 	// the worst case is today's plan.
 	OptPlannerStatistics OptionName = "PLANNER_STATISTICS"
-	// OptLogQuery gates the SLF4J log level in Java. Go has no ambient
-	// log-level concept: the planning-metrics hook (RFC-034) always emits a
-	// record and the handler owns level + sampling, so this option is
-	// intentionally not consumed by the embedded engine pending the
-	// options-plumbing work for the gRPC/REPL frontends.
+	// OptLogQuery raises a statement's planning log record to INFO in Java
+	// (RelationalLoggingUtil.publishPlanGenerationLogs), as OPTIONS (LOG QUERY)
+	// does. Go's planning-metrics hook (RFC-034) always emits a record and the
+	// handler owns the level, so the option sets PlanGenerationInfo.LogQuery.
 	OptLogQuery OptionName = "LOG_QUERY"
 	// OptLogSlowQueryThresholdMicros is the canonical default source for the
 	// connection's slow-query threshold (RFC-034); see
@@ -141,9 +149,9 @@ const (
 	// not the session's are rejected with 42501 (insufficient privilege).
 	//
 	// Boolean, default FALSE — and the default is the Java-parity contract, not
-	// an oversight. Java's SemanticAnalyzer.parseSchemaURI splits "/db/SCHEMA"
+	// an oversight. Java's SemanticAnalyzer.parseSchemaURI splits "/FRL/db/SCHEMA"
 	// purely lexically and never compares the result to the connection's
-	// database, so `DROP SCHEMA /other/S` and `DROP DATABASE /other` are
+	// database, so `DROP SCHEMA /FRL/other/S` and `DROP DATABASE /FRL/other` are
 	// accepted from any connection; Java assumes an authorization layer outside
 	// the SQL engine. Turning this on by default would diverge from Java on the
 	// shared surface, so it stays opt-in.
@@ -204,6 +212,46 @@ func (m IndexFetchMethod) String() string {
 	}
 }
 
+// ParseIndexFetchMethod is the enum's valueOf.
+func ParseIndexFetchMethod(s string) (IndexFetchMethod, error) {
+	for _, m := range []IndexFetchMethod{IndexFetchScanAndFetch, IndexFetchUseRemoteFetch, IndexFetchUseRemoteFetchWithFallback} {
+		if m.String() == s {
+			return m, nil
+		}
+	}
+	return 0, NewErrorf(ErrCodeInvalidParameter, "No enum constant IndexFetchMethod.%s", s)
+}
+
+// VectorIndexEnginePreference mirrors Java's Options.VectorIndexEnginePreference.
+type VectorIndexEnginePreference int
+
+const (
+	VectorIndexNoPreference VectorIndexEnginePreference = iota
+	VectorIndexPreferHNSW
+	VectorIndexPreferGuardiann
+)
+
+// String returns the enum name matching Java.
+func (p VectorIndexEnginePreference) String() string {
+	switch p {
+	case VectorIndexPreferHNSW:
+		return "PREFER_HNSW"
+	case VectorIndexPreferGuardiann:
+		return "PREFER_GUARDIANN"
+	}
+	return "NO_PREFERENCE"
+}
+
+// ParseVectorIndexEnginePreference is the enum's valueOf.
+func ParseVectorIndexEnginePreference(s string) (VectorIndexEnginePreference, error) {
+	for _, p := range []VectorIndexEnginePreference{VectorIndexNoPreference, VectorIndexPreferHNSW, VectorIndexPreferGuardiann} {
+		if p.String() == s {
+			return p, nil
+		}
+	}
+	return 0, fmt.Errorf("no enum constant VectorIndexEnginePreference.%s", s)
+}
+
 // nullSentinel is a non-nil marker stored in the values map to encode
 // an explicitly-unset value. Matches Java's NULL_STANDIN. It MUST NOT
 // be exposed to callers.
@@ -246,6 +294,8 @@ var defaultOptionValues = map[OptionName]any{
 	OptExecutionScannedRowsLimit:          math.MaxInt32,
 	OptDryRun:                             false,
 	OptPlanRightDeep:                      false,
+	OptVectorIndexEnginePreference:        VectorIndexNoPreference,
+	OptIsolationLevelSnapshot:             false,
 	OptCaseSensitiveIdentifiers:           false,
 	OptAsyncOperationsTimeoutMillis:       int64(10_000),
 	OptEncryptWhenSerializing:             false,

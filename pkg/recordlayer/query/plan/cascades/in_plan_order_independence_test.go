@@ -182,7 +182,7 @@ func inPlanUnion(
 	bindingNames []string,
 ) *plans.RecordQueryInUnionPlan {
 	t.Helper()
-	plan, err := plans.NewRecordQueryInUnionPlan(inner, bindingNames, nil, false)
+	plan, err := plans.NewRecordQueryInUnionPlan(inner, bindingNames, nil, false, plans.UnboundedInUnionSize)
 	return mustConstruct(t, plan, err)
 }
 

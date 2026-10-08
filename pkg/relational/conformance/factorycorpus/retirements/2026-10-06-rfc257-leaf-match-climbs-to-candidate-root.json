@@ -1,0 +1,1213 @@
+{
+  "format_version": 2,
+  "rfc": "RFC-257",
+  "date": "2026-10-06",
+  "reason": "A leaf match climbs through the candidate's Select to its MatchableSort, as Java's SelectExpression.adjustMatch lets it (RFC-257 WS-F): AdjustMatchRule's correlation check is Java's subset check. A bare join leg or aggregation input now gets a full index scan where it got a primary scan, as Java's WithPrimaryKeyDataAccessRule plans it, and an existential FlatMap plans one outer per requested ordering (Java's per-ordering roll-up). fc_0000000350_q3_p0..p2 and fc_0000000815_q2_p0..p2 are retired: they became the same (feature vector, plan shape) points as fc_0000000091_q2_p0..p2 and fc_0000000447_q4_p0..p2, which stay. The frozen rows are unchanged.",
+  "base_commit": "e11e8bcde8f87add60f5979616b14e861a5771a5",
+  "before_census_sha256": "97150a8667350b13cce379a8809ed1bba23b758e754d89218a086ea4ed46b9c4",
+  "after_census_sha256": "a4ee651a6c31dea6cb19b4effd090a3f7612e1fba3e7245dddd6b75794ffe5a3",
+  "before_tree_sha256": "b5fe1346aeb94708ae9fe0807d7b69bdb0e3559d058eb9e03d293a088bfa6e8a",
+  "after_tree_sha256": "718bacb3444ed9cdff315577cf15d97d7ef6294702162a61d85206b0286a541f",
+  "changes": [
+    {
+      "name": "join2_comma__and_arith-cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "a238dbebdb719f39e3cdc9c33d5d4da81a981fdee066ed06cd2b7436ae805448",
+      "new_sha256": "ec7602e2a9c199c0fcf528273b2aa04917fca9d3db5db108dc239279d88f8dbe"
+    },
+    {
+      "name": "join2_comma__and_arith-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "682e84ca98d7c2ac605ded259869fb0260cb47df983c591e79c79377cf6f3a3e",
+      "new_sha256": "931ccbce5340d22dac8d5ad10dc467bcf50b42d8396541269a8c575d447cfd77"
+    },
+    {
+      "name": "join2_comma__and_arith-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "f79ea0391256e5d3389ac9452a73417f99d95494357ea0c63a8c95eac4b7e8c9",
+      "new_sha256": "13eff009c57582b6f802158b0f168e97f8f1edaf258e9667e336159dc6e5412f"
+    },
+    {
+      "name": "join2_comma__and_between-cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "6ce01941de781fd21aa82cef79999f65fb5ed6add322f7221ee02b008d9bc9dc",
+      "new_sha256": "3c037bab3097041182de4e907489e03bc6424604b0b453ca0416acb51feb60c7"
+    },
+    {
+      "name": "join2_comma__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "6e96f86f6e02712cead1220fc39116fb57fa3c6f563258aacff6ea01060f3548",
+      "new_sha256": "c3dbda769c05155ff6e176d269cd3fda63da1d255c055fd68346f63c72596055"
+    },
+    {
+      "name": "join2_comma__and_between-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "269d79382103509599924f2612ee6c3bc543e40f56860bc7886b31da60254e9b",
+      "new_sha256": "1e5abf0e7e23a10851ec6677e381f120ea6b202bd0e2f373db57e4b75ae95687"
+    },
+    {
+      "name": "join2_comma__and_bit-cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "02bb99d5330ac55b75748a56f6474f5af6e4239b5322b6a0ed6eca4d9dfe387a",
+      "new_sha256": "46f659d6a7e9baea04c1a78caf19fb24cd37696ef89340d31a8c9a13558a2853"
+    },
+    {
+      "name": "join2_comma__and_bit-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "23d157b06a63ce0b995df420985c18cfbc4d31fa79bd75275a2a76e6824a9be1",
+      "new_sha256": "74e5b00e5b7e5dcb4ffcc09d3673ebb1cc99aa0d5f6ce6a3840b2a22a66c031e"
+    },
+    {
+      "name": "join2_comma__and_cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "3f7d6fc905f22bd3d3f31e04e84ea4e84c1bc4327097c9afa29018a79c2e87ed",
+      "new_sha256": "989be03b548660ca9ab6176fa997d0f2ad8e4ec708b82f831a0191ffadc6b4c1"
+    },
+    {
+      "name": "join2_comma__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "7135c039edf3ad4c0f25c60d8d63f62017f8f31f428b63fe1aaaae311ce942df",
+      "new_sha256": "0dde5e54b1c9de40072d2a47d91c0f52fd969c5f10e50e47802c1d1df79e1409"
+    },
+    {
+      "name": "join2_comma__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "e109f2bb1ed54ec8d0a66d1df45cfc90c004a678a5cb64a439da2c4401d24c9f",
+      "new_sha256": "fe93da2171bc421de165266a0bf03c9aff613dc7c2c2eafbacacc4546d0942e8"
+    },
+    {
+      "name": "join2_comma__and_colcol-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "f2e15bb0ca6970c8c04df1cbd0d27bf6ba07472ce5717138a09185de69a4d377",
+      "new_sha256": "623f35ccfead00921367a3345db84c6b1305f7ebdb67cebb18864683860973f5"
+    },
+    {
+      "name": "join2_comma__arith__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "9ce3e63aed5639ce2456a7121387f10ea48abfbca65c9765b83024afceadad4f",
+      "new_sha256": "24b55f4acea01b469c922876cb180c4a9c86b034ea54e55caca33c0064c05689"
+    },
+    {
+      "name": "join2_comma__between__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "4ea4a593e85cb10128df3383076786d838d9c1eb6d85f1bdecc28c197b0766f2",
+      "new_sha256": "c959aadbbf83c5c6f611139edb6d5cefcd50809cd966e4ba6a1d2b84f2934a7a"
+    },
+    {
+      "name": "join2_comma__bit__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "4c8fb7fee394a7e01b76b1fa15fe92d101c33c7f77c7027700a6fd2c83914964",
+      "new_sha256": "39fc049aa39d12032a0c1087166eb61a2334664989039c6215d7b03587aa676f"
+    },
+    {
+      "name": "join2_comma__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "3784f2bbdac4e1c3bad9b1942de8e1c1de0ea95fecdcecc950311683fe6e2942",
+      "new_sha256": "6058f0da6e1cfc5c76726b92b235b7e1cc9a77709914aa767729ad1cb8558f2a"
+    },
+    {
+      "name": "join2_comma__in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "d7b41ce88240ad8763b49d261f0734c5a681eaa4c6f4038c73e45e371542a7ac",
+      "new_sha256": "451dd10e06150e308128ddc1865b6235bd89cc153c265983d6dcac0a74b93e56"
+    },
+    {
+      "name": "join2_inner__and_arith-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "6f73ad0131472fd3d8bbdfada089537638f542faf8d60162f7e2cbc4e988f83d",
+      "new_sha256": "3eba3fff18734cc164318f4fcb864ecbe2fcd4f63c7a71b74e2d00fd809154cb"
+    },
+    {
+      "name": "join2_inner__and_arith-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "71e5885afe785ade5de86354d0eefb1db37c76bff3d1c3c03fd8480376be3d99",
+      "new_sha256": "ebdb26d2b23cdef405e78f20732f805d9705354e59ac6dc7cc9045c47d47787b"
+    },
+    {
+      "name": "join2_inner__and_arith-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "b30ce633498f144b3c3f22bf14c49ffe7cbbc8176a07e7607878a7c9bafe9b40",
+      "new_sha256": "491ddf3c262f5ee677b82f42c825766548c7e0c33e24a1eea4c35134e6ed2e4b"
+    },
+    {
+      "name": "join2_inner__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "e374c0727c9482d2e707db68f1427e59c6fb0377bf4077342918ac83ceefa953",
+      "new_sha256": "b96f9fe2365863a71b1623acf1c946a72722b48f209a19230b5d039bd4c80354"
+    },
+    {
+      "name": "join2_inner__and_between-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "54caf2ad0af6de51e66af041598942ed09ea92a2b2876224a319770cc1cfe4e3",
+      "new_sha256": "cf072287f31b0746c3d0537243abd7a78dc38ac389b9fc2fb93896003e347c1a"
+    },
+    {
+      "name": "join2_inner__and_cmp-colcol-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "71310ee813bf93eeb4e55c448af7ee60a1a748336b0e919ff1594bcc0df6e67e",
+      "new_sha256": "ee2466a5c45a1291411dcc3ea9f5829de0b02ef6742eea9bf3bd2322d6234f43"
+    },
+    {
+      "name": "join2_inner__and_cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "6a7fb5e9ae18f460da73e9c2f5ec52f05b8f707126157b497721997639d227b1",
+      "new_sha256": "8a740c010d5d2831b89f112ff62444e60438f353d372963265256f42d4ca8b12"
+    },
+    {
+      "name": "join2_inner__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "009c31b4fd440698999739041ec9c1ce77e043199c9ee3ac80e075c271d3107b",
+      "new_sha256": "653acd62da090210d26f2e8e8e9e444edf70c3901409aec32a7ab4d9e5359104"
+    },
+    {
+      "name": "join2_inner__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "0c9961af62db0c678f5b9ee9bb00f5c07d405e0ee50677a3d662684162fd1a43",
+      "new_sha256": "158bb4f675dca3876f8a609cb996afdf0bd046cd6ad8a41ee3c538e7867ccc76"
+    },
+    {
+      "name": "join2_inner__and_colcol-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "be461df9773c24502576c15443d852b96d880fe6564d878a64dca365d9ce1c7d",
+      "new_sha256": "7bb2fec815bafdc4975bf8f7f13961160412d4e33663df73a0aa2a9594141bad"
+    },
+    {
+      "name": "join2_inner__between__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "27f3b71a3acb8685a6ea230695cd20be1e3da28101274d627ef2435681861893",
+      "new_sha256": "bef66905475a58c03a7d1a8bc23f28ed2f9c40839aca1a1274b5588b42dcd444"
+    },
+    {
+      "name": "join2_inner__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "e37044dfc3eb95a374d93f7fd0610c50ad7dedb498d5ffce37bb94041c0bfda4",
+      "new_sha256": "575951d2d68c52c3c92cacead47df7320b07527a5f60c416acecc11c45442bde"
+    },
+    {
+      "name": "join2_inner__in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "f1eec9cb9a72df3886271bf2c0f5114627b329645cb7d7fbdd624342bd0ee1a1",
+      "new_sha256": "bdc0fa6cc83661d83f0bd645563cf3c448ccf07ad614aee50a2722ec9117e692"
+    },
+    {
+      "name": "join2_left-outer__and_arith-bit__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "610218735f1bb407a87182cde35d8c3a3d42c184b52b42431053ded335d6b425",
+      "new_sha256": "a907ffa18d7fde6b6a3d662422122dc4f61cfa3eae1c62b131855348ae5193fa"
+    },
+    {
+      "name": "join2_left-outer__and_arith-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "e687318ed68ae170dffdf81e1d2c05643e4187da53fddbd53a3549a766871f36",
+      "new_sha256": "030b48e08b0381ff03a37cf7af37a2f7790ba6e164e9ac5449338a02e3161849"
+    },
+    {
+      "name": "join2_left-outer__and_between-cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "be0f3c68db5aef8577ee923bfb858a6a3212d157971379952a97dbd9e779e8e1",
+      "new_sha256": "697e67bcab8825054831ae13563ed07c90d28db76a9cb2dd709410f8c8b85162"
+    },
+    {
+      "name": "join2_left-outer__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "62db02594aebbd361491587364215afe475db04e2ef0dcf4db7b39bb7d059416",
+      "new_sha256": "f1db9f867417e320d366b1328e6761b98969ffb0dd241dcdba8e7a13e6c5c6d7"
+    },
+    {
+      "name": "join2_left-outer__and_between-colcol-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5e114f27d4bff229a7513c1cbf832e2ab56e1bd6e0843782ad2dc861350e4deb",
+      "new_sha256": "c7d5cea743ff2401c967d7e198a4f8931bebdb1dd9af7ab642b333cfbcf3fa6d"
+    },
+    {
+      "name": "join2_left-outer__and_bit-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "3dcc6d78fc49df439069bfccf0cf53ee66af6f5c9aa2b45f6969776753f8fcd1",
+      "new_sha256": "86c9b4757e4e7650a6565e161b4e872c624bbc9801ac8d52f04ee05aa05b5ad5"
+    },
+    {
+      "name": "join2_left-outer__and_cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "ad60381f62ee97417a88e1bb3095ea6260d238d5929db79ef192112582329665",
+      "new_sha256": "7289f4c80e8def497b42454df3b734f2dd56c34cee47e53cf57405a94ec37600"
+    },
+    {
+      "name": "join2_left-outer__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "ce0513ad815087e12192e87e4cadc64f05e0412114d8eaf29d6b4adc669160b5",
+      "new_sha256": "1800874963f52d5beb55508d52620a2d46c92373346b19bb4905a35f38b7629f"
+    },
+    {
+      "name": "join2_left-outer__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "3023da3bdb4229c4372c80eff72cc9a63f5e2cadfadcf69baf32f71af7a4b520",
+      "new_sha256": "40bb82eb9fd2a4a45b8f226feb26002d27eb2f2dc12c39afd77a7c63cdf7cda2"
+    },
+    {
+      "name": "join2_left-outer__and_colcol-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "a13443f28e1522eed7364c45754db41cc3825d5adfa1405a193797adc457202a",
+      "new_sha256": "32435b5212bcb73db2dc9f957f1758a2f2b697b0f657317889a9628d4d80a42f"
+    },
+    {
+      "name": "join2_left-outer__arith__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "97af86a4076098d0cf05b02512bb04ee84da0ce33c6b1a0f010ac3c2435b5619",
+      "new_sha256": "f68cd1bb95a4f80db07e596d5ffe289b3a16a55b42d444b5233dbf10248b71a3"
+    },
+    {
+      "name": "join2_left-outer__between__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5d2bceb78397843da2895b361375cc6fa898db88d9c1dc3848274ef6939b7fc6",
+      "new_sha256": "020c51224311b7f61b545933a28af1c33b16bf260526e6fed414ca1d5d5c846f"
+    },
+    {
+      "name": "join2_left-outer__bit__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "e31c94988ddb7e8bf4f539c562ef42d7b1b8a3f8eac0239c828df8b91c089665",
+      "new_sha256": "8cb8ad9185496b1ebb854eddc7e9454d7e95d887221ea31bf8bfd17a5bacc199"
+    },
+    {
+      "name": "join2_left-outer__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5327e93ffcf45b42febbab48006b6029d270d1fb153916dad8aea75d4de749a7",
+      "new_sha256": "9df134972c7cb25749c1e78b9e711c394ef2043aba5df255ecdd980403364150"
+    },
+    {
+      "name": "join2_left-outer__in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "ccd462192a5e05c182509803c29c05a9485200e84d7ebeab5ad3c39473dd4498",
+      "new_sha256": "dc2b1fa2ee7bdb54766c5704d175d1105a2e6874ba04ab38be71798fd196aa20"
+    },
+    {
+      "name": "join2_right-outer__and_arith-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5a6d9bf6bf60441518fc2c473e7e29f6aa751e4793dc1058d01e967cfd300e3d",
+      "new_sha256": "e0ac4162461432ee16491a73331377d11d7130cb87933f7fb321b069603ee71c"
+    },
+    {
+      "name": "join2_right-outer__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5fb1829cf2f204f92b0684a2e775ad71e589baacaa3c1735a0fb7b54961dbb18",
+      "new_sha256": "5357f3e4acf3b499d70d74aafb2f66b32299b69c9a0d88012d6f65f619df7763"
+    },
+    {
+      "name": "join2_right-outer__and_bit-cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "ddef90d30162cdc34f3da292ad27ea363bc60e5ccd342b5208bc566c5effc3f0",
+      "new_sha256": "ac701beb0a2e7f1d17d26401cec46733e69deb3acf7d4d4cec7d75ce87b7b190"
+    },
+    {
+      "name": "join2_right-outer__and_bit-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "84f846619fc0a8ee87aa8c4ee83b3172a1da3ae8b9539c0b568c23f6e5c3bf19",
+      "new_sha256": "ed527d908f68340fb471351afad056ffd569bc2b66de155dc01d433106432eeb"
+    },
+    {
+      "name": "join2_right-outer__and_cmp-colcol-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "792932ab1e9c9cf92b58a1676fc952e76088f5670cfd16586343fa9561ae7f95",
+      "new_sha256": "4759125353d2fc157f5d8e0dfe4ab0eb18228b3df01cf0dc74962f5ac7bfbde3"
+    },
+    {
+      "name": "join2_right-outer__and_cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "8aba5676c6024bf234bf8acce18d3f6f97c9848adf4275df88b2c963f974c134",
+      "new_sha256": "d20df2c18537b7c81e9ae057fb1ed3b0a856722f9fc1c3ccf9b1cd340ddd49f7"
+    },
+    {
+      "name": "join2_right-outer__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "deea01120c225a1de415a28f5a308f4783bca501919b8b88e5248419f860e5d8",
+      "new_sha256": "74b1c9f2b2a3f00bb0bab916ec0f64a1abcb736a6489be5bcf35876eba423b6c"
+    },
+    {
+      "name": "join2_right-outer__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "2ce8799d48858c1a16fa0bffe18f33da71f0d6003f2122cec4758a2828b18512",
+      "new_sha256": "8ebcf239ecd10214fd29fa50a36f00166e31529c81a1cfc20e15255f37fa224e"
+    },
+    {
+      "name": "join2_right-outer__and_in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "1ff9b431c610a4853fc332c8bcacc8da9c87d76e02e1183a36b709c0c496c35f",
+      "new_sha256": "c239f919eca36c5510bd7fb3a67931dd69e01407fe3a92c86b83517e47c95c28"
+    },
+    {
+      "name": "join2_right-outer__between__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "b96e8f82dab719f2928bc4e71e50baa4cd2899295e78bf6f41c227514197479b",
+      "new_sha256": "3b7ba33272a39bc7decbbb62b78001c4f516cd21970346d5576b18cc92647866"
+    },
+    {
+      "name": "join2_right-outer__bit__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "d6971f40a64d843adc773e1001184627d3c5afc82bf807194e36aeaa6d3a9507",
+      "new_sha256": "71b3af5e08e937edf6a7962cd46f31ed07ae7cd93a6838af107f430770de9885"
+    },
+    {
+      "name": "join2_right-outer__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "68d4b8cfad2e37ec761913930ed576db60d5bddd76f15316df6fc1e1d54253de",
+      "new_sha256": "37e8cc7b9e49ff006173d9ee793602d9adb0362471983338394a3c044b2906f6"
+    },
+    {
+      "name": "join2_right-outer__in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "d36eb6c002ff3733527c8322dd7638eb142c9ca479ba8b2467471c3278605fde",
+      "new_sha256": "92549d66f63c56131db4a93a2b8555752decdcd807b6faeb892c1020de87645b"
+    },
+    {
+      "name": "join3_comma__and_arith-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "704b8f439c372c99a778f84d7e06f9e85d32afee6cb2b85f31c9d61c25a79bc4",
+      "new_sha256": "ab421c62bc8dbebcedf6eae2277c3ce8f2202f328fa622299fc17979dee28853"
+    },
+    {
+      "name": "join3_comma__and_arith-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "088a8e5ab40fac3cd305186621c13836a5850df9754c9e0cc8d478402b31855e",
+      "new_sha256": "c9ed79de6b83ba17245eb3b44662a9297f0288e50874b2695209dfaee2372581"
+    },
+    {
+      "name": "join3_comma__and_arith__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "ab150c5568320a6d8e2cbac9ec24db8c1623bf0b9529b7441164aa031087765c",
+      "new_sha256": "241f8d9162f23447eaff949b904d0d9ec59c34075a37107b6572b84c829c6db3"
+    },
+    {
+      "name": "join3_comma__and_between-bit__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "2719559fc0c374058d9be3fed450ce375e97e55f6d3efffcbebb8253efa18d4d",
+      "new_sha256": "78f426b671c22e67d59cea959cbefe93fef6e43f16a0db4a9ac141ef2b619675"
+    },
+    {
+      "name": "join3_comma__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "45b46192c3dbe9e84ed81cd52065e0f4d794cddbc02b04f04234cadfcea1e774",
+      "new_sha256": "5dde97bf4c29ced1af638ea51dbf3fa456e8ce3859976269706ce9324450d133"
+    },
+    {
+      "name": "join3_comma__and_between-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "9c4a1a979273c6f89905e0b7ebe5e47dbde37cf2a7b07a4f9c2f25a1c61a6a0e",
+      "new_sha256": "5fb05ca406b69e2e044a3286367c110bbbc0afda44ed79b1704bccbcc0cf6493"
+    },
+    {
+      "name": "join3_comma__and_bit-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5a5ffdce343f075ccb1598073a75a92cc5e606c6caad7cb6f34ff25cd86749c1",
+      "new_sha256": "17c3a22ee4be33d30c7698f77bc9c32fb4792a56b0754558a65c0a837aed48a9"
+    },
+    {
+      "name": "join3_comma__and_bit-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "97550d386bfdd4905ce757df7519ee3ff9cd68992684c5cd75ba0f7801512a7d",
+      "new_sha256": "8f3bace5769ef5da610ca542c398c450999032a1f102e117a7faa4b5a4e3f4eb"
+    },
+    {
+      "name": "join3_comma__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "9951f2ce2f025a27f4ec96685d959e0ef64d23c990760d4bf74f886a969745ac",
+      "new_sha256": "3b23ea377ced8074f18be5ead461198bbd849c291c70c180d5af8838aa466116"
+    },
+    {
+      "name": "join3_comma__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "883fb101073be1671917c49e579d3fef92c8e82a026e0eb2cb86239dce8dc34d",
+      "new_sha256": "ac8dbdbd3621aceae8d599c55d7e5d01cfcf2fdf9b3b3642b418c53124e84d67"
+    },
+    {
+      "name": "join3_comma__arith__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "75bb7451733a2e1302e575ed0ade49a35464cbd963de126b8a30facccc3b3786",
+      "new_sha256": "fa58de3811c8a0579729309b0e1c9138a6053da6a403278a0a661515ff430623"
+    },
+    {
+      "name": "join3_comma__between__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "86845233598feb50545ed0067c74fbf379444bfda7e1ec4c3598372207419fe1",
+      "new_sha256": "38bceb1909e0460c85dcea6a7b41d7aebeb0bd89958ec5d3a9bb5608b48e3d56"
+    },
+    {
+      "name": "join3_comma__bit__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "ba532597ae859a8efa7ee2450f860faab3bcf4a2e3fe424db18c553a0ecbfb93",
+      "new_sha256": "31c7d1ee2683ec652e926a0a05389371ba32f41350bb225779f66c2b00115174"
+    },
+    {
+      "name": "join3_comma__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "1a93dbd824540cce33083120c6481c8f79354f8d6690a5d202d203f21b9720dc",
+      "new_sha256": "863724ab19b8cc36894d3fa30d3de347f8a39a51efcf5a8085845d2cf4788a73"
+    },
+    {
+      "name": "join3_comma__in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "3be2ed4f898d46f8ab2e2aac16e85d265a3ff17b117a0086849ab128a6c03568",
+      "new_sha256": "9918eead3931edfe1122f241a97edaeb8e245e76299602073e53c9abb74845bb"
+    },
+    {
+      "name": "join3_inner__and_arith-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "867ab4297749be61d36bb196d7e343cbb79bf6e0c1f9b2536473b1e52daf0ca8",
+      "new_sha256": "6c5ab82337324cbb2a2c366751a1ba1730ff16bb81d4bed5c0ca56ae74a6d5fc"
+    },
+    {
+      "name": "join3_inner__and_arith-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "16b758937a23dad30a82ea5e7b898979b7b4c1dbf9d0ce5cc11f09bd717630ab",
+      "new_sha256": "7a91d029c99f1399c90009b02c6342e46ee950ee64a00fb42ae3bde9eac7de9d"
+    },
+    {
+      "name": "join3_inner__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "0443b912829477e9758a817087c591aa81418af72e84796d499c7882127cdbfc",
+      "new_sha256": "a380fecee8467e9559bb97be1197d9570656db1f97a49aa358edc433a36078d4"
+    },
+    {
+      "name": "join3_inner__and_bit-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "376bcd3d097e782cf709295e9d11cc441c672bf590997f1e89ee9488bf341422",
+      "new_sha256": "fea7e5b8902542fd06a52b5a39a6cbfa44f6780b872df5718991b9934414bbeb"
+    },
+    {
+      "name": "join3_inner__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "cfa65a7952f241681166a7719295a10944a626dd9f29e08c8dd74a8d572a8f9e",
+      "new_sha256": "0ca5cf02792b5f4a97eac521a29536d7dba29986bd2d58958242c38724e30b7a"
+    },
+    {
+      "name": "join3_inner__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "7f9c8cc0088bac78e548f9211e89c229d6727f38c9d9c8f33f186ad96620567e",
+      "new_sha256": "ecb6ac358856c3b0353332c7167cf196324c95181161adce5545a5fba7c7e0b1"
+    },
+    {
+      "name": "join3_inner__and_in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "551a8564cfd857f6c91fbfeddbb01b5d65149000ac9bd55a7b40cf5af17f5256",
+      "new_sha256": "6ca0406c1870506771416f7970fbb07690fe12dff89b9dbed1738aee810268e0"
+    },
+    {
+      "name": "join3_inner__arith__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "91d5c06e92434069dc657e12449bcb6e2850f190a4d6fa29a4782e692238dfd7",
+      "new_sha256": "ef4ab529e4155cb615bc2bdffa4a17d657f1006f24093af87c9ba0ec26255ff2"
+    },
+    {
+      "name": "join3_inner__between__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "ce8cabbbe95d459b8640157bba4d28411e1d4f550eaf1e0fb658bc48bbaa033b",
+      "new_sha256": "edef2cf03eb805149b225dfdf1eac6e9bd27744f636041595d5084e74cda9629"
+    },
+    {
+      "name": "join3_inner__bit__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "d24bbed3dbf17e3aa5d125abba85b251fb6619ae00678d83febc50fee07e9650",
+      "new_sha256": "e9226403c2c2e5676a55b303768c9a694e972b3ffc88538980049a2864080040"
+    },
+    {
+      "name": "join3_inner__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "48f8d0230377143ece8b01d09818e4389c73f12e54c111ced8d5ec7920ffd00b",
+      "new_sha256": "32ae786acb5a504dfeacfc40fcefbe1c5777a23a5b375aa977c27c7c68b71cc0"
+    },
+    {
+      "name": "join3_inner__in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c16ec8f12a420589728421956692209d7fc49c70f6d747f34c0b9172268e7338",
+      "new_sha256": "717d0b54c675299554314dca50be6223d34dfc9abbf2660fcc5c0a321f8ff879"
+    },
+    {
+      "name": "join3_left-outer__and_arith-bit__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "4283362bf328d81cf6da03c3d8029bef79f2bb96ca42b5144f488be45df5d851",
+      "new_sha256": "aac0f36b80c07ee604f644b115a7da6f1733e999a2b0c3e14349535f15e245a4"
+    },
+    {
+      "name": "join3_left-outer__and_arith-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "60a4e3f681e050b5523d6e96b37dc3755d10dae3d49ccee43fa8ce941bb21eab",
+      "new_sha256": "23ae1fca3e2f47da645e2d5439c63e5900ebab91cb5a929ca8a5fe263f0233f4"
+    },
+    {
+      "name": "join3_left-outer__and_arith-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "0cde68d06ba719f3bfa67002f03c9d5c9f125f5540f2a63fba2bd9cd82f40044",
+      "new_sha256": "315c24997327f9981975a231c0a89d594595913ac52a76653e3e4f57af40a718"
+    },
+    {
+      "name": "join3_left-outer__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5623512333e109f9546a9ed044ed1dcb84ae1672d2385ff05c6b3c93e48d37e4",
+      "new_sha256": "874b8600ff08ebe44b6c5ef73ee6aabab64405fe169febc9b33a6bc0c15b20fc"
+    },
+    {
+      "name": "join3_left-outer__and_bit-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "e6dddceca241fc14a52ec9ef3a354437a5a1ac22de1c5d5d76125ff03fdbc620",
+      "new_sha256": "b0738c536ca763871d2f72bd83b52d6cc8ebc5edcabb4ccb7b8e88e84eed5158"
+    },
+    {
+      "name": "join3_left-outer__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "3f6b16e732c0fe339f66dce8eeec37b16adae3d1bc6d2cf3d64168c9d00af363",
+      "new_sha256": "f690fbfd199be73bd0bbd31db6928d1ebb237a18fb42bbfcdf23c3bad3ff92a3"
+    },
+    {
+      "name": "join3_left-outer__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "1988504a06facf476b13e08a87fd908ddbb0c0e77a7711b7ae783d7a13f2f4fe",
+      "new_sha256": "efa62f7de73a75fce07cd9607ef0eebe49dbd6ad11fdab2d699b3d41068c6838"
+    },
+    {
+      "name": "join3_left-outer__arith__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "934b0bfc119aaf6666de714d0f9e22a66720f48c1f89987e47376e869ae6a879",
+      "new_sha256": "25b48f09c795ae25d73fefc764598f110497b45a4b3e29291299054cba0585db"
+    },
+    {
+      "name": "join3_left-outer__between__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "9eea530f24605190918d275a188017ab3ada8a3cad0058cbd2d4bf098c34dadf",
+      "new_sha256": "5cdc4d80fc370d46092a04fd136ef1549afe889853e4be63c09468244ae808e2"
+    },
+    {
+      "name": "join3_left-outer__bit__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "ce78642b3bec1fde3ccc80ffc20708cc6583c26a1c6c449f38c65e1ad1c9848d",
+      "new_sha256": "5937bc1cb6278c6597e7ae233b63510208ae25913f1df1c1b02aa3f8466e9258"
+    },
+    {
+      "name": "join3_left-outer__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "088b0f984e7b5c1f8b3170d1dd60baea8e3f9cd668ef43935ef5ff3068f141e8",
+      "new_sha256": "a32b0ef393ec04461b72cfc2e0fb2ffe41ab6a5aab4c5f89c74372532133deb5"
+    },
+    {
+      "name": "join3_left-outer__in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c200de6ea2f3bb472d4923c406f8d360446824cb05e8d99ede93c5564cf6edb6",
+      "new_sha256": "afcb77b1e1d60c5193c63ff5fc2ef2c233f838a67b4a1d23b6f055a061a14a23"
+    },
+    {
+      "name": "nested_join2_comma__and_cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5a9028f1cb75232a3a807f5e417b13e5312a6e6b0e65af19690511af4de17f8f",
+      "new_sha256": "02bea529ae605030998def3dfb1892cf2ddee38a9282c76ca0dc9b093bbb701a"
+    },
+    {
+      "name": "nested_join2_comma__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "474cfedc2250673631bb159d18898766cf8c3b42e177c7987f99983d02d85676",
+      "new_sha256": "f544ddc88d8febde8bb1b8ba824240d7d46fc65fa32c442774e8e79f2b5596c5"
+    },
+    {
+      "name": "nested_join2_comma__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "e3a69d548dd648f73e74a64125c84499113a4311029539474cbf7d9e20b9a7c0",
+      "new_sha256": "cdfb201bb79d872da158fa3512b07c2c706758e8ec1fd7d7019e71d214b7dce4"
+    },
+    {
+      "name": "nested_join2_inner__and_cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "81e2504e05bbe71386de297e228591252f33a12d4196a69407a7dc028201f31b",
+      "new_sha256": "6f1cd362a769939535ab8b2ae3f6537474ecfd249bb44c9735e75b087cd767b8"
+    },
+    {
+      "name": "nested_join2_inner__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "25e8a67ec84a39e229acfa74303ec972d2b89f6b99e2db47f2863286b96bf032",
+      "new_sha256": "10caa5619e8a4b746d99c2b386d3d55b524c521c4804852ca0b7253d10ee69c5"
+    },
+    {
+      "name": "nested_join2_inner__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "3f7e159c76c0fe50b6a5d0d7c61ef78e9b3bc0cad0487988f39edad6c7d2bdc5",
+      "new_sha256": "a004965d8a8521be86025990393b890adc793ea06431e21e76888e663f6c90b4"
+    },
+    {
+      "name": "nested_join2_left-outer__and_cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "3a648a7779b525cfa3a605692656c67c3d1d102332050d1e1fb535faf0a55e4c",
+      "new_sha256": "17a18df7ec807459a80b5f5b6f21a7655fb9610e9583490fdd1da7e4ab85bde4"
+    },
+    {
+      "name": "nested_join2_left-outer__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c3569ea84b05cc691da6ebd02f9499ad3f208ade4f881d8ce771c95acbfd7844",
+      "new_sha256": "2fdf9cc9728305d9baa785f2991dfb5404797c80cfb03d1a57e5693bd234c030"
+    },
+    {
+      "name": "nested_join2_left-outer__bit__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "1559f77802ae2130718b83f16e77370690b4da44da62b7052c9ebe60f4ebeaef",
+      "new_sha256": "6f36e4e083b7abcaa4df1fcbcbed814a576153a035f696a0b6e7d52e84a1272a"
+    },
+    {
+      "name": "nested_join2_left-outer__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "12461413e640d5fbcadffc469b21dc499e123cded01c96bc036170265c69aabf",
+      "new_sha256": "fc6100175bec3e6c16f03dc0d5dde8fc43aceecd96a92a4e053b24e5a7a28775"
+    },
+    {
+      "name": "nested_join3_comma__and_between-bit__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c244ac7b232b808fa6b60c1082e8998a5c31b292ec1c0a70830158c08542fa20",
+      "new_sha256": "8d0f5dbd74207c77302b24d9d79a9f34c6a5557c3804e065f11ef7b63686172d"
+    },
+    {
+      "name": "nested_join3_comma__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "12c23e2667683558fbb76613d078ea6fcbcf7eef40d4f0316841d5a358df71a6",
+      "new_sha256": "a99b57fedfde8f7209b16d50b712709720406827576a989affc307dad65d9cf1"
+    },
+    {
+      "name": "nested_join3_comma__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "54c11f5bdf28bb8e8c8ad2d7f35b018dde7c85303909797ebd2203dde3a8ce5d",
+      "new_sha256": "7773ee6bb904ad3f04cf9fafaafa6dffe687a2b27f87f7b8db0cb26f80c718ca"
+    },
+    {
+      "name": "nested_join3_comma__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5b826b57cc8dc1eff4323ca324dd81162a32d8c01d92cc605f411f3c559b89ad",
+      "new_sha256": "414e7083df832245d63dda8a4e5a6eee2265044e9d7f826cb11406a117e3f9d0"
+    },
+    {
+      "name": "nested_join3_inner__cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "de0c024927efc96048771ca833ab29f3deaf7ca85290913ba37f06ec09d5c429",
+      "new_sha256": "1cffceac819d2acb31c7043a4e9180c70ea6cd9b1abe91109935224270f65431"
+    },
+    {
+      "name": "nested_join3_inner__in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "756694361e0377782108c836cbacfc563045949dbb86028ce79d7672b8756f5e",
+      "new_sha256": "6c50d8feee227f8e1c764d51fc2ecd189408cae1cdbfcfc58d187e408eb07791"
+    },
+    {
+      "name": "nested_join3_left-outer__bit__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "3f4b64599ee4b944699c6e9ca9c83d1a28c591e3d0fadb2b42904c081e4bac15",
+      "new_sha256": "b6e73a1c1ae9cad0cf450af44641c43999dca926a096694cf0904c4d62057ca4"
+    },
+    {
+      "name": "nested_single__and_cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5db7b8ec5ec27dcf09117475471f74a719595ae1cffdbd890896f39652fa50d7",
+      "new_sha256": "20ae6b7deee041f83fa4d5383fbc8a584d26213fd26a61c4801564e310d5e544"
+    },
+    {
+      "name": "nested_single__cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "0694c5a7b10d1fa8082f8bee0781aac1542a111de3dbad58089598c74f141b94",
+      "new_sha256": "1e406dc00e33b2ff7c3a1afbdab8f6aa8aa2e317df73b9fa07c33e80ce68bdcd"
+    },
+    {
+      "name": "single__and_arith-bit-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "1b156fb9e5f93cf0ab7e83dd6b4887c44b45c4aada63905ca7aafc6dca9a49ce",
+      "new_sha256": "f8187f0f88cc2c745bd2c1d4cacf8d204394846a9345eb8ad19ad44cf773c3e4"
+    },
+    {
+      "name": "single__and_arith-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "16b6aaf8da795e5b73ec5af29bb0d10abefb55511a09c0305619213f3de174c4",
+      "new_sha256": "659fdb719bb58f474dc85e145c72ecd96258f1a2cdd9f20042e6eb0cb7d79cf7"
+    },
+    {
+      "name": "single__and_between-bit-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "d89f16bb4f6b4f97042b2fc3649d8a69d91b885d78ef3834c917332478cdb6af",
+      "new_sha256": "6dd39134d358fe752aeb22acfcbdb98f8c6092ee6005318682d19b0c0cfae28c"
+    },
+    {
+      "name": "single__and_between-cmp-strfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "8c435c5e5135f9d305d2de6931c63562ad053c8898b9d076ed04586be2dfc4f3",
+      "new_sha256": "62a4cf156639a354234a3d2cbe670a35555ba72d15b65a911908bcfe0ea211ba"
+    },
+    {
+      "name": "single__and_between-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "6448e9803711bbab1ff49558ff373ca6ab1d46f169dfefdb33042c709e223dd4",
+      "new_sha256": "bbc8f3a3d674dfe79bd760df4aee7ac9d81afd0ea928cc8866ab144a0f56a3b8"
+    },
+    {
+      "name": "single__and_bit-cmp-in__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "2b624dd2befb324cb87db8abd74a6d631fff93282bdf9a39c063dd501541aa22",
+      "new_sha256": "e42ae47f223c8d5659849e52830728799baf93888a6fbcbb7b9dce4f51ea98f2"
+    },
+    {
+      "name": "single__and_bit-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "321f746e53415ae98209af353584cd1b2c59ff4d06a5ebd73a5575d18d72de95",
+      "new_sha256": "aa576a9c75d31830afbe70ec9cd769df0211e35636b5277967ed120534664876"
+    },
+    {
+      "name": "single__and_bit__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "f6e117da3a97dd850cf745307c7dc984f1d84c23bcf0de27de71775ad1522c58",
+      "new_sha256": "fe6613ba3df22381449b6a58245c7e43d8ce0afc48f17c3d5d1760c43b5137d7"
+    },
+    {
+      "name": "single__and_case-cast-cmp-in__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c92bce402741b239b9725df483afcae6cff56402467af3709dcaaced71a8ca2c",
+      "new_sha256": "cf5866dbf17492147727b6d33a40ae64ea2489f1d3fa7d557c4ecdb9fad7216b"
+    },
+    {
+      "name": "single__and_case-cast-cmp-numfn__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "6bd461b15f74c03f211b22fd84f00cbfd7c0808394972b7388e9f37d2778edbd",
+      "new_sha256": "45030574e389635ca2e033780625e92ea03c9435bfe6b7356d5f5627b884c2ca"
+    },
+    {
+      "name": "single__and_case-cmp-in-numfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "57a3c930a9ce8a7b0641150b2d1e5573e757928ee77255334c4a699cb45fad53",
+      "new_sha256": "63f529bfca600b10302b59c082b4fa0de54242d7354934895cbc10f2c501ca92"
+    },
+    {
+      "name": "single__and_case-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "01e1f0aecf70df35530a037884a28cba9739bb3fc663da8f1eae81d726a76d86",
+      "new_sha256": "a5eb94f436ff7388d4cf9b9eb23b28bdc710f78c424a4fca4bc93d6c7549445b"
+    },
+    {
+      "name": "single__and_cast-cmp-numfn__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "f696284416d586880fd7f065e7b2b2be73fb6d715093d67ac98eab9b09af5b19",
+      "new_sha256": "de172de2f61180cb8296c71e3900b556a881d12f6a7c62b66245beaacd402071"
+    },
+    {
+      "name": "single__and_cast-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5f4e4df03693034edbb57f6658ea0bdb9ac7344bef6357f0423ce0111293545c",
+      "new_sha256": "3a22a82d55c4d6fbaf4c5dd7f69e102c0ae591f99adeedc2a0d176b67b58d7fe"
+    },
+    {
+      "name": "single__and_cast-in-numfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "d185c7228238e9b48499d8a87ea442b9b38823a0805ad73268e1b840c6d63c5b",
+      "new_sha256": "043402e6dd4086aaad204a851382609ff6567e42acd77370dd01061a0ab69e04"
+    },
+    {
+      "name": "single__and_cmp-colcol-strfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "724b275abdbfb09ad0ca4bfb340349a8d25f723798ad7c51b97e88070582603c",
+      "new_sha256": "789f21342614912398b1c2e23c0868f9cbaba3e017f17c46f98f1b30acfdbbaf"
+    },
+    {
+      "name": "single__and_cmp-colcol__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "924f9c70221dec07f35265b1df0339f8507bdf7d78e4700f75da9f93fe038b5d",
+      "new_sha256": "f52677412ac7d8c5e03c1d26772df8f46afa49eaffb0348e4945bce606d88a77"
+    },
+    {
+      "name": "single__and_cmp-in__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "282cd69db735dd2ce12a730471033a0fa6f4c54a66d95e2574b2c748a95c44b5",
+      "new_sha256": "6a55a0f4b2f3c92e4bec3aa57edfd42318b03f50e5e976fad1c5ab4f0549b8a7"
+    },
+    {
+      "name": "single__and_cmp-numfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "57ef97e56cdd477cec3a97d3623eeaa94b9b435b53290a37be63f9bf1b4e1117",
+      "new_sha256": "b98a66f995c8b8ebac22c4d5b3dca1449b0fdd96e68ff88f3622c5e2ed8ea087"
+    },
+    {
+      "name": "single__and_cmp-strfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "6af281ff798a38279cff1118a3164b79d43bec23b534090b576cb484629e9330",
+      "new_sha256": "2ed6bd679338e6dbfe956dac7c6b08d22ac66045e8183fea6c07203033300483"
+    },
+    {
+      "name": "single__and_cmp__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5847deaa34d593dabacd5740cc2581ea172f4b6b318283eeeb449a936596e1b1",
+      "new_sha256": "76b4392e541c0cf3d22448816599b844299b90d9ff994a569ce02a54e2d911b0"
+    },
+    {
+      "name": "single__and_cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "165b9518e4c1608402b2669d4bca14acf7f94166820650b515a6b09a64a7807e",
+      "new_sha256": "2005c74b056da6215a8f933e8ba96c52d62015c010b4f515a1a624f0526796a4"
+    },
+    {
+      "name": "single__and_colcol-in__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "717f304b00d4e986d892cfc65781b5a21beb07d8d34262ef337c13152bfff059",
+      "new_sha256": "a42c11bb341645d4a3c0ee4b99a1e38f36653e92667d3a148cc6d45e65f9c8af"
+    },
+    {
+      "name": "single__and_in__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "0d589fb36c8b82343a9f149bb3bd04fb11f996f4f3ca5fba99887e01dbf1394d",
+      "new_sha256": "d4508e00a607a2e7423efe2ade933504d3c0638237a79f8cb268e52b163042b9"
+    },
+    {
+      "name": "single__and_not_arith-cmp-colcol__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "185a94968f5002d989f12e6c8f4ca47527545a44de06dc63005040b39c090134",
+      "new_sha256": "170a7c6c5bfe7f730993bb3afded43821276313640286da1fba490edf926ebc8"
+    },
+    {
+      "name": "single__and_not_between-case-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "20bbca11b4a0dfe896c6f23ba3872e0427cedb21c64ca92283f43cb26b89e86e",
+      "new_sha256": "3a96165301fa558d2d0d9270b0d137d6d1d54e33f1a5633af84f04bab2784bec"
+    },
+    {
+      "name": "single__and_not_between-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "f68c876e69b2e346be115b671363feb660e82ded44b9bc594d74b8043f9a53d6",
+      "new_sha256": "6e9356fe475df93ed1b07cbbc17db69c409b4c692e6e42db817a3a376edf0536"
+    },
+    {
+      "name": "single__and_not_bit-arith__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "f9c69e04875f08309b5b42dfcc1d464f1358ff3036dcc78b2b81a49c4ab48fb1",
+      "new_sha256": "4d3b7e458b2537f709f0989290109c983b70832d440beb91c2ca21a76a3e2fc2"
+    },
+    {
+      "name": "single__and_not_bit-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "cd32cb13340dfd841269af411d81f55e00df441448e399a46bd3fa4c6d11c535",
+      "new_sha256": "6058b20764be34a07e3c5dfae9174197dd60a89c293ea707ea67d292653ccbda"
+    },
+    {
+      "name": "single__and_not_case-not_cmp-cmp-strfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "25bfb96fdf214bfcad8d30863f31c715baab12acfc1985b5aa928d232af18543",
+      "new_sha256": "e91167ceb2e5a1e4ed8fe80783ed98fc8609cb2a8415984e135dc566813237e9"
+    },
+    {
+      "name": "single__and_not_cast-not_cmp-cmp-colcol__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "b520a0eeae3a300c5f2305077756655355b894242e5192829b84685b732ba7df",
+      "new_sha256": "2af1a406ce7da8e87aa78e189716f88c5b5d034650c83946a90de0be9900c72e"
+    },
+    {
+      "name": "single__and_not_cmp-arith-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "73eed079306591cb4ea37eecae806c4375fe738f86c837b13546c44523bf8c13",
+      "new_sha256": "e5ee757d7d6c5f66ce2a6c25c5c37bac13c1b3d19e746e1255c1141185e467be"
+    },
+    {
+      "name": "single__and_not_cmp-between-case-cmp-numfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "9ab8a1c0ce4395f3109b918176c7abb6657c3e1205646ac7c0a241a0e07958b2",
+      "new_sha256": "77c48eeb09440535a251439018a7f3739a26b9b753d6cb8803b7cce0792ecad2"
+    },
+    {
+      "name": "single__and_not_cmp-between-cmp-numfn__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "eb9c671688bd7342132d4d846ba56c56b6056cb0eddf711a26490be763082b18",
+      "new_sha256": "df11d9c56de2acb24c9fd5ee5614ff145927b01588f15365fe30508560c65843"
+    },
+    {
+      "name": "single__and_not_cmp-between-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "0f6be9d903560739f21729b5aed97c290a591bc185fe91ba67dfdbc1688bef3c",
+      "new_sha256": "fb8af84cd33c51c3c92ad77642d750013dade97d1254ae6492da53f430b458f3"
+    },
+    {
+      "name": "single__and_not_cmp-bit-cmp__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "a999ad19a5f7b793a587d8e1cc9d970433c73215c733788eade41547528d6468",
+      "new_sha256": "a0da1c425afc30c7ea8448df659b2eae3162bbadeb2c3ea62d8d0596c89b82e8"
+    },
+    {
+      "name": "single__and_not_cmp-cast-cmp-numfn-strfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "cdb240b4986c94f46e03af1673f4109e39d59d3eec1f1e2abe81d4c1cacca4a6",
+      "new_sha256": "f9e9acb6915ed76294db9089e6994d39d78204c137daefe27641c3e25883adee"
+    },
+    {
+      "name": "single__and_not_cmp-cmp-in__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c7cd7a7e458f685b943cb69cd62fc0c67fe08e9a66f40a545e6e03f6eb050102",
+      "new_sha256": "29531f821d29b38cc4e14e9de1df36d558470a736dcebce75d1657e8c2e0731a"
+    },
+    {
+      "name": "single__and_not_cmp-cmp-strfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "14d840aca900bd04866941f2188946b84111d52416022c656420d9b4ff930dee",
+      "new_sha256": "eb61f8948f600d1d9db8fd1524df2daefa40cfc1a7701c320c7e9bc989e854f1"
+    },
+    {
+      "name": "single__and_not_cmp-cmp__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "e8c59d3dfd177b1a7fcdb23d42fcbd41dceea7ef203a5862f6689c86fff4f8a4",
+      "new_sha256": "451d8dc1bcf592643b737497384ad202f328ea43912cf71828242ffcf8a21276"
+    },
+    {
+      "name": "single__and_not_cmp-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "7a2afbe6c767851bb68bc9810a9764945c8ebd84f08a67ab4ec539b578bad5fd",
+      "new_sha256": "5cfc7c8395557b55c2a954f61988f2920d42bc9c9597ee2583b29abf0862092f"
+    },
+    {
+      "name": "single__and_not_cmp-not_in-between-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "1ad53f7019429d5668c29476736dab20a9830d50acfdb6fa06267a4475bacf82",
+      "new_sha256": "e37f552be1b36c03f5ae2fa4dda5b3bad81c001e60b72d7b96be4fe6df9ebe81"
+    },
+    {
+      "name": "single__and_not_cmp-not_in-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "45240e588df997f95e9fd54f33ef4eae66052b62086db8e366b7a279bb498088",
+      "new_sha256": "08ae5f8134f7d8568483c9c2fb2f531d034392842c3540af018639ef346b85ef"
+    },
+    {
+      "name": "single__and_not_cmp-not_in-not_numfn__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "5201cbfb0c4d0db7181bd52e3302253d4fadd93dc966b7afc09473eecf6f8366",
+      "new_sha256": "8e315190e46fcf5ad83218151af4eb6b3a0ea79db2681d764abaf98e80319d91"
+    },
+    {
+      "name": "single__and_not_in-between-case-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "ecf14bdf65621909fe7313d9c112c510847f65fec1eeab520678ab03e2886b27",
+      "new_sha256": "357f827fbf5dc28f9cca0503948b182d096db09c0d738065baaecbe17f5a676c"
+    },
+    {
+      "name": "single__and_not_in-cmp-colcol__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c9077136e33a22cca4d3e3685599c35a804babc59996103fd8845fb498cedc8b",
+      "new_sha256": "b1ff68cad89f91d26eb94301ae6ea2f3ccd06933da0e072664ec60644ec30ee4"
+    },
+    {
+      "name": "single__and_not_numfn-cast-cmp__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "0599490ed65365d2c6dfb55d97abd8b0bd8c3a498145a73a5a427071801d77d0",
+      "new_sha256": "05ce15d0af481f619198c5759c93066155b3826b0e24935b38b9dade9a5ef282"
+    },
+    {
+      "name": "single__and_not_numfn-cmp__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "e27f370e45f45dd9acef54be697cc9eded6be4a081dec4bc3c98c7ae66fe8f86",
+      "new_sha256": "2dedfac9ea03f8719d4eff37b86eb832196ddfca0954ad704629a41558fff404"
+    },
+    {
+      "name": "single__and_not_numfn-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "0e12753b3f737191b7051446018ecad56a5badfbb74d0c5e866ecdb405e9f9cf",
+      "new_sha256": "f164b3fcb10deddeeac51025d418de2f67bc9f87858344f72c4f41f9c54295d6"
+    },
+    {
+      "name": "single__and_not_strfn-cmp-numfn__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "25db2444266f8a9036c8aa740b6f275600b73bf3824f06ca088747fb31e22c08",
+      "new_sha256": "734ce03ed8f2572e1514f3eed593495400db607981e3ce84fdb89659bc448b4c"
+    },
+    {
+      "name": "single__between__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c503b495556a5f6e2f45aa9141de69b7a9a835f6bf644c599e8f687ee7f44178",
+      "new_sha256": "58c26869ef5c1d05acee594f4d740554ba4d735c4561973364ad02a448ccb585"
+    },
+    {
+      "name": "single__between__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "57c8eba945275c0fa39b10a8fc397861388959548302bd8ef2a310ce6e9601c4",
+      "new_sha256": "1e6054d68cdbf187d23490c155e0a828bc3eec21a239e67ee17513efb864cfb4"
+    },
+    {
+      "name": "single__bit__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "4e806bbd5bbf45eb364b897af7bafa3ee72b40c67ba1ef8c6f831db4e0d25957",
+      "new_sha256": "466d24dcf9e5b7dfb66c9e9ff531357d54cec8c449cb3f5264262522c5e5c3fa"
+    },
+    {
+      "name": "single__cmp__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "2fd33049b9761fcdc5f7646f2f14cf17396a71180da9bb174a050cb608bc56ac",
+      "new_sha256": "3af20497cf8eb71a8992470056c71d9dafa3260511eb6680e578dacefbbd1a3a"
+    },
+    {
+      "name": "single__cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "db453e5d4df1c63ecca1b6071e378ce1535f4bb28417507c0192eb3695cb65cc",
+      "new_sha256": "780126097c6091577ef8d06c3bf0ae2217eefc5acccef949ab5d7d4336e49ff6"
+    },
+    {
+      "name": "single__in__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "231f565fbaac5e612cdcf14ed4c8990a8b97122065f774d0958fa682f0831a64",
+      "new_sha256": "7c27e2ef997c16b2342155598d29c6f83a4d1f1a2415a18dd5112d387efe8385"
+    },
+    {
+      "name": "single__not_and_and__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "59aab120801fab268228d6afac71892fde61d15a1b59af5caec48c5eeebafdde",
+      "new_sha256": "c04764dfde1b8a9084c71237cfd44a8d3f5c8c04b10567bdb6c58d52b92ac47d"
+    },
+    {
+      "name": "single__not_and_arith__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "f1b5a9c88afc294fb487e2fd69f53c20433fb7086a9a4fcda411054a2a015a20",
+      "new_sha256": "91131d623091a174f3ee62db2e91db76f5d6136f39fc4be1ec2e851d4147d42c"
+    },
+    {
+      "name": "single__not_and_or__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "6560d2517d0fcbbe23f27e28a903789031d35c752c2c9cdeb79ab4c5dd1825b0",
+      "new_sha256": "0536a9c3bfcd9ac55503fec26963d70359f5fd81a7b51783e5c3d90b4040005c"
+    },
+    {
+      "name": "single__not_and_or__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "87eab91e373d2e480e5dbdad786353856f22b5bc89857e683e860b954ea0913a",
+      "new_sha256": "aee403a571c198aef7342b578b3d3a89dbceef760cce50ed82b327b39d8c7ae6"
+    },
+    {
+      "name": "single__not_cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "b657ff969335aaee50019f43a6ad764da09e972c654f1e551b85c45498c8bb68",
+      "new_sha256": "e268fdd742977113dd26764367976fcc9f7a4836eedefbe15ef0ad36b358eb83"
+    },
+    {
+      "name": "single__or_and-case__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "1aece4ee524cba90d855a48ba80109bb11bf56efee49097c350a28287b0b76ca",
+      "new_sha256": "8c624ab77b58b25ce9b8ad5b365633826d798683a19d385b4f1425f650ac7631"
+    },
+    {
+      "name": "single__or_and-cast__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "42d07cda18615490d97458f8536df328c59871b7e812367d848ba050e5f0cd24",
+      "new_sha256": "fa77d9d8899f83881d63a915bbe0c0f986dd17c47982594e4e23ebe6722d353e"
+    },
+    {
+      "name": "single__or_and-cmp__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "8bce5bb4d26ff8bfe526de2a62bd17802b803d3924370ad2b4b54f29bed87654",
+      "new_sha256": "672b723b81c6e2cae21daa2ed928b4ad0c5633f87110eefb5a1036b060f0296d"
+    },
+    {
+      "name": "single__or_and-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "092795de1dccd95885bd10984f90189f06af54c61e0d685ea40448aed0ee0f1e",
+      "new_sha256": "2946ef3a66dd924aacef34b64e1b290013690a2268908382b6a022f281958d96"
+    },
+    {
+      "name": "single__or_and-colcol__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "43c5194b78a1738cc215e2318a3fa34eaa55953e365a364215dcd06c6d0b1cbd",
+      "new_sha256": "fd0750f9a2f2aac14529d798ef523643b2aab44f4fe2ad94389098ef10a45d79"
+    },
+    {
+      "name": "single__or_and-in__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "29da842d5ed3a60927c0f09c4a5b18efca86c6d471f3deb5bb08e95258022da2",
+      "new_sha256": "e88ea915eaef0c9d8d8e917962d84e0d7f99a54c8b6f8e8ecd1ae1ccc42ee3fa"
+    },
+    {
+      "name": "single__or_and-numfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "941f26e59a0cf71111aa82fd72257ca2f3744dddf8ac02b324753ca11a0a185a",
+      "new_sha256": "6d807bc4a475bf6e7303fb2281d2efe2aca4c893a48dbe9e48b79e58ad552ece"
+    },
+    {
+      "name": "single__or_and-strfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "221357fdc79e6b2142bf7f226e7708e7586a53915733859d581c61753dcec9de",
+      "new_sha256": "dab76e71e7cee643acdd9afd5b7149a6d02951c0f6a2a013233930daa9707024"
+    },
+    {
+      "name": "single__or_and__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "668474702f3fbb94b6e66023143c09db6c83e56d14d6fd3f2eb71233491b156d",
+      "new_sha256": "4776e6a48e7386845a17def632a3fa351708f1713b8cf01df150dac5f9f10ef5"
+    },
+    {
+      "name": "single__or_between-cmp__exists-scalarsub.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c5edbb129fa1c072ba97d9ac13e52218ba8df8c942b20564ea67fd15420914b8",
+      "new_sha256": "471c82da683ee84ca70ea938754b64dee929c387f4f3471307125dbb9b456185"
+    },
+    {
+      "name": "single__or_between-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "e25dff829f35b819e18fac2db2b1de86b23a37c2eefaa89cb43361244d6e73d3",
+      "new_sha256": "1bec9190f17ee584f141a02e8d49911580ff023c00379055c0759ef27c620ec6"
+    },
+    {
+      "name": "single__or_case-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c88766e7e661d858e42352b6ce623b48c4d74536708666d9a881dd8a1d2e7d5f",
+      "new_sha256": "3b393ae329eccdce99023928924b2cabd186f9d86371abbe14f83698a8a52383"
+    },
+    {
+      "name": "single__or_cmp-colcol__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "b84f42ae47503185533ccf6675a00e49086ca1c57aa97a59fd567b4126e3354e",
+      "new_sha256": "efcb25aeb1b9c1f19b1309e6ae2eb18a57d8d0e93430d4107628685c46aacd0d"
+    },
+    {
+      "name": "single__or_cmp-in__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "b7b0c6e963ea9e6e755fdc77328d17aaccfd7751a454d9f325fd0c8e1f25cf06",
+      "new_sha256": "4ca3cc9d52f76314486b8b5a85293b9a7072baa17a5fd51a950c23aa78f71dd5"
+    },
+    {
+      "name": "single__or_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "13772f82a3ba8eff2780886a44c45c428a94f171c8c1f4c1a2c6e107e99c7ab5",
+      "new_sha256": "79b0b46b31c32d2a4c1591ee5ea4113e0a1c2c9307fc9bdf4c646f43ceed065f"
+    },
+    {
+      "name": "single__or_cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "37ff9d19459c5ac7410c890d463d6bc01d54fee9157acb8f09b4e5609ed67f44",
+      "new_sha256": "866239d748602ef3ef580206402e989a2c44bbbc80107f698421ffbf3faba8ca"
+    },
+    {
+      "name": "single__or_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "7695dafa572a88792707576549c1d7867a5fc003a55895509635f740b4dfcb70",
+      "new_sha256": "fa0e6a6090ac83ac314a481eb244e9e9420927f1ff65c914b0c50dbf30beb4f2"
+    },
+    {
+      "name": "single__or_in-numfn__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "76335e8e60e7b28fbe8e3786d90b301c1a9f0af528a872c027ede91e82eb57df",
+      "new_sha256": "44e65994bccd8f48f63e553a6560ff10ce8c62b9d3757835078f822c2bfa45dd"
+    },
+    {
+      "name": "single__or_not_between-and__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "b9ad81f2f60896051fde3f4b560c70c705a9d8101d51d959799ca8c61fa85782",
+      "new_sha256": "120f2905917d353cd239c0e37b3fbb48d102ff588727ff44c8519fc629adbbcd"
+    },
+    {
+      "name": "single__or_not_bit-in__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "7f81e8b3a19e4f6755aaed4359fd2c4fe2aa0dea7d5b2309f7756b4836c30777",
+      "new_sha256": "7a9d74fcc0f58480424f07323b75e7d1e49b71f9cc5321c4020a25d820256b8c"
+    },
+    {
+      "name": "single__or_not_cast-and__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "fb5edb90a2b43a292159f40318f15b6258e9dafcb213b7de30185993686a774f",
+      "new_sha256": "fa1cfce5f00357bb114af728fe5f512c883a1378b06ede9a5b3baa425da00774"
+    },
+    {
+      "name": "single__or_not_cmp-cmp__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "78a3a2971ea67fe4b17caffc8bc107ea48cecf7e2612c57ee2169f7db953a952",
+      "new_sha256": "be0b67bf9ab4ceeacab097b97295e0563e83574ae1ca243bd402ac91effef3f9"
+    },
+    {
+      "name": "single__or_not_in-and__exists.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "ce2717ae5724c9f35bdacbc4cd272467f13428aa17e147a0d28f33a348350770",
+      "new_sha256": "5077a1dd591a376d72eed5f2f698b2892ee6aeabd481acb5b91a1025467b854a"
+    }
+  ]
+}

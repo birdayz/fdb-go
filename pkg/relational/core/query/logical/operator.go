@@ -38,7 +38,7 @@
 // **Java alignment.** Most operators map 1:1 to a Java counterpart:
 //
 //	LogicalFilter    ↔ LogicalFilter / QueryPredicate-carrying child
-//	LogicalProject   ↔ LogicalProjectionExpression
+//	LogicalProject   ↔ the query block's SelectExpression result value
 //	LogicalSort      ↔ LogicalSortExpression
 //	LogicalAggregate ↔ GroupByExpression
 //	LogicalUnion     ↔ LogicalUnionExpression

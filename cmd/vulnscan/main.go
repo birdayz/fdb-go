@@ -68,13 +68,25 @@ import (
 // diff, which is the point.
 const govulncheckVersion = "v1.6.0"
 
-// scanPatterns is the shipped surface. pkg/testcontainers is excluded because
-// it wraps the Docker SDK — TEST infrastructure, not shipped to users — which
-// carries open upstream advisories with no fixed release (GO-2026-4887,
-// GO-2026-4883). See SECURITY.md. Everything else must be vulnerability-free.
+// scanPatterns is the shipped surface. Test infrastructure is excluded:
+// pkg/testcontainers wraps the Docker SDK, which carries open upstream
+// advisories with no fixed release (GO-2026-4887, GO-2026-4883), and
+// pkg/relational/sqltest (the end-to-end SQL suite and its testkit library,
+// a non-test package only because the suite's packages share it) imports it.
+// Neither is shipped to users. See SECURITY.md. Everything else must be
+// vulnerability-free.
 var scanPatterns = []string{"./pkg/..."}
 
-const excludeSubstring = "/testcontainers"
+var excludeSubstrings = []string{"/testcontainers", "/relational/sqltest/"}
+
+func excluded(pkg string) bool {
+	for _, s := range excludeSubstrings {
+		if strings.Contains(pkg, s) {
+			return true
+		}
+	}
+	return false
+}
 
 func main() {
 	var (
@@ -232,7 +244,7 @@ func listPackages(patterns []string) ([]string, error) {
 	var pkgs []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.Contains(line, excludeSubstring) {
+		if line == "" || excluded(line) {
 			continue
 		}
 		pkgs = append(pkgs, line)

@@ -14,6 +14,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -53,6 +54,15 @@ func (p *memoAdmissionHashSpyPlan) EqualsPlanWithoutChildren(other plans.RecordQ
 
 func (p *memoAdmissionHashSpyPlan) GetChildren() []plans.RecordQueryPlan { return nil }
 
+// The spy is a leaf with no correlations; admission derives them for new members.
+func (p *memoAdmissionHashSpyPlan) GetQuantifiers() []expressions.Quantifier { return nil }
+
+func (p *memoAdmissionHashSpyPlan) CanCorrelate() bool { return false }
+
+func (p *memoAdmissionHashSpyPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return nil
+}
+
 type hostileMemoExpression struct {
 	methodCalls atomic.Int32
 }
@@ -73,6 +83,7 @@ type memoAdmissionBatchImplementationRule struct {
 }
 
 func (r *memoAdmissionBatchImplementationRule) Matcher() matching.BindingMatcher { return r.matcher }
+
 func (r *memoAdmissionBatchImplementationRule) OnMatch(call *ImplementationRuleCall) {
 	for _, expression := range r.yields {
 		call.Yield(expression)
@@ -323,7 +334,7 @@ func TestMemoAdmissionWholeBatchChecksTypeBeforeHashInBothOrders(t *testing.T) {
 			constraints := reference.ConstraintsMap()
 			constraints.PushProperty("ordering", "seed", nil)
 			constraints.StartExploration()
-			reference.SetPlanProperties("properties-sentinel")
+			reference.SetPlanProperties(NewPlanPropertiesMap())
 			reference.AddPartialMatch("candidate", "match")
 			before := snapshotMemoAdmissionState(reference)
 			versionProbe, err := prepareReferenceMemberBatch(reference, nil)
@@ -375,7 +386,7 @@ func TestMemoAdmissionRuleDriverRejectsLateInvalidYieldAtomically(t *testing.T) 
 			}
 			reference.ConstraintsMap().PushProperty("driver", "seed", nil)
 			reference.ConstraintsMap().StartExploration()
-			reference.SetPlanProperties("driver-properties")
+			reference.SetPlanProperties(NewPlanPropertiesMap())
 			reference.AddPartialMatch("driver-candidate", "driver-match")
 			memo := NewMemo(reference)
 			before := snapshotMemoAdmissionState(reference)
@@ -427,7 +438,7 @@ func TestMemoAdmissionImplementationDriverRejectsLateInvalidYieldAtomically(t *t
 			}
 			reference.ConstraintsMap().PushProperty("driver", "seed", nil)
 			reference.ConstraintsMap().StartExploration()
-			reference.SetPlanProperties("implementation-driver-properties")
+			reference.SetPlanProperties(NewPlanPropertiesMap())
 			reference.AddPartialMatch("implementation-driver-candidate", "implementation-driver-match")
 			constraintRef, err := InitialOf(fixtureScan("IMPLEMENTATION_DRIVER_CHILD"))
 			if err != nil {
@@ -591,15 +602,11 @@ func TestMemoAdmissionPreparedBatchConflictsWithStageTransition(t *testing.T) {
 func TestMemoAdmissionApplyAdapterHasOneRootCaller(t *testing.T) {
 	t.Parallel()
 	fset := token.NewFileSet()
-	// PreparedMemberDuplicateWithHashes is watched INSTEAD OF, not alongside,
-	// PreparedMemberDuplicate: the admission boundary calls the hash-hoisting
-	// form, and the plain one now forwards to it for callers that have no
-	// precomputed hashes. Watching both would demand a root call to a function
-	// this package deliberately does not call, so the gate would fail on a
-	// correct tree. What the gate protects is unchanged — exactly one dedup
-	// entry point into the memo, in memo_admission.go.
 	counts := map[string][]string{
 		"ApplyPreparedMemberBatch":          nil,
+		"DuplicateWithHashes":               nil,
+		"NewMemberIndex":                    nil,
+		"PreparedMemberDuplicate":           nil,
 		"PreparedMemberDuplicateWithHashes": nil,
 	}
 	entries, err := memoAdmissionSourceFS.ReadDir(".")
@@ -639,8 +646,23 @@ func TestMemoAdmissionApplyAdapterHasOneRootCaller(t *testing.T) {
 		})
 	}
 	for name, sites := range counts {
-		if len(sites) != 1 || !strings.HasPrefix(sites[0], "memo_admission.go:") {
-			t.Fatalf("%s call sites = %v, want exactly one root call in memo_admission.go", name, sites)
+		if name == "PreparedMemberDuplicate" || name == "PreparedMemberDuplicateWithHashes" || name == "DuplicateWithHashes" {
+			if len(sites) != 0 {
+				t.Fatalf("%s call sites = %v; root admission must use batch-scoped equality", name, sites)
+			}
+			continue
+		}
+		want := 1
+		if name == "NewMemberIndex" {
+			want = 2 // Exploratory and final lanes remain separate.
+		}
+		if len(sites) != want {
+			t.Fatalf("%s call sites = %v, want %d root calls in memo_admission.go", name, sites, want)
+		}
+		for _, site := range sites {
+			if !strings.HasPrefix(site, "memo_admission.go:") {
+				t.Fatalf("%s call site %s is outside root admission", name, site)
+			}
 		}
 	}
 }
@@ -785,6 +807,58 @@ func TestMemoAdmissionDoesNotReproveAlreadyAdmittedMembers(t *testing.T) {
 	}
 	if got := len(reference.Members()); got != 5 {
 		t.Errorf("Reference has %d members, want 5 (seed + four admitted intents)", got)
+	}
+}
+
+func TestMemoAdmissionPublishesCorrelationsOnlyAfterCommit(t *testing.T) {
+	t.Parallel()
+	for _, conflict := range []bool{false, true} {
+		t.Run(fmt.Sprint(conflict), func(t *testing.T) {
+			t.Parallel()
+			visits := 0
+			predicate := &memoCorrelationObservedPredicate{
+				QueryPredicate: predicates.NewConstantPredicate(predicates.TriTrue), visits: &visits,
+			}
+			leaf, err := expressions.NewSelectExpression(values.NewBooleanValue(true), nil, []predicates.QueryPredicate{predicate})
+			leaf = mustConstruct(t, leaf, err)
+			child := expressions.InitialOf(leaf)
+			member, err := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(child))
+			member = mustConstruct(t, member, err)
+			reference, err := InitialOf(member)
+			reference = mustConstruct(t, reference, err)
+			incoming, err := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(child))
+			incoming = mustConstruct(t, incoming, err)
+			// Admitting member already published the child's correlations; drop
+			// them so this batch derives them itself.
+			child.InvalidateCorrelatedToCache()
+			visits = 0
+			batch, err := prepareReferenceMemberBatch(reference, []referenceMemberIntent{{
+				set: expressions.ReferenceExploratoryMembers, expression: incoming,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if batch.inserted[0] || visits == 0 {
+				t.Fatalf("fixture did not derive duplicate correlations: inserted=%t visits=%d", batch.inserted[0], visits)
+			}
+			if conflict && !reference.InsertFinal(member) {
+				t.Fatal("fixture failed to invalidate the prepared batch")
+			}
+			if err := batch.commit(); (err != nil) != conflict {
+				t.Fatalf("commit error=%v, want conflict=%t", err, conflict)
+			}
+			visits = 0
+			if got := child.GetCorrelatedTo(); len(got) != 0 {
+				t.Fatalf("constant leaf gained free correlations: %v", got)
+			}
+			wantVisits := 0
+			if conflict {
+				wantVisits = 1
+			}
+			if visits != wantVisits {
+				t.Fatalf("post-commit child correlations rederived %d times, want %d", visits, wantVisits)
+			}
+		})
 	}
 }
 

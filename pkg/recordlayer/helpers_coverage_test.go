@@ -80,35 +80,22 @@ var _ = Describe("Helper function coverage", func() {
 		})
 	})
 
-	Describe("calculateDelay", func() {
-		// Lines 223-231 of runner.go.
-		It("returns exponential backoff with jitter", func() {
-			runner := &FDBDatabaseRunner{
-				InitialDelay: 100 * time.Millisecond,
-				MaxDelay:     10 * time.Second,
+	Describe("exponentialDelay", func() {
+		// Java's ExponentialDelay: each delay is uniform in [0, current), and
+		// current then doubles, capped at the maximum, floored at 2 ms.
+		It("draws below the current bound, which doubles to the maximum", func() {
+			d := newExponentialDelay(100*time.Millisecond, 350*time.Millisecond, nil)
+			for _, bound := range []time.Duration{100, 200, 350, 350} {
+				got := d.delay()
+				Expect(got).To(BeNumerically(">=", 0))
+				Expect(got).To(BeNumerically("<", bound*time.Millisecond))
 			}
-
-			// Attempt 1: base delay = 100ms * 2^0 = 100ms, jitter 0.5-1.5x → 50-150ms
-			d1 := runner.calculateDelay(1)
-			Expect(d1).To(BeNumerically(">=", 50*time.Millisecond))
-			Expect(d1).To(BeNumerically("<=", 150*time.Millisecond))
-
-			// Attempt 3: base delay = 100ms * 2^2 = 400ms, jitter → 200-600ms
-			d3 := runner.calculateDelay(3)
-			Expect(d3).To(BeNumerically(">=", 200*time.Millisecond))
-			Expect(d3).To(BeNumerically("<=", 600*time.Millisecond))
 		})
 
-		It("caps at MaxDelay", func() {
-			runner := &FDBDatabaseRunner{
-				InitialDelay: 1 * time.Second,
-				MaxDelay:     2 * time.Second,
-			}
-
-			// Attempt 10: base = 1s * 2^9 = 512s, capped to 2s, jitter → 1-3s
-			d := runner.calculateDelay(10)
-			Expect(d).To(BeNumerically(">=", 1*time.Second))
-			Expect(d).To(BeNumerically("<=", 3*time.Second))
+		It("floors the bound at 2 ms", func() {
+			d := newExponentialDelay(0, time.Second, nil)
+			Expect(d.delay()).To(Equal(time.Duration(0)), "the first draw is below the initial 0 ms")
+			Expect(d.current).To(Equal(2 * time.Millisecond))
 		})
 	})
 })

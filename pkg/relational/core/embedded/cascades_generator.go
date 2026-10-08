@@ -11,7 +11,6 @@ import (
 	"math"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +38,7 @@ import (
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/query/semantic"
 	"fdb.dev/pkg/relational/core/rowstruct"
 	"fdb.dev/pkg/relational/core/session"
 	"google.golang.org/protobuf/proto"
@@ -52,7 +52,11 @@ import (
 // around the connection's exec* methods.
 type cascadesGenerator struct {
 	c     *EmbeddedConnection
-	cache *PlanCache
+	cache queryPlanCache
+	// args are the statement's driver arguments; paramKey renders their
+	// bindings for the plan-cache key, since bound constants are planned in.
+	args     []driver.NamedValue
+	paramKey string
 }
 
 func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
@@ -99,10 +103,33 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 	if err := contextCancellationError(ctx); err != nil {
 		return nil, err
 	}
+	if cs, _ := g.c.Options().Get(api.OptCaseSensitiveIdentifiers).(bool); cs {
+		sql = caseSensitiveIdentifiers(sql)
+	}
 	root, err := parser.Parse(sql)
 	if err != nil {
 		return nil, err
 	}
+	if err := checkDecimalConstants(root); err != nil {
+		return nil, err
+	}
+	if mayCallSQLFunction(root) && g.c.ensureMetaData(ctx) == nil {
+		expanded, changed, err := expandSQLFunctions(sql, root, metaDataFunctions(g.c.cachedMetaData()))
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			if root, err = parser.Parse(expanded); err != nil {
+				return nil, err
+			}
+		}
+	}
+	paramKey, release, err := bindStatementParameters(root, g.args)
+	if err != nil {
+		return nil, err
+	}
+	g.paramKey = paramKey
+	g.c.releaseParams = append(g.c.releaseParams, release)
 
 	stmts := root.Statements()
 	if stmts == nil || len(stmts.AllStatement()) == 0 {
@@ -145,6 +172,9 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 // SHOW, DDL, or transaction.
 func (g *cascadesGenerator) planOne(ctx context.Context, stmt antlrgen.IStatementContext) (query.Plan, error) {
 	c := g.c
+	if statementOptionsFor(stmt, c.Options()).snapshot && !snapshotAdmits(stmt) {
+		return nil, errSnapshotOnlySelect()
+	}
 
 	// EXPLAIN <inner> → driver.Rows plan with a single PLAN column.
 	if util := stmt.UtilityStatement(); util != nil {
@@ -207,7 +237,8 @@ func (g *cascadesGenerator) planSelect(ctx context.Context, sel antlrgen.ISelect
 
 	// Explain-only mode: no FDB available, produce logical plan text only.
 	// Used by NewExplainOnlyGenerator / NewExplainOnlyGeneratorWithSchema.
-	if c.sess == nil || c.sess.DB == nil {
+	// A stored-query warm-up has no FDB either, but plans for real.
+	if (c.sess == nil || c.sess.DB == nil) && !c.offlineAllIndexesReadable {
 		return g.planSelectExplainOnly(sel, q)
 	}
 
@@ -231,7 +262,7 @@ func (g *cascadesGenerator) planSelect(ctx context.Context, sel antlrgen.ISelect
 			ExplainFn: func() string {
 				md := c.cachedMetaData()
 				if md != nil {
-					if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
+					if op, err := buildLogicalPlanForQueryWithTemplate(q, md, g.sessionTemplate()); err == nil && op != nil {
 						return op.Explain("")
 					}
 				}
@@ -252,7 +283,7 @@ func (g *cascadesGenerator) planSelect(ctx context.Context, sel antlrgen.ISelect
 			"no schema metadata available")
 	}
 
-	return g.planSelectCascades(ctx, q, md, true)
+	return g.planSelectCascades(ctx, q, md, true, statementOptionsFor(sel, g.c.Options()))
 }
 
 // planSelectExplainOnly produces a PlanFunc that renders a logical plan
@@ -274,7 +305,7 @@ func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementC
 		ExplainFn: func() string {
 			md := c.cachedMetaData()
 			if md != nil {
-				if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
+				if op, err := buildLogicalPlanForQueryWithTemplate(q, md, g.sessionTemplate()); err == nil && op != nil {
 					return op.Explain("")
 				}
 			}
@@ -291,7 +322,7 @@ func (g *cascadesGenerator) planSelectExplainOnly(sel antlrgen.ISelectStatementC
 // query path passes true; the EXPLAIN re-entry from computeExplainText passes
 // false so EXPLAIN does not emit a phantom planning event (Java's getPlan
 // funnel does not fire for EXPLAIN-internal planning).
-func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData, logMetrics bool) (plan query.Plan, err error) {
+func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.IQueryContext, md *recordlayer.RecordMetaData, logMetrics bool, so statementOptions) (plan query.Plan, err error) {
 	if err := contextCancellationError(ctx); err != nil {
 		return nil, err
 	}
@@ -317,6 +348,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	var ls *planLogScope
 	if logMetrics {
 		ls = g.beginPlanLog(ctx, canonicalTextOf(q))
+		ls.setLogQuery(so.logQuery)
 	}
 	defer func() { ls.finish(err) }()
 
@@ -348,6 +380,9 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, stateErr
 	}
 	popts.config.ReadableIndexes = readableIndexesFrom(md, indexStateSnapshot)
+	if g.c.offlineAllIndexesReadable {
+		popts.config.ReadableIndexes = cascades.AllIndexesReadable()
+	}
 	// A cross-row uniqueness proof is a statement about an INSTANT, so it only
 	// licenses anything when the WHOLE result comes from one read version.
 	// fetchPage routes on exactly this condition: with an explicit transaction
@@ -357,18 +392,24 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// PlannerConfiguration.SingleReadVersion.
 	popts.config.SingleReadVersion = g.c.activeTx != nil
 	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope
-	// (case-sensitive, never normalized) and the injective canonical query
-	// text. NOT q.GetText() — that concatenated tokens with no separator,
-	// colliding `SELECT AB` with `SELECT A B`. PlanCache normalizes only the
-	// query text (see planCacheScope / PlanCache.Get).
-	cacheScope := planCacheScope(g.c.sess.DBPath, g.c.sess.Schema, md.Version(), popts.cacheKeyPart())
-	cacheSQL := canonicalTextOf(q)
+	// (case-sensitive) and the token-rendered query text.
+	if so.rightDeep {
+		popts.config.ShouldJoinRightDeep = true
+	}
+	planKey, cacheable := g.planCacheKey(md, popts, planCacheText(q))
+	cacheTemplate := g.sessionTemplate()
+	cache := g.cache
+	if so.noCache || !cacheable {
+		cache = nil
+	}
 
-	if g.cache != nil {
-		if cachedPlan, cachedSubs, cachedLabels, ok := g.cache.GetWithOutputLabels(cacheScope, cacheSQL); ok {
+	if cache != nil {
+		if cached, ok := cache.lookup(cacheTemplate, planKey, g.paramKey); ok {
+			cachedPlan, cachedSubs, cachedLabels := cached.plan, cached.scalarSubs, cached.outputLabels
 			ls.setPlan(cachedPlan)
 			ls.setCache(PlanCacheHit)
 			return &cascadesPlan{
+				snapshot:         so.snapshot,
 				conn:             g.c,
 				md:               md,
 				physicalPlan:     cachedPlan,
@@ -396,8 +437,11 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, err
 	}
 
-	visitor := NewPlanVisitorWithSchema(md, g.c.sess.Schema)
+	visitor := NewPlanVisitorWithTemplate(md, g.sessionTemplate())
 	logicalOp, buildErr := visitor.VisitQuery(q)
+	if buildErr == nil {
+		buildErr = rejectArrayAggOrderBy(q)
+	}
 	if buildErr != nil {
 		return nil, buildErr
 	}
@@ -409,7 +453,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 			"Unsupported operator "+fn)
 	}
 
-	if err := runFromResolutionPostPasses(logicalOp, g.c.sess.Schema, md, g.c.cachedMetaData()); err != nil {
+	if err := runFromResolutionPostPasses(logicalOp, g.sessionTemplate(), md, g.c.cachedMetaData()); err != nil {
 		return nil, err
 	}
 	outputLabels, labelErr := query.ExactLogicalOutputLabels(logicalOp, md, nil)
@@ -521,7 +565,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// constructors. This is the plan-cache MISS path — the hit path above
 	// returns the same plan pointer to concurrent executions, so this is the
 	// only point at which stamping is not a data race.
-	if err := cascades.FinalizePlan(physPlan); err != nil {
+	if err := plans.FinalizePlan(physPlan); err != nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "result descriptor: "+err.Error())
 	}
 	// Plan scalar subqueries independently through the Cascades pipeline
@@ -536,13 +580,14 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// LIMIT/OFFSET queries are cacheable: the limit is now carried by the
 	// RecordQueryLimitPlan operator inside the cached physical plan (RFC-128),
 	// not applied post-execution, so the cached plan is complete.
-	if g.cache != nil {
+	if cache != nil {
 		ls.setCache(PlanCacheMiss)
-		g.cache.PutWithOutputLabels(cacheScope, cacheSQL, physPlan, scalarSubs, outputLabels)
+		cache.store(cacheTemplate, planKey, g.paramKey, &planCacheEntry{plan: physPlan, scalarSubs: scalarSubs, outputLabels: outputLabels})
 	} else {
 		ls.setCache(PlanCacheSkip)
 	}
 	return &cascadesPlan{
+		snapshot:         so.snapshot,
 		conn:             g.c,
 		md:               md,
 		physicalPlan:     physPlan,
@@ -618,7 +663,7 @@ func (g *cascadesGenerator) explainLogicalQuery(ctx context.Context, q antlrgen.
 		return "", err
 	}
 	if md != nil {
-		if op, err := buildLogicalPlanForQueryWithCatalog(q, md); err == nil && op != nil {
+		if op, err := buildLogicalPlanForQueryWithTemplate(q, md, g.sessionTemplate()); err == nil && op != nil {
 			return explainWithContext(ctx, func() string { return op.Explain("") })
 		}
 	}
@@ -680,7 +725,7 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 			return "", api.NewError(api.ErrCodeUnsupportedQuery,
 				"no schema metadata available")
 		}
-		plan, planErr := g.planSelectCascades(ctx, q, freshMd, false)
+		plan, planErr := g.planSelectCascades(ctx, q, freshMd, false, statementOptionsFor(d, g.c.Options()))
 		if planErr != nil {
 			return "", planErr
 		}
@@ -691,7 +736,7 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 	// that gap is tracked in TODO.md, not done here.
 	if del := d.DeleteStatement(); del != nil {
 		if md != nil {
-			if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionSchema()); op != nil {
+			if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionTemplate()); op != nil {
 				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
@@ -701,7 +746,7 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 	}
 	if ins := d.InsertStatement(); ins != nil {
 		if md != nil {
-			if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionSchema()); op != nil {
+			if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionTemplate()); op != nil {
 				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
@@ -711,7 +756,7 @@ func (g *cascadesGenerator) computeExplainText(ctx context.Context, d *antlrgen.
 	}
 	if upd := d.UpdateStatement(); upd != nil {
 		if md != nil {
-			if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionSchema()); op != nil {
+			if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionTemplate()); op != nil {
 				return explainWithContext(ctx, func() string { return op.Explain("") })
 			}
 		}
@@ -743,7 +788,7 @@ func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementC
 			if dml := stmt.DmlStatement(); dml != nil {
 				if del := dml.DeleteStatement(); del != nil {
 					if md != nil {
-						if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionSchema()); op != nil {
+						if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionTemplate()); op != nil {
 							return op.Explain("")
 						}
 					}
@@ -753,7 +798,7 @@ func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementC
 				}
 				if upd := dml.UpdateStatement(); upd != nil {
 					if md != nil {
-						if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionSchema()); op != nil {
+						if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionTemplate()); op != nil {
 							return op.Explain("")
 						}
 					}
@@ -763,7 +808,7 @@ func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementC
 				}
 				if ins := dml.InsertStatement(); ins != nil {
 					if md != nil {
-						if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionSchema()); op != nil {
+						if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionTemplate()); op != nil {
 							return op.Explain("")
 						}
 					}
@@ -775,40 +820,6 @@ func (g *cascadesGenerator) planDDL(_ context.Context, stmt antlrgen.IStatementC
 			return explainStatement(statementKind(stmt), stmt)
 		},
 	}, nil
-}
-
-// dmlHasDryRunOption reports whether a DML statement carries OPTIONS (DRY RUN) ANYWHERE in
-// its parse subtree. DRY RUN is a statement-level directive, but depending on the spelling
-// the grammar attaches the trailing OPTIONS clause to different nodes: a VALUES insert puts
-// it on insertStatement.queryOptions, while an `INSERT … SELECT … OPTIONS (DRY RUN)` is
-// consumed by the inner SELECT's queryTerm.queryOptions (#simpleTable), leaving
-// insertStatement.queryOptions nil. Checking only the statement-level clause therefore
-// MISSES the INSERT…SELECT spelling — and a missed DRY RUN COMMITS the mutation, the exact
-// data-loss the option exists to prevent.
-//
-// So this walks the whole DML subtree, matching Java's AstNormalizer, which visits every
-// queryOptions node and accumulates them into one statement-level Options (DRY_RUN set at
-// AstNormalizer.java:281). Over-detection only ever previews (no mutation), so a tree-wide
-// walk fails safe; the grammar's queryOption alternatives are
-// `NOCACHE | LOG QUERY | DRY RUN | EF_SEARCH n` and DRY RUN is the only one whose omission
-// changes whether data is mutated.
-func dmlHasDryRunOption(tree antlr.Tree) bool {
-	if tree == nil {
-		return false
-	}
-	if qo, ok := tree.(antlrgen.IQueryOptionsContext); ok {
-		for _, opt := range qo.AllQueryOption() {
-			if opt != nil && opt.DRY() != nil && opt.RUN() != nil {
-				return true
-			}
-		}
-	}
-	for i := 0; i < tree.GetChildCount(); i++ {
-		if dmlHasDryRunOption(tree.GetChild(i)) {
-			return true
-		}
-	}
-	return false
 }
 
 // updateHasDefaultAssignment reports whether an UPDATE has a `SET col = DEFAULT`
@@ -887,6 +898,9 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	if err := rejectWindowedAggregate(dml); err != nil {
 		return nil, err
 	}
+	if err := rejectArrayAggOrderBy(dml); err != nil {
+		return nil, err
+	}
 
 	// Explain-only mode: no FDB available, produce logical plan text only.
 	// No planning happens here, so it is outside the metrics funnel.
@@ -894,9 +908,14 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return g.planDMLExplainOnly(dml)
 	}
 
-	// DML is never cached; the cache event is always Skip on success.
-	// Log the original whitespace-preserved SQL (see planSelectCascades).
+	// UPDATE and DELETE plans are cached as SELECT plans are; INSERT plans are
+	// not (Java's PlanGenerator.shouldNotCache: an INSERT's plan carries its
+	// rows). Log the original whitespace-preserved SQL (see planSelectCascades).
+	so := statementOptionsFor(dml, c.Options())
 	ls := g.beginPlanLog(ctx, canonicalTextOf(dml))
+	if ls != nil {
+		ls.setLogQuery(so.logQuery)
+	}
 	defer func() { ls.finish(err) }()
 
 	if err := c.ensureMetaData(ctx); err != nil {
@@ -910,15 +929,17 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// DML … OPTIONS (DRY RUN): preview the would-be-affected rows without committing.
 	// Java honors it — AstNormalizer.visitQueryOptions → Options.DRY_RUN →
 	// ExecuteProperties.setDryRun (QueryPlan.java:435) → the DML plans branch to
-	// dryRunSave/DeleteRecordAsync. The flag is STATEMENT-scoped: parsed from the typed
-	// OPTIONS clause here, carried on the cascadesPlan → paginatingRows.dryRun →
-	// ExecuteProperties.DryRun, where executeInsert/Update/Delete branch onto the store
-	// DryRun* primitives. It must NEVER ride a connection option — that would go sticky
-	// across pooled statements (the next plain DML would silently no-op). NOCACHE/LOG
+	// dryRunSave/DeleteRecordAsync. The flag is the statement's typed OPTIONS clause
+	// merged with the connection's DRY_RUN (Java's PlanGenerator merge, :170), decided
+	// here per statement (it is not part of a cached plan) and carried on the cascadesPlan →
+	// paginatingRows.dryRun → ExecuteProperties.DryRun, where executeInsert/Update/Delete
+	// branch onto the store DryRun* primitives. A connection DRY_RUN set through SetOption
+	// lasts one pool borrow: ResetSession restores the connector's options, so the next
+	// borrower's plain DML never silently no-ops. NOCACHE/LOG
 	// QUERY remain accepted-and-ignored hints. Detection walks the whole DML subtree so the
 	// INSERT…SELECT spelling — whose OPTIONS the grammar attaches to the inner SELECT, not
 	// insertStatement.queryOptions — cannot silently bypass DRY RUN and commit.
-	dryRun := dmlHasDryRunOption(dml)
+	dryRun := so.dryRun
 
 	var logicalOp logical.LogicalOperator
 	var insStmt antlrgen.IInsertStatementContext
@@ -933,7 +954,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 				"EXISTS nested in a scalar expression is not yet supported")
 		}
 		var delErr error
-		logicalOp, delErr = buildLogicalPlanForDeleteWithCatalog(del, md, g.c.sess.Schema)
+		logicalOp, delErr = buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionTemplate())
 		if delErr != nil {
 			// A carried SQLSTATE from a WHERE-EXISTS subquery plan failure (RFC-142:
 			// AT-on-a-table → WRONG_OBJECT_TYPE) — surface it as the SELECT path does.
@@ -961,7 +982,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 				"EXISTS nested in a scalar expression is not yet supported")
 		}
 		var updErr error
-		logicalOp, updErr = buildLogicalPlanForUpdateWithCatalog(upd, md, g.c.sess.Schema)
+		logicalOp, updErr = buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionTemplate())
 		if updErr != nil {
 			return nil, updErr
 		}
@@ -978,7 +999,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		}
 		insStmt = ins
 		var insErr error
-		logicalOp, insErr = buildLogicalPlanForInsertWithCatalog(ins, md, g.c.sess.Schema)
+		logicalOp, insErr = buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionTemplate())
 		if insErr != nil {
 			// A carried SQLSTATE from the INSERT … SELECT body build (RFC-142:
 			// AT-on-a-table comma source → WRONG_OBJECT_TYPE) — surface it.
@@ -989,13 +1010,13 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML logical plan failed")
 	}
 
-	if err := resolveQualifiedTableNames(logicalOp, g.c.sess.Schema); err != nil {
+	if err := resolveQualifiedTableNames(logicalOp, g.sessionTemplate()); err != nil {
 		return nil, err
 	}
 
 	// DML target-table existence: surface a clean 42F01 (matching INSERT INTO <missing>
 	// and the SELECT path), not a downstream generic 0AF00 "DML Cascades translation
-	// failed". Run AFTER resolveQualifiedTableNames so (a) a BAD schema qualifier's 42F00
+	// failed". Run AFTER resolveQualifiedTableNames so (a) a BAD template qualifier's 42F00
 	// already errored above and takes precedence, and (b) a VALID qualifier (or none) has
 	// been stripped to the bare Target, which is checked here — so `DELETE FROM
 	// <session_schema>.missing` and `DELETE FROM missing` both get 42F01, while
@@ -1030,8 +1051,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// reported success having removed no rows. Canonicalising the name instead
 	// would be worse still -- it would let an unquoted write mutate a table that
 	// can only be named with quotes.
-	if dmlTarget != "" && md.GetRecordType(bareTableName(dmlTarget)) == nil {
-		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(bareTableName(dmlTarget)))
+	// The target is bare here: resolveQualifiedTableNames stripped any
+	// qualifier from its segments, and a dot left in it belongs to the name.
+	if dmlTarget != "" && md.GetRecordType(dmlTarget) == nil {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(dmlTarget))
 	}
 
 	// SOURCE tables too, and AFTER the target check so the target keeps its own
@@ -1051,16 +1074,6 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 			"setting column ordering for insert with select is not supported")
 	}
 
-	// INSERT … SELECT promotion guard: reject when an aggregate-result column
-	// cannot be promoted to its target column type (e.g. AVG(BIGINT)→DOUBLE into
-	// a BIGINT column), matching Java's plan-time PromoteValue rejection
-	// (SQLSTATE 22000), independent of how many rows the source yields.
-	if insOp, ok := logicalOp.(*logical.LogicalInsert); ok && insOp.Source != nil {
-		if err := checkInsertSelectPromotable(insOp, md); err != nil {
-			return nil, err
-		}
-	}
-
 	// INSERT … VALUES: build the literal rows into a Cascades array Value
 	// (resolved table name is now available). translateInsert explodes it
 	// as the InsertExpression inner, so VALUES rides the Cascades path.
@@ -1078,9 +1091,11 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 
 	// UPDATE: reject unsupported functions in SET RHS (parse-tree scan, the
 	// same mechanism the SELECT projection path uses — catches functions
-	// the resolver can't build a Value for, e.g. UPPER), and SET col = NULL
-	// on a NOT NULL column. Both at plan time, matching the naive path.
-	if updOp, ok := logicalOp.(*logical.LogicalUpdate); ok {
+	// the resolver can't build a Value for, e.g. UPPER). A NULL assigned to a
+	// field that cannot hold it is Java's run-time NULL_ASSIGNMENT, refused
+	// by the executor when a row is transformed (MessageHelpers.coerceObject),
+	// not here.
+	if _, ok := logicalOp.(*logical.LogicalUpdate); ok {
 		if upd := dml.UpdateStatement(); upd != nil {
 			for _, el := range upd.AllUpdatedElement() {
 				if el == nil || el.Expression() == nil {
@@ -1091,14 +1106,27 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 				}
 			}
 		}
-		if err := validateUpdateAssignments(updOp, md); err != nil {
-			return nil, err
-		}
 	}
 
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Unsupported operator "+fn)
+	}
+
+	var outputLabels []string
+	if elements := returningSelectElements(dml); elements != nil {
+		returning, err := buildReturning(logicalOp, elements, md, g.sessionTemplate())
+		if err != nil {
+			return nil, err
+		}
+		if fn := query.FindUnsupportedFunction(returning); fn != "" {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
+		}
+		if outputLabels, err = query.ExactLogicalOutputLabels(returning, md, nil); err != nil {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"RETURNING has no exact output-label contract: %v", err)
+		}
+		logicalOp = returning
 	}
 
 	// Pass md so DML join legs (e.g. UPDATE … FROM a JOIN b) anchor (RFC-077 7.6).
@@ -1141,6 +1169,38 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// can move between pages and be emitted twice. See
 	// PlannerConfiguration.SingleReadVersion.
 	popts.config.SingleReadVersion = g.c.activeTx != nil
+
+	// The plan cache, keyed as a SELECT's is. The statement's checks above
+	// ran, and its RETURNING labels and explain come from the logical plan,
+	// so a hit supplies only the physical plan and its scalar subqueries.
+	planKey, cacheable := g.planCacheKey(md, popts, planCacheText(dml))
+	var cache queryPlanCache
+	if dml.InsertStatement() == nil && !so.noCache && cacheable {
+		cache = g.cache
+	}
+	cacheTemplate := g.sessionTemplate()
+	newDMLPlan := func(physPlan plans.RecordQueryPlan, subs []PlannedScalarSubquery) *cascadesPlan {
+		ls.setPlan(physPlan)
+		return &cascadesPlan{
+			conn:             g.c,
+			md:               md,
+			physicalPlan:     physPlan,
+			explain:          logicalOp.Explain(""),
+			scalarSubqueries: subs,
+			sql:              g.c.execLogSQL(dml),
+
+			indexDependencies: collectPlanIndexDependencies(md, physPlan, subs),
+			dryRun:            dryRun,
+			outputLabels:      outputLabels,
+		}
+	}
+	if cache != nil {
+		if cached, ok := cache.lookup(cacheTemplate, planKey, g.paramKey); ok {
+			ls.setCache(PlanCacheHit)
+			return newDMLPlan(cached.plan, cached.scalarSubs), nil
+		}
+	}
+
 	// Collected statistics take precedence; the legacy count-key source is the
 	// fallback. Placed after popts exists, since gate 1 reads the flag from it.
 	dmlStats, dmlStructurallyRefused := g.fetchCollectedStatistics(ctx, md, popts)
@@ -1178,7 +1238,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "malformed DML plan: "+err.Error())
 	}
-	if err := cascades.FinalizePlan(physPlan); err != nil {
+	if err := plans.FinalizePlan(physPlan); err != nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "result descriptor: "+err.Error())
 	}
 
@@ -1194,19 +1254,13 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, dmlSubErr
 	}
 
-	ls.setPlan(physPlan)
-	ls.setCache(PlanCacheSkip)
-	return &cascadesPlan{
-		conn:             g.c,
-		md:               md,
-		physicalPlan:     physPlan,
-		explain:          logicalOp.Explain(""),
-		scalarSubqueries: dmlScalarSubs,
-		sql:              g.c.execLogSQL(dml),
-
-		indexDependencies: collectPlanIndexDependencies(md, physPlan, dmlScalarSubs),
-		dryRun:            dryRun,
-	}, nil
+	if cache != nil {
+		ls.setCache(PlanCacheMiss)
+		cache.store(cacheTemplate, planKey, g.paramKey, &planCacheEntry{plan: physPlan, scalarSubs: dmlScalarSubs})
+	} else {
+		ls.setCache(PlanCacheSkip)
+	}
+	return newDMLPlan(physPlan, dmlScalarSubs), nil
 }
 
 // planDMLExplainOnly produces a PlanFunc for DML (INSERT/UPDATE/DELETE) in
@@ -1228,7 +1282,7 @@ func (g *cascadesGenerator) planDMLExplainOnly(dml antlrgen.IDmlStatementContext
 			md := c.cachedMetaData()
 			if del := dml.DeleteStatement(); del != nil {
 				if md != nil {
-					if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionSchema()); op != nil {
+					if op, _ := buildLogicalPlanForDeleteWithCatalog(del, md, g.sessionTemplate()); op != nil {
 						return op.Explain("")
 					}
 				}
@@ -1238,7 +1292,7 @@ func (g *cascadesGenerator) planDMLExplainOnly(dml antlrgen.IDmlStatementContext
 			}
 			if upd := dml.UpdateStatement(); upd != nil {
 				if md != nil {
-					if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionSchema()); op != nil {
+					if op, _ := buildLogicalPlanForUpdateWithCatalog(upd, md, g.sessionTemplate()); op != nil {
 						return op.Explain("")
 					}
 				}
@@ -1248,7 +1302,7 @@ func (g *cascadesGenerator) planDMLExplainOnly(dml antlrgen.IDmlStatementContext
 			}
 			if ins := dml.InsertStatement(); ins != nil {
 				if md != nil {
-					if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionSchema()); op != nil {
+					if op, _ := buildLogicalPlanForInsertWithCatalog(ins, md, g.sessionTemplate()); op != nil {
 						return op.Explain("")
 					}
 				}
@@ -1288,11 +1342,14 @@ type cascadesPlan struct {
 	// separators.
 	sql string
 
-	// dryRun carries the SQL OPTIONS (DRY RUN) flag from planDML to execution.
-	// Statement-scoped (one cascadesPlan per statement) → paginatingRows.dryRun
-	// → ExecuteProperties.DryRun, so the DML executor previews via the store
-	// DryRun* primitives instead of mutating. Never a connection option.
+	// dryRun carries the statement's merged DRY RUN (its OPTIONS clause or the
+	// connection's DRY_RUN) from planDML to execution: one cascadesPlan per
+	// statement → paginatingRows.dryRun → ExecuteProperties.DryRun, so the DML
+	// executor previews via the store DryRun* primitives instead of mutating.
 	dryRun bool
+	// snapshot is the statement-scoped OPTIONS (ISOLATION LEVEL SNAPSHOT) flag:
+	// the statement's reads take no read-conflict ranges.
+	snapshot bool
 }
 
 // IsUpdate reports whether this is a DML plan (INSERT/UPDATE/DELETE),
@@ -1352,12 +1409,12 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation,
 			"statement continuations are not supported: Go SQL tokens are engine-private and no resume entry point exists")
 	}
-	ss, ssErr := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	ss, ssErr := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
 	if ssErr != nil {
 		return query.Result{}, ssErr
 	}
 
-	cols := deriveColumnsFromPlan(p.physicalPlan, p.md)
+	cols := resultColumns(p.physicalPlan)
 	if p.outputLabels != nil {
 		if len(p.outputLabels) != len(cols) {
 			return query.Result{}, api.NewErrorf(api.ErrCodeInternalError,
@@ -1399,6 +1456,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		ctx:              ctx,
 		cancel:           cancel,
 		conn:             c,
+		opts:             c.Options(),
 		execLog:          execLog,
 		ss:               ss,
 		plan:             p.physicalPlan,
@@ -1413,6 +1471,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		tx:             c.activeTx,
 		isUpdate:       p.IsUpdate(),
 		dryRun:         p.dryRun,
+		snapshot:       p.snapshot,
 		// The statement-stable CURRENT_TIMESTAMP-family instant is stamped
 		// ONCE here, while the statement is in flight (the driver entry
 		// point's session-clock stamp is still live). It must be captured on
@@ -1551,9 +1610,13 @@ func (r *paginatingRows) countAll() (int64, error) {
 // (aggregate accumulators, sort buffers) serialized as protobuf. No
 // cursor persists across transactions — this matches Java's architecture.
 type paginatingRows struct {
-	ctx              context.Context
-	cancel           context.CancelFunc // statement-timeout cancel; nil when no timeout
-	conn             *EmbeddedConnection
+	ctx    context.Context
+	cancel context.CancelFunc // statement-timeout cancel; nil when no timeout
+	conn   *EmbeddedConnection
+	// opts is the connection's option set captured when the statement
+	// executed; every page reads it, so a SetOption between two pages of one
+	// result does not change the rest of it (RFC-257 WS-E 6.2).
+	opts             *api.Options
 	ss               subspace.Subspace
 	plan             plans.RecordQueryPlan
 	md               *recordlayer.RecordMetaData
@@ -1577,6 +1640,10 @@ type paginatingRows struct {
 	// never recorded — exhaustion is how a successful result set ends.
 	statsErr error
 
+	// retryTimeLimit retains the reduced budget across successful pages. Zero
+	// means the initial ceiling; explicit transactions never adapt or retry.
+	retryTimeLimit time.Duration
+
 	// emitted counts rows actually returned to the caller across all pages.
 	// Shared by the MAX_ROWS cap and pageRowBudget. SQL LIMIT/OFFSET is NOT
 	// here anymore — it is carried by the RecordQueryLimitPlan operator
@@ -1596,11 +1663,13 @@ type paginatingRows struct {
 	maxResultBytes int64
 	resultBytes    int64
 
-	// dryRun is the statement-scoped SQL OPTIONS (DRY RUN) flag, propagated from
-	// the cascadesPlan at construction and read in executeProps() into
-	// ExecuteProperties.DryRun. A fresh paginatingRows per statement means it can
-	// never leak to a subsequent plain DML on the same (pooled) connection.
+	// dryRun is the statement's merged DRY RUN, propagated from the cascadesPlan
+	// at construction and read in executeProps() into ExecuteProperties.DryRun.
+	// A fresh paginatingRows per statement keeps it to that statement.
 	dryRun bool
+	// snapshot is the statement-scoped OPTIONS (ISOLATION LEVEL SNAPSHOT) flag:
+	// the statement's reads take no read-conflict ranges.
+	snapshot bool
 
 	// statementTime is the statement-stable CURRENT_TIMESTAMP-family
 	// instant, captured once in Execute while the statement's session-clock
@@ -1718,6 +1787,12 @@ func (r *paginatingRows) Close() error {
 	return nil
 }
 
+// metaData is the result set's metadata (api.WithResultSetMetaDataObserver):
+// the labelled columns with their full types.
+func (r *paginatingRows) metaData() api.ResultSetMetaData {
+	return executor.NewResultSetMetaData(r.cols)
+}
+
 func (r *paginatingRows) ColumnTypeDatabaseTypeName(index int) string {
 	if index < 0 || index >= len(r.cols) {
 		return ""
@@ -1735,14 +1810,13 @@ func (r *paginatingRows) ColumnTypeScanType(index int) reflect.Type {
 		return reflect.TypeOf((*float64)(nil)).Elem()
 	case "FLOAT":
 		return reflect.TypeOf((*float32)(nil)).Elem()
-	case "STRING":
+	case "STRING", "DATE", "TIMESTAMP":
+		// A DATE or TIMESTAMP value is its canonical text.
 		return reflect.TypeOf((*string)(nil)).Elem()
 	case "BOOLEAN":
 		return reflect.TypeOf((*bool)(nil)).Elem()
 	case "BYTES", "BINARY":
 		return reflect.TypeOf((*[]byte)(nil)).Elem()
-	case "DATE", "TIMESTAMP":
-		return reflect.TypeOf((*time.Time)(nil)).Elem()
 	default:
 		return reflect.TypeOf((*any)(nil)).Elem()
 	}
@@ -1953,6 +2027,26 @@ func (r *paginatingRows) pageRowBudget() int {
 	return int(remainingEmit)
 }
 
+// options is the option set captured when the statement executed (the
+// connection's, for a result set built without one).
+func (r *paginatingRows) options() *api.Options {
+	if r.opts != nil {
+		return r.opts
+	}
+	return r.conn.Options()
+}
+
+func (r *paginatingRows) pageTimeLimit() time.Duration {
+	limit := txPageTimeLimit
+	if r.retryTimeLimit > 0 && r.retryTimeLimit < limit {
+		limit = r.retryTimeLimit
+	}
+	if millis := optInt64(r.options(), api.OptExecutionTimeLimit, 0); millis > 0 && millis <= txPageTimeLimit.Milliseconds() {
+		limit = min(limit, time.Duration(millis)*time.Millisecond)
+	}
+	return limit
+}
+
 func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	// Anchor the scan/time budget on the database's env clock. This path ALWAYS arms a time
 	// limit (txPageTimeLimit below), and that limit decides where a page ends and therefore
@@ -1961,25 +2055,22 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	// wall clock, unchanged.
 	props := recordlayer.DefaultExecutePropertiesIn(r.env())
 
-	// DRY RUN is statement-scoped (carried on paginatingRows from the
-	// cascadesPlan), NOT a connection option — read the field, never
-	// r.conn.Options(), so it can't leak to a later plain statement.
+	// DRY RUN is the statement's merged flag (carried on paginatingRows from
+	// the cascadesPlan), read from the field so a later change of the
+	// connection's DRY_RUN cannot change a statement already executing.
 	props = props.WithDryRun(r.dryRun)
+	if r.snapshot {
+		props.IsolationLevel = recordlayer.SnapshotIsolation
+	}
 
-	opts := r.conn.Options()
+	opts := r.options()
 
 	// Per-page time limit. The connection option (if set) is intersected
 	// with the per-transaction CAP (txPageTimeLimit, 4s) so the FDB 5s hard
 	// wall is never exceeded: the 4s cap is the ceiling and a smaller user
 	// limit only narrows it — a larger user value can never raise the page
 	// budget past the cap.
-	timeLimit := txPageTimeLimit
-	if userMillis := optInt64(opts, api.OptExecutionTimeLimit, 0); userMillis > 0 {
-		if ut := time.Duration(userMillis) * time.Millisecond; ut < timeLimit {
-			timeLimit = ut
-		}
-	}
-	props = props.WithTimeLimit(timeLimit)
+	props = props.WithTimeLimit(r.pageTimeLimit())
 
 	// Per-page scanned-records limit. MaxInt32 is the "no limit" sentinel
 	// (api default) — only wire a real (smaller) limit through.
@@ -2205,6 +2296,17 @@ func (r *paginatingRows) fetchPage() error {
 	// transaction that has since ended is a loud 25F01, never a silent fresh
 	// transaction (Decision 3).
 	_, txErr := c.runInCapturedTx(r.ctx, r.tx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		if attempts > 0 {
+			// Java's ThrottledRetryingIterator decreases work on every failed
+			// attempt. SQL pages use time rather than its scanned-row quota:
+			// reduce by 10%, retaining a positive budget and cleanup margin.
+			// A fast version clock can make FDB's MVCC window shorter than
+			// four wall-clock seconds. Retrying the same budget then repeats
+			// 1007 forever. Closure re-entry observes commit failures too,
+			// which happen outside this callback; it also conservatively
+			// reduces work for other retryable failures such as conflicts.
+			r.retryTimeLimit = max(time.Millisecond, r.pageTimeLimit()*9/10)
+		}
 		attempts++
 		// The driver budget governs an application's multi-statement explicit
 		// transaction. An internally owned auto-commit DML transaction may span
@@ -2242,8 +2344,14 @@ func (r *paginatingRows) fetchPage() error {
 		// Validated against the STORE's metadata, not the plan's: execution
 		// opens the store with the connection's current metadata, so this is
 		// where an index dropped or redefined since planning is observable.
+		//
+		// PeekIndexStates, the conflict-free read planning used: like Java's
+		// plan-constraint check (DatabaseObjectDependenciesPredicate.java:98),
+		// it adds no conflict. The scans this plan opens take a conflict key
+		// for each index they scan; an index the statement never touches can
+		// change state without aborting its transaction.
 		if stateErr := validatePlanIndexDependencies(
-			r.indexDependencies, store.GetRecordMetaData(), store.GetAllIndexStates(),
+			r.indexDependencies, store.GetRecordMetaData(), store.PeekIndexStates(),
 		); stateErr != nil {
 			return nil, stateErr
 		}
@@ -2288,7 +2396,8 @@ func (r *paginatingRows) fetchPage() error {
 		defer func() {
 			r.execLog.addScanned(
 				int64(props.ScanState.RecordsScanned())-scanRecordsAtEntry,
-				props.ScanState.BytesScanned()-scanBytesAtEntry)
+				props.ScanState.BytesScanned()-scanBytesAtEntry,
+			)
 		}()
 		if len(r.scalarSubqueries) > 0 {
 			scalarResults := make(map[values.CorrelationIdentifier]any, len(r.scalarSubqueries))
@@ -2412,9 +2521,38 @@ func materializePageRow(
 		if err != nil {
 			return nil, err
 		}
-		row[i] = materializeDriverValue(v)
+		row[i] = materializeDriverValue(enumValuesAsNames(v, rs.ColumnType(i+1)))
 	}
 	return row, nil
+}
+
+// enumValuesAsNames hands an enum column to the client as its value's name, as
+// Java's RowStruct.getString does (ProtoUtils.toUserIdentifier of the value
+// descriptor's name, RowStruct.java:214-215): in the value layer an enum
+// carries its declared number, an int64 only its type tells apart from a
+// BIGINT. An array of enums is the same per element. A number the enum does
+// not declare is left as it is (a closed enum's undeclared number reads unset,
+// so none reaches here).
+func enumValuesAsNames(v any, t values.Type) any {
+	switch typed := t.(type) {
+	case *values.EnumType:
+		if n, ok := v.(int64); ok {
+			if member, found := typed.LookupValueByNumber(int32(n)); found { //nolint:gosec
+				return member.Name
+			}
+		}
+	case *values.ArrayType:
+		if elems, ok := v.([]any); ok && typed.ElementType != nil {
+			if _, isEnum := typed.ElementType.(*values.EnumType); isEnum {
+				out := make([]any, len(elems))
+				for i, e := range elems {
+					out[i] = enumValuesAsNames(e, typed.ElementType)
+				}
+				return out
+			}
+		}
+	}
+	return v
 }
 
 // preflightTxBudget enforces the whole-transaction time budget before a page
@@ -2568,13 +2706,21 @@ func translateExecError(err error) error {
 	if errors.As(err, &sumOverflow) {
 		return api.NewError(api.ErrCodeNumericValueOutOfRange, sumOverflow.Error())
 	}
+	var nullElem *values.NullArrayElementError
+	if errors.As(err, &nullElem) {
+		return api.NewError(api.ErrCodeUnsupportedOperation, nullElem.Error())
+	}
+	var likeErr *values.LikeError
+	if errors.As(err, &likeErr) {
+		return api.NewError(likeErrorCode(likeErr.Kind), likeErr.Error())
+	}
 	var divZero *values.ArithmeticDivisionByZeroError
 	if errors.As(err, &divZero) {
 		return api.NewError(api.ErrCodeDivisionByZero, "/ by zero")
 	}
 	var overflow *values.ArithmeticOverflowError
 	if errors.As(err, &overflow) {
-		return api.NewError(api.ErrCodeNumericValueOutOfRange, "integer overflow")
+		return api.NewError(api.ErrCodeNumericValueOutOfRange, overflow.Error())
 	}
 	var scalarMismatch *values.ScalarTypeMismatchError
 	if errors.As(err, &scalarMismatch) {
@@ -2584,9 +2730,19 @@ func translateExecError(err error) error {
 	if errors.As(err, &castErr) {
 		return api.NewError(api.ErrCodeInvalidCast, castErr.Error())
 	}
+	// Java fails the same write with an unmapped VerifyException or
+	// IllegalArgumentException, both XXXXX.
+	var slotErr *values.SlotAssignmentError
+	if errors.As(err, &slotErr) {
+		return api.NewError(api.ErrCodeUnknown, slotErr.Error())
+	}
 	var enumErr *values.InvalidEnumValueError
 	if errors.As(err, &enumErr) {
 		return api.WrapError(api.ErrCodeInternalError, enumErr.Error(), err)
+	}
+	var uuidErr *values.InvalidUUIDValueError
+	if errors.As(err, &uuidErr) {
+		return api.WrapError(api.ErrCodeInternalError, uuidErr.Error(), err)
 	}
 	var invalidArg *values.InvalidArgumentError
 	if errors.As(err, &invalidArg) {
@@ -2603,6 +2759,20 @@ func translateExecError(err error) error {
 	// would otherwise escape raw (RFC-198 criterion 9). translateFDBError is
 	// idempotent on *api.Error, so double translation is harmless.
 	return translateFDBError(err)
+}
+
+// likeErrorCode is ExceptionUtil's mapping of the LIKE semantic errors
+// (ExceptionUtil.java:95-102).
+func likeErrorCode(kind values.LikeErrorKind) api.ErrorCode {
+	switch kind {
+	case values.LikeEscapeNotSingleChar:
+		return api.ErrCodeInvalidEscapeCharacter
+	case values.LikeEscapeConflict:
+		return api.ErrCodeEscapeCharacterConflict
+	case values.LikeInvalidEscapeSequence:
+		return api.ErrCodeInvalidEscapeSequence
+	}
+	return api.ErrCodeInvalidArgumentForFunction
 }
 
 // fetchTableStatistics reads per-record-type row counts from FDB using a
@@ -2637,7 +2807,7 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 	if !recordlayer.IsRecordTypeExpression(countKey) {
 		return nil
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
 	if err != nil {
 		return nil
 	}
@@ -2725,7 +2895,7 @@ func (g *cascadesGenerator) fetchIndexStateSnapshot(
 	if len(md.GetAllIndexes()) == 0 {
 		return nil, nil
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
 	if err != nil {
 		return nil, err
 	}
@@ -2734,11 +2904,18 @@ func (g *cascadesGenerator) fetchIndexStateSnapshot(
 		if storeErr != nil {
 			return nil, storeErr
 		}
-		// GetAllIndexStates, NOT GetAllIndexStatesMap. The two answer in
+		// PeekIndexStates, NOT GetAllIndexStatesMap. The two answer in
 		// different DOMAINS: this one iterates the METADATA's indexes and
 		// defaults an absent entry to READABLE; the raw map returns whatever
 		// keys the index-state subspace happens to hold, including a key for a
 		// name the metadata no longer has.
+		//
+		// And PeekIndexStates, NOT GetAllIndexStates: planning reads the states
+		// the store loaded at open and adds NO conflict, as Java's PlanContext
+		// does (PlanContext.java:237-260). Each scan takes its own index's
+		// conflict key; a key for every index made a reader abort (1020) on a
+		// state change of an index it never scanned, where Java commits
+		// (RFC-257 WS-E 6.4, measured by indexStateReadScopeProbe).
 		//
 		// THE INVARIANT: the signature comparison is ONE function evaluated
 		// TWICE — here and again at execution — never two functions that
@@ -2754,7 +2931,7 @@ func (g *cascadesGenerator) fetchIndexStateSnapshot(
 		// indexes and asks recordMetaData.hasIndex first
 		// (DatabaseObjectDependenciesPredicate.java:90-101). Storage that
 		// metadata does not name is not part of the dependency.
-		return store.GetAllIndexStates(), nil
+		return store.PeekIndexStates(), nil
 	})
 	if runErr != nil {
 		return nil, runErr
@@ -2902,10 +3079,11 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		if len(pkCols) == 0 {
 			continue
 		}
-		upperPK := make([]string, len(pkCols))
+		// Layout names, as the index candidates take them (layoutNames): decoded,
+		// never folded -- a quoted lowercase key column is named "id", and folding
+		// it matches no field.
 		aliases := make([]values.CorrelationIdentifier, len(pkCols))
-		for i, col := range pkCols {
-			upperPK[i] = strings.ToUpper(col)
+		for i := range pkCols {
 			aliases[i] = values.UniqueCorrelationIdentifier()
 		}
 		// Flow the descriptor-shaped positional type, like the index
@@ -2922,22 +3100,23 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		// rt.Name is the STORED protobuf name, and that is correct here: it is
 		// what Java's PrimaryScanMatchCandidate carries, it is injective by
 		// construction, and it flows into physical plans and the continuation
-		// salt. The DEFECT is on the other side -- cascades_translator.go builds
-		// the query's FullUnorderedScanExpression from the SQL table name, and
+		// salt. The query's FullUnorderedScanExpression carries the same stored
+		// name (cascadesTranslator.storageName, RFC-238 §7c), and
 		// FullUnorderedScanExpression.EqualsWithoutChildren compares the two
-		// lists as strings, so a table whose name escapes matches NO candidate
-		// and gets no access path at all. RFC-238 §7c decides the fix: the scan
-		// leaf translates once, here nothing changes.
+		// lists as strings.
 		primaryCandidate := cascades.NewPrimaryScanMatchCandidate(
 			nil,
 			aliases,
 			allTypeNames,
 			[]string{rt.Name},
-			upperPK,
+			pkCols,
 			rt.PrimaryKeyHasRecordTypePrefix(),
 			flowed,
 		)
 		primaryCandidate.WithKeyComponentTypes(keyTypes)
+		if rt.PrimaryKey != nil && rt.Descriptor != nil {
+			primaryCandidate.WithCommonPrimaryKey(translatePrimaryKeyToValues(rt.PrimaryKey, recordlayer.ToUserIdentifier, flowed))
+		}
 		candidates = append(candidates, primaryCandidate)
 	}
 
@@ -3020,6 +3199,16 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 				candidates = append(candidates, vecCand)
 				continue
 			}
+		} else if idx.GetPredicateProto().GetRowNumberWindowPredicate() != nil {
+			// A sliding-window vector index answers K-NN over the base table from
+			// its window: Java plans it with the window as TRUE
+			// (RowNumberWindowPredicate.toPredicate), which is the index's intent
+			// (sliding-window-semantic-search.yamsql). Only the vector candidate
+			// takes it; a value scan would read a top-N index as the table.
+			if vecCand := tryVectorIndexCandidate(idx, c.md); vecCand != nil {
+				candidates = append(candidates, vecCand)
+				continue
+			}
 		}
 		// Atomic-mutation / aggregate-only index types (COUNT/SUM totals,
 		// MAX_EVER/MIN_EVER running extrema, BITMAP_VALUE bitsets) must not become
@@ -3028,10 +3217,8 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		// index) reads stale data. In Java these types have no value-scan candidate
 		// (AtomicMutationIndexMaintainerFactory / BitmapValueIndexMaintainerFactory
 		// never call expandValueIndexMatchCandidate). The subset with a legitimate
-		// aggregate use — COUNT/SUM and permuted MIN/MAX — was already claimed as an
-		// aggregate candidate by tryAggregateIndexCandidate above and never reaches
-		// here; the running-extremum (_EVER) and bitmap types get no candidate at
-		// all. Either way, dropping them here leaves a plain MAX/MIN over only such
+		// aggregate use was already claimed by tryAggregateIndexCandidate above.
+		// Dropping the remaining atomic types here leaves a plain MAX/MIN over only such
 		// an index to fall back to a base-record StreamingAgg, which computes the
 		// correct current extremum.
 		if idx.IsAtomicMutationIndex() {
@@ -3062,17 +3249,17 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 // a pass added to only one side silently forks the two pipelines.
 //
 // schema is the resolution schema (the session's for queries,
-// defaultEmbeddedSchema for template DDL); md the metadata the plan was built
+// defaultEmbeddedTemplate for template DDL); md the metadata the plan was built
 // against; unnestMD the metadata for unnest-alias validation (the session's
 // cached metadata in production; the same md for DDL).
 func runFromResolutionPostPasses(logicalOp logical.LogicalOperator, schema string, md, unnestMD *recordlayer.RecordMetaData) error {
 	// Java's generateAccess resolves a FROM identifier as a CTE/table/view/
 	// function BEFORE treating it as a correlated array field. The parser, which
-	// has no metadata, may classify a schema-qualified table (`FROM PA AS s,
+	// has no metadata, may classify a template-qualified table (`FROM PA AS s,
 	// s.PB`, where the alias `s` also equals the schema name) as a lateral
 	// unnest; demote it back to a table scan so the table branch wins (or reject
 	// AT-on-a-table with WRONG_OBJECT_TYPE). RFC-142.
-	if err := demoteSchemaQualifiedUnnest(logicalOp, schema, md); err != nil {
+	if err := demoteQualifiedTableUnnest(logicalOp, schema, md); err != nil {
 		return err
 	}
 	// Backstop for AT-on-a-table sources (`FROM t, U AT O`, present-scalar field,
@@ -3129,7 +3316,7 @@ func (d *metadataIndexDef) IndexColumnNames() []string {
 	if root := d.idx.RootExpression.ToKeyExpression(); root != nil {
 		if names, ok := indexKeyColumnNames(root); ok &&
 			len(names) == d.idx.RootExpression.ColumnSize() {
-			return names
+			return layoutNames(names)
 		}
 	}
 	// The fallback must respect the covering split too: FieldNames delegates
@@ -3139,9 +3326,9 @@ func (d *metadataIndexDef) IndexColumnNames() []string {
 	// split point for a KeyWithValueExpression; nested leaves make the name
 	// count exceed the column count, in which case truncation would be a
 	// guess — return the untruncated list and let the candidate's
-	// flat-descriptor check decline it (NewPlanContextFromIndexDefs refuses
+	// column check decline it (NewPlanContextFromIndexDefs refuses
 	// nested-leaf roots outright before that).
-	names := d.idx.RootExpression.FieldNames()
+	names := layoutNames(d.idx.RootExpression.FieldNames())
 	if kwv, ok := d.idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
 		inner := kwv.InnerKey()
 		if len(names) == inner.ColumnSize() && kwv.SplitPoint() <= len(names) {
@@ -3149,6 +3336,26 @@ func (d *metadataIndexDef) IndexColumnNames() []string {
 		}
 	}
 	return names
+}
+
+// layoutNames maps metadata field names -- a key expression's, which carry the
+// DESCRIPTOR's stored spelling (`c__1` for the column "c$1") -- to the names the
+// planner's row layouts carry. values.FieldNameForProtoField decodes every
+// descriptor name, and every name a candidate offers is resolved against such a
+// layout, so it must be decoded by the same rule: Java's ScalarTranslationVisitor
+// and KeyExpressionExpansionVisitor read ProtoUtils.toUserIdentifier(getFieldName())
+// for the same reason. A spelling that is not escaped passes unchanged, and no
+// case is folded. Key expressions stay stored; cascades re-encodes a name it
+// spells back into one.
+func layoutNames(stored []string) []string {
+	if stored == nil {
+		return nil
+	}
+	out := make([]string, len(stored))
+	for i, name := range stored {
+		out[i] = recordlayer.ToUserIdentifier(name)
+	}
+	return out
 }
 
 // IndexValueColumnNames returns the covering-only (FDB VALUE part) column
@@ -3171,7 +3378,7 @@ func (d *metadataIndexDef) IndexValueColumnNames() []string {
 	if !okNames || kwv.SplitPoint() > len(names) {
 		return nil
 	}
-	return names[kwv.SplitPoint():]
+	return layoutNames(names[kwv.SplitPoint():])
 }
 
 func (d *metadataIndexDef) IndexIsUnique() bool { return d.idx.IsUnique() }
@@ -3302,7 +3509,7 @@ func (d *metadataIndexDef) IndexPrimaryKeyComponentTypes() []values.Type {
 	// change does is route one more shape into that trade. Narrowing it means
 	// teaching this function that the trim is name-based for these indexes,
 	// which is a separate change with its own plan-shape review.
-	nameTrimmed := plans.TrimmedPKSuffix(d.IndexColumnNames(), pkCols)
+	nameTrimmed := plans.TrimmedPKSuffix(indexTrimmableKeyColumnNames(d.idx.RootExpression.ToKeyExpression()), pkCols)
 	if len(actualSuffix) != len(nameTrimmed) {
 		return unknown
 	}
@@ -3370,22 +3577,16 @@ func indexColumnFunctionTags(expr recordlayer.KeyExpression) []string {
 		tags[0] = cascades.FunctionKindCardinality
 		return tags
 	case *recordlayer.FunctionKeyExpression:
-		// An order-function wrapper (order_desc_nulls_last, …) is a
-		// single-column key whose entry bytes are the TupleOrdering encoding;
-		// the tag tells the candidate its Value is
-		// ToOrderedBytesValue(field, direction) rather than a plain field
-		// (Java: OrderFunctionKeyExpression.toValue,
-		// OrderFunctionKeyExpression.java:99-103). An unrecognized function
-		// stays "" — reported as a plain field, and the candidate's
-		// flat-descriptor check declines the mismatch fail-closed.
-		if _, isOrder := cascades.OrderFunctionDirection(e.Name()); isOrder {
+		// A function key column is tagged with the function whose Value the
+		// candidate's expansion builds (FunctionKeyExpression.toValue): an
+		// order function's ToOrderedBytesValue, a long-arithmetic function's
+		// ArithmeticValue. Any other function, an application's of the same
+		// name included, stays "" and the candidate declines the mismatch.
+		if _, isOrder := cascades.OrderFunctionDirection(e.Name()); isOrder ||
+			recordlayer.IsLongArithmeticFunction(e.Name()) {
 			return []string{e.Name()}
 		}
-		n := e.ColumnSize()
-		if n == 0 {
-			n = 1
-		}
-		return make([]string, n)
+		return []string{""}
 	case *recordlayer.KeyWithValueExpression:
 		// Tags stay parallel to IndexColumnNames — the KEY part only.
 		tags := indexColumnFunctionTags(e.InnerKey())
@@ -3408,6 +3609,48 @@ func indexColumnFunctionTags(expr recordlayer.KeyExpression) []string {
 			return []string{""}
 		}
 		return make([]string, columnSize)
+	}
+}
+
+// indexTrimmableKeyColumnNames are the key columns that are top-level fields:
+// the only ones a primary-key field equals, as Index.TrimPrimaryKey compares
+// key expressions (a nested S.X, CARDINALITY(X) or a version is not field X).
+func indexTrimmableKeyColumnNames(expression *gen.KeyExpression) []string {
+	var names []string
+	for _, name := range indexKeyColumnFields(expression) {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// indexKeyColumnFields is one entry per key column: the top-level field it is,
+// or "" for any other column.
+func indexKeyColumnFields(expression *gen.KeyExpression) []string {
+	switch {
+	case expression == nil:
+		return nil
+	case expression.Field != nil:
+		return []string{expression.Field.GetFieldName()}
+	case expression.Then != nil:
+		var names []string
+		for _, child := range expression.Then.GetChild() {
+			names = append(names, indexKeyColumnFields(child)...)
+		}
+		return names
+	case expression.KeyWithValue != nil:
+		names := indexKeyColumnFields(expression.KeyWithValue.GetInnerKey())
+		if split := int(expression.KeyWithValue.GetSplitPoint()); split >= 0 && split < len(names) {
+			return names[:split]
+		}
+		return names
+	default:
+		key, err := recordlayer.KeyExpressionFromProto(expression)
+		if err != nil || key == nil {
+			return []string{""}
+		}
+		return make([]string, key.ColumnSize())
 	}
 }
 
@@ -3446,7 +3689,8 @@ func indexKeyColumnNames(expression *gen.KeyExpression) ([]string, bool) {
 		}
 		return indexKeyColumnNames(expression.Nesting.GetChild())
 	case expression.Function != nil:
-		return indexKeyColumnNames(expression.Function.GetArguments())
+		// One column, named by the field its single argument reads.
+		return []string{cascades.FunctionKeyColumnName(expression.Function)}, true
 	case expression.Grouping != nil:
 		return indexKeyColumnNames(expression.Grouping.GetWholeKey())
 	case expression.KeyWithValue != nil:
@@ -3598,6 +3842,44 @@ func (d *metadataIndexDef) IndexPrimaryKeyColumns() []string {
 	return pkCols
 }
 
+// IndexPrimaryKeyEntryOrdinals is, per IndexPrimaryKeyColumns column, its KEY
+// tuple position in an entry of this single-type index: past the index's own
+// columns, counting only the primary-key components the index key does not
+// already hold (Index.trimPrimaryKey), or -1 for one it does. Java's value
+// expansion visitor reads the trimmed primary key from exactly these positions.
+func (d *metadataIndexDef) IndexPrimaryKeyEntryOrdinals() []int {
+	rts := d.recordTypes()
+	if len(rts) != 1 || d.idx.RootExpression == nil {
+		return nil
+	}
+	columns, leadingRecordTypeKey, ok := coveredPrimaryKeyColumns(rts[0])
+	if !ok {
+		return nil
+	}
+	components := len(columns)
+	if leadingRecordTypeKey {
+		components++
+	}
+	positions := d.idx.PrimaryKeyComponentPositions()
+	if positions != nil && len(positions) != components {
+		return nil
+	}
+	ordinals := make([]int, 0, len(columns))
+	next := d.idx.RootExpression.ColumnSize()
+	for j := 0; j < components; j++ {
+		ordinal := -1
+		if positions == nil || positions[j] < 0 {
+			ordinal = next
+			next++
+		}
+		if j == 0 && leadingRecordTypeKey {
+			continue
+		}
+		ordinals = append(ordinals, ordinal)
+	}
+	return ordinals
+}
+
 // commonCoveredPrimaryKeyColumns proves that every supplied record type has
 // the same coordinate-safe visible primary-key tail and the same leading
 // RecordTypeKey topology. Value and vector candidates share this authority;
@@ -3676,7 +3958,7 @@ func coveredPrimaryKeyColumns(rt *recordlayer.RecordType) ([]string, bool, bool)
 			component.Field.GetFanType() != gen.Field_SCALAR {
 			return nil, false, false
 		}
-		columns = append(columns, component.Field.GetFieldName())
+		columns = append(columns, recordlayer.ToUserIdentifier(component.Field.GetFieldName()))
 	}
 	return columns, leadingRecordTypeKey, true
 }
@@ -3698,11 +3980,26 @@ func (d *metadataIndexDef) IndexCommonPrimaryKeyValues() []values.Value {
 	if len(rts) != 1 || rts[0].PrimaryKey == nil {
 		return nil
 	}
-	return recordlayer.TranslatePrimaryKeyToValues(
+	return translatePrimaryKeyToValues(
 		rts[0].PrimaryKey,
-		strings.ToUpper,
+		recordlayer.ToUserIdentifier,
 		d.IndexRowType(),
 	)
+}
+
+// GetCommonPrimaryKeyValues is the record type's primary key translated as an
+// index over the type translates it (IndexCommonPrimaryKeyValues), over the
+// same row layout, so scan and index plans report one primary-key property.
+func (c *metadataPlanContext) GetCommonPrimaryKeyValues(recordType string) []values.Value {
+	if c.md == nil {
+		return nil
+	}
+	rt := c.md.GetRecordType(recordType)
+	if rt == nil || rt.PrimaryKey == nil || rt.Descriptor == nil {
+		return nil
+	}
+	return translatePrimaryKeyToValues(rt.PrimaryKey, recordlayer.ToUserIdentifier,
+		executor.PositionalTypeForRecordLayout(rt.Descriptor, c.md.IsStoreRecordVersions()))
 }
 
 func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {
@@ -3722,12 +4019,15 @@ func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {
 // or nil if the index is not an aggregate type.
 func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaData) *cascades.AggregateIndexMatchCandidate {
 	var aggFunc expressions.AggregateFunction
-	// Canonicalized like every other behaviour-deriving switch on an index type.
-	// A no-op for the arms below (the deprecated bare _EVER spellings fold onto
-	// _LONG, which is equally unmatched here, and deliberately so per the note in
-	// the PermutedMax arm) — uniform because a switch that looks like it does not
-	// need canonicalizing is exactly how the bare spellings were missed.
+	// The deprecated bare "max_ever"/"min_ever" types are maintained as _LONG
+	// (CanonicalType) but are no candidate: Java's aggregate map holds only the
+	// suffixed types (AggregateIndexExpansionVisitor.supportsAggregateIndexType).
+	if idx.Type == recordlayer.IndexTypeMaxEver || idx.Type == recordlayer.IndexTypeMinEver {
+		return nil
+	}
 	switch idx.CanonicalType() {
+	case recordlayer.IndexTypeBitmapValue:
+		aggFunc = expressions.AggBitmapConstructAgg
 	case recordlayer.IndexTypeSum:
 		aggFunc = expressions.AggSum
 	case recordlayer.IndexTypeCount, recordlayer.IndexTypeCountNotNull:
@@ -3735,14 +4035,20 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	case recordlayer.IndexTypePermutedMax:
 		// Plain SQL MAX(col) resolves to a PERMUTED_MAX index (Java's
 		// NumericAggregationValue.Max.getIndexTypeName()), which tracks the true
-		// current maximum under deletes/updates. The monotone MAX_EVER/MIN_EVER
-		// index types are intentionally NOT matched here: a plain MAX/MIN query
-		// served from a monotone _EVER index would return stale extrema. The
-		// separate max_ever()/min_ever() aggregate would match those — but Go's
-		// read side does not expose them as query aggregates (only MAX/MIN).
+		// current maximum under deletes/updates. A plain MAX/MIN never reaches a
+		// monotone _EVER index, which would answer stale extrema: those carry
+		// their own aggregates below, which a MIN/MAX does not equal.
 		aggFunc = expressions.AggMax
 	case recordlayer.IndexTypePermutedMin:
 		aggFunc = expressions.AggMin
+	case recordlayer.IndexTypeMaxEverLong, recordlayer.IndexTypeMaxEverTuple:
+		// max_ever(col) / min_ever(col), the index-only aggregates Java's
+		// AggregateIndexExpansionVisitor maps these types to
+		// (IndexOnlyAggregateValue.MaxEverFn / MinEverFn,
+		// AggregateIndexExpansionVisitor.java:369-380).
+		aggFunc = expressions.AggMaxEver
+	case recordlayer.IndexTypeMinEverLong, recordlayer.IndexTypeMinEverTuple:
+		aggFunc = expressions.AggMinEver
 	default:
 		return nil
 	}
@@ -3752,28 +4058,42 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		return nil
 	}
 
-	allCols := gke.FieldNames()
+	// The candidate identifies each column by the full field path it reads,
+	// the FieldValue the expansion visitor builds for it. A key the visitor
+	// would expand into any other Value (a function, a version, a fan-out)
+	// declines: MAX(add(v, 1)) must not match MAX(v). More than one grouped
+	// column is Java's UnsupportedOperationException (constructGroupBy).
 	groupingCount := gke.GetGroupingCount()
 	groupedCount := gke.GetGroupedCount()
-
-	if groupingCount == 0 {
+	groupPaths, groupedPaths, err := cascades.DescribeAggregateIndexKey(
+		gke.ToKeyExpression().GetGrouping().GetWholeKey(), groupingCount)
+	if err != nil || len(groupPaths) != groupingCount || len(groupedPaths) != groupedCount || groupedCount > 1 {
 		return nil
 	}
+	// The described paths are stored; the candidate resolves them against the
+	// row layout, so they are decoded segment by segment (layoutNames).
+	for i, path := range groupPaths {
+		groupPaths[i] = layoutNames(path)
+	}
+	for i, path := range groupedPaths {
+		groupedPaths[i] = layoutNames(path)
+	}
+
+	// An ungrouped index is one group, the whole table, and serves the
+	// ungrouped aggregate as Java's does (aggregate-empty-table.yamsql plans
+	// `select sum(col1) from T2` as `AISCAN(T2_I5 <,> BY_GROUP ...)`). The rule
+	// extends it to a NULL row when the index holds no entry (Java's ON EMPTY
+	// NULL); a table whose rows were all deleted reads the stored 0, as in Java.
 	permutedSize := 0
 	if idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin {
-		if raw, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
-			parsed, err := strconv.Atoi(raw)
+		// Absent is 0 and present is Integer.parseInt, as Java's
+		// AggregateIndexMatchCandidate.getPermutedCount reads it.
+		if _, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
+			parsed, err := recordlayer.PermutedSizeOption(idx)
 			if err != nil || parsed < 0 || parsed > groupingCount {
 				return nil
 			}
 			permutedSize = parsed
-		}
-		if permutedSize > 0 {
-			// The physical key inserts the aggregate value before the permuted
-			// grouping suffix. The current aggregate rule has neither residual
-			// compensation nor a truthful logical ordering for that shape, so a
-			// positive permutation must fall back to base-record aggregation.
-			return nil
 		}
 	}
 
@@ -3792,11 +4112,14 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	// operand, which bottoms out in RecordType.fieldNameScan's `f.Name == name`
 	// (values/type.go) — a byte comparison with no fold anywhere near it.
 	groupCols := make([]string, groupingCount)
-	copy(groupCols, allCols[:groupingCount])
-
+	for i, path := range groupPaths {
+		groupCols[i] = path[len(path)-1]
+	}
 	var aggColumn string
-	if groupedCount > 0 && groupingCount+groupedCount <= len(allCols) {
-		aggColumn = allCols[groupingCount]
+	var aggPath []string
+	if groupedCount > 0 {
+		aggPath = groupedPaths[0]
+		aggColumn = aggPath[len(aggPath)-1]
 	}
 
 	rts := md.RecordTypesForIndex(idx)
@@ -3808,11 +4131,34 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	allTypes := physicalKeyComponentTypes(gke, rts)
 	groupTypes := alignPhysicalTypes(allTypes, groupingCount)
 
-	// RFC-209: carry the two structural facts the group-existence machinery
-	// needs. countsRows distinguishes a COUNT(*) index (record-layer type
-	// `count`, whose stored value is the group's row count) from a COUNT(col)
-	// one (`count_not_null`) — both arrive here as AggCount with the same
-	// grouping, and only the former makes a stored zero mean "vacated group".
+	if aggFunc == expressions.AggBitmapConstructAgg {
+		// BitmapAggregateIndexExpansionVisitor adds the bucket offset as an
+		// implicit final grouping coordinate; the metadata stores the raw field.
+		size, err := recordlayer.BitmapValueEntrySizeOption(idx)
+		if err != nil || groupedCount != 1 || aggColumn == "" || idx.HasFilteringPredicate() {
+			return nil
+		}
+		row, ok := singleRecordTypeRowType(md, idx).(*values.RecordType)
+		if !ok {
+			return nil
+		}
+		field, ok := values.LookupFieldPathUnique(row, aggPath)
+		if !ok {
+			return nil
+		}
+		bucketName := "__bitmap_bucket"
+		for _, name := range groupCols {
+			if name == bucketName {
+				return nil
+			}
+		}
+		groupCols = append(groupCols, bucketName)
+		groupPaths = append(groupPaths, []string{bucketName})
+		groupTypes = append(groupTypes, field.FieldType)
+		return cascades.NewAggregateIndexMatchCandidate(idx.Name, rtNames, groupCols, aggFunc, aggColumn,
+			row, groupTypes, len(groupCols)).WithColumnPaths(groupPaths, aggPath).WithBitmapEntrySize(size)
+	}
+
 	return cascades.NewAggregateIndexMatchCandidate(
 		idx.Name,
 		rtNames,
@@ -3824,12 +4170,9 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		// type, including a DOUBLE whose key order is not its value order.
 		singleRecordTypeRowType(md, idx),
 		groupTypes,
-		groupingCount,
-	).WithGroupExistence(idx.Type == recordlayer.IndexTypeCount, recordlayer.GroupingSignature(gke)).
-		WithGroupExistenceCompanionNeed(
-			recordlayer.PredicateSignature(idx),
-			recordlayer.NeedsGroupCountCompanion(idx),
-		)
+		groupingCount-permutedSize,
+	).WithColumnPaths(groupPaths, aggPath).
+		WithPermutedOrdering(idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin)
 }
 
 // tryVectorIndexCandidate builds a VectorIndexScanMatchCandidate for a vector
@@ -3842,49 +4185,41 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	if (idx.Type != recordlayer.IndexTypeVector && idx.Type != recordlayer.IndexTypeVectorSPFresh) || idx.RootExpression == nil {
 		return nil
 	}
-	cols := idx.RootExpression.FieldNames()
+	cols := layoutNames(idx.RootExpression.FieldNames())
 	if len(cols) == 0 {
 		return nil
-	}
-	upperCols := make([]string, len(cols))
-	for i, col := range cols {
-		upperCols[i] = strings.ToUpper(col)
 	}
 	partitionCount := 0
 	if kwv, ok := idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
 		partitionCount = kwv.SplitPoint()
 	}
-	metricOption := idx.Options[recordlayer.IndexOptionVectorMetric]
-	if idx.Type == recordlayer.IndexTypeVectorSPFresh {
-		metricOption = idx.Options[recordlayer.IndexOptionSPFreshMetric]
+	if idx.Type == recordlayer.IndexTypeVectorSPFresh && partitionCount > 0 {
 		// The SPFresh maintainer rejects prefixed (grouped) scans; a
 		// partitioned candidate would plan queries the executor cannot run.
 		// The DDL already rejects PARTITION BY USING SPFRESH — this guards
 		// directly-constructed metadata.
-		if partitionCount > 0 {
-			return nil
-		}
-	}
-	metric, ok := vectorMetricOperator(metricOption)
-	if !ok {
-		// Unrecognized metric (corrupt or newer-version metadata). Don't build
-		// a candidate with a wrong default metric; without the candidate the
-		// QUALIFY distance predicate stays uncompensatable and the query fails
-		// to plan rather than returning wrong-metric results.
 		return nil
 	}
+	parsed, err := recordlayer.VectorIndexMetric(idx)
+	if err != nil {
+		// A metric the maintainer refuses (corrupt or newer-version metadata):
+		// no candidate, so the QUALIFY distance predicate stays
+		// uncompensatable and the query fails to plan rather than returning
+		// wrong-metric results. Java's expansion throws there; the index's
+		// writes fail in both engines.
+		return nil
+	}
+	metric := vectorDistanceOperator(parsed)
 
 	rts := md.RecordTypesForIndex(idx)
 	rtNames := make([]string, len(rts))
 	for i, rt := range rts {
 		rtNames[i] = rt.Name
 	}
+	// Layout names, as for the primary-scan candidate (layoutNames).
 	var pkCols []string
 	if pk, _, safe := commonCoveredPrimaryKeyColumns(rts); safe {
-		pkCols = make([]string, len(pk))
-		for i, col := range pk {
-			pkCols[i] = strings.ToUpper(col)
-		}
+		pkCols = pk
 	}
 
 	partitionTypes := alignPhysicalTypes(
@@ -3896,148 +4231,49 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	if values.IsUnresolved(baseRowType) {
 		return nil
 	}
+	engine, err := recordlayer.VectorEngineOf(idx)
+	if err != nil {
+		return nil
+	}
 	return cascades.NewVectorIndexScanMatchCandidate(
-		idx.Name, rtNames, upperCols, partitionCount, metric,
+		idx.Name, rtNames, cols, partitionCount, metric,
 		baseRowType, idx.IsUnique(), pkCols,
-	).WithPartitionKeyComponentTypes(partitionTypes)
+	).WithPartitionKeyComponentTypes(partitionTypes).WithIndexEngine(engine.String())
 }
 
-// vectorMetricOperator maps the stored HNSW metric option (Java Metric enum
-// name) to the cascades DistanceOperator used by the distance placeholder. An
-// absent option defaults to Euclidean, matching Java's
-// VectorIndexExpansionVisitor (`getOrDefault(HNSW_METRIC, Config.DEFAULT_METRIC)`
-// where DEFAULT_METRIC == EUCLIDEAN_METRIC). It returns ok=false for an
-// unrecognized non-empty metric: Java throws there; we instead skip the
-// candidate so a corrupt or newer-version metric never silently maps to
-// Euclidean and serves the wrong distance.
-func vectorMetricOperator(name string) (values.DistanceOperator, bool) {
-	switch name {
-	case "", "EUCLIDEAN_METRIC", "euclidean":
-		return values.DistanceEuclidean, true
-	case "EUCLIDEAN_SQUARE_METRIC":
-		return values.DistanceEuclideanSquare, true
-	case "COSINE_METRIC", "cosine":
-		return values.DistanceCosine, true
-	case "DOT_PRODUCT_METRIC", "inner_product":
-		return values.DistanceDotProduct, true
+// vectorDistanceOperator is the distance placeholder's operator for the metric
+// the index is maintained with (recordlayer.VectorIndexMetric).
+func vectorDistanceOperator(m recordlayer.VectorMetric) values.DistanceOperator {
+	switch m {
+	case recordlayer.VectorMetricEuclideanSquare:
+		return values.DistanceEuclideanSquare
+	case recordlayer.VectorMetricCosine:
+		return values.DistanceCosine
+	case recordlayer.VectorMetricInnerProduct:
+		return values.DistanceDotProduct
 	default:
-		return values.DistanceEuclidean, false
+		return values.DistanceEuclidean
 	}
 }
 
-func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	if md == nil {
-		return nil
+// resultColumns are the columns Java reports for a plan: the fields of its
+// result row type (QueryPlan.getResultType). The SQL labels come from the
+// logical output row and are applied by Execute.
+func resultColumns(plan plans.RecordQueryPlan) []executor.ColumnDef {
+	switch t := plan.GetResultType().(type) {
+	case *values.RecordType:
+		return columnsOfRowType(t)
+	case *values.RelationType:
+		row, _ := t.InnerType.(*values.RecordType)
+		return columnsOfRowType(row)
 	}
-	if explode, ok := plan.(*plans.RecordQueryExplodePlan); ok {
-		return deriveColumnsFromProjectionlessExplode(explode)
-	}
-	if proj, ok := plan.(*plans.RecordQueryProjectionPlan); ok {
-		return deriveColumnsFromProjection(proj, md)
-	}
-	if agg, ok := plan.(*plans.RecordQueryStreamingAggregationPlan); ok {
-		return deriveColumnsFromAggregation(agg, md)
-	}
-	if aggIdx, ok := plan.(*plans.RecordQueryAggregateIndexPlan); ok {
-		return deriveColumnsFromAggregateIndex(aggIdx, md)
-	}
-	if mi, ok := plan.(*plans.RecordQueryMultiIntersectionOnValuesPlan); ok {
-		return deriveColumnsFromMultiIntersection(mi, md)
-	}
-	if nlj, ok := plan.(*plans.RecordQueryNestedLoopJoinPlan); ok {
-		return deriveColumnsFromJoin(nlj, md)
-	}
-	if fm, ok := plan.(*plans.RecordQueryFlatMapPlan); ok {
-		return deriveColumnsFromFlatMap(fm, md)
-	}
-	// A recursive CTE consumed bare (`SELECT * FROM cte`) has the recursive
-	// plan at top — no projection above it. Its output schema is the SEED
-	// leg's: standard SQL defines the CTE's columns from the seed (plus any
-	// column-alias list, which the translator bakes into the seed leg's
-	// normalization projection), and the recursive leg is normalized onto the
-	// same names. Recurse into the seed (through its TempTableInsert wrapper)
-	// exactly like the plain-UNION arm recurses into its first leg — without
-	// this arm the walk fell through to the leaf handler, found no scan, and
-	// returned NO columns: rows flowed but Rows.Columns() was empty, so every
-	// database/sql Scan failed with "expected 0 destination arguments".
-	if rdj, ok := plan.(*plans.RecordQueryRecursiveDfsJoinPlan); ok {
-		return deriveColumnsFromPlan(rdj.GetRoot(), md)
-	}
-	if rlu, ok := plan.(*plans.RecordQueryRecursiveLevelUnionPlan); ok {
-		return deriveColumnsFromPlan(rlu.GetInitialState(), md)
-	}
-	if u := findUnionPlan(plan); u != nil {
-		return deriveColumnsFromPlan(u[0], md)
-	}
-	if ip, ok := plan.(innerPlan); ok {
-		return deriveColumnsFromPlan(ip.GetInner(), md)
-	}
-	// Leaf plan: either a primary-key scan or an index scan. Both
-	// carry GetRecordTypes(); the index scan's executor fetches the
-	// full record via indexFetchCursor, so all columns are available.
-	var recordTypes []string
-	if scan := findScanPlan(plan); scan != nil {
-		recordTypes = scan.GetRecordTypes()
-	} else if idxPlan := findIndexPlan(plan); idxPlan != nil {
-		recordTypes = idxPlan.GetRecordTypes()
-	}
-	if len(recordTypes) == 0 {
-		return nil
-	}
-	rt := md.GetRecordType(recordTypes[0])
-	if rt == nil || rt.Descriptor == nil {
-		return nil
-	}
-	fields := rt.Descriptor.Fields()
-	cols := make([]executor.ColumnDef, fields.Len())
-	for i := 0; i < fields.Len(); i++ {
-		fd := fields.Get(i)
-		nullable := api.ColumnNullable
-		if fd.Cardinality() == protoreflect.Required {
-			nullable = api.ColumnNoNulls
-		}
-		cols[i] = executor.ColumnDef{
-			Name: values.FieldNameForProtoField(fd),
-			// Route through protoFieldTypeName (descriptor-aware) so a bare
-			// SELECT * reports a UUID column as "OTHER" — the same JDBC name the
-			// projection path (valueTypeName) and Java (Types.OTHER) use — rather
-			// than the "UNKNOWN" protoKindToTypeName's MessageKind default gives.
-			TypeName: protoFieldTypeName(rt.Descriptor, string(fd.Name())),
-			Nullable: nullable,
-		}
-	}
-	return cols
+	return nil
 }
 
-// deriveColumnsFromProjectionlessExplode publishes the SQL-visible columns of
-// a bare record-valued Explode leaf. Inline VALUES is the canonical owner:
-// `SELECT * FROM VALUES (42)` deliberately has no Projection above its Explode,
-// so no catalog scan exists from which the generic leaf fallback can recover
-// metadata. The Explode's constructor-time result snapshot and admitted output
-// layout are the authority instead.
-//
-// This arm is deliberately all-or-nothing and record-only. A scalar Explode is
-// one scalar source consumed by a surrounding FlatMap, not a projection-less
-// table row. WITH ORDINALITY emits a two-slot box (element, ordinal), whose SQL
-// AS/AT names are likewise assigned by that surrounding operator; flattening a
-// record element here would describe a different row than execution emits.
-func deriveColumnsFromProjectionlessExplode(explode *plans.RecordQueryExplodePlan) []executor.ColumnDef {
-	if explode == nil || explode.IsWithOrdinality() {
+func columnsOfRowType(rowType *values.RecordType) []executor.ColumnDef {
+	if rowType == nil {
 		return nil
 	}
-	rowType, ok := explode.GetElementType().(*values.RecordType)
-	if !ok || rowType == nil {
-		return nil
-	}
-	if _, err := values.SnapshotExactType(rowType); err != nil {
-		return nil
-	}
-	layout, err := explode.ProvidedOutputLayout()
-	if err != nil || layout == nil || layout.Carrier() == nil ||
-		!values.FlowedTypeEquals(layout.Carrier(), rowType) {
-		return nil
-	}
-
 	cols := make([]executor.ColumnDef, len(rowType.Fields))
 	for ordinal, field := range rowType.Fields {
 		typeName := cascadesTypeName(field.FieldType)
@@ -4053,6 +4289,9 @@ func deriveColumnsFromProjectionlessExplode(explode *plans.RecordQueryExplodePla
 			TypeName: typeName,
 			Nullable: nullable,
 		}
+		if dt, err := rowstruct.DataTypeOf(field.FieldType); err == nil {
+			cols[ordinal].DataType = dt
+		}
 	}
 	return cols
 }
@@ -4061,2312 +4300,8 @@ type innerPlan interface {
 	GetInner() plans.RecordQueryPlan
 }
 
-func findScanPlan(p plans.RecordQueryPlan) *plans.RecordQueryScanPlan {
-	for {
-		if s, ok := p.(*plans.RecordQueryScanPlan); ok {
-			return s
-		}
-		if ip, ok := p.(innerPlan); ok {
-			p = ip.GetInner()
-		} else {
-			return nil
-		}
-	}
-}
-
-// findExplodePlan walks through innerPlan wrappers (a PredicatesFilter pushed
-// down for a WHERE-on-element, etc.) to find a leaf RecordQueryExplodePlan — the
-// structural marker of a lateral-unnest FlatMap's inner leg (`FROM t, t.arr AS
-// x`). RFC-142.
-func findExplodePlan(p plans.RecordQueryPlan) *plans.RecordQueryExplodePlan {
-	for {
-		if e, ok := p.(*plans.RecordQueryExplodePlan); ok {
-			return e
-		}
-		if ip, ok := p.(innerPlan); ok {
-			p = ip.GetInner()
-		} else {
-			return nil
-		}
-	}
-}
-
-// findIndexPlan walks through innerPlan wrappers (filters, type
-// filters, etc.) to find a leaf RecordQueryIndexPlan.
-func findIndexPlan(p plans.RecordQueryPlan) *plans.RecordQueryIndexPlan {
-	for {
-		if idx, ok := p.(*plans.RecordQueryIndexPlan); ok {
-			return idx
-		}
-		// A covering scan HOLDS its index plan as a field rather than as a
-		// child (RFC-220 criterion C1), so neither the type assertion above nor
-		// the innerPlan chain below reaches it — the walk would run off the end
-		// and report "no index leaf". That answer is not an error anywhere: the
-		// caller reads it as "no record types" and returns an empty column list,
-		// so `SELECT *` over a plan whose leaves are covering scans reports ZERO
-		// columns and every database/sql Scan fails with "expected 0 destination
-		// arguments". Unwrapping here is the same explicit arm Java's plan
-		// visitors each carry for the covering type.
-		if cov, ok := p.(*plans.RecordQueryCoveringIndexPlan); ok {
-			return cov.GetIndexPlan()
-		}
-		if ip, ok := p.(innerPlan); ok {
-			p = ip.GetInner()
-		} else {
-			return nil
-		}
-	}
-}
-
-// allLeafDescriptors collects the record-type descriptors of EVERY scan /
-// index leaf reachable from p — both sides of a join. A single-leaf lookup
-// (following only the GetInner() chain) misses the other join leg, which left
-// a projected column from that leg (e.g. `o.total` in
-// `SELECT u.name, o.total FROM Users u, Orders o ...`) with no descriptor
-// to resolve its type against → reported as UNKNOWN. Resolving each
-// projected column against all leaves recovers the correct column type.
-func allLeafDescriptors(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []protoreflect.MessageDescriptor {
-	var out []protoreflect.MessageDescriptor
-	seen := make(map[protoreflect.MessageDescriptor]struct{})
-	var walk func(n plans.RecordQueryPlan)
-	walk = func(n plans.RecordQueryPlan) {
-		if n == nil {
-			return
-		}
-		var rts []string
-		switch leaf := n.(type) {
-		case *plans.RecordQueryScanPlan:
-			rts = leaf.GetRecordTypes()
-		case *plans.RecordQueryIndexPlan:
-			rts = leaf.GetRecordTypes()
-		case *plans.RecordQueryCoveringIndexPlan:
-			// A covering scan is a LEAF here, not a parent of one: it holds its
-			// index plan as a field (RFC-220 criterion C1), so the GetChildren()
-			// recursion below never descends into it and it would otherwise
-			// contribute no descriptor.
-			//
-			// This walk is reached with a covering leaf constantly (436 times
-			// across the sqldriver target, measured), but removing this arm
-			// currently changes NO test outcome: when the descriptor is absent,
-			// projection type resolution falls through to its type-inheritance
-			// chain and arrives at the same answer. So the arm is correct rather
-			// than demonstrably load-bearing, and it is kept on that basis — a
-			// leaf that reports no record types is wrong on its own terms, and
-			// the fallback that currently hides it is not guaranteed to cover
-			// every future caller of this walk.
-			rts = leaf.GetRecordTypes()
-		}
-		// RecordQueryAggregateIndexPlan is intentionally omitted: aggregate
-		// results are typed by deriveColumnsFromAggregateIndex, never by the
-		// projection path that calls this. Add a case here if that changes.
-		for _, name := range rts {
-			if rt := md.GetRecordType(name); rt != nil && rt.Descriptor != nil {
-				if _, dup := seen[rt.Descriptor]; !dup {
-					seen[rt.Descriptor] = struct{}{}
-					out = append(out, rt.Descriptor)
-				}
-			}
-		}
-		for _, c := range n.GetChildren() {
-			walk(c)
-		}
-	}
-	walk(p)
-	return out
-}
-
-// descriptorForColumn picks the leaf descriptor that defines the given
-// (possibly qualified) column. A projection over a join can reference
-// same-named columns from different legs, so resolving every column against
-// descs[0] (or first-match) mis-types the far leg. Resolution order:
-//  1. the unique leaf descriptor that has the bare field;
-//  2. among several, the leg whose record-type name matches the column's
-//     qualifier (covers unqualified / table-name-qualified references);
-//  3. among several the qualifier cannot separate (the physical plan's leaves
-//     carry record-type names, not query aliases, so "B.VAL" matches no
-//     descriptor): the answer is first-match ONLY while every candidate AGREES
-//     on what it would report — same SQL type, same cardinality. Then there is
-//     nothing to guess and the shared answer is the answer.
-//  4. when the candidates DISAGREE, DECLINE (nil). This is the case that
-//     produced wrong client metadata: two legs declaring the same column at
-//     different types made first-match report the far leg's column as the near
-//     leg's type, and because a non-empty answer looks resolved it also
-//     PREEMPTED the caller's type-inheritance chain — which reads the actual
-//     flowed type off the inner plan's own output and answers correctly.
-//
-// Declining on disagreement is what lets the type FLOW instead of being
-// re-derived. Java never searches for a column's type at all: client metadata is
-// positional over the plan's flowed record type (RelationalStructMetaData.getField
-// is List.get(i)), so a name that cannot identify one answer must fall through to
-// the flowed type rather than resolve to a guess. Scoping the decline to genuine
-// DISAGREEMENT keeps every case where the search was never really ambiguous —
-// notably a join whose legs share a NOT-NULL PK name — reporting exactly what it
-// reported before, so the decline cannot silently move nullability.
-//
-// Returns nil when no leg has the field, and when several do and they disagree.
-func descriptorForColumn(name string, descs []protoreflect.MessageDescriptor) protoreflect.MessageDescriptor {
-	ref := parseColRef(name)
-	bare := protoreflect.Name(ref.bare())
-	var matches []protoreflect.MessageDescriptor
-	for _, d := range descs {
-		if d.Fields().ByName(bare) != nil {
-			matches = append(matches, d)
-		}
-	}
-	if len(matches) <= 1 {
-		if len(matches) == 1 {
-			return matches[0]
-		}
-		return nil
-	}
-	if ref.table != "" {
-		for _, d := range matches {
-			if strings.EqualFold(string(d.Name()), ref.table) {
-				return d
-			}
-		}
-	}
-	// Do the candidates agree on everything this lookup is consulted for?
-	// descriptorForColumn has FOUR consumers. Three read only the field's SQL
-	// type name and its cardinality (the NOT-NULL bit) off the returned
-	// descriptor — deriveProjectionColumnDef, columnDefFromRef, and the
-	// GROUP-BY key derivation in buildAggColumns — and for those,
-	// when every candidate answers both identically, the choice among them is
-	// not observable and first-match is exact.
-	//
-	// The fourth consumer reads the descriptor's IDENTITY, which this
-	// agreement gate does NOT cover: the null-born upgrade in
-	// deriveColumnsFromProjection tests nullBorn[d.FullName()] — whether the
-	// returned LEAF is an outer join's null-supplying leg. Two legs can agree
-	// on type+cardinality and still differ on null-born membership:
-	// LEFTT(VAL BIGINT NOT NULL) LEFT JOIN RIGHTT(VAL BIGINT NOT NULL) agrees
-	// on (BIGINT, required) for VAL, first-match answers LEFTT, and RIGHTT's
-	// null-born upgrade never fires — B.VAL reports NoNulls where Java (#4274)
-	// reports the null-supplying column nullable. No choice function HERE can
-	// repair that: BOTH result slots receive the SAME candidate list while the
-	// correct answer differs per slot — (NoNulls, Nullable).
-	//
-	// So that consumer no longer asks this function. A QUANTIFIER-ADDRESSED
-	// read resolves its leg structurally instead (legRead: the leg plan the
-	// correlation names, then that leg's own column at the read's leg-relative
-	// ordinal). That answers PER SLOT, which is the property this function
-	// cannot have. It is not name-free — legRead resolves the leg by
-	// correlation ALIAS and falls back to a leaf-name match for an unbaked
-	// read — but neither of those is a COLUMN name searched across legs, which
-	// is the specific thing that collapses two slots onto one answer here.
-	// TestCrossLegNullBorn_RequiredColumnOnNullSupplyingLeg pins exactly the
-	// shape above. What still arrives here is the FLAT (childless) read, which
-	// carries no correlation to resolve a leg from; for that form the
-	// first-match hole stands, and positional metadata flowed from the plan's
-	// own result type (the D3 deliverable) is still the general answer.
-	// TestFDB_CrossLegAgreementGate_NullBornNotCovered pins the fact that no
-	// SQL-DDL-expressible column can reach either path — the emitter produces
-	// no REQUIRED field, so nothing derives NoNulls and the upgrade is vacuous
-	// through the driver.
-	//
-	// STRUCT nested-field disagreement is likewise uncovered by this gate —
-	// two candidates agreeing on ("STRUCT", cardinality) can nest entirely
-	// different shapes — and is currently unobservable only because ColumnDef
-	// carries no nested metadata; it becomes live the moment
-	// getStructMetaData-style nested metadata is threaded through ColumnDef.
-	first := matches[0].Fields().ByName(bare)
-	firstType := protoFieldTypeName(matches[0], string(bare))
-	for _, d := range matches[1:] {
-		fd := d.Fields().ByName(bare)
-		if fd.Cardinality() != first.Cardinality() ||
-			protoFieldTypeName(d, string(bare)) != firstType {
-			return nil // the candidates disagree — refuse to pick one
-		}
-	}
-	return matches[0]
-}
-
-func deriveColumnsFromAggregateIndex(aggIdx *plans.RecordQueryAggregateIndexPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	groupCols := aggIdx.GetGroupCols()
-	aggCol := aggIdx.GetAggColumn()
-	aggFunc := aggIdx.GetAggregateFunction()
-
-	var desc protoreflect.MessageDescriptor
-	if md != nil {
-		rtName := aggIdx.GetRecordTypeName()
-		if rt := md.GetRecordType(rtName); rt != nil && rt.Descriptor != nil {
-			desc = rt.Descriptor
-		}
-	}
-
-	cols := make([]executor.ColumnDef, 0, len(groupCols)+1)
-	for _, gc := range groupCols {
-		typeName := "STRING"
-		if desc != nil {
-			if t := protoFieldTypeName(desc, gc); t != "UNKNOWN" {
-				typeName = t
-			}
-		}
-		cols = append(cols, executor.ColumnDef{
-			Name:     gc,
-			TypeName: typeName,
-			Nullable: api.ColumnNullable,
-		})
-	}
-
-	var aggName string
-	if aggCol == "" {
-		aggName = aggFunc + "(*)"
-	} else {
-		aggName = aggFunc + "(" + aggCol + ")"
-	}
-	aggTypeName := "BIGINT"
-	if aggCol != "" && desc != nil {
-		if t := protoFieldTypeName(desc, aggCol); t != "UNKNOWN" {
-			aggTypeName = t
-		}
-	}
-	cols = append(cols, executor.ColumnDef{
-		Name:     aggName,
-		TypeName: aggTypeName,
-		Nullable: api.ColumnNullable,
-	})
-	return cols
-}
-
-// deriveColumnsFromMultiIntersection derives result columns for a
-// multi-aggregate intersection plan. The plan's result value is a record
-// constructor whose field names are the output columns (grouping columns
-// followed by one aggregate column per intersected stream). Grouping-column
-// types resolve against the base record type; aggregate columns default to
-// BIGINT (mirroring deriveColumnsFromAggregateIndex), with COUNT pinned to
-// BIGINT and other column aggregates resolved against the descriptor.
-func deriveColumnsFromMultiIntersection(mi *plans.RecordQueryMultiIntersectionOnValuesPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	rc, ok := mi.GetResultValue().(*values.RecordConstructorValue)
-	if !ok {
-		return nil
-	}
-
-	var desc protoreflect.MessageDescriptor
-	if md != nil {
-		for _, child := range mi.GetChildren() {
-			if agg, ok := child.(*plans.RecordQueryAggregateIndexPlan); ok {
-				if rt := md.GetRecordType(agg.GetRecordTypeName()); rt != nil && rt.Descriptor != nil {
-					desc = rt.Descriptor
-					break
-				}
-			}
-		}
-	}
-
-	cols := make([]executor.ColumnDef, 0, len(rc.Fields))
-	for _, f := range rc.Fields {
-		name := strings.ToUpper(f.Name)
-		// A grouping slot flows a plain column read (FieldValue); every
-		// other slot is an aggregate output. Classify by the RESOLVED
-		// Value, never by "(" in the rendered name (RFC-180 F-2): a
-		// delimited column literally named "SUM(X)" would misclassify.
-		// Grouping columns resolve their type against the record type;
-		// aggregates default to BIGINT.
-		typeName := "BIGINT"
-		if fv, isCol := values.AsFieldValue(f.Value); isCol && desc != nil {
-			if t := protoFieldTypeName(desc, strings.ToUpper(fv.DisplayName())); t != "UNKNOWN" {
-				typeName = t
-			}
-		}
-		cols = append(cols, executor.ColumnDef{
-			Name:     name,
-			TypeName: typeName,
-			Nullable: api.ColumnNullable,
-		})
-	}
-	return cols
-}
-
-// legPlanFor resolves a QOV correlation alias to the JOIN LEG PLAN it
-// addresses, walking nested NLJ/FlatMap shapes through order-preserving
-// wrappers. Returns the leg's subplan and whether that leg is
-// null-supplying (its subtree carries a DefaultOnEmpty — the LEFT-JOIN
-// null-extension; coarse in the safe direction, like the descriptor-level
-// nullBorn detection). found=false when the alias doesn't name a leg of
-// this plan — callers fall back to the name-keyed lookups.
-func legPlanFor(p plans.RecordQueryPlan, alias string) (leg plans.RecordQueryPlan, nullSupplying bool, found bool) {
-	// UNIQUE-match-or-decline: the plan-level walk is not query-scope-aware
-	// — a FOLDED query block (a projected-EXISTS CTE lowered to a FlatMap)
-	// has no RecordQueryProjectionPlan for the opaque-boundary guard to
-	// stop at, so an interior block reusing a top-block alias would
-	// shadow-match and attach the WRONG branch's null extension. Every
-	// candidate is therefore collected; only an unambiguous single match is
-	// used, and a duplicated alias declines to the name-keyed fallbacks
-	// (which degrade toward nullable — the safe direction — never toward a
-	// foreign branch's metadata). Exact scoping needs resolver-carried leg
-	// provenance (the RFC-142 model), not plan-side alias search.
-	matches := collectLegMatches(p, alias, false, nil)
-	if len(matches) != 1 {
-		return nil, false, false
-	}
-	return matches[0].leg, matches[0].nullSupplying, true
-}
-
-type legMatch struct {
-	leg           plans.RecordQueryPlan
-	nullSupplying bool
-}
-
-func collectLegMatches(p plans.RecordQueryPlan, alias string, acc bool, out []legMatch) []legMatch {
-	for p != nil {
-		switch n := p.(type) {
-		case *plans.RecordQueryNestedLoopJoinPlan:
-			jt := n.GetJoinType()
-			outerNS := acc || jt == plans.JoinFullOuter
-			innerNS := acc || jt == plans.JoinLeftOuter || jt == plans.JoinFullOuter
-			// A matched leg's SUBTREE is still searched: shallow-wins scope
-			// shadowing would be sound only if plan nesting faithfully
-			// mirrored SQL scoping, and FOLDED query blocks are exactly
-			// where that mirror breaks — an interior duplicate therefore
-			// counts as a second match and the caller declines to the name
-			// fallbacks rather than trusting either binding.
-			if strings.EqualFold(n.GetOuterAlias().Name(), alias) {
-				out = append(out, legMatch{n.GetOuter(), outerNS || legHasDefaultOnEmpty(n.GetOuter())})
-			}
-			out = collectLegMatches(n.GetOuter(), alias, outerNS, out)
-			if strings.EqualFold(n.GetInnerAlias().Name(), alias) {
-				out = append(out, legMatch{n.GetInner(), innerNS || legHasDefaultOnEmpty(n.GetInner())})
-			}
-			out = collectLegMatches(n.GetInner(), alias, innerNS, out)
-			return out
-		case *plans.RecordQueryFlatMapPlan:
-			if strings.EqualFold(n.GetOuterAlias().Name(), alias) {
-				out = append(out, legMatch{n.GetOuter(), acc || legHasDefaultOnEmpty(n.GetOuter())})
-			}
-			out = collectLegMatches(n.GetOuter(), alias, acc, out)
-			if strings.EqualFold(n.GetInnerAlias().Name(), alias) {
-				out = append(out, legMatch{n.GetInner(), acc || legHasDefaultOnEmpty(n.GetInner())})
-			}
-			out = collectLegMatches(n.GetInner(), alias, acc, out)
-			return out
-		case *plans.RecordQueryDefaultOnEmptyPlan:
-			acc = true
-			p = n.GetInner()
-		case *plans.RecordQueryProjectionPlan:
-			// Query-block boundary — aliases below belong to another scope.
-			return out
-		default:
-			ip, ok := p.(innerPlan)
-			if !ok {
-				return out
-			}
-			p = ip.GetInner()
-		}
-	}
-	return out
-}
-
-func legHasDefaultOnEmpty(p plans.RecordQueryPlan) bool {
-	has := false
-	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
-		if _, ok := n.(*plans.RecordQueryDefaultOnEmptyPlan); ok {
-			has = true
-			return false
-		}
-		return true
-	})
-	return has
-}
-
-// legRead is the STRUCTURAL resolution of a QUANTIFIER-ADDRESSED projected
-// read: the join leg its correlation names, that leg's OWN derived columns,
-// and whether the leg is null-supplying (an outer join's null-extended side).
-//
-// Both arms of deriveColumnsFromProjection that need a QOV read's leg column —
-// the null-born nullability upgrade and the type inheritance — go through here,
-// so the ADDRESSING is derived once. They used to derive it independently, and
-// they had already drifted: the type arm addressed the leg structurally while
-// the nullability arm composed a "CORR.FIELD" string for a descriptor lookup
-// that cannot separate legs at all.
-//
-// Sharing the addressing is NOT the same as the two arms behaving alike, and
-// this comment used to claim it was. They consume the result differently and
-// deliberately: the nullability arm short-circuits on nullSupplying before it
-// ever addresses a column (see nullExtended), and the type arm has its own
-// fallbacks after this returns. What is guaranteed here is one derivation of
-// "which leg, which slot" — nothing about what each caller then does with it.
-type legRead struct {
-	cols          []executor.ColumnDef
-	nullSupplying bool
-}
-
-// resolveLegRead resolves a correlation to its leg and derives that leg's own
-// columns. found=false when the alias names no unambiguous leg of this plan
-// (legPlanFor declines on a duplicated alias), which leaves callers on their
-// name-keyed fallbacks.
-func resolveLegRead(inner plans.RecordQueryPlan, md *recordlayer.RecordMetaData, corr string) (legRead, bool) {
-	legPlan, nullSupplying, found := legPlanFor(inner, corr)
-	if !found {
-		return legRead{}, false
-	}
-	return legRead{cols: deriveColumnsFromPlan(legPlan, md), nullSupplying: nullSupplying}, true
-}
-
-// column returns the leg column this read addresses, by one of two keys that
-// mirror Java's own two accessor kinds exactly:
-//
-//   - the BAKED LEG-RELATIVE ordinal, tried first. Java's RESOLVED accessor
-//     compares getOrdinal() ALONE — the name is not part of identity
-//     (FieldValue.java:684,:689).
-//   - the leaf NAME. Java's UNRESOLVED accessor compares ordinal AND name
-//     (FieldValue.java:633, hashCode :638), which is what a carrier with no
-//     usable ordinal falls back to here.
-//
-// So the two-key split is not an ad-hoc fallback ladder; it is the same split
-// Java draws between a resolved and an unresolved accessor.
-//
-// The name key serves an UNBAKED (lazy) read, which carries no ordinal — and
-// ALSO a baked read whose ordinal is out of range for this leg, which the
-// earlier wording denied. It is a genuinely weaker key either way, since a leg
-// that duplicates an output name keeps only one of them under it.
-//
-// Accessors[0] is the whole story for the single-accessor case: the leaf
-// derivation emits one column per TOP-LEVEL proto field, so a struct occupies
-// exactly one slot and root ordinals stay aligned with r.cols. No re-anchoring
-// is needed to reach the right slot.
-func (r legRead) column(fv values.FieldValue) (executor.ColumnDef, bool) {
-	if path := fv.Path(); path != nil {
-		// A reference that is not exactly single-accessor is not addressable
-		// against this leg's columns by EITHER key. A multi-accessor root
-		// ordinal is not an index into the leg's flattened columns, and the
-		// only NAME such a reference carries is its leaf — a member of the
-		// enclosing struct's namespace, offered to columns keyed by the
-		// RECORD's, where a shared spelling answers with an unrelated column.
-		// Declining leaves the reference's own resolved type and nullability
-		// standing, which is Java's answer (FieldValue.computeResultType is
-		// fieldPath.getLastFieldType, FieldValue.java:143-148).
-		//
-		// WHAT THIS DECLINE ACTUALLY CHANGES, per arm — it is not one guard
-		// covering both, and describing it as merely "moved here" was wrong:
-		//
-		//   - MULTI-accessor, TYPE arm: already declined before this existed.
-		//     deriveColumnsFromProjection sets inherited=true for
-		//     len(Accessors) > 1 and the whole QOV block sits under
-		//     `if !inherited`, so such a read never reaches this function.
-		//     Redundant here, kept because this function must be correct on
-		//     its own terms rather than on its caller's.
-		//   - ZERO-accessor, TYPE arm: a NEW restriction. A Resolved carrying
-		//     no accessors passed both of those upstream tests and did reach
-		//     the leg's leaf-name loop; now it declines.
-		//   - EITHER, NULLABILITY arm: new, and this is the only guard there
-		//     is — that arm reaches this function through nullExtended with no
-		//     upstream arity test at all.
-		//
-		// MEASURED over the sqldriver suite (6159 tests) at the commit that
-		// added this: 13 entries into this function, ALL single-accessor —
-		// zero multi-accessor, zero zero-accessor, zero unbaked. So the new
-		// restriction is LATENT, not a live behaviour change, and this decline
-		// is fail-safe rather than corpus-proven. Recorded rather than dressed
-		// up as coverage.
-		if path.Len() != 1 {
-			return executor.ColumnDef{}, false
-		}
-		accessor, ok := path.Accessor(0)
-		if !ok {
-			return executor.ColumnDef{}, false
-		}
-		if ord := accessor.Ordinal(); ord >= 0 && ord < len(r.cols) {
-			return r.cols[ord], true
-		}
-	}
-	for _, ic := range r.cols {
-		if strings.EqualFold(parseColRef(ic.Name).bare(), fv.DisplayName()) {
-			return ic, true
-		}
-	}
-	return executor.ColumnDef{}, false
-}
-
-// nullExtended reports whether the addressed column serves SQL NULL on this
-// plan's rows: either the whole leg is null-supplying (the outer join pads
-// unmatched rows) or the leg's own derivation already made the column
-// nullable. Callers only ever UPGRADE off this answer — a false here is "no
-// evidence of nullability", never "provably NOT NULL".
-//
-// THE ORDER OF THE TWO TESTS IS LOAD-BEARING, and it is why a struct-descent
-// read on a null-extended leg still upgrades even though column() would
-// decline it: nullSupplying is answered FIRST, so the leg's null extension
-// never depends on resolving a leaf. That mirrors Java, where the flowed
-// nullability is DISJUNCTIVE with the path rather than gated on it —
-// computeResultType's `childValue.getResultType().isNullable() ||
-// fieldPath.areAnyFieldTypesNullable()` (FieldValue.java:147). A consequence
-// worth stating plainly: on a null-supplying leg this function bypasses
-// column() entirely, so the decline there is NOT in force for the case this
-// arm most cares about.
-func (r legRead) nullExtended(fv values.FieldValue) bool {
-	if r.nullSupplying {
-		return true
-	}
-	ic, ok := r.column(fv)
-	return ok && ic.Nullable == api.ColumnNullable
-}
-
-// frozenSchemaRenamesSlot reports whether a projection's frozen output schema
-// gives slot i a name the projection's own Value program and aliases would not
-// derive — an EXTERNAL rename, such as a CTE column list (`WITH r(n) AS …`)
-// renaming the leg's output — as opposed to the schema's own deduplicating
-// suffix. The output schema must stay name-addressable, so a repeated name is
-// deduplicated there (`A`, `A_2`) by the same rule the natural derivation
-// applies; when the two agree, the frozen name adds nothing the user wrote and
-// the user-visible label keeps the SQL spelling — `SELECT g AS a, g AS a`
-// reports [A A], as Java does (Type.Record keeps repeated field names and the
-// JDBC label is the field name), never [A A_2]. The caller sizes natural to
-// the projections, so a slot past it is not reached from there; the bounds
-// guard keeps such a slot on the frozen name, the authority it is everywhere
-// else, rather than indexing past the schema.
-func frozenSchemaRenamesSlot(natural []string, i int, frozen string) bool {
-	if i >= len(natural) {
-		return true
-	}
-	return natural[i] != frozen
-}
-
-func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	// A projection over a join references columns from MULTIPLE record types,
-	// so resolve each column's type against every join leaf, not just the
-	// first one (the single-leaf lookup left the other leg's columns UNKNOWN).
-	descs := allLeafDescriptors(proj.GetInner(), md)
-	aliases := proj.GetAliases()
-	aliasProvenance := proj.GetAliasMinted()
-	aliasSources := proj.GetAliasSources()
-	projections := proj.GetProjections()
-	outputNames := proj.GetOutputNames()
-
-	// Leaf descriptors under a NULL-SUPPLYING (DefaultOnEmpty) subtree: a
-	// column defined by one of these serves NULL on the outer join's padded
-	// rows, so its metadata reports NULLABLE regardless of the proto's
-	// Required (Java gets this from
-	// the flowed result type; the name-model lazy projections here flow
-	// none). Keyed by descriptor FullName. Coarse by design in the safe
-	// direction: a self-joined table on both sides marks the preserved read
-	// nullable too — clients then handle a NULL that never comes, never the
-	// reverse.
-	//
-	// THAT COARSENESS IS NOW NARROWED, NOT SCOPED AWAY — an earlier wording
-	// here said "the FLAT (childless) read ONLY", which the fallback about
-	// fifty lines down contradicts. Two kinds of read still land on this map:
-	//
-	//   - the FLAT (childless) read, which carries no correlation at all and
-	//     so has no leg to resolve;
-	//   - a QUANTIFIER-ADDRESSED read whose alias names no UNAMBIGUOUS leg,
-	//     where legPlanFor declines (a folded block's duplicated alias) and
-	//     the structural path cannot answer.
-	//
-	// What did change is that a QOV read WITH a resolvable leg no longer
-	// consults this map, so the self-join case described above — both sides
-	// sharing one descriptor — is answered exactly for that form: the
-	// preserved leg reports its own nullability and only the null-supplying
-	// leg is upgraded.
-	nullBorn := map[protoreflect.FullName]struct{}{}
-	plans.Walk(proj.GetInner(), func(n plans.RecordQueryPlan) bool {
-		if doe, ok := n.(*plans.RecordQueryDefaultOnEmptyPlan); ok {
-			for _, d := range allLeafDescriptors(doe, md) {
-				nullBorn[d.FullName()] = struct{}{}
-			}
-		}
-		return true
-	})
-
-	// A pull-up / pass-through projection (e.g. the RFC-141 projected-EXISTS fold's
-	// cleanup re-projection that drops a hidden ORDER BY column) references its
-	// columns by the INNER plan's OUTPUT key — which for an aliased column is the
-	// alias (`THE_ID`), not a proto field. The descriptor-based type lookup then
-	// can't resolve it (there is no proto field `THE_ID`) and yields UNKNOWN. The
-	// projection never RE-TYPES a column it merely renames/drops, so inherit the
-	// type+nullability from the inner plan's same-named derived column. This keeps
-	// the cleanup a true metadata pass-through, consistent-by-construction with the
-	// folded FlatMap's own column derivation (foldedColumnDef). The inner columns
-	// are derived lazily — only when a column's type is genuinely unresolved — so
-	// the ordinary projection path pays nothing.
-	var innerCols []executor.ColumnDef
-	var innerDerived bool
-	var innerByName map[string]executor.ColumnDef
-	deriveInner := func() {
-		if innerDerived {
-			return
-		}
-		innerDerived = true
-		innerCols = deriveColumnsFromPlan(proj.GetInner(), md)
-		innerByName = make(map[string]executor.ColumnDef, len(innerCols))
-		for _, ic := range innerCols {
-			innerByName[strings.ToUpper(ic.Name)] = ic
-		}
-	}
-	// The natural schema: what the freeze site names each slot
-	// (values.ProjectionSlotName), deduplicated exactly as the frozen schema was
-	// (values.DedupFieldNames). Comparing the two per slot is what tells an
-	// external rename from the schema's own suffix.
-	var natural []string
-	if len(outputNames) > 0 {
-		natural = make([]string, len(projections))
-		for i, v := range projections {
-			alias := ""
-			if i < len(aliases) {
-				alias = aliases[i]
-			}
-			natural[i] = values.ProjectionSlotName(v, alias)
-			if natural[i] == "" {
-				natural[i] = values.OrdinalFieldName(i)
-			}
-		}
-		natural = values.DedupFieldNames(natural)
-	}
-	cols := make([]executor.ColumnDef, len(projections))
-	for i, v := range projections {
-		alias := ""
-		if i < len(aliases) {
-			alias = aliases[i]
-		}
-		// A slot past the provenance vector reads as a USER alias: a machinery
-		// mint is the exceptional case and states itself explicitly.
-		aliasMinted := i < len(aliasProvenance) && aliasProvenance[i]
-		aliasSource := values.ProjectionAliasSource{}
-		if i < len(aliasSources) {
-			aliasSource = aliasSources[i]
-		}
-		cd := deriveProjectionColumnDef(v, alias, aliasMinted, aliasSource, i, descs)
-		// The projection's frozen result schema is the emitted row-key
-		// authority. In particular, a scalar QOV can compute an UNNEST ordinal
-		// whose SQL name (AT) differs from the scalar leg's display name (VAL).
-		// Re-deriving that key from the Value here would make metadata disagree
-		// with the row the executor emits.
-		if i < len(outputNames) && outputNames[i] != "" {
-			cd.Name = outputNames[i]
-			if alias == "" {
-				if values.QuantifierFlowsAScalarRow(v) {
-					cd.Label = outputNames[i]
-				} else if _, isReference := values.AsFieldValue(v); isReference &&
-					frozenSchemaRenamesSlot(natural, i, outputNames[i]) {
-					// A plain column REFERENCE can be RENAMED by the projection's
-					// frozen output schema with no SELECT alias attached: a CTE
-					// column list (`WITH r(n) AS …`) renames the leg's output and
-					// never appears as an alias on a projected item, and a
-					// rebuild that preserves the output schema does not always
-					// carry the alias vector with it. The executor names the
-					// emitted slot from that schema, so a label left on the read's
-					// own field name (`ID`) describes a slot the row calls `N` and
-					// the positional read refuses to align — every column of the
-					// result then goes loud.
-					//
-					// NOT when the frozen name is the schema's own deduplication of
-					// a repeated label. The output schema is name-addressable, so a
-					// repeated label is DEDUPLICATED there (`X`, `X_2`) while the
-					// user-visible labels stay `[X X]` — Java's layout, and what
-					// the alignment check already tolerates by ordinal. Following
-					// the schema there would publish the machinery's suffix as a
-					// column name. frozenSchemaRenamesSlot draws the line
-					// structurally: the natural schema deduplicates by the same
-					// rule, so only a name the natural schema does NOT produce is
-					// a rename.
-					//
-					// Bare leaf, VERBATIM: an output name over a gated ordinal
-					// join is qualified (`C.NAME`) while the label is bare, so
-					// the qualifier comes off — but the leaf's own case is the
-					// authored one and stays. This is the site that made
-					// `SELECT "KeepCase"` report KEEPCASE while `SELECT *` over
-					// the same table reported KeepCase; Java reports KeepCase
-					// for both, measured.
-					//
-					// WHICH DOT IS THE QUALIFIER IS NOT A QUESTION THE STRING
-					// CAN ANSWER. A column DECLARED `"a.b"` round-trips the wire
-					// escape (`.`→`__2`, reversed by ToUserIdentifier) and
-					// arrives here spelled `a.b`, which the last-dot split read
-					// as qualifier `a` plus column `b` — a label for a column no
-					// engine calls that. Measured against a live JVM: Java
-					// reports `a.b`, and Go's own STAR expansion already
-					// reported `a.b`, so one path was wrong beside a sibling
-					// that was right.
-					//
-					// WHICH DOT IS THE QUALIFIER is answered by the SCHEMA, on
-					// TWO facts: the whole name stands only when it is a
-					// declared column AND the split's column half is not.
-					// The reference's own ALIAS would settle it outright and
-					// does not reach this boundary — every root correlation is
-					// re-anchored to `_current` by the time labels are derived,
-					// which was measured, not assumed. qualifierStrippedLabel
-					// carries that measurement, the shapes two schema facts
-					// still get wrong, and the answers that preceded them.
-					cd.Label = qualifierStrippedLabel(outputNames[i], descs)
-				}
-			} else if !aliasMinted && frozenSchemaRenamesSlot(natural, i, outputNames[i]) {
-				// A USER alias renamed again by the frozen schema (a CTE column
-				// list over an aliased item) follows the schema; a user alias the
-				// schema merely deduplicated keeps its spelling. This arm took the
-				// frozen name unconditionally, and `SELECT g AS a, g AS a` reported
-				// [A A_2]; worse, a derived table whose body repeated an alias
-				// (`SELECT g, SUM(v) AS g … GROUP BY g`) published G_2 as a leg
-				// label, the join's positional row carried G, and every read of
-				// `SELECT *` over that leg beside another table refused to align.
-				cd.Label = outputNames[i]
-			}
-		}
-		// Exact Value nullability describes the expression before a surrounding
-		// join edge. Overlay the selected input's null-extension after that
-		// derivation, even when the expression type itself is already known (a
-		// projected EXISTS is exact NOT NULL and therefore never enters the
-		// UNKNOWN-only inheritance block below).
-		if fv, isField := values.AsFieldValue(v); isField {
-			if qov, viaQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); viaQOV {
-				if qov.Correlation() == proj.GetInnerQuantifier().GetAlias() && fv.Path().Len() == 1 &&
-					projectionInputNullExtendsOutput(proj.GetInner()) {
-					deriveInner()
-					ordinals := fv.Path().Ordinals()
-					if ordinal := ordinals[0]; ordinal >= 0 && ordinal < len(innerCols) && innerCols[ordinal].Nullable == api.ColumnNullable {
-						cd.Nullable = api.ColumnNullable
-					}
-				} else if _, nullSupplying, found := legPlanFor(proj.GetInner(), qov.Correlation().Name()); found && nullSupplying {
-					cd.Nullable = api.ColumnNullable
-				} else {
-					deriveInner()
-					qualified := strings.ToUpper(qov.Correlation().Name()) + "." + strings.ToUpper(fv.DisplayName())
-					if inherited, ok := innerByName[qualified]; ok && inherited.Nullable == api.ColumnNullable {
-						cd.Nullable = api.ColumnNullable
-					}
-				}
-			}
-		}
-		if cd.Nullable == api.ColumnNoNulls {
-			// The projected reference is either a FLAT (childless) read — its
-			// Field may carry the "LEG.COL" qualifier — or the resolver's
-			// QUANTIFIER-ADDRESSED bake (FieldValue{Child: QOV(leg), COL}).
-			//
-			// The QOV form resolves its leg STRUCTURALLY, through the same
-			// legRead the type-inheritance arm below uses. It previously
-			// composed "CORR.FIELD" and handed the string to
-			// descriptorForColumn, which cannot answer it across legs: that
-			// lookup matches by BARE name over every join-leaf descriptor and
-			// consults the qualifier only as a tie-break against d.Name() —
-			// the PROTO/TABLE name — so a correlation never matches for an
-			// aliased source (`FROM orders o` composed "O.VAL" against a
-			// descriptor named ORDERS). First-match then answered the
-			// PRESERVED leg and a null-supplying window's column reported
-			// NoNulls. Java addresses the same reference by ordinal identity
-			// alone — ResolvedAccessor.equals/hashCode compare getOrdinal()
-			// and the name is not part of identity (FieldValue.java:684,:689).
-			if fv, ok := values.AsFieldValue(v); ok {
-				structural := false
-				if qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV {
-					if r, found := resolveLegRead(proj.GetInner(), md, qov.Correlation().Name()); found {
-						structural = true
-						if r.nullExtended(fv) {
-							cd.Nullable = api.ColumnNullable
-						}
-					}
-				}
-				// A FLAT read carries no correlation to resolve a leg from, and
-				// a QOV read whose alias names no unambiguous leg (a folded
-				// block's duplicated alias, where legPlanFor declines) has none
-				// either. Both fall back to the descriptor-identity test on the
-				// reference's OWN name — coarse across legs, but composing
-				// nothing: the qualifier the mint used to add could only ever
-				// have tie-broken against a table name.
-				if !structural {
-					if d := descriptorForColumn(fv.DisplayName(), descs); d != nil {
-						if _, born := nullBorn[d.FullName()]; born {
-							cd.Nullable = api.ColumnNullable
-						}
-					}
-				}
-			}
-		}
-		if cd.TypeName == "" || cd.TypeName == "UNKNOWN" {
-			// Inherit from the inner column the projection reads (matched by the
-			// projected FieldValue's field = the inner output key). BOTH read
-			// emissions inherit: the FLAT (childless) form AND the resolver's
-			// QUANTIFIER-ADDRESSED bake (FieldValue{Child: QOV(inner)}) — a
-			// projection has exactly one input, so the QOV form reads the same
-			// inner output the flat form does. The QOV form arrives when the
-			// planner KEEPS a projection spine unmerged (e.g. an ordering-pinned
-			// spine under an elided sort): the outer read of a derived column
-			// like `val * 2 AS doubled` is then a plain rename of the inner
-			// output, and refusing to inherit reported UNKNOWN where Java types
-			// it from the flowed result type regardless of plan shape.
-			fv, isField := values.AsFieldValue(v)
-			if isField {
-				if qov, viaQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); viaQOV {
-					deriveInner()
-					// The BAKED ordinal is the structural linkage (RFC-142): a
-					// plan-time reference reads the inner output SLOT, and the
-					// inner's column NAME for that slot may be a positional
-					// label ("_1" for an unaliased computed column) that no
-					// name lookup can hit — e.g. an unmerged projection spine
-					// where the outer reads `DOUBLED#1` while the inner derives
-					// slot 1 as "_1" (correctly typed). Resolve by ordinal
-					// first; the name map serves lazy (unbaked) reads.
-					inherited := false
-					// A MULTI-ACCESSOR reference inherits from nothing here. Every
-					// arm below recovers a column by a NAME, and the only name a
-					// fused reference has is its leaf — a member of the enclosing
-					// struct's namespace, offered to maps keyed by the RECORD's. A
-					// shared spelling then types this column from an unrelated
-					// column. The reference already carries the leaf's own type on
-					// its resolved path (Java's FieldValue.computeResultType is
-					// fieldPath.getLastFieldType, FieldValue.java:143-148), so
-					// declining to inherit leaves the RIGHT answer standing rather
-					// than a guess.
-					if fv.Path().Len() > 1 {
-						inherited = true
-					}
-					if !inherited {
-						// A QOV-addressed read over a JOIN resolves against
-						// QUALIFIED inner keys ("D.FOO" — deriveColumnsFromJoin
-						// keys per-leg columns by their leg alias). When the
-						// read also carries a BAKED ordinal, resolve it WITHIN
-						// the leg's columns (qualified-prefix slice, leg order
-						// preserved by the join derivation): a name lookup
-						// alone loses slot identity when a leg duplicates an
-						// output name — the map keeps only the last "D.FOO"
-						// while the accessor addresses a specific slot. The
-						// name lookup serves unbaked QOV reads; the bare key
-						// serves single-source shapes.
-						inheritFrom := func(ic executor.ColumnDef) {
-							cd.TypeName = ic.TypeName
-							// Nullability only ever UPGRADES here: the
-							// null-born (LEFT-JOIN null-extension) adjustment
-							// ran before inheritance, and copying an inner
-							// NoNulls back would un-null-extend the column —
-							// unmatched outer rows still serve NULL.
-							if ic.Nullable == api.ColumnNullable {
-								cd.Nullable = api.ColumnNullable
-							}
-							inherited = true
-						}
-						if qov != nil {
-							// Resolve the LEG STRUCTURALLY: reconstructing leg
-							// membership from qualified-name prefixes both
-							// miscounts (an already-qualified output like a
-							// quoted "X.Y" identifier stays unprefixed in the
-							// merge, shifting every later slot) and loses slot
-							// identity under duplicate names. The leg's own
-							// derived columns are 1:1 positional with the
-							// leg-relative baked ordinal, carry EXACT
-							// nullability (a synthesized NOT NULL such as a
-							// projected EXISTS stays NoNulls on a CROSS join),
-							// and the null-supplying flag applies the LEFT-JOIN
-							// null extension only where it exists.
-							if r, found := resolveLegRead(proj.GetInner(), md, qov.Correlation().Name()); found {
-								if ic, ok := r.column(fv); ok && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
-									cd.TypeName = ic.TypeName
-									cd.Nullable = ic.Nullable
-									if r.nullSupplying {
-										cd.Nullable = api.ColumnNullable
-									}
-								}
-								inherited = true
-							}
-							// THE DECLINE IN legRead.column ONLY NARROWS THIS ARM, it
-							// does not close it. When column() refuses, the lookup
-							// below still recovers a column by NAME — `legPrefix +
-							// fv.Field` against innerByName — which is the same
-							// leaf-vs-record-namespace hazard the decline exists to
-							// avoid, one map further out. The NULLABILITY arm has no
-							// such tail: a resolved leg there sets structural=true
-							// and suppresses every fallback, so for that arm the
-							// hazard really is closed. This tail is pre-existing and
-							// unreachable today for the multi-accessor case
-							// (deriveColumnsFromProjection's upstream
-							// `len(Accessors) > 1` sets inherited, and this block
-							// sits under `if !inherited`); it shuts entirely when the
-							// qualified-name inner keys go away.
-							if !inherited {
-								legPrefix := strings.ToUpper(qov.Correlation().Name()) + "."
-								if ic, found := innerByName[legPrefix+strings.ToUpper(fv.DisplayName())]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
-									inheritFrom(ic)
-								}
-							}
-						}
-						if !inherited {
-							if ic, found := innerByName[strings.ToUpper(fv.DisplayName())]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
-								inheritFrom(ic)
-							}
-						}
-					}
-				}
-			}
-		}
-		cols[i] = cd
-	}
-	return cols
-}
-
-// projectionInputNullExtendsOutput reports whether a whole-row read through a
-// projection's sole physical edge crosses a join that can replace one of its
-// output slots with SQL NULL. An INNER/CROSS FlatMap may contain a
-// FirstOrDefault solely to compute EXISTS; its folded output Value remains
-// exact NOT NULL, so the wrapper alone is not evidence of null extension.
-func projectionInputNullExtendsOutput(plan plans.RecordQueryPlan) bool {
-	for plan != nil {
-		switch p := plan.(type) {
-		case *plans.RecordQueryNestedLoopJoinPlan:
-			return p.GetJoinType() == plans.JoinLeftOuter || p.GetJoinType() == plans.JoinFullOuter
-		case *plans.RecordQueryProjectionPlan:
-			return false
-		default:
-			inner, ok := plan.(innerPlan)
-			if !ok {
-				return false
-			}
-			plan = inner.GetInner()
-		}
-	}
-	return false
-}
-
-// deriveProjectionColumnDef derives the ResultSet ColumnDef (datum-lookup Name,
-// user-visible display Label, type, nullability) for a single projected column
-// from its Value + optional SELECT-list alias. Its one caller is the normal
-// projection path (deriveColumnsFromProjection).
-//
-// The RFC-141 projected-EXISTS fold does NOT come through here, despite what
-// this comment claimed until the claim was checked: deriveColumnsFromFlatMap
-// derives its columns through foldedColumnDef, which takes Name+Label from the
-// field NAME the fold set rather than re-deriving them from the field VALUE.
-// The two are consistent by construction, not by sharing code, and
-// foldedColumnDef's own doc is the one that explains why.
-//
-// The derivation matches Java's ResultSetMetaData:
-//   - Name (datum lookup key): the alias when aliased, else the column's
-//     reference name — QUALIFIED ("U.NAME") for a join projection so same-named
-//     columns of different legs stay disambiguable in the row map.
-//   - Label (getColumnLabel — what Rows.Columns() surfaces): the alias when
-//     aliased; for an unaliased field reference the UNQUALIFIED leaf name
-//     (`SELECT u.name` → label NAME, never U.NAME); for an unaliased non-field
-//     expression the positional `_i`. The qualifier must NEVER leak into the
-//     user-visible metadata.
-//
-// idx is the column's position (for the `_i` positional label of an unaliased
-// computed expression). descs are the leaf descriptors the column type/nullable
-// is resolved against (the leg that defines the column).
-//
-// aliasMinted is the slot's alias PROVENANCE (RecordQueryProjectionPlan's
-// GetAliasMinted): true when the machinery wrote the alias as an internal datum
-// key, false when it is the user's `AS`. It is what separates the two — they are
-// spelled alike — and the separation is the whole difference between reporting
-// `SELECT u.name AS "U.NAME"` as Java does (verbatim) and degrading it.
-func deriveProjectionColumnDef(
-	v values.Value,
-	alias string,
-	aliasMinted bool,
-	aliasSource values.ProjectionAliasSource,
-	idx int,
-	descs []protoreflect.MessageDescriptor,
-) executor.ColumnDef {
-	// A NESTED reference is named by its resolved PATH, read from the one
-	// predicate every naming authority shares, and it is tested FIRST because it
-	// subsumes both arms below: `Field` is ONE segment of the path, so it cannot
-	// name a nested column no matter which segment it holds. It held the struct
-	// ROOT when this arm was written and `n.sk` and `n.co` were both named `N`
-	// here — duplicate labels over correct data, measured; it holds the LEAF now
-	// and `SELECT t1.n.sk, sk` would collide the other way. Java names the fused
-	// reference by the requested identifier `n.sk` for exactly this reason
-	// (SemanticAnalyzer.java:598-599) and the top-level projection then clears
-	// the qualifier, so the user sees SK and CO.
-	//
-	// It subsumes the Child arm too, and that is the point rather than an
-	// accident: NestedResolvedPath renders THROUGH the child, so a nested
-	// reference over a ≥2-source FROM takes `T1.N.SK` here — the same qualified
-	// shape the `Child != nil` arm below produces for a flat reference, reached
-	// by one predicate instead of two. `Child == nil` is not the nested arm's
-	// precondition; the multi-accessor resolved path is. The Label computed from
-	// this Name is the unqualified leaf either way (`SK`), measured over
-	// `SELECT n.sk, n.co FROM t1, t2`, so the qualifier stays an internal slot
-	// key exactly as Java's does (Identifier.withoutQualifier, Identifier.java:101).
-	var name string
-	if path, nested := values.NestedResolvedPath(v); nested {
-		name = path
-	} else if _, ok := values.AsFieldValue(v); ok {
-		name = values.ColumnNameValue(v)
-	} else {
-		name = values.ColumnNameValue(v)
-	}
-	var label string
-	if alias != "" {
-		// Verbatim: the alias arrives already normalized by the parse capture,
-		// so the only thing a second fold can do is rename `AS "x"` to X.
-		label = alias
-	} else if _, isField := values.AsFieldValue(v); !isField {
-		label = fmt.Sprintf("_%d", idx)
-	}
-	// Resolve THIS column against the leg that defines it (a join
-	// projects same-named columns from different legs; the qualifier
-	// disambiguates). Falling back to descs[0] for non-FieldValue
-	// expressions keeps the prior aggregate-operand behaviour.
-	colDesc := descriptorForColumn(name, descs)
-	typeDesc := colDesc
-	if typeDesc == nil && len(descs) > 0 {
-		typeDesc = descs[0]
-	}
-	// For a PLAIN column read the stored descriptor is the metadata
-	// authority: the flowed seed type conflates INT/BIGINT and FLOAT/DOUBLE
-	// (evaluation widths), which must not leak into ResultSet metadata —
-	// Java reports the DECLARED column type (INTEGER, FLOAT). The flowed
-	// type serves columns the descriptor cannot resolve (derived/CTE
-	// outputs) and every non-FieldValue expression.
-	typeName := ""
-	if _, isField := values.AsFieldValue(v); isField && colDesc != nil {
-		// The stored descriptor is the metadata authority for a BASE column read —
-		// but ONLY to recover the eval-width the flowed seed conflates (INTEGER↔
-		// BIGINT, FLOAT↔DOUBLE). A DERIVED/CTE OUTPUT alias whose name coincidentally
-		// matches a stored field flows a genuinely DIFFERENT type (`SELECT q.id FROM
-		// (SELECT x AS id FROM B) q`: q.id is x's DOUBLE, but the derived leg carries
-		// B's descriptor so descriptorForColumn finds B.ID's BIGINT). Let the
-		// descriptor override only when it REFINES the flowed type within its family.
-		if t := protoFieldTypeName(colDesc, name); t != "UNKNOWN" && descriptorRefinesFlowed(t, valueTypeName(v, typeDesc)) {
-			typeName = t
-		}
-	}
-	if typeName == "" {
-		typeName = valueTypeName(v, typeDesc)
-	}
-	if typeName == "" && colDesc != nil {
-		typeName = protoFieldTypeName(colDesc, name)
-	}
-	if typeName == "" {
-		typeName = "UNKNOWN"
-	}
-	// Use the alias as the datum lookup key (Name) when available.
-	// executeProjection stores values under both the original name
-	// and the alias, so the alias is a valid lookup key and gives
-	// CTE consumers the column name they reference.
-	// VERBATIM: this is the DATUM KEY, and the row it indexes names its slots
-	// through values.OutputColumnName, which folds nothing. Folding here asked
-	// a verbatim-named row for a name it does not carry.
-	colName := name
-	if label != "" {
-		colName = label
-	}
-	// Display label — what ResultSetMetaData.getColumnLabel returns and
-	// what database/sql Rows.Columns() surfaces to the caller. For an
-	// unaliased field reference this is the UNQUALIFIED field name,
-	// matching Java: `SELECT u.name` over a join yields column NAME, not
-	// U.NAME. The datum key (colName/Name) stays qualified — a join
-	// projects same-named columns from different legs and the qualifier
-	// disambiguates the lookup — but the qualifier must never leak into
-	// the user-visible metadata.
-	displayLabel := label
-	if label == "" {
-		if _, isField := values.AsFieldValue(v); isField && name != "" {
-			// Java takes the leaf of the RESOLVED IDENTIFIER —
-			// Identifier.withoutQualifier, applied by the top-level
-			// clearQualifier — so `SELECT u.name` over a join reports NAME and
-			// a nested `n.sk` reports SK, not the struct root.
-			//
-			// The leaf is taken VERBATIM. A quoted DDL column keeps its case
-			// through the whole engine, and the result-set label is where the
-			// user sees it: `SELECT "KeepCase"` reports KeepCase, as Java does,
-			// where a fold here reported KEEPCASE.
-			//
-			// WHICH DOT IS THE QUALIFIER is answered by the SCHEMA, on two
-			// facts — see qualifierStrippedLabel, which also carries why the
-			// reference's own alias, the answer that would settle it outright,
-			// does not reach this boundary.
-			displayLabel = qualifierStrippedLabel(name, descs)
-		}
-	} else if aliasMinted {
-		// A MACHINERY-pinned alias — the duplicated-bare-leaf dedup pins the
-		// projected reference's QUALIFIED spelling ("A.NAME" for QOV(A).NAME)
-		// as the alias so the two same-named datum keys do not collapse — is
-		// an INTERNAL key, not a user label: Java reports the bare column for
-		// `SELECT c.name, p.name` (both NAME, JDBC allows duplicate labels).
-		// So the qualifier comes off, and the datum key (colName, below) keeps
-		// it.
-		//
-		// The provenance is CARRIED here, never recovered from the string. It
-		// used to be recovered — a dotted label whose leaf matched the
-		// projected reference's leaf was read as machinery — and a user is
-		// perfectly entitled to write that exact spelling: `SELECT u.name AS
-		// "U.NAME"` reported the label NAME, as did the SINGLE-TABLE form where
-		// no machinery alias can exist at all. Java never inspects an alias for
-		// a dot (its clearQualifier, LogicalOperator.java:484-487, strips the
-		// structural qualifier LIST, and a delimited `"U.NAME"` is one
-		// Identifier with an EMPTY qualifier list), so no spelling can be the
-		// discriminator.
-		// The counterparty is the frozen structured alias source captured when
-		// the machinery minted this key. The projected Value may since have been
-		// reanchored onto `_current`, so it is evaluation authority rather than
-		// authored display identity. Whether the qualifier sliced out of the
-		// label equals the frozen source is this site's conversion question. The
-		// parenthesis heuristic is recorded as its own DECLINE rather than
-		// folded into "bare", because a rejection made by looking for `()` in a
-		// rendering is the thing under measurement, not a clean non-split.
-		if stripped, did := stripDisplayLabelQualifier(label, aliasSource); did {
-			displayLabel = stripped
-		}
-	}
-	nullable := api.ColumnNullable
-	if colDesc != nil {
-		if fd := colDesc.Fields().ByName(protoreflect.Name(parseColRef(name).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
-			nullable = api.ColumnNoNulls
-		}
-	}
-	// The proto descriptor says what the STORED column is; the exact FLOWED
-	// value says what this query serves. It is authoritative in both
-	// directions: outer-null extension widens a field to nullable, while EXISTS
-	// and other definite expressions remain NOT NULL even without a descriptor.
-	// UNKNOWN carries no claim and leaves the descriptor/default untouched.
-	if flowed := v.Type(); flowed != nil && flowed.Code() != values.TypeCodeUnknown {
-		if flowed.IsNullable() {
-			nullable = api.ColumnNullable
-		} else {
-			nullable = api.ColumnNoNulls
-		}
-	}
-	return executor.ColumnDef{
-		Name:     colName,
-		Label:    displayLabel,
-		TypeName: typeName,
-		Nullable: nullable,
-	}
-}
-
-// foldedColumnDef derives the ResultSet ColumnDef for ONE field of a
-// projected-EXISTS fold's RecordConstructor (RFC-141 ROOT FIX). It is the
-// consistent-by-construction counterpart of the normal projection path's
-// deriveProjectionColumnDef, but it takes its Name+Label from the field NAME the
-// fold set rather than re-deriving them from the field VALUE.
-//
-// The contract is dictated by execution: RecordConstructorValue.Evaluate keys the
-// executed row by `f.Name` (one map key per field), and a positional/named Scan
-// looks the column up by `ColumnDef.Name`. Therefore:
-//
-//   - Name (datum lookup key) = f.Name, ALWAYS. The fold set f.Name to the
-//     SELECT-list alias when the column was explicitly aliased, else to the
-//     column's reference (bare `ID` for a single-table column, qualified
-//     `T1.ID`/`T2.ID` for a JOIN leg so same-named legs stay disambiguable). It
-//     cannot diverge from the record key, so a Scan never reads NULL.
-//   - Label (the user-visible getColumnLabel) = the BARE LEAF of f.Name —
-//     matching Java exactly (the SELECT-list Identifier after clearQualifier):
-//     `SELECT t1.id` → ID, `t1.id AS id` → ID, `id AS the_id` → THE_ID,
-//     `t2.id` over a JOIN → ID (never the qualified T2.ID).
-//   - Type resolves from the field VALUE (the EXISTS boolean → BOOLEAN via
-//     ExistsValue.Type(); a leg column against its defining descriptor). The
-//     value's column reference (ExplainValue — qualified `T2.ID` for a JOIN
-//     composite) is what the descriptor lookup keys on, so the type resolves
-//     against the correct leg even though the public label is the bare leaf.
-//
-// No alias inference, no value-derived Name: the divergences found
-// (explicit-alias==bare-leaf reading NULL, JOIN composite leaking a qualified
-// label) are impossible by construction.
-func foldedColumnDef(f values.RecordConstructorField, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
-	// VERBATIM on both: the RC field's name is the slot key the executor wrote,
-	// and the label is its bare leaf. A fold here renamed the column the user
-	// sees and asked a verbatim-named row for a key it does not carry.
-	name := f.Name
-	label := parseColRef(f.Name).bare()
-
-	// Resolve the column TYPE against the leg that defines it. Use the VALUE's
-	// reference name (qualified for a JOIN composite) so descriptorForColumn keys
-	// the right leg; fall back to the field Name for a non-FieldValue value.
-	typeRef := name
-	if _, ok := values.AsFieldValue(f.Value); ok {
-		typeRef = values.ColumnNameValue(f.Value)
-	}
-	return columnDefFromRef(name, label, typeRef, f.Value, descs)
-}
-
-// columnDefFromRef is the shared type+nullability derivation for a single
-// result-set column: name is the datum-map lookup key, label the user-visible
-// display name, typeRef the string descriptorForColumn keys on (the value's
-// qualified reference for a fold, the bare column name for an ordinal seed), and
-// value the defining Value (its Type() supplies a synthesized column's type and
-// nullability). Extracted from foldedColumnDef so the ordinal-unnest arm can
-// reuse the identical resolution while keying the descriptor lookup on the
-// BARE field name (a baked ofOrdinal renders "T1.ID#0" under ExplainValue — the
-// "#0" suffix misses the proto descriptor).
-func columnDefFromRef(name, label, typeRef string, value values.Value, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
-	colDesc := descriptorForColumn(typeRef, descs)
-	typeDesc := colDesc
-	if typeDesc == nil && len(descs) > 0 {
-		typeDesc = descs[0]
-	}
-	typeName := valueTypeName(value, typeDesc)
-	if typeName == "" && colDesc != nil {
-		typeName = protoFieldTypeName(colDesc, typeRef)
-	}
-	// A column the leaf descriptors couldn't resolve (genuinely unknown type)
-	// flows under the FlatMap's merged outer row where a numeric BIGINT is the
-	// safe default; the EXISTS boolean and other resolved columns keep their real
-	// type (valueTypeName returns it). This preserves the fold's prior behaviour
-	// for genuinely-unresolved columns.
-	if typeName == "" || typeName == "UNKNOWN" {
-		typeName = "BIGINT"
-	}
-
-	nullable := api.ColumnNullable
-	if colDesc != nil {
-		if fd := colDesc.Fields().ByName(protoreflect.Name(parseColRef(typeRef).bare())); fd != nil && fd.Cardinality() == protoreflect.Required {
-			nullable = api.ColumnNoNulls
-		}
-	} else if value != nil {
-		// No proto descriptor field resolves for this column — it is a
-		// SYNTHESIZED value, not a stored field. The unnest WITH-ORDINALITY ordinal
-		// (`AT o`) is the canonical case: its FieldValue carries Type values.NotNullInt
-		// (Java's Type.primitiveType(INT, false)) but has NO descriptor field, so the
-		// colDesc-only path above would default it to ColumnNullable and the result-set
-		// metadata would wrongly report the NOT-NULL ordinal as nullable. Derive
-		// nullability from the VALUE's own type instead (the same place valueTypeName
-		// reads the TYPE), so a NOT-NULL synthesized column (the ordinal, an EXISTS
-		// boolean) reports ColumnNoNulls while a genuinely nullable element column
-		// (a nullable array element type, an UnknownType fallback) still reports
-		// ColumnNullable. RFC-142.
-		if t := value.Type(); t != nil && !t.IsNullable() {
-			nullable = api.ColumnNoNulls
-		}
-	}
-	return executor.ColumnDef{
-		Name:     name,
-		Label:    label,
-		TypeName: typeName,
-		Nullable: nullable,
-	}
-}
-
-// ordinalUnnestColumnDef derives ONE result-set column of a lateral-unnest
-// ORDINAL seed (the WITH-ORDINALITY seed). The seed's OUTER leg columns are
-// BAKED ofOrdinal FieldValues whose ExplainValue carries the "#ordinal" suffix
-// (e.g. "T1.ID#0"), which misses the proto descriptor and mis-reports a stored
-// column's type/nullability (a pk drops from NOT NULL to nullable). Because an
-// ordinal seed's field NAMES are exactly the bare column / AS / AT alias
-// names, key the descriptor lookup on the bare name — so an outer stored
-// column resolves its descriptor (pk NOT NULL) exactly as a name-keyed lookup
-// would, while the descriptor-less element/ordinal still types from its own
-// Value (element from the array element, ordinal INT NOT NULL). RFC-142.
-// columnDefDisplayName is the column's unqualified user-visible name — the
-// exact value RecordLayerResultSet.positionalAligned compares each positional
-// slot's field name against: the Label (alias) when set, else the bare leaf of
-// the qualified datum-key Name ("Q$DUP2.ID" → "ID"). Kept in lockstep with the
-// executor's columnDisplayName so deriveColumnsFromJoin's divergence check (does
-// the name-model merge render the same output sequence the positional row does?)
-// asks exactly the question positionalAligned will answer at serve time.
-func columnDefDisplayName(c executor.ColumnDef) string {
-	if c.Label != "" {
-		return c.Label
-	}
-	return parseColRef(c.Name).bare()
-}
-
-// mergedRVSequenceDiverges reports whether the name-model leg-merge (merged)
-// fails to render the ordinal RC's authoritative output sequence: a different
-// column count, or any position whose merged DISPLAY name (the value
-// positionalAligned compares) differs from the RC field's bare name. It is the
-// trigger for `SELECT *` over a duplicate-alias cluster: the planner may
-// group same-table dup legs (physical `P ⋈ (P ⋈ Q)`),
-// so the structural merge reorders to `[ID V ID V QID]` while the RC — which
-// the positional row mirrors — keeps FROM order `[ID V QID ID V]` with duplicate
-// bare labels. When the sequences AGREE (every non-reordered case, incl.
-// distinct-alias `A.K`/`B.K`), the merge path is authoritative-equivalent and
-// kept byte-identical.
-func mergedRVSequenceDiverges(rc *values.RecordConstructorValue, merged []executor.ColumnDef) bool {
-	if len(rc.Fields) != len(merged) {
-		return true
-	}
-	// The RC names a repeated slot by its name-addressability suffix (G_2)
-	// while the user-visible label stays G, so the merged display sequence is
-	// compared under the same rule the RC applied (values.DedupFieldNames):
-	// exactly, slot for slot. Skipping a repeated display instead would have
-	// accepted any RC name at a repeated position; comparing the raw display
-	// would have read every duplicate-name leg as a reordering and routed its
-	// metadata through the RC-derived fallback, which publishes the suffix as
-	// a label.
-	displays := make([]string, len(merged))
-	for i, c := range merged {
-		displays[i] = strings.ToUpper(columnDefDisplayName(c))
-	}
-	for i, name := range values.DedupFieldNames(displays) {
-		if !strings.EqualFold(parseColRef(rc.Fields[i].Name).bare(), name) {
-			return true
-		}
-	}
-	return false
-}
-
-// mergedInRVOrder re-sequences the name-model leg-merge into the ordinal RC's
-// authoritative output order, keeping each column's qualified datum key.
-//
-// A divergence between the two sequences is a statement about ORDER, never
-// about the names. The merge walks the PHYSICAL leg tree, and which grouping
-// the planner picks for equal-cost legs is arbitrary — a plain three-way
-// `SELECT *` plans `TA ⋈ (TB ⋈ TC)` or `TB ⋈ (TA ⋈ TC)` on a tie — while the RC
-// always carries FROM order. Answering the divergence by falling back to the
-// RC's own bare labels fixes the order and throws the qualifiers away with it,
-// dropping the `TA.K`/`TB.K` datum keys that by-name reads use. The permutation
-// is what was actually needed, and the RC states it.
-//
-// Each RC field names its LEG by root correlation and its position by baked
-// ordinal path; slotIndex resolves that pair to the leg's derived-column index
-// (legSlotIndex in production, which walks the path down the leg's own join
-// tree). Nothing here re-derives a column: the merge already carries the
-// qualification, the outer-join null extension and the per-leg recursion, and
-// this only says WHERE each of its entries belongs.
-//
-// The resolver is a parameter so the permutation assembly and its refusals can
-// be driven directly, without standing up a plan tree for each one.
-//
-// Reports false unless the RC accounts for every merged column exactly once,
-// under exactly the two leg roots. Anything else means the merge is not simply
-// misordered, and the caller keeps its existing RC-derived answer rather than
-// guessing at an alignment.
-func mergedInRVOrder(
-	rc *values.RecordConstructorValue,
-	merged []executor.ColumnDef,
-	firstAlias, secondAlias string,
-	firstWidth int,
-	slotIndex func(alias string, path []int) (int, bool),
-) ([]executor.ColumnDef, bool) {
-	if len(rc.Fields) != len(merged) ||
-		firstWidth < 0 || firstWidth > len(merged) ||
-		firstAlias == "" || secondAlias == "" || firstAlias == secondAlias {
-		return nil, false
-	}
-	out := make([]executor.ColumnDef, len(merged))
-	taken := make([]bool, len(merged))
-	for i, f := range rc.Fields {
-		field, isField := values.AsFieldValue(f.Value)
-		if !isField {
-			return nil, false
-		}
-		root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
-		if !isRoot {
-			return nil, false
-		}
-		var position int
-		var resolved bool
-		switch name := strings.ToUpper(root.Correlation().Name()); name {
-		case firstAlias:
-			position, resolved = slotIndex(name, field.Path().Ordinals())
-		case secondAlias:
-			position, resolved = slotIndex(name, field.Path().Ordinals())
-			position += firstWidth
-		}
-		if !resolved || position < 0 || position >= len(merged) || taken[position] {
-			return nil, false
-		}
-		taken[position] = true
-		out[i] = merged[position]
-	}
-	return out, true
-}
-
-// legSlotIndex resolves one ordinal path within a leg's emitted row to that
-// leg's DERIVED-COLUMN index.
-//
-// The two orders are not the same and cannot be assumed to be. A join leg emits
-// a nested positional-merge row whose slot order is its PHYSICAL leg order,
-// while its derived columns come back flat in SQL order — deriveColumnsFromJoin
-// may already have reversed them. `SELECT * FROM p, q, p` planned `(P ⋈ Q) ⋈ P`
-// is the shape where they part company: the sub-join's row is `<_0 Q, _1 P>`
-// and its columns are `[P.ID P.V Q.QID]`. So the path is followed through the
-// join's OWN result value, which names the leg at each slot, and the leg order
-// is re-derived exactly as the merge derived it.
-//
-// A leg that is not a join emits a flat row: slot i is column i.
-func legSlotIndex(
-	leg plans.RecordQueryPlan, md *recordlayer.RecordMetaData, path []int,
-) (int, bool) {
-	if leg == nil || len(path) == 0 {
-		return 0, false
-	}
-	// Pass-through wrappers (Fetch, Limit, DefaultOnEmpty) keep their input's
-	// row, so descend to the node that shapes it. definesOutputSchema is the
-	// same stop set deriveColumnsFromPlan's descent uses.
-	for !definesOutputSchema(leg) {
-		inner, wrapped := leg.(innerPlan)
-		if !wrapped || inner.GetInner() == nil {
-			break
-		}
-		leg = inner.GetInner()
-	}
-	nlj, isJoin := leg.(*plans.RecordQueryNestedLoopJoinPlan)
-	if !isJoin {
-		if len(path) != 1 {
-			return 0, false
-		}
-		if path[0] < 0 || path[0] >= len(deriveColumnsFromPlan(leg, md)) {
-			return 0, false
-		}
-		return path[0], true
-	}
-	rc, isRC := nlj.GetResultValue().(*values.RecordConstructorValue)
-	if !isRC || path[0] < 0 || path[0] >= len(rc.Fields) {
-		return 0, false
-	}
-	slotLeg, isSlotLeg := values.AsQuantifiedObjectValue(rc.Fields[path[0]].Value)
-	if !isSlotLeg {
-		return 0, false
-	}
-	firstLeg, secondLeg, firstAlias, secondAlias := joinLegDerivationOrder(nlj)
-	switch strings.ToUpper(slotLeg.Correlation().Name()) {
-	case firstAlias:
-		return legSlotIndex(firstLeg, md, path[1:])
-	case secondAlias:
-		index, ok := legSlotIndex(secondLeg, md, path[1:])
-		if !ok {
-			return 0, false
-		}
-		return len(deriveColumnsFromPlan(firstLeg, md)) + index, true
-	}
-	return 0, false
-}
-
-// joinLegDerivationOrder returns the join's legs in the order
-// deriveColumnsFromJoin merges their columns, with their aliases uppercased.
-// Both sites must make the same first/second decision or an index computed
-// against one describes the other.
-func joinLegDerivationOrder(
-	nlj *plans.RecordQueryNestedLoopJoinPlan,
-) (firstLeg, secondLeg plans.RecordQueryPlan, firstAlias, secondAlias string) {
-	outerAlias := strings.ToUpper(nlj.GetOuterAlias().Name())
-	innerAlias := strings.ToUpper(nlj.GetInnerAlias().Name())
-	if joinResultValueIsReversed(nlj.GetResultValue(), outerAlias, innerAlias) {
-		return nlj.GetInner(), nlj.GetOuter(), innerAlias, outerAlias
-	}
-	return nlj.GetOuter(), nlj.GetInner(), outerAlias, innerAlias
-}
-
-// The field name is carried VERBATIM into both the datum key and the label.
-// f.Name comes off a RecordConstructorField that the seed builder already
-// named, so the two folds here were a second normalization of a name that had
-// one — the same conversion applied to every other output-naming site.
-func ordinalUnnestColumnDef(f values.RecordConstructorField, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
-	name := f.Name
-	label := parseColRef(f.Name).bare()
-	return columnDefFromRef(name, label, name, f.Value, descs)
-}
-
-// valueRootCorrelation reports the correlation a seed field ultimately reads
-// from: a bare QuantifiedObjectValue's own correlation (the NO-AT scalar element
-// leg), or the root correlation of a baked ofOrdinal FieldValue chain (an outer
-// column or the WITH-ORDINALITY element/ordinal). Reports false for any other
-// shape. Used to classify an ordinal-unnest seed field as an OUTER column vs an
-// element/ordinal (which reference the FlatMap's INNER correlation).
-func valueRootCorrelation(v values.Value) (values.CorrelationIdentifier, bool) {
-	if qov, ok := values.AsQuantifiedObjectValue(v); ok {
-		return qov.Correlation(), true
-	}
-	if field, ok := values.AsFieldValue(v); ok {
-		return valueRootCorrelation(field.ChildValue())
-	}
-	return values.CorrelationIdentifier{}, false
-}
-
-func deriveColumnsFromAggregation(agg *plans.RecordQueryStreamingAggregationPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	// ALL leaf descriptors, not just the first: a GROUP BY over a JOIN can key
-	// on a column from any leg, and its type must resolve against the leg it
-	// lives on (Java reads the type off the flowed join-output record). A single
-	// first-leaf descriptor served UNKNOWN for a far-leg group key.
-	descs := allLeafDescriptors(agg.GetInner(), md)
-	return buildAggColumns(agg.GetGroupingKeys(), agg.GetAggregates(), descs)
-}
-
 type multiInnerPlan interface {
 	GetInners() []plans.RecordQueryPlan
-}
-
-func findUnionPlan(p plans.RecordQueryPlan) []plans.RecordQueryPlan {
-	for {
-		// STOP at a node that defines the output schema itself. The descent
-		// exists to reach a top-level set operation wearing unary hats
-		// (Fetch/Limit/…), whose legs then supply the columns — but a set
-		// operation BELOW a projection or aggregation is an input to it, not
-		// the output shape. Descending past one derived the columns from an
-		// intersection leg's full record (every field of the table) while the
-		// plan emitted the projection's single slot, so every read failed the
-		// positional-alignment guard: `SELECT DISTINCT id … WHERE a=? AND b=?
-		// LIMIT k` over two indexes planned `Limit(Project([ID], Intersection))`
-		// and reported 3 columns for a 1-column row. Returning nil here lets
-		// deriveColumnsFromPlan's unary recursion reach the schema-defining
-		// node, which has a dedicated arm.
-		if definesOutputSchema(p) {
-			return nil
-		}
-		if mi, ok := p.(multiInnerPlan); ok {
-			inners := mi.GetInners()
-			if len(inners) > 0 {
-				return inners
-			}
-			return nil
-		}
-		if ip, ok := p.(innerPlan); ok {
-			p = ip.GetInner()
-		} else {
-			return nil
-		}
-	}
-}
-
-// definesOutputSchema reports whether a plan node determines the result's
-// column list rather than passing its input's through. It lists every type
-// deriveColumnsFromPlan handles with a dedicated arm BEFORE it consults
-// findUnionPlan — including the two recursive-CTE arms, which derive from
-// their seed / initial state. Keeping the two in sync is what makes the
-// descent safe; a type with a dedicated arm that is missing here would be
-// descended past and lose its schema.
-func definesOutputSchema(p plans.RecordQueryPlan) bool {
-	switch p.(type) {
-	case *plans.RecordQueryProjectionPlan,
-		*plans.RecordQueryStreamingAggregationPlan,
-		*plans.RecordQueryAggregateIndexPlan,
-		*plans.RecordQueryMultiIntersectionOnValuesPlan,
-		*plans.RecordQueryNestedLoopJoinPlan,
-		*plans.RecordQueryFlatMapPlan,
-		*plans.RecordQueryRecursiveDfsJoinPlan,
-		*plans.RecordQueryRecursiveLevelUnionPlan:
-		return true
-	}
-	return false
-}
-
-func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	outerCols := deriveColumnsFromPlan(nlj.GetOuter(), md)
-	innerCols := deriveColumnsFromPlan(nlj.GetInner(), md)
-	if outerCols == nil && innerCols == nil {
-		return nil
-	}
-	// Null extension is a property of the join edge, not of the stored table
-	// descriptor nor of a derived leg's pre-join exact type. Apply it before
-	// any SQL-order reversal so it stays attached to the physical role that
-	// supplies NULLs. This is especially important for synthesized NOT NULL
-	// columns such as projected EXISTS flags.
-	switch nlj.GetJoinType() {
-	case plans.JoinLeftOuter:
-		innerCols = columnsWithNullable(innerCols)
-	case plans.JoinFullOuter:
-		outerCols = columnsWithNullable(outerCols)
-		innerCols = columnsWithNullable(innerCols)
-	}
-
-	outerAlias := strings.ToUpper(nlj.GetOuterAlias().Name())
-
-	firstCols, secondCols := outerCols, innerCols
-	firstLeg, secondLeg, firstAlias, secondAlias := joinLegDerivationOrder(nlj)
-	if firstAlias != outerAlias {
-		firstCols, secondCols = innerCols, outerCols
-	}
-
-	merged := qualifyAndMergeColumns(firstCols, secondCols, firstAlias, secondAlias)
-
-	// The GATHERED multi-source unnest star (`SELECT * FROM A, B, A.arr AS x`)
-	// plans as an NLJ whose FlatMap leg is a PARTITION SUB-PRODUCT — a
-	// positional-merge RC whose fields are planner-internal `_N` names — so
-	// the leg-merge above leaks `_0`/`_1` into the user-visible columns (and
-	// misses the element entirely). The translated ordinal TOP RV carries the
-	// true SQL-order output names (each f.Name IS the datum/positional key by
-	// construction — the same rule the FlatMap fold arm relies on), and the
-	// positional-aligned read then serves the VALUES from the positional
-	// row's matching slots. Derive from the RV, keyed on bare names against
-	// BOTH legs' leaf descriptors (ordinalUnnestColumnDef). Scoped by the
-	// STRUCTURAL discriminator — a leg subplan whose RV is the
-	// positional-merge RC (the sub-product that folds to `_N` columns) —
-	// never by the derived NAMES: a user column literally named `_0` over a
-	// plain gated join is a legal identifier and must keep the merge path's
-	// qualified metadata byte-identical.
-	// AND the GATHERED-UNNEST signature — an Explode-bearing FlatMap leg
-	// (gatheredExplodeElement): a PLAIN multi-way join's partition also
-	// leaves a positional-merge subplan, but ITS fold keeps qualified
-	// duplicate-name keys (deriveColumnsFromJoin handles an NLJ-shaped
-	// sub-product), so rerouting it would drop the `A.K`/`B.K` names by-name
-	// reads rely on.
-	// The second structural trigger: the name-model merge DIVERGES from the
-	// ordinal RV's authoritative output sequence. A duplicate-alias
-	// `SELECT *` (`SELECT * FROM p, q, p`) lets the planner GROUP the
-	// same-table legs (physical `P ⋈ (P ⋈ Q)`), so the structural leg-merge
-	// reorders to `[ID V ID V QID]`, while the ordinal TOP RV carries every
-	// slot in FROM order with duplicate BARE labels (Java's exact star
-	// layout: `[ID V QID ID V]`) — the sequence the positional row mirrors
-	// and positionalAligned reads by slot. The binding-keyed qualification
-	// makes each dup leg's qualified name DISTINCT (`P.ID` vs `Q$DUP2.ID`),
-	// so a same-qualified-name collision check can no longer catch this
-	// case; the divergence of the DISPLAY sequences is the faithful signal.
-	// Distinct-alias duplicates ("A.K" / "B.K") whose merge is NOT reordered
-	// keep the byte-identical merge path (their display sequence equals the
-	// RV's), exactly as before.
-	rc, isOrdinalRC := nlj.GetResultValue().(*values.RecordConstructorValue)
-	mergedDivergesFromRV := isOrdinalRC && mergedRVSequenceDiverges(rc, merged)
-	elemAlias, elemTypeName, elemValue := gatheredExplodeElement(nlj, md)
-	// A merge that is merely MISORDERED is re-sequenced, not discarded: the RC's
-	// baked ordinals name each slot's position in the merged physical row, so
-	// the permutation is stated rather than guessed, and the qualified datum
-	// keys survive. Only when the two cannot be aligned that way does the
-	// RC-derived (bare-label) answer below take over. The gathered-unnest arm is
-	// NOT re-sequenced — its merge is missing the element column outright, so
-	// there is no permutation to find.
-	// No baked-ordinal requirement: the mapping is by RESOLVED PATH through the
-	// leg tree, which a resolved read carries whether or not the RC also wears
-	// the baked marker. Requiring the marker left a four-way `SELECT *` (whose
-	// top RC resolves but is not marked) reporting its columns in physical leg
-	// order while the row it describes was in FROM order — metadata and row
-	// disagreeing, which the positional read refuses outright.
-	if mergedDivergesFromRV && elemAlias == "" {
-		resolveSlot := func(alias string, path []int) (int, bool) {
-			if alias == firstAlias {
-				return legSlotIndex(firstLeg, md, path)
-			}
-			return legSlotIndex(secondLeg, md, path)
-		}
-		if resequenced, ok := mergedInRVOrder(
-			rc, merged, firstAlias, secondAlias, len(firstCols), resolveSlot); ok {
-			return resequenced
-		}
-	}
-	if isOrdinalRC && len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) &&
-		((hasPositionalMergeLeg(nlj) && elemAlias != "") || mergedDivergesFromRV) {
-		descs := allLeafDescriptors(nlj.GetOuter(), md)
-		descs = append(descs, allLeafDescriptors(nlj.GetInner(), md)...)
-		cols := make([]executor.ColumnDef, 0, len(rc.Fields))
-		for _, f := range rc.Fields {
-			col := ordinalUnnestColumnDef(f, descs)
-			// The MIXED (no-AT) element rides a single-accessor merge-slot ref
-			// whose type the partition collapse erased (the Explode quantifier
-			// flows untyped); no descriptor names it either. Its authoritative
-			// type is the Explode's own collection element (the AS+AT form's
-			// refs stay typed through fusion and never reach this). A STRUCT
-			// element's values.Type is ALSO unknown (7.6 does not model
-			// message element types), so fall back on the element type
-			// gatheredExplodeElement resolved from the array column's own
-			// proto field — the ground truth: a repeated field's Kind IS its
-			// element kind, with non-UUID messages reporting STRUCT
-			// (java.sql.Types.STRUCT), never the BIGINT fallback that silently
-			// mistyped struct elements.
-			if strings.EqualFold(f.Name, elemAlias) && unknownTypedValue(f.Value) {
-				tn := ""
-				if elemValue != nil {
-					tn = valueTypeName(elemValue, nil)
-				}
-				if tn == "" || tn == "UNKNOWN" {
-					tn = elemTypeName
-				}
-				if tn != "" && tn != "UNKNOWN" {
-					col.TypeName = tn
-				}
-			}
-			cols = append(cols, col)
-		}
-		return cols
-	}
-	return merged
-}
-
-func columnsWithNullable(columns []executor.ColumnDef) []executor.ColumnDef {
-	result := append([]executor.ColumnDef(nil), columns...)
-	for i := range result {
-		result[i].Nullable = api.ColumnNullable
-	}
-	return result
-}
-
-// hasPositionalMergeLeg reports whether a leg subplan (transitively, through
-// inner-plan wrappers and nested join plans) carries the POSITIONAL-MERGE
-// RC as its result value — the partition sub-product whose column fold
-// renders planner-internal `_N` names. The STRUCTURAL twin of the retired
-// name-based check: keying on derived names misfired on a user column
-// literally named `_0` (a legal identifier), rerouting a today-working
-// join's metadata off the qualified merge path.
-func hasPositionalMergeLeg(p plans.RecordQueryPlan) bool {
-	var legHas func(plans.RecordQueryPlan) bool
-	legHas = func(leg plans.RecordQueryPlan) bool {
-		switch tp := leg.(type) {
-		case *plans.RecordQueryFlatMapPlan:
-			if rc, isRC := tp.GetResultValue().(*values.RecordConstructorValue); isRC && values.IsPositionalMergeRC(rc) {
-				return true
-			}
-			return legHas(tp.GetOuter()) || legHas(tp.GetInner())
-		case *plans.RecordQueryNestedLoopJoinPlan:
-			if rc, isRC := tp.GetResultValue().(*values.RecordConstructorValue); isRC && values.IsPositionalMergeRC(rc) {
-				return true
-			}
-			return legHas(tp.GetOuter()) || legHas(tp.GetInner())
-		}
-		if ip, isIP := leg.(innerPlan); isIP {
-			return legHas(ip.GetInner())
-		}
-		return false
-	}
-	nlj, isNLJ := p.(*plans.RecordQueryNestedLoopJoinPlan)
-	if !isNLJ {
-		return false
-	}
-	return legHas(nlj.GetOuter()) || legHas(nlj.GetInner())
-}
-
-// unknownTypedValue reports whether a value's own type is absent/unknown —
-// the shape whose column type needs an out-of-band source.
-func unknownTypedValue(v values.Value) bool {
-	t := v.Type()
-	return t == nil || t.Code() == values.TypeCodeUnknown
-}
-
-// gatheredExplodeElement finds the gathered unnest's Explode leg under an NLJ
-// (the FlatMap pairing the owning source with its Explode — possibly nested
-// under further NLJ levels for a wider cluster) and returns the element's
-// binding alias (the FlatMap's inner correlation, the AS alias), the element's
-// TYPE NAME as resolved from the array column's own proto field, and a value
-// typed as the Explode's collection ELEMENT when the plan-level type survived
-// (a STRUCT element's values.Type is Unknown — 7.6 does not model message
-// element types — so the caller falls back on the resolved type name).
-// ("", "", nil) when no such leg exists.
-//
-// The second result is a TYPE name, never a COLUMN name. It used to be the
-// collection reference's display field, and the caller then re-resolved that
-// string against every join leg's descriptor — so two legs carrying an array
-// column of the same leaf name and different element kinds reported the FIRST
-// leg's kind for the OTHER leg's element (`SELECT * FROM WS AS A, WX AS B,
-// B."SITEMS" AS "EL"` typed a struct element BIGINT). Resolution happens once,
-// here, by identity, against the leg the Explode actually reads (RFC-197).
-func gatheredExplodeElement(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData) (string, string, values.Value) {
-	if fm, ok := p.(*plans.RecordQueryFlatMapPlan); ok {
-		if exp := findExplodePlan(fm.GetInner()); exp != nil {
-			elemTypeName := explodeElementTypeName(exp, fm.GetOuter(), md)
-			collType := exp.GetCollectionValue().Type()
-			if arr, isArr := collType.(*values.ArrayType); isArr && arr.ElementType != nil {
-				element, err := values.NewQuantifiedObjectValue(
-					fm.GetInnerAlias(), arr.ElementType,
-				)
-				if err == nil {
-					return fm.GetInnerAlias().Name(), elemTypeName, element
-				}
-			}
-			return fm.GetInnerAlias().Name(), elemTypeName, nil
-		}
-	}
-	if nlj, ok := p.(*plans.RecordQueryNestedLoopJoinPlan); ok {
-		if a, tn, v := gatheredExplodeElement(nlj.GetOuter(), md); a != "" {
-			return a, tn, v
-		}
-		return gatheredExplodeElement(nlj.GetInner(), md)
-	}
-	if ip, ok := p.(innerPlan); ok {
-		return gatheredExplodeElement(ip.GetInner(), md)
-	}
-	return "", "", nil
-}
-
-// explodeElementTypeName resolves the ELEMENT type name of the array column an
-// Explode iterates, from that column's own proto field — the ground truth when
-// the plan-level element type was erased. Java never loses it: a repeated
-// field's element type is derived structurally at Type construction
-// (Type.java:452-455 → fromProtoTypeToArray :492-533, reached from
-// Record.Field.fromDescriptor :2866), so the element type rides the Type and
-// is never re-derived from a column name later. Go's leg-row builder collapses
-// every repeated field to UNKNOWN (cascades_translator.go fieldTypeForFD), and
-// this is where that erasure is repaired.
-//
-// The array column is identified by IDENTITY, not by its display name: the
-// collection reference's ordinal, checked against the LEG ROW LAYOUT it
-// indexes. Two structural facts make the ordinal usable against the proto
-// descriptor, and both are checked rather than assumed:
-//
-//   - The leg row's column order IS the descriptor's declared field order —
-//     the layout is built by iterating that descriptor
-//     (cascades_translator.go tableColumns). The check is a whole-layout
-//     signature match (descriptorOrdinalDomain against the reference's own
-//     domain token), not a per-column name match, so a leg whose row type was
-//     derived some other way declines instead of indexing the wrong slot.
-//   - Only the legs the Explode's own FlatMap reads are consulted. The value
-//     reads a column off that FlatMap's outer quantifier, so the far side of
-//     the join is not a candidate at all.
-//
-// Anything the identity cannot answer for — a lazy or fused reference, a
-// childless one, an unknown domain, a layout no leg descriptor matches — fails
-// closed and returns "", leaving the element column's type as derived
-// elsewhere. A declined type refinement is recoverable; a wrong column's kind
-// is not.
-//
-// Measured, so the next reader does not re-litigate it: once the search is
-// scoped to the reference's own leg AND the layouts are checked to agree,
-// indexing by ordinal and looking the field up by name pick the SAME field —
-// proto field names are unique within a descriptor, and the signature check
-// has already required the two ordered name lists to be equal. The behavioural
-// defect came from the name ESCAPING to a caller that held every leg of the
-// join and no way to tell which one the reference read. That is what the
-// ordinal removes: not a different answer here, but the possibility of the
-// question being asked anywhere else.
-func explodeElementTypeName(exp *plans.RecordQueryExplodePlan, leg plans.RecordQueryPlan, md *recordlayer.RecordMetaData) string {
-	fv, isFV := values.AsFieldValue(exp.GetCollectionValue())
-	if !isFV {
-		return ""
-	}
-	qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
-	if !isQOV {
-		return ""
-	}
-	id, ok := values.CorrelatedFieldIdentityIn(fv, values.OrdinalDomainOfQuantified(qov))
-	if !ok {
-		return ""
-	}
-	for _, d := range allLeafDescriptors(leg, md) {
-		if descriptorOrdinalDomain(d) != id.Domain {
-			continue
-		}
-		if id.Ordinal >= d.Fields().Len() {
-			return ""
-		}
-		return arrayElementTypeNameOfField(d.Fields().Get(id.Ordinal))
-	}
-	return ""
-}
-
-// descriptorOrdinalDomain derives a record type's ordinal domain from its proto
-// descriptor — the CONSUMER-side derivation the token exists for: the signature
-// is the layout's ordered column-name list, derivable independently by the
-// producer that resolved a name against a declared column order and by the
-// consumer that holds the descriptor-shaped row type. Equality of the two is
-// the soundness condition for reusing an ordinal across them.
-func descriptorOrdinalDomain(d protoreflect.MessageDescriptor) values.OrdinalDomain {
-	fields := d.Fields()
-	names := make([]string, fields.Len())
-	for i := range names {
-		names[i] = string(fields.Get(i).Name())
-	}
-	return values.OrdinalDomainOfColumnNames(names)
-}
-
-// arrayElementTypeNameOfField reports the JDBC type name of a repeated proto
-// field's ELEMENT. A repeated field's Kind IS its element kind; a non-UUID
-// message element is a STRUCT column (java.sql.Types.STRUCT).
-func arrayElementTypeNameOfField(fd protoreflect.FieldDescriptor) string {
-	// The EFFECTIVE repeated field: a NullableArrayWrapper column's element
-	// kind lives on the wrapper's `values` field.
-	inner, _, ok := values.EffectiveListField(fd)
-	if !ok {
-		return ""
-	}
-	fd = inner
-	if fd.Kind() == protoreflect.MessageKind {
-		if msg := fd.Message(); msg != nil && string(msg.FullName()) == functions.UUIDProtoMessageName {
-			return "OTHER"
-		}
-		return "STRUCT"
-	}
-	if fd.Kind() == protoreflect.EnumKind {
-		return cascadesTypeName(values.ScalarTypeForProtoKind(fd))
-	}
-	return protoKindToTypeName(fd.Kind())
-}
-
-func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	// An ORDINAL lateral-unnest seed (a NON-anchored RC over a
-	// FlatMap-over-Explode, carrying baked ofOrdinal outer columns) replaces
-	// the name-model anchored seed for a single-source unnest. It lands here
-	// exactly like the anchored arm below, but two things differ: its baked
-	// outer fields render "T1.ID#0" under ExplainValue (foldedColumnDef's
-	// value-derived descriptor lookup then misses and mis-reports a pk's
-	// nullability), and its FULL outer run KEEPS a column the element AS/AT
-	// alias SHADOWS (the name model dropped it in buildUnnestResultValue).
-	// Derive the SELECT-* columns to MATCH the name model: outer columns
-	// resolved against the scan descriptor by their BARE name (pk NOT NULL),
-	// the shadowed outer column dropped, the element/ordinal typed from their
-	// own Value (element nullable from the array element, ordinal INT NOT
-	// NULL). Scoped by findExplodePlan (the unnest signature — excludes the
-	// correlated-scalar-subquery ordinal seed below, whose inner is not an
-	// Explode) AND ContainsBakedOrdinal (excludes name-model /
-	// projected-EXISTS folds). RFC-142.
-	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok &&
-		len(rc.Fields) > 0 && findExplodePlan(fm.GetInner()) != nil && values.ContainsBakedOrdinal(rc) {
-		descs := allLeafDescriptors(fm.GetOuter(), md)
-		innerCorr := fm.GetInnerAlias()
-		// The element/ordinal columns reference the INNER correlation; a same-named
-		// OUTER column is SHADOWED by the AS/AT alias (name-model rule).
-		shadowed := map[string]struct{}{}
-		for _, f := range rc.Fields {
-			if corr, ok := valueRootCorrelation(f.Value); ok && corr == innerCorr {
-				shadowed[strings.ToUpper(f.Name)] = struct{}{}
-			}
-		}
-		cols := make([]executor.ColumnDef, 0, len(rc.Fields))
-		for _, f := range rc.Fields {
-			corr, hasCorr := valueRootCorrelation(f.Value)
-			isInner := hasCorr && corr == innerCorr
-			if !isInner {
-				if _, clash := shadowed[strings.ToUpper(f.Name)]; clash {
-					continue // outer column shadowed by the element/ordinal alias
-				}
-			}
-			cols = append(cols, ordinalUnnestColumnDef(f, descs))
-		}
-		return cols
-	}
-
-	// RFC-141 Phase 2: a projected-EXISTS FlatMap folds the SELECT projection
-	// into its result value — an ordinary (non-anchored-join) RecordConstructor.
-	// Its field names ARE the output columns (e.g. ID, HAS_T2), so derive from
-	// them directly rather than merging the outer+inner table columns.
-	if rc, ok := fm.GetResultValue().(*values.RecordConstructorValue); ok && len(rc.Fields) > 0 {
-		// RFC-141 ROOT FIX: derive each folded column's metadata DIRECTLY
-		// from the RecordConstructorField's Name — the SAME name the fold set as the
-		// output column key and that RecordConstructorValue.Evaluate keys the
-		// executed row by (`out[f.Name] = …`). The earlier code re-derived the datum
-		// Name from the field's VALUE (a since-removed bare-name inference heuristic),
-		// which DIVERGED from f.Name in two cases:
-		//   - an explicit alias equal to the bare leaf (`t1.id AS id`): inferred
-		//     UNALIASED, datum Name became the qualified value name `T1.ID` while the
-		//     record key is the alias `ID` → a Scan of that column read NULL;
-		//   - an unaliased qualified column over a JOIN (`t2.id`): the NLJ rule
-		//     rebases the value to the composite FieldValue{Field:ID, Child:QOV} so
-		//     the old bare-name compare was skipped → the qualified f.Name was
-		//     returned as a fake alias → label leaked `T2.ID`.
-		// Using f.Name as the datum Name is correct BY CONSTRUCTION (it cannot
-		// diverge from the record key), and the display label is the bare leaf of
-		// f.Name — exactly Java's rule (the SELECT-list Identifier post-clearQualifier:
-		// `SELECT t1.id` → label ID, `t1.id AS id` → ID, `id AS the_id` → THE_ID),
-		// with no value inference. The value is used ONLY for the column TYPE (the
-		// EXISTS boolean reports BOOLEAN via ExistsValue.Type(); a column resolves
-		// against its defining leg descriptor).
-		descs := allLeafDescriptors(fm.GetOuter(), md)
-
-		// The correlated-scalar-subquery-in-projection ordinal seed
-		// (scalarSubqueryOrdinalSeed) is ALSO a raw (non-anchored) RC and
-		// lands here. Unlike a regular gated-join ordinal seed — whose legs
-		// are BOTH typed via ordinalLegType — its INNER scalar leg is typed
-		// UnknownType at translation (Go quantifier flowed types are
-		// untyped). foldedColumnDef resolves types only against the OUTER
-		// leaf descriptors, so it cannot reach the inner subquery's type and
-		// falls back to BIGINT — regressing a DOUBLE (AVG) / STRING / etc.
-		// scalar to BIGINT. Derive that one field's type from the INNER plan
-		// (a scalar subquery exposes exactly ONE output column), exactly as
-		// the retired name-model path did via its outer+inner merge.
-		// Scoping: IsOrdinalJoinRV excludes RFC-141 projected-EXISTS folds
-		// (their result value is not an ordinal-join RC), and the per-field
-		// untyped-inner-leg test excludes regular gated-join seeds (their inner
-		// legs are already typed, so isCorrelatedScalarInnerLeg is false for them).
-		innerScalarType := ""
-		if values.IsOrdinalJoinRV(rc) {
-			if innerCols := deriveColumnsFromPlan(fm.GetInner(), md); len(innerCols) == 1 {
-				innerScalarType = innerCols[0].TypeName
-			}
-		}
-		innerAlias := fm.GetInnerAlias().Name()
-
-		cols := make([]executor.ColumnDef, 0, len(rc.Fields))
-		for _, f := range rc.Fields {
-			col := foldedColumnDef(f, descs)
-			if innerScalarType != "" && isCorrelatedScalarInnerLeg(f, innerAlias) {
-				// Only the TYPE is corrected; Name/Label/Nullable from
-				// foldedColumnDef stay (the inner scalar leg is LEFT-OUTER
-				// null-supplying, so it must remain nullable regardless of the
-				// inner column's own nullability).
-				col.TypeName = innerScalarType
-			}
-			cols = append(cols, col)
-		}
-		// DUPLICATE bare labels stay BARE — Java's rule (the SELECT-list
-		// Identifier post-clearQualifier: `SELECT t1.id, t2.id` labels both
-		// columns ID; JDBC allows duplicate labels), pinned by the
-		// cross-engine conformance metadata corpus. The datum Name keeps the
-		// QUALIFIED form (bareLeafDuplicated) so internal reads never
-		// collapse the two columns — only the user-visible label is bare.
-		return cols
-	}
-
-	// RFC-141: a plain `WHERE EXISTS` / `WHERE NOT EXISTS` is planned as an
-	// IDENTITY FlatMap — its result value is the OUTER row's QuantifiedObjectValue
-	// (the existential level only filters; the row that flows out is the outer row
-	// unchanged), with the semi-join boolean dropped by a PredicatesFilter above.
-	// The cursor emits ONLY the outer row, so the columns are EXACTLY the outer
-	// plan's columns. Falling through to the outer+inner merge below would report
-	// the inner subquery's columns too (a metadata leak: `SELECT * FROM t1 WHERE
-	// EXISTS(SELECT … FROM t2 …)` would advertise t1's AND t2's columns even though
-	// only t1's row is returned). Detect the identity-over-outer shape and return
-	// the outer columns alone. Projected EXISTS (a RecordConstructor result value)
-	// was already handled above; this covers the WHERE-only case where the result
-	// value is the bare outer QOV.
-	if qov, ok := values.AsQuantifiedObjectValue(fm.GetResultValue()); ok &&
-		strings.EqualFold(qov.Correlation().Name(), fm.GetOuterAlias().Name()) {
-		return deriveColumnsFromPlan(fm.GetOuter(), md)
-	}
-
-	outerCols := deriveColumnsFromPlan(fm.GetOuter(), md)
-	innerCols := deriveColumnsFromPlan(fm.GetInner(), md)
-	if outerCols == nil && innerCols == nil {
-		return nil
-	}
-
-	outerAlias := strings.ToUpper(fm.GetOuterAlias().Name())
-	innerAlias := strings.ToUpper(fm.GetInnerAlias().Name())
-
-	firstCols, secondCols := outerCols, innerCols
-	firstAlias, secondAlias := outerAlias, innerAlias
-	if joinResultValueIsReversed(fm.GetResultValue(), outerAlias, innerAlias) {
-		firstCols, secondCols = innerCols, outerCols
-		firstAlias, secondAlias = innerAlias, outerAlias
-	}
-
-	return qualifyAndMergeColumns(firstCols, secondCols, firstAlias, secondAlias)
-}
-
-// isCorrelatedScalarInnerLeg reports whether an ordinal-seed field is the INNER
-// scalar leg of a correlated-scalar-subquery ordinal seed: a
-// FieldValue over the inner-alias QOV whose flowed type is UnknownType (the
-// scalarSubqueryOrdinalSeed types this one leg UnknownType because Go quantifier
-// flowed types are untyped at translation). A regular gated-join seed's inner
-// legs are typed via ordinalLegType, so this is false for them — keeping the
-// type correction scoped to the correlated-scalar seed. Caller has already
-// gated on values.IsOrdinalJoinRV.
-func isCorrelatedScalarInnerLeg(f values.RecordConstructorField, innerAlias string) bool {
-	fv, ok := values.AsFieldValue(f.Value)
-	if !ok {
-		return false
-	}
-	qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
-	if !ok || !strings.EqualFold(qov.Correlation().Name(), innerAlias) {
-		return false
-	}
-	t := fv.Type()
-	return t == nil || t.Code() == values.TypeCodeUnknown
-}
-
-// joinResultValueIsReversed checks whether the plan's resultValue
-// indicates that the SQL-level column order is opposite to the physical
-// outer/inner assignment. The translator builds the binary join seed in SQL
-// order [outer, inner]; comparing the SQL-first leg against the physical
-// outerAlias tells us whether columns need to be emitted in reversed order.
-func joinResultValueIsReversed(rv values.Value, physOuterAlias, physInnerAlias string) bool {
-	_ = physOuterAlias
-	// The gated LEFT/RIGHT ordinal seed keeps DECLARATION order while the
-	// physical legs run in EXECUTION (swapped) order — the SQL-first leg is
-	// the FIRST field's root baked QOV. Without this arm a RIGHT join's
-	// SELECT * metadata derived in execution order while the positional row
-	// followed the seed: the driver scanned dept values against emp columns
-	// (caught by the parity matrix).
-	if rc, isRC := rv.(*values.RecordConstructorValue); isRC &&
-		len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) {
-		if corr, ok := valueRootCorrelation(rc.Fields[0].Value); ok {
-			return strings.EqualFold(corr.Name(), physInnerAlias)
-		}
-	}
-	return false
-}
-
-func qualifyAndMergeColumns(firstCols, secondCols []executor.ColumnDef, firstAlias, secondAlias string) []executor.ColumnDef {
-	cols := make([]executor.ColumnDef, 0, len(firstCols)+len(secondCols))
-	for _, c := range firstCols {
-		qual := c
-		if firstAlias != "" && !parseColRef(c.Name).isQualified() {
-			// Name carries the FROM-alias qualifier so same-named columns
-			// across legs stay distinct as datum-map keys; the display Label
-			// stays the UNQUALIFIED column name to match Java — `SELECT *`
-			// over a join yields bare column names (with duplicates), never
-			// U.NAME (verified against fdb-relational 4.11.1.0).
-			if qual.Label == "" {
-				// VERBATIM. The label is the SQL name a user sees, and
-				// `c.Name` is already canonical from the parse boundary —
-				// folding it here reported KEEPCASE for a column declared
-				// `"KeepCase"` on the STAR-OVER-A-JOIN path alone, while the
-				// same column read explicitly, or starred over one table,
-				// reported KeepCase. The datum key below still folds: it is
-				// a key, not a name.
-				qual.Label = c.Name
-			}
-			qual.Name = firstAlias + "." + strings.ToUpper(c.Name)
-		}
-		cols = append(cols, qual)
-	}
-	for _, c := range secondCols {
-		qual := c
-		if secondAlias != "" && !parseColRef(c.Name).isQualified() {
-			if qual.Label == "" {
-				// VERBATIM, for the same reason as the first leg above.
-				qual.Label = c.Name
-			}
-			qual.Name = secondAlias + "." + strings.ToUpper(c.Name)
-		}
-		cols = append(cols, qual)
-	}
-	return cols
-}
-
-func buildAggColumns(
-	groupKeys []values.Value,
-	aggregates []expressions.AggregateSpec,
-	descs []protoreflect.MessageDescriptor,
-) []executor.ColumnDef {
-	var firstDesc protoreflect.MessageDescriptor
-	if len(descs) > 0 {
-		firstDesc = descs[0]
-	}
-	cols := make([]executor.ColumnDef, 0, len(groupKeys)+len(aggregates))
-	for _, k := range groupKeys {
-		// The datum lookup key (ColumnDef.Name) MUST be the name the aggregate
-		// cursor writes — executor aggKeyName: a FieldValue keys by its bare
-		// Field, everything else by ExplainValue. A resolved group key carrying
-		// a correlation Child (the duplicate-alias binding FieldValue(
-		// QOV(Q$DUP1), QID); the RFC-142 shadow-qualified twin) explains as the
-		// QUALIFIED "Q$DUP1.QID" while the cursor keys the output row by the
-		// bare "QID" — deriving the column Name from ExplainValue read the
-		// missing qualified key off the bare-named row and served NULL for a
-		// correctly-grouped result. This bare-Field-vs-ExplainValue convention
-		// has three mirrors that must agree: executor aggKeyName,
-		// aggregateGroupKeyOutputName (logical_predicate.go), and this
-		// derivation. So the qualified Name is load-bearing and stays.
-		//
-		// THE THIRD MIRROR NOW READS THE AUTHORITY INSTEAD OF RE-DERIVING IT.
-		// It used to hand-copy the FieldValue-vs-ColumnNameValue rule, and a
-		// hand-copied rule is one that can be corrected in two places and
-		// missed in the third — which is exactly what a nested key would have
-		// done: the authority takes the resolved PATH, and a mirror still
-		// reading the flat root would key this column `N` against a row the
-		// cursor wrote under `N.SK`, serving NULL.
-		name := expressions.AggregateKeyColumnName(k)
-		// The DISPLAY label is always BARE: Java clears the qualifier on the
-		// top-level projection (Expression.clearQualifier), so a qualified group
-		// key `d.dname` labels the output column `DNAME`, never `D.DNAME`. Carry
-		// it as Label (bare) and keep Name qualified for the datum lookup — the
-		// driver's Rows.Columns() surfaces Label when set (paginatingRows).
-		bare := parseColRef(name).bare()
-		label := ""
-		if !strings.EqualFold(name, bare) {
-			// VERBATIM, like the aggregate half below and like
-			// AggregateKeyColumnName, which produced `name`. The comparison
-			// stays EqualFold because it asks a structural question — did the
-			// split remove a qualifier — not a naming one.
-			label = bare
-		}
-		// The TYPE resolves against ALL join-leaf descriptors, not just the
-		// first: a group key from a FAR join leg (`GROUP BY d.dname` over
-		// `emp JOIN dept`) lives on the second leg and served UNKNOWN under a
-		// single first-leaf descriptor. Java reads the type off the flowed
-		// join-output record's field.
-		typeName := "UNKNOWN"
-		nullable := api.ColumnNullable
-		if d := descriptorForColumn(bare, descs); d != nil {
-			typeName = protoFieldTypeName(d, bare)
-			if fd := d.Fields().ByName(protoreflect.Name(bare)); fd != nil && fd.Cardinality() == protoreflect.Required {
-				nullable = api.ColumnNoNulls
-			}
-		}
-		cols = append(cols, executor.ColumnDef{
-			Name:     name,
-			Label:    label,
-			TypeName: typeName,
-			Nullable: nullable,
-		})
-	}
-	for _, a := range aggregates {
-		// THE AUTHORITY, not a third copy of it. This arm used to render the
-		// name itself (aggregateSpecName/aggOperandName), carrying its own
-		// space-strip and its own fold — the exact two repairs RFC-237 §8
-		// removed from expressions.AggregateResultColumnName, still standing
-		// here. Two copies of one naming rule is the shape that keeps
-		// producing wrong answers in this file's neighbourhood, so the copy is
-		// gone rather than corrected.
-		//
-		// Measured before the change, because "it looked wrong" is not a
-		// reason to touch a live path: suffixing every Name and Label out of
-		// deriveColumnsFromAggregation leaves the WHOLE yamsql corpus and all
-		// of //pkg/relational/sqldriver green, while the same mutation on
-		// deriveColumnsFromProjection reddens yamsql in seconds. Every
-		// aggregate plan the corpus produces carries a projection above it,
-		// and that projection owns the names:
-		//
-		//	$ grep -c '^plan:  StreamingAgg' …/plan_shape.golden
-		//	0                       # of 2769 lines that DID plan (the 2612 query
-		//	                        # count includes 271 plan errors, which emit no
-		//	                        # plan: line at all — so it is the wrong denominator)
-		//	$ grep -c StreamingAgg  …/plan_shape.golden
-		//	1115                    # the control: the node is everywhere, never at the root
-		//
-		// So this arm is UNREACHABLE FROM SQL AS PLANNED TODAY. That is the
-		// honest claim and it is narrower than the one that stood here, which
-		// asserted the executor "can still produce a bare StreamingAgg root"
-		// and had nothing behind it. The arm is kept because a dispatch that
-		// returns no columns is a worse failure than an unreached one, and it
-		// is made to agree with the authority so that if the planner ever does
-		// emit that root, it agrees.
-		name := expressions.AggregateResultColumnName(a)
-		// Aggregate result type stays first-leaf-resolved (unchanged): COUNT/AVG
-		// are operator-fixed and a SUM/MIN/MAX operand is overwhelmingly the
-		// aggregated leg's own column. Far-leg aggregate-operand typing is a
-		// separate axis outside this rider's group-key scope.
-		typeName := aggregateResultType(a, firstDesc)
-		// A user-written alias is the OUTPUT column name and must win over the
-		// generated `MAX(A)` spelling. A GROUPED aggregate keeps a projection
-		// above it that already carries the alias, so this arm was only ever
-		// reached for a SCALAR aggregate — whose plan is the bare
-		// StreamingAgg, with nowhere else for the alias to live. Without this,
-		// `SELECT MAX(a) AS agg FROM t` reported the column as `MAX(A)` while
-		// the grouped form of the same query correctly reported `AGG`.
-		// Name stays the generated spelling: it is the datum lookup key the
-		// aggregate cursor writes (see the group-key comment above); Label is
-		// what Rows.Columns() surfaces.
-		label := a.Alias
-		cols = append(cols, executor.ColumnDef{
-			Name:     name,
-			Label:    label,
-			TypeName: typeName,
-			Nullable: api.ColumnNullable,
-		})
-	}
-	return cols
-}
-
-// aggregateResultType derives the SQL type name of an aggregate's result
-// column. It routes through valueTypeName so the function-determined facts
-// (AVG→DOUBLE, COUNT→BIGINT) have a SINGLE source — AggregateValue.Type() —
-// rather than a second hardcoded copy that could silently drift. SUM/MIN/MAX
-// stay operand-derived (resolved against desc inside valueTypeName). Mirrors
-// Java's per-operator resultTypeCode.
-func aggregateResultType(a expressions.AggregateSpec, desc protoreflect.MessageDescriptor) string {
-	op := valueAggOp(a.Function)
-	if op == values.AggInvalid {
-		return "UNKNOWN"
-	}
-	// Construct the node directly (not NewAggregateValue, which panics on
-	// shape mismatches) purely to derive its result type via valueTypeName.
-	return valueTypeName(&values.AggregateValue{Op: op, Operand: a.Operand}, desc)
-}
-
-// valueAggOp bridges the planner's expressions.AggregateFunction to the
-// values.AggregateOp used by AggregateValue, so aggregate result-type
-// derivation has one home.
-func valueAggOp(f expressions.AggregateFunction) values.AggregateOp {
-	switch f {
-	case expressions.AggCount:
-		return values.AggCount
-	case expressions.AggSum:
-		return values.AggSum
-	case expressions.AggMin:
-		return values.AggMin
-	case expressions.AggMax:
-		return values.AggMax
-	case expressions.AggAvg:
-		return values.AggAvg
-	}
-	return values.AggInvalid
-}
-
-// valueTypeName resolves the SQL type name for a Value. For
-// AggregateValue nodes, it inspects the typed Op field instead of
-// string-parsing the ExplainValue output. For plain field references,
-// it falls through and returns "".
-func valueTypeName(v values.Value, desc protoreflect.MessageDescriptor) string {
-	// Arithmetic result type is the numeric promotion of its operand types.
-	// The operand FieldValues aren't type-bound at projection time, so resolve
-	// them against the record descriptor here rather than via Value.Type()
-	// (which defaults to BIGINT for unbound operands).
-	if arith, ok := v.(*values.ArithmeticValue); ok {
-		if n := arithTypeNameViaDesc(arith, desc); n != "" {
-			return n
-		}
-	}
-	if av, ok := v.(*values.AggregateValue); ok {
-		// SUM/MIN/MAX inherit the operand type, resolved against the record
-		// descriptor (av.Type() defaults unbound operands to BIGINT, so the
-		// descriptor is the reliable source for these). AVG (→DOUBLE) and
-		// COUNT/COUNT(*) (→BIGINT) are function-determined: fall through to the
-		// v.Type() block below so AggregateValue.Type() is the single source of
-		// truth and the two SQL-name derivations cannot drift.
-		switch av.Op {
-		case values.AggSum, values.AggMin, values.AggMax:
-			if av.Operand != nil && desc != nil {
-				operandName := values.ColumnNameValue(av.Operand)
-				if t := protoFieldTypeName(desc, operandName); t != "UNKNOWN" {
-					return t
-				}
-			}
-			return "BIGINT"
-		}
-	}
-	return cascadesTypeName(v.Type())
 }
 
 // cascadesTypeName is the SQL type NAME of a cascades Type — the tail of
@@ -6417,156 +4352,12 @@ func cascadesTypeName(t values.Type) string {
 		// mistyped it (review finding, pinned).
 		return "STRUCT"
 	case values.TypeCodeArray:
-		// The ELEMENT's name, which is CQ-74's truncation and NOT a fresh
-		// decision: a TOP-LEVEL array column already reports the bare element
-		// type, because its stored descriptor resolves and protoFieldTypeName
-		// reads the repeated field's kind (TestFDB_ArrayColumnMetadataIsTruncated
-		// is that behaviour's live sentinel, and it is where this changes back).
-		// An array leaf reached through a STRUCT PATH has no descriptor to
-		// resolve — descriptorForColumn matches BARE names against the join-leaf
-		// descriptors and a struct member is not a top-level field of any of
-		// them — so without this arm it fell to "" and then to "UNKNOWN", and one
-		// array answered two ways depending on how it was addressed.
-		if at, ok := t.(*values.ArrayType); ok {
-			return cascadesTypeName(at.ElementType)
-		}
+		// Java's getColumnTypeName for an array column is "ARRAY"
+		// (SqlTypeNamesSupport over Types.ARRAY); the element type is the
+		// column's DataType (ColumnDataType, Java's getArrayMetaData).
+		return "ARRAY"
 	}
 	return ""
-}
-
-// arithTypeNameViaDesc resolves an arithmetic value's result type NAME by
-// numeric promotion (DOUBLE > FLOAT > BIGINT > INTEGER) of its operand type
-// names, resolving FieldValue operands against the record descriptor. Returns
-// "" when no operand type can be resolved (caller falls back).
-func arithTypeNameViaDesc(a *values.ArithmeticValue, desc protoreflect.MessageDescriptor) string {
-	return widerNumericTypeName(
-		operandTypeNameViaDesc(a.Left, desc),
-		operandTypeNameViaDesc(a.Right, desc),
-	)
-}
-
-func operandTypeNameViaDesc(v values.Value, desc protoreflect.MessageDescriptor) string {
-	if field, ok := values.AsFieldValue(v); ok {
-		if field.Path().Len() > 1 {
-			return valueTypeName(v, desc)
-		}
-		if desc != nil {
-			if n := protoFieldTypeName(desc, field.DisplayName()); n != "UNKNOWN" {
-				return n
-			}
-		}
-		return valueTypeName(v, desc)
-	}
-	switch t := v.(type) {
-	case *values.ArithmeticValue:
-		return arithTypeNameViaDesc(t, desc)
-	default:
-		return valueTypeName(v, desc)
-	}
-}
-
-// widerNumericTypeName returns the wider of two numeric SQL type names, or ""
-// when neither is a recognised numeric type.
-func widerNumericTypeName(a, b string) string {
-	rank := func(s string) int {
-		switch s {
-		case "DOUBLE":
-			return 4
-		case "FLOAT":
-			return 3
-		case "BIGINT":
-			return 2
-		case "INTEGER":
-			return 1
-		}
-		return 0
-	}
-	ra, rb := rank(a), rank(b)
-	if ra == 0 && rb == 0 {
-		return ""
-	}
-	if ra >= rb {
-		return a
-	}
-	return b
-}
-
-func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string {
-	fields := desc.Fields()
-	fd := fields.ByName(protoreflect.Name(parseColRef(name).bare()))
-	if fd != nil {
-		// UUID columns are stored as the tuple_fields.UUID message and reported
-		// as JDBC's catch-all OTHER type name (matches Java's java.sql.Types.OTHER).
-		if fd.Kind() == protoreflect.MessageKind {
-			if msg := fd.Message(); msg != nil && string(msg.FullName()) == functions.UUIDProtoMessageName {
-				return "OTHER"
-			}
-		}
-		// A NULLABLE array column stores through the NullableArrayWrapper;
-		// the reported type name stays the measured CQ-74 truncation (the
-		// bare ELEMENT kind), same as a flat repeated field — the wrapper is
-		// storage shape, not a type.
-		if inner, wrapped, _ := values.EffectiveListField(fd); wrapped {
-			fd = inner
-		}
-		if fd.Kind() == protoreflect.EnumKind {
-			return cascadesTypeName(values.ScalarTypeForProtoKind(fd))
-		}
-		return protoKindToTypeName(fd.Kind())
-	}
-	return "UNKNOWN"
-}
-
-// descriptorRefinesFlowed reports whether the stored-descriptor type `descType`
-// legitimately REFINES the flowed value type `flowed`. The descriptor override in
-// column-metadata derivation exists only to recover the eval-width the flowed seed
-// conflates within a numeric family (INTEGER↔BIGINT, FLOAT↔DOUBLE). A derived/CTE
-// output alias colliding with a stored field name flows a genuinely different type,
-// so the descriptor must NOT override across families — only within one, or on an
-// exact match.
-func descriptorRefinesFlowed(descType, flowed string) bool {
-	if flowed == "" {
-		return true // no flowed type to trust — the descriptor is the sole authority
-	}
-	if df := numericFamily(descType); df != "" && df == numericFamily(flowed) {
-		return true // same numeric family: the descriptor recovers the conflated width
-	}
-	return strings.EqualFold(descType, flowed)
-}
-
-// numericFamily buckets a JDBC type name into its width-conflation family, or ""
-// for a non-numeric type (which must match exactly).
-func numericFamily(t string) string {
-	switch strings.ToUpper(t) {
-	case "INTEGER", "BIGINT":
-		return "int"
-	case "FLOAT", "DOUBLE":
-		return "float"
-	}
-	return ""
-}
-
-func protoKindToTypeName(k protoreflect.Kind) string {
-	switch k {
-	case protoreflect.BoolKind:
-		return "BOOLEAN"
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-		return "INTEGER"
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		return "BIGINT"
-	case protoreflect.FloatKind:
-		return "FLOAT"
-	case protoreflect.DoubleKind:
-		return "DOUBLE"
-	case protoreflect.StringKind:
-		return "STRING"
-	case protoreflect.BytesKind:
-		// JDBC type name for SQL binary columns is BINARY (matches Java
-		// fdb-relational). The DDL keyword stays "BYTES".
-		return "BINARY"
-	default:
-		return "UNKNOWN"
-	}
 }
 
 func findDistinctAggregate(op logical.LogicalOperator) string {
@@ -6719,22 +4510,23 @@ func findFullOuterWithExists(op logical.LogicalOperator) string {
 	return ""
 }
 
-// demoteSchemaQualifiedUnnest enforces Java's `LogicalOperator.generateAccess`
+// demoteQualifiedTableUnnest enforces Java's `LogicalOperator.generateAccess`
 // resolution ORDER on a lateral-unnest candidate: a FROM identifier is resolved
 // as a CTE / TABLE / view / function FIRST, and only falls through to
 // `resolveCorrelatedIdentifier` (an in-scope correlated array field) when none
 // of those match. The parser classifies a dotted comma source as a
 // LogicalUnnest whenever segment 0 names a VISIBLE in-scope FROM-source alias —
 // but it has no metadata, so it cannot run the table-first check. When the prior
-// alias HAPPENS to equal the session schema name (`FROM PA AS s, s.PB AS B`),
-// `s.PB` is in truth a schema-qualified TABLE (`tableExists` in Java: qualifier
-// == schema name AND table `PB` exists), so the table branch must win — it is a
+// alias HAPPENS to equal the schema template's name (`FROM PA AS s, s.PB AS B`
+// over template s), `s.PB` is in truth a qualified TABLE (`tableExists` in
+// Java: qualifier == the template's name AND table `PB` exists), so the table
+// branch must win — it is a
 // plain cross join, never a correlated unnest. This pass walks the tree and, for
-// any LogicalJoin whose Right is a schema-qualified-table LogicalUnnest, demotes
+// any LogicalJoin whose Right is a template-qualified-table LogicalUnnest, demotes
 // it back to a LogicalScan of the resolved bare table name (mirroring
 // `resolveQualifiedTableNames` stripping `schema.` off a normal scan).
 //
-// When the schema-qualified table carries an AT ordinal alias (`FROM PA AS s,
+// When the template-qualified table carries an AT ordinal alias (`FROM PA AS s,
 // s.PB AT ord`), Java's table branch still wins — but it asserts
 // `atAlias.isEmpty()` and throws WRONG_OBJECT_TYPE ("'PB' is a table"). We surface
 // that code HERE (early, before scope binding tries to resolve a projection
@@ -6744,18 +4536,17 @@ func findFullOuterWithExists(op logical.LogicalOperator) string {
 // qualifier `T1` is NOT the schema name) is left untouched — it is not a schema-
 // qualified table, so it correctly falls through to the correlated-field path.
 // RFC-142 (P2b).
-func demoteSchemaQualifiedUnnest(op logical.LogicalOperator, schemaName string, md *recordlayer.RecordMetaData) error {
+func demoteQualifiedTableUnnest(op logical.LogicalOperator, templateName string, md *recordlayer.RecordMetaData) error {
 	if op == nil || md == nil {
 		return nil
 	}
 	if j, ok := op.(*logical.LogicalJoin); ok {
 		if u, ok := j.Right.(*logical.LogicalUnnest); ok {
-			if table, alias, isTable := schemaQualifiedUnnestTable(u, schemaName, md); isTable {
+			if table, alias, isTable := qualifiedUnnestTable(u, templateName, md); isTable {
 				if u.AtAlias != "" {
-					// AT on a schema-qualified TABLE → Java's table-branch
+					// AT on a template-qualified TABLE → Java's table-branch
 					// atAlias.isEmpty() assert → WRONG_OBJECT_TYPE.
-					return api.NewError(api.ErrCodeWrongObjectType,
-						"AT ordinality is only valid on a correlated array source, not a table")
+					return atOnNonArrayError(strings.Join(u.Segments, "."), "a table")
 				}
 				demoted := logical.NewScan(table, alias, table)
 				demoted.Binding = u.Binding
@@ -6764,21 +4555,21 @@ func demoteSchemaQualifiedUnnest(op logical.LogicalOperator, schemaName string, 
 		}
 	}
 	for _, ch := range op.Children() {
-		if err := demoteSchemaQualifiedUnnest(ch, schemaName, md); err != nil {
+		if err := demoteQualifiedTableUnnest(ch, templateName, md); err != nil {
 			return err
 		}
 	}
 	// Children() exposes only the operator's primary input tree; the nested
 	// logical plans for EXISTS / scalar subqueries are carried as side fields on
 	// LogicalFilter / LogicalProject / LogicalAggregate and are NOT children. A
-	// schema-qualified-table LogicalUnnest can live INSIDE such a subquery
+	// template-qualified-table LogicalUnnest can live INSIDE such a subquery
 	// (`… WHERE EXISTS (SELECT 1 FROM PA AS s, s.PB AS B)`), so the table-first
 	// demotion — Java's generateAccess runs at EVERY FROM-source resolution
 	// point, including inside subqueries — must reach those plans too, else
 	// `s.PB` is wrongly translated as a correlated unnest of the missing field
 	// `PB` on source `s`. RFC-142 (P2).
 	for _, sub := range subqueryPlans(op) {
-		if err := demoteSchemaQualifiedUnnest(sub, schemaName, md); err != nil {
+		if err := demoteQualifiedTableUnnest(sub, templateName, md); err != nil {
 			return err
 		}
 	}
@@ -6787,171 +4578,163 @@ func demoteSchemaQualifiedUnnest(op logical.LogicalOperator, schemaName string, 
 
 // rejectAtOrdinalityOnTable enforces Java's `generateAccess` AT-on-a-table
 // rejection EARLY — at FROM-source analysis time, before the SELECT/WHERE column
-// resolution — so the faithful WRONG_OBJECT_TYPE (42809) is the surfaced error and
-// is NOT masked by a scope-level undefined-column (42703) / ambiguous (42702)
-// raised while resolving a projection.
+// resolution — so the faithful WRONG_OBJECT_TYPE (42809) or UNDEFINED_TABLE
+// (42F01) is the surfaced error and is NOT masked by a scope-level
+// undefined-column (42703) / ambiguous (42702) raised while resolving a
+// projection.
 //
-// The masking bug: for an AT comma source that is in truth a TABLE — a
-// SINGLE-segment `FROM T1, U AT O` (U a real table), the bare-source `T1, T1 AT O`,
-// a present-but-scalar correlated field `T1.ID AS X AT O`, or a schema-qualified
-// `s.PB AT O` — the parser keeps it a LogicalUnnest (the AT shortcut in
+// The masking bug: a SINGLE-segment AT comma source (`FROM T1, U AT O`, the
+// bare-source `T1, T1 AT O`) stays a LogicalUnnest (the AT shortcut in
 // unnestCandidateShape) so the AT survives to a clean rejection, and the SELECT
 // scope registers a VIRTUAL unnest binding (correlation = the AT alias). A
 // reference to the REAL table's own column (`U.ID`) then fails to resolve at the
 // scope level (the real table `U` is shadowed by the virtual binding) with a
 // MASKING 42703 BEFORE translation. Running the rejection here — before any
-// projection column resolution — surfaces the intended 42809 regardless of what the
-// query references.
+// projection column resolution — surfaces the intended error regardless of what
+// the query references.
 //
-// This early check covers AT candidates before semantic collection binding:
-//
-//	(1) segment 0 does NOT resolve to a visible outer owner (scan, retained CTE,
-//	    derived source, prior unnest or inline VALUES), OR
-//	(2) a real-table owner is named without a field or with a present scalar
-//	    field instead of an array.
-//
-// CTE/derived outputs, prior elements, inline VALUES, missing fields and nested
-// field paths are left to semantic collection resolution. The translator consumes
-// that exact binding; it no longer reconstructs a table scan as a fallback.
+// Only the single-segment item is decided here (atOnJoinSourceError): a dotted
+// item is a template-qualified table (demoteQualifiedTableUnnest) or a
+// correlated path the semantic collection binding resolves, where an array
+// takes the AT and a non-array is refused as it is without one.
 // RFC-142.
 func rejectAtOrdinalityOnTable(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
-	return rejectAtOrdinalityOnTableWithCTEs(op, md, logical.CTERegistry{})
+	return rejectAtOrdinalityOnTableWithCTEs(op, md, logical.CTERegistry{}, nil)
 }
 
 // Resolve constructor inputs once, then validate the retained producer graph.
 // Both selected CTEs and captured physical sources keep their defining ownership.
-func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, registry logical.CTERegistry) error {
+// enclosing is the scope of the blocks enclosing op, whose operators Java's
+// CTE branch reads by name; nil where the caller has none.
+func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, registry logical.CTERegistry, enclosing *semantic.Scope) error {
 	logical.BindCTESources(op, registry)
-	return rejectAtOrdinalityOnTableInGraph(op, md, make(map[*logical.CTEProducer]bool))
+	return rejectAtOrdinalityOnTableInGraph(op, md, make(map[*logical.CTEProducer]bool), registry, enclosing)
 }
 
-func rejectAtOrdinalityOnTableInGraph(op logical.LogicalOperator, md *recordlayer.RecordMetaData, producers map[*logical.CTEProducer]bool) error {
+// rejectAtOrdinalityOnTableInGraph walks op's block with its registry and
+// enclosing scope. A CTE body or a subquery plan it descends into is its own
+// block, whose enclosing scope this walk does not have (nil): its own build ran
+// this pass with that scope before it was attached, and this is the backstop.
+func rejectAtOrdinalityOnTableInGraph(op logical.LogicalOperator, md *recordlayer.RecordMetaData, producers map[*logical.CTEProducer]bool, registry logical.CTERegistry, enclosing *semantic.Scope) error {
 	if op == nil || md == nil {
 		return nil
 	}
 	if scan, ok := op.(*logical.LogicalScan); ok {
 		if producer := scan.Source.Producer(); producer != nil && !producers[producer] {
 			producers[producer] = true
-			if err := rejectAtOrdinalityOnTableInGraph(producer.Body(), md, producers); err != nil {
+			if err := rejectAtOrdinalityOnTableInGraph(producer.Body(), md, producers, registry, nil); err != nil {
 				return err
 			}
 		}
 	}
 	if j, ok := op.(*logical.LogicalJoin); ok {
 		if u, ok := j.Right.(*logical.LogicalUnnest); ok && u.AtAlias != "" {
-			if atOnNonArraySource(j.Left, u, md) {
-				return api.NewError(api.ErrCodeWrongObjectType,
-					"AT ordinality is only valid on a correlated array source, not a table")
+			if err := atOnJoinSourceError(j.Left, u, md, registry, enclosing); err != nil {
+				return err
 			}
 		}
 	}
 	for _, ch := range op.Children() {
-		if err := rejectAtOrdinalityOnTableInGraph(ch, md, producers); err != nil {
+		if err := rejectAtOrdinalityOnTableInGraph(ch, md, producers, registry, enclosing); err != nil {
 			return err
 		}
 	}
 	// AT-on-a-table can appear inside an EXISTS / scalar subquery's own FROM scope
 	// (carried on side fields, not Children()) — Java's generateAccess runs at every
-	// FROM point. Reach those plans too, like demoteSchemaQualifiedUnnest. RFC-142.
+	// FROM point. Reach those plans too, like demoteQualifiedTableUnnest. RFC-142.
 	for _, sub := range subqueryPlans(op) {
-		if err := rejectAtOrdinalityOnTableInGraph(sub, md, producers); err != nil {
+		if err := rejectAtOrdinalityOnTableInGraph(sub, md, producers, registry, nil); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// atOnNonArraySource reports whether an AT-bearing LogicalUnnest is in truth an
-// AT on a TABLE / non-array source (cases (1)/(2) of rejectAtOrdinalityOnTable),
-// resolving segment 0 against the outer leg's visible scans and their retained
-// producer identities.
+// atOnJoinSourceError is Java's generateAccess for a comma or INNER join FROM
+// item carrying AT (LogicalOperator.java:180-226), decided before binding so a
+// reference the AT source's virtual binding shadows cannot mask it with 42703.
+//
+// Only a SINGLE-segment item is decided here. Java reads it as a CTE — which,
+// for a name, is a WITH CTE or an operator of ANY fragment, the block's prior
+// FROM sources and every enclosing block's (findCteMaybe: `FROM w, w AT p` and
+// `EXISTS (SELECT 1 FROM h, w AT p)` under an outer w are both "'W' is a
+// common table expression", measured) — or as a table, and either refuses the
+// AT, WRONG_OBJECT_TYPE; anything else is an unqualified correlated
+// identifier, which resolveCorrelatedIdentifier refuses as an unknown table,
+// UNDEFINED_TABLE (`FROM w, nosuch AT p`, measured). registry supplies the
+// WITH CTEs in scope and enclosing the enclosing blocks' sources; either may
+// be empty where a caller has none.
+//
+// A DOTTED item is not decided here: a template-qualified table is refused by
+// demoteQualifiedTableUnnest, and every other dotted item is a correlated path
+// the binder resolves across every enclosing level — an array takes the AT
+// (`FROM t2, n.arr AS x AT p`, `EXISTS (SELECT 1 FROM h, w.arr AS v AT p)`,
+// both measured), a non-array is refused INVALID_COLUMN_REFERENCE with or
+// without AT (`FROM w, w.f AS x AT p`, measured), as
+// generateCorrelatedFieldAccess refuses it.
 // RFC-142.
-func atOnNonArraySource(left logical.LogicalOperator, u *logical.LogicalUnnest, md *recordlayer.RecordMetaData) bool {
-	if len(u.Segments) == 0 {
-		return false
+func atOnJoinSourceError(left logical.LogicalOperator, u *logical.LogicalUnnest, md *recordlayer.RecordMetaData, registry logical.CTERegistry, enclosing *semantic.Scope) error {
+	if len(u.Segments) != 1 {
+		return nil
 	}
-	// The selected producer's output owns this source even when its alias or
-	// declaration name also names a physical table. Physical absence is retained.
-	if scan := logical.FindVisibleScan(left, u.Segments[0]); scan != nil && scan.Source.Producer() != nil {
-		return false
-	}
-	if logical.OuterSourceIsDerivedTable(left, u.Segments[0]) {
-		return false
-	}
-	// Segment 0 names a PRIOR lateral unnest's element (a CHAINED unnest,
-	// `… t.arr AS x, x.sub AS y AT o`). The translator lowers it
-	// (translateChainedUnnestJoin) with ordinality support, so AT here is VALID,
-	// not "AT on a table" — leave it to the translator's per-case disposition
-	// (array→plan, scalar sub→UNDEFINED_COLUMN, present-scalar sub→INVALID_
-	// COLUMN_REFERENCE). Checked before the outerTable=="" reject below, which
-	// would otherwise mistake the unnest-element owner for a bare table source.
-	if logical.FindOwnerUnnest(left, u.Segments[0]) != nil {
-		return false
-	}
-	// An exact inline VALUES leaf is another real correlated owner. It has no
-	// catalog descriptor by design; its frozen logical row is the authority
-	// that translateUnnestJoin uses to classify the array path. Do not let this
-	// early table-error echo mask that exact classification with 42809.
-	if logical.FindOwnerInlineValues(left, u.Segments[0]) != nil {
-		return false
-	}
-	outerTable := logical.FindOuterScanTable(left, u.Segments[0])
-	if outerTable == "" {
-		// (1) No visible correlated owner: reject AT on a table or unknown
-		// qualifier before projection resolution can mask the diagnostic.
-		return true
-	}
-	rt := md.GetRecordType(outerTable)
-	if rt == nil || rt.Descriptor == nil {
-		// No physical descriptor authorizes a table/scalar rejection. Leave
-		// exact source and collection resolution to the semantic binder.
-		return false
-	}
-	// (2) Real base table. A bare source (single segment, no field) or a field
-	//     that is MISSING / a PRESENT SCALAR is not an array.
-	if len(u.Segments) < 2 {
-		// AT on a bare real-table source (`FROM T1, T1 AT O`) — no field segment.
-		return true
-	}
-	if len(u.Segments[1:]) != 1 {
-		// A multi-segment field path is not a top-level array unnest shape (mirrors
-		// unnestArrayElementType's single-segment requirement) — let the translator
-		// table-fallback / reject it; do not raise WRONG_OBJECT_TYPE here.
-		return false
-	}
-	fd := lookupFieldFold(rt.Descriptor, u.Segments[1])
-	if fd == nil {
-		// Missing field on a real table → the translator's clean UNDEFINED_COLUMN,
-		// NOT WRONG_OBJECT_TYPE. Leave it to the translator.
-		return false
-	}
-	// Present field: an array (flat repeated OR NullableArrayWrapper) is a
-	// genuine unnest (not rejected); a scalar is the "repeated type" assert
-	// → WRONG_OBJECT_TYPE.
-	_, _, isArr := values.EffectiveListField(fd)
-	return !isArr
+	name := u.Segments[0]
+	probe := logical.NewScan(name, "", name)
+	logical.BindCTESources(probe, registry)
+	cteNamed := logical.FindVisibleScan(left, name) != nil ||
+		logical.OuterSourceIsDerivedTable(left, name) ||
+		logical.FindOwnerUnnest(left, name) != nil ||
+		logical.FindOwnerInlineValues(left, name) != nil ||
+		logical.FindOuterScanTable(left, name) != "" ||
+		probe.Source.Producer() != nil ||
+		scopeNamesSource(enclosing, name)
+	return singleSegmentAtError(name, cteNamed, md)
 }
 
-// lookupFieldFold returns the proto field descriptor named `name` on `desc`
-// case-insensitively (SQL identifiers are case-folded; proto names are often
-// lower/snake), mirroring unnestArrayElementType's field lookup. RFC-142.
-func lookupFieldFold(desc protoreflect.MessageDescriptor, name string) protoreflect.FieldDescriptor {
-	if fd := desc.Fields().ByName(protoreflect.Name(strings.ToLower(name))); fd != nil {
-		return fd
+// scopeNamesSource reports that some level of scope has a source aliased name:
+// the operators of every enclosing query block, which Java's findCteMaybe
+// reads as CTEs of that name. A nil scope names nothing.
+func scopeNamesSource(scope *semantic.Scope, name string) bool {
+	if scope == nil {
+		return false
 	}
-	fields := desc.Fields()
-	for i := 0; i < fields.Len(); i++ {
-		f := fields.Get(i)
-		if strings.EqualFold(string(f.Name()), name) {
-			return f
+	for _, src := range scope.AllSourcesRecursive() {
+		if src.Alias.Name() == name {
+			return true
 		}
 	}
-	return nil
+	return false
+}
+
+// singleSegmentAtError is the verdict atOnJoinSourceError describes, for a
+// single-name FROM item carrying AT: cteNamed reports that Java's CTE branch
+// reads the name (a WITH CTE, or an operator of this or an enclosing block).
+//
+// The table test folds case (recordTypeExistsFold) where Java's tableExists
+// compares exactly: it asks the question Go's own table resolution answers for
+// the same name without the AT (a hand-written descriptor's lower-case record
+// type is a table to `FROM orders`), so the AT verdict and the scan agree on
+// what is a table. A DDL catalog stores the normalized spelling, where the two
+// comparisons coincide.
+func singleSegmentAtError(name string, cteNamed bool, md *recordlayer.RecordMetaData) error {
+	switch {
+	case cteNamed:
+		return atOnNonArrayError(name, "a common table expression")
+	case md != nil && recordTypeExistsFold(md, name):
+		return atOnNonArrayError(name, "a table")
+	}
+	return api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", name)
+}
+
+// atOnNonArrayError is Java's WRONG_OBJECT_TYPE for an AT on a FROM item that is
+// not a correlated array (LogicalOperator.java:187-216), in its wording.
+func atOnNonArrayError(name, kind string) error {
+	return api.NewErrorf(api.ErrCodeWrongObjectType,
+		"AT clause requires an array-typed column, but '%s' is %s", name, kind)
 }
 
 // subqueryPlans returns the nested logical plans an operator carries on its
 // side fields (EXISTS / scalar subqueries) — the plans NOT reachable via
-// Children(). These are the FROM scopes that a schema-qualified-table unnest
+// Children(). These are the FROM scopes that a template-qualified-table unnest
 // (or any per-source resolution) can appear in beyond the operator's primary
 // input. Mirrors the set of subquery-plan fields the cascades translator walks
 // (LogicalFilter / LogicalProject / LogicalAggregate). RFC-142.
@@ -6986,21 +4769,21 @@ func subqueryPlans(op logical.LogicalOperator) []logical.LogicalOperator {
 	return plans
 }
 
-// schemaQualifiedUnnestTable reports whether a lateral-unnest candidate is in
-// truth a schema-qualified TABLE reference (Java's `tableExists` precedence),
+// qualifiedUnnestTable reports whether a lateral-unnest candidate is in
+// truth a template-qualified TABLE reference (Java's `tableExists` precedence),
 // and if so returns the resolved bare table name and the FROM alias to scan it
-// under. It is a schema-qualified table IFF its segments are exactly
+// under. It is a template-qualified table IFF its segments are exactly
 // `[qualifier, table]`, the qualifier case-insensitively equals the session
 // schema name, and `table` resolves to a real record type — precisely Java's
 // `tableExists` (one qualifier segment == schema-template name + table in the
 // catalog). An AT alias does NOT change whether it is a TABLE (the caller handles
 // AT separately: a table cross join when AT is absent, WRONG_OBJECT_TYPE when
 // present). RFC-142.
-func schemaQualifiedUnnestTable(u *logical.LogicalUnnest, schemaName string, md *recordlayer.RecordMetaData) (table, alias string, ok bool) {
+func qualifiedUnnestTable(u *logical.LogicalUnnest, templateName string, md *recordlayer.RecordMetaData) (table, alias string, ok bool) {
 	if len(u.Segments) != 2 {
 		return "", "", false
 	}
-	if !strings.EqualFold(u.Segments[0], schemaName) {
+	if u.Segments[0] != templateName {
 		return "", "", false
 	}
 	tableName := u.Segments[1]
@@ -7025,30 +4808,54 @@ func recordTypeExistsFold(md *recordlayer.RecordMetaData, name string) bool {
 	return recordTypeCI(md, name) != nil
 }
 
-// defaultEmbeddedSchema is the schema name the embedded planner uses when no
-// session schema is supplied (the FDB test / EXPLAIN harnesses). The session
-// path passes the real CONNECT schema (g.c.sess.Schema). RFC-142.
-const defaultEmbeddedSchema = "s"
+// defaultEmbeddedTemplate is the table qualifier the embedded planner accepts
+// when it plans with metadata and no schema template (the FDB test and
+// planner harnesses): the name such a harness's tables are qualified by. A
+// session plans with its schema's template name (sessionTemplate). RFC-142.
+const defaultEmbeddedTemplate = "S"
 
-// sessionSchema returns the active CONNECT schema, falling back to
-// defaultEmbeddedSchema when there is no session (explain-only generator) or
-// the session never set one. EXPLAIN / DDL explain paths use this so the DML
-// catalog builders classify a schema-qualified comma source against the SAME
-// active schema the live planSelect/planDML paths use (g.c.sess.Schema). RFC-142.
-func (g *cascadesGenerator) sessionSchema() string {
-	if g.c != nil && g.c.sess != nil && g.c.sess.Schema != "" {
-		return g.c.sess.Schema
+// sessionTemplate returns the name a table's qualifier must carry: the name of
+// the session schema's TEMPLATE (functions.ResolveTargetTablePath), read from
+// the same cached schema the plan's metadata comes from (cachedMetaData). With
+// no session schema, or none cached (an explain-only generator without
+// metadata), it is defaultEmbeddedTemplate.
+// planCacheKey is a statement's plan-cache query key, Java's QueryCacheKey
+// under the template's primary entry: the template version, the planner
+// options (the readable-index view included, read from this store before the
+// key is built), the transaction's temporary functions (Java's
+// transaction-bound metadata) and the token-rendered text. Every schema of one
+// template shares a plan, as in Java. A plan that ranked on this store's
+// collected statistics (PLANNER_STATISTICS) is the exception and stays keyed
+// to its database and schema. cacheable is false when the temporary functions
+// cannot be keyed.
+func (g *cascadesGenerator) planCacheKey(md *recordlayer.RecordMetaData, popts plannerOptions, text string) (cacheKey, bool) {
+	temp, cacheable := g.c.activeTx.planCacheComponent()
+	dbPath, schema := "", ""
+	if popts.useCollectedStatistics {
+		dbPath, schema = g.c.sess.DBPath, g.c.sess.Schema
 	}
-	return defaultEmbeddedSchema
+	var scope strings.Builder
+	scope.WriteString(planCacheScope(dbPath, schema, md.Version(), popts.cacheKeyPart()))
+	writeLengthPrefixed(&scope, temp)
+	return cacheKey{scope: scope.String(), sql: text}, cacheable
+}
+
+func (g *cascadesGenerator) sessionTemplate() string {
+	if g.c != nil {
+		if tmpl := g.c.cachedSchemaTemplate(); tmpl != nil {
+			return tmpl.MetadataName()
+		}
+	}
+	return defaultEmbeddedTemplate
 }
 
 // newUnnestTableResolver builds the table-first resolver (Java's `tableExists`
 // precedence) the lateral-unnest classifier consults: a dotted FROM-source name
-// resolves to a schema-qualified TABLE — and is therefore NOT a correlated
+// resolves to a template-qualified TABLE — and is therefore NOT a correlated
 // unnest — when its segments are exactly `[qualifier, name]`, `qualifier`
-// case-insensitively equals the session schema name, and `name` is a real record
-// type. This mirrors Java's `tableExists`: one qualifier segment == the
-// schema-template name plus a table found in the catalog.
+// equals the schema template's name exactly (both normalized), and `name` is a
+// real record type. This mirrors Java's `tableExists`: one qualifier segment
+// equal to metadataCatalog.getName() plus a table found in the catalog.
 //
 // A dotted reference whose qualifier is a CTE/derived alias (`cte.col`,
 // `d.col`) is NOT matched here: a CTE reference in Java's `findCteMaybe` matches
@@ -7056,35 +4863,45 @@ func (g *cascadesGenerator) sessionSchema() string {
 // CTE-output unnest case (`FROM cte, cte.arr`) is handled on the correlated path
 // and validated against the CTE OUTPUT type — P2a (translateUnnestJoin's
 // outerSourceIsCTE rejection). RFC-142.
-func newUnnestTableResolver(md *recordlayer.RecordMetaData, schemaName string) tableResolver {
+func newUnnestTableResolver(md *recordlayer.RecordMetaData, templateName string) tableResolver {
 	return func(segments []string) bool {
 		if len(segments) != 2 {
 			return false
 		}
-		if !strings.EqualFold(segments[0], schemaName) {
+		if segments[0] != templateName {
 			return false
 		}
 		return recordTypeExistsFold(md, segments[1])
 	}
 }
 
-// resolveQualifiedTableNames walks the logical plan tree and resolves
-// schema-qualified table names (schema.table → table) in LogicalScan
-// nodes. Mirrors Java's SemanticAnalyzer.tableExists qualifier validation.
-func resolveQualifiedTableNames(op logical.LogicalOperator, schemaName string) error {
+// resolveQualifiedTableNames walks the logical plan tree and resolves each
+// qualified table name (template.table -> table): a scan as Java's
+// SemanticAnalyzer.tableExists reads a FROM source, a DML target as its
+// getTable reads a statement's table (functions.ResolveSourceTablePath and
+// ResolveTargetTablePath). A scan keeps its TablePath, so a qualified name
+// whose table does not exist is refused by validateTablesAndColumns as Java
+// refuses it.
+func resolveQualifiedTableNames(op logical.LogicalOperator, templateName string) error {
 	if op == nil {
 		return nil
 	}
 	if scan, ok := op.(*logical.LogicalScan); ok {
-		var resolved string
-		var err error
-		if scan.TablePath != nil {
-			resolved, err = functions.ResolveQualifiedTablePath(scan.TablePath, schemaName)
-		} else {
-			resolved, err = functions.ResolveQualifiedTableName(scan.Table, schemaName)
+		path := scan.TablePath
+		if path == nil {
+			path = strings.Split(scan.Table, ".")
 		}
+		// A qualified source that is not the template's table is, in Java, no
+		// table: generateAccess goes on to a view, a function and a correlated
+		// field, and the last refuses the path. Go's builders have already
+		// taken an alias-qualified path as a correlated field (an unnest), so
+		// what reaches a scan is refused here.
+		resolved, ok, err := functions.ResolveSourceTablePath(path, templateName)
 		if err != nil {
 			return err
+		}
+		if !ok {
+			return functions.UnknownSourceReferenceError(path)
 		}
 		// Keep a DEFAULTED alias in lockstep with the strip — the same
 		// alias-desync root fix the catalog sub-build path applies by
@@ -7100,39 +4917,50 @@ func resolveQualifiedTableNames(op logical.LogicalOperator, schemaName string) e
 		}
 		scan.Table = resolved
 	}
+	// A DML target resolves from its parse-time segments, as a scan does, so a
+	// quoted target holding a dot (`"foo.tableA"`) is one name, not a schema
+	// `foo` and a table `tableA`. Every builder of a DML operator sets the
+	// segments; a target without them has lost them, and splitting its joined
+	// name would read a quoted dot as a qualifier.
+	resolveTarget := func(name string, path []string) (string, error) {
+		if len(path) == 0 {
+			return "", fmt.Errorf("DML target %q carries no identifier segments", name)
+		}
+		return functions.ResolveTargetTablePath(path, templateName)
+	}
 	if ins, ok := op.(*logical.LogicalInsert); ok {
-		resolved, err := functions.ResolveQualifiedTableName(ins.Table, schemaName)
+		resolved, err := resolveTarget(ins.Table, ins.TablePath)
 		if err != nil {
 			return err
 		}
 		ins.Table = resolved
 	}
 	if del, ok := op.(*logical.LogicalDelete); ok {
-		resolved, err := functions.ResolveQualifiedTableName(del.Target, schemaName)
+		resolved, err := resolveTarget(del.Target, del.TargetPath)
 		if err != nil {
 			return err
 		}
 		del.Target = resolved
 	}
 	if upd, ok := op.(*logical.LogicalUpdate); ok {
-		resolved, err := functions.ResolveQualifiedTableName(upd.Target, schemaName)
+		resolved, err := resolveTarget(upd.Target, upd.TargetPath)
 		if err != nil {
 			return err
 		}
 		upd.Target = resolved
 	}
 	for _, ch := range op.Children() {
-		if err := resolveQualifiedTableNames(ch, schemaName); err != nil {
+		if err := resolveQualifiedTableNames(ch, templateName); err != nil {
 			return err
 		}
 	}
 	// Subquery plans (EXISTS / scalar) carried on side fields are not Children();
-	// a schema-qualified table scan can live inside one (`… EXISTS (SELECT 1 FROM
+	// a template-qualified table scan can live inside one (`… EXISTS (SELECT 1 FROM
 	// PA, s.PB AS B)`), so strip its `schema.` qualifier there too — the same
-	// structural gap the subquery-aware demoteSchemaQualifiedUnnest walk covers
+	// structural gap the subquery-aware demoteQualifiedTableUnnest walk covers
 	// for the unnest variant. RFC-142 (P2).
 	for _, sub := range subqueryPlans(op) {
-		if err := resolveQualifiedTableNames(sub, schemaName); err != nil {
+		if err := resolveQualifiedTableNames(sub, templateName); err != nil {
 			return err
 		}
 	}
@@ -7152,6 +4980,13 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 		if scan.Source.Producer() == nil {
 			rt := md.GetRecordType(scan.Table)
 			if rt == nil {
+				// A qualified name that names no table ends in Java's
+				// correlated-field reading, which refuses the path; only an
+				// unqualified one is "Unknown table" (resolveCorrelatedIdentifier
+				// requires a qualifier).
+				if len(scan.TablePath) > 1 {
+					return functions.UnknownSourceReferenceError(scan.TablePath)
+				}
 				return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", scan.Table)
 			}
 		}
@@ -7195,7 +5030,7 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 						}
 						if qual != scanName {
 							return api.NewErrorf(api.ErrCodeUndefinedColumn,
-								"column reference with qualifier %q cannot be resolved", qual)
+								"Attempting to query non existing column %s", col)
 						}
 						upper = ref.bare()
 					}
@@ -7219,7 +5054,7 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 					// resolution path itself handles the quoted name fine).
 					if rt.Descriptor.Fields().ByName(protoreflect.Name(upper)) == nil &&
 						rt.Descriptor.Fields().ByName(protoreflect.Name(parseColRef(col).bare())) == nil {
-						return api.NewErrorf(api.ErrCodeUndefinedColumn, "column %q does not exist", col)
+						return api.NewErrorf(api.ErrCodeUndefinedColumn, "Attempting to query non existing column %s", col)
 					}
 				}
 			}
@@ -7346,9 +5181,17 @@ func findUnsupportedFunctionInParseTree(ctx antlr.Tree) string {
 	}
 	switch n := ctx.(type) {
 	case *antlrgen.FunctionCallExpressionAtomContext:
+		// A bare-name call may be a schema macro; the resolver decides.
+		if _, udf := n.FunctionCall().(*antlrgen.UserDefinedScalarFunctionCallContext); udf {
+			break
+		}
 		if fc := n.FunctionCall(); fc != nil {
+			// The name as the query spells it: Java's resolveFunction reports
+			// "Unsupported operator <name>" with the caller's spelling
+			// (SemanticAnalyzer.java:1105-1107), so `bitmap_bucket_number(x)`
+			// is refused in lower case. The allow-list reads it upper-cased.
 			if name := extractFunctionNameFromCall(fc); name != "" {
-				if !isAllowedFunction(name) {
+				if !isAllowedFunction(strings.ToUpper(name)) {
 					return name
 				}
 			}
@@ -7376,11 +5219,11 @@ func extractFunctionNameFromCall(fc antlrgen.IFunctionCallContext) string {
 	switch f := fc.(type) {
 	case *antlrgen.ScalarFunctionCallContext:
 		if f.ScalarFunctionName() != nil {
-			return strings.ToUpper(f.ScalarFunctionName().GetText())
+			return f.ScalarFunctionName().GetText()
 		}
 	case *antlrgen.UserDefinedScalarFunctionCallContext:
 		if f.UserDefinedScalarFunctionName() != nil {
-			return strings.ToUpper(f.UserDefinedScalarFunctionName().GetText())
+			return f.UserDefinedScalarFunctionName().GetText()
 		}
 	case *antlrgen.NonAggregateFunctionCallContext:
 		if wf := f.NonAggregateWindowedFunction(); wf != nil {
@@ -7426,7 +5269,7 @@ func extractFunctionNameFromCall(fc antlrgen.IFunctionCallContext) string {
 
 func isAllowedFunction(name string) bool {
 	switch name {
-	case "COUNT", "SUM", "MIN", "MAX", "AVG",
+	case "COUNT", "SUM", "MIN", "MAX", "AVG", "ARRAY_AGG",
 		"CASE", "CAST", "IF",
 		"CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME",
 		"CURRENT_USER",
@@ -7434,7 +5277,13 @@ func isAllowedFunction(name string) bool {
 		// → CardinalityValue), not a generic ScalarFunctionValue, so it lives
 		// here rather than in IsCascadesSafeScalarFunction — the Cascades walk
 		// builds its own Value with nullable-INT typing and array validation.
-		"CARDINALITY":
+		"CARDINALITY",
+		// The bitmap functions are ArithmeticValues (expr.walkScalarFunction
+		// → ResolveArithmetic), as Java's are, not catalogue entries.
+		"BITMAP_BUCKET_OFFSET", "BITMAP_BIT_POSITION",
+		// Vector distances are DistanceValues (expr.distanceOperatorForFunc).
+		"EUCLIDEAN_DISTANCE", "EUCLIDEAN_SQUARE_DISTANCE", "COSINE_DISTANCE", "DOT_PRODUCT_DISTANCE",
+		`"` + expr.SQLFunctionArgument + `"`:
 		return true
 	}
 	return values.IsCascadesSafeScalarFunction(name)
@@ -7488,7 +5337,7 @@ func NewExplainOnlyGeneratorWithSchema(schemaDDL string) (query.Generator, error
 	if err != nil {
 		return nil, err
 	}
-	const dbPath = "/explain"
+	const dbPath = "/FRL/explain"
 	const schemaName = "s"
 	sess := &session.Session{
 		DBPath: dbPath,
@@ -7537,7 +5386,8 @@ func BuildSchemaTemplateFromDDLNamed(schemaDDL, name string) (*metadata.RecordLa
 
 // buildSchemaTemplateFromDDL parses schemaDDL as a single
 // CREATE SCHEMA TEMPLATE statement and builds a
-// RecordLayerSchemaTemplate without performing any catalog write.
+// RecordLayerSchemaTemplate without performing any catalog write, through
+// buildSchemaTemplate, the front end CREATE SCHEMA TEMPLATE executes.
 func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTemplate, error) {
 	wrapped := schemaDDL
 	if !startsWithCreateSchemaTemplate(schemaDDL) {
@@ -7567,60 +5417,8 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 	if !ok {
 		return nil, fmt.Errorf("schema DDL must be a CREATE SCHEMA TEMPLATE statement, got %T", cs)
 	}
-
-	templateID := trimIdentifierQuotes(stCtx.SchemaTemplateId().GetText())
-	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
-	// WITH OPTIONS(...) — the same three options execCreateSchemaTemplate
-	// applies, parsed BEFORE the table/index passes because they change how
-	// Build() compiles primary keys (intermingle) and whether the
-	// __ROW_VERSION pseudo-column exists for index planning
-	// (store_row_versions). Silently dropping them here built metadata that
-	// DIVERGED from what the production DDL path builds for the same text.
-	if oc := stCtx.OptionsClause(); oc != nil {
-		for _, opt := range oc.AllOption() {
-			switch {
-			case opt.ENABLE_LONG_ROWS() != nil:
-				b.SetEnableLongRows(opt.BooleanLiteral().TRUE() != nil)
-			case opt.INTERMINGLE_TABLES() != nil:
-				b.SetIntermingleTables(opt.BooleanLiteral().TRUE() != nil)
-			case opt.STORE_ROW_VERSIONS() != nil:
-				b.SetStoreRowVersions(opt.BooleanLiteral().TRUE() != nil)
-			default:
-				return nil, fmt.Errorf("unknown option in schema template creation: %s", opt.GetText())
-			}
-		}
-	}
-	if rejErr := rejectUnsupportedTemplateClauses(stCtx.AllTemplateClause()); rejErr != nil {
-		return nil, rejErr
-	}
-	if serr := registerStructDefinitions(stCtx.AllTemplateClause(), b); serr != nil {
-		return nil, serr
-	}
-	for _, clause := range stCtx.AllTemplateClause() {
-		td := clause.TableDefinition()
-		if td == nil {
-			continue
-		}
-		// Normalize the table name the same way execCreateSchemaTemplate and
-		// the column/index parsers do (NormalizeIdentifier upper-cases
-		// unquoted identifiers), so index lookups by table name match.
-		tableName := functions.NormalizeIdentifier(td.Uid().GetText())
-		cols, pkCols, tdErr := parseTableDefinition(td, b)
-		if tdErr != nil {
-			return nil, fmt.Errorf("table %q: %w", tableName, tdErr)
-		}
-		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
-	}
-	for _, clause := range stCtx.AllTemplateClause() {
-		idxDef := clause.IndexDefinition()
-		if idxDef == nil {
-			continue
-		}
-		if idxErr := parseIndexDefinition(idxDef, b); idxErr != nil {
-			return nil, fmt.Errorf("index: %w", idxErr)
-		}
-	}
-	return b.Build()
+	// The production front end, the one CREATE SCHEMA TEMPLATE executes.
+	return buildSchemaTemplate(stCtx)
 }
 
 // explainStatement returns a trivial textual description of a parsed

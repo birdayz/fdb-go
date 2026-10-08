@@ -98,24 +98,71 @@ func (store *FDBRecordStore) IndexStateSubspace() subspace.Subspace {
 }
 
 // GetAllIndexStates returns a map of all index names to their current states.
-// Indexes without an explicit state entry default to READABLE.
-// Matches Java's FDBRecordStore.getAllIndexStates().
+// Indexes without an explicit state entry default to READABLE. Like Java's
+// FDBRecordStore.getAllIndexStates (addStoreStateReadConflict,
+// FDBRecordStore.java:4205-4213, 4610-4617), it adds ONE read-conflict range
+// over the whole index-state subspace: any state change in the store
+// conflicts with the caller's transaction.
 func (store *FDBRecordStore) GetAllIndexStates() map[string]IndexState {
+	if store.context != nil {
+		// The signature returns no error, as before, when a per-index read
+		// dropped its conflict error; a dead transaction fails its commit.
+		_ = store.context.AddReadConflictRange(store.IndexStateSubspace())
+	}
+	return store.PeekIndexStates()
+}
+
+// PeekIndexStates returns the state of every index the metadata names, an
+// index with no stored state defaulted to READABLE, WITHOUT any read conflict:
+// the states the store loaded at open, Java's getRecordStoreState().getState
+// (PlanContext.java:237-260 plans from them and adds no conflict). It serves
+// SQL planning and the per-page plan revalidation only; a scan takes its own
+// per-index conflict key (ReadIndexState), so a state change of an index a
+// statement never scans does not abort its transaction.
+func (store *FDBRecordStore) PeekIndexStates() map[string]IndexState {
+	store.ensureStoreStateLoaded()
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+	loaded := store.snapshotIndexStatesLocked()
 	result := make(map[string]IndexState)
 	for name := range store.metaData.GetAllIndexes() {
-		result[name] = store.GetIndexState(name)
+		state, ok := loaded[name]
+		if !ok {
+			state = IndexStateReadable
+		}
+		result[name] = state
 	}
 	return result
 }
 
-// RebuildAllIndexes rebuilds all indexes that are not in READABLE state.
+// GetIndexesToBuild returns eligible indexes that are not exactly READABLE.
+// State reads are serializable, including decisions to omit readable indexes.
+// Matches Java's FDBRecordStore.getIndexesToBuild().
+func (store *FDBRecordStore) GetIndexesToBuild() ([]*Index, error) {
+	var result []*Index
+	for _, index := range store.metaData.GetIndexesToBuildSince(-1) {
+		state, err := store.readIndexState(index.Name)
+		if err != nil {
+			return nil, err
+		}
+		if state != IndexStateReadable {
+			result = append(result, index)
+		}
+	}
+	return result, nil
+}
+
+// RebuildAllIndexes rebuilds eligible indexes that are not in READABLE state.
+// Replaced originals are excluded, but explicit RebuildIndex remains supported.
 // Matches Java's FDBRecordStore.rebuildAllIndexes().
 func (store *FDBRecordStore) RebuildAllIndexes() error {
-	for _, idx := range store.metaData.GetAllIndexes() {
-		if store.GetIndexState(idx.Name) != IndexStateReadable {
-			if err := store.RebuildIndex(idx); err != nil {
-				return fmt.Errorf("rebuild all indexes: %w", err)
-			}
+	indexes, err := store.GetIndexesToBuild()
+	if err != nil {
+		return err
+	}
+	for _, idx := range indexes {
+		if err := store.RebuildIndex(idx); err != nil {
+			return fmt.Errorf("rebuild all indexes: %w", err)
 		}
 	}
 	return nil
@@ -140,14 +187,35 @@ func (store *FDBRecordStore) VacuumReadableIndexesBuildData() {
 	}
 }
 
+// EventWaitDeleteStore is FDBStoreTimer.Waits.WAIT_DELETE_STORE, the wait a
+// caller records around a store deletion (Java's relational DROP SCHEMA).
+var EventWaitDeleteStore = Event{"wait_delete_store", "wait for delete store", KindTimed}
+
 // DeleteStore completely removes all data in a store subspace.
-// Matches Java's FDBRecordStore.deleteStore(context, subspace).
+// Matches Java's header-aware FDBRecordStore.deleteStoreAsync.
 func DeleteStore(ctx *FDBRecordContext, ss subspace.Subspace) error {
-	pr, err := fdb.PrefixRange(ss.Bytes())
+	headerBytes, err := ctx.Transaction().Get(ss.Pack(tuple.Tuple{StoreInfoKey})).Get()
 	if err != nil {
-		return fmt.Errorf("delete store: prefix range: %w", err)
+		return fmt.Errorf("delete store: read header: %w", err)
 	}
-	ctx.Transaction().ClearRange(pr)
+	if headerBytes != nil {
+		header := &gen.DataStoreInfo{}
+		// Malformed headers must not prevent deletion or leave cached state
+		// valid. Unknown fields and unsupported format numbers remain deletable.
+		if err := UnmarshalAsJava(headerBytes, header); err != nil || header.GetCacheable() {
+			ctx.SetMetaDataVersionStamp()
+		}
+	}
+	// Java 4.14.2.0 leaves its captured replacement-retirement callback queued,
+	// which can recreate a DISABLED state key after this clear. Cancel the
+	// subspace's pending check so deletion cannot resurrect store data (RFC-257).
+	ctx.removeCommitCheck(replacementRetirementCheckName(ss))
+	ctx.removeCommitChecksWithPrefix(pendingWriteCommitCheckPrefix(ss))
+	ctx.PutSession(replacementRetirementMetadataKey(ss), nil)
+	ctx.SetDirtyStoreState(true)
+	begin, end := ss.FDBRangeKeys()
+	// The header read above is authoritative even for an already-opened store.
+	ctx.clearRange(fdb.KeyRange{Begin: begin, End: end}, false)
 	return nil
 }
 
@@ -187,12 +255,24 @@ func (store *FDBRecordStore) GetStoreHeader() *gen.DataStoreInfo {
 // Goroutine-safe via stateMu (read lock).
 // For a complete map including defaulted READABLE states, use GetAllIndexStates().
 func (store *FDBRecordStore) GetAllIndexStatesMap() map[string]IndexState {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
-	if store.indexStates == nil {
-		return make(map[string]IndexState)
+	return store.snapshotIndexStatesLocked()
+}
+
+// snapshotIndexStatesLocked copies the context authority, not a handle's older
+// initialization snapshot. Caller holds stateMu after lazy initialization.
+func (store *FDBRecordStore) snapshotIndexStatesLocked() map[string]IndexState {
+	states := store.indexStates
+	if store.indexStateView != nil {
+		store.indexStateView.mu.Lock()
+		defer store.indexStateView.mu.Unlock()
+		states = store.indexStateView.states
 	}
-	return maps.Clone(store.indexStates)
+	result := make(map[string]IndexState, len(states))
+	maps.Copy(result, states)
+	return result
 }
 
 // OverrideLockSaveRecord saves a record even when the store is locked for record updates
@@ -257,12 +337,16 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 	recordType := store.metaData.GetRecordType(recordTypeName)
 	if recordType == nil {
-		return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
+		return nil, unknownRecordTypeError(recordTypeName)
 	}
 
 	if recordType.PrimaryKey == nil {
 		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
+	// As saveRecordInternal: the record as every later load reads it, and
+	// the message the save serializes.
+	var writeRecord proto.Message
+	record, writeRecord = recordType.asJavaForSave(record)
 
 	// Record type supplied so a record-type-prefixed primary key resolves its
 	// leading component, matching the real save path (and Java's dry run,
@@ -299,6 +383,19 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		return nil, fmt.Errorf("load existing record: %w", err)
 	}
 	oldRecordExists := oldValue != nil
+	// A dry run loads the existing record through the serializer too
+	// (saveTypedRecord's loadExistingRecord precedes its isDryRun return), so a
+	// record the store cannot read fails the preview as it fails the save.
+	var oldRT *RecordType
+	var oldMsg proto.Message
+	var oldWire *recordWire
+	if oldRecordExists {
+		var deserErr error
+		oldRT, oldMsg, oldWire, deserErr = store.deserializeAndDiscover(oldValue)
+		if deserErr != nil {
+			return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
+		}
+	}
 
 	if existenceCheck.ErrorIfExists() && oldRecordExists {
 		return nil, &RecordAlreadyExistsError{
@@ -315,10 +412,6 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	}
 
 	if existenceCheck.ErrorIfTypeChanged() && oldRecordExists {
-		_, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
-		if deserErr != nil {
-			return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
-		}
 		existingTypeName := string(oldMsg.ProtoReflect().Descriptor().Name())
 		if existingTypeName != recordTypeName {
 			return nil, &RecordTypeChangedError{
@@ -338,36 +431,41 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	// STRICTER than Java (rejecting a preview Java allows). DryRunDeleteRecord already skips it
 	// for the same reason (Java line 1735). Pinned by TestFDB_DmlDryRun_LockedStorePreviews.
 
-	// Serialize directly into union wire format (no UnionDescriptor allocation)
-	data, err := serializeUnion(record, recordType)
+	// Serialize as the save would, over the stored record (a type holding a map
+	// is written in the stored record's map order), so the preview's sizes are
+	// the save's.
+	data, err := serializeUnionOver(writeRecord, recordType, priorRecordInner(oldRT, oldWire, recordType))
 	if err != nil {
 		return nil, &RecordSerializationError{Cause: err}
 	}
+	stored, err := store.writeStoredRecord(data, recordType, primaryKey)
+	if err != nil {
+		return nil, err
+	}
 
-	keyCount := 1
-	keySize := len(recordsSubspace.Pack(primaryKey))
-	valueSize := len(data)
-	isSplit := splitEnabled && len(data) > splitRecordSize
+	// Java's dryRunSetSizeInfo: the stored bytes' keys and values, chunk by
+	// chunk, as the save would write them.
+	sizes := dryRunSaveWithSplitSizeInfo(recordsSubspace, primaryKey, stored, splitEnabled, store.omitUnsplitRecordSuffix())
 
-	// Include version key/value bytes in dry-run metrics.
-	// Matches Java's dryRunWriteVersionSizeInfo().
-	if store.metaData.IsStoreRecordVersions() {
-		versionKey := store.versionKey(primaryKey)
-		keyCount++
-		keySize += len(versionKey)
-		// Value is a tuple-packed Versionstamp: VersionBytes (12) + 1 tuple type byte = 13.
-		// Matches Java's SizeInfo.add(keyBytes, version): VERSION_LENGTH + 1.
-		valueSize += VersionBytes + 1
+	// The inline version's key and value (dryRunWriteVersionSizeInfo). Java
+	// passes no version in the old version format (splitVersion is null when
+	// useOldVersionFormat), whose version lives in its own subspace.
+	if store.metaData.IsStoreRecordVersions() && !store.useOldVersionFormat() {
+		sizes.KeyCount++
+		sizes.KeySize += len(store.versionKey(primaryKey))
+		// A tuple-packed Versionstamp: VersionBytes (12) and its type code, the
+		// incomplete version's 4-byte offset excluded as Java excludes it.
+		sizes.ValueSize += VersionBytes + 1
 	}
 
 	return &FDBStoredRecord[proto.Message]{
 		PrimaryKey: primaryKey,
 		Record:     record,
 		RecordType: recordType,
-		KeyCount:   keyCount,
-		KeySize:    keySize,
-		ValueSize:  valueSize,
-		Split:      isSplit,
+		KeyCount:   sizes.KeyCount,
+		KeySize:    sizes.KeySize,
+		ValueSize:  sizes.ValueSize,
+		Split:      sizes.IsSplit,
 	}, nil
 }
 
@@ -395,6 +493,12 @@ func (store *FDBRecordStore) DryRunDeleteRecord(primaryKey tuple.Tuple) (bool, e
 	if value == nil {
 		return false, nil
 	}
+	// Java's dry run loads the record through the serializer
+	// (deleteTypedRecord's loadTypedRecord), so one the store cannot read
+	// fails the preview as it fails the delete.
+	if _, _, _, err := store.deserializeAndDiscover(value); err != nil {
+		return false, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
+	}
 	return true, nil
 }
 
@@ -411,7 +515,7 @@ func (store *FDBRecordStore) IsIndexReadableUniquePending(indexName string) bool
 func (store *FDBRecordStore) GetWriteOnlyIndexes() []*Index {
 	var result []*Index
 	for _, idx := range store.metaData.GetAllIndexes() {
-		if store.GetIndexState(idx.Name) == IndexStateWriteOnly {
+		if store.GetIndexState(idx.Name).IsWriteOnly() {
 			result = append(result, idx)
 		}
 	}
@@ -435,13 +539,7 @@ func (store *FDBRecordStore) GetDisabledIndexes() []*Index {
 // added or modified since the given metadata version.
 // Matches Java's FDBRecordStore.getIndexesToBuildSince(version).
 func (store *FDBRecordStore) GetIndexesToBuildSince(version int) []*Index {
-	var result []*Index
-	for _, idx := range store.metaData.GetAllIndexes() {
-		if idx.LastModifiedVersion > version {
-			result = append(result, idx)
-		}
-	}
-	return result
+	return store.metaData.GetIndexesToBuildSince(version)
 }
 
 // ResolveUniquenessViolationByDeletion resolves uniqueness violations for a specific

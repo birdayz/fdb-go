@@ -79,7 +79,7 @@ func TestSeedKeyedByBinding(t *testing.T) {
 		t.Fatalf("leg DISPLAY aliases = [%s %s], want [S S]", legs[0].alias, legs[1].alias)
 	}
 
-	fields, legTypes := tr.ordinalJoinSeedFields(legs)
+	fields, legTypes, _ := tr.ordinalJoinSeedFields(legs)
 	if fields == nil {
 		t.Fatal("seed fields must build for binding-distinguished duplicate legs")
 	}

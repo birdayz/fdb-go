@@ -3,7 +3,6 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -21,7 +20,10 @@ import (
 // prior TempTableInsert → inner plan implement rules). The recursive
 // leg similarly must have a physical plan available.
 //
-// Mirrors Java's ImplementRecursiveDfsJoinRule.
+// Mirrors Java's ImplementRecursiveDfsJoinRule, which pre-selects nothing
+// (RFC-257 WS-F F-8): one DFS plan per final plan under each initial-state
+// insert, its root ranging over that one plan, and the recursive leg ranging
+// over every plan of its rolled-up partition.
 type ImplementRecursiveDfsJoinRule struct {
 	matcher matching.BindingMatcher
 }
@@ -47,20 +49,6 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	initialWinner, _ := getWinnerForOrdering(initialRef, properties.PreserveOrdering(), call.CostModel())
-	recursiveWinner, _ := getWinnerForOrdering(recursiveRef, properties.PreserveOrdering(), call.CostModel())
-	if initialWinner == nil || recursiveWinner == nil {
-		return
-	}
-	initPh, ok := initialWinner.(physicalPlanExpression)
-	if !ok {
-		return
-	}
-	recPh, ok := recursiveWinner.(physicalPlanExpression)
-	if !ok {
-		return
-	}
-
 	strategy := plans.DfsPreorder
 	if !recUnion.PreOrderAllowed() && recUnion.PostOrderAllowed() {
 		strategy = plans.DfsPostorder
@@ -78,80 +66,68 @@ func (r *ImplementRecursiveDfsJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// dead plumbing here — and under the streaming RecursiveCursor a
 	// per-level TempTableInsertCursor continuation would snapshot the
 	// accumulator table into EVERY level of the DFS continuation.
-	rootPlan := stripTempTableInsertTop(initPh.GetRecordQueryPlan())
-	childPlan := stripTempTableInsertTop(recPh.GetRecordQueryPlan())
-
-	// Memoize the STRIPPED plans, not the winners they came from.
 	//
-	// stripTempTableInsertTop removes a TempTableInsert from each leg for the
-	// PLAN, but initialWinner/recursiveWinner still carry it. Memoizing those
-	// left the quantifier resolving to
-	// `TempTableInsert(…, Project(PredicatesFilter(Scan(TREE))))` while the
-	// plan child was the bare `Project(PredicatesFilter(Scan(TREE)))` — 58
-	// divergent edges across the corpus (RFC-183 §12). The memo was costing a
-	// leg with plumbing the executed plan does not have.
-	//
-	// Note this is the INVERSE of the FlatMap sites in
-	// rule_implement_nested_loop_join.go, where the plan held compensating
-	// filters the quantifier lacked. Same defect class — plan and quantifier
-	// describing different expressions — reached from opposite directions,
-	// which is why there is no single mechanical rewrite for §12's remaining
-	// sites.
-	//
-	// scanPlanExpression is the existing plan-backed adapter for exactly this
-	// (see its other use for the buried-leg rebase): it makes the memoized
-	// expression report the plan actually being executed.
-	//
-	// MemoizeFinalExpression, NOT MemoizeExpression — the two legs must land in
-	// SEPARATE references.
-	//
-	// HISTORY, because the reason CHANGED and the old reason is now false:
-	// this originally guarded against an interning collapse. scanPlanExpression
-	// compared via EqualsPlanWithoutChildren (children excluded) and reports no
-	// quantifiers, so the memo could not tell two of them apart when their root
-	// nodes matched — and both legs here are RecordQueryProjectionPlan with the
-	// same projections (root `Project([ID,PARENT], TypeFilter(Scan))`, child
-	// `Project([ID,PARENT], Project(FlatMap(…)))`). They compared EQUAL and
-	// interned into ONE group, so the memo believed the two legs were the same
-	// expression. That collapse was introduced by an earlier revision of this
-	// very fix and is why the leg divergence fell only from 58 to 25.
-	//
-	// That mechanism NO LONGER EXISTS: scanPlanExpression now compares deeply
-	// (RFC-183 §15, abstract_data_access_rule.go), so these legs are distinct
-	// to the memo on their own. MemoizeExpression would very likely be safe
-	// here today.
-	//
-	// It stays MemoizeFinalExpression anyway, deliberately: the rule's
-	// correctness needs one reference PER LEG, and expressing that directly is
-	// better than depending on two structurally-similar plans happening to
-	// differ below the root. The guarantee should not be a coincidence of the
-	// data.
-	rootQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: rootPlan}))
-	childQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(&scanPlanExpression{plan: childPlan}))
-	// The plan carries its two leg edges directly — no separate physical
-	// wrapper (RFC-184 W2).
-	plan, err := plans.NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
-		rootQ, childQ, priorCorrelation, strategy, recUnion.IsDistinct(),
-	)
-	if err != nil {
-		call.Fail(err)
-		return
+	// The legs range over references restricted to plans UNDER the inserts,
+	// so the memo costs exactly the plans executed, never the plumbing
+	// (RFC-183 §12), and each leg is its own reference.
+	var roots []dfsJoinLeg
+	for _, leg := range dfsJoinLegsUnderInserts(initialRef) {
+		for _, member := range leg.members {
+			roots = append(roots, dfsJoinLeg{source: leg.source, members: []expressions.RelationalExpression{member}})
+		}
 	}
-	call.Yield(plan)
+	for _, root := range roots {
+		for _, child := range dfsJoinLegsUnderInserts(recursiveRef) {
+			rootQ := expressions.NewPhysicalQuantifier(call.MemoizeMemberPlansFromOther(root.source, root.members))
+			childQ := expressions.NewPhysicalQuantifier(call.MemoizeMemberPlansFromOther(child.source, child.members))
+			// The plan carries its two leg edges directly — no separate
+			// physical wrapper (RFC-184 W2).
+			plan, err := plans.NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
+				rootQ, childQ, priorCorrelation, strategy, recUnion.IsDistinct(),
+			)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			call.Yield(plan)
+		}
+	}
 }
 
-// stripTempTableInsertTop unwraps a TempTableInsert at the top of a leg plan
-// (Java's initialInnerPlanMatcher / recursive TempTableInsertExpression
-// matcher shapes take the plan UNDER the insert). Match-surface divergence:
-// Java's matcher REQUIRES the insert top (the rule does not fire without
-// it), while this strip tolerates its absence — benign because the front
-// end always builds recursive legs insert-topped, and a hypothetical bare
-// leg would plan identically rather than silently mis-fire.
-func stripTempTableInsertTop(p plans.RecordQueryPlan) plans.RecordQueryPlan {
-	if ins, ok := p.(*plans.RecordQueryTempTableInsertPlan); ok {
-		return ins.GetInner()
+// dfsJoinLeg is a set of plans one DFS-join leg may range over, all members of
+// source.
+type dfsJoinLeg struct {
+	source  *expressions.Reference
+	members []expressions.RelationalExpression
+}
+
+// dfsJoinLegsUnderInserts returns, for each physical plan of ref's rolled-up
+// partition, the plans the DFS join ranges over in its place: every plan of
+// the rolled-up partition under a TempTableInsert top (Java matches
+// tempTableInsertPlanOverQuantifier and takes the plans below it), or the
+// plan itself for a leg without one. Match-surface divergence: Java's matcher
+// REQUIRES the insert top (the rule does not fire without it), while Go
+// tolerates its absence — benign because the front end always builds
+// recursive legs insert-topped, and a hypothetical bare leg would plan
+// identically rather than silently mis-fire.
+func dfsJoinLegsUnderInserts(ref *expressions.Reference) []dfsJoinLeg {
+	var out []dfsJoinLeg
+	for _, member := range rolledUpPhysicalMembers(ref) {
+		insert, ok := member.(*plans.RecordQueryTempTableInsertPlan)
+		if !ok {
+			out = append(out, dfsJoinLeg{source: ref, members: []expressions.RelationalExpression{member}})
+			continue
+		}
+		quantifiers := insert.GetQuantifiers()
+		if len(quantifiers) != 1 || quantifiers[0].GetRangesOver() == nil {
+			continue
+		}
+		below := quantifiers[0].GetRangesOver()
+		if members := rolledUpPhysicalMembers(below); len(members) > 0 {
+			out = append(out, dfsJoinLeg{source: below, members: members})
+		}
 	}
-	return p
+	return out
 }
 
 var _ ExpressionRule = (*ImplementRecursiveDfsJoinRule)(nil)

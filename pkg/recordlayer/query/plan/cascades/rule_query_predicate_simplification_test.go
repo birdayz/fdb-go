@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -44,10 +45,177 @@ func fireQueryPredicateRule(
 	return result
 }
 
-// TestQueryPredicateSimplification_FoldsArithmetic verifies that a
-// ComparisonPredicate with an ArithmeticValue operand (e.g., name = 1+2)
-// is simplified to name = 3.
-func TestQueryPredicateSimplification_FoldsArithmetic(t *testing.T) {
+func queryPredicateComparison(t testing.TB, pred predicates.QueryPredicate) *predicates.ComparisonPredicate {
+	t.Helper()
+	residual, err := predicates.ToResidualPredicate(pred)
+	if err != nil {
+		t.Fatalf("ToResidualPredicate: %v", err)
+	}
+	comparison, ok := residual.(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected a single ComparisonPredicate residual, got %T", residual)
+	}
+	return comparison
+}
+
+func TestQueryPredicateSimplification_WholeConjunction(t *testing.T) {
+	t.Parallel()
+	q, root := queryPredicateFixture()
+	a := predicates.NewComparisonPredicate(queryPredicateField(root, 1), predicates.Comparison{
+		Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong},
+	})
+	b := predicates.NewComparisonPredicate(queryPredicateField(root, 3), predicates.Comparison{
+		Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(4), Typ: values.NotNullLong},
+	})
+	// Equality is class-sensitive: use the normalized form of a at both levels.
+	normalizedA := predicates.NewPredicateWithValueAndRanges(a.Operand, []*predicates.RangeConstraints{
+		predicates.NewRangeConstraints([]predicates.Comparison{a.Comparison}, nil),
+	})
+	sel := queryPredicateSelect(q, root, []predicates.QueryPredicate{normalizedA, &predicates.OrPredicate{SubPredicates: []predicates.QueryPredicate{normalizedA, b}}})
+	yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), expressions.InitialOf(sel))
+	if len(yielded) != 1 {
+		t.Fatalf("whole-conjunction absorption yielded %d expressions, want 1", len(yielded))
+	}
+	result := yielded[0].(*expressions.SelectExpression)
+	if got := result.GetPredicates(); len(got) != 1 || !predicates.PredicateEquals(queryPredicateComparison(t, got[0]), a) {
+		t.Fatalf("absorption retained redundant predicates: %v", got)
+	}
+	if again := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), expressions.InitialOf(result)); len(again) != 0 {
+		t.Fatalf("simplified conjunction yielded again: %v", again)
+	}
+}
+
+func TestQueryPredicateSimplification_RangeFixpoint(t *testing.T) {
+	t.Parallel()
+	q, root := queryPredicateFixture()
+	p := predicates.NewPredicateWithValueAndRanges(queryPredicateField(root, 1), []*predicates.RangeConstraints{
+		predicates.NewRangeConstraints([]predicates.Comparison{{Type: predicates.ComparisonGreaterThan, Operand: &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong}}}, nil),
+	})
+	sel := queryPredicateSelect(q, root, []predicates.QueryPredicate{p})
+	yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), expressions.InitialOf(sel))
+	if len(yielded) != 0 {
+		t.Fatalf("unchanged range predicate yielded %d expressions", len(yielded))
+	}
+}
+
+func TestQueryPredicateSimplification_PreservesSwappedMetadata(t *testing.T) {
+	t.Parallel()
+	q, root := queryPredicateFixture()
+	other, _ := queryPredicateFixture()
+	p := predicates.NewComparisonPredicate(queryPredicateField(root, 1), predicates.Comparison{
+		Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong},
+	})
+	sel := mustTypeRewriteConstruct(expressions.NewSelectExpressionWithJoinType(root, []expressions.Quantifier{q, other}, []predicates.QueryPredicate{p, predicates.NewConstantPredicate(predicates.TriTrue)}, []string{"first", "second"}, expressions.JoinLeftOuter)).WithSwappedQuantifiers()
+	rule := NewQueryPredicateSimplificationRule()
+	matches := rule.Matcher().BindMatches(matching.NewBindings(), sel)
+	if len(matches) != 1 {
+		t.Fatalf("rule bindings=%d, want 1", len(matches))
+	}
+	call := &ExpressionRuleCall{Bindings: matches[0], Reference: expressions.InitialOf(sel)}
+	rule.OnMatch(call)
+	if call.Err() != nil {
+		t.Fatal(call.Err())
+	}
+	yielded := call.Yielded()
+	if len(yielded) != 1 {
+		t.Fatalf("yielded=%d, want 1", len(yielded))
+	}
+	result := yielded[0].(*expressions.SelectExpression)
+	if !result.IsQuantifiersSwapped() {
+		t.Fatal("simplification erased quantifier-swap metadata")
+	}
+	if result.GetResultValue() != root || result.GetJoinType() != expressions.JoinLeftOuter {
+		t.Fatal("simplification changed the projection or join kind")
+	}
+	if got := result.GetSourceAliases(); len(got) != 2 || got[0] != "second" || got[1] != "first" {
+		t.Fatalf("simplification changed source aliases: %v", got)
+	}
+	qs := result.GetQuantifiers()
+	if len(qs) != 2 || qs[0].GetAlias() != other.GetAlias() || qs[1].GetAlias() != q.GetAlias() {
+		t.Fatal("simplification changed the swapped edges")
+	}
+	if len(sel.GetPredicates()) != 2 || len(result.GetPredicates()) != 1 {
+		t.Fatal("predicate replacement mutated the input or retained the identity")
+	}
+	if !predicates.PredicateEquals(queryPredicateComparison(t, result.GetPredicates()[0]), p) {
+		t.Fatal("simplification changed the surviving comparison")
+	}
+	if !predicates.PredicateEquals(sel.GetPredicates()[0], predicates.NewConstantPredicate(predicates.TriTrue)) ||
+		!predicates.PredicateEquals(queryPredicateComparison(t, sel.GetPredicates()[1]), p) {
+		t.Fatal("predicate replacement mutated the input predicates")
+	}
+}
+
+func TestQueryPredicateSimplification_PromotedAtomicChild(t *testing.T) {
+	t.Parallel()
+	_, root := queryPredicateFixture()
+	compare := func(ordinal int) predicates.QueryPredicate {
+		return predicates.NewComparisonPredicate(queryPredicateField(root, ordinal), predicates.Comparison{
+			Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong},
+		})
+	}
+	for _, kind := range []string{"and", "or", "not"} {
+		for _, promotion := range []string{"and_identity", "or_identity", "double_not", "nested"} {
+			t.Run(kind+"/"+promotion, func(t *testing.T) {
+				t.Parallel()
+				var fixed predicates.QueryPredicate
+				switch kind {
+				case "and":
+					fixed = predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriTrue), compare(1))
+				case "or":
+					fixed = predicates.NewOr(compare(1), predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriTrue), compare(3)))
+				case "not":
+					fixed = predicates.NewNot(predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriTrue), compare(1)))
+				}
+				fixed = predicates.WithAtomicity(fixed, true)
+				var input predicates.QueryPredicate
+				switch promotion {
+				case "and_identity":
+					input = predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriTrue), fixed)
+				case "or_identity":
+					input = predicates.NewOr(predicates.NewConstantPredicate(predicates.TriFalse), fixed)
+				case "double_not":
+					input = predicates.NewNot(predicates.NewNot(fixed))
+				case "nested":
+					input = predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriTrue), predicates.NewOr(predicates.NewConstantPredicate(predicates.TriFalse), fixed))
+				}
+				out, err := Simplify(input, queryPredicateSimplificationRules())
+				if err != nil {
+					t.Fatal(err)
+				}
+				negate := func(ordinal int) predicates.QueryPredicate {
+					return predicates.NewComparisonPredicate(queryPredicateField(root, ordinal), predicates.Comparison{
+						Type: predicates.ComparisonNotEquals, Operand: &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong},
+					})
+				}
+				var want predicates.QueryPredicate
+				switch kind {
+				case "and":
+					want = compare(1)
+					if promotion == "double_not" {
+						want = predicates.NewNot(negate(1))
+					}
+				case "or":
+					want = predicates.WithAtomicity(predicates.NewOr(compare(1), compare(3)), true)
+					if promotion == "double_not" {
+						want = predicates.NewOr(predicates.NewNot(negate(1)), predicates.NewNot(negate(3)))
+					}
+				case "not":
+					want = negate(1)
+					if promotion == "double_not" {
+						want = predicates.NewNot(predicates.NewNot(want))
+					}
+				}
+				assertSimplificationTree(t, out, want)
+			})
+		}
+	}
+}
+
+// TestQueryPredicateSimplification_DoesNotEvaluateArithmetic verifies that a
+// comparison against constant arithmetic (name = 1+2) is left as it is: Java's
+// ConstantFoldingRuleSet evaluates no constant, so the rule yields nothing.
+func TestQueryPredicateSimplification_DoesNotEvaluateArithmetic(t *testing.T) {
 	t.Parallel()
 
 	scanQ, scanRoot := queryPredicateFixture()
@@ -68,26 +236,8 @@ func TestQueryPredicateSimplification_FoldsArithmetic(t *testing.T) {
 	sel := queryPredicateSelect(scanQ, scanRoot, []predicates.QueryPredicate{pred})
 	selRef := expressions.InitialOf(sel)
 
-	yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef)
-	if len(yielded) < 1 {
-		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
-	}
-
-	result := yielded[0].(*expressions.SelectExpression)
-	if len(result.GetPredicates()) != 1 {
-		t.Fatalf("expected 1 predicate, got %d", len(result.GetPredicates()))
-	}
-
-	cp, ok := result.GetPredicates()[0].(*predicates.ComparisonPredicate)
-	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", result.GetPredicates()[0])
-	}
-	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
-	if !ok {
-		t.Fatalf("expected ConstantValue after simplification, got %T", cp.Comparison.Operand)
-	}
-	if cv.Value != int64(3) {
-		t.Errorf("expected 3, got %v", cv.Value)
+	if yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef); len(yielded) != 0 {
+		t.Fatalf("expected no yield, got %d", len(yielded))
 	}
 }
 
@@ -133,8 +283,8 @@ func TestQueryPredicateSimplification_NoPredicates(t *testing.T) {
 }
 
 // TestQueryPredicateSimplification_MultiplePredicates verifies that
-// when multiple predicates exist, only the ones that change are
-// replaced — and the rule yields if any changed.
+// when multiple predicates exist and none is changed by Java's set (constant
+// arithmetic is not evaluated), the rule does not yield.
 func TestQueryPredicateSimplification_MultiplePredicates(t *testing.T) {
 	t.Parallel()
 
@@ -164,40 +314,8 @@ func TestQueryPredicateSimplification_MultiplePredicates(t *testing.T) {
 	sel := queryPredicateSelect(scanQ, scanRoot, []predicates.QueryPredicate{pred1, pred2})
 	selRef := expressions.InitialOf(sel)
 
-	yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef)
-	if len(yielded) < 1 {
-		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
-	}
-
-	result := yielded[0].(*expressions.SelectExpression)
-	if len(result.GetPredicates()) != 2 {
-		t.Fatalf("expected 2 predicates, got %d", len(result.GetPredicates()))
-	}
-
-	// First predicate should be simplified.
-	cp1, ok := result.GetPredicates()[0].(*predicates.ComparisonPredicate)
-	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", result.GetPredicates()[0])
-	}
-	cv1, ok := cp1.Comparison.Operand.(*values.ConstantValue)
-	if !ok {
-		t.Fatalf("expected ConstantValue after simplification, got %T", cp1.Comparison.Operand)
-	}
-	if cv1.Value != int64(5) {
-		t.Errorf("expected 5, got %v", cv1.Value)
-	}
-
-	// Second predicate should be unchanged.
-	cp2, ok := result.GetPredicates()[1].(*predicates.ComparisonPredicate)
-	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", result.GetPredicates()[1])
-	}
-	cv2, ok := cp2.Comparison.Operand.(*values.ConstantValue)
-	if !ok {
-		t.Fatalf("expected ConstantValue, got %T", cp2.Comparison.Operand)
-	}
-	if cv2.Value != "hello" {
-		t.Errorf("expected 'hello', got %v", cv2.Value)
+	if yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef); len(yielded) != 0 {
+		t.Fatalf("expected no yield, got %d", len(yielded))
 	}
 }
 
@@ -232,46 +350,59 @@ func TestQueryPredicateSimplification_AndPredicate(t *testing.T) {
 	}
 
 	result := yielded[0].(*expressions.SelectExpression)
-	// The Select constructor lifts the AND into its predicate list (Java's
-	// SelectExpression.partitionPredicates), so the conjuncts are top-level
-	// and the first one is the simplified comparison.
-	if got := len(result.GetPredicates()); got != 2 {
-		t.Fatalf("expected the two conjuncts as top-level predicates, got %d: %v", got, result.GetPredicates())
+	// Java's identity-AND rule removes TRUE; the comparison keeps its
+	// arithmetic, which Java's set does not evaluate.
+	if got := len(result.GetPredicates()); got != 1 {
+		t.Fatalf("expected only the comparison, got %d: %v", got, result.GetPredicates())
 	}
-	cp, ok := result.GetPredicates()[0].(*predicates.ComparisonPredicate)
-	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", result.GetPredicates()[0])
-	}
-	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
-	if !ok {
-		t.Fatalf("expected ConstantValue, got %T", cp.Comparison.Operand)
-	}
-	if cv.Value != int64(30) {
-		t.Errorf("expected 30, got %v", cv.Value)
+	cp := queryPredicateComparison(t, result.GetPredicates()[0])
+	if _, ok := cp.Comparison.Operand.(*values.ArithmeticValue); !ok {
+		t.Fatalf("expected the arithmetic kept, got %T", cp.Comparison.Operand)
 	}
 }
 
-// TestRewritingRules_ContainsExpectedRules verifies the RewritingRules
-// function returns the expected set of rules.
+// TestRewritingRules_ContainsExpectedRules pins Java's RewritingRuleSet: the
+// exploration rules are decorrelation-then-simplification and the outer-join
+// rewrite; SelectMerge-then-PushDown and the finalizer are implementation rules.
 func TestRewritingRules_ContainsExpectedRules(t *testing.T) {
 	t.Parallel()
 
 	rules := RewritingRules()
-	if len(rules) != 4 {
-		t.Fatalf("expected 4 rewriting rules, got %d", len(rules))
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 rewriting exploration rules, got %d", len(rules))
+	}
+	cond, ok := rules[0].(*conditionalExpressionRule)
+	if !ok || len(cond.rules) != 2 {
+		t.Fatalf("rules[0]: expected a two-rule conditional, got %T", rules[0])
+	}
+	if _, ok := cond.rules[0].(*DecorrelateValuesRule); !ok {
+		t.Errorf("conditional[0]: expected DecorrelateValuesRule, got %T", cond.rules[0])
+	}
+	if _, ok := cond.rules[1].(*QueryPredicateSimplificationRule); !ok {
+		t.Errorf("conditional[1]: expected QueryPredicateSimplificationRule, got %T", cond.rules[1])
+	}
+	if _, ok := rules[1].(*RewriteOuterJoinRule); !ok {
+		t.Errorf("rules[1]: expected RewriteOuterJoinRule, got %T", rules[1])
 	}
 
-	// Check types.
-	if _, ok := rules[0].(*QueryPredicateSimplificationRule); !ok {
-		t.Errorf("rules[0]: expected QueryPredicateSimplificationRule, got %T", rules[0])
+	impl := RewritingImplementationRules()
+	if len(impl) != 2 {
+		t.Fatalf("expected 2 rewriting implementation rules, got %d", len(impl))
 	}
-	if _, ok := rules[1].(*PredicatePushDownRule); !ok {
-		t.Errorf("rules[1]: expected PredicatePushDownRule, got %T", rules[1])
+	implCond, ok := impl[0].(*conditionalImplementationRule)
+	if !ok || len(implCond.rules) != 2 {
+		t.Fatalf("impl[0]: expected a two-rule conditional, got %T", impl[0])
 	}
-	if _, ok := rules[2].(*DecorrelateValuesRule); !ok {
-		t.Errorf("rules[2]: expected DecorrelateValuesRule, got %T", rules[2])
+	if _, ok := implCond.rules[0].(*SelectMergeRule); !ok {
+		t.Errorf("impl conditional[0]: expected SelectMergeRule, got %T", implCond.rules[0])
 	}
-	if _, ok := rules[3].(*RewriteOuterJoinRule); !ok {
-		t.Errorf("rules[3]: expected RewriteOuterJoinRule, got %T", rules[3])
+	if _, ok := implCond.rules[1].(*PredicatePushDownRule); !ok {
+		t.Errorf("impl conditional[1]: expected PredicatePushDownRule, got %T", implCond.rules[1])
+	}
+	if !isPrunedInputsRule(impl[0]) {
+		t.Error("SelectMerge-then-PushDown must run only on pruned inputs")
+	}
+	if _, ok := impl[1].(*FinalizeExpressionsRule); !ok {
+		t.Errorf("impl[1]: expected FinalizeExpressionsRule, got %T", impl[1])
 	}
 }

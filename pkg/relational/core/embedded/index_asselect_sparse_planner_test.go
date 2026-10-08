@@ -22,9 +22,6 @@ CREATE INDEX i1 AS SELECT col1 FROM t1 WHERE col1 < 200
 	for _, q := range []string{
 		// NOT implied by the index predicate — using I1 loses rows.
 		"SELECT col1 FROM t1 WHERE col1 < 453",
-		// Implied by the index predicate — see the companion negative pin
-		// below for why this too must not use I1 today.
-		"SELECT col1 FROM t1 WHERE col1 < 100",
 	} {
 		plan, err := PlanQueryForTest(q, schema, nil)
 		if err != nil {
@@ -38,17 +35,9 @@ CREATE INDEX i1 AS SELECT col1 FROM t1 WHERE col1 < 200
 	}
 }
 
-// TestSparseIndexCandidate_ImpliedQueryFallsBack is a NEGATIVE result with a
-// named re-arm: Java's ranges arm (ValueIndexExpansionVisitor.java:146-158)
-// re-expresses a DNF-of-ranges index predicate as extra ranges on the
-// candidate's placeholders, so a query whose predicate IMPLIES the index
-// predicate (col1 < 100 ⇒ col1 < 200) still matches and Java explains
-// COVERING(I1 …) (sparse-index-tests.yamsql). Go's Placeholder carries no
-// candidate-side ranges yet, so the implied query conservatively falls back
-// to a base scan — correct rows, narrower reach. When placeholder extra
-// ranges land, this test's expectation FLIPS: delete it and assert the
-// COVERING plan instead.
-func TestSparseIndexCandidate_ImpliedQueryFallsBack(t *testing.T) {
+// A stronger literal bound admits the sparse index while retaining the
+// query's tighter scan range.
+func TestSparseIndexCandidate_ImpliedQueryUsesIndex(t *testing.T) {
 	t.Parallel()
 	const schema = `
 CREATE TABLE T1 (id BIGINT, col1 BIGINT, PRIMARY KEY (id))
@@ -58,12 +47,8 @@ CREATE INDEX i1 AS SELECT col1 FROM t1 WHERE col1 < 200
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(plan, "Scan(T1)") {
-		t.Errorf("implied sparse query no longer plans a base scan:\n%s\n"+
-			"— if the planner now matches sparse candidates via placeholder extra "+
-			"ranges (Java's ValueIndexExpansionVisitor.java:146-158), this negative "+
-			"pin has been RE-ARMED: replace it with a COVERING(I1 …) assertion and "+
-			"prove range implication with a red-green over a NON-implied query", plan)
+	if !strings.Contains(plan, "IndexScan(I1") {
+		t.Fatalf("implied sparse query must use I1:\n%s", plan)
 	}
 }
 

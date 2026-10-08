@@ -110,8 +110,17 @@ func (r *PositionalRow) AttachOrdinalLayout(layout values.OrdinalLayout, carrier
 	// here made a scan allocate one Type graph per row and then deep-compare
 	// against it — measured as the largest single item this method contributed
 	// to the row path.
-	if err := r.checkLayoutAttachable(layout, carrierType); err != nil {
+	widenTo, err := r.checkLayoutAttachable(layout, carrierType)
+	if err != nil {
 		return nil, err
+	}
+	if widenTo != nil {
+		// The row takes the carrier's nullable type (checkLayoutAttachable).
+		copyRow := *r
+		copyRow.Slots = append([]any(nil), r.Slots...)
+		copyRow.Type = widenTo
+		copyRow.Layout = layout
+		return r.finishAttach(&copyRow, layout), nil
 	}
 	// The identity fast path returns the row WITHOUT going through finishAttach,
 	// and that is presence-EQUIVALENT rather than presence-skipping: finishAttach
@@ -159,23 +168,36 @@ func (r *PositionalRow) finishAttach(target *PositionalRow, layout values.Ordina
 	return target
 }
 
-// checkLayoutAttachable is the shared guard for both attach forms.
-func (r *PositionalRow) checkLayoutAttachable(layout values.OrdinalLayout, carrierType values.Type) error {
+// checkLayoutAttachable is the shared guard for both attach forms. It returns
+// the carrier's record type when the row must take it: a NOT NULL row under a
+// carrier that is the same record made nullable. That row is a value of the
+// carrier, field for field, so the ordinal address space is the same. The shape
+// arises where a plan's result value keeps a leg's nullable row over a
+// quantifier that flows the NOT NULL one: EliminateNullOnEmptyRule drops the
+// null-on-empty flag under a predicate that rejects the null tuple and keeps
+// the result value, as Java's rule does (factory scenarios fc_0000000534_q3
+// and fc_0000000556_q5, a LEFT JOIN leg under an IN). Any other disagreement,
+// including a nullable row under a NOT NULL carrier, is refused.
+func (r *PositionalRow) checkLayoutAttachable(layout values.OrdinalLayout, carrierType values.Type) (*values.RecordType, error) {
 	if r == nil || r.Type == nil || layout == nil || layout.CarrierKind() != values.OrdinalCarrierRecord {
-		return &values.ResolutionError{
+		return nil, &values.ResolutionError{
 			ErrorCode: values.LayoutCarrierMismatch,
 			Path:      "positional.layout",
 			Detail:    "record row requires a concrete record OrdinalLayout",
 		}
 	}
-	if carrierType == nil || !r.Type.Equals(carrierType) {
-		return &values.ResolutionError{
-			ErrorCode: values.LayoutCarrierMismatch,
-			Path:      "positional.layout",
-			Detail:    "row type and layout carrier type disagree",
-		}
+	if carrierType != nil && r.Type.Equals(carrierType) {
+		return nil, nil
 	}
-	return nil
+	if carrier, ok := carrierType.(*values.RecordType); ok && carrier.IsNullable() && !r.Type.IsNullable() &&
+		values.WithNullability(r.Type, true).Equals(carrier) {
+		return carrier, nil
+	}
+	return nil, &values.ResolutionError{
+		ErrorCode: values.LayoutCarrierMismatch,
+		Path:      "positional.layout",
+		Detail:    "row type and layout carrier type disagree",
+	}
 }
 
 // OrdinalLayout returns the exact immutable physical layout attached to this

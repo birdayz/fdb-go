@@ -30,7 +30,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,7 +123,9 @@ func retryContainerStart(ctx context.Context, maxAttempts int, backoff func(atte
 		}
 		lastErr = err
 		if ctx.Err() != nil {
-			return nil, ctx.Err() // cancelled/expired — surface cancellation, don't keep recreating
+			// Keep the failed startup stage as well as cancellation: replacing
+			// the attempt with ctx.Err() erases the cause of a fixture timeout.
+			return nil, fmt.Errorf("container startup stopped: %w (last attempt: %w)", ctx.Err(), lastErr)
 		}
 		if !isTransientContainerErr(err) {
 			return nil, err // deterministic failure — recreating won't help
@@ -129,7 +133,7 @@ func retryContainerStart(ctx context.Context, maxAttempts int, backoff func(atte
 		if i < maxAttempts {
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, fmt.Errorf("container startup backoff stopped: %w (last attempt: %w)", ctx.Err(), lastErr)
 			case <-time.After(backoff(i)):
 			}
 		}
@@ -496,7 +500,7 @@ func (c *Container) startAdditionalProcesses(ctx context.Context) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		output, err := c.FDBCLIExec(ctx, "status minimal")
-		if err == nil && (strings.Contains(output, "Healthy") || strings.Contains(output, "available")) {
+		if err == nil && DatabaseAvailable(output) {
 			// Count processes via ps aux (more reliable than parsing status details).
 			procCount, _ := c.countProcesses(ctx)
 			if procCount >= c.config.processCount {
@@ -511,15 +515,37 @@ func (c *Container) startAdditionalProcesses(ctx context.Context) error {
 // countProcesses returns the number of fdbserver processes running in the container.
 // Uses pgrep for precise matching (avoids counting bash wrappers or fdbcli).
 func (c *Container) countProcesses(ctx context.Context) (int, error) {
-	_, reader, err := c.Exec(ctx, []string{"pgrep", "-c", "fdbserver"}, tcexec.Multiplexed())
+	out, err := c.execOutput(ctx, "pgrep", "pgrep", "-c", "fdbserver")
 	if err != nil {
 		// pgrep returns exit 1 if no matches.
 		return 0, nil
 	}
-	out, _ := io.ReadAll(reader)
 	var count int
-	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &count)
+	fmt.Sscanf(strings.TrimSpace(out), "%d", &count)
 	return count, nil
+}
+
+// DatabaseAvailable reports whether fdbcli `status minimal` output says the
+// database is available. The phrase is matched whole: "unavailable" contains
+// "available", and FDB 7.3 never prints "Healthy" there.
+func DatabaseAvailable(statusMinimal string) bool {
+	return strings.Contains(statusMinimal, "The database is available")
+}
+
+// WaitAvailable polls `status minimal` until the database is available or ctx
+// ends; the caller's ctx is its only deadline.
+func (c *Container) WaitAvailable(ctx context.Context) error {
+	for {
+		output, err := c.FDBCLIExec(ctx, "status minimal")
+		if err == nil && DatabaseAvailable(output) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("database not available: %w (last status %q, error %v)", ctx.Err(), output, err)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // FDBCLIExec runs an fdbcli command inside the container and returns the output.
@@ -528,21 +554,45 @@ func (c *Container) countProcesses(ctx context.Context) (int, error) {
 //
 //	output, err := container.FDBCLIExec(ctx, "status details")
 func (c *Container) FDBCLIExec(ctx context.Context, command string) (string, error) {
-	exitCode, reader, err := c.Exec(ctx, []string{
-		"/usr/bin/fdbcli", "--exec", command,
-	}, tcexec.Multiplexed())
-	if err != nil {
-		return "", fmt.Errorf("exec fdbcli: %w", err)
+	return c.execOutput(ctx, "fdbcli", "/usr/bin/fdbcli", "--exec", command)
+}
+
+// execOutput runs argv in the container and returns its output. testcontainers
+// reads a multiplexed exec stream to its end without watching ctx, so the
+// command is killed in the container at ctx's deadline, and the call returns
+// when ctx ends even if the stream does not.
+func (c *Container) execOutput(ctx context.Context, name string, argv ...string) (string, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		secs := int(math.Ceil(time.Until(deadline).Seconds()))
+		argv = append([]string{"timeout", "-s", "KILL", strconv.Itoa(max(secs, 1))}, argv...)
 	}
-
-	outputBytes, _ := io.ReadAll(reader)
-	output := string(outputBytes)
-
-	if exitCode != 0 {
-		return output, fmt.Errorf("fdbcli exited with code %d", exitCode)
+	type result struct {
+		output   string
+		exitCode int
+		err      error
 	}
-
-	return output, nil
+	done := make(chan result, 1)
+	go func() {
+		exitCode, reader, err := c.Exec(ctx, argv, tcexec.Multiplexed())
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		outputBytes, _ := io.ReadAll(reader)
+		done <- result{output: string(outputBytes), exitCode: exitCode}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			return "", fmt.Errorf("exec %s: %w", name, r.err)
+		}
+		if r.exitCode != 0 {
+			return r.output, fmt.Errorf("%s exited with code %d", name, r.exitCode)
+		}
+		return r.output, nil
+	case <-ctx.Done():
+		return "", fmt.Errorf("exec %s: %w", name, ctx.Err())
+	}
 }
 
 // Status returns the FDB cluster status output.

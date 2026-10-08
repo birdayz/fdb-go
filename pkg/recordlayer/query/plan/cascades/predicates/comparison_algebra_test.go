@@ -222,12 +222,13 @@ func TestComparisonType_CommutePreservesEval(t *testing.T) {
 		}
 	}
 
-	// Six: =, <>, <, <=, >, >=.
-	if commutable != 6 {
-		t.Errorf("Commute() claims %d types, want 6 — the law was checked over a different "+
+	// Eight: =, <>, <, <=, >, >=, IS DISTINCT FROM, IS NOT DISTINCT FROM.
+	if commutable != 8 {
+		t.Errorf("Commute() claims %d types, want 8 — the law was checked over a different "+
 			"population than this floor describes", commutable)
 	}
-	// 6 types x 19 operands squared is 2166 candidates, 1548 actually compared.
+	// Six of the types over 19 operands squared were 2166 candidates, 1548
+	// actually compared; the two null-safe types only add to that.
 	// Floored at 1400 on the same reasoning as the negation law's floor.
 	if pairs < 1400 {
 		t.Fatalf("the commutation law was checked on only %d operand pairs — EvalAgainst is "+

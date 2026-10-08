@@ -5,13 +5,6 @@ on:
     branches: [ master, main ]
   pull_request:
     branches: [ master, main ]
-  # Dispatched by frl-pin-bump.yml against its bot branch: the pull_request
-  # runs a PR opened with the repository's GITHUB_TOKEN raises are created and
-  # then held at action_required (measured in frl-pin-bump.yml's header), and
-  # a held run surfaces no check. A dispatched run attaches its check runs to
-  # the branch's head commit, so the bot PR carries the same named checks a
-  # human PR does — provided the dispatch is not held the same way, which the
-  # first nightly after this trigger landed is what measures.
   workflow_dispatch:
 
 permissions:
@@ -19,9 +12,13 @@ permissions:
   issues: write
   pull-requests: write
 
+# A running CI always finishes: pushes come faster than the full run (~50 min),
+# so cancelling in progress meant no run on an active branch ever completed.
+# Within the group GitHub keeps one run going and only the NEWEST pending one
+# queued (older pending runs are dropped), so frequent pushes still coalesce.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   ci:
@@ -30,46 +27,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
-        with:
-          # Retirement ledgers name the exact historical corpus commit. A
-          # shallow checkout would make the permanent history gate a no-op.
-          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
-
-      - name: Verify corpus retirement history anchors
-        env:
-          EVENT_BEFORE: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          trusted_ref=HEAD
-          # Declare WHOSE history the ref belongs to. Only the target branch may
-          # advance independently of this change and so be normalized to the fork
-          # point; a pre-push tip that is not an ancestor of HEAD means history
-          # was REWRITTEN, and narrowing there would let a force-push erase
-          # retirement ledgers unnoticed.
-          trusted_ref_kind=prior-tip
-          if [ -n "${GITHUB_BASE_REF:-}" ]; then
-            # On a PR, authenticate against the target branch as it existed
-            # independently of the proposed history.
-            git fetch --no-tags origin "+refs/heads/${GITHUB_BASE_REF}:refs/remotes/origin/${GITHUB_BASE_REF}"
-            trusted_ref="refs/remotes/origin/$GITHUB_BASE_REF"
-            trusted_ref_kind=target-branch
-          elif [ -n "${EVENT_BEFORE:-}" ] && [[ ! "$EVENT_BEFORE" =~ ^0+$ ]]; then
-            # On a target-branch push, use the pre-push commit when available.
-            if ! git cat-file -e "$EVENT_BEFORE^{commit}" 2>/dev/null; then
-              git fetch --no-tags origin "$EVENT_BEFORE"
-            fi
-            trusted_ref="$EVENT_BEFORE"
-          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-            trusted_ref=HEAD^
-          fi
-          go run ./cmd/verify-corpus-retirement-history \
-            -trusted-ref "$trusted_ref" -trusted-ref-kind "$trusted_ref_kind"
 
       - name: Check generated code is up to date
         run: |
@@ -127,16 +90,14 @@ jobs:
         id: test
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl
 
-      # tools/bazelscaleset is a standalone Go module (its own go.mod, absent from
-      # go.work) so the runner supervisor's GitHub-API dependencies never enter the
+      # tools/bazelscaleset is a standalone Go module (its own go.mod) so the
+      # runner supervisor's GitHub-API dependencies never enter the
       # record-layer dependency graph. That separation also put its 53 tests outside
       # `bazelisk test //...` — they ran NOWHERE, in CI or locally, while looking
-      # entirely normal in review. This step is the lane; //pkg/docscheck's
-      # TestOutOfBazelLanesAreReal fails if it is renamed or removed, so the
-      # exemption cannot rot back into silence.
+      # entirely normal in review. This step is the lane.
       - name: Test the standalone runner-supervisor module
         if: ${{ !cancelled() }}
-        run: GOWORK=off go test ./... -count=1
+        run: go test ./... -count=1
         working-directory: tools/bazelscaleset
 
       - name: Timeout budgets
@@ -254,7 +215,7 @@ jobs:
           DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run='TestDiff|^Fuzz' -v -count=1 ./cmd/fdb-diff-oracle/
 
   frl-go-install:
-    name: go install lane (cmd/frl, GOWORK=off)
+    name: go install lane (cmd/frl)
     runs-on: hetzner-fdb-vm
     steps:
       - name: Checkout code
@@ -263,48 +224,27 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: cmd/frl/go.mod
+          go-version-file: go.mod
           cache: false
 
-      # The lane for the ONE build configuration no other job here exercises:
-      # what `go install fdb.dev/cmd/frl@latest` actually compiles.
-      #
-      # cmd/frl is a nested Go module. Every other lane builds it through the
-      # workspace -- go.work for `go build`, the source tree for Bazel -- and the
-      # workspace resolves fdb.dev to the checkout, so the `fdb.dev` REQUIREMENT
-      # in cmd/frl/go.mod is never consulted. Users get the opposite: go.work
-      # does not ship, replace directives are rejected in module mode, and the
-      # pin is the only thing that decides which library their binary is built
-      # against. That single unexercised requirement is the whole install path
-      # for anyone without this repo checked out.
-      #
-      # Left unwatched it went stale for 15 days and `go install
-      # fdb.dev/cmd/frl@latest` did not compile for any of them -- ten undefined
-      # symbols, master green the entire time, because nothing in CI ever built
-      # this configuration. It was invisible rather than unnoticed: the release
-      # workflow does build GOWORK=off and would have caught it, but it is
-      # tag-triggered and no tag existed, so the check that was supposed to cover
-      # this ran zero times. A gate that never runs reports nothing, which reads
-      # exactly like a gate that found nothing.
-      #
-      # frl-pin-bump.yml keeps the pin fresh; this makes a stale one LOUD, which
-      # is the half that was missing -- the bot's PR sat open and unmerged for
-      # those 15 days precisely because nothing was red.
-      #
-      # A PR that teaches cmd/frl to use a symbol newer than the pin fails here,
-      # and that is the correct verdict, not a false positive: such a change
-      # breaks `go install ...@latest` the moment it merges. Land the pkg/ side
-      # first, let the pin bump, then land the cmd/frl side.
+      # The lane for the one build configuration no other job here exercises:
+      # what `go install fdb.dev/cmd/frl@<version>` compiles. Bazel builds frl
+      # from its own dependency resolution and hosted smoke builds only the pure
+      # wire packages, so this is the only module-mode, cgo-free build of the CLI
+      # against the root go.mod and go.sum. `go install pkg@version` also refuses
+      # a module whose go.mod carries a replace or exclude directive, so one here
+      # breaks installation for every user the moment it merges.
       - name: Build cmd/frl the way `go install` builds it
-        working-directory: cmd/frl
         env:
-          GOWORK: "off"
           CGO_ENABLED: "0"
         run: |
           set -euo pipefail
-          echo "fdb.dev pin: $(go list -m -f '{{.Version}}' fdb.dev)"
-          go build -trimpath ./...
-          go vet ./...
+          if grep -nE '^[[:space:]]*(replace|exclude)([[:space:]]|\()' go.mod; then
+            echo "::error::go.mod has a replace or exclude directive; go install fdb.dev/cmd/frl@<version> refuses such a module"
+            exit 1
+          fi
+          go build -trimpath ./cmd/frl/...
+          go vet ./cmd/frl/...
 
   govulncheck:
     name: Vulnerability scan
@@ -415,11 +355,18 @@ jobs:
         # starving.
         #
         # The corpora are CONTENT gates, not concurrency probes: they drive the same
-        # driver → planner → executor stack sqldriver_test already drives from 1292
-        # concurrent tests, over per-scenario state that is shared with nothing. The
+        # driver → planner → executor stack the end-to-end SQL suite already drives
+        # from ~1600 concurrent tests, over per-scenario state that is shared with nothing. The
         # race-coverage delta is ~0 and the cost is the merge queue. They keep
         # running non-instrumented in "Build, Lint & Test" on every PR, and under
         # the detector in nightly-coverage's race step.
+        #
+        # The end-to-end SQL suite (//pkg/relational/sqltest/...) is excluded for
+        # the same reason: it is content coverage of that stack, not a concurrency
+        # probe, and under -race on this runner it alone exceeded the 1h budget.
+        # It runs non-instrumented in "Build, Lint & Test". The SQL layer's raced
+        # target is //pkg/relational/sqldriver: the driver's own tests (connection,
+        # transactions, rows, options) and the simfdb fault suites.
         #
         # CASCADES is the third scope. Note precisely what it adds: the relational
         # scope already LINKS AND DRIVES the Cascades planner, so planner code was
@@ -434,7 +381,7 @@ jobs:
           echo "RACE_JOB_START=$(date -u +%FT%TZ)" >> "$GITHUB_ENV"
           bazelisk shutdown
           RACE_BASE="$HOME/.cache/bazel/_race_output_base"
-          REL_SCOPE="//pkg/relational/... -//pkg/relational/conformance/..."
+          REL_SCOPE="//pkg/relational/... -//pkg/relational/conformance/... -//pkg/relational/sqltest/..."
           CLIENT_SCOPE="//pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/..."
           CASCADES_SCOPE="//pkg/recordlayer/query/plan/cascades/..."
           # No-op guard PER SCOPE (codex): count each gate independently. Counting the

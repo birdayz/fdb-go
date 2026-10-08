@@ -15,10 +15,15 @@ const (
 )
 
 func init() {
-	RegisterFunction(OrderFuncAscNullsFirst, makeOrderEvaluator(OrderAscNullsFirst))
-	RegisterFunction(OrderFuncAscNullsLast, makeOrderEvaluator(OrderAscNullsLast))
-	RegisterFunction(OrderFuncDescNullsFirst, makeOrderEvaluator(OrderDescNullsFirst))
-	RegisterFunction(OrderFuncDescNullsLast, makeOrderEvaluator(OrderDescNullsLast))
+	// OrderFunctionKeyExpression.java:64-72, :88-90.
+	for name, direction := range map[string]OrderDirection{
+		OrderFuncAscNullsFirst:  OrderAscNullsFirst,
+		OrderFuncAscNullsLast:   OrderAscNullsLast,
+		OrderFuncDescNullsFirst: OrderDescNullsFirst,
+		OrderFuncDescNullsLast:  OrderDescNullsLast,
+	} {
+		registerCoreFunction(name, FunctionSpec{Evaluator: makeOrderEvaluator(direction), MinArguments: 1, MaxArguments: 1, ColumnSize: 1})
+	}
 }
 
 // isOrderFunctionName reports whether name is one of the four

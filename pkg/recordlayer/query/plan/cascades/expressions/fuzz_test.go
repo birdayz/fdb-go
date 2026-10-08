@@ -1,6 +1,8 @@
 package expressions
 
 import (
+	"fmt"
+	"slices"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -57,6 +59,123 @@ func FuzzSemanticEquals_Properties(f *testing.F) {
 		if ab && a.HashCodeWithoutChildren() != c.HashCodeWithoutChildren() {
 			t.Fatalf("hash inconsistency: SemanticEquals(a,c) but HashCodeWithoutChildren differ (a=%d c=%d, a=%T c=%T)",
 				a.HashCodeWithoutChildren(), c.HashCodeWithoutChildren(), a, c)
+		}
+	})
+}
+
+func FuzzMemoEqual_QuantifierBindings(f *testing.F) {
+	f.Add([]byte{0, 0, 0, 0})
+	f.Add([]byte{3, 1, 1, 1, 1, 1})
+	f.Add([]byte{8, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9})
+	f.Add([]byte{7, 1, 7, 3, 5, 1, 6, 2, 4, 0})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) < 4 {
+			return
+		}
+		n := 2 + int(data[0]%9)
+		build := func(right, changed bool) RelationalExpression {
+			qs := make([]Quantifier, n)
+			for i := range qs {
+				name := "T"
+				if n > 5 || data[1]&1 == 0 {
+					name = fmt.Sprint("T", i)
+				}
+				if changed && i == n/2 {
+					name = "DIFFERENT"
+				}
+				child := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{name}, values.NotNullLong)))
+				if i > 0 && data[(i+2)%len(data)]&1 != 0 {
+					inner := ForEachQuantifier(child)
+					dependency := qs[int(data[(i+3)%len(data)])%i]
+					p := predicates.NewComparisonPredicate(mustExpression(inner.RequireFlowedObjectValue()), predicates.Comparison{
+						Type: predicates.ComparisonEquals, Operand: mustExpression(dependency.RequireFlowedObjectValue()),
+					})
+					child = InitialOf(mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{p}, inner)))
+				}
+				qs[i] = ForEachQuantifier(child)
+			}
+			result := mustExpression(qs[n-1].RequireFlowedObjectValue())
+			for i := n - 1; i > 0; i-- {
+				j := 0
+				if right {
+					j = int(data[(i+1)%len(data)]) % (i + 1)
+				}
+				qs[i], qs[j] = qs[j], qs[i]
+			}
+			return mustExpression(NewSelectExpression(result, qs, nil))
+		}
+		left, right, changed := build(false, false), build(true, false), build(true, true)
+		if !MemoEqual(left, right) || !MemoEqual(right, left) || !preparedChildDuplicate(left, right) {
+			t.Fatalf("alias-renamed, permuted dependency graph did not intern: n=%d data=%v", n, data)
+		}
+		if MemoEqual(left, changed) || MemoEqual(changed, left) || preparedChildDuplicate(left, changed) {
+			t.Fatal("matching lost a changed child behind quantifier permutations")
+		}
+		if left.HashCodeWithoutChildren() != right.HashCodeWithoutChildren() {
+			t.Fatal("equivalent parents hash differently")
+		}
+	})
+}
+
+func FuzzPreparedMemberIndexMatchesLinear(f *testing.F) {
+	f.Add([]byte{0, 1, 2, 3, 4, 5, 6, 7})
+	f.Add([]byte{255, 127, 63, 31, 15, 7, 3, 1})
+	f.Add([]byte{8, 8, 8, 8})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) == 0 {
+			return
+		}
+		pool := make([]RelationalExpression, 16+int(data[0]%16))
+		for i := range pool {
+			choice := data[i%len(data)]
+			child := buildFuzzTree(data, i)
+			if choice&1 != 0 {
+				child = &memoObservedExpression{RelationalExpression: child}
+			}
+			ref := InitialOf(child)
+			if choice&2 != 0 {
+				ref.members = append(ref.members, buildFuzzTree(data, i+1))
+			}
+			if choice&4 != 0 {
+				ref.finalMembers, ref.members = ref.members, nil
+			}
+			if choice&8 != 0 {
+				ref.finalMembers = append(ref.finalMembers, buildFuzzTree(data, i+2))
+			}
+			if choice&16 != 0 {
+				forwarder := InitialOf(child)
+				forwarder.forwardedTo = ref
+				ref = forwarder
+			}
+			switch choice % 3 {
+			case 0:
+				pool[i] = child
+			case 1:
+				pool[i] = mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(ref)))
+			default:
+				q := ForEachQuantifier(ref)
+				pool[i] = mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{predicates.NewComparisonPredicate(
+					mustQOV(q.GetAlias()), predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(choice % 5)}},
+				)}, q))
+			}
+		}
+		members := slices.Repeat(pool[:3], 8)
+		hashes := make([]uint64, int(data[0]%4))
+		for i := range hashes {
+			hashes[i] = members[i].HashCodeWithoutChildren()
+		}
+		var equality PreparedMemberEquality
+		index := equality.NewMemberIndex(members, hashes)
+		for _, incoming := range append(pool[3:len(pool):len(pool)], pool...) {
+			got, aliasAware := index.Duplicate(incoming)
+			want, wantAliasAware := PreparedMemberDuplicate(members, incoming)
+			if got != want || aliasAware != wantAliasAware {
+				t.Fatalf("indexed=%t/%t linear=%t/%t: data=%v incoming=%T members=%d", got, aliasAware, want, wantAliasAware, data, incoming, len(members))
+			}
+			if !got {
+				index.Add(incoming)
+				members = append(members, incoming)
+			}
 		}
 	})
 }
@@ -157,26 +276,22 @@ func FuzzAliasMap_BijectionInvariant(f *testing.F) {
 				m = m.Compose(candidate)
 			}()
 		}
-		// Bijection invariant: every (s, t) round-trips.
-		for s := range m.forward {
-			tgt, ok := m.GetTarget(s)
-			if !ok {
-				t.Fatalf("forward map has %v but GetTarget says missing", s)
+		// Bijection invariant: every (s, t) round-trips, in both directions.
+		count := 0
+		values.RangeAliasPairs(m.ToValuesAliasMap(), func(pair values.AliasPair) bool {
+			count++
+			tgt, ok := m.GetTarget(pair.Source)
+			if !ok || tgt != pair.Target {
+				t.Fatalf("pair %v→%v but GetTarget(%v)=%v,%v", pair.Source, pair.Target, pair.Source, tgt, ok)
 			}
-			revS, ok := m.GetSource(tgt)
-			if !ok || revS != s {
-				t.Fatalf("bijection broken: %v→%v but GetSource(%v)=%v,%v", s, tgt, tgt, revS, ok)
+			revS, ok := m.GetSource(pair.Target)
+			if !ok || revS != pair.Source {
+				t.Fatalf("bijection broken: %v→%v but GetSource(%v)=%v,%v", pair.Source, pair.Target, pair.Target, revS, ok)
 			}
-		}
-		for tgt := range m.reverse {
-			s, ok := m.GetSource(tgt)
-			if !ok {
-				t.Fatalf("reverse map has %v but GetSource says missing", tgt)
-			}
-			revT, ok := m.GetTarget(s)
-			if !ok || revT != tgt {
-				t.Fatalf("bijection broken: rev %v→%v but GetTarget(%v)=%v,%v", tgt, s, s, revT, ok)
-			}
+			return true
+		})
+		if count != m.Size() {
+			t.Fatalf("ranged %d pairs, Size()=%d", count, m.Size())
 		}
 	})
 }

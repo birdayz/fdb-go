@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "constfoldcensus",
+    srcs = ["census.go"],
+    importpath = "fdb.dev/pkg/recordlayer/query/plan/constfoldcensus",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "constfoldcensus_test",
+    srcs = ["census_test.go"],
+    # keep: MODULE.bazel's runfiles symlink leads the census to the real tree
+    # (it must see every package, not only declared inputs), and `external`
+    # keeps a cached pass from hiding a newly added site.
+    data = ["//:MODULE.bazel"],
+    tags = ["external"],  # keep
+    deps = [":constfoldcensus"],
+)

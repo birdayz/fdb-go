@@ -812,12 +812,10 @@ func FuzzTranslateNullExtendedField(f *testing.F) {
 		}
 		beforeType, beforeFieldType := program.Type(), field.Type()
 		rebuilt, rebuildErr := TranslateNullExtendedPhaseRoot(program, source, target)
-		if nullableElement {
-			if rebuildErr != nil || rebuilt == nil || !rebuilt.Type().Equals(beforeType) {
-				t.Fatalf("nullable-element array reconstruction = %v, %v", rebuilt, rebuildErr)
-			}
-		} else if rebuildErr == nil || rebuilt != nil {
-			t.Fatalf("incompatible array metadata survived null extension: %v, %v", rebuilt, rebuildErr)
+		// Java 4.14 injects promotions to the retained element type rather
+		// than rejecting a replacement solely for differing nullability.
+		if rebuildErr != nil || rebuilt == nil || !rebuilt.Type().Equals(beforeType) {
+			t.Fatalf("array reconstruction = %v, %v", rebuilt, rebuildErr)
 		}
 		if array.Elements[0] != field || !field.Type().Equals(beforeFieldType) || !program.Type().Equals(beforeType) {
 			t.Fatal("array reconstruction mutated its source program")

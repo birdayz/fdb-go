@@ -20,9 +20,6 @@ func TestEvaluateConstant_DivByZeroDeclinesToFold(t *testing.T) {
 	if got, ok := EvaluateConstant(div); ok {
 		t.Fatalf("constant 1/0 must NOT fold (must raise 22012 at runtime); folded to %v", got)
 	}
-	if got, ok := DefaultFolder().Fold(div); ok {
-		t.Fatalf("DefaultFolder must decline 1/0; folded to %v", got)
-	}
 }
 
 // TestEvaluateConstant_OverflowDeclinesToFold pins that a constant arithmetic

@@ -8,6 +8,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/functions"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -154,6 +155,27 @@ func ordinalStructType(record *values.RecordType) (*api.StructType, error) {
 	return api.NewStructType(publicOrdinalTypeName(record.RecordName, "RECORD"), fields, record.Nullable), nil
 }
 
+// NonArrayCorrelationError is Java's INVALID_COLUMN_REFERENCE for a correlated
+// FROM item whose column is typ, not an array, with typ rendered as Java's
+// DataType.toString renders it (`long ∪ ∅`). A type with no public rendering
+// falls back to its own spelling.
+func NonArrayCorrelationError(typ values.Type) error {
+	text := fmt.Sprint(typ)
+	if dt, err := ordinalDataType(typ); err == nil {
+		text = dt.String()
+	}
+	return functions.NonArrayCorrelationError(text)
+}
+
+// DataTypeOf is the public DataType of a planned type: Java's
+// DataTypeUtils.toRelationalType, which a result set's metadata reports
+// (RelationalStructMetaData over the plan's result type). A struct keeps its
+// declared type name and its fields, an array its element type. A type with
+// no public form (a vector, an unresolved type) is an error.
+func DataTypeOf(typ values.Type) (api.DataType, error) {
+	return ordinalDataType(typ)
+}
+
 func ordinalDataType(typ values.Type) (api.DataType, error) {
 	if typ == nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "missing exact ordinal type")
@@ -271,6 +293,20 @@ func materializeOrdinalValue(v any, expected values.Type) (any, error) {
 			out[i] = materialized
 		}
 		return out, nil
+	case values.TypeCodeEnum:
+		// The value layer carries an enum as its declared number; a client
+		// reads its name, as a column's (enumValuesAsNames) and as Java's
+		// RowStruct over the constructed message (MessageTuple.sanitizeField).
+		enum, ok := expected.(*values.EnumType)
+		if !ok {
+			return nil, api.NewError(api.ErrCodeInternalError, "enum attribute has no exact enum type")
+		}
+		if n, isNumber := v.(int64); isNumber {
+			if member, found := enum.LookupValueByNumber(int32(n)); found { //nolint:gosec
+				return member.Name, nil
+			}
+		}
+		return v, nil
 	case values.TypeCodeUuid:
 		switch id := v.(type) {
 		case [16]byte:

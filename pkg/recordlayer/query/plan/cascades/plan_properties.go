@@ -10,23 +10,31 @@ import (
 // PlanPropertiesMap stores computed property values for each physical-plan
 // wrapper expression in a Reference's final members.
 type PlanPropertiesMap struct {
-	props map[expressions.RelationalExpression]properties.PropertyMap
-	order []expressions.RelationalExpression // insertion order
+	props        map[expressions.RelationalExpression]properties.PropertyMap
+	order        []expressions.RelationalExpression // insertion order
+	dependencies map[expressions.RelationalExpression][]planPropertyDependency
+	revision     uint64
 }
 
 // NewPlanPropertiesMap creates a new empty properties map.
 func NewPlanPropertiesMap() *PlanPropertiesMap {
 	return &PlanPropertiesMap{
-		props: make(map[expressions.RelationalExpression]properties.PropertyMap),
+		props:        make(map[expressions.RelationalExpression]properties.PropertyMap),
+		dependencies: make(map[expressions.RelationalExpression][]planPropertyDependency),
 	}
 }
 
 // Add computes and stores properties for the given physical wrapper.
 func (m *PlanPropertiesMap) Add(w physicalPlanExpression) {
+	if dependencies, computed := m.dependencies[w]; computed && planPropertyDependenciesUnchanged(dependencies) {
+		return
+	}
 	if _, exists := m.props[w]; !exists {
 		m.order = append(m.order, w)
 	}
 	m.props[w] = computeWrapperProperties(w)
+	m.dependencies[w] = capturePlanPropertyDependencies(w)
+	m.revision++
 }
 
 // Set stores an ALREADY-COMPUTED property map for an expression, preserving
@@ -40,9 +48,43 @@ func (m *PlanPropertiesMap) Set(expr expressions.RelationalExpression, props pro
 		m.order = append(m.order, expr)
 	}
 	m.props[expr] = props
+	delete(m.dependencies, expr)
+	m.revision++
 }
 
-// GetProperties returns the computed properties for a wrapper expression.
+// RetainMembers preserves the cached properties of surviving finals in member order.
+func (m *PlanPropertiesMap) RetainMembers(members []expressions.RelationalExpression) {
+	n, unchanged := 0, true
+	for _, member := range members {
+		if _, present := m.props[member]; present {
+			if n >= len(m.order) || m.order[n] != member {
+				unchanged = false
+			}
+			n++
+		}
+	}
+	if unchanged && n == len(m.order) {
+		return
+	}
+	retained := make(map[expressions.RelationalExpression]properties.PropertyMap, len(members))
+	order := make([]expressions.RelationalExpression, 0, len(members))
+	for _, member := range members {
+		if props, ok := m.props[member]; ok {
+			retained[member] = props
+			order = append(order, member)
+		}
+	}
+	for member := range m.dependencies {
+		if _, present := retained[member]; !present {
+			delete(m.dependencies, member)
+		}
+	}
+	m.props = retained
+	m.order = order
+	m.revision++
+}
+
+// GetProperties returns the read-only computed properties for a wrapper expression.
 func (m *PlanPropertiesMap) GetProperties(expr expressions.RelationalExpression) properties.PropertyMap {
 	return m.props[expr]
 }
@@ -52,7 +94,7 @@ func (m *PlanPropertiesMap) Expressions() []expressions.RelationalExpression {
 	return m.order
 }
 
-// All returns the full underlying map. Callers that need deterministic
+// All returns the read-only underlying map. Callers that need deterministic
 // iteration should use Expressions() and GetProperties() instead.
 func (m *PlanPropertiesMap) All() map[expressions.RelationalExpression]properties.PropertyMap {
 	return m.props
@@ -73,6 +115,8 @@ func computeWrapperProperties(w physicalPlanExpression) properties.PropertyMap {
 
 func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan) bool {
 	switch plan.(type) {
+	case *plans.RecordQueryVectorIndexPlan:
+		return plan.(*plans.RecordQueryVectorIndexPlan).ProducesDistinctRecords()
 	case *plans.RecordQueryScanPlan:
 		return true
 	case *plans.RecordQueryIndexPlan:
@@ -97,11 +141,9 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 			return cp.ProducesDistinctRecords()
 		}
 		return false
-	case *plans.RecordQueryProjectionPlan:
-		// A SQL-level projection reshapes the output (selects specific
-		// columns); two different underlying records can project to the
-		// same value tuple, so record-level distinctness is NOT preserved.
-		return false
+	case *plans.RecordQueryCoveringIndexValuePlan:
+		// DistinctRecordsProperty.visitCoveringIndexValuePlan: the index plan's.
+		return plan.(*plans.RecordQueryCoveringIndexValuePlan).ProducesDistinctRecords()
 	case *plans.RecordQueryMapPlan:
 		return computeDistinctRecordsForMap(w)
 	case *plans.RecordQueryFilterPlan,
@@ -124,6 +166,10 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		return distinctRecordsFromChildRef(w)
 	case *plans.RecordQueryFirstOrDefaultPlan:
 		return true
+	case *plans.RecordQueryExplodePlan:
+		// DistinctRecordsProperty.visitExplodePlan: every row of an ordinality
+		// explode carries its own ordinal, one-based (SQL `AT`) or zero-based.
+		return plan.(*plans.RecordQueryExplodePlan).IsWithOrdinality()
 	case *plans.RecordQueryDefaultOnEmptyPlan,
 		*plans.RecordQueryInJoinPlan:
 		return distinctRecordsFromChildRef(w)
@@ -142,7 +188,9 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan,
 		*plans.RecordQueryIntersectionPlan,
 		*plans.RecordQueryMultiIntersectionOnValuesPlan,
-		*plans.RecordQueryInUnionPlan:
+		*plans.RecordQueryInUnionPlan,
+		// DistinctRecordsProperty.visitAggregateIndexPlan: an entry is a group.
+		*plans.RecordQueryAggregateIndexPlan:
 		return true
 	case *plans.RecordQueryUnorderedUnionPlan,
 		// RecordQueryUnionPlan is Go's NO-DEDUP UNION ALL variant (union.go:
@@ -227,6 +275,7 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 		// a field, so the covering type needs its own arm rather than inheriting
 		// one through child traversal.
 		*plans.RecordQueryCoveringIndexPlan,
+		*plans.RecordQueryCoveringIndexValuePlan,
 		// A fetch turns a partial index entry into the stored record. Java's
 		// StoredRecordProperty therefore returns true directly for this node;
 		// delegating to its covering child would describe the input carrier, not
@@ -246,7 +295,6 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQueryInMemorySortPlan,
-		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
 		return storedRecordFromChildren(plan.GetChildren())
@@ -292,10 +340,27 @@ func storedRecordAllChildren(children []plans.RecordQueryPlan) bool {
 	return len(children) > 0
 }
 
+// scanPrimaryKeyValues is a scan's primary-key property: the structural key an
+// index over the same type reports when the plan context supplied it, so scan
+// and index plans share one property as Java's (both translate the type's key
+// expression); otherwise the scan's own key coordinates, the only statement of
+// its key a context without record metadata has.
+func scanPrimaryKeyValues(p *plans.RecordQueryScanPlan) []values.Value {
+	if pk := p.GetCommonPrimaryKeyValues(); pk != nil {
+		return pk
+	}
+	return p.GetPrimaryKeyValues()
+}
+
 func computePrimaryKey(plan plans.RecordQueryPlan) any {
 	switch p := plan.(type) {
+	case *plans.RecordQueryVectorIndexPlan:
+		if pk := p.GetCommonPrimaryKeyValues(); pk != nil {
+			return pk
+		}
+		return nil
 	case *plans.RecordQueryScanPlan:
-		if pk := p.GetPrimaryKeyValues(); pk != nil {
+		if pk := scanPrimaryKeyValues(p); pk != nil {
 			return pk
 		}
 		return nil
@@ -309,6 +374,12 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		// that made M5 unsafe (ImplementDistinctUnionRule dropping rows). nil when
 		// the candidate/def supplied no structural PK → the property abstains
 		// (no dedup), the safe under-report.
+		if pk := p.GetCommonPrimaryKeyValues(); pk != nil {
+			return pk
+		}
+		return nil
+	case *plans.RecordQueryCoveringIndexValuePlan:
+		// PrimaryKeyProperty.visitCoveringIndexValuePlan: the index plan's.
 		if pk := p.GetCommonPrimaryKeyValues(); pk != nil {
 			return pk
 		}
@@ -327,7 +398,6 @@ func computePrimaryKey(plan plans.RecordQueryPlan) any {
 		*plans.RecordQueryPredicatesFilterPlan,
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
-		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryDistinctPlan,
 		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan,
@@ -391,7 +461,7 @@ func commonPKFromChildren(children []plans.RecordQueryPlan) any {
 
 func computeWrapperOrdering(w physicalPlanExpression) properties.Ordering {
 	if rich, isJoin := computeJoinRichOrdering(w); isJoin {
-		return plainOrderingFromRich(rich)
+		return rich.PlainOrdering()
 	}
 	if hinter, ok := w.(properties.OrderingHinter); ok {
 		return hinter.HintOrdering()
@@ -491,14 +561,18 @@ func computeJoinRichOrdering(w physicalPlanExpression) (*properties.RichOrdering
 	if outerOrdering == nil || innerOrdering == nil {
 		return properties.EmptyOrdering(), true
 	}
+	localAliases := map[values.CorrelationIdentifier]struct{}{outerAlias: {}, innerAlias: {}}
 	outerOrdering, err := pullChildOrderingThroughResult(
 		outerOrdering, outerExpr,
-		flatMapOrderingResultForChild(flatMap, outerAlias, true), outerAlias)
+		flatMapOrderingResultForChild(flatMap, outerAlias, true), outerAlias,
+		localAliases,
+	)
 	if err != nil {
 		return properties.EmptyOrdering(), true
 	}
 	innerOrdering, err = pullChildOrderingThroughResult(
-		innerOrdering, innerExpr, result, innerAlias)
+		innerOrdering, innerExpr, result, innerAlias, localAliases,
+	)
 	if err != nil {
 		return properties.EmptyOrdering(), true
 	}
@@ -528,15 +602,16 @@ func pullChildOrderingThroughResult(
 	child physicalPlanExpression,
 	resultValue values.Value,
 	resultAlias values.CorrelationIdentifier,
+	localAliases map[values.CorrelationIdentifier]struct{},
 ) (*properties.RichOrdering, error) {
 	if ordering == nil || child == nil || child.GetRecordQueryPlan() == nil {
 		return nil, nil
 	}
 	layout, err := child.GetRecordQueryPlan().ProvidedOutputLayout()
 	if err != nil || layout == nil || layout.Carrier() == nil {
-		return ordering.PullUpThroughValue(resultValue, resultAlias)
+		return ordering.PullUpThroughValue(resultValue, resultAlias, localAliases)
 	}
-	bound, err := ordering.PullUpThroughValue(layout.Carrier(), resultAlias)
+	bound, err := ordering.PullUpThroughValue(layout.Carrier(), resultAlias, localAliases)
 	if err != nil || bound == nil {
 		return bound, err
 	}
@@ -548,7 +623,7 @@ func pullChildOrderingThroughResult(
 		resultQOV.Correlation() == resultAlias {
 		return bound, nil
 	}
-	return bound.PullUpThroughValue(resultValue, resultAlias)
+	return bound.PullUpThroughValue(resultValue, resultAlias, localAliases)
 }
 
 // flatMapOrderingResultForChild returns the semantic result-value lens used to
@@ -587,42 +662,6 @@ func exactFinalPhysicalMember(ref *expressions.Reference) (physicalPlanExpressio
 	return ph, ok && ph.GetRecordQueryPlan() != nil
 }
 
-// plainOrderingFromRich is the partition-key projection of a rich ordering.
-// Fixed keys do not consume a sort position; directional bindings retain both
-// direction and counterflow NULL placement. Sort satisfaction itself still
-// uses the full RichOrdering.
-func plainOrderingFromRich(rich *properties.RichOrdering) properties.Ordering {
-	if rich == nil {
-		return properties.Ordering{}
-	}
-	var (
-		keys       []values.Value
-		descending []bool
-		nullsFirst []bool
-	)
-	for _, key := range rich.GetKeys() {
-		sortOrder := properties.SortOrderOf(rich.GetBindingMap()[key])
-		if !sortOrder.IsDirectional() {
-			continue
-		}
-		keys = append(keys, key)
-		desc := sortOrder.IsAnyDescending()
-		descending = append(descending, desc)
-		nullsFirst = append(nullsFirst,
-			sortOrder == properties.ProvidedSortOrderAscending ||
-				sortOrder == properties.ProvidedSortOrderDescendingNullsFirst)
-	}
-	if len(keys) == 0 {
-		return properties.Ordering{}
-	}
-	return properties.Ordering{
-		IsKnown:    true,
-		Keys:       keys,
-		Descending: descending,
-		NullsFirst: nullsFirst,
-	}
-}
-
 // computeRefPlanProperties computes and stores plan properties for all
 // final-member physical plans in the given Reference. Called during the
 // PLANNING phase after ImplementationRules have fired on ref.
@@ -631,12 +670,16 @@ func computeRefPlanProperties(ref *expressions.Reference) {
 	if len(members) == 0 {
 		members = ref.AllMembers()
 	}
-	pm := NewPlanPropertiesMap()
+	pm := GetRefPlanPropertiesMap(ref)
+	if pm == nil {
+		pm = NewPlanPropertiesMap()
+	}
 	for _, m := range members {
 		if ph, ok := m.(physicalPlanExpression); ok {
 			pm.Add(ph)
 		}
 	}
+	pm.RetainMembers(members)
 	ref.SetPlanProperties(pm)
 }
 
@@ -714,7 +757,6 @@ func usesOrInnerChildResolver(plan plans.RecordQueryPlan) bool {
 	switch plan.(type) {
 	case *plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryMapPlan,
-		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryTempTableInsertPlan,
 		*plans.RecordQueryFetchFromPartialRecordPlan,
 		*plans.RecordQueryInUnionPlan:

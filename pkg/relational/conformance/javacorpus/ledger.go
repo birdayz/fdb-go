@@ -69,10 +69,6 @@ const (
 	// FDB clusters wired as separate connections.
 	SkipMultiCluster SkipClass = "unsupported:multi-cluster"
 
-	// SkipPrepared is `statement_type: prepared` and parameter injection into
-	// a prepared statement. RFC-201 Phase 5.
-	SkipPrepared SkipClass = "unsupported:prepared"
-
 	// SkipContinuation is `maxRows` with multi-page result consumption. The
 	// driver has no per-page continuation surface to hand back. RFC-201
 	// Phase 2, and under the hard wire-compat line.
@@ -84,26 +80,15 @@ const (
 	//
 	// Java reads these off RelationalResultSetMetaData, which exposes
 	// getStructMetaData / getArrayMetaData / getTypeName recursively
-	// (CheckResultMetadataConfig.extractDescriptors). Go's driver cannot: the
-	// planned result type is flattened into `executor.ColumnDef`, whose
-	// `TypeName` is ONE string, so a struct column arrives as "STRUCT" with no
-	// fields, an array column arrives as its ELEMENT's type name rather than
-	// Java's "ARRAY(elem)", and a declared struct type name is not carried at
-	// all. The flat, scalar half of the directive IS asserted; only the
-	// descending half is declined, and it is declined with a name so the driver
-	// gap is sized rather than hidden inside a passing file.
+	// (CheckResultMetadataConfig.extractDescriptors). Go's driver reports the
+	// same through the column DataTypes it hands
+	// api.WithResultSetMetaDataObserver, and the runner compares them; this
+	// class is booked only for a result set that reported no metadata, whose
+	// `database/sql` type names are flat. The corpus has none today.
 	SkipResultMetadataNested SkipClass = "unsupported:result-metadata-nested"
-
-	// SkipTemporaryFunction is a `setup:` / `setupReference:` query config,
-	// which Java restricts to CREATE TEMPORARY FUNCTION. RFC-201 Phase 4.
-	SkipTemporaryFunction SkipClass = "unsupported:temporary-function"
 
 	// SkipCopyBlock is a `copy_block`, which moves data between two clusters.
 	SkipCopyBlock SkipClass = "unsupported:copy-block"
-
-	// SkipSchemaCommand is a `load schema template` / `set schema state`
-	// command: metadata surgery with no Go equivalent.
-	SkipSchemaCommand SkipClass = "unsupported:schema-command"
 
 	// SkipDebugger is a `debugger:` config selecting a Java planner debugger.
 	SkipDebugger SkipClass = "unsupported:debugger"
@@ -120,8 +105,12 @@ const (
 
 	// SkipDDLStructIndex is a struct-declaring schema template whose struct
 	// DDL succeeds but whose CREATE INDEX ... AS SELECT over NESTED struct
-	// fields the generator cannot build yet — the RFC-204 Phase 5 surface
+	// fields the generator cannot build — the RFC-204 Phase 5 surface
 	// (multi-accessor chains through MaterializedViewIndexGenerator).
+	//
+	// EMPTY as of RFC-257 WS-J step 7c: the generator reads the translated
+	// graph, and its last three carriers build. Kept declared as the message
+	// rule's bucket for such a template.
 	SkipDDLStructIndex SkipClass = "unsupported-DDL:struct-index"
 
 	// SkipGapStructDML is a struct-declaring file whose DDL now builds
@@ -137,14 +126,6 @@ const (
 	// regression belongs back here rather than in a new name.
 	SkipGapStructDML SkipClass = "engine-gap:struct-dml"
 
-	// SkipGapStructQuery is a struct-declaring file whose DML now works and
-	// which reaches a struct QUERY-surface gap: nested field access
-	// (`s.field` in a predicate or projection), a record constructor in an
-	// expression position, or `SELECT (*)`. This is RFC-204 Phase 3's work
-	// list — Java resolves these through SemanticAnalyzer's lookupNestedField
-	// descent and RecordConstructorValue in expression position.
-	SkipGapStructQuery SkipClass = "engine-gap:struct-query"
-
 	// SkipDDLFunction is a schema template declaring a SQL function.
 	// RFC-201 Phase 4.
 	SkipDDLFunction SkipClass = "unsupported-DDL:function"
@@ -154,8 +135,9 @@ const (
 	// cannot hide inside the two named ones.
 	SkipDDLOther SkipClass = "unsupported-DDL:other"
 
-	// SkipCheckCache is the extra `check_cache` pass, whose assertion needs a
-	// per-connection plan-cache metric collector.
+	// SkipCheckCache is a `check_cache` run on a connection without a shared
+	// plan cache, whose hit count the assertion reads (Java skips the run on a
+	// connection without a metric collector).
 	SkipCheckCache SkipClass = "unsupported:check-cache"
 
 	// SkipRandomInjection is a `!r` / `!a` generator segment, whose value comes
@@ -174,29 +156,7 @@ const (
 // booked. They are separate classes rather than one bucket because a gap
 // without a name cannot be sized, prioritised or noticed when it closes.
 const (
-	// SkipGapCommaJoinFrom is a JOIN clause combined with comma-separated
-	// FROM sources (`FROM a, a.refs AS r JOIN b ON …`).
-	SkipGapCommaJoinFrom SkipClass = "engine-gap:comma-join-mixed-from"
-	// SkipGapDMLReturning is a DML statement's RETURNING clause: the engine
-	// executes the mutation but produces no result set (the same surface
-	// SkipGapReturningDryRun covers for the DRY RUN variant).
-	SkipGapDMLReturning SkipClass = "engine-gap:dml-returning-result-set"
-	// SkipGapCatalogTables is a query against the catalog's own system tables.
-	SkipGapCatalogTables SkipClass = "engine-gap:catalog-system-tables"
 
-	// SkipGapTableValuedFunction is a table-valued function in FROM.
-	SkipGapTableValuedFunction SkipClass = "engine-gap:table-valued-function"
-	// SkipGapCorrelatedExistsSetOp is a correlated EXISTS over a set operation.
-	SkipGapCorrelatedExistsSetOp SkipClass = "engine-gap:correlated-exists-setop"
-	// SkipGapNestedRecursiveWith is a WITH nested inside a recursive CTE body.
-	SkipGapNestedRecursiveWith SkipClass = "engine-gap:nested-recursive-with"
-	// SkipGapReturningDryRun is UPDATE … RETURNING … OPTIONS(DRY RUN).
-	SkipGapReturningDryRun SkipClass = "engine-gap:returning-dry-run"
-	// SkipGapPlannerDeclines is a query Cascades declines to plan.
-	SkipGapPlannerDeclines SkipClass = "engine-gap:planner-declines"
-	// SkipGapErrorClass is an error that reaches the client without a SQLSTATE,
-	// so the corpus's error-class assertion has nothing to compare against.
-	SkipGapErrorClass SkipClass = "engine-gap:error-class"
 	// SkipConformanceGoAccepts is a query Go executes that Java rejects — a
 	// widening of the shared surface, tracked because the conformance
 	// principle governs that surface in both directions.
@@ -215,26 +175,10 @@ const (
 	// for, and the fix would cost real correctness elsewhere, so these stay
 	// booked rather than closed.
 	SkipConformanceJavaPlannerBug SkipClass = "conformance:java-planner-bug"
-	// SkipGapSerializationOptions is a schema template serialization option
-	// (compression/encryption) the store layer does not implement, so reads
-	// that Java rejects (wrong key, missing encryption) succeed in Go.
-	SkipGapSerializationOptions SkipClass = "engine-gap:serialization-options"
-	// SkipGapMultipleLateralUnnests is a FROM clause carrying MORE THAN ONE
-	// lateral array unnest (`FROM t, t.a AS x AT i, t.b AS y AT j`). The
-	// single-unnest form works; the translator has no lowering for a second
-	// one, and declines loudly (0AF00) rather than dropping a leg. RFC-142.
-	SkipGapMultipleLateralUnnests SkipClass = "engine-gap:multiple-lateral-unnests"
-	// SkipGapStarGroupBy is a qualified star in a SELECT list that also carries
-	// GROUP BY. Java expands the star FIRST and then requires each expanded
-	// output to be composable from the grouping expressions, the aggregates and
-	// the outer correlations (LogicalOperator.java:435-441, isComposableFrom →
-	// GROUPING_ERROR), so `SELECT a.* … GROUP BY a1, a2, a3` over a table with
-	// exactly those columns is LEGAL. Go rejects every star-with-GROUP-BY
-	// unconditionally at parse time, where no schema is in hand to expand
-	// against — measured against the live JVM in
-	// conformance/duplicate_star_java_probe_test.go (group_by_star_covers vs
-	// group_by_star_exceeds).
-	SkipGapStarGroupBy SkipClass = "engine-gap:star-group-by-expansion"
+	// SkipConformanceJavaDisabled is a file Java's test class @Disabled
+	// because Java fails it, failing here for the same reason. Nothing is
+	// missing on the Go side relative to Java; the booking names Java's TODO.
+	SkipConformanceJavaDisabled SkipClass = "conformance:java-disabled"
 )
 
 // AllSkipClasses is every declared reason class.
@@ -252,31 +196,19 @@ func AllSkipClasses() []SkipClass {
 		SkipVacuous,
 		SkipVersionGate,
 		SkipMultiCluster,
-		SkipPrepared,
 		SkipContinuation,
 		SkipResultMetadataNested,
-		SkipTemporaryFunction,
 		SkipCopyBlock,
-		SkipSchemaCommand,
 		SkipDebugger,
 		SkipDDLStruct,
+		SkipDDLStructIndex,
 		SkipDDLFunction,
 		SkipDDLOther,
-		SkipGapCommaJoinFrom,
-		SkipGapDMLReturning,
-		SkipGapCatalogTables,
+		SkipGapStructDML,
 
-		SkipGapTableValuedFunction,
-		SkipGapCorrelatedExistsSetOp,
-		SkipGapNestedRecursiveWith,
-		SkipGapReturningDryRun,
-		SkipGapPlannerDeclines,
-		SkipGapErrorClass,
 		SkipConformanceGoAccepts,
 		SkipConformanceJavaPlannerBug,
-		SkipGapSerializationOptions,
-		SkipGapMultipleLateralUnnests,
-		SkipGapStarGroupBy,
+		SkipConformanceJavaDisabled,
 		SkipCheckCache,
 		SkipRandomInjection,
 		SkipNoChecks,
@@ -318,6 +250,8 @@ type Skip struct {
 	Where string
 	// Detail is the specific cause, e.g. the engine's DDL rejection message.
 	Detail string
+	// GapBooking identifies the matched engine gap without parsing display text.
+	GapBooking string
 }
 
 // FileResult is one corpus file's outcome.
@@ -332,9 +266,11 @@ type FileResult struct {
 	// QueriesRun counts queries whose configs were actually asserted.
 	QueriesRun int
 	// FixtureLoadAttempts counts explicit reset/load transactions in the
-	// generated-fixture mode only. Each ambiguous commit is retained below.
+	// generated-fixture mode only. Each ambiguous commit and each replayed
+	// transaction-window loss is retained below.
 	FixtureLoadAttempts      int
 	FixtureCommitAmbiguities []error
+	FixtureWindowLosses      []error
 	// Skips are the sub-file counted skips (block, query and config level).
 	Skips []Skip
 }

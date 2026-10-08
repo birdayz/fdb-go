@@ -22,7 +22,7 @@ import (
 // has no streaming mode: the child is not required to be primary-key ordered.
 type RecordQueryUnorderedPrimaryKeyDistinctPlan struct {
 	PlanExprBase
-	innerQ expressions.Quantifier
+	quantifiers [1]expressions.Quantifier
 }
 
 // NewRecordQueryUnorderedPrimaryKeyDistinctPlan constructs a PK-based
@@ -40,17 +40,17 @@ func NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
 	if err != nil {
 		return nil, err
 	}
-	return &RecordQueryUnorderedPrimaryKeyDistinctPlan{PlanExprBase: base, innerQ: innerQ}, nil
+	return &RecordQueryUnorderedPrimaryKeyDistinctPlan{PlanExprBase: base, quantifiers: [1]expressions.Quantifier{innerQ}}, nil
 }
 
 // GetInner returns the wrapped inner plan, dereferenced through the quantifier.
 func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetInner() RecordQueryPlan {
-	return planFromQuantifier(p.innerQ)
+	return planFromQuantifier(p.quantifiers[0])
 }
 
 // GetInnerQuantifier returns the plan's single child edge.
 func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetInnerQuantifier() expressions.Quantifier {
-	return p.innerQ
+	return p.quantifiers[0]
 }
 
 // GetResultValue returns the child row unchanged.
@@ -61,10 +61,10 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetResultValue() values.Val
 // GetQuantifiers reports the real child quantifier, overriding
 // PlanExprBase's none.
 func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetQuantifiers() []expressions.Quantifier {
-	if p.innerQ.GetRangesOver() == nil {
+	if p.quantifiers[0].GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return p.quantifiers[:]
 }
 
 // IsReverse delegates to the inner plan.
@@ -95,12 +95,12 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetChildren() []RecordQuery
 // checks `getClass() == otherExpression.getClass()`. The same key drives both
 // EqualsPlanWithoutChildren and HashCodeWithoutChildren.
 func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) structuralKey() *structuralKey {
-	return newStructuralKey()
+	return &structuralKey{}
 }
 
 func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryUnorderedPrimaryKeyDistinctPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mirrors Java's
@@ -109,7 +109,7 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) HashCodeWithoutChildren() u
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("unorderedprimarykeyDistinctplan")
+	hash := p.keyFor(p).Hash("unorderedprimarykeyDistinctplan")
 	p.storeStructuralHash(p, hash)
 	return hash
 }
@@ -146,7 +146,7 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) WithQuantifiers(qs []expres
 		return nil, err
 	}
 	cp.PlanExprBase = base
-	cp.innerQ = qs[0]
+	cp.quantifiers[0] = qs[0]
 	return &cp, nil
 }
 
@@ -169,8 +169,8 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) WithInner(
 	inner RecordQueryPlan,
 ) (*RecordQueryUnorderedPrimaryKeyDistinctPlan, error) {
 	cp := *p
-	cp.innerQ = QuantifierOverPlan(inner)
-	base, err := newPlanExprBaseForQuantifier("RecordQueryUnorderedPrimaryKeyDistinctPlan", cp.innerQ)
+	cp.quantifiers[0] = QuantifierOverPlan(inner)
+	base, err := newPlanExprBaseForQuantifier("RecordQueryUnorderedPrimaryKeyDistinctPlan", cp.quantifiers[0])
 	if err != nil {
 		return nil, err
 	}

@@ -366,7 +366,10 @@ func rebalanceSPFreshIndexRounds(ctx context.Context, db *FDBDatabase, storeBuil
 		if index.Type != IndexTypeVectorSPFresh {
 			return fmt.Errorf("spfresh rebalance: index %q has type %q", indexName, index.Type)
 		}
-		config = parseSPFreshConfig(index)
+		var cerr error
+		if config, cerr = readSPFreshConfig(index); cerr != nil {
+			return cerr
+		}
 		indexSubspace = store.indexSubspace(index)
 		return nil
 	}); err != nil {

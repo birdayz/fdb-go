@@ -82,6 +82,6 @@ func FuzzSQLPlan(f *testing.F) {
 		}
 		// A returned error is fine (bad column, unsupported shape, type error, …);
 		// only a panic is a bug. The fuzzer reports any panic as a crash.
-		_, _ = g.planSelectCascades(ctx, q, md, false)
+		_, _ = g.planSelectCascades(ctx, q, md, false, statementOptions{})
 	})
 }

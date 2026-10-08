@@ -14,6 +14,9 @@ func StructurallyEqual(a, b QueryPredicate) bool {
 		return false
 	}
 
+	if IsAtomic(a) != IsAtomic(b) {
+		return false
+	}
 	switch ap := a.(type) {
 	case *ComparisonPredicate:
 		bp, ok := b.(*ComparisonPredicate)

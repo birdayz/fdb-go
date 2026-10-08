@@ -27,8 +27,9 @@ name: Nightly Factory
 # wrong direction; the reviewable UNIT survives accumulation anyway, because the
 # rolling branch keeps one commit and one manifest comment per run.
 #
-# The FULL corpus also runs in every `just test` and every PR CI run (owner
-# ruling 2026-08-01: the committed corpus is ordinary suite content). The
+# The FULL corpus also runs in `just test-full` and every PR CI run (owner
+# ruling 2026-08-01: the committed corpus is ordinary suite content; since
+# 2026-10-05 the fast local `just test` omits it, see AGENTS.md). The
 # `corpus` job here is therefore redundant as coverage, but it is KEPT: it is
 # the scheduled master-branch net, and its genuine-run heartbeat is what
 # nightly-reconcile.yml checks — removing the job would turn the reconciler
@@ -77,9 +78,7 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # The permitted band, declared as two explicit hours so it is
-          # machine-readable: pkg/docscheck's TestNightlyWindowAdmitsMeasuredLandings
-          # parses these and replays every allocation hour this net has been given.
+          # The permitted band, as two explicit hours.
           # WINDOW_START > WINDOW_END means the band WRAPS midnight.
           #
           # This job landed with an inlined `-ge 0 -lt 10` bound, written before the
@@ -118,7 +117,7 @@ jobs:
       - name: Run the full committed corpus
         if: steps.window.outputs.ok == 'true'
         id: corpus
-        # The same target every `just test` runs; named explicitly and
+        # The same target `just test-full` and PR CI run; named explicitly and
         # uncached because this job's product is the scheduled master-branch
         # heartbeat, not incremental coverage.
         run: |

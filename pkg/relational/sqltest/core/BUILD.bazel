@@ -1,0 +1,66 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "core_test",
+    size = "large",
+    timeout = "eternal",
+    srcs = [
+        "covering_leaf_column_metadata_fdb_test.go",
+        "current_timestamp_crosspage_test.go",
+        "current_timestamp_join_shapes_test.go",
+        "current_timestamp_stability_test.go",
+        "direct_access_fdb_test.go",
+        "embedded_fdb_test.go",
+        "fleet_fanout_fdb_test.go",
+        "main_test.go",
+        "named_call_fdb_test.go",
+        "plan_cache_engine_fdb_test.go",
+        "plan_logging_fdb_test.go",
+        "range_table_function_fdb_test.go",
+        "read_your_writes_index_fdb_test.go",
+        "sliding_window_view_fdb_test.go",
+        "sql_function_columns_fdb_test.go",
+        "sql_function_fdb_test.go",
+        "store_timer_metrics_fdb_test.go",
+    ],
+    tags = [
+        "resources:memory:700",
+        "test-full",
+    ],
+    deps = [
+        "//pkg/dst",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/internal/fdbclient",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/rlmetrics",
+        "//pkg/relational/api",
+        "//pkg/relational/conformance/coveringleaf",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/ddl",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/fleet",
+        "//pkg/relational/core/rowstruct",
+        "//pkg/relational/sqldriver",
+        "//pkg/relational/sqltest/testkit",
+        "//pkg/simfdb",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)
+
+# This package's test sources, for the whole-corpus census and the
+# transaction-budget census (//pkg/relational/sqltest:corpus).
+filegroup(
+    name = "corpus",
+    srcs = glob(
+        ["*_test.go"],
+        exclude = ["main_test.go"],
+    ),
+    visibility = ["//pkg/relational:__subpackages__"],
+)

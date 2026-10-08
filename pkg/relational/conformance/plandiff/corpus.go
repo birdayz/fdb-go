@@ -319,7 +319,7 @@ func SeedRunCorpus() []RunQuery {
 		// INFORMATION_SCHEMA: empirically probed: Java
 		// rejects with `RelationalException: Unknown reference
 		// INFORMATION_SCHEMA.TABLES` — the catalog is not registered
-		// at all in 4.11.1.0 (no schema-qualified reference, no
+		// at all in 4.11.1.0 (no template-qualified reference, no
 		// alternate access path). Go has a working Go-only impl
 		// (system_tables.go / system_rows.go) that's NOT cross-engine
 		// alignable until upstream adds support. TODO #9 decision:
@@ -999,20 +999,15 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_OFF ORDER BY id LIMIT 2 OFFSET 1",
 		},
 		{
-			// FROM-less SELECT (CTE base case form) — Java rejects
-			// universally per QueryVisitor.visitSimpleTable's
-			// Assert.notNullUnchecked(fromClause) gate, including
-			// inside CTE bodies.
-			Name:           "fromless_in_cte_base_rejected",
+			// Java 4.14.2.0 supplies a singleton source inside a CTE too.
+			Name:           "fromless_in_cte_base",
 			SchemaTemplate: "CREATE TABLE T_FLC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_FLC VALUES (1, 1)"},
 			Query:          "WITH base AS (SELECT 1 AS n) SELECT n FROM base",
 		},
 		{
-			// FROM-less SELECT (standalone) — companion pin to
-			// fromless_in_cte_base_rejected. Same Java site, same
-			// message, different syntactic context.
-			Name:           "fromless_standalone_rejected",
+			// Standalone singleton source, through the same query shell.
+			Name:           "fromless_standalone",
 			SchemaTemplate: "CREATE TABLE T_FL (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_FL VALUES (1, 1)"},
 			Query:          "SELECT 1 + 1",
@@ -1081,18 +1076,8 @@ func SeedRunCorpus() []RunQuery {
 		// LIMIT-using yamsql + sqldriver tests; defer to a dedicated
 		// cleanup shift. Probed against live Java — rejection
 		// confirmed.
-		// NOTE: `SELECT 1+1` (FROM-less SELECT for constant projection)
-		// is a known one-sided divergence: Java rejects standalone
-		// FROM-less SELECT with UnableToPlan (CLAUDE.md gotcha
-		// "SELECT <expr> without FROM is unsupported by the planner")
-		// but ACCEPTS the same form inside CTE base cases like
-		// `WITH RECURSIVE counter(n) AS (SELECT 1 AS n UNION ALL ...)`.
-		// Go's embedded engine accepts both contexts uniformly.
-		// Aligning Go to reject standalone FROM-less SELECT while
-		// continuing to accept the CTE base case requires context-
-		// aware parsing (separate parseSelectQuery entry points or a
-		// flag) — deferred as a separate large-scope conformance
-		// task. Probed against live Java.
+		// FROM-less constant projection is shared with Java 4.14.2.0;
+		// the standalone and CTE cases above pin its singleton source.
 		// NOTE: `col IN (SELECT ...)` is rejected by BOTH engines — no
 		// divergence. Java's `ExpressionVisitor.visitInPredicate`
 		// asserts `inList().queryExpressionBody() == null` with
@@ -6922,7 +6907,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// Recursive CTE counting depth via SELECT n+1 FROM c WHERE n < 10.
 			// Base case must come from a real table (Java rejects standalone
-			// FROM-less SELECT but accepts inside CTE base; we pull the seed
+			// FROM-less SELECT in older releases; this specimen pulls the seed
 			// from a single-row table to stay portable).
 			Name:           "recursive_cte_depth_counter",
 			SchemaTemplate: "CREATE TABLE T_RC1 (id BIGINT, PRIMARY KEY (id))",
@@ -12791,29 +12776,18 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "WITH RECURSIVE c AS (SELECT id AS n FROM T_RCA1 UNION ALL SELECT n + 1 AS n FROM c WHERE n < 10) SELECT count(*) FROM c",
 		},
 		{
-			// Explicit CTE column list RENAMES a seed that carries its own
-			// alias (`c(v)` over `SELECT id AS x`): the seed-normalization wrap
-			// fires and must re-read the seed by its emitted alias X (the
-			// positional slot name), not the source column ID (same review-P2
-			// class as above, seed-side). Annotated JavaErrorsGoCorrect: Java's
-			// recursive-CTE inner type carries the SEED names only (the column
-			// list applies to the union's OUTPUT), so Java can't see `v` inside
-			// the recursive branch; Go exposes it Postgres-style.
+			// An explicit CTE column list (`c(v)` over `SELECT id AS x`) names
+			// the CTE only for the main query: the recursive branch cannot see
+			// `v`, and both engines reject it 42703.
 			Name:           "recursive_cte_column_list_renames_aliased_seed",
 			SchemaTemplate: "CREATE TABLE T_RCA2 (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_RCA2 VALUES (1)"},
 			Query:          "WITH RECURSIVE c(v) AS (SELECT id AS x FROM T_RCA2 UNION ALL SELECT v + 1 FROM c WHERE v < 5) SELECT count(*) FROM c",
 		},
 		{
-			// REVERSE direction of the entry above (PR #446): the recursive
-			// body references the seed's INNER alias
-			// `x`, not the column-list name `v`. Confirmed empirically:
-			// Java's recursive-CTE inner type carries the SEED's output names
-			// (X), so Java resolves `x` and runs the recursion; Go's
-			// normalization exposes the column-list names (V) inside the body
-			// per Postgres (the column list renames the CTE's columns for ALL
-			// references — PG rejects `x` here too), so Go rejects with a
-			// plan-time 42703. Annotated JavaSucceedsGoRejects.
+			// The recursive branch reads the seed's own alias `x`; the column
+			// list `v` renames only the main query's view
+			// (QueryVisitor.handleRecursiveNamedQuery).
 			Name:           "recursive_cte_body_references_seed_alias",
 			SchemaTemplate: "CREATE TABLE T_RCA3 (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_RCA3 VALUES (1)"},
@@ -14451,9 +14425,9 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id FROM T_MT_02 WHERE n IN ('5', 'ten')",
 			Divergence: &Divergence{
-				Reason:          "Both engines reject mixed-type IN list (string vs BIGINT). Go uses 42804 (DATATYPE_MISMATCH) matching Java's SemanticException translation. Error messages may differ.",
+				Reason:          "Both engines reject a STRING IN list against a BIGINT probe with 22000, the IN's promotion of its probe (Java INCOMPATIBLE_TYPE).",
 				Direction:       DivergenceBothErrorMessagesDrift,
-				GoErrorContains: "The operands of a comparison operator are not compatible",
+				GoErrorContains: "cannot be promoted to the type of the variable",
 			},
 		},
 		// --- Self-join shapes -----------------------------------------
@@ -18109,26 +18083,17 @@ func SeedRunCorpus() []RunQuery {
 			// accepts the duplicate FROM (per-attribute a.qid → the q leg,
 			// the only leg carrying qid) and the UNCORRELATED EXISTS (always
 			// true — p is non-empty), so it answers the full cross product's
-			// q values: 6 rows, qid ∈ {5,7,9} each twice. PARITY — Go matches
-			// (the identity-FlatMap pass-through flows the gated outer's
-			// positional row so the minted-dup upper resolves positionally);
-			// Go previously declined this valid query (a mislabeled reach
-			// gap, not a Java divergence).
+			// q values: 6 rows, qid ∈ {5,7,9} each twice. Go answers the same
+			// rows in its own nesting order (Divergence below).
 			Name:           "dup_from_alias_leg_independent_exists",
 			SchemaTemplate: "CREATE TABLE T_DUP_EIP (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_EIQ (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_EIP VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_EIQ VALUES (5), (7), (9)"},
 			Query:          "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIP)",
 			Divergence: &Divergence{
 				Reason: "ORDER ONLY — identical six-row multiset on both engines, and the query has no ORDER BY. " +
-					"Go's cost model ties on the two nestings of the unconstrained comma join and breaks the tie " +
-					"with an identifier-sensitive hash. So does JAVA — its ImplementNestedLoopJoinRule matches both " +
-					"quantifier orders (SetMatcher.exactlyInAnyOrder) and PlanningCostModel.compare ends in a planHash " +
-					"comparison, so neither engine guarantees a nesting: over 16 name/cardinality combinations Java " +
-					"deviates from FROM order in 10 (RFC-235 section 18). PRE-EXISTING and not caused by the EXISTS: measured at " +
-					"merge-base e24f338e7, the plain comma join over these tables already diverges the same way. " +
-					"The retired three-quantifier NLJ arm forced Java's nesting for this shape and was masking it. " +
-					"Root cause, the renamed-table demonstration and the mutation evidence: RFC-235 section 17; " +
-					"pinned live against the JVM by conformance/dup_alias_exists_order_probe_test.go.",
+					"The two nestings of the unconstrained comma join tie on cost and each engine breaks the tie " +
+					"with its own plan hash; see dup_from_alias_shadowing_exists, and the live pin beside its sibling " +
+					"shapes in conformance/dup_alias_exists_order_probe_test.go.",
 				Direction: DivergenceUnorderedRowOrderDiffers,
 				GoExpectedRows: [][]any{
 					{float64(5)}, {float64(5)}, {float64(7)}, {float64(7)}, {float64(9)}, {float64(9)},
@@ -18148,12 +18113,14 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_DUP_SHP VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_SHQ VALUES (5), (7), (9)"},
 			Query:          "SELECT a.qid FROM T_DUP_SHP AS a, T_DUP_SHQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_SHP AS a WHERE a.id = 1)",
 			Divergence: &Divergence{
-				Reason: "ORDER ONLY — same multiset, no ORDER BY, same cost-model tie as " +
-					"dup_from_alias_leg_independent_exists. This entry is ALSO the evidence that the tie is a coin " +
-					"flip rather than a rule about FROM order: the byte-identical query over tables named " +
-					"T_DUP_EIP/T_DUP_EIQ instead of T_DUP_SHP/T_DUP_SHQ plans the OPPOSITE nesting and AGREES with " +
-					"Java. Both spellings are run side by side against the JVM in " +
-					"conformance/dup_alias_exists_order_probe_test.go; full write-up in RFC-235 section 17.",
+				Reason: "ORDER ONLY — identical six-row multiset on both engines, and the query has no ORDER BY. " +
+					"Go's cost model ties on the two nestings of the unconstrained comma join and breaks the tie " +
+					"with an identifier-sensitive hash. So does JAVA — its ImplementNestedLoopJoinRule matches both " +
+					"quantifier orders (SetMatcher.exactlyInAnyOrder) and PlanningCostModel.compare ends in a planHash " +
+					"comparison, so neither engine guarantees a nesting: over 16 name/cardinality combinations Java " +
+					"deviates from FROM order in 10 (RFC-235 section 18). The plain comma join over these tables " +
+					"diverges the same way. Pinned live against the JVM, beside its sibling shapes, by " +
+					"conformance/dup_alias_exists_order_probe_test.go.",
 				Direction: DivergenceUnorderedRowOrderDiffers,
 				GoExpectedRows: [][]any{
 					{float64(5)}, {float64(5)}, {float64(7)}, {float64(7)}, {float64(9)}, {float64(9)},
@@ -18165,7 +18132,7 @@ func SeedRunCorpus() []RunQuery {
 			// in FROM order (unique quantifier ids; no dedup). PARITY: Go answers
 			// cols [ID V QID ID V], full cross product (the ordinal seed's
 			// positional row serves the duplicate labels —
-			// deriveColumnsFromJoin's RV-divergence arm). Go previously rejected
+			// the former column derivation's RV-divergence arm). Go previously rejected
 			// with 42702 at the FROM walk.
 			Name:           "dup_from_alias_select_star",
 			SchemaTemplate: "CREATE TABLE T_DUP_S (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_T (qid BIGINT, PRIMARY KEY (qid))",
@@ -18227,18 +18194,17 @@ func SeedRunCorpus() []RunQuery {
 				" SELECT * FROM r",
 		},
 		{
-			// Positional ORDER BY over a star SELECT: BOTH engines reject
-			// (live-classified — Java cannot plan it either); Go's message
-			// names the actual problem, Java's is the generic planner
-			// decline. Message drift, not a capability gap.
+			// Java treats the numeric sort expression as a literal and cannot
+			// plan this ordering. Go's positional-ordering extension addresses
+			// the expanded visible SELECT slots, including a sole star.
 			Name:           "order_by_position_over_star",
 			SchemaTemplate: "CREATE TABLE T_OBP_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_OBP_01 VALUES (2, 20), (1, 10)"},
 			Query:          "SELECT * FROM T_OBP_01 ORDER BY 1",
 			Divergence: &Divergence{
-				Reason:          "Both engines reject positional ORDER BY over a star SELECT (live-verified: Java 'Cascades planner could not plan query'); Go's 22023 names the empty positional SELECT list. Cosmetic message drift.",
-				Direction:       DivergenceBothErrorMessagesDrift,
-				GoErrorContains: "ORDER BY position 1 is out of range",
+				Reason:         "Java cannot plan this literal sort expression; Go's positional-ordering extension resolves position 1 against the expanded star.",
+				Direction:      DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{{float64(1), float64(10)}, {float64(2), float64(20)}},
 			},
 		},
 		{
@@ -18253,7 +18219,7 @@ func SeedRunCorpus() []RunQuery {
 			Divergence: &Divergence{
 				Reason:          "Both engines reject the generated aggregate spelling as a non-existing column. RFC-256 makes an unaliased aggregate output anonymous in Go as it is in Java; only diagnostic wording differs.",
 				Direction:       DivergenceBothErrorMessagesDrift,
-				GoErrorContains: "column \"A.COUNT(*)\" does not exist",
+				GoErrorContains: "Attempting to query non existing column A.COUNT(*)",
 			},
 		},
 		{

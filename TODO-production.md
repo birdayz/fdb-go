@@ -608,8 +608,7 @@ retract: **no** `IN (SELECT ...)` form works, in any position, and the corpus pi
 `0AF00` rejection in every shape. Java rejects it too
 (`ExpressionVisitor.visitInPredicate` asserts `inList().queryExpressionBody() == null`
 → `UNSUPPORTED_QUERY`), so it is a shared gap, not a Go divergence. The strings above
-are corrected in place; a `pkg/docscheck` guard now fails the build if the README's
-supported list re-advertises the form.
+are corrected in place.
 
 **Update (RFC-131, PR — 2026-06-20):** the earlier SQL-section rewrite missed a separate README
 contradiction — the client-maturity row (README:19) still claimed "no drop-in escape hatch to the C
@@ -663,7 +662,7 @@ Torvalds + codex ACK**; mark `[x]` once accepted.
 *(Verified 2026-06-24 — correcting the first reconciliation pass, which wrongly reported "no
 CHANGELOG".)* Everything except the actual tag is in place (RFC-131/132 era, 2026-06-20):
 - **`CHANGELOG.md`** — Keep-a-Changelog format with an `[Unreleased]` section and a per-entry
-  **Compatibility** block (wire / SQL / client-option / deps); guarded by `pkg/docscheck`.
+  **Compatibility** block (wire / SQL / client-option / deps).
 - **`RELEASE.md`** — versioning + support policy: `v0.MINOR.PATCH`, Go API unstable pre-1.0, FDB
   wire format the stable hard line across every tag.
 - **Stability statement** — `README.md` (pre-1.0 maturity row) + `RELEASE.md` per-layer policy +

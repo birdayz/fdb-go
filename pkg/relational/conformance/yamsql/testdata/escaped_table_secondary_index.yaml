@@ -32,22 +32,16 @@
 # The unescaped table is here so a failure is attributable: if BOTH CREATE INDEX
 # statements start failing, the DDL broke generally rather than on the escaping.
 #
-# THE INDEX IS BUILT AND MAINTAINED BUT NOT YET CHOSEN, and the plan assertions
-# say so rather than pretending otherwise. Measured, same query shape, one per
+# THE INDEX IS CHOSEN, as on the unescaped table. Same query shape, one per
 # table:
 #
 #   u          ->  IndexScan(IDX_TAG, [=] COVERING)
-#   "MY$TABLE" ->  PredicatesFilter(Scan(MY$TABLE), [1 preds])
+#   "MY$TABLE" ->  IndexScan(IDX_NAME, [=] COVERING)
 #
-# The match candidates are registered under the STORED name while the query's
-# scan expression carries the SQL one, and the two are compared as strings
-# (FullUnorderedScanExpression.EqualsWithoutChildren), so no candidate ever
-# matches an escaped table. Creating the index is a real fix -- the DDL error
-# was a hard functional gap -- and the matching is the open half, decided in
-# RFC-238 §7c: the scan leaf resolves the table to its STORED name, as Java's
-# LogicalOperator.generateTableAccess does. When that lands the first assertion
-# becomes an IndexScan over IDX_NAME; that is the signal to update this file,
-# not to relax it.
+# The scan leaf carries the table's STORED name, as Java's
+# LogicalOperator.generateTableAccess builds it (RFC-238 §7c), so it matches
+# the candidates registered under that name. Before §7c the escaped table
+# planned `PredicatesFilter(Scan(MY$TABLE), [1 preds])`.
 name: escaped_table_secondary_index
 schema_template: |
   CREATE TABLE "MY$TABLE" (id BIGINT, name STRING, "c$1" BIGINT, PRIMARY KEY (id))
@@ -62,7 +56,7 @@ tests:
   # The DDL above is the assertion: reaching this query at all means CREATE
   # INDEX on an escaped table no longer reports the table as unknown.
   - query: SELECT id FROM "MY$TABLE" WHERE name = 'beta'
-    plan_contains: "PredicatesFilter(Scan(MY$TABLE)"
+    plan_contains: "IndexScan(IDX_NAME, [=] COVERING)"
     rows:
       - [2]
 
@@ -71,3 +65,21 @@ tests:
     plan_contains: "IndexScan(IDX_TAG, [=] COVERING)"
     rows:
       - [10]
+
+  # The ESCAPED COLUMN's index is chosen too. Its key expression names the
+  # stored field `c__1`, and the candidate's base type names it `c$1`
+  # (FieldNameForProtoField decodes); the key expansion decodes the stored
+  # path by the same rule, as Java's KeyExpressionExpansionVisitor reads
+  # toUserIdentifier(getFieldName()). Without that the candidate failed to
+  # build and this planned `PredicatesFilter(Scan(MY$TABLE), [1 preds])`.
+  - query: SELECT id FROM "MY$TABLE" WHERE "c$1" = 200
+    plan_contains: "IndexScan(IDX_AS_SELECT, [=, *] COVERING)"
+    rows:
+      - [2]
+
+  - query: SELECT id FROM "MY$TABLE" WHERE "c$1" > 150
+    plan_contains: "IndexScan(IDX_AS_SELECT, [<>, *] COVERING)"
+    unordered: true
+    rows:
+      - [2]
+      - [3]

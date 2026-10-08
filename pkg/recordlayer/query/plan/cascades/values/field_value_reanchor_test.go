@@ -716,6 +716,59 @@ func TestReanchorFieldValueFrontierBridgeRequiresPinAndExactWholeRow(t *testing.
 	requireReanchorError(t, failed, err, ReanchorUnmappedSource)
 }
 
+// A self-join filter on leg R reads `M.SK = R.SK`, where M is the outer leg of
+// the same table. M's machine-built (pinned) path has the carrier's exact type,
+// which is not evidence that it reads R's row: crossing it turned the
+// predicate into `_current.SK = _current.SK`, true on every row.
+func TestReanchorOwnedValueForLayoutKeepsSameTypedOuterLeg(t *testing.T) {
+	t.Parallel()
+	rowType := NewRecordType("NT", false, []Field{
+		{Name: "ID", Ordinal: 0, FieldType: NotNullLong},
+		{Name: "SK", Ordinal: 1, FieldType: NullableLong},
+	})
+	input, err := NewOrdinalLayoutForCarrierType(
+		rowType, []OrdinalTileSpec{{Start: 0, Width: 2, Kind: OrdinalTileFlat}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outerLeg := mustLayoutSourceQOV(t, "M", rowType)
+	innerLeg := mustLayoutSourceQOV(t, "R", rowType)
+	outerSK, err := ResolveOrdinalSeedField(outerLeg, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	innerSK, err := ResolveOrdinalSeedField(innerLeg, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comparison := &ArithmeticValue{Op: OpAdd, Left: outerSK, Right: innerSK}
+	owned := map[CorrelationIdentifier]struct{}{
+		NamedCorrelationIdentifier("R"): {},
+		CurrentCorrelation():            {},
+	}
+	got, err := ReanchorOwnedValueForLayout(comparison, input.Carrier(), input, owned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reanchored := got.(*ArithmeticValue)
+	if reanchored.Left != outerSK {
+		t.Fatalf("outer leg M crossed onto the input carrier: %v", reanchored.Left)
+	}
+	if mustReanchorField(t, reanchored.Right).ChildValue() != input.Carrier() {
+		t.Fatalf("owned leg R did not cross onto the input carrier: %v", reanchored.Right)
+	}
+
+	// The unrestricted form keeps its bridge for callers whose value has no
+	// outer reads.
+	bridged, err := ReanchorValueForLayout(outerSK, input.Carrier(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mustReanchorField(t, bridged).ChildValue() != input.Carrier() {
+		t.Fatal("unrestricted reanchor lost the pinned-frontier bridge")
+	}
+}
+
 func TestPinValueToExactFrontierPinsOnlyOwnedCurrentFields(t *testing.T) {
 	t.Parallel()
 	rowType := NewRecordType("aggregate-input", false, []Field{

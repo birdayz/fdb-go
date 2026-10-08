@@ -125,15 +125,10 @@ const (
 	// decides an ERROR, which is the sharpest consequence in the family.
 	QualRecSiteProjQualVsScan
 
-	// QualRecSiteDisplayLabelStrip is embedded's display-label strip
-	// (cascades_generator.go), guarded by the PARENTHESIS HEURISTIC in
-	// isPlainQualifiedColumnReference — which rejects on `()` because
-	// "parentheses identify the rendered aggregate/function label at issue".
-	// That is a heuristic over a RENDERING, not a parse, and it is the reason
-	// this site is counted even though both provenance and structured alias
-	// source are now carried: it still splits the rendered internal datum key to
-	// obtain the leaf, and the census verifies that rendering agrees with the
-	// frozen source rather than whichever physical carrier now owns the Value.
+	// QualRecSiteDisplayLabelStrip is the stable identity of the retired
+	// display-label strip, which split a rendered projection key to label a
+	// column. Result columns are now the plan's result row type and SQL labels
+	// the logical output names, so every class at this site is a revival.
 	QualRecSiteDisplayLabelStrip
 
 	qualRecSiteCount
@@ -195,9 +190,9 @@ const (
 
 	// QualRecHeuristicDecline: a dot WAS found and the split was declined — but
 	// by a HEURISTIC OVER THE RENDERING rather than by any structured fact. The
-	// only instance is isPlainQualifiedColumnReference's rejection on `()`,
-	// which reads a rendered aggregate/function label out of a string by looking
-	// for parentheses in it.
+	// only instance, the retired display-label strip's rejection on `()`, read a
+	// rendered aggregate/function label out of a string by looking for
+	// parentheses in it.
 	//
 	// It is its own class and not folded into BARE, because the two are opposite
 	// findings: bare means the site was handed a name with no qualifier in it,

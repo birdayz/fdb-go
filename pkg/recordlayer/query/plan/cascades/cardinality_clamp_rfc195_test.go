@@ -742,15 +742,6 @@ func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 			physical: mustBuild(t, captureBuild(plans.NewRecordQueryFilterPlan(nil, probe("PAIR_FILTER")))),
 			probes:   probes,
 		},
-		"*expressions.LogicalProjectionExpression": {
-			logical: &expressions.LogicalProjectionExpression{},
-			physical: func() plans.RecordQueryPlan {
-				child := probe("PAIR_PROJECTION")
-				return mustBuild(t, captureBuild(plans.NewRecordQueryProjectionPlan(
-					[]values.Value{mustCardinalityField(t, child, "ID")}, child)))
-			}(),
-			probes: probes,
-		},
 		"*expressions.LogicalSortExpression": {
 			logical:  &expressions.LogicalSortExpression{},
 			physical: mustBuild(t, captureBuild(plans.NewRecordQueryInMemorySortPlan(probe("PAIR_SORT"), nil))),
@@ -898,9 +889,10 @@ func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 		"*plans.RecordQueryMultiIntersectionOnValuesPlan":   "n-ary physical form of LogicalIntersectionExpression; paired through RecordQueryIntersectionPlan",
 		"*plans.RecordQueryNestedLoopJoinPlan":              "materialized physical form of SelectExpression's join shape; paired through RecordQueryFlatMapPlan",
 		"*plans.RecordQueryRecursiveDfsJoinPlan":            "depth-first physical form of RecursiveUnionExpression; paired through RecordQueryRecursiveLevelUnionPlan, and pinned equal to it by TestRFC195_RecursiveTwinsProveOneBound",
-		"*plans.RecordQueryMapPlan":                         "physical form of LogicalProjectionExpression's row reshape; paired through RecordQueryProjectionPlan",
+		"*plans.RecordQueryMapPlan":                         "physical form of a one-quantifier SelectExpression's row reshape; covered by the filter-shaped SELECT pair",
 		"*plans.RecordQueryIndexPlan":                       "no logical counterpart: index selection is an implementation choice, not a logical operator",
 		"*plans.RecordQueryCoveringIndexPlan":               "no logical counterpart: answering from the index entry instead of the base record is an implementation choice over the same logical access as RecordQueryIndexPlan",
+		"*plans.RecordQueryCoveringIndexValuePlan":          "no logical counterpart: as RecordQueryCoveringIndexPlan, reading the entry through a reader Value",
 		"*plans.RecordQueryVectorIndexPlan":                 "no logical counterpart: a K-NN probe is an access path, not a logical operator",
 		"*plans.RecordQueryAggregateIndexPlan":              "no logical counterpart: an aggregate index is an access path for GroupByExpression, not a logical operator",
 		"*plans.RecordQueryFetchFromPartialRecordPlan":      "no logical counterpart: a fetch is an enforcer the planner inserts, never named in SQL",
@@ -918,7 +910,6 @@ func TestRFC195_LogicalPhysicalArmsArePaired(t *testing.T) {
 		"*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan": "paired through LogicalUniqueExpression",
 		"*plans.RecordQueryDistinctPlan":                    "paired through LogicalDistinctExpression",
 		"*plans.RecordQueryTypeFilterPlan":                  "paired through LogicalTypeFilterExpression",
-		"*plans.RecordQueryProjectionPlan":                  "paired through LogicalProjectionExpression",
 		"*plans.RecordQueryInMemorySortPlan":                "paired through LogicalSortExpression",
 		"*plans.RecordQueryUnionPlan":                       "paired through LogicalUnionExpression",
 		"*plans.RecordQueryIntersectionPlan":                "paired through LogicalIntersectionExpression",

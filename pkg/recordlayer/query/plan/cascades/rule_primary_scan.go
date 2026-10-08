@@ -56,7 +56,8 @@ func (r *PrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 				plan = plan.WithPrimaryKey(pkVals).
 					WithKeyComponentTypes(physicalTypesFromFlatRow(
 						scan.GetFlowedType(), pkCols, nil,
-					))
+					)).
+					WithCommonPrimaryKey(commonPrimaryKeyOf(call.Context, scan.GetRecordTypes()))
 			}
 		}
 	}

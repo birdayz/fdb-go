@@ -11,74 +11,17 @@ package sqldriver_test
 
 import (
 	"context"
-	"database/sql"
-	"errors"
-	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"fdb.dev/pkg/relational/api"
 )
 
-// setupErrorTestDB creates a fresh database + schema template + schema
-// and returns a *sql.DB wired into that schema. Same shape as the
-// happy-path tests' setup, factored so the error tests can share it.
-func setupErrorTestDB(t *testing.T, dbPath, schemaName, ddl string) *sql.DB {
-	t.Helper()
-	if clusterFilePath == "" {
-		t.Skip("FDB not available (no Docker)")
-	}
-	ctx := context.Background()
-	setup := openTestDB(t, dbPath)
-	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", dbPath)); err != nil {
-		t.Fatalf("CREATE DATABASE: %v", err)
-	}
-	if _, err := setup.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA TEMPLATE %s_tmpl %s", schemaName, ddl)); err != nil {
-		t.Fatalf("CREATE SCHEMA TEMPLATE: %v", err)
-	}
-	if _, err := setup.ExecContext(ctx,
-		fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s_tmpl", dbPath, schemaName, schemaName)); err != nil {
-		t.Fatalf("CREATE SCHEMA: %v", err)
-	}
-	dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schemaName)
-	db, err := sql.Open("fdbsql", dsn)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
-}
-
-// asAPIError unwraps the err to *api.Error. Returns nil if the chain
-// has no api.Error.
-func asAPIError(err error) *api.Error {
-	var e *api.Error
-	if errors.As(err, &e) {
-		return e
-	}
-	return nil
-}
-
-// assertErrorCode runs the SQL, expects an error, and asserts the
-// returned error's api.ErrCode* matches `wantCode`.
-func assertErrorCode(t *testing.T, db *sql.DB, sql string, wantCode api.ErrorCode) {
-	t.Helper()
-	_, err := db.ExecContext(context.Background(), sql)
-	if err == nil {
-		t.Fatalf("expected error %q, got nil", wantCode)
-	}
-	got := asAPIError(err)
-	if got == nil {
-		t.Fatalf("error is not *api.Error: %v (%T)", err, err)
-	}
-	if got.Code != wantCode {
-		t.Fatalf("error code = %q, want %q (full: %v)", got.Code, wantCode, err)
-	}
-}
-
 func TestFDB_Errors_PKConflictDuplicateInsert(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_pk", "errs_pk",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_errs_pk", "errs_pk",
 		"CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))")
 
 	if _, err := db.ExecContext(context.Background(),
@@ -91,7 +34,7 @@ func TestFDB_Errors_PKConflictDuplicateInsert(t *testing.T) {
 	if err == nil {
 		t.Fatal("duplicate-PK INSERT did not error")
 	}
-	got := asAPIError(err)
+	got := testkit.AsAPIError(err)
 	if got == nil {
 		t.Fatalf("error is not *api.Error: %v", err)
 	}
@@ -115,7 +58,7 @@ func TestFDB_Errors_PKConflictDuplicateInsert(t *testing.T) {
 
 func TestFDB_Errors_TypeMismatchInsert(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_tm", "errs_tm",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_errs_tm", "errs_tm",
 		"CREATE TABLE Item (id BIGINT, qty BIGINT, PRIMARY KEY (id))")
 	// Inserting a STRING into a BIGINT column.
 	_, err := db.ExecContext(context.Background(),
@@ -123,7 +66,7 @@ func TestFDB_Errors_TypeMismatchInsert(t *testing.T) {
 	if err == nil {
 		t.Fatal("string-into-BIGINT INSERT did not error")
 	}
-	got := asAPIError(err)
+	got := testkit.AsAPIError(err)
 	if got == nil {
 		t.Fatalf("error is not *api.Error: %v", err)
 	}
@@ -135,14 +78,14 @@ func TestFDB_Errors_TypeMismatchInsert(t *testing.T) {
 
 func TestFDB_Errors_InvalidSQL(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_sql", "errs_sql",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_errs_sql", "errs_sql",
 		"CREATE TABLE Item (id BIGINT, name STRING, PRIMARY KEY (id))")
 	_, err := db.ExecContext(context.Background(), "THIS IS NOT VALID SQL")
 	if err == nil {
 		t.Fatal("invalid SQL did not error")
 	}
 	// Pin: the parser's error must carry "syntax" or be SyntaxError-typed.
-	if got := asAPIError(err); got != nil {
+	if got := testkit.AsAPIError(err); got != nil {
 		if got.Code != api.ErrCodeSyntaxError {
 			t.Fatalf("error code = %q, want %q (full: %v)", got.Code, api.ErrCodeSyntaxError, err)
 		}
@@ -156,14 +99,14 @@ func TestFDB_Errors_InvalidSQL(t *testing.T) {
 
 func TestFDB_Errors_UndefinedTable(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_undef", "errs_undef",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_errs_undef", "errs_undef",
 		"CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))")
 	_, err := db.ExecContext(context.Background(),
 		"INSERT INTO NoSuchTable (id) VALUES (1)")
 	if err == nil {
 		t.Fatal("INSERT into nonexistent table did not error")
 	}
-	got := asAPIError(err)
+	got := testkit.AsAPIError(err)
 	if got == nil {
 		t.Fatalf("error is not *api.Error: %v", err)
 	}
@@ -176,7 +119,7 @@ func TestFDB_Errors_UndefinedTable(t *testing.T) {
 // col_doesnt_exist FROM t must error with 42703 (undefined column).
 func TestFDB_Errors_UndefinedColumn(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_undef_col", "errs_undef_col",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_errs_undef_col", "errs_undef_col",
 		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10)"); err != nil {
@@ -196,7 +139,7 @@ func TestFDB_Errors_UndefinedColumn(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected error for %q, got nil", tc.sql)
 			}
-			got := asAPIError(err)
+			got := testkit.AsAPIError(err)
 			if got == nil {
 				t.Fatalf("expected api.Error, got non-API error: %v", err)
 			}
@@ -215,7 +158,7 @@ func TestFDB_Errors_UndefinedColumn(t *testing.T) {
 // qualified references.
 func TestFDB_Errors_UnknownQualifier(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_qual", "errs_qual",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_errs_qual", "errs_qual",
 		"CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 'hello')"); err != nil {
@@ -236,7 +179,7 @@ func TestFDB_Errors_UnknownQualifier(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected error for %q, got nil", tc.sql)
 			}
-			got := asAPIError(err)
+			got := testkit.AsAPIError(err)
 			if got == nil {
 				t.Logf("error is not *api.Error: %v (%T)", err, err)
 				t.Fatalf("expected api.Error with code 42703, got non-API error")
@@ -253,7 +196,7 @@ func TestFDB_Errors_UnknownQualifier(t *testing.T) {
 // nonexistent table in a JOIN produces 42F01 (not 0AF00).
 func TestFDB_Errors_UndefinedTableInJoin(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_errs_join_undef", "errs_join_undef",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_errs_join_undef", "errs_join_undef",
 		"CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1, 10)"); err != nil {
@@ -264,7 +207,7 @@ func TestFDB_Errors_UndefinedTableInJoin(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for nonexistent table in JOIN, got nil")
 	}
-	got := asAPIError(err)
+	got := testkit.AsAPIError(err)
 	if got == nil {
 		t.Fatalf("expected api.Error, got: %v", err)
 	}

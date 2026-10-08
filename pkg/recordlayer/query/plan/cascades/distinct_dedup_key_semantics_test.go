@@ -33,11 +33,11 @@ import (
 func firePredicateUnionRuleOnSingleOR(t testing.TB) []expressions.RelationalExpression {
 	t.Helper()
 	orPred := predicates.NewOr(
-		predicates.NewConstantPredicate(predicates.TriTrue),
-		predicates.NewConstantPredicate(predicates.TriFalse),
+		predicateUnionEquals(predicateUnionSourceAlias, "x", 1),
+		predicateUnionEquals(predicateUnionSourceAlias, "y", 2),
 	)
 	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{orPred})
-	return mustFirePredicateUnionRule(t, NewPredicateToLogicalUnionRule(), ref)
+	return mustExplorePredicateUnion(t, ref)
 }
 
 // TestPushDistinctThroughFetch_DeclinesRowDistinct is the soundness pin.

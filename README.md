@@ -4,7 +4,7 @@
 [![Test Report](https://img.shields.io/badge/test_report-latest-2980b9)](https://fdb-record-layer-go-reports.fsn1.your-objectstorage.com/reports/master/latest.html)
 
 Go port of Apple's [FoundationDB Record Layer](https://github.com/FoundationDB/fdb-record-layer).
-Wire-compatible with Java Record Layer 4.12.11.0 — Go and Java applications can read
+Wire-compatible with Java Record Layer 4.14.2.0 — Go and Java applications can read
 and write the same data on a shared FDB cluster.
 
 ## Status
@@ -29,7 +29,7 @@ backup, and observability — see the [operator guide](docs/operations.md).
 | Component | Version | Notes |
 |-----------|---------|-------|
 | **FoundationDB** | **7.3.77** | Client library + headers. Go bindings pinned to `release-7.3` branch. |
-| **Java Record Layer** | **4.12.11.0** | Wire compatibility target. Conformance tests run against this version. |
+| **Java Record Layer** | **4.14.2.0** | Wire compatibility target. Conformance tests run against this version. |
 | **Go** | **1.26.4** | Minimum Go version (kept current with stdlib security patches; `govulncheck` CI gates this). |
 | **Bazel** | **9.0.1** | Build system. Pinned in `.bazelversion`. |
 
@@ -130,14 +130,14 @@ Cascades-based query planner ported from Java's `fdb-relational-core`.
 ```go
 import _ "fdb.dev/pkg/relational/sqldriver"
 
-db, _ := sql.Open("fdbsql", "fdbsql:///mydb?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
+db, _ := sql.Open("fdbsql", "fdbsql:///FRL/mydb?cluster_file=/etc/foundationdb/fdb.cluster&schema=main")
 
 // DDL
-db.Exec("CREATE DATABASE /mydb")
+db.Exec("CREATE DATABASE /FRL/mydb")
 db.Exec(`CREATE SCHEMA TEMPLATE app_tmpl
     CREATE TABLE Users (id BIGINT NOT NULL, name STRING, email STRING, PRIMARY KEY (id))
     CREATE INDEX idx_email ON Users (email)`)
-db.Exec("CREATE SCHEMA /mydb/main WITH TEMPLATE app_tmpl")
+db.Exec("CREATE SCHEMA /FRL/mydb/main WITH TEMPLATE app_tmpl")
 
 // DML
 db.Exec("INSERT INTO Users (id, name, email) VALUES (1, 'Alice', 'alice@example.com')")
@@ -230,7 +230,7 @@ Full gap analysis in [TODO.md](TODO.md).
 ## Conformance
 
 Wire compatibility is verified by a conformance suite that runs both Go and Java
-(Record Layer 4.12.11.0) against the same FDB instance, cross-validating reads and
+(Record Layer 4.14.2.0) against the same FDB instance, cross-validating reads and
 writes bidirectionally.
 
 ### Wire format
@@ -309,10 +309,10 @@ import (
 )
 
 func main() {
-    db, _ := sql.Open("fdbsql", "fdbsql:///myapp?cluster_file=/tmp/fdb.cluster&schema=main")
-    db.Exec("CREATE DATABASE /myapp")
+    db, _ := sql.Open("fdbsql", "fdbsql:///FRL/myapp?cluster_file=/tmp/fdb.cluster&schema=main")
+    db.Exec("CREATE DATABASE /FRL/myapp")
     db.Exec(`CREATE SCHEMA TEMPLATE app CREATE TABLE Users (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))`)
-    db.Exec("CREATE SCHEMA /myapp/main WITH TEMPLATE app")
+    db.Exec("CREATE SCHEMA /FRL/myapp/main WITH TEMPLATE app")
 
     db.Exec("INSERT INTO Users VALUES (1, 'Alice'), (2, 'Bob')")
 

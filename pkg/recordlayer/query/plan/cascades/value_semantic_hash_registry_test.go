@@ -49,8 +49,12 @@ func TestValueSemanticHashCode_AllCorrelationBearingTypesAreAliasInvariant(t *te
 		{"UnmatchedAggregateValue", func(_ testing.TB, c values.CorrelationIdentifier) values.Value {
 			return values.NewUnmatchedAggregateValue(c)
 		}},
-		{"IndexEntryObjectValue", func(_ testing.TB, c values.CorrelationIdentifier) values.Value {
-			return values.NewIndexEntryObjectValue(c, values.TupleSourceKey, []int{0}, values.NotNullLong)
+		{"IndexEntryObjectValue", func(tb testing.TB, c values.CorrelationIdentifier) values.Value {
+			v, err := values.NewIndexEntryObjectValue(c, values.TupleSourceKey, []int{0}, values.NotNullLong)
+			if err != nil {
+				tb.Fatal(err)
+			}
+			return v
 		}},
 	}
 

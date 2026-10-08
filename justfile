@@ -39,9 +39,9 @@ generate: ensure-buf generate-mocks generate-parser generate-frl
     .tools/buf generate
     bazelisk run //:gazelle
 
-# Regenerate protobuf code for the `frl` CLI module (separate go.mod, separate
-# buf.yaml under cmd/frl/). Output goes to cmd/frl/gen/, consumed by the CLI
-# only — never by the library module.
+# Regenerate protobuf code for the `frl` CLI (its own buf.yaml under cmd/frl/).
+# Output goes to cmd/frl/gen/, consumed by the CLI only — never by the library
+# packages.
 generate-frl: ensure-buf
     rm -rf cmd/frl/gen/
     cd cmd/frl && ../../.tools/buf generate
@@ -104,16 +104,41 @@ generate-parser:
 build:
     bazelisk build //...
 
-# Test all targets (includes Go↔Java conformance via the RFC-082 regression
-# lock AND the FULL RFC-201 factory corpus — the committed corpus is ordinary
-# suite content, owner ruling 2026-08-01; excludes only the heavy 1M stress
-# tier, whose target is also `manual`, which is what actually drops it from
-# the wildcard — the filter is the explicit, greppable statement of intent).
-test:
-    bazelisk test //... --test_tag_filters=-stress
+# Concurrent test targets for the local lanes: a third of the cores, at least
+# the 4 .bazelrc sets for CI's 4-vCPU runners (which call bazelisk directly),
+# at most 8.
+# Measured on 24 cores, the whole sqltest suite uncached: 261 s at 4, 145 s at
+# 8, 154 s at 12 (CPU-bound beyond that).
+# Capped at 8: each concurrent FDB-backed target starts its own container, and
+# too many at once hang Docker (see .bazelrc).
+test_jobs := `c=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4); n=$(( c / 3 )); [ "$n" -lt 4 ] && n=4; [ "$n" -gt 8 ] && n=8; echo $n`
+
+# Standard edit/commit loop: unit tests and bounded integration tests, with nogo.
+# Heavy suites are tagged test-full (or conformance_java/stress/manual).
+test *args:
+    bazelisk test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress --local_test_jobs={{test_jobs}} {{args}}
+
+# The end-to-end SQL suite: the driver's own tests plus every sqltest package
+# (cached; an edited test reruns only its own package).
+sqltest *args:
+    bazelisk test //pkg/relational/sqldriver:all //pkg/relational/sqltest/... {{args}}
+
+# The whole sqltest corpus as one binary: the only run that asserts the census
+# floors. Manual target; nightly-coverage and `just test-full` run it too.
+census *args:
+    bazelisk test //pkg/relational/sqltest/census:census_test {{args}}
+
+# Thorough lane: all Bazel test targets, including manual stress/oracle targets.
+# Query explicitly: //... alone silently omits manual targets. Cache stays enabled.
+test-full *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    targets=$(bazelisk query 'kind(".*_test", //...)' --output=label)
+    test -n "$targets" || { echo 'No test targets found' >&2; exit 1; }
+    bazelisk test $targets --local_test_jobs={{test_jobs}} {{args}}
 
 # Convenience: run ONLY the full committed RFC-201 factory corpus, uncached.
-# It is part of `just test` too; this recipe exists for a forced standalone
+# It is part of `just test-full` too; this recipe exists for a forced standalone
 # re-run (e.g. reproducing the nightly heartbeat job locally).
 factory-corpus:
     bazelisk test //pkg/relational/conformance/factorycorpus/full:full_test \
@@ -467,8 +492,8 @@ race:
 # THREE DIFFERENT RACE SETS EXIST. They are not meant to be equal, so do not
 # "reconcile" them without reading why:
 #
-#   this recipe          client, fdb, recordlayer, chaos, conformance, cascades/...
-#   nightly-coverage.yml client, fdb, recordlayer, chaos, conformance
+#   this recipe          client, fdb, recordlayer, chaos, conformance (+ corpora), cascades/...
+#   nightly-coverage.yml client, fdb, recordlayer, chaos, conformance (+ corpora)
 #   ci.yml (PR gate)     relational/..., client, transport, fdb, cascades/...
 #
 # This recipe mirrors NIGHTLY-COVERAGE (not the PR gate) and always has: it is
@@ -483,17 +508,19 @@ race:
 #
 # Cascades was added to BOTH this recipe and the PR gate, as a WILDCARD so new
 # planner subpackages are picked up instead of silently going unraced. It is
-# CPU-only (no Docker, no FDB), so it is the cheap part of both.
+# CPU-only (no Docker, no FDB), so it is the cheap part of both. The
+# run_sql / yamsql / fault-inject specs split out of conformance_test into
+# conformance_corpora_test are raced wherever conformance_test is.
 race-all:
-    bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test //pkg/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
+    bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test //conformance:conformance_corpora_test //pkg/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
 
-# Full pre-merge verification: build + test + race detector + fuzz smoke test.
-# Run this before requesting PR merge. Takes ~3 minutes on a warm cache.
+# Extended verification: full suite + race detector + bounded fuzz smoke.
+# Nightly workflows retain their larger exploration budgets.
 verify:
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "=== Build + lint + test ==="
-    just test
+    echo "=== Build + lint + full test suite ==="
+    just test-full
     # No target count in this label: race-all now ends in a wildcard, so any
     # hardcoded number is wrong the moment a planner subpackage is added. It was
     # already stale — "5" predated the cascades scope, which alone resolves to 7.
@@ -517,7 +544,14 @@ verify:
         -test.fuzzcachedir=/tmp/fuzz_verify -test.fuzztime=10s
     echo "=== All verification passed ==="
 
-# Install pre-commit hook (generate drift check + lint + build + test)
+# Refuse staged content that must never reach this repository, which is public:
+# credentials, private keys, OpenTofu state, public host addresses, and the
+# contents of this machine's secret files (cmd/secretscan). The pre-commit hook
+# runs it first; CI runs it over every commit a change adds.
+secret-scan:
+    go run ./cmd/secretscan -staged
+
+# Install pre-commit hook (secret scan + clean staged tree + fast Bazel/nogo lane)
 install-hooks:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -529,7 +563,16 @@ install-hooks:
     cat > "$hooks_dir/pre-commit" << 'HOOK'
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "Running pre-commit: just generate && just lint && just build && just test"
+    echo "Running pre-commit: just secret-scan && just test"
+
+    # This repository is public: nothing that grants access may be committed (a
+    # credential, a private key, OpenTofu state, a public host address, a secret
+    # file's contents from this machine). First, so no later step runs before it.
+    if ! just secret-scan; then
+      echo "ERROR: the secret scan refused the staged content, or could not run (a tree"
+      echo "  without the secret-scan recipe must merge master first). Nothing was committed."
+      exit 1
+    fi
 
     # This hook is per-clone state, and core.hooksPath is one absolute path SHARED
     # by every worktree — so any worktree, on any branch, overwrites it for all of
@@ -554,115 +597,19 @@ install-hooks:
     if [ -n "$untracked_go" ]; then
       echo "NOTE: untracked .go file(s) present — these are BUILT but will NOT be committed:"
       echo "$untracked_go" | sed 's/^/  /'
-      echo "  If 'just build' fails below on a missing Bazel target, stage these and their"
+      echo "  If 'just test' fails below on a missing Bazel target, stage these and their"
       echo "  BUILD.bazel entries together — a test file in no test target fails the build."
     fi
 
-    # The paths `just generate` can actually WRITE, as shell patterns matched
-    # against `git ls-files --others` output (repo-relative). Read off the recipe
-    # chain `generate: ensure-buf generate-mocks generate-parser generate-frl`:
-    # its `rm -rf` targets, its `find … -delete` pattern, the gazelle runs that
-    # write BUILD.bazel, and the buf download in ensure-buf.
-    #
-    # This list exists because the hook can only observe that a file APPEARED
-    # while codegen was running — never that codegen wrote it. Over a multi-minute
-    # `just generate`, in a tree several agents share, "appeared during" catches
-    # scratch logs and redirect targets too, and blaming codegen for those sends
-    # the reader to stage exactly what must never be staged.
-    #
-    # Widening a recipe to write somewhere new means widening this list:
-    # TestCodegenOwnedGlobsCoverTheGenerateRecipes derives the paths from the
-    # recipes and fails the build when one is not covered, so the narrowing
-    # cannot silently start missing real codegen output.
-    #
-    # `.tools/` is gitignored, so nothing under it can reach the untracked list at
-    # all; the entry keeps the list a complete statement of what codegen writes
-    # rather than of what git happens to report.
-    codegen_owned_globs='gen/*
-    cmd/frl/gen/*
-    pkg/relational/core/parser/gen/*
-    pkg/relational/api/*mocks_*.go
-    BUILD.bazel
-    */BUILD.bazel
-    .tools/*'
-
-    path_is_codegen_owned() {
-      local f="$1" g
-      while IFS= read -r g; do
-        [ -n "$g" ] || continue
-        # $g is deliberately unquoted: it is a pattern, not a literal.
-        # shellcheck disable=SC2254
-        case "$f" in $g) return 0 ;; esac
-      done <<< "$codegen_owned_globs"
-      return 1
-    }
-
-    # Snapshot the tree BEFORE codegen. `git diff --exit-code` alone cannot tell a
-    # dirty tree from genuine codegen drift: it reports both identically, so a
-    # message naming either one is confidently wrong half the time.
-    #
-    # The untracked list is snapshotted SEPARATELY because `git diff` reports
-    # tracked files only. Codegen that CREATES a file — gazelle writing a
-    # BUILD.bazel for a new package — is invisible to a tracked-only diff, so
-    # before == after and the drift check passes over uncommitted codegen output.
-    # It stays separate from the dirty-tree test below so that pre-existing
-    # scratch files, which appear in both snapshots, still cannot fail the commit.
-    before="$(git diff)"
-    before_untracked="$(git ls-files --others --exclude-standard)"
-
-    just generate
-
-    after="$(git diff)"
-    after_untracked="$(git ls-files --others --exclude-standard)"
-
-    # Split the files that arrived during codegen by whether codegen could have
-    # written them at all. Only the owned half is attributable; the rest merely
-    # shares a time window with it.
-    owned_new=""
-    foreign_new=""
-    while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      if path_is_codegen_owned "$f"; then
-        owned_new+="$f"$'\n'
-      else
-        foreign_new+="$f"$'\n'
-      fi
-    done < <(comm -13 <(printf '%s\n' "$before_untracked") <(printf '%s\n' "$after_untracked"))
-
-    if [ "$before" != "$after" ] || [ -n "$owned_new" ]; then
-      echo "ERROR: generated files are out of date — the tree changed across 'just generate',"
-      echo "  in paths the codegen recipes write."
-      echo "  Stage the regenerated files and retry."
-      git diff --stat
-      # --stat covers modified tracked files only; a file codegen CREATED shows up
-      # nowhere else, and is the case most likely to be missed when staging.
-      if [ -n "$owned_new" ]; then
-        printf '%s' "$owned_new" | sed 's/^/  new file: /'
-      fi
-      exit 1
-    fi
-
-    if [ -n "$foreign_new" ]; then
-      echo "NOTE: file(s) appeared in the tree while the hook was running, outside every"
-      echo "  path 'just generate' writes:"
-      printf '%s' "$foreign_new" | sed 's/^/  /'
-      echo "  The hook only saw them arrive during that window — it cannot tell what wrote"
-      echo "  them, and does not attribute them to codegen. The two usual causes are a"
-      echo "  concurrent writer in this shared worktree and a command inside the repo"
-      echo "  redirecting its output to a path here."
-      echo "  Do NOT stage them to silence this note."
-    fi
-
-    if [ -n "$before" ]; then
-      echo "ERROR: unstaged changes in tracked files — the tree was already dirty BEFORE"
-      echo "  'just generate' ran, and codegen did not change anything. This is NOT"
-      echo "  codegen drift. Stage what belongs in this commit, or stash/revert the rest."
-      echo "  (Committing with a dirty tree would test content the commit does not carry.)"
+    # Test the staged bytes, not uncommitted changes to tracked files.
+    if ! git diff --quiet; then
+      echo "ERROR: unstaged changes in tracked files. Stage the intended changes first."
       git diff --stat
       exit 1
     fi
 
-    just lint && just build && just test
+    # Nogo runs during compilation. Codegen drift and the full suite are CI gates.
+    just test
     HOOK
     chmod +x "$hooks_dir/pre-commit"
     echo "Pre-commit hook installed at $hooks_dir/pre-commit"

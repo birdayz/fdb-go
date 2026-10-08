@@ -87,10 +87,10 @@ func TestRecordQueryInUnionPlan_BindingAliasInvariant(t *testing.T) {
 	})
 	ck := []values.Value{testField(t, "ID", values.NullableLong)}
 	a := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
-		return NewRecordQueryInUnionPlan(inner, []string{"q$5"}, ck, false)
+		return NewRecordQueryInUnionPlan(inner, []string{"q$5"}, ck, false, UnboundedInUnionSize)
 	})
 	b := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
-		return NewRecordQueryInUnionPlan(inner, []string{"q$99"}, ck, false)
+		return NewRecordQueryInUnionPlan(inner, []string{"q$99"}, ck, false, UnboundedInUnionSize)
 	}) // same shape, different alias
 
 	if !a.EqualsPlanWithoutChildren(b) {
@@ -108,7 +108,7 @@ func TestRecordQueryInUnionPlan_BindingAliasInvariant(t *testing.T) {
 
 	// The binding COUNT is structural — a different number of IN columns must NOT be equal.
 	two := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
-		return NewRecordQueryInUnionPlan(inner, []string{"q$5", "q$6"}, ck, false)
+		return NewRecordQueryInUnionPlan(inner, []string{"q$5", "q$6"}, ck, false, UnboundedInUnionSize)
 	})
 	if a.EqualsPlanWithoutChildren(two) {
 		t.Error("InUnions with a different number of bindings must NOT be equal")

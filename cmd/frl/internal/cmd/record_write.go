@@ -41,7 +41,7 @@ func newRecordPutCmd() *cobra.Command {
 		Short: "Save one record (write)",
 		Example: `  frl record put --type Order '{"order_id": 9, "price": 150}' --dry-run
   frl record put --type Order '{"order_id": 9, "price": 150}' --yes
-  frl record put --type ITEMS '{"ID": 7, "NAME": "eta"}' --database /myapp --schema main --yes`,
+  frl record put --type ITEMS '{"ID": 7, "NAME": "eta"}' --database /FRL/myapp --schema main --yes`,
 		Long: "Parses <json> as protojson against the record type's descriptor " +
 			"and saves it — index maintenance and uniqueness checks run " +
 			"transactionally, exactly as an app write would. Overwrites any " +
@@ -132,7 +132,7 @@ func newRecordDeleteCmd() *cobra.Command {
 		Short: "Delete one record by primary key (write)",
 		Example: `  frl record delete 42 --dry-run
   frl record delete 42 --yes
-  frl record delete 1 --type ITEMS --database /myapp --schema main --yes`,
+  frl record delete 1 --type ITEMS --database /FRL/myapp --schema main --yes`,
 		Long: "Deletes the record at <primary-key> (comma-separated tuple " +
 			"elements, same form record scan prints; --type prepends the " +
 			"record-type key for prefix-keyed types). Index entries are " +

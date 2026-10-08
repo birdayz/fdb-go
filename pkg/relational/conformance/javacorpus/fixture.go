@@ -22,7 +22,10 @@ import (
 // this reset/load unit can run. No test or assertion belongs to the replay unit.
 type privateFixture struct {
 	target connTarget
-	tables []string
+	// template is the normalized name of the fixture's schema template, the
+	// only qualifier a setup INSERT's target may carry.
+	template string
+	tables   []string
 }
 
 // validatePrivateFixture does not admit includes, connection switching, template
@@ -58,8 +61,12 @@ func validatePrivateFixture(file *javayamsql.File, prefix string) (*privateFixtu
 			}
 		}
 	}
-	id := "YAML_" + prefix + "_1"
-	fixture := &privateFixture{target: connTarget{Path: "/" + id + "_DB", Schema: id + "_SCHEMA"}}
+	id := generatedID(prefix, 1)
+	// The runner creates this file's schema template as generatedID(prefix, 1)
+	// + "_TEMPLATE" (executeSchemaTemplate, the file's first block), and a
+	// table's qualifier is that TEMPLATE's name, not the schema's
+	// (functions.ResolveTargetTablePath).
+	fixture := &privateFixture{target: connTarget{Path: "/FRL/" + id + "_DB", Schema: id + "_SCHEMA"}, template: strings.ToUpper(id + "_TEMPLATE")}
 	stmt, err := parseFixtureStatement("CREATE SCHEMA TEMPLATE fixture " + template.Variants[0].Definition)
 	if err != nil {
 		return nil, err
@@ -105,11 +112,11 @@ func validatePrivateFixture(file *javayamsql.File, prefix string) (*privateFixtu
 		}
 		ins := dml.InsertStatement()
 		body, ok := ins.InsertStatementValue().(*antlrgen.InsertStatementValueValuesContext)
-		if !ok || ins.QueryOptions() != nil {
-			return nil, fmt.Errorf("factory reset/load setup must contain only INSERT VALUES without query options")
+		if !ok || ins.StatementOptions() != nil {
+			return nil, fmt.Errorf("factory reset/load setup must contain only INSERT VALUES without statement options")
 		}
 		parts := ins.TableName().FullId().AllUid()
-		if len(parts) == 0 || len(parts) > 2 || (len(parts) == 2 && functions.NormalizeIdentifier(parts[0].GetText()) != strings.ToUpper(fixture.target.Schema)) {
+		if len(parts) == 0 || len(parts) > 2 || (len(parts) == 2 && functions.NormalizeIdentifier(parts[0].GetText()) != fixture.template) {
 			return nil, fmt.Errorf("factory reset/load INSERT target is outside the private schema")
 		}
 		name := functions.NormalizeIdentifier(parts[len(parts)-1].GetText())
@@ -162,7 +169,23 @@ func validateFixtureValues(node antlr.Tree) error {
 
 const fixtureLoadMaxAttempts = 3
 
-func (f *privateFixture) load(ctx context.Context, db *sql.DB, steps []*javayamsql.Command, result *FileResult) error {
+// txBeginner is a *sql.DB or a pinned *sql.Conn.
+type txBeginner interface {
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
+
+func (f *privateFixture) load(ctx context.Context, db txBeginner, steps []*javayamsql.Command, result *FileResult) error {
+	// A transaction that outlived FDB's 5-second MVCC window committed
+	// nothing, so the whole reset/load replays; on an oversubscribed machine
+	// the load alone can take that long. Any other step error is final.
+	windowLost := func(err error, attempt int) bool {
+		if !api.IsTransactionTimeLimit(err) || attempt == fixtureLoadMaxAttempts {
+			return false
+		}
+		result.FixtureWindowLosses = append(result.FixtureWindowLosses, err)
+		return true
+	}
+attempts:
 	for attempt := 1; attempt <= fixtureLoadMaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -173,24 +196,38 @@ func (f *privateFixture) load(ctx context.Context, db *sql.DB, steps []*javayams
 		}
 		result.FixtureLoadAttempts++
 		for _, name := range f.tables {
-			query := "DELETE FROM " + quoteFixtureIdentifier(strings.ToUpper(f.target.Schema)) + "." + quoteFixtureIdentifier(name)
+			// A DELETE's target is always a table, so the unqualified name
+			// reaches only the fixture's own table in its private schema.
+			query := "DELETE FROM " + quoteFixtureIdentifier(name)
 			if _, err := tx.ExecContext(ctx, query); err != nil {
-				return errors.Join(fmt.Errorf("fixture reset %q: %w", name, err), tx.Rollback())
+				err = errors.Join(fmt.Errorf("fixture reset %q: %w", name, err), tx.Rollback())
+				if windowLost(err, attempt) {
+					continue attempts
+				}
+				return err
 			}
 		}
 		for _, step := range steps {
 			if _, err := tx.ExecContext(ctx, step.Query); err != nil {
-				return errors.Join(&setupError{line: step.Line, query: truncate(step.Query), err: err}, tx.Rollback())
+				err = errors.Join(&setupError{line: step.Line, query: truncate(step.Query), err: err}, tx.Rollback())
+				if windowLost(err, attempt) {
+					continue attempts
+				}
+				return err
 			}
 		}
 		if err := ctx.Err(); err != nil {
 			return errors.Join(err, tx.Rollback())
 		}
-		// Only this error is eligible for replay. No SQL execution error and
-		// no assertion failure can reach the ambiguous-commit classification.
+		// Only this error is eligible for the ambiguous-commit replay. No SQL
+		// execution error and no assertion failure can reach that
+		// classification.
 		err = tx.Commit()
 		if err == nil {
 			return nil
+		}
+		if windowLost(err, attempt) {
+			continue
 		}
 		if !fixtureCommitUnknown(err) {
 			return err

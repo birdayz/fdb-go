@@ -37,6 +37,10 @@ type ScopeSource struct {
 	// enclosing query (column qualifier). For `FROM t AS x` → Alias
 	// is `x`; for `FROM t` with no alias → Alias is `t`.
 	Alias Identifier
+	// UnqualifiedOutput distinguishes unnamed SQL operators from their private
+	// runtime correlation aliases. Their inherited output names remain eligible
+	// for SELECT alias lookup; named operators qualify those same attributes.
+	UnqualifiedOutput bool
 	// CorrelationName is the identifier the analyzer uses to tie
 	// this source back to a Quantifier when building
 	// QuantifiedObjectValue / FieldValue trees that reference it.
@@ -44,14 +48,40 @@ type ScopeSource struct {
 	// dependency on cascades/values/CorrelationIdentifier — callers wrap
 	// this into a cascades.values.CorrelationIdentifier themselves.
 	CorrelationName string
+	// NamePath, when it has two or more segments, is the name SQL references
+	// this source by in place of Alias: an unaliased table qualified by its
+	// schema template's name (`FROM T.W`) is named by the whole qualified
+	// identifier, as Java names the table operator by it
+	// (LogicalOperator.generateTableAccess with no alias), so `T.W.col`
+	// qualifies its columns and `W.col` does not. Alias then carries only the
+	// last segment, for messages; CorrelationName is unaffected.
+	NamePath []Identifier
 	// AdditionalQualifiers are query-block-local spellings that may qualify
 	// this source without changing its runtime correlation identity. The narrow
 	// live use is Java's table-first alias/schema collision: in
-	// `FROM PA AS s, s.PB AS B`, where `s` is also the active schema, `PA.ID`
+	// `FROM PA AS s, s.PB AS B`, where `s` is also the schema template's name
+	// (the qualifier a table name may carry), `PA.ID`
 	// continues to address the PA source even though its range alias is `s`.
 	// Ordinary aliased sources leave this empty, so SQL's usual alias-hides-table
 	// rule and the correlation mint remain unchanged.
 	AdditionalQualifiers []Identifier
+	// Unnamed marks a source this scope level reads through an operator Java
+	// builds with preserved expression names and no name
+	// (LogicalOperator.newOperatorWithPreservedExpressionNames): an aggregate
+	// query block's select-where operator, which its select list, GROUP BY,
+	// HAVING and ORDER BY resolve against (QueryVisitor.visitSimpleTable), and
+	// an outer join's operator, which replaces the sources it joins for every
+	// clause after it (QueryVisitor.wrapOperandsForOuterJoin, and
+	// collapseLeftSideOperators before an outer join's ON when two or more
+	// sources precede it). Each attribute keeps its qualified name, so `x.f`
+	// still names x's column f, but SemanticAnalyzer.lookup's doubled reading
+	// needs the operator's name, and lookupNestedField clears an unnamed
+	// operator's qualifier: a struct column's field is reached by the column's
+	// bare name in the qualified pass too, counted beside the qualified
+	// reading, and a qualified path through a column is tried only when the
+	// path does not begin with that column's bare name. Measured in
+	// conformance/ws_f_table_qualifier_conformance_test.go.
+	Unnamed bool
 	// Shadowing marks a virtual AS/AT source whose value construction must keep
 	// the exact element/ordinal correlation. It grants no lookup precedence:
 	// every visible matching attribute participates in ordinary ambiguity.
@@ -88,7 +118,7 @@ type ScopeSource struct {
 }
 
 func (s ScopeSource) matchesQualifier(qualifier Identifier) bool {
-	if s.Alias.EqualsIgnoreQuoting(qualifier) {
+	if s.NamedBy(qualifier) {
 		return true
 	}
 	for _, alternate := range s.AdditionalQualifiers {
@@ -97,6 +127,72 @@ func (s ScopeSource) matchesQualifier(qualifier Identifier) bool {
 		}
 	}
 	return false
+}
+
+// NamedBy reports whether SQL names this source by the single identifier q: its
+// alias, or its table's name when unaliased. A source named by a qualified path
+// (NamePath) is never named by one identifier, its last segment included.
+// AdditionalQualifiers are not consulted: they qualify columns, they do not
+// name the source.
+func (s ScopeSource) NamedBy(q Identifier) bool {
+	return len(s.NamePath) < 2 && s.Alias.EqualsIgnoreQuoting(q)
+}
+
+// qualifierLength reports how many leading segments of a qualified path
+// name this source: the whole NamePath when the source is named by one and the
+// path begins with it (with at least one segment after it), else one when the
+// first segment matches the source's single-segment name (matchesQualifier),
+// else zero.
+func (s ScopeSource) qualifierLength(segs []Identifier) int {
+	if k := len(s.NamePath); k >= 2 && len(segs) > k {
+		named := true
+		for i, part := range s.NamePath {
+			if !part.EqualsIgnoreQuoting(segs[i]) {
+				named = false
+				break
+			}
+		}
+		if named {
+			return k
+		}
+	}
+	if len(segs) > 1 && s.matchesQualifier(segs[0]) {
+		return 1
+	}
+	return 0
+}
+
+// doubledQualifierColumn reports the column a path names through Java's
+// doubled qualifier: the source's name with its last segment prepended, then a
+// top-level column (`t.t.c` for a source named t, `w.T.w.c` for one named T.w).
+// Java's qualified lookup matches an attribute by its table-qualified name with
+// the operator's name prepended (SemanticAnalyzer.lookup,
+// attributeIdentifier.withQualifier(operatorName.getName()), which PREPENDS),
+// so this is a reading of its own, of a top-level column only, never a nested
+// path; it counts beside the source's other readings, so it can make a path
+// ambiguous. Measured: `SELECT w.w.id FROM w` resolves in both engines, as does
+// `x.x.x` over a scalar unnest aliased x (its one attribute is x). An Unnamed
+// source takes none: the reading prepends the operator's name.
+func (s ScopeSource) doubledQualifierColumn(segs []Identifier) (Identifier, bool) {
+	if s.Unnamed {
+		return Identifier{}, false
+	}
+	name := s.NamePath
+	if len(name) < 2 {
+		if s.Alias.Name() == "" {
+			return Identifier{}, false
+		}
+		name = []Identifier{s.Alias}
+	}
+	if len(segs) != len(name)+2 || !segs[0].EqualsIgnoreQuoting(name[len(name)-1]) {
+		return Identifier{}, false
+	}
+	for i, part := range name {
+		if !part.EqualsIgnoreQuoting(segs[i+1]) {
+			return Identifier{}, false
+		}
+	}
+	return segs[len(segs)-1], true
 }
 
 // hidesColumn reports whether this source hides id from UNQUALIFIED
@@ -118,6 +214,20 @@ func NewScope(parent *Scope) *Scope {
 // Parent returns the enclosing scope, or nil if this is the
 // outermost.
 func (s *Scope) Parent() *Scope { return s.parent }
+
+// WithUnnamedSources returns this level with every source Unnamed, under the
+// same parent: the level an aggregate query block's select list, GROUP BY,
+// HAVING and ORDER BY resolve against, Java's generateSelectWhere operator
+// over the block's sources. The receiver is unchanged.
+func (s *Scope) WithUnnamedSources() *Scope {
+	out := *s
+	out.sources = make([]ScopeSource, len(s.sources))
+	for i, src := range s.sources {
+		src.Unnamed = true
+		out.sources[i] = src
+	}
+	return &out
+}
 
 // Sources returns the FROM-clause sources at this scope level
 // (defensive copy, does NOT include parent sources).
@@ -224,8 +334,13 @@ const (
 	//     ProtoUtils.java:39-41, mirrored in protoname.go). That is
 	//     un-escaped once, at the catalog boundary, by ToUserIdentifier.
 	//   - Unicode case folding beyond strings.EqualFold's simple folding.
+	//   - a column whose name the statement's SQL text authored
+	//     (Column.SQLAuthored: an unnest's AS/AT alias, a derived table's or
+	//     CTE's SELECT-list `AS`, a CTE column list). Like a qualifier it never
+	//     came from a descriptor, so it is compared exactly (matchesColumn).
 	//
-	// COVERED: column names, and struct-field names below them.
+	// COVERED: descriptor-named columns, and struct-field names below them —
+	// including a derived table's or CTE's pass-through of one.
 	//
 	// THIS HAS NO JAVA ANALOGUE. It is a Go-only read-side extension, not a
 	// port, and saying so precisely matters because the surrounding structure
@@ -264,6 +379,16 @@ func (p resolutionPass) matches(have, want Identifier) bool {
 	return p == relaxedPass && strings.EqualFold(have.Name(), want.Name())
 }
 
+// matchesColumn is matches for a candidate COLUMN: a name the statement's SQL
+// text authored (Column.SQLAuthored) is compared exactly in both passes,
+// because the fold exists only for descriptor spellings.
+func (p resolutionPass) matchesColumn(c Column, want Identifier) bool {
+	if c.SQLAuthored {
+		return strictPass.matches(c.Id, want)
+	}
+	return p.matches(c.Id, want)
+}
+
 // lookupColumn resolves a single column of tbl under this pass.
 func (p resolutionPass) lookupColumn(tbl Table, id Identifier) (Column, bool) {
 	if col, ok := tbl.LookupColumn(id); ok {
@@ -273,7 +398,7 @@ func (p resolutionPass) lookupColumn(tbl Table, id Identifier) (Column, bool) {
 		return Column{}, false
 	}
 	for _, c := range tbl.Columns() {
-		if p.matches(c.Id, id) {
+		if p.matchesColumn(c, id) {
 			return c, true
 		}
 	}
@@ -292,7 +417,7 @@ func (p resolutionPass) lookupStructField(col Column, id Identifier) (Column, in
 		return Column{}, 0, false
 	}
 	for i, f := range col.StructFields {
-		if p.matches(f.Id, id) {
+		if p.matchesColumn(f, id) {
 			return f, i, true
 		}
 	}
@@ -340,7 +465,7 @@ func matchingColumns(tbl Table, id Identifier, pass resolutionPass) []Column {
 	var out []Column
 	seenFirst := false
 	for _, c := range tbl.Columns() {
-		if !pass.matches(c.Id, id) {
+		if !pass.matchesColumn(c, id) {
 			continue
 		}
 		if !seenFirst {
@@ -489,23 +614,20 @@ type NestedAccessor struct {
 // lookupNestedField rule (SemanticAnalyzer.java:481-488 — the fifth and last
 // matching rule `lookup` applies per output attribute).
 //
-// Two candidate kinds compete at each scope level:
+// Two candidate kinds, in Java's order (ResolvePathNested):
 //
 //   - a DIRECT match: `qualifier` names a FROM source and `col` is one of its
 //     columns. This is the shape every reference had before struct columns
-//     existed, and it is unchanged.
+//     existed.
 //   - a NESTED match: `qualifier` names a STRUCT COLUMN of some source in
 //     scope and `col` is one of that struct's fields, so the reference
 //     `home_address.city` descends rather than addressing a source.
 //
-// They are counted TOGETHER, which is what makes a reference that both kinds
-// could answer an ambiguity rather than a silent preference. Java reaches the
-// same place by a different route: rules 1-4 and rule 5 all append into the
-// one `directMatchesBuilder` list and `resolveIdentifierMaybe` errors when
-// that list holds more than one entry (SemanticAnalyzer.java:433-437,
-// "Ambiguous reference %s", ErrorCode.AMBIGUOUS_COLUMN). A nested candidate
-// evaluated only after direct resolution FAILED would resolve that collision
-// by order of attempt, and order of attempt is not a semantics.
+// Java 4.14.2.0's resolveIdentifierMaybe looks the direct (qualified) match
+// up first and the nested one only when that finds nothing, so a source's
+// column outranks a same-named struct column's field (measured: `SELECT h.f
+// FROM y, h` is table h's f). Two candidates of one kind at a level are an
+// ambiguity ("Ambiguous reference %s", ErrorCode.AMBIGUOUS_COLUMN).
 //
 // Everything else about the level walk is unchanged, including the property
 // that a zero-match level falls through to the parent.
@@ -551,18 +673,29 @@ func descendStruct(col Column, rest []Identifier, pass resolutionPass) ([]Nested
 // qualifier string "A.N" that names neither a source nor a struct column and
 // the reference died as UNDEFINED_COLUMN.
 //
-// Two candidate kinds compete per source, counted TOGETHER so a reference both
-// could answer is an ambiguity rather than a silent preference:
+// Two candidate kinds, in Java's order (SemanticAnalyzer.resolveIdentifierMaybe
+// runs lookup(…, matchQualifiedOnly=true) and only when that finds nothing
+// lookup(…, false)):
 //
-//   - STRUCT-RELATIVE: segs[0] names a column of the source and segs[1:]
-//     descend into it (`n.sk`, `n.inner.leaf`). This carries no source
-//     qualifier at all, so it is tried against EVERY source in scope.
-//   - ALIAS-QUALIFIED: segs[0] names the source, segs[1] one of its columns,
-//     and segs[2:] descend into that column (`a.id`, `a.n.sk`).
+//   - QUALIFIED, first: the leading segments name the source (its alias, or the
+//     whole NamePath), the next segment one of its columns, and the rest
+//     descend into that column (`a.id`, `a.n.sk`, `T.W.id`); or Java's doubled
+//     qualifier names a top-level column (doubledQualifierColumn, `t.t.c`).
+//     Every such candidate at the level counts, so two are an ambiguity.
+//   - STRUCT-RELATIVE, only when no qualified candidate exists: segs[0] names a
+//     column of the source and segs[1:] descend into it (`n.sk`,
+//     `n.inner.leaf`). It carries no source qualifier, so it is tried against
+//     EVERY source in scope. Java's qualified lookup cannot produce it (a named
+//     operator's attributes carry the operator's name, and a reference without
+//     it is no prefix of theirs), so `x.f` over a table x with a column f and
+//     a struct column x holding f is x's f, as Java answers (measured).
 //
-// The alias-qualified arm is what keeps two sources declaring the same struct
-// apart: `a.n.sk` and `b.n.sk` each match exactly one source because the
-// leading segment is compared against the source ALIAS, not discarded.
+// The qualified arm is what keeps two sources declaring the same struct apart:
+// `a.n.sk` and `b.n.sk` each match exactly one source because the leading
+// segment is compared against the source ALIAS, not discarded. The RELAXED
+// pass (the declared case over-resolution) takes both kinds together, so a
+// fold that reaches a field by both readings is ambiguous rather than the
+// first reading's, as resolveUpdateColumn's fold is.
 //
 // The scope-chain walk is unchanged from the two-segment form it subsumes:
 // ambiguity at a level is terminal, a zero-match level falls through to the
@@ -581,64 +714,16 @@ func (s *Scope) ResolvePathNested(segs []Identifier) (Column, ScopeSource, []Nes
 	var firstAliasTable QualifiedName
 	aliasSeen := false
 	for cur := s; cur != nil; cur = cur.parent {
-		type candidate struct {
-			col              Column
-			src              ScopeSource
-			accessors        []NestedAccessor
-			ephemeralDerived bool
-		}
-		var matches []candidate
+		var matches []pathCandidate
 		// STRICT then RELAXED at this level; only then the parent. The
 		// qualifier is compared exactly in BOTH passes — a source alias never
 		// comes from a descriptor, so a fold has nothing to repair there.
 		for _, pass := range [...]resolutionPass{strictPass, relaxedPass} {
-			for _, src := range cur.sources {
-				// Rule 5 (nested): segs[0] names a STRUCT column of this source.
-				// Checked for EVERY source, not only alias-matching ones, because
-				// the struct column is reached through the source's columns — the
-				// reference `home_address.city` carries no source qualifier at all.
-				for _, structCol := range matchingColumns(src.Table, qualifier, pass) {
-					if acc, found := descendStruct(structCol, segs[1:], pass); found {
-						matches = append(matches, candidate{structCol, src, acc, structCol.Ephemeral})
-					}
-				}
-				if !src.matchesQualifier(qualifier) {
-					continue
-				}
-				if !aliasSeen {
-					aliasSeen = true
-					firstAliasTable = src.Table.Name()
-				}
-				// Per-attribute, exactly as the bare form: a source emitting the
-				// name twice makes `nested.id` ambiguous, not first-match.
-				for _, c := range matchingColumns(src.Table, segs[1], pass) {
-					acc, found := descendStruct(c, segs[2:], pass)
-					if !found {
-						continue
-					}
-					matches = append(matches, candidate{c, src, acc, c.Ephemeral && len(acc) > 0})
-				}
+			direct, structRelative, seen, table := cur.levelPathCandidates(segs, pass)
+			if seen && !aliasSeen {
+				aliasSeen, firstAliasTable = true, table
 			}
-			// All successful paths name this requested identifier. Java drops
-			// a nested route through an ephemeral whole object when a direct
-			// attribute already supplies that same identifier. Independent
-			// non-ephemeral attributes still compete, regardless of source.
-			hasDirect := false
-			for _, match := range matches {
-				if !match.ephemeralDerived {
-					hasDirect = true
-					break
-				}
-			}
-			if hasDirect {
-				kept := matches[:0]
-				for _, match := range matches {
-					if !match.ephemeralDerived {
-						kept = append(kept, match)
-					}
-				}
-				matches = kept
-			}
+			matches = narrowPathMatches(direct, structRelative, pass)
 			if len(matches) > 0 {
 				break
 			}
@@ -670,25 +755,222 @@ func (s *Scope) ResolvePathNested(segs []Identifier) (Column, ScopeSource, []Nes
 		avail = append(avail, src.Alias)
 	}
 	return Column{}, ScopeSource{}, nil, &SourceNotFoundError{
-		Alias: qualifier, Available: avail,
+		Alias: qualifier, Available: avail, Path: append([]Identifier(nil), segs...),
 	}
+}
+
+// pathCandidate is one attribute a multi-segment path reads at a scope level.
+type pathCandidate struct {
+	col              Column
+	src              ScopeSource
+	accessors        []NestedAccessor
+	ephemeralDerived bool
+	// doubled marks the doubled reading's match. Java names it by its
+	// attribute's own name, not by the requested path, so it does not
+	// cover a nested match through an ephemeral whole object (lookup
+	// drops an ephemeral-derived match only when a direct match carries
+	// its name): `item.item.b` over a record element aliased item is
+	// ambiguous (measured).
+	doubled bool
+}
+
+// levelPathCandidates is ONE scope level's lookup of a multi-segment path under
+// one pass. direct holds the readings Java's first (qualified-only) lookup
+// returns — a source-qualified reading, a doubled reading, a struct column of
+// an unnamed operator read by its bare name — and structRelative a named
+// source's struct-relative readings, which only Java's second lookup returns.
+// aliasSeen and firstAliasTable report the first source the leading segment
+// named, for the refusal's wording.
+func (s *Scope) levelPathCandidates(segs []Identifier, pass resolutionPass) (matches, structRelative []pathCandidate, aliasSeen bool, firstAliasTable QualifiedName) {
+	qualifier := segs[0]
+	for _, src := range s.sources {
+		// Rule 5 (nested): segs[0] names a STRUCT column of this source.
+		// Checked for EVERY source, not only alias-matching ones, because
+		// the struct column is reached through the source's columns — the
+		// reference `home_address.city` carries no source qualifier at all.
+		k := src.qualifierLength(segs)
+		for _, structCol := range matchingColumns(src.Table, qualifier, pass) {
+			if acc, found := descendStruct(structCol, segs[1:], pass); found {
+				c := pathCandidate{structCol, src, acc, structCol.Ephemeral, false}
+				if src.Unnamed {
+					// An unnamed operator's attribute keeps its qualified
+					// name, so a reference spelling exactly that name is
+					// the attribute's direct match, and Java stops there
+					// (lookup's `continue`) before the nested path through
+					// the same attribute: `ss.ss` over table ss with a
+					// struct column ss holding ss is the column (measured).
+					if k > 0 && len(segs) == k+1 && pass.matchesColumn(structCol, segs[k]) {
+						continue
+					}
+					// Otherwise it is looked up by its bare name in the
+					// qualified pass (lookupNestedField clears the
+					// qualifier), beside the qualified reading.
+					matches = append(matches, c)
+				} else {
+					structRelative = append(structRelative, c)
+				}
+			}
+		}
+		doubled, isDoubled := src.doubledQualifierColumn(segs)
+		if k == 0 && !isDoubled {
+			continue
+		}
+		if !aliasSeen {
+			aliasSeen = true
+			firstAliasTable = src.Table.Name()
+		}
+		// Per-attribute, exactly as the bare form: a source emitting the
+		// name twice makes `nested.id` ambiguous, not first-match.
+		if k > 0 {
+			for _, c := range matchingColumns(src.Table, segs[k], pass) {
+				// Through an unnamed operator, a path beginning with the
+				// column's bare name is read from the column
+				// (lookupNestedField's cleared-qualifier prefix) and never
+				// as the qualified path through it: `x.x.f` over table x
+				// with a struct column x names no column there (measured).
+				if src.Unnamed && len(segs) > k+1 && pass.matchesColumn(c, segs[0]) {
+					continue
+				}
+				// A lateral unnest's whole element is named by its bare
+				// alias (LogicalOperator.generateCorrelatedFieldAccess
+				// names the EphemeralExpression by the alias alone), so
+				// through an unnamed operator nothing qualifies it:
+				// `COUNT(item.item) … GROUP BY` is 42703 where
+				// `COUNT(item)` is the element (measured).
+				if src.Unnamed && src.Shadowing && src.FlowedObject != nil && c.Ephemeral {
+					continue
+				}
+				acc, found := descendStruct(c, segs[k+1:], pass)
+				if !found {
+					continue
+				}
+				matches = append(matches, pathCandidate{c, src, acc, c.Ephemeral && len(acc) > 0, false})
+			}
+		}
+		if isDoubled {
+			for _, c := range matchingColumns(src.Table, doubled, pass) {
+				// Java tries each attribute's direct forms before its
+				// nested path and stops at the first that matches
+				// (lookup's `continue`), so the doubled reading of a
+				// column replaces a qualified path through that same
+				// column rather than competing with it: `ss.ss.ss`, where
+				// table ss has a struct column ss holding a field ss, is
+				// the column (measured).
+				kept := matches[:0]
+				for _, m := range matches {
+					if m.src.CorrelationName != src.CorrelationName || !m.col.Id.EqualsIgnoreQuoting(c.Id) {
+						kept = append(kept, m)
+					}
+				}
+				matches = append(kept, pathCandidate{c, src, nil, false, true})
+			}
+		}
+	}
+	return matches, structRelative, aliasSeen, firstAliasTable
+}
+
+// narrowPathMatches applies Java's lookup rules to one lookup's candidates: the
+// struct-relative readings count only when no direct one does (strict), both
+// together when folding; and a nested route through an ephemeral whole object
+// drops out when a direct attribute carries the name.
+func narrowPathMatches(matches, structRelative []pathCandidate, pass resolutionPass) []pathCandidate {
+	// Java's second lookup: a named source's struct-relative reading
+	// only when the qualified one found nothing (strict), both together
+	// when folding.
+	if pass == relaxedPass || len(matches) == 0 {
+		matches = append(matches, structRelative...)
+	}
+	// Every match but the doubled one is named by this requested
+	// identifier. Java drops a nested route through an ephemeral whole
+	// object when a direct attribute already carries that name.
+	// Independent non-ephemeral attributes still compete, regardless of
+	// source.
+	hasDirect := false
+	for _, match := range matches {
+		if !match.ephemeralDerived && !match.doubled {
+			hasDirect = true
+			break
+		}
+	}
+	if hasDirect {
+		kept := matches[:0]
+		for _, match := range matches {
+			if !match.ephemeralDerived {
+				kept = append(kept, match)
+			}
+		}
+		matches = kept
+	}
+	return matches
+}
+
+// ResolvePathAcrossLevels resolves a FROM item's correlated path as Java does:
+// resolveCorrelatedIdentifier's resolveIdentifier over the operators of this
+// query block and every enclosing one as ONE list
+// (LogicalPlanFragment.getLogicalOperatorsIncludingOuter). Java looks up that
+// list twice (SemanticAnalyzer.resolveIdentifier): the qualified-only lookup
+// first, where more than one answer is ambiguous, and the struct-relative
+// lookup only when the first finds nothing. So a qualified reading at one level
+// wins over a struct-relative one at another — `EXISTS (SELECT 1 FROM w AS n,
+// n.arr AS x)` under an outer t2 whose struct column n holds arr is the inner
+// N.ARR (measured) — and two qualified readings at different levels are 42702
+// (`EXISTS (SELECT 1 FROM w, w.arr AS v)` under an outer w, measured).
+//
+// Each level contributes the candidates ResolvePathNested reads there
+// (levelPathCandidates), under the strict pass and then Go's relaxed pass,
+// which folds case; the relaxed pass runs only when the strict one answers
+// nothing at any level. A single-segment path is not a correlated identifier
+// (Java refuses it as an unknown table before any lookup); it keeps
+// ResolvePathNested's innermost-level reading.
+func (s *Scope) ResolvePathAcrossLevels(segs []Identifier) (Column, ScopeSource, []NestedAccessor, error) {
+	if len(segs) < 2 {
+		return s.ResolvePathNested(segs)
+	}
+	for _, pass := range [...]resolutionPass{strictPass, relaxedPass} {
+		var direct, structRelative []pathCandidate
+		for cur := s; cur != nil; cur = cur.parent {
+			d, r, _, _ := cur.levelPathCandidates(segs, pass)
+			direct = append(direct, d...)
+			structRelative = append(structRelative, r...)
+		}
+		matches := narrowPathMatches(direct, structRelative, pass)
+		switch len(matches) {
+		case 0:
+			continue
+		case 1:
+			return matches[0].col, matches[0].src, matches[0].accessors, nil
+		}
+		sources := make([]Identifier, len(matches))
+		for i, m := range matches {
+			sources[i] = m.src.Alias
+		}
+		return Column{}, ScopeSource{}, nil, &AmbiguousColumnError{
+			Id: segs[len(segs)-1], Qualifier: segs[0], Path: append([]Identifier(nil), segs...),
+			Matches: len(matches), Sources: sources,
+		}
+	}
+	// Nothing answers: ResolvePathNested's own refusal, which names what the
+	// leading segment reached.
+	return s.ResolvePathNested(segs)
 }
 
 // ResolveSourceQualifiedPath resolves a path whose leading segment is already
 // proven by the grammar/caller to name a FROM source. Unlike ResolvePathNested,
-// it does not also consider the leading segment as a struct column. That
-// distinction is load-bearing for a self-named lateral source such as
-// `FROM t, t.records AS item, item.item AS leaf`: the ordinary SQL expression
-// `item.item` is intentionally ambiguous when both the source-qualified and
-// struct-relative rules answer it, but the FROM-item classifier has already
-// established that the first ITEM names the preceding source.
+// it does not also consider the leading segment as a struct column, which a
+// FROM item's path never is once the FROM-item classifier has established that
+// its first segment names a preceding source (`FROM t, t.records AS item,
+// item.item AS leaf`). Nor does it take the doubled reading: its callers
+// resolve Go's own expansion of a FROM item's path through a prior unnest's
+// whole element (`item.m` read as `item.item.m`, unnestSemanticPath), never a
+// path a user spelled, whose doubled reading ResolvePathNested and
+// ResolvePathAcrossLevels take (`FROM w, w.w.arr AS x` unnests w.arr, measured).
 //
 // Duplicate source aliases retain Java's per-attribute ambiguity rule: all
 // alias-matching sources at one scope level are considered, and more than one
 // complete match is loud. Zero matches fall through to the parent exactly as
-// ResolvePathNested does. Callers must not use this method to impose source
-// precedence on an ordinary expression whose leading segment has not already
-// been classified as a source alias.
+// ResolvePathNested does. An ordinary expression resolves through
+// ResolvePathNested, which weighs the source-qualified reading against the
+// struct-relative and doubled ones as Java's lookup does.
 func (s *Scope) ResolveSourceQualifiedPath(segs []Identifier) (Column, ScopeSource, []NestedAccessor, error) {
 	if len(segs) < 2 {
 		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{}
@@ -706,15 +988,16 @@ func (s *Scope) ResolveSourceQualifiedPath(segs []Identifier) (Column, ScopeSour
 		// STRICT then RELAXED at this level, as in ResolvePathNested.
 		for _, pass := range [...]resolutionPass{strictPass, relaxedPass} {
 			for _, src := range cur.sources {
-				if !src.matchesQualifier(qualifier) {
+				k := src.qualifierLength(segs)
+				if k == 0 {
 					continue
 				}
 				if !aliasSeen {
 					aliasSeen = true
 					firstAliasTable = src.Table.Name()
 				}
-				for _, c := range matchingColumns(src.Table, segs[1], pass) {
-					accessors, found := descendStruct(c, segs[2:], pass)
+				for _, c := range matchingColumns(src.Table, segs[k], pass) {
+					accessors, found := descendStruct(c, segs[k+1:], pass)
 					if !found {
 						continue
 					}
@@ -753,7 +1036,7 @@ func (s *Scope) ResolveSourceQualifiedPath(segs []Identifier) (Column, ScopeSour
 	for _, src := range all {
 		available = append(available, src.Alias)
 	}
-	return Column{}, ScopeSource{}, nil, &SourceNotFoundError{Alias: qualifier, Available: available}
+	return Column{}, ScopeSource{}, nil, &SourceNotFoundError{Alias: qualifier, Available: available, Path: append([]Identifier(nil), segs...)}
 }
 
 // AmbiguousColumnError is returned when a column reference matches
@@ -839,6 +1122,22 @@ func joinStrings(parts []string, sep string) string {
 type SourceNotFoundError struct {
 	Alias     Identifier
 	Available []Identifier
+	// Path is the column reference as written (`Q.ID`) when a column
+	// lookup, not a star expansion, missed the qualifier.
+	Path []Identifier
+}
+
+// Reference renders the reference as written: the column path when a column
+// lookup missed its qualifier, else the qualifier alone.
+func (e *SourceNotFoundError) Reference() string {
+	if len(e.Path) == 0 {
+		return e.Alias.Name()
+	}
+	parts := make([]string, len(e.Path))
+	for i, part := range e.Path {
+		parts[i] = part.Name()
+	}
+	return joinStrings(parts, ".")
 }
 
 func (e *SourceNotFoundError) Error() string {

@@ -32,7 +32,7 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 		t.Run(fmt.Sprintf("w%d", cfg.workers), func(t *testing.T) {
 			n := 500_000
 			batchSize := 2000
-			dbPath := fmt.Sprintf("/sqlpar_w%d", cfg.workers)
+			dbPath := fmt.Sprintf("/FRL/sqlpar_w%d", cfg.workers)
 
 			// Setup: create database + schema using a setup connection.
 			setup := func() {
@@ -67,7 +67,7 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 				wg.Add(1)
 				go func(from, to int) {
 					defer wg.Done()
-					dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=main", dbPath, clusterFilePath)
+					dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=MAIN", strings.ToUpper(dbPath), clusterFilePath)
 					workerDB, openErr := sql.Open("fdbsql", dsn)
 					if openErr != nil {
 						firstErr.Record(openErr)

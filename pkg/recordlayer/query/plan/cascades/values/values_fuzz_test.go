@@ -43,7 +43,7 @@ func FuzzSimplifyValue_ArithmeticTree(f *testing.F) {
 		}
 
 		// 1. SimplifyValue must not panic on any byte input.
-		out := SimplifyValue(tree)
+		out := EvaluateConstantComparand(tree)
 		if out == nil {
 			t.Fatalf("SimplifyValue returned nil — should always return a Value (got input: a=%d b=%d c=%d op1=%d op2=%d)", a, b, c, op1, op2)
 		}
@@ -65,9 +65,9 @@ func FuzzSimplifyValue_ArithmeticTree(f *testing.F) {
 
 		// 3. Idempotency: simplifying the result must be a no-op (the
 		//    leaf folds back to itself).
-		again := SimplifyValue(out)
+		again := EvaluateConstantComparand(out)
 		if again == nil {
-			t.Fatalf("SimplifyValue(simplified) returned nil")
+			t.Fatalf("EvaluateConstantComparand(simplified) returned nil")
 		}
 	})
 }
@@ -97,7 +97,7 @@ func FuzzSimplifyValue_CastChain(f *testing.F) {
 			t2,
 		)
 
-		out := SimplifyValue(tree)
+		out := EvaluateConstantComparand(tree)
 		if out == nil {
 			t.Fatalf("SimplifyValue returned nil for CAST chain (n=%d t1=%v t2=%v)", n, t1, t2)
 		}
@@ -105,9 +105,9 @@ func FuzzSimplifyValue_CastChain(f *testing.F) {
 		// Idempotency: simplifying the result must be a no-op. Either
 		// the chain folded to a leaf (folds back to itself) or the
 		// type-mismatch case declined (declining is also idempotent).
-		again := SimplifyValue(out)
+		again := EvaluateConstantComparand(out)
 		if again == nil {
-			t.Fatalf("SimplifyValue(simplified) returned nil for CAST chain")
+			t.Fatalf("EvaluateConstantComparand(simplified) returned nil for CAST chain")
 		}
 	})
 }

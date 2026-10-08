@@ -38,9 +38,20 @@ type EliminateNullOnEmptyRule struct {
 // NewEliminateNullOnEmptyRule constructs the rule.
 func NewEliminateNullOnEmptyRule() *EliminateNullOnEmptyRule {
 	return &EliminateNullOnEmptyRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("eliminate_null_on_empty"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("eliminate_null_on_empty").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool {
+				for _, q := range sel.GetQuantifiers() {
+					if q.Kind() == expressions.QuantifierForEach && q.IsNullOnEmpty() {
+						return true
+					}
+				}
+				return false
+			},
+		),
 	}
 }
+
+func (r *EliminateNullOnEmptyRule) ConstraintDependencies() []any { return nil }
 
 func (r *EliminateNullOnEmptyRule) Matcher() matching.BindingMatcher { return r.matcher }
 
@@ -141,16 +152,16 @@ func rejectsNull(p predicates.QueryPredicate, alias values.CorrelationIdentifier
 // ConstantPredicateFoldingUtil.foldPredicateAtNull. After substitution, a
 // null-strict Value over a NullValue child is collapsed to NullValue (the
 // CollapseNullStrictValueOverNullValueRule port) so the comparison's operand
-// becomes a NullValue that SimplifyPredicateValues can then fold via 3VL
-// (`NULL = x` → UNKNOWN, `NULL IS NULL` → TRUE, …).
+// becomes a NullValue, and Java's ConstantFoldingRuleSet (ConstantFoldingRules,
+// the set QueryPredicateSimplificationRule runs) folds it over effective
+// constants (`NULL = x` → NULL, `NULL IS NULL` → TRUE, …).
 //
 // Per Java's #4222 limitation, `NULL AND <non-constant>` is NOT folded (the
-// simplifier does not assume NULL ≡ FALSE in a filter context). Such a mixed
+// simplifier does not assume NULL ≡ FALSE in a filter context), and neither is
+// NOT over a constant predicate or a comparison of non-boolean literals. Such a
 // predicate stays non-constant → UNKNOWN → does not reject (conservative).
 func foldPredicateAtNull(p predicates.QueryPredicate, alias values.CorrelationIdentifier) (predicates.QueryPredicate, error) {
-	nullified := substituteNullAtAlias(p, alias)
-	folded := predicates.SimplifyPredicateValues(nullified)
-	return Simplify(folded, DefaultSimplifyRules())
+	return Simplify(substituteNullAtAlias(p, alias), ConstantFoldingRules())
 }
 
 // substituteNullAtAlias replaces every leaf QuantifiedObjectValue correlated to
@@ -236,6 +247,8 @@ func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) value
 		cmp := q.Comparison
 		cmp.Operand = fn(q.Comparison.Operand)
 		return &predicates.ComparisonPredicate{Operand: fn(q.Operand), Comparison: cmp}
+	case *predicates.PredicateWithValueAndRanges:
+		return predicates.ReplaceValues(q, fn)
 	case *predicates.ValuePredicate:
 		return predicates.NewValuePredicate(fn(q.Value))
 	case *predicates.ExistentialValuePredicate:
@@ -245,15 +258,15 @@ func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) value
 		for i, sp := range q.SubPredicates {
 			subs[i] = mapPredicateValues(sp, fn)
 		}
-		return &predicates.AndPredicate{SubPredicates: subs}
+		return predicates.WithAtomicity(&predicates.AndPredicate{SubPredicates: subs}, predicates.IsAtomic(q))
 	case *predicates.OrPredicate:
 		subs := make([]predicates.QueryPredicate, len(q.SubPredicates))
 		for i, sp := range q.SubPredicates {
 			subs[i] = mapPredicateValues(sp, fn)
 		}
-		return &predicates.OrPredicate{SubPredicates: subs}
+		return predicates.WithAtomicity(&predicates.OrPredicate{SubPredicates: subs}, predicates.IsAtomic(q))
 	case *predicates.NotPredicate:
-		return &predicates.NotPredicate{Child: mapPredicateValues(q.Child, fn)}
+		return predicates.WithAtomicity(&predicates.NotPredicate{Child: mapPredicateValues(q.Child, fn)}, predicates.IsAtomic(q))
 	default:
 		// Conservative passthrough: a predicate type not enumerated above is
 		// returned unmapped. This is correct for the leaf/atom predicates that
@@ -265,23 +278,10 @@ func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) value
 	}
 }
 
-// isNullStrictValue reports whether v is one of the strictly-null-propagating
-// Value classes (yields NULL if any child is NULL). Mirrors Java's
-// CollapseNullStrictValueOverNullValueRule.VALUE_CLASSES — KEEP IN SYNC: when a
-// new null-strict Value type is ported (Java adds one to that allowlist), add it
-// here too, else this rule's null-folding silently under-approximates. As of
-// Java 4.12 the set is ArithmeticValue, CastValue, FieldValue, NotValue,
-// PromoteValue, SubscriptValue (enumerated below).
-func isNullStrictValue(v values.Value) bool {
-	switch v.(type) {
-	case *values.ArithmeticValue, *values.CastValue,
-		*values.NotValue, *values.PromoteValue, *values.SubscriptValue:
-		return true
-	default:
-		_, isField := values.AsFieldValue(v)
-		return isField
-	}
-}
+// isNullStrictValue is values.IsNullStrictValue, the class list of Java's
+// CollapseNullStrictValueOverNullValueRule, whose collapse the value sets now
+// carry (values.collapseNullStrict).
+func isNullStrictValue(v values.Value) bool { return values.IsNullStrictValue(v) }
 
 // hasNullValueChild reports whether any immediate child of v is a NullValue.
 func hasNullValueChild(v values.Value) bool {

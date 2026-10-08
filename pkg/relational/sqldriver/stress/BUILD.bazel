@@ -4,8 +4,9 @@ go_test(
     name = "stress_test",
     timeout = "eternal",
     srcs = [
+        "domain_registration_test.go",
         "first_error_test.go",
-        "group_existence_plan_cost_test.go",
+        "latency_attribution_stress_test.go",
         "raw_fdb_bench_test.go",
         "recordlayer_bench_test.go",
         "statistics_join_order_stress_test.go",
@@ -28,6 +29,7 @@ go_test(
         "//pkg/recordlayer/query/executor",
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",
+        "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
         "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",

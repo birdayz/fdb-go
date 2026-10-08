@@ -38,9 +38,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync/atomic"
+	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -48,43 +50,6 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/sqldriver"
 )
-
-// lateClock is a wall clock that can be made to report a fixed amount of extra
-// elapsed time — a load spike, modelled as a clock that has run ahead.
-//
-// ONE-SHOT by default, which is the point rather than a convenience: a spike
-// that never ends is a different scenario (covered separately below) and cannot
-// distinguish "the retry works" from "the retry is missing", because both end
-// red. Disarm is called by the retry's observer hook, so the injected fault
-// lasts exactly one attempt — the same lifetime as the chaos harness's
-// InjectOnce.
-type lateClock struct {
-	lateBy time.Duration
-	armed  atomic.Bool
-}
-
-func newLateClock(lateBy time.Duration) *lateClock {
-	c := &lateClock{lateBy: lateBy}
-	c.armed.Store(true)
-	return c
-}
-
-func (c *lateClock) Now() time.Time {
-	if c.armed.Load() {
-		return time.Now().Add(c.lateBy)
-	}
-	return time.Now()
-}
-
-// Disarm ends the spike. Safe to call repeatedly.
-func (c *lateClock) Disarm() { c.armed.Store(false) }
-
-// Rearm re-injects the spike for the NEXT transaction. A test with several
-// independent explicit transactions — subtests, typically — needs each of them
-// to meet the condition; without this the first one consumes the one-shot and
-// every later transaction runs clean, so its retry would be a permanently
-// untested arm while the test reported green.
-func (c *lateClock) Rearm() { c.armed.Store(true) }
 
 // openLateClockDB registers a REAL FoundationDB-backed database whose record
 // layer measures elapsed time on clk, and returns an *sql.DB speaking to it.
@@ -97,7 +62,7 @@ func openLateClockDB(t *testing.T, clk dst.Clock, dbPath, tmpl string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	rawDB, err := fdb.OpenDatabase(testkit.ClusterFile())
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -106,19 +71,19 @@ func openLateClockDB(t *testing.T, clk dst.Clock, dbPath, tmpl string) *sql.DB {
 	key := "lateclock://" + t.Name()
 	t.Cleanup(sqldriver.RegisterBackend(key, rlDB))
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, key))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), key))
 	if err != nil {
 		t.Fatalf("sql.Open setup: %v", err)
 	}
 	defer setup.Close()
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
-	mwjoMustExec(t, setup, ctx,
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE "+tmpl+
 			" CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))"+
 			" CREATE INDEX idx_v ON t (v)")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+tmpl)
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, key))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), key))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
@@ -155,13 +120,13 @@ func isTxBudgetExhausted(err error) bool {
 // retry below a fix for something demonstrated rather than something argued.
 func TestFDB_TxBudget_PreemptsAnExplicitTransactionUnderALateClock(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
 	// Permanently late: the spike never ends, so every attempt must fail.
-	clk := newLateClock(30 * time.Second)
-	db := openLateClockDB(t, clk, "/testdb_txbudget_late", "txbudgetlate")
+	clk := testkit.NewLateClock(30 * time.Second)
+	db := openLateClockDB(t, clk, "/FRL/testdb_txbudget_late", "txbudgetlate")
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -212,10 +177,10 @@ func runInTxWithRetry(
 	db *sql.DB,
 	attempts int,
 	onRetry func(attempt int, err error),
-	body func(txAttempt) error,
+	body func(testkit.TxAttempt) error,
 ) {
 	t.Helper()
-	retryTx(t, db, txRetryOpts{Attempts: attempts, OnRetry: onRetry}, body)
+	testkit.RetryTx(t, db, testkit.TxRetryOpts{Attempts: attempts, OnRetry: onRetry}, body)
 }
 
 // TestTxRetry_HelperArms drives every arm of the retry helper without FDB.
@@ -329,21 +294,21 @@ func runInTxRetryLoop(t *testing.T, attempts int, onRetry func(int, error), body
 // inside the new transaction, never carried across the boundary.
 func TestFDB_TxBudget_RetryClearsAOneShotSpike(t *testing.T) {
 	t.Parallel()
-	if clusterFilePath == "" {
+	if testkit.ClusterFile() == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	clk := newLateClock(30 * time.Second)
-	db := openLateClockDB(t, clk, "/testdb_txbudget_spike", "txbudgetspike")
-	mwjoMustExec(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
+	clk := testkit.NewLateClock(30 * time.Second)
+	db := openLateClockDB(t, clk, "/FRL/testdb_txbudget_spike", "txbudgetspike")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t (id, v) VALUES (1, 100)")
 
 	var attemptsRun int
-	runInTxWithRetry(t, db, 3, func(int, error) { clk.Disarm() }, func(a txAttempt) error {
-		attemptsRun = a.num
-		if _, err := a.tx.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (2, 777)"); err != nil {
+	runInTxWithRetry(t, db, 3, func(int, error) { clk.Disarm() }, func(a testkit.TxAttempt) error {
+		attemptsRun = a.Num
+		if _, err := a.Tx.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (2, 777)"); err != nil {
 			return err
 		}
-		rows, err := a.tx.QueryContext(ctx, "SELECT id FROM t WHERE v = 777")
+		rows, err := a.Tx.QueryContext(ctx, "SELECT id FROM t WHERE v = 777")
 		if err != nil {
 			return err
 		}
@@ -363,7 +328,7 @@ func TestFDB_TxBudget_RetryClearsAOneShotSpike(t *testing.T) {
 			t.Fatalf("attempt %d read ids %v, want [2]: the retried transaction does not "+
 				"see its OWN uncommitted INSERT. A retry that restarts the transaction "+
 				"must re-establish read-your-writes inside the new one; if it does not, "+
-				"the retry is masking the failure rather than fixing it.", a.num, got)
+				"the retry is masking the failure rather than fixing it.", a.Num, got)
 		}
 		return nil
 	})

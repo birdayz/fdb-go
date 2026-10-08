@@ -4,10 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"regexp"
 	"strings"
 	"testing"
-	"unicode/utf8"
+	"time"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -355,7 +354,7 @@ func TestComparison_Eval_Like(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, _ := Comparison{Type: ComparisonLike, Operand: values.LiteralValue(tc.pattern)}.Eval(tc.s)
+			got, _ := likeComparison(tc.pattern).Eval(tc.s)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -363,14 +362,33 @@ func TestComparison_Eval_Like(t *testing.T) {
 	}
 }
 
-// LIKE type mismatch degrades to UNKNOWN.
-func TestComparison_Eval_Like_TypeMismatch(t *testing.T) {
+// likeComparison is `LIKE pattern` with no ESCAPE, as the resolver builds it.
+func likeComparison(pattern any) Comparison {
+	return Comparison{Type: ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue(pattern), values.LiteralValue(nil))}
+}
+
+// A NULL pattern is UNKNOWN; a bad escape is an error even for a NULL
+// operand, as the pattern is evaluated first (Java's ValueComparison.eval).
+func TestComparison_Eval_Like_NullsAndEscapeErrors(t *testing.T) {
 	t.Parallel()
-	if got, _ := (Comparison{Type: ComparisonLike, Operand: values.LiteralValue("abc")}).Eval(int64(5)); got != TriUnknown {
-		t.Fatalf("got %v", got)
+	if got, err := likeComparison(nil).Eval("abc"); got != TriUnknown || err != nil {
+		t.Fatalf("NULL pattern: %v, %v", got, err)
 	}
-	if got, _ := (Comparison{Type: ComparisonLike, Operand: values.LiteralValue(int64(5))}).Eval("abc"); got != TriUnknown {
-		t.Fatalf("got %v", got)
+	if got, err := likeComparison("a%").Eval(nil); got != TriUnknown || err != nil {
+		t.Fatalf("NULL operand: %v, %v", got, err)
+	}
+	badEscape := Comparison{Type: ComparisonLike, Operand: values.NewPatternForLikeValue(values.LiteralValue("a%"), values.LiteralValue("ab"))}
+	var le *values.LikeError
+	if _, err := badEscape.Eval(nil); !errors.As(err, &le) || le.Kind != values.LikeEscapeNotSingleChar {
+		t.Fatalf("a bad escape with a NULL operand: %v", err)
+	}
+	// NewLiteralComparison wraps a LIKE literal as an escape-less pattern.
+	lit := NewLiteralComparison(ComparisonLike, "%eta")
+	if _, ok := lit.Operand.(*values.PatternForLikeValue); !ok {
+		t.Fatalf("NewLiteralComparison(LIKE) operand %T, want a PatternForLikeValue", lit.Operand)
+	}
+	if got, err := lit.Eval("beta"); got != TriTrue || err != nil {
+		t.Fatalf("'beta' LIKE '%%eta': %v, %v", got, err)
 	}
 }
 
@@ -1054,135 +1072,6 @@ func TestNewLiteralComparison(t *testing.T) {
 	}
 }
 
-// LIKE with ESCAPE — pin the matcher's escape-handling truth
-// table against Java. escape == 0 disables escape handling. A
-// non-zero escape opens an escape sequence ONLY before `_` or `%`
-// (Java's PatternForLikeValue installs exactly those two entries);
-// in every other position the escape rune falls through to the
-// ordinary per-character rules and is therefore an ordinary literal
-// — including when it dangles at the end of the pattern.
-func TestLikeMatch_Escape(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name    string
-		pattern string
-		s       string
-		escape  rune
-		want    bool
-	}{
-		// escape=0 → no escape handling, original wildcard semantics.
-		{"no-escape: %% matches anything", "%", "a%b", 0, true},
-		// `\%` with escape `\` matches literal `%`.
-		{"escape blocks wildcard", `a\%b`, "a%b", '\\', true},
-		{"escape blocks wildcard, x rejected", `a\%b`, "axb", '\\', false},
-		// `\_` with escape `\` matches literal `_`.
-		{"escape blocks underscore wildcard", `a\_b`, "a_b", '\\', true},
-		{"escape blocks underscore, x rejected", `a\_b`, "axb", '\\', false},
-		// Custom escape character (`!` instead of `\`).
-		{"custom escape !", `a!%b`, "a%b", '!', true},
-		// Mixed wildcard + escaped: `a\%%c` = literal a, literal %, then anything-c.
-		{"escaped + wildcard", `a\%%c`, "a%xyzc", '\\', true},
-		{"escaped + wildcard, no leading %", `a\%%c`, "axyzc", '\\', false},
-		// DANGLING escape — no `_`/`%` follows, so no escape entry
-		// fires and the escape rune is an ordinary literal. It
-		// therefore needs a matching character in the input: `a\`
-		// does NOT match "a", and DOES match `a\`.
-		{"dangling escape needs the literal escape rune", `a\`, "a", '\\', false},
-		{"dangling escape matches the literal escape rune", `a\`, `a\`, '\\', true},
-		// The shape Java's own corpus records (like.yamsql:92):
-		// `'Z' LIKE 'Z' ESCAPE 'Z'` is TRUE.
-		{"escape rune equal to the whole pattern", "Z", "Z", 'Z', true},
-		{"escape rune equal to the whole pattern, no match", "Z", "Y", 'Z', false},
-		// Escape preceding an ORDINARY character escapes nothing:
-		// the escape rune is the literal and the next character is
-		// then read normally. `a\b` matches `a\b`, NOT `ab`.
-		{"escape over non-meta is itself the literal", `a\b`, `a\b`, '\\', true},
-		{"escape over non-meta does not swallow the next char", `a\b`, "ab", '\\', false},
-		// No escaped-escape: Java installs no `<esc><esc>` entry, so
-		// `a\\b` is TWO literal backslashes.
-		{"no escaped-escape: two runes stay two", `a\\b`, `a\\b`, '\\', true},
-		{"no escaped-escape: does not collapse to one", `a\\b`, `a\b`, '\\', false},
-		// The escape rune falls through to the ORDINARY rules, so an
-		// escape rune that is itself a wildcard still wildcards when
-		// it is not opening a sequence. escape='%': `%%` is an
-		// escaped literal `%`, while a dangling `%` is still `.*`.
-		{"wildcard escape rune: escaped pair is a literal", "%%", "%", '%', true},
-		{"wildcard escape rune: escaped pair rejects other input", "%%", "ab", '%', false},
-		{"wildcard escape rune: dangling stays a wildcard", "a%", "abc", '%', true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := likeMatch(tc.pattern, tc.s, tc.escape); got != tc.want {
-				t.Fatalf("got %v, want %v (pattern=%q s=%q escape=%q)",
-					got, tc.want, tc.pattern, tc.s, tc.escape)
-			}
-		})
-	}
-}
-
-// LIKE+ESCAPE Explain renders the ESCAPE clause inline so the
-// output round-trips back to recognisable SQL.
-func TestComparisonPredicate_Explain_LikeEscape(t *testing.T) {
-	t.Parallel()
-	pred := NewComparisonPredicate(predicateTestField(t, "name", values.TypeString), Comparison{
-		Type:    ComparisonLike,
-		Operand: values.LiteralValue(`a\%b`),
-		Escape:  '\\',
-	},
-	)
-	want := `predicate_test_name.name#0 LIKE 'a\%b' ESCAPE '\'`
-	if got := pred.Explain(); got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-// LIKE+ESCAPE with single-quote as the escape character produces
-// valid SQL — the quote inside the literal is doubled per SQL
-// string-literal escaping. Without doubling, the output `ESCAPE ”'`
-// would be unbalanced and unparseable.
-func TestComparisonPredicate_Explain_LikeEscape_SingleQuoteEscape(t *testing.T) {
-	t.Parallel()
-	pred := NewComparisonPredicate(predicateTestField(t, "name", values.TypeString), Comparison{
-		Type:    ComparisonLike,
-		Operand: values.LiteralValue("a%b"),
-		Escape:  '\'',
-	},
-	)
-	want := `predicate_test_name.name#0 LIKE 'a%b' ESCAPE ''''`
-	if got := pred.Explain(); got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-// LIKE without ESCAPE doesn't emit a stray "ESCAPE ”" clause.
-func TestComparisonPredicate_Explain_LikeNoEscape(t *testing.T) {
-	t.Parallel()
-	pred := NewComparisonPredicate(predicateTestField(t, "name", values.TypeString), Comparison{Type: ComparisonLike, Operand: values.LiteralValue("hel%")})
-	want := `predicate_test_name.name#0 LIKE 'hel%'`
-	if got := pred.Explain(); got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-// Comparison.Eval with non-zero Escape evaluates LIKE through the
-// escape-aware matcher. Pin the round-trip from Comparison{Escape}
-// down to likeMatch.
-func TestComparison_Eval_LikeWithEscape(t *testing.T) {
-	t.Parallel()
-	c := Comparison{
-		Type:    ComparisonLike,
-		Operand: values.LiteralValue(`a\%b`),
-		Escape:  '\\',
-	}
-	if got, _ := c.Eval("a%b"); got != TriTrue {
-		t.Errorf("a%%b: got %v, want TRUE", got)
-	}
-	if got, _ := c.Eval("axb"); got != TriFalse {
-		t.Errorf("axb: got %v, want FALSE (escape blocked wildcard)", got)
-	}
-}
-
 // Float comparisons through ComparisonPredicate.Eval — both operands
 // float, mixed int/float (cmpAny promotion), NULL propagation.
 // Pinned because the float comparison path reaches further than
@@ -1228,7 +1117,7 @@ func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 		pbake(t, "name", values.TypeString, "name", "pattern"),
 		Comparison{
 			Type:    ComparisonLike,
-			Operand: pbake(t, "pattern", values.TypeString, "name", "pattern"),
+			Operand: values.NewPatternForLikeValue(pbake(t, "pattern", values.TypeString, "name", "pattern"), values.LiteralValue(nil)),
 		},
 	)
 	cases := []struct {
@@ -1243,469 +1132,12 @@ func TestComparisonPredicate_Like_FieldValueRHS(t *testing.T) {
 		{map[string]any{"name": "hello", "pattern": nil}, TriUnknown},
 		// NULL name → UNKNOWN.
 		{map[string]any{"name": nil, "pattern": "hel%"}, TriUnknown},
-		// Non-string pattern (numeric mismatch) → UNKNOWN.
-		{map[string]any{"name": "hello", "pattern": int64(5)}, TriUnknown},
 	}
 	for _, tc := range cases {
 		if got, _ := pred.Eval(predRow(tc.row)); got != tc.want {
 			t.Errorf("row=%v: got %v, want %v", tc.row, got, tc.want)
 		}
 	}
-}
-
-// TestLikeMatch_NoPatternYieldsATightPrefixRange pins a NEGATIVE result:
-// there is NO LIKE pattern whose matching set equals a byte-prefix range,
-// not even the `<literal>%` shape that looks exactly like a prefix
-// predicate.
-//
-// The name quantifies over ALL patterns, so the test is in four parts and
-// only the last is about `<literal>%`:
-//
-//	PART 1  one witness per PATTERN CLASS -- wildcard-free, trailing `%`,
-//	        interior `%`, `_`, an ESCAPE-escaped wildcard inside the
-//	        prefix, and a leading `%` (empty prefix). Each class escapes
-//	        the prefix range for a different reason, so a fix to one does
-//	        not silently cover the others.
-//	PART 2  `_` is terminator-averse exactly as `%` is; both are
-//	        no-DOTALL character classes.
-//	PART 3  the boundary of the argument. Java's `$` tolerates ONE FINAL
-//	        line terminator, so the counterexample needs an INTERNAL one.
-//	        The same tolerance is why a wildcard-free LIKE is NOT a plain
-//	        equality: its match set is the literal plus the literal with
-//	        one trailing terminator, so an equality range over it would
-//	        LOSE rows -- the opposite failure direction from PART 1.
-//	        NOT "any" terminator: final CRLF is stripped as a single unit,
-//	        so a literal already ending in `\r` does NOT match literal+`\n`
-//	        (`like_match_test.go:139`, "$ never between \r and \n"). The
-//	        match set is therefore literal-plus-one-terminator MINUS that
-//	        case. The universal is unaffected -- the set still is not a
-//	        single value, so no equality range is exact -- but the set is
-//	        not uniformly six or seven members either.
-//	PART 4  the raw-terminator deep dive on `abc%` (see the EDITING
-//	        HAZARD note below before touching its subject list).
-//
-// The reason is the no-DOTALL rule in likeMatch's contract. `%` maps to
-// `.*` compiled with no flags, so it cannot consume a Java line
-// terminator (`\n`, `\r`, NEL, LS, PS). A subject that starts with the
-// literal prefix but then contains one of those does NOT match the
-// pattern, while a byte-prefix range contains it. Such a witness therefore
-// separates the range from the predicate for every pattern shape: the
-// range is NOT contained in the predicate, which is the direction that
-// makes the residual mandatory. It is not the STRICT-SUPERSET claim --
-// that additionally needs containment the other way, every match lying
-// inside the range, which these sampled fixtures do not establish and
-// this file leaves unproven.
-//
-// Why this is worth a test rather than a comment: the obvious index
-// optimization for `col LIKE 'abc%'` is to rewrite it to a prefix range
-// scan and DROP the LIKE as redundant. That rewrite is unsound here, and
-// nothing else in the tree records why. This test is the reason it must
-// not be written that way.
-//
-// EDITING HAZARD - READ BEFORE TOUCHING THE SUBJECT LIST BELOW.
-// Three of the six subjects contain a RAW, INVISIBLE UTF-8 line
-// terminator rather than a backslash escape: NEL (U+0085, bytes c2 85),
-// LS (U+2028, e2 80 a8) and PS (U+2029, e2 80 a9). In a diff, a terminal
-// or a review UI they render as nothing at all, so `"abc<NEL>def"` looks
-// exactly like a plain `"abcdef"` -- which would be a subject that DOES
-// match `abc%`, making the loop's assertion look like an obvious bug and
-// inviting a "fix" that silently deletes three of the five terminators
-// this test exists to cover.
-//
-// They are deliberately raw: the point is that the MATCHER must treat
-// these code points as terminators, and writing them as backslash-u escapes
-// in the Go source would test the same runes but hide that the hazard is
-// unreadable input. Verify with a hexdump, never by eye, and copy this
-// block byte-exactly.
-//
-// Two failure modes, and only one of them used to be caught. DELETING a
-// terminator is caught already: the subject collapses to a plain "abcdef",
-// which DOES match `abc%`, so the loop's assertion fires and the test goes
-// red. SUBSTITUTING one terminator for another is the silent one -- an
-// editor normalising NEL to "\n" yields a byte-for-byte duplicate of the
-// first subject, every assertion still holds, and coverage of NEL
-// evaporates with the suite still green. The distinctness check below
-// closes exactly that gap: six subjects that are no longer six distinct
-// byte strings mean a terminator was rewritten into another one.
-func TestLikeMatch_NoPatternYieldsATightPrefixRange(t *testing.T) {
-	t.Parallel()
-
-	// PART 1 - the universal, across every LIKE pattern class. The name of
-	// this test quantifies over ALL patterns, so a single pattern shape
-	// cannot establish it: the trailing-`%` shape is only the one that
-	// LOOKS tight. Each class below pairs the constant byte prefix a
-	// prefix-range rewrite would derive (the literal run before the first
-	// unescaped wildcard) with a witness that separates the range from the
-	// predicate.
-	//
-	//	inRange  a subject the byte-prefix range CONTAINS and the predicate
-	//	         REJECTS. Its existence separates the range from the
-	//	         predicate -- the range is provably not contained in it --
-	//	         which is what forbids dropping the residual LIKE filter
-	//	         after emitting the range. It is NOT the strict-superset
-	//	         claim, which additionally needs every match to lie inside
-	//	         the range; that direction stays unproven here.
-	//	matched  a control the predicate ACCEPTS, so the class is not
-	//	         vacuous -- a pattern that matched nothing would satisfy the
-	//	         separation assertion for free and prove nothing.
-	//
-	// The witnesses are NOT interchangeable across classes: each class
-	// escapes the prefix range for a different reason (a wildcard that
-	// cannot cross a line terminator, a literal that follows the wildcard,
-	// a wildcard that consumes exactly one character, an escaped wildcard
-	// that is part of the prefix, a wildcard that opens the pattern).
-	classes := []struct {
-		name    string
-		pattern string
-		escape  rune
-		prefix  string
-		inRange string
-		matched string
-	}{
-		// The shape the rewrite is actually after. `%` compiles to `.*`
-		// with no DOTALL, so it cannot consume the INTERNAL terminator.
-		{
-			name: "trailing_wildcard", pattern: "abc%", prefix: "abc",
-			inRange: "abc\ndef", matched: "abcdef",
-		},
-		// No wildcard at all: the pattern is an equality in disguise, so
-		// everything strictly longer than the literal is in the prefix
-		// range and out of the predicate. See PART 3 for why its EQUALITY
-		// range is not tight either.
-		{
-			name: "wildcard_free", pattern: "abc", prefix: "abc",
-			inRange: "abcdef", matched: "abc",
-		},
-		// Interior `%`: the prefix stops at the wildcard, and the literal
-		// tail after it rejects most of the range.
-		{
-			name: "interior_wildcard", pattern: "ab%de", prefix: "ab",
-			inRange: "abzz", matched: "abxde",
-		},
-		// `_` matches EXACTLY ONE character, so the range's longer
-		// subjects are out. PART 2 pins that `_` is terminator-averse too.
-		{
-			name: "underscore_wildcard", pattern: "abc_", prefix: "abc",
-			inRange: "abcde", matched: "abcd",
-		},
-		// ESCAPE puts a literal `%` INSIDE the prefix; the prefix is
-		// "a%b", not "a". The escaped wildcard does not widen the range,
-		// and the trailing `%` still cannot cross a terminator.
-		{
-			name: "escaped_wildcard_in_prefix", pattern: "a!%b%", escape: '!',
-			prefix: "a%b", inRange: "a%b\ncd", matched: "a%bcd",
-		},
-		// Leading `%`: the derived prefix is empty, so the "range" is
-		// every string. A rewrite must bail out here; the assertion
-		// records that the degenerate range is maximally untight.
-		{
-			name: "empty_prefix", pattern: "%foo", prefix: "",
-			inRange: "zzz", matched: "xfoo",
-		},
-	}
-	for _, c := range classes {
-		if !strings.HasPrefix(c.inRange, c.prefix) {
-			t.Fatalf("%s: witness %q is not in the byte-prefix range of %q — test setup is wrong",
-				c.name, c.inRange, c.prefix)
-		}
-		if likeMatch(c.pattern, c.inRange, c.escape) {
-			t.Fatalf("%s: likeMatch(%q, %q, %q) = true, want false.\n"+
-				"The byte-prefix range %q would then have no witness separating it "+
-				"from the predicate for this pattern class, and a rewrite that emits "+
-				"the range and DROPS the residual LIKE would look sound for this "+
-				"class. Re-derive the tightness argument before relying on it.",
-				c.name, c.pattern, c.inRange, c.escape, c.prefix)
-		}
-		if !strings.HasPrefix(c.matched, c.prefix) {
-			t.Fatalf("%s: control %q is not in the byte-prefix range of %q — the prefix "+
-				"a rewrite derives from %q is wrong, or the control is",
-				c.name, c.matched, c.prefix, c.pattern)
-		}
-		if !likeMatch(c.pattern, c.matched, c.escape) {
-			t.Fatalf("%s: likeMatch(%q, %q, %q) = false, want true — the class is vacuous, "+
-				"so its separation assertion above proves nothing",
-				c.name, c.pattern, c.matched, c.escape)
-		}
-	}
-
-	// PART 2 - `_` is terminator-averse exactly as `%` is. Both compile to
-	// character classes with no DOTALL (`.` and `.*`), so NEITHER can cross
-	// a Java line terminator. A rewrite author who fixed the `%` case by
-	// hand and assumed `_` was ordinary would reintroduce the bug.
-	for _, subject := range []string{"abc\n", "abc\r", "abc\u0085", "abc\u2028", "abc\u2029"} {
-		if likeMatch("abc_", subject, 0) {
-			t.Fatalf("likeMatch(%q, %q) = true, want false — `_` must not consume a "+
-				"line terminator; if it now can, the prefix-range witnesses above "+
-				"for the underscore class are no longer separating",
-				"abc_", subject)
-		}
-	}
-
-	// PART 3 - the carve-out, stated exactly. Java's `$` under find()
-	// tolerates ONE FINAL line terminator (values/like_match.go's
-	// trimFinalLineTerminator retry), so the counterexample to tightness
-	// needs an INTERNAL terminator, not merely a terminator. The two
-	// assertions below are the boundary of that: with the terminator FINAL
-	// the predicate accepts, and PART 1's witnesses all place it INTERNAL.
-	if !likeMatch("abc%", "abc\n", 0) {
-		t.Fatal("likeMatch(\"abc%\", \"abc\\n\") = false, want true — a FINAL line " +
-			"terminator is accepted. If this flips, the not-tight claim above is " +
-			"still true but its stated REASON (internal terminators only) is not.")
-	}
-	// And the consequence that makes "wildcard-free LIKE is just an
-	// equality, so an equality range over it IS tight" WRONG: the predicate
-	// accepts "abc"+terminator, which the equality range {"abc"} excludes.
-	// The failure direction is the opposite of PART 1's — not extra rows
-	// but MISSING ones — so a future rule may NOT route the wildcard-free
-	// shape to a bare equality bound and drop the residual.
-	for _, subject := range []string{"abc\n", "abc\r", "abc\r\n", "abc\u0085", "abc\u2028", "abc\u2029"} {
-		if !likeMatch("abc", subject, 0) {
-			t.Fatalf("likeMatch(%q, %q) = false, want true — a wildcard-free LIKE "+
-				"matches its literal followed by one final line terminator, which is "+
-				"why its match set is NOT the single value and an equality range over "+
-				"it is NOT tight (it would LOSE this row)",
-				"abc", subject)
-		}
-		if subject == "abc" {
-			t.Fatalf("test setup is wrong: %q collapsed to the bare literal", subject)
-		}
-	}
-
-	// PART 4 - the raw-terminator deep dive on the trailing-`%` shape,
-	// covering all five Java line terminators rather than just `\n`.
-	const pattern = "abc%"
-	const prefix = "abc"
-
-	subjects := []string{
-		"abc\ndef",
-		"abc\rdef",
-		"abc\r\ndef",
-		"abcdef",
-		"abc def",
-		"abc def",
-	}
-
-	// Substitution guard -- see the EDITING HAZARD note above. Each subject
-	// carries a DIFFERENT terminator, so all six must be distinct byte
-	// strings. Rewriting one terminator into another (the failure mode the
-	// assertions below cannot see) collapses two subjects into one and trips
-	// this instead of passing silently.
-	if len(subjects) != 6 {
-		t.Fatalf("expected 6 subjects, got %d — a terminator subject was added or deleted",
-			len(subjects))
-	}
-	for i, a := range subjects {
-		for j, b := range subjects[i+1:] {
-			if a == b {
-				t.Fatalf("subjects %d and %d are byte-identical (%q, % x) — a raw line "+
-					"terminator was normalised into another one, silently dropping the "+
-					"code point this subject exists to cover; recover the block by "+
-					"byte-copy and verify with a hexdump",
-					i, i+1+j, a, a)
-			}
-		}
-	}
-
-	for _, subject := range subjects {
-		if !strings.HasPrefix(subject, prefix) {
-			t.Fatalf("subject %q does not start with %q — test setup is wrong",
-				subject, prefix)
-		}
-		if likeMatch(pattern, subject, 0) {
-			t.Fatalf("likeMatch(%q, %q) = true, want false.\n"+
-				"A trailing `%%` would then be TIGHT, and a prefix-range "+
-				"rewrite that drops the LIKE residual filter would be sound. "+
-				"It is not sound today: the range contains this subject and "+
-				"the predicate rejects it, so dropping the residual returns "+
-				"WRONG ROWS. If this assertion is genuinely obsolete, "+
-				"re-derive the tightness argument before relying on it.",
-				pattern, subject)
-		}
-	}
-
-	// Control: the same prefix without a terminator DOES match, so the
-	// test is not passing merely because likeMatch rejects everything.
-	if !likeMatch(pattern, "abcdef", 0) {
-		t.Fatal("likeMatch(\"abc%\", \"abcdef\") = false, want true")
-	}
-}
-
-// FuzzLikeMatch cross-checks likeMatch against a regex-based oracle.
-// `%` → `.*`, `_` → `.`, all other chars are regex-escaped. Both
-// anchored with `^...$`. Mismatch = likeMatch bug.
-func FuzzLikeMatch(f *testing.F) {
-	// Seed corpus: known-good patterns + strings.
-	f.Add("hello", "hello")
-	f.Add("h%o", "hello")
-	f.Add("h_llo", "hello")
-	f.Add("%", "")
-	f.Add("", "")
-	f.Add("a%b%c", "axbycxyc")
-	f.Add("__", "ab")
-	// Newline-axis seeds: measured Java answers (no DOTALL; default
-	// `$` before a final line terminator).
-	f.Add("a_b", "a\nb")  // false — `.` rejects \n
-	f.Add("a%b", "a\nb")  // false — `.*` rejects \n
-	f.Add("_", "\n")      // false
-	f.Add("abc", "abc\n") // true — `$` before final terminator
-	f.Add("a", "a\u2028") // true — LS is a Java terminator
-	f.Add("%", "\n")      // true — `.*` empty + `$` tolerance
-	f.Add("a", "a\r\n")   // true — final \r\n is one terminator
-	f.Add("a\r", "a\r\n") // false — `$` never between \r and \n
-	f.Fuzz(func(t *testing.T, pattern, s string) {
-		// Cap runaway inputs — the matcher is O(n*m); want fuzz to
-		// fail fast on pathological seeds rather than burn CPU.
-		if len(pattern) > 128 || len(s) > 128 {
-			t.Skip()
-		}
-		// Oracle iterates runes; byte-level LIKE-matcher diverges
-		// on invalid UTF-8 (replacement-char substitution). SQL
-		// strings should be valid UTF-8, so constrain the corpus.
-		if !utf8.ValidString(pattern) || !utf8.ValidString(s) {
-			t.Skip()
-		}
-		got := likeMatch(pattern, s, 0)
-		want := likeMatchRegexOracle(pattern, s)
-		if got != want {
-			t.Fatalf("mismatch: pattern=%q s=%q got=%v want=%v",
-				pattern, s, got, want)
-		}
-	})
-}
-
-// likeMatchRegexOracle is a known-good reference impl that translates
-// the LIKE pattern to a Go regex and runs it anchored.
-func likeMatchRegexOracle(pattern, s string) bool {
-	return likeMatchRegexOracleWithEscape(pattern, s, 0)
-}
-
-// likeMatchRegexOracleWithEscape is the escape-aware oracle, and it
-// is deliberately built the way JAVA builds it rather than the way
-// likeMatch scans: Java's `PatternForLikeValue.eval` rewrites the SQL
-// pattern into a regex which `LikeOperatorValue.likeOperation` then
-// compiles and matches. The oracle therefore mirrors Java's
-// replacement table, whose escape half is exactly two entries:
-//
-//	.put(escapeChar + "_", "_")
-//	.put(escapeChar + "%", "%")
-//	.putAll(REPLACE_MAP)
-//
-// An escape rune is consumed as an escape ONLY before `_` or `%`.
-// Anywhere else — before an ordinary character, before another
-// escape rune, or dangling at the end — no escape entry matches and
-// the rune is rewritten by the ordinary per-character rules, which
-// makes it a literal in general and a WILDCARD when the escape rune
-// is itself `%` or `_`. That fallthrough is the whole content of the
-// contract; an oracle that special-cased a dangling escape to `false`
-// would merely restate whatever the matcher does and could never
-// catch a divergence from Java.
-//
-// NEWLINE axis — the oracle models Java's default-mode regex
-// semantics EXPLICITLY, measured against a real JDK (Pattern.compile
-// with no flags + find(), per LikeOperatorValue.java:93-99):
-//
-//   - No DOTALL: `_` → `.` and `%` → `.*` reject Java's five line
-//     terminators (`\n`, `\r`, U+0085, U+2028, U+2029). Go's RE2 `.`
-//     without `s` excludes only `\n`, so the oracle spells the class
-//     out instead of using `.`. Dropping `(?s)` alone would be a
-//     HALF-model: RE2's `$` is end-of-text, which breaks
-//     `'\n' LIKE '%'` (Java: TRUE).
-//   - Default `$` under find() with a `^`-anchored pattern matches
-//     at end of input or just before one FINAL line terminator —
-//     "\r\n" counts as ONE terminator and `$` never matches between
-//     its `\r` and `\n` (java.util.regex.Pattern$Dollar). The oracle
-//     models this as: full match on s, else full match on s with
-//     exactly one trailing terminator stripped.
-func likeMatchRegexOracleWithEscape(pattern, s string, escape rune) bool {
-	// `.` under Java default mode: any char except the five Java
-	// line terminators.
-	const javaDot = `[^\n\r\x{0085}\x{2028}\x{2029}]`
-	runes := []rune(pattern)
-	var b strings.Builder
-	b.WriteString(`\A(?:`)
-	for i := 0; i < len(runes); i++ {
-		r := runes[i]
-		if escape != 0 && r == escape && i+1 < len(runes) &&
-			(runes[i+1] == '_' || runes[i+1] == '%') {
-			b.WriteString(regexp.QuoteMeta(string(runes[i+1])))
-			i++
-			continue
-		}
-		switch r {
-		case '%':
-			b.WriteString(javaDot + "*")
-		case '_':
-			b.WriteString(javaDot)
-		default:
-			b.WriteString(regexp.QuoteMeta(string(r)))
-		}
-	}
-	b.WriteString(`)\z`)
-	re := regexp.MustCompile(b.String())
-	if re.MatchString(s) {
-		return true
-	}
-	if trimmed, ok := oracleTrimFinalLineTerminator(s); ok {
-		return re.MatchString(trimmed)
-	}
-	return false
-}
-
-// oracleTrimFinalLineTerminator strips one final Java line
-// terminator ("\r\n" as a unit, else one of `\n`, `\r`, U+0085,
-// U+2028, U+2029). Independent of the matcher's own helper — the
-// oracle must model Java, not restate the implementation.
-func oracleTrimFinalLineTerminator(s string) (string, bool) {
-	if strings.HasSuffix(s, "\r\n") {
-		return s[:len(s)-2], true
-	}
-	for _, term := range []string{"\n", "\r", "\u0085", "\u2028", "\u2029"} {
-		if strings.HasSuffix(s, term) {
-			return s[:len(s)-len(term)], true
-		}
-	}
-	return "", false
-}
-
-// FuzzLikeMatchEscape — same regex-oracle cross-check as FuzzLikeMatch
-// but feeds a non-zero escape rune through both implementations.
-// The escape rune itself is fuzzed via an int8 parameter (mapped to
-// printable ASCII) so adversarial cases like escape=='%' or '_'
-// (escape character collides with a wildcard) get coverage too.
-//
-// Catches divergence between the matcher's escape handling and the
-// oracle on adversarial pattern/escape combinations.
-func FuzzLikeMatchEscape(f *testing.F) {
-	// Seeds covering the documented escape behaviors. The third
-	// parameter is the escape-char index — we map it to a printable
-	// ASCII rune below so the fuzzer explores `\\`, `!`, `%`, `_`,
-	// etc. without invalid-UTF-8 noise.
-	f.Add(`a\%b`, "a%b", int8(0)) // escape='\\'
-	f.Add(`a\_b`, "a_b", int8(0)) // escape='\\'
-	f.Add(`%\%`, "x%", int8(0))   // escape='\\'
-	f.Add(`\%`, "%", int8(0))     // escape='\\'
-	f.Add(`\`, "", int8(0))       // escape='\\'
-	f.Add(`a!%b`, "a%b", int8(1)) // escape='!'
-	f.Add(`%%%`, "abc", int8(2))  // escape='%' — collides with wildcard
-	f.Fuzz(func(t *testing.T, pattern, s string, escIdx int8) {
-		if len(pattern) > 128 || len(s) > 128 {
-			t.Skip()
-		}
-		if !utf8.ValidString(pattern) || !utf8.ValidString(s) {
-			t.Skip()
-		}
-		// Map the int8 index to a printable rune. Using a small set
-		// keeps the fuzz space tractable while still hitting the
-		// adversarial escape-equals-wildcard cases.
-		escapeChars := []rune{'\\', '!', '%', '_', '#', '@'}
-		escape := escapeChars[(int(escIdx)%len(escapeChars)+len(escapeChars))%len(escapeChars)]
-		got := likeMatch(pattern, s, escape)
-		want := likeMatchRegexOracleWithEscape(pattern, s, escape)
-		if got != want {
-			t.Fatalf("mismatch: pattern=%q s=%q escape=%q got=%v want=%v",
-				pattern, s, escape, got, want)
-		}
-	})
 }
 
 // cmpAny is the PREDICATE comparator. Java exposes two relevant predicate
@@ -1890,5 +1322,24 @@ func TestComparison_Eval_DistanceRankReachesRowEval_Errors(t *testing.T) {
 				t.Fatalf("error = %v, want the un-lowered K-NN diagnosis", err)
 			}
 		})
+	}
+}
+
+// DATE and TIMESTAMP values are text, so a time.Time operand has no producer;
+// one that arrives anyway is an internal error naming its Value, never a
+// silent comparison.
+func TestComparisonPredicate_TimeOperandRefused(t *testing.T) {
+	t.Parallel()
+	when := &values.ConstantValue{Value: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Typ: values.NotNullTimestamp}
+	text := &values.ConstantValue{Value: "2024-01-01 00:00:00", Typ: values.NotNullTimestamp}
+	for _, p := range []*ComparisonPredicate{
+		{Operand: when, Comparison: Comparison{Type: ComparisonEquals, Operand: text}},
+		{Operand: text, Comparison: Comparison{Type: ComparisonEquals, Operand: when}},
+	} {
+		_, err := p.Eval(nil)
+		var carrier *TemporalCarrierError
+		if !errors.As(err, &carrier) || !strings.Contains(carrier.Error(), "2024-01-01") {
+			t.Errorf("%s: want a TemporalCarrierError naming the operand, got %v", p.Explain(), err)
+		}
 	}
 }

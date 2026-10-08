@@ -9,8 +9,8 @@ import (
 func TestRowNumberValue_Type(t *testing.T) {
 	t.Parallel()
 	r := NewRowNumberValue(nil, nil, nil, nil)
-	if !r.Type().Equals(NotNullLong) {
-		t.Fatalf("Type = %v, want NotNullLong", r.Type())
+	if !r.Type().Equals(NullableLong) {
+		t.Fatalf("Type = %v, want NullableLong", r.Type())
 	}
 }
 

@@ -6,22 +6,8 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
-// QueryPredicateSimplificationRule applies predicate simplification to
-// a SelectExpression. Runs the predicate simplifier
-// (predicates.SimplifyPredicateValues) on each predicate in the
-// SelectExpression's predicate list and yields a new SelectExpression
-// if any predicate changed.
-//
-// Go's simplifier engine (SimplifyPredicateValues) walks the predicate
-// tree and constant-folds Value operands — e.g. `name = 1+2` becomes
-// `name = 3`. This is the Go equivalent of Java's
-// ConstantFoldingRuleSet applied through Simplification.optimize.
-//
-// Convergence: if no predicates changed (pointer-identity check), the
-// rule does not yield. Constant-folding is idempotent, so repeated
-// application converges in one step.
-//
-// Ports Java's QueryPredicateSimplificationRule (ExplorationCascadesRule, 128 LOC).
+// QueryPredicateSimplificationRule simplifies the whole conjunction and tests
+// semantic equality for convergence, like Java's rule of the same name.
 type QueryPredicateSimplificationRule struct {
 	matcher matching.BindingMatcher
 }
@@ -42,34 +28,22 @@ func (r *QueryPredicateSimplificationRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Simplify each predicate. Track whether anything changed via
-	// pointer identity (SimplifyPredicateValues returns the same
-	// pointer when nothing folds).
-	anyChanged := false
-	simplified := make([]predicates.QueryPredicate, len(originalPredicates))
-	for i, p := range originalPredicates {
-		simplified[i] = predicates.SimplifyPredicateValues(p)
-		if simplified[i] != p {
-			anyChanged = true
-		}
-	}
-
-	if !anyChanged {
-		return
-	}
-
-	newSel, err := expressions.NewSelectExpressionWithJoinType(
-		sel.GetResultValue(),
-		sel.GetQuantifiers(),
-		simplified,
-		sel.GetSourceAliases(),
-		sel.GetJoinType(),
-	)
+	// Java simplifies the conjunction, not isolated value operands: a sibling
+	// can absorb an OR or supply the identity that eliminates another factor.
+	// The set is Java's ConstantFoldingRuleSet (ConstantFoldingRules), whose
+	// value rule simplifies the leaves inside the fixpoint.
+	conjunction := buildAnd(originalPredicates)
+	simplifiedConjunction, err := Simplify(conjunction, ConstantFoldingRules())
 	if err != nil {
 		call.Fail(err)
 		return
 	}
-	call.Yield(newSel)
+	if predicates.PredicateEquals(conjunction, simplifiedConjunction) {
+		return
+	}
+	simplified := andConjuncts(simplifiedConjunction)
+
+	call.Yield(sel.WithPredicates(simplified))
 }
 
 var _ ExpressionRule = (*QueryPredicateSimplificationRule)(nil)

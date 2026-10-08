@@ -1,160 +1,150 @@
 package cascades
 
 import (
+	"reflect"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
-// Simplifier — the predicate-rewrite fixpoint driver.
-//
-// Tiny fixed-point driver that applies a list of CascadesRules to a
-// QueryPredicate until no rule yields. Deliberately not the planner
-// (no memo, no cost model, no task stack): predicate simplification
-// is a strict-reduction rewrite with no cost-based choice, so a
-// fixpoint loop is the right tool — the Java analog is the
-// `values.simplification` rule sets, not `CascadesPlanner`. Used in
-// production by rules that need eager predicate simplification
-// (EliminateNullOnEmptyRule) and by the predicate-rule tests.
-
-// Simplify iterates the rules on `pred` until no rule produces a
-// rewrite, then returns the final form. Each iteration applies every
-// rule in order; if ANY rule yields, the result replaces `pred` and
-// the loop restarts from the top (fixpoint convergence). Descends
-// into child predicates after the top-level stabilises.
-//
-// Termination invariants for the rule sets this driver runs:
-//
-//   - DefaultSimplifyRules — each rule strictly reduces the tree
-//     (folds a constant or drops an identity / absorbed child), and
-//     there's a finite number of constants / identities to collapse.
-//   - NormalizationRules — adds DeMorganRule, which strictly
-//     INCREASES the node count (NOT distributed across N children
-//     adds N-1 NOTs). DeMorganRule terminates via NOT-depth monotone
-//     decrease: each application moves every NOT one level closer to
-//     leaves, leaves are finitely deep, leaves eventually hit
-//     NotComparisonRewriteRule and disappear (or stop matching).
-//
-// Not safe against cyclic-rewrite rule sets — real Cascades uses a
-// memo to detect cycles. The rule sets this driver runs are
-// termination-proven per above so no cycle is possible.
+// Simplify visits children before applying rules, as Java's Simplification does.
+// Rules that create new child expressions must request re-exploration.
 func Simplify(pred predicates.QueryPredicate, rules []CascadesRule) (predicates.QueryPredicate, error) {
+	return simplifyWithReExploration(pred, rules, true, nil)
+}
+
+func simplifyWithReExploration(pred predicates.QueryPredicate, rules []CascadesRule, isRoot bool, childResults map[predicates.QueryPredicate]predicates.QueryPredicate) (predicates.QueryPredicate, error) {
 	if pred == nil || len(rules) == 0 {
 		return pred, nil
 	}
-	// Top-level fixpoint.
+	original := pred
+	if !isRoot && childResults != nil {
+		if result := childResults[pred]; result != nil {
+			return result, nil
+		}
+	}
 	for {
-		next, err := applyRulesOnce(pred, rules)
+		var err error
+		pred, err = simplifyPredicateChildren(pred, rules, childResults)
 		if err != nil {
 			return nil, err
 		}
-		if next == pred {
-			break
-		}
-		pred = next
-	}
-	// Recurse into children. After a stable top-level, rewrite
-	// sub-predicates and then re-simplify the top (child
-	// simplifications may expose new top-level opportunities).
-	switch p := pred.(type) {
-	case *predicates.AndPredicate:
-		rewritten := false
-		simpler := make([]predicates.QueryPredicate, len(p.SubPredicates))
-		for i, sp := range p.SubPredicates {
-			var err error
-			simpler[i], err = Simplify(sp, rules)
+		for {
+			next, reExplore, err := applyRulesOnce(pred, rules, isRoot)
 			if err != nil {
 				return nil, err
 			}
-			if simpler[i] != sp {
-				rewritten = true
+			if next == pred {
+				if _, registered := childResults[original]; !isRoot && registered {
+					childResults[original] = pred
+				}
+				return pred, nil
 			}
-		}
-		if rewritten {
-			return Simplify(&predicates.AndPredicate{SubPredicates: simpler}, rules)
-		}
-	case *predicates.OrPredicate:
-		rewritten := false
-		simpler := make([]predicates.QueryPredicate, len(p.SubPredicates))
-		for i, sp := range p.SubPredicates {
-			var err error
-			simpler[i], err = Simplify(sp, rules)
-			if err != nil {
-				return nil, err
+			pred = next
+			if reExplore {
+				break
 			}
-			if simpler[i] != sp {
-				rewritten = true
-			}
-		}
-		if rewritten {
-			return Simplify(&predicates.OrPredicate{SubPredicates: simpler}, rules)
-		}
-	case *predicates.NotPredicate:
-		inner, err := Simplify(p.Child, rules)
-		if err != nil {
-			return nil, err
-		}
-		if inner != p.Child {
-			return Simplify(&predicates.NotPredicate{Child: inner}, rules)
 		}
 	}
-	return pred, nil
 }
 
-// applyRulesOnce fires each rule against pred exactly once, returning
-// the first yielded replacement. When no rule fires, returns pred
-// unchanged (the caller's fixpoint test uses pointer-equality).
-func applyRulesOnce(pred predicates.QueryPredicate, rules []CascadesRule) (predicates.QueryPredicate, error) {
+func simplifyPredicateChildren(pred predicates.QueryPredicate, rules []CascadesRule, childResults map[predicates.QueryPredicate]predicates.QueryPredicate) (predicates.QueryPredicate, error) {
+	children := pred.Children()
+	if len(children) == 0 {
+		return pred, nil
+	}
+	var simpler []predicates.QueryPredicate
+	for i, child := range children {
+		next, err := simplifyWithReExploration(child, rules, false, childResults)
+		if err != nil {
+			return nil, err
+		}
+		if next != child && simpler == nil {
+			simpler = make([]predicates.QueryPredicate, len(children))
+			copy(simpler, children)
+		}
+		if simpler != nil {
+			simpler[i] = next
+		}
+	}
+	if simpler == nil {
+		return pred, nil
+	}
+	// Child replacement preserves atomicity; a rule may deliberately rebuild it away.
+	switch p := pred.(type) {
+	case *predicates.AndPredicate:
+		clone := *p
+		clone.SubPredicates = simpler
+		return &clone, nil
+	case *predicates.OrPredicate:
+		clone := *p
+		clone.SubPredicates = simpler
+		return &clone, nil
+	case *predicates.NotPredicate:
+		clone := *p
+		clone.Child = simpler[0]
+		return &clone, nil
+	default:
+		return pred, nil
+	}
+}
+
+// Root-only rules expose their scope before binding to avoid allocating child calls
+// that their OnMatch must decline (Java's NormalFormRule.isRoot guard).
+type rootOnlySimplificationRule interface{ rootOnly() bool }
+
+// applyRulesOnce returns the first replacement; unchanged identity ends the fixpoint.
+func applyRulesOnce(pred predicates.QueryPredicate, rules []CascadesRule, isRoot bool) (predicates.QueryPredicate, bool, error) {
+	rootType := reflect.TypeOf(pred)
 	for _, rule := range rules {
-		matches := rule.Matcher().BindMatches(matching.NewBindings(), pred)
+		if scoped, ok := rule.(rootOnlySimplificationRule); !isRoot && ok && scoped.rootOnly() {
+			continue
+		}
+		matcher := rule.Matcher()
+		if typed, ok := matcher.(matching.RootOperatorMatcher); ok {
+			if root := typed.RootOperator(); root != nil && root != rootType {
+				continue
+			}
+		}
+		matches := matcher.BindMatches(matching.NewBindings(), pred)
 		for _, b := range matches {
-			call := &RuleCall{Bindings: b}
+			call := &RuleCall{Bindings: b, isRoot: isRoot}
 			rule.OnMatch(call)
 			if err := call.Err(); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			if ys := call.Yielded(); len(ys) > 0 {
-				// First yield wins — rules are ordered by priority.
 				if qp, ok := ys[0].(predicates.QueryPredicate); ok {
-					return qp, nil
+					return qp, call.reExplore, nil
 				}
 			}
 		}
 	}
-	return pred, nil
+	return pred, false, nil
 }
 
-// DefaultSimplifyRules returns the canonical simplification rule set.
-// Callers pass this to Simplify for a typical
-// "flatten + constant-fold + identity-drop" pass. Order matters:
-// flattens run first so the constant-fold rules see a flat operand
-// list; then Comparison constants fold; then Not resolves; then the
-// And/Or identity-drop + absorbing-element rules.
-//
-// Rules NOT included (intentional):
-//   - De Morgan NOT-distribution (`NOT(AND(a,b))` → `OR(NOT a, NOT b)`).
-//     Kleene-safe but NODE-INCREASING (N-ary AND becomes N-element
-//     OR plus N NOTs), so it doesn't fit the strict-reduction
-//     termination invariant DefaultSimplifyRules guarantees. Java
-//     applies De Morgan as a separate `BooleanNormalizer` pre-CNF
-//     pass; we mirror this via the explicit `NormalizationRules()`
-//     rule set (which prepends `NewDeMorganRule()` before the
-//     default set).
-//   - Tautology / contradiction folds that require NOT-NULL
-//     metadata (`x = x` → TRUE iff x is NOT NULL). Waits on Type
-//     nullability tracking.
-func DefaultSimplifyRules() []CascadesRule {
+// queryPredicateSimplificationRules mirrors DefaultQueryPredicateRuleSet.
+// Absorption, not eager flattening or deduplication, determines surviving positions.
+func queryPredicateSimplificationRules() []CascadesRule {
 	return []CascadesRule{
-		NewAndFlattenRule(),
-		NewOrFlattenRule(),
-		NewComparisonConstantSimplifyRule(),
-		NewNotConstantSimplifyRule(),
-		NewAndConstantSimplifyRule(),
 		NewOrConstantSimplifyRule(),
-		NewAndDedupRule(),
-		NewOrDedupRule(),
+		NewAndConstantSimplifyRule(),
 		NewAndAbsorbOrRule(),
 		NewOrAbsorbAndRule(),
 		NewNotComparisonRewriteRule(),
-		NewValuePredicateConstantFoldRule(),
+		NewDeMorganRule(),
+	}
+}
+
+// TranslatorConstantPredicateRules is the set the SQL translator runs after
+// it replaces an EXISTS it has decided with its constant: AND and OR identity
+// and annulment, and NOT over a constant predicate. The last is Go's own, for
+// that translator fold only; Java's ConstantFoldingRuleSet (ConstantFolding-
+// Rules) has no fold of NOT over a constant.
+func TranslatorConstantPredicateRules() []CascadesRule {
+	return []CascadesRule{
+		NewAndConstantSimplifyRule(),
+		NewOrConstantSimplifyRule(),
+		NewNotConstantSimplifyRule(),
 	}
 }

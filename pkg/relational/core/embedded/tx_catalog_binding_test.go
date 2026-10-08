@@ -76,35 +76,30 @@ func newSimBackend(t *testing.T, seed uint64) *simBackend {
 }
 
 // connect builds a connection the way the SQL driver's Connector does —
-// New(...) plus SetDefaultSchema — and NOT via SetSchema. The distinction is
-// load-bearing and is pinned by TestSchemaNameNormalizationIsInSetDefaultSchema
-// below: SetDefaultSchema normalizes the name (unquoted identifiers uppercase),
-// SetSchema stores it raw, and DDL writes the catalog row under the normalized
-// name. A harness that used the raw setter with a lowercase literal would look
-// past the catalog row its own DDL just wrote.
+// New(...) plus SetDefaultSchema, both taking their names verbatim. DDL folds
+// unquoted identifiers, a database path whole: `CREATE DATABASE /FRL/simdb`
+// stores /FRL/SIMDB and `CREATE SCHEMA /FRL/simdb/s` stores (/FRL/SIMDB, S). So a
+// connection names what that DDL created as "/FRL/SIMDB" and "S"; the verbatim
+// rule is pinned by TestSetDefaultSchemaIsVerbatim below.
 func (b *simBackend) connect(schema string) *EmbeddedConnection {
-	c := New("/simdb", b.fdbDB, b.cat, b.factory, b.ks)
+	c := New("/FRL/SIMDB", b.fdbDB, b.cat, b.factory, b.ks)
 	if schema != "" {
 		c.SetDefaultSchema(schema)
 	}
 	return c
 }
 
-// TestSchemaNameNormalizationIsInSetDefaultSchema pins where SQL identifier
-// normalization happens on the connection, because every SimFDB-backed test in
-// this package depends on it and nothing else states it.
+// TestSetDefaultSchemaIsVerbatim pins that the connection's schema entry
+// point keeps the name as given, as Java's DSN option does
+// (RecordLayerStorageCluster.parseConnectionQueryString upper-cases the
+// option's name, not its value), while DDL folds what it creates. Every
+// SimFDB-backed harness in this package names the folded schema because of
+// it.
 //
-// CREATE SCHEMA /simdb/s writes the catalog row under the NORMALIZED name
-// ("S"), so a session schema must be normalized before it can resolve. The
-// driver gets that for free: the DSN's schema= goes through SetDefaultSchema,
-// which strips quotes and uppercases. SetSchema is the raw setter and does
-// neither — it is the api.Connection-shaped label setter with no production
-// caller in this repo, so nothing else would notice.
-//
-// If SetSchema ever grows normalization (or SetDefaultSchema loses it), this
-// test fails and the harnesses above can be simplified — that is the point of
-// pinning it rather than leaving it as a comment.
-func TestSchemaNameNormalizationIsInSetDefaultSchema(t *testing.T) {
+// A lower-case "s" names a schema nobody created: the statement is refused
+// with the undefined-schema code rather than reaching S. Folding here again
+// would reach schemas Java's connect refuses.
+func TestSetDefaultSchemaIsVerbatim(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	b := newSimBackend(t, 107)
@@ -115,25 +110,105 @@ func TestSchemaNameNormalizationIsInSetDefaultSchema(t *testing.T) {
 		t.Fatalf("admin connection schema = %q, want empty", got)
 	}
 
-	normalized := b.connect("s")
-	if got := normalized.GetSchema(); got != "S" {
-		t.Fatalf("SetDefaultSchema(%q) left the session schema %q, want %q: the driver's "+
-			"own entry point stopped normalizing, and every DSN with a lowercase "+
-			"schema= now looks past the catalog row CREATE SCHEMA wrote", "s", got, "S")
+	lower := b.connect("s")
+	if got := lower.GetSchema(); got != "s" {
+		t.Fatalf("SetDefaultSchema(%q) left the session schema %q, want it verbatim: the "+
+			"connection folds the DSN's schema again, which Java does not", "s", got)
 	}
-	if _, err := normalized.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (1, 1)", nil); err != nil {
-		t.Fatalf("insert through the normalized session: %v", err)
+	_, err := lower.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (1, 1)", nil)
+	var ae *api.Error
+	if !errors.As(err, &ae) || ae.Code != api.ErrCodeUndefinedSchema {
+		t.Fatalf("insert through schema %q (DDL created S) = %v, want the undefined-schema "+
+			"code %s: an unfolded name reached the folded schema", "s", err, api.ErrCodeUndefinedSchema)
 	}
 
-	raw := b.connect("")
-	raw.SetSchema("s")
-	if got := raw.GetSchema(); got != "s" {
-		t.Fatalf("SetSchema(%q) stored %q: the raw label setter now normalizes too, so the "+
-			"harnesses in this package no longer need SetDefaultSchema", "s", got)
+	folded := b.connect("S")
+	if _, err := folded.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (2, 2)", nil); err != nil {
+		t.Fatalf("insert through the schema DDL stored (S): %v", err)
 	}
-	if _, err := raw.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (2, 2)", nil); err == nil {
-		t.Fatalf("a session schema set through the RAW setter resolved: normalization moved, " +
-			"and the reason this package's harnesses must use SetDefaultSchema no longer holds")
+}
+
+// TestSetSchemaRefusesAMissingSchema pins SetSchema as Java's
+// EmbeddedRelationalConnection.setSchema: the name as given, a schema the
+// database does not hold refused with UNDEFINED_SCHEMA "Schema <s> does not
+// exist in <path>" and the session left where it was, the empty name clearing
+// it unchecked, and a closed connection refused ("Connection is closed!",
+// INTERNAL_ERROR).
+func TestSetSchemaRefusesAMissingSchema(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := newSimBackend(t, 109)
+	admin := b.connect("")
+	bootstrapTwoTemplates(t, admin)
+
+	c := b.connect("")
+	if err := c.SetSchema("S"); err != nil {
+		t.Fatalf("SetSchema(S), the schema DDL stored: %v", err)
+	}
+	if _, err := c.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (1, 1)", nil); err != nil {
+		t.Fatalf("insert after SetSchema(S): %v", err)
+	}
+
+	err := c.SetSchema("s")
+	var ae *api.Error
+	if !errors.As(err, &ae) || ae.Code != api.ErrCodeUndefinedSchema ||
+		ae.Message != "Schema s does not exist in /FRL/SIMDB" {
+		t.Fatalf("SetSchema(s) = %v, want %s \"Schema s does not exist in /FRL/SIMDB\"", err, api.ErrCodeUndefinedSchema)
+	}
+	if got := c.GetSchema(); got != "S" {
+		t.Fatalf("a refused SetSchema moved the session to %q", got)
+	}
+
+	if err := c.SetSchema(""); err != nil || c.GetSchema() != "" {
+		t.Fatalf("SetSchema(\"\") = %v, schema %q: want the schema cleared", err, c.GetSchema())
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	err = c.SetSchema("S")
+	if !errors.As(err, &ae) || ae.Code != api.ErrCodeInternalError || ae.Message != "Connection is closed!" {
+		t.Fatalf("SetSchema on a closed connection = %v, want XX000 \"Connection is closed!\"", err)
+	}
+}
+
+// TestSetSchemaReadsInsideTheOpenTransaction pins SetSchema's catalog read to
+// the connection's open transaction, as Java's setSchema reads through
+// getTransaction(): a schema another connection drops after the transaction's
+// first read is still there for SetSchema inside it (the transaction's
+// snapshot), and gone once the transaction has ended (the control, which
+// reads in a fresh transaction).
+func TestSetSchemaReadsInsideTheOpenTransaction(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := newSimBackend(t, 113)
+	admin := b.connect("")
+	bootstrapTwoTemplates(t, admin)
+	c := b.connect("S")
+	if _, err := c.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (1, 1)", nil); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if _, err := c.Begin(); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if got := queryOneInt64(t, c, "SELECT v FROM t WHERE id = 1"); got != 1 {
+		t.Fatalf("v = %d, want 1", got)
+	}
+	if _, err := b.connect("").ExecContext(ctx, "DROP SCHEMA /FRL/SIMDB/S", nil); err != nil {
+		t.Fatalf("drop the schema from another connection: %v", err)
+	}
+	if err := c.SetSchema("S"); err != nil {
+		t.Fatalf("SetSchema(S) inside the transaction that read S: %v", err)
+	}
+	if err := c.activeTx.Rollback(); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	err := c.SetSchema("S")
+	var ae *api.Error
+	if !errors.As(err, &ae) || ae.Code != api.ErrCodeUndefinedSchema {
+		t.Fatalf("SetSchema(S) after the transaction ended = %v, want %s: the drop committed", err, api.ErrCodeUndefinedSchema)
 	}
 }
 
@@ -143,10 +218,10 @@ func bootstrapTwoTemplates(t *testing.T, admin *EmbeddedConnection) {
 	t.Helper()
 	ctx := context.Background()
 	for _, stmt := range []string{
-		"CREATE DATABASE /simdb",
+		"CREATE DATABASE /FRL/simdb",
 		"CREATE SCHEMA TEMPLATE tmpl_plain CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		"CREATE SCHEMA TEMPLATE tmpl_indexed CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX idx_v ON t (v)",
-		"CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl_plain",
+		"CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl_plain",
 	} {
 		if _, err := admin.ExecContext(ctx, stmt, nil); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
@@ -160,8 +235,8 @@ func swapSchemaToIndexed(t *testing.T, b *EmbeddedConnection) {
 	t.Helper()
 	ctx := context.Background()
 	for _, stmt := range []string{
-		"DROP SCHEMA /simdb/s",
-		"CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl_indexed",
+		"DROP SCHEMA /FRL/simdb/s",
+		"CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl_indexed",
 	} {
 		if _, err := b.ExecContext(ctx, stmt, nil); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
@@ -194,8 +269,8 @@ func TestCatalogBinding_NoSilentZeroRows(t *testing.T) {
 	b := newSimBackend(t, 73)
 	connA := b.connect("")
 	bootstrapTwoTemplates(t, connA)
-	connA.SetDefaultSchema("s")
-	connB := b.connect("s")
+	connA.SetDefaultSchema("S")
+	connB := b.connect("S")
 
 	const rows = 250 // past MAX_RECORDS_FOR_REBUILD (200)
 	for lo := 0; lo < rows; lo += 50 {
@@ -224,7 +299,7 @@ func TestCatalogBinding_NoSilentZeroRows(t *testing.T) {
 	// The mid-transaction invalidation (what a DDL issued on this connection
 	// does through invalidateSchemaCache): the binding entry is dropped and
 	// statement 2 must RE-READ.
-	connA.invalidateSchemaCache("/simdb", "s")
+	connA.invalidateSchemaCache("/FRL/SIMDB", "S")
 
 	// Cross-connection DDL commits a schema whose plan for the next statement
 	// would be an index scan.
@@ -288,8 +363,8 @@ func TestCatalogBinding_CacheDoesNotCrossTransactionBoundary(t *testing.T) {
 	b := newSimBackend(t, 79)
 	connA := b.connect("")
 	bootstrapTwoTemplates(t, connA)
-	connA.SetDefaultSchema("s")
-	connB := b.connect("s")
+	connA.SetDefaultSchema("S")
+	connB := b.connect("S")
 
 	if _, err := connA.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (1, 1)", nil); err != nil {
 		t.Fatalf("insert: %v", err)
@@ -342,11 +417,11 @@ func TestCatalogBinding_ConcurrentDDLConflictsCommit(t *testing.T) {
 	connA := b.connect("")
 	bootstrapTwoTemplates(t, connA)
 	// A second schema for A's write, untouched by B's DDL.
-	if _, err := connA.ExecContext(ctx, "CREATE SCHEMA /simdb/other WITH TEMPLATE tmpl_plain", nil); err != nil {
+	if _, err := connA.ExecContext(ctx, "CREATE SCHEMA /FRL/simdb/other WITH TEMPLATE tmpl_plain", nil); err != nil {
 		t.Fatalf("create other schema: %v", err)
 	}
-	connA.SetDefaultSchema("s")
-	connB := b.connect("s")
+	connA.SetDefaultSchema("S")
+	connB := b.connect("S")
 
 	if _, err := connA.Begin(); err != nil {
 		t.Fatalf("begin: %v", err)
@@ -357,7 +432,7 @@ func TestCatalogBinding_ConcurrentDDLConflictsCommit(t *testing.T) {
 		t.Fatalf("plan: %v", err)
 	}
 	// The transaction's write lives in the OTHER schema.
-	connA.SetDefaultSchema("other")
+	connA.SetDefaultSchema("OTHER")
 	if _, err := connA.ExecContext(ctx, "INSERT INTO t (id, v) VALUES (100, 100)", nil); err != nil {
 		t.Fatalf("insert into other: %v", err)
 	}

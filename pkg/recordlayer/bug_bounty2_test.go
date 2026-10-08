@@ -64,13 +64,13 @@ var _ = Describe("Bug Bounty Round 2", func() {
 		})
 	})
 
-	// BUG #2 (FIXED): isRetryableError now uses errors.As instead of type assertion,
-	// so wrapped FDB errors are correctly detected as retryable.
-	Describe("BUG: isRetryableError fails on wrapped FDB errors", func() {
+	// BUG #2 (FIXED): the runner's predicate walks the chain, so wrapped FDB
+	// errors are correctly detected as retryable.
+	Describe("BUG: the retry predicate fails on wrapped FDB errors", func() {
 		It("detects unwrapped FDB errors correctly", func() {
-			Expect(isRetryableError(fdb.Error{Code: 1020})).To(BeTrue(), "unwrapped conflict")
-			Expect(isRetryableError(fdb.Error{Code: 1021})).To(BeTrue(), "unwrapped commit_unknown")
-			Expect(isRetryableError(fdb.Error{Code: 1009})).To(BeTrue(), "unwrapped timestamp")
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1020})).To(BeTrue(), "unwrapped conflict")
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1021})).To(BeTrue(), "unwrapped commit_unknown")
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1009})).To(BeTrue(), "unwrapped timestamp")
 		})
 
 		It("detects wrapped FDB retryable errors (FIXED)", func() {
@@ -78,7 +78,7 @@ var _ = Describe("Bug Bounty Round 2", func() {
 				inner := fdb.Error{Code: code}
 				wrapped := fmt.Errorf("operation failed: %w", inner)
 
-				Expect(isRetryableError(wrapped)).To(BeTrue(),
+				Expect(isRetriableAnyCause(wrapped)).To(BeTrue(),
 					fmt.Sprintf("wrapped fdb.Error{Code:%d} should be detected as retryable", code))
 			}
 		})
@@ -97,7 +97,7 @@ var _ = Describe("Bug Bounty Round 2", func() {
 
 			Expect(err).To(HaveOccurred())
 			Expect(attempts).To(Equal(5),
-				"FIX: should retry up to 5 times because isRetryableError now uses errors.As")
+				"FIX: should retry up to 5 times because the predicate walks the chain")
 		})
 	})
 

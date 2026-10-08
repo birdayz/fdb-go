@@ -22,12 +22,8 @@ import (
 // is computed under a different equality contract; flattening
 // would silently change semantics. Different-keys case declines.
 //
-// 'Match' here is by Explain-text equality of the corresponding keys —
-// the same conservative textual bridge as
-// LogicalProjectionExpression.EqualsWithoutChildren (different-keys
-// cases decline, so semantics are never merged; values.SemanticEquals
-// exists, but switching dedup/match semantics to it needs its own
-// review cycle).
+// 'Match' here is by Explain-text equality of the corresponding keys
+// (different-keys cases decline, so semantics are never merged).
 type IntersectionMergeRule struct {
 	matcher matching.BindingMatcher
 }

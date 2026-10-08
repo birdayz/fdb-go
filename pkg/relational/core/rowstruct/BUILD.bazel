@@ -1,8 +1,9 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "rowstruct",
     srcs = [
+        "builder.go",
         "ordinal.go",
         "rowstruct.go",
     ],
@@ -10,10 +11,19 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
         "//pkg/relational/core/functions",
         "//pkg/relational/core/metadata",
+        "@com_github_google_uuid//:uuid",
         "@org_golang_google_protobuf//reflect/protoreflect",
     ],
+)
+
+go_test(
+    name = "rowstruct_test",
+    srcs = ["ordinal_test.go"],
+    embed = [":rowstruct"],
+    deps = ["//pkg/recordlayer/query/plan/cascades/values"],
 )

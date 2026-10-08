@@ -4,16 +4,14 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 )
 
-// The corpus reaches only the SCALAR branches of this matcher: every vendored
-// file carrying a struct-, array- or type-name expectation is claimed earlier
-// by `unsupported-DDL:struct` or by the array-literal INSERT gap. So the
-// descending branches are exercised here directly, against the semantics
-// CheckResultMetadataConfig.matchesExpected defines — otherwise the port would
-// be a large body of code with no test able to tell whether it is right, and it
-// would go live the day Phase 3 lands with nothing having ever checked it.
+// The descending branches are exercised here directly, against the semantics
+// CheckResultMetadataConfig.matchesExpected defines, besides the corpus's
+// check-result-metadata files, which reach them through the driver's metadata.
 
 // metadataConfigFrom parses a real `.yamsql` document and returns its
 // `resultMetadata:` config, so the tests run the same parse→match path the
@@ -384,11 +382,11 @@ func TestMetadataDescends(t *testing.T) {
 	}
 }
 
-// TestExtractDescriptorsFromDriverSurface pins what the runner can actually
-// read back, and therefore the exact boundary of what `resultMetadata:` asserts
-// today: one flat type name per column, taken from
-// `sql.ColumnType.DatabaseTypeName`. If the driver ever starts carrying nested
-// metadata, this is the test that has to change first.
+// TestExtractDescriptorsFromDriverSurface pins what the runner reads back.
+// Without result set metadata only `sql.ColumnType.DatabaseTypeName` is known,
+// one flat type name per column. With it, the descriptors are Java's
+// extractDescriptors over the column DataTypes: STRUCT with its type name and
+// fields, ARRAY(STRUCT) likewise, ARRAY(elem) for a scalar or nested array.
 func TestExtractDescriptorsFromDriverSurface(t *testing.T) {
 	t.Parallel()
 
@@ -400,9 +398,37 @@ func TestExtractDescriptorsFromDriverSurface(t *testing.T) {
 		t.Errorf("scalar descriptor = %+v", got[0])
 	}
 	if got[1].HasFields || got[1].HasStructTypeName || got[1].IsArray {
-		t.Errorf("a STRUCT column must arrive with NO nested metadata — the driver has none to give; got %+v", got[1])
+		t.Errorf("without metadata a STRUCT column has no nested descriptor; got %+v", got[1])
 	}
 	if extractDescriptors(nil) != nil {
 		t.Error("a nil result set has no descriptors")
+	}
+
+	point := api.NewStructType("POINT", []api.StructField{
+		api.NewStructField("X", api.NewLongType(true), 0),
+		api.NewStructField("TAGS", api.NewArrayType(api.NewStringType(false), true), 1),
+	}, true)
+	cols := []executor.ColumnDef{
+		{Name: "ID", TypeName: "BIGINT", DataType: api.NewLongType(false)},
+		{Name: "PT", TypeName: "STRUCT", DataType: point},
+		{Name: "PTS", TypeName: "ARRAY", DataType: api.NewArrayType(point.WithNullable(false), true)},
+		{Name: "M", TypeName: "ARRAY", DataType: api.NewArrayType(api.NewArrayType(api.NewIntegerType(false), false), true)},
+	}
+	withMeta := rs([]string{"ID", "PT", "PTS", "M"}, []string{"BIGINT", "STRUCT", "ARRAY", "ARRAY"})
+	withMeta.Meta = executor.NewResultSetMetaData(cols)
+	var b strings.Builder
+	for _, d := range extractDescriptors(withMeta) {
+		appendDescriptor(&b, d, "")
+	}
+	want := "ID: BIGINT\n" +
+		"PT: STRUCT(POINT)\n" +
+		"    X: BIGINT\n" +
+		"    TAGS: ARRAY(STRING)\n" +
+		"PTS: ARRAY(STRUCT)(POINT)\n" +
+		"    X: BIGINT\n" +
+		"    TAGS: ARRAY(STRING)\n" +
+		"M: ARRAY(ARRAY(INTEGER))\n"
+	if b.String() != want {
+		t.Errorf("descriptors with metadata:\n%s\nwant:\n%s", b.String(), want)
 	}
 }

@@ -454,7 +454,7 @@ func TestExecuteProjection_FieldExtraction(t *testing.T) {
 	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
 		&values.ConstantValue{Value: int64(100), Typ: values.NewPrimitiveType(values.TypeCodeInt, false)},
 	}))
-	projPlan := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+	projPlan := mustExecutorConstruct(newProjectionMapOverForTest(
 		[]values.Value{
 			&values.ConstantValue{Value: "projected", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
 		},
@@ -586,7 +586,7 @@ func TestExecuteIntersection_NoCommonRows(t *testing.T) {
 			Typ:   values.NewPrimitiveType(values.TypeCodeInt, false),
 		}
 		input := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{literal}))
-		return mustExecutorConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+		return mustExecutorConstruct(newProjectionMapForTest(
 			[]values.Value{literal}, []string{"V"}, input,
 		))
 	}
@@ -668,6 +668,47 @@ func TestQueryResult_FromStoredRecord_NilSafe(t *testing.T) {
 // total-order comparator. NaN PROPAGATES into both extremes (order-independent) and
 // -0.0 < +0.0. The old code used compareAny with native float </>, which left NaN
 // order-dependently ignored and -0.0/+0.0 first-seen-wins.
+// MIN and MAX are Math.min/Math.max line for line, so a NaN result is the NaN
+// OPERAND, bits included, in either arrival order (RFC-257 WS-E 5.3: the
+// target stores fff8000000000000 for MIN/MAX over 0.0/0.0's NaN, where Go once
+// stored math.NaN()'s 7ff8000000000001). FLOAT keeps a signaling payload: it is
+// never widened through a double.
+func TestAggMinMax_ReturnsTheNaNOperandsBits(t *testing.T) {
+	t.Parallel()
+	for _, bits := range []uint64{0xfff8000000000000, 0x7ff8000000000000, 0x7ff0000000000001, 0xfff00000deadbeef} {
+		nan := math.Float64frombits(bits)
+		for _, other := range []float64{1.0, math.Inf(1), math.Inf(-1), math.Copysign(0, -1)} {
+			for _, isMin := range []bool{true, false} {
+				for _, order := range [][2]float64{{nan, other}, {other, nan}} {
+					got := aggMinMax(aggMinMax(nil, order[0], isMin), order[1], isMin).(float64)
+					if math.Float64bits(got) != bits {
+						t.Errorf("min=%t over %v: %016x, want the NaN operand %016x", isMin, order, math.Float64bits(got), bits)
+					}
+				}
+			}
+		}
+	}
+	for _, bits := range []uint32{0xffc00000, 0x7fc00000, 0x7f800001} {
+		nan := math.Float32frombits(bits)
+		for _, isMin := range []bool{true, false} {
+			for _, order := range [][2]float32{{nan, 2}, {2, nan}} {
+				got := aggMinMax(aggMinMax(nil, order[0], isMin), order[1], isMin).(float32)
+				if math.Float32bits(got) != bits {
+					t.Errorf("float32 min=%t over %v: %08x, want the NaN operand %08x", isMin, order, math.Float32bits(got), bits)
+				}
+			}
+		}
+	}
+	// Two NaN operands: Java returns the first (`if (a != a) return a`).
+	a, b := math.Float64frombits(0xfff8000000000000), math.Float64frombits(0x7ff8000000000000)
+	if got := javaMinF64(a, b); math.Float64bits(got) != 0xfff8000000000000 {
+		t.Errorf("Math.min(NaN a, NaN b) = %016x, want a", math.Float64bits(got))
+	}
+	if got := javaMaxF64(b, a); math.Float64bits(got) != 0x7ff8000000000000 {
+		t.Errorf("Math.max(NaN b, NaN a) = %016x, want b", math.Float64bits(got))
+	}
+}
+
 func TestAggMinMax_FloatNaNAndSignedZero(t *testing.T) {
 	t.Parallel()
 	nan := math.NaN()
@@ -824,7 +865,7 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 
 	limited := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sorted, 10, 0))
 
-	projected := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+	projected := mustExecutorConstruct(newProjectionMapOverForTest(
 		[]values.Value{
 			&values.ConstantValue{Value: "result", Typ: values.NewPrimitiveType(values.TypeCodeString, false)},
 		},
@@ -868,7 +909,7 @@ func TestProjection_MultiColumnFieldValue(t *testing.T) {
 	}))
 	root := inner.GetResultValue()
 
-	projected := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
+	projected := mustExecutorConstruct(newProjectionMapOverForTest(
 		[]values.Value{
 			mustTestFieldOrdinal(t, root, 0),
 			mustTestFieldOrdinal(t, root, 1),
@@ -2822,49 +2863,21 @@ func TestMergeRows_ScalarOuter(t *testing.T) {
 	}
 }
 
-// --- toFloat64 unit tests ---
+// --- asFloat64 unit tests (the SUM/AVG operand conversion) ---
 
-func TestToFloat64_Int64(t *testing.T) {
+// Every numeric carrier widens exactly; anything else is refused, never
+// turned into a NaN that a SUM would then store (RFC-257 WS-E 5.3).
+func TestAsFloat64(t *testing.T) {
 	t.Parallel()
-	if v := toFloat64(int64(42)); v != 42.0 {
-		t.Fatalf("expected 42.0, got %v", v)
+	for in, want := range map[any]float64{int64(42): 42, 3.14: 3.14, int(7): 7, int32(100): 100, float32(0.5): 0.5} {
+		if v, ok := asFloat64(in); !ok || v != want {
+			t.Errorf("asFloat64(%#v) = %v, %v; want %v", in, v, ok, want)
+		}
 	}
-}
-
-func TestToFloat64_Float64(t *testing.T) {
-	t.Parallel()
-	if v := toFloat64(float64(3.14)); v != 3.14 {
-		t.Fatalf("expected 3.14, got %v", v)
-	}
-}
-
-func TestToFloat64_Int(t *testing.T) {
-	t.Parallel()
-	if v := toFloat64(int(7)); v != 7.0 {
-		t.Fatalf("expected 7.0, got %v", v)
-	}
-}
-
-func TestToFloat64_Int32(t *testing.T) {
-	t.Parallel()
-	if v := toFloat64(int32(100)); v != 100.0 {
-		t.Fatalf("expected 100.0, got %v", v)
-	}
-}
-
-func TestToFloat64_Unsupported(t *testing.T) {
-	t.Parallel()
-	v := toFloat64("hello")
-	if !math.IsNaN(v) {
-		t.Fatalf("expected NaN for string, got %v", v)
-	}
-}
-
-func TestToFloat64_Nil(t *testing.T) {
-	t.Parallel()
-	v := toFloat64(nil)
-	if !math.IsNaN(v) {
-		t.Fatalf("expected NaN for nil, got %v", v)
+	for _, in := range []any{"hello", nil, true} {
+		if v, ok := asFloat64(in); ok {
+			t.Errorf("asFloat64(%#v) = %v, accepted", in, v)
+		}
 	}
 }
 
@@ -3404,54 +3417,6 @@ func TestTupleElementToRowValue(t *testing.T) {
 	}
 }
 
-// buildCoveringLogicalRow must emit FLOAT slots as float64 — the covering row
-// and the base-record row must be interchangeable for compareValues,
-// distinctKey and join keys (a covering leg previously carried raw float32 and
-// never deduped/merged against a base-scan leg).
-func TestBuildCoveringLogicalRow_WidensFloat32(t *testing.T) {
-	t.Parallel()
-	logicalType := &values.RecordType{Fields: []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
-		{Name: "F", FieldType: values.NotNullFloat, Ordinal: 1},
-	}}
-	// Index on F, PK ID: entry key (f), primary key (id).
-	pos := buildCoveringLogicalRow(
-		[]string{"F"}, []string{"ID"},
-		tuple.Tuple{float32(2.5)}, tuple.Tuple{int64(1)},
-		logicalType, []int{1, 0}, nil)
-	if got := pos.Slots[1]; got != float64(2.5) {
-		t.Fatalf("covering FLOAT slot = %T:%v, want float64:2.5 (base-record domain)", got, got)
-	}
-	if got := pos.Slots[0]; got != int64(1) {
-		t.Fatalf("covering PK slot = %T:%v, want int64:1", got, got)
-	}
-}
-
-// A covering float32 and a base float64 of the same number carry different
-// tuple type codes, so they would key differently — DISTINCT/UNION across a
-// covering leg and a base leg would never dedup. The boundary normalization
-// widens the covering FLOAT to float64, so both produce the same packed key.
-func TestDistinctKey_CoveringAndBaseFloatRowsDedup(t *testing.T) {
-	t.Parallel()
-	logicalType := &values.RecordType{Fields: []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
-		{Name: "F", FieldType: values.NotNullFloat, Ordinal: 1},
-	}}
-	covering := QueryResult{Positional: buildCoveringLogicalRow(
-		[]string{"F"}, []string{"ID"},
-		tuple.Tuple{float32(2.5)}, tuple.Tuple{int64(1)},
-		logicalType, []int{1, 0}, nil)}
-	// The base-record path widens FLOAT to float64 (ProtoScalarKindToRowValue).
-	base := QueryResult{Positional: &PositionalRow{
-		Type:  logicalType,
-		Slots: []any{int64(1), float64(2.5)},
-	}}
-	if mustDistinctKey(t, covering) != mustDistinctKey(t, base) {
-		t.Fatalf("covering row key %q != base row key %q — dedup split across access paths",
-			mustDistinctKey(t, covering), mustDistinctKey(t, base))
-	}
-}
-
 // --- passesJoinPredicatesLegs unit tests ---
 
 func TestPassesJoinPredicates_Empty(t *testing.T) {
@@ -3836,9 +3801,16 @@ func TestScalarProtoToGo_Uint32Kinds(t *testing.T) {
 	} {
 		t.Run(kind.String(), func(t *testing.T) {
 			t.Parallel()
+			// protobuf-java's signed Integer: all 32 bits set is -1.
 			got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfUint32(math.MaxUint32))
-			if got != int64(math.MaxUint32) {
-				t.Errorf("got %v (%T), want int64(%d)", got, got, uint32(math.MaxUint32))
+			if got != int64(-1) {
+				t.Errorf("got %v (%T), want int64(-1)", got, got)
+			}
+			if got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfUint32(3000000000)); got != int64(-1294967296) {
+				t.Errorf("3000000000: got %v (%T), want int64(-1294967296)", got, got)
+			}
+			if got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfUint32(42)); got != int64(42) {
+				t.Errorf("42: got %v (%T), want int64(42)", got, got)
 			}
 		})
 	}
@@ -5048,12 +5020,12 @@ func TestAggregateContinuation_RoundTrip_SumCount(t *testing.T) {
 	innerCont := recordlayer.NewBytesContinuation([]byte{0xDE, 0xAD})
 	groupKey := "test-group-key"
 
-	encoded, err := encodeAggregateContinuation(innerCont, groupKey, gs.keyVals, gs, aggs)
+	encoded, err := encodeLegacyAggregateContinuation(innerCont, groupKey, gs.keyVals, gs, aggs)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, len(aggs))
+	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, nil, aggs, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5105,12 +5077,12 @@ func TestAggregateContinuation_NilGroupState(t *testing.T) {
 	t.Parallel()
 
 	innerCont := recordlayer.NewBytesContinuation([]byte{0x01})
-	encoded, err := encodeAggregateContinuation(innerCont, "", nil, nil, nil)
+	encoded, err := encodeAggregateContinuation(innerCont, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 
-	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, 0)
+	gotInner, gotGroupKey, gotGS, err := decodeAggregateContinuation(encoded, nil, make([]expressions.AggregateSpec, 0), nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5142,12 +5114,12 @@ func TestAggregateContinuation_FloatMinMax(t *testing.T) {
 		maxs:    []any{float64(5.0)},
 	}
 
-	encoded, err := encodeAggregateContinuation(nil, "k", gs.keyVals, gs, aggs)
+	encoded, err := encodeLegacyAggregateContinuation(nil, "k", gs.keyVals, gs, aggs)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
 
-	_, _, gotGS, err := decodeAggregateContinuation(encoded, 1)
+	_, _, gotGS, err := decodeAggregateContinuation(encoded, nil, make([]expressions.AggregateSpec, 1), nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -5194,11 +5166,11 @@ func TestAggregateContinuation_GroupKeyBytesSurvive_F4(t *testing.T) {
 			mins:    []any{nil},
 			maxs:    []any{nil},
 		}
-		encoded, err := encodeAggregateContinuation(nil, key, gs.keyVals, gs, aggs)
+		encoded, err := encodeLegacyAggregateContinuation(nil, key, gs.keyVals, gs, aggs)
 		if err != nil {
 			t.Fatalf("encode %v: %v", tup, err)
 		}
-		_, gotKey, _, err := decodeAggregateContinuation(encoded, len(aggs))
+		_, gotKey, _, err := decodeAggregateContinuation(encoded, nil, aggs, nil)
 		if err != nil {
 			t.Fatalf("decode %v: %v", tup, err)
 		}
@@ -5233,11 +5205,11 @@ func TestAggregateContinuation_TypesPreserved_F5(t *testing.T) {
 		maxs:    []any{nil, float64(2.0)},
 	}
 
-	encoded, err := encodeAggregateContinuation(nil, "k", gs.keyVals, gs, aggs)
+	encoded, err := encodeLegacyAggregateContinuation(nil, "k", gs.keyVals, gs, aggs)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	_, _, gotGS, err := decodeAggregateContinuation(encoded, len(aggs))
+	_, _, gotGS, err := decodeAggregateContinuation(encoded, nil, aggs, nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -6335,7 +6307,7 @@ func TestExecuteUnorderedUnion_ResumeContract(t *testing.T) {
 			Typ:   values.NewPrimitiveType(values.TypeCodeInt, false),
 		}
 		input := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{literal}))
-		return mustExecutorConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+		return mustExecutorConstruct(newProjectionMapForTest(
 			[]values.Value{literal}, []string{"V"}, input,
 		))
 	}
@@ -6597,5 +6569,179 @@ func TestExecuteExplode_ProtoDeclaredShape(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestAggregateContinuation_ArrayAgg(t *testing.T) {
+	t.Parallel()
+	aggs := []expressions.AggregateSpec{
+		{Function: expressions.AggArrayAgg, Operand: mustNamedTestField(t, "s", values.NullableString), Limit: values.ArrayAggNoLimit},
+		{Function: expressions.AggSum, Operand: mustNamedTestField(t, "amount", values.NullableLong)},
+		{Function: expressions.AggArrayAgg, Operand: mustNamedTestField(t, "n", values.NullableLong), IgnoreNulls: true, Limit: 3},
+	}
+	gs := &groupState{
+		count: 2, counts: []int64{0, 2, 0}, sums: []float64{0, 3, 0}, sumsI: []int64{0, 3, 0},
+		allInt: []bool{true, true, true}, mins: []any{nil, nil, nil}, maxs: []any{nil, nil, nil},
+		arrays: [][]any{{"a", "b"}, nil, nil},
+	}
+	encoded, err := encodeLegacyAggregateContinuation(nil, "k", nil, gs, aggs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, got, err := decodeAggregateContinuation(encoded, nil, aggs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A group that saw rows but kept no element restores an empty, not absent, array.
+	if fmt.Sprint(got.arrays[0]) != "[a b]" || got.arrays[2] == nil || len(got.arrays[2]) != 0 {
+		t.Fatalf("arrays = %#v", got.arrays)
+	}
+	if got.sumsI[1] != 3 {
+		t.Fatalf("sumsI = %v", got.sumsI)
+	}
+	// A continuation written without ARRAY_AGG slots is not one for this plan.
+	legacy, err := encodeLegacyAggregateContinuation(nil, "k", nil, gs, aggs[1:2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := decodeAggregateContinuation(legacy, nil, aggs, nil); err == nil {
+		t.Fatal("decoded a continuation missing its ARRAY_AGG slots")
+	}
+}
+
+func TestBitmapAggregateStreaming(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		positions []any
+		length    int
+		first     byte
+		last      byte
+		fail      bool
+	}{
+		{"bits", []any{int64(1), int64(2), int64(2), nil}, 1250, 6, 0, false},
+		{"long narrows", []any{int64(1<<32) + 1}, 1250, 2, 0, false},
+		{"extended", []any{int64(10000)}, 1251, 0, 1, false},
+		{"maximum", []any{int64(249999)}, 31250, 0, 128, false},
+		{"null", []any{nil}, 0, 0, 0, false},
+		{"negative", []any{int64(-1)}, 0, 0, 0, true},
+		{"too large", []any{int64(250000)}, 0, 0, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			operand := &values.ConstantValue{Typ: values.NullableLong}
+			c := &aggregateCursor{aggregates: []expressions.AggregateSpec{{Function: expressions.AggBitmapConstructAgg, Operand: operand}}}
+			c.current = c.newGroupState()
+			var err error
+			for _, v := range tc.positions {
+				operand.Value = v
+				if err = c.accumulateRow(QueryResult{}); err != nil {
+					break
+				}
+			}
+			if tc.fail {
+				if err == nil {
+					t.Fatal("expected invalid bitmap position error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Resume a partially accumulated group before producing its result.
+			encoded, err := encodeAggregateContinuation(nil, nil, nil, c.current, c.aggregates)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, c.current, err = decodeAggregateContinuation(encoded, nil, c.aggregates, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := c.finalizeGroup().Positional.Slots[0]
+			if tc.length == 0 {
+				if got != nil {
+					t.Fatalf("all-null aggregate = %v", got)
+				}
+				return
+			}
+			b, ok := got.([]byte)
+			if !ok || len(b) != tc.length {
+				t.Fatalf("bitmap type/length = %T/%v, want %d bytes", got, got, tc.length)
+			}
+			if b[0] != tc.first || b[len(b)-1] != tc.last {
+				t.Fatalf("bitmap endpoints %d/%d", b[0], b[len(b)-1])
+			}
+		})
+	}
+}
+
+func TestBitmapAggregateContinuationValidation(t *testing.T) {
+	t.Parallel()
+	operand := &values.ConstantValue{Typ: values.NullableLong, Value: int64(1)}
+	aggs := []expressions.AggregateSpec{{Function: expressions.AggBitmapConstructAgg, Operand: operand}, {Function: expressions.AggArrayAgg, Operand: operand, Limit: values.ArrayAggNoLimit}}
+	c := &aggregateCursor{aggregates: aggs}
+	c.current = c.newGroupState()
+	if err := c.accumulateRow(QueryResult{}); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := encodeAggregateContinuation(nil, nil, nil, c.current, aggs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent gen.AggregateCursorContinuation
+	if err := proto.Unmarshal(encoded, &sent); err != nil {
+		t.Fatal(err)
+	}
+	// Java writes BitSet.toByteArray(), which trims trailing zero bytes.
+	if got := sent.GetPartialAggregationResults().GetAccumulatorStates()[0].GetState()[0].GetBytesState(); !bytes.Equal(got, []byte{2}) {
+		t.Fatalf("bitmap state = %x, want Java's trimmed 02", got)
+	}
+	_, _, c.current, err = decodeAggregateContinuation(encoded, nil, aggs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operand.Value = int64(9)
+	if err := c.accumulateRow(QueryResult{}); err != nil {
+		t.Fatal(err)
+	}
+	row := c.finalizeGroup().Positional.Slots
+	bitmap := row[0].([]byte)
+	if bitmap[0] != 2 || bitmap[1] != 2 || fmt.Sprint(row[1]) != "[1 9]" {
+		t.Fatalf("resumed bitmap/array: %v", row)
+	}
+	for _, tc := range []struct {
+		name  string
+		state *gen.OneOfTypedState
+	}{
+		{"oversize", &gen.OneOfTypedState{State: &gen.OneOfTypedState_BytesState{BytesState: make([]byte, 31251)}}},
+		{"wrong type", &gen.OneOfTypedState{State: &gen.OneOfTypedState_Int64State{Int64State: 2}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var msg gen.AggregateCursorContinuation
+			if err := proto.Unmarshal(encoded, &msg); err != nil {
+				t.Fatal(err)
+			}
+			msg.PartialAggregationResults.AccumulatorStates[0].State[0] = tc.state
+			bad, err := proto.Marshal(&msg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, err := decodeAggregateContinuation(bad, nil, aggs, nil); err == nil {
+				t.Fatal("accepted malformed bitmap state")
+			}
+		})
+	}
+}
+
+// The executor's array write backstop raises the same 0A000 error as array
+// construction.
+func TestGoToProtoValue_NullArrayElementIsJavas(t *testing.T) {
+	t.Parallel()
+	fd := (&gen.Index{}).ProtoReflect().Descriptor().Fields().ByName("record_type")
+	_, err := goToProtoValue(fd, []any{"a", nil})
+	var nullElem *values.NullArrayElementError
+	if !errors.As(err, &nullElem) {
+		t.Fatalf("err = %v (%T), want NullArrayElementError", err, err)
 	}
 }

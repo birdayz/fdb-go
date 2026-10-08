@@ -145,7 +145,7 @@ func TranslationMapOfAliases(source, target values.CorrelationIdentifier) *Regul
 // RegularTranslationMap.rebaseWithAliasMap.
 func RebaseWithAliasMap(am *AliasMap) *RegularTranslationMap {
 	fnMap := make(map[values.CorrelationIdentifier]TranslationFunction, am.Size())
-	for source, target := range am.forward {
+	for source, target := range am.entries() {
 		targetAlias := target // capture for closure
 		fnMap[source] = func(_ values.CorrelationIdentifier, leafValue values.LeafValue) values.Value {
 			return leafValue.RebaseLeaf(targetAlias)

@@ -249,7 +249,7 @@ func (p *RecordQueryIntersectionPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryIntersectionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryIntersectionPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren folds the type discriminator + the comparison-key
@@ -259,7 +259,7 @@ func (p *RecordQueryIntersectionPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("intersectionplan")
+	hash := p.keyFor(p).Hash("intersectionplan")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

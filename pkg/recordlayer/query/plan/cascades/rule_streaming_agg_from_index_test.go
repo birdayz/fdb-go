@@ -5,7 +5,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 func mustStreamingAggIndexConstruct[T any](value T, err error) T {
@@ -267,20 +266,10 @@ func TestStreamingAggFromIndex_RejectsFanOutCandidate(t *testing.T) {
 		nil,
 	)
 
-	if len(results) != 1 {
-		t.Fatalf("expected only the scalar aggregate-index shortcut, got %d yields", len(results))
-	}
-	agg, ok := results[0].(*plans.RecordQueryStreamingAggregationPlan)
-	if !ok {
-		t.Fatalf("expected *plans.RecordQueryStreamingAggregationPlan, got %T", results[0])
-	}
-	// The rule builds a COVERING scan (RFC-220: coveringness is the plan type,
-	// constructed where the scan is built, never stamped later onto a bare scan).
-	coveringPlan, ok := agg.GetInner().(*plans.RecordQueryCoveringIndexPlan)
-	if !ok {
-		t.Fatalf("expected aggregate over a covering index scan, got %T", agg.GetInner())
-	}
-	if got := coveringPlan.GetIndexName(); got != "T$tags_scalar" {
-		t.Fatalf("aggregate shortcut selected %q, want the non-fan-out candidate", got)
+	// The fan-out index multiplies rows and the cardinality index keys a
+	// function; the scalar one stores the whole array, which no entry reader
+	// reads (IndexEntryObjectValue holds primitives), so none serves it.
+	if len(results) != 0 {
+		t.Fatalf("expected no aggregate-index shortcut over an array grouping key, got %d yields", len(results))
 	}
 }

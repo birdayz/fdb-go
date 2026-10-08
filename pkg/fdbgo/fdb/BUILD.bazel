@@ -37,6 +37,7 @@ go_test(
     timeout = "long",
     srcs = [
         "approxsize_deferred_test.go",
+        "body_error_chain_fdb_test.go",
         "conflictrange_workload_test.go",
         "convert_teardown_test.go",
         "database_bootstrap_test.go",
@@ -85,10 +86,3 @@ go_test(
         "@com_github_onsi_gomega//:gomega",
     ],
 )
-
-# keep: staged into the pkg/docscheck API_PARITY honest-options gate, which
-# parses options.go and cross-checks its classification against API_PARITY.md.
-exports_files([
-    "options.go",
-    "API_PARITY.md",
-])

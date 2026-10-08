@@ -38,6 +38,18 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	if err := store.ensureStoreStateLoadedErr(); err != nil {
 		return nil, fmt.Errorf("load store state: %w", err)
 	}
+	// Every record is checked before the first is written, so a bad one late
+	// in the batch leaves none of it in the transaction.
+	for i, record := range records {
+		if record == nil {
+			continue
+		}
+		if rt := store.metaData.GetRecordType(string(record.ProtoReflect().Descriptor().Name())); rt != nil {
+			if err := rt.checkUTF8Strings(record); err != nil {
+				return nil, fmt.Errorf("record %d: %w", i, &RecordSerializationError{Cause: err})
+			}
+		}
+	}
 	if store.omitUnsplitRecordSuffix() {
 		results := make([]*FDBStoredRecord[proto.Message], len(records))
 		for i, rec := range records {
@@ -57,6 +69,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	// --- Phase 1: Extract PKs and issue all Get futures (non-blocking) ---
 	type pendingRecord struct {
 		record     proto.Message
+		write      proto.Message // what the save serializes (asJavaForSave)
 		recordType *RecordType
 		primaryKey tuple.Tuple
 		unsplitKey fdb.Key // pre-computed, reused for save
@@ -74,11 +87,15 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 		recordType := store.metaData.GetRecordType(recordTypeName)
 		if recordType == nil {
-			return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
+			return nil, unknownRecordTypeError(recordTypeName)
 		}
 		if recordType.PrimaryKey == nil {
 			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
 		}
+		// As saveRecordInternal: the record as every later load reads it, and
+		// the message the save serializes.
+		var write proto.Message
+		record, write = recordType.asJavaForSave(record)
 
 		// Record type supplied so a record-type-prefixed primary key can read
 		// its leading component off the type, as Java's saveTypedRecord does.
@@ -110,6 +127,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 
 		pending[i] = pendingRecord{
 			record:     record,
+			write:      write,
 			recordType: recordType,
 			primaryKey: primaryKey,
 			unsplitKey: unsplitKey,
@@ -142,12 +160,16 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		return nil, fmt.Errorf("load store state: %w", err)
 	}
 	// Hold stateMu.RLock for the entire batch to avoid per-record lock/unlock.
-	// Also validate update lock once (same for all records).
+	// The update lock is the same for every record, so it is validated once, in
+	// the first record's turn, after that record's existing value is decoded:
+	// each record saves as SaveRecord saves it (Java's saveTypedRecord loads the
+	// old record, then validates the lock), so a batch whose first record the
+	// store cannot read fails that decode, not the lock.
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
-	if err := store.validateRecordUpdateAllowedLocked(); err != nil {
-		return nil, err
-	}
+	store.indexStateView.maintenance.RLock()
+	defer store.indexStateView.maintenance.RUnlock()
+	lockChecked := false
 
 	for i := range pending {
 		p := &pending[i]
@@ -181,27 +203,49 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			}
 		}
 		oldRecordExists := oldValue != nil
+		// Each record saves as SaveRecord saves it: the existing record is
+		// read through the serializer first (Java's loadExistingRecord), so
+		// one the store cannot read fails the batch and is never overwritten.
+		var oldRT *RecordType
+		var oldMsg proto.Message
+		var oldWire *recordWire
+		if oldRecordExists {
+			oldRT, oldMsg, oldWire, err = store.deserializeAndDiscover(oldValue)
+			if err != nil {
+				return nil, &RecordDeserializationError{PrimaryKey: p.primaryKey, Cause: err}
+			}
+		}
+		if !lockChecked {
+			if err := store.validateRecordUpdateAllowedLocked(); err != nil {
+				return nil, err
+			}
+			lockChecked = true
+		}
 
 		// Serialize
-		data, err := serializeUnion(p.record, p.recordType)
+		data, err := serializeUnionOver(p.write, p.recordType, priorRecordInner(oldRT, oldWire, p.recordType))
 		if err != nil {
 			return nil, &RecordSerializationError{Cause: err}
+		}
+		storedBytes, err := store.writeStoredRecord(data, p.recordType, p.primaryKey)
+		if err != nil {
+			return nil, fmt.Errorf("record %d: %w", i, err)
 		}
 
 		// Save — fast path for unsplit new records (most common in batch ingest)
 		var newsizeInfo sizeInfo
-		if !oldRecordExists && len(data) <= splitRecordSize {
+		if !oldRecordExists && len(storedBytes) <= splitRecordSize {
 			// Direct Set using pre-computed key — avoids appendToTuple + Pack in saveWithSplit
-			tx.SetBytes(p.unsplitKey, data)
+			tx.SetBytes(p.unsplitKey, storedBytes)
 			newsizeInfo.KeyCount = 1
 			newsizeInfo.KeySize = len(p.unsplitKey)
-			newsizeInfo.ValueSize = len(data)
+			newsizeInfo.ValueSize = len(storedBytes)
 		} else {
 			var oldsizeInfoPtr *sizeInfo
 			if oldRecordExists {
 				oldsizeInfoPtr = &oldsizeInfo
 			}
-			if err := saveWithSplit(tx, recordsSubspace, p.primaryKey, data,
+			if err := saveWithSplit(store.context, tx, recordsSubspace, p.primaryKey, storedBytes,
 				splitEnabled, false, oldsizeInfoPtr, &newsizeInfo); err != nil {
 				return nil, fmt.Errorf("record %d: save: %w", i, err)
 			}
@@ -227,12 +271,14 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			PrimaryKey: p.primaryKey,
 			RecordType: p.recordType,
 			Record:     p.record,
-			Version:    savedVersion,
-			Store:      store,
-			KeyCount:   newsizeInfo.KeyCount,
-			KeySize:    newsizeInfo.KeySize,
-			ValueSize:  newsizeInfo.ValueSize,
-			Split:      newsizeInfo.IsSplit,
+			// Its map entries are indexed in the order it was written in.
+			wire:      newRecordWire(p.recordType, unionInner(data, p.recordType.unionFieldNumber)),
+			Version:   savedVersion,
+			Store:     store,
+			KeyCount:  newsizeInfo.KeyCount,
+			KeySize:   newsizeInfo.KeySize,
+			ValueSize: newsizeInfo.ValueSize,
+			Split:     newsizeInfo.IsSplit,
 		}
 		if !oldRecordExists {
 			if countFDBKey != nil {
@@ -249,14 +295,11 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		// Secondary indexes
 		var oldRecord *FDBStoredRecord[proto.Message]
 		if oldRecordExists {
-			oldRT, oldMsg, err := store.deserializeAndDiscover(oldValue)
-			if err != nil {
-				return nil, fmt.Errorf("record %d: deserialize old record: %w", i, err)
-			}
 			oldRecord = &FDBStoredRecord[proto.Message]{
 				PrimaryKey: p.primaryKey,
 				RecordType: oldRT,
 				Record:     oldMsg,
+				wire:       oldWire,
 				Store:      store,
 			}
 			if store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {

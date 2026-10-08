@@ -10,7 +10,6 @@ package embedded
 // (TestFDB_AggregateIndexResidual).
 
 import (
-	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -50,6 +49,7 @@ func TestAggregateIndexResidualOverGroupingColumns(t *testing.T) {
 	const schema = `
 CREATE TABLE T (id BIGINT, a STRING, b STRING, c STRING, v BIGINT, d DOUBLE, PRIMARY KEY (id))
 CREATE INDEX sum_abc AS SELECT SUM(v) FROM T GROUP BY a, b, c
+CREATE INDEX sum_abc_nn AS SELECT COUNT(v) FROM T GROUP BY a, b, c
 CREATE INDEX cnt_abc AS SELECT COUNT(*) FROM T GROUP BY a, b, c
 CREATE INDEX cnt_d_a AS SELECT COUNT(*) FROM T GROUP BY d, a
 CREATE TABLE CUST (id BIGINT, b STRING, region STRING, PRIMARY KEY (id))`
@@ -144,24 +144,135 @@ CREATE TABLE CUST (id BIGINT, b STRING, region STRING, PRIMARY KEY (id))`
 // is ordinal i of the candidate's groupCols, whereas the GroupBy row's ordinals
 // differ when a grouping key is RECORD-typed (MatchesGroupBy expands such a
 // key to its primitive leaves, so the GroupBy row carries fewer, wider
-// columns than the candidate). That shape cannot reach the rule today: an
-// aggregate index over nested struct fields is rejected at DDL validation, so
-// no candidate ever has a leaf-expanded grouping column. If this DDL is ever
-// accepted, the residual's ordinal rewrite over a record-typed grouping key
-// becomes live and needs its own rows pin; this arm is what says so.
+// columns than the candidate). That rewrite has no rows pin over such a shape,
+// so it must stay unreachable until it gets one.
+//
+// Java cannot plan a RECORD-typed grouping key at all (UnableToPlanException,
+// measured by the "WS-J nested-grouping aggregate index plan oracle"): its
+// grouping subsumption matches the leaves, and the query's result value cannot
+// be pulled up through them. Go answers it through Scan + Aggregate, a read
+// extension, and keeps it OFF the aggregate index by the same pull-up
+// (AggregateIndexMatchCandidate.groupingKeysMatch). Nested LEAF grouping
+// columns over the same index ARE served (TestAggregateIndexNestedLeafGrouping
+// Columns), which is what makes this population reachable at all.
 func TestAggregateIndexResidual_RecordTypedGroupingKeyIsUnreachable(t *testing.T) {
 	t.Parallel()
 	const schema = `
 CREATE TYPE AS STRUCT ADDR (city STRING, zip BIGINT)
-CREATE TABLE T_S (id BIGINT, home ADDR, cat STRING, PRIMARY KEY (id))
-CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat`
-	_, err := PlanPhysicalForTest("SELECT home, cat, COUNT(*) FROM T_S WHERE cat = 'x' GROUP BY home, cat", schema, nil)
-	if err == nil {
-		t.Fatal("an aggregate index over nested struct fields was accepted: a record-typed grouping key can now " +
-			"reach AggregateDataAccessRule, and RFC-248's residual rewrite (grouping column i = leaf-row ordinal i, " +
-			"below the projection) needs a rows pin over that shape before this arm is removed")
+CREATE TYPE AS STRUCT ONE (city STRING)
+CREATE TABLE T_S (id BIGINT, home ADDR, solo ONE, cat STRING, v BIGINT, PRIMARY KEY (id))
+CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat
+CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM T_S GROUP BY home.city, home.zip, cat
+CREATE INDEX sum_home_cat_nn AS SELECT COUNT(v) FROM T_S GROUP BY home.city, home.zip, cat
+CREATE INDEX cnt_solo AS SELECT COUNT(*) FROM T_S GROUP BY solo.city
+CREATE INDEX cnt_cat AS SELECT COUNT(*) FROM T_S GROUP BY cat`
+	served := func(q string) bool {
+		t.Helper()
+		plan, err := PlanPhysicalForTest(q, schema, nil)
+		if err != nil {
+			t.Fatalf("the schema (accepted by Java 4.14.2.0) or the read must plan: %v\n  sql: %s", err, q)
+		}
+		aggs, _, _ := aggregateResidualShape(plan)
+		return aggs > 0
 	}
-	if !strings.Contains(err.Error(), "is a message type") {
-		t.Fatalf("the DDL was refused for a different reason than the nested-field limitation this arm rests on: %v", err)
+	// Positive controls, same schema: a flat grouping and the nested leaves the
+	// RECORD keys below expand to ARE served, so a refusal below is the pull-up
+	// declining, not a detector that never sees an aggregate index plan.
+	for _, q := range []string{
+		"SELECT cat, COUNT(*) FROM T_S GROUP BY cat",
+		"SELECT home.city, home.zip, cat, COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat",
+		"SELECT solo.city, COUNT(*) FROM T_S GROUP BY solo.city",
+	} {
+		if !served(q) {
+			t.Fatalf("control: not served by its aggregate index\n  sql: %s", q)
+		}
+	}
+	for _, q := range []string{
+		"SELECT home, cat, COUNT(*) FROM T_S WHERE cat = 'x' GROUP BY home, cat",
+		"SELECT home, cat, SUM(v) FROM T_S WHERE cat = 'x' GROUP BY home, cat",
+		"SELECT home, cat, COUNT(*) FROM T_S GROUP BY home, cat",
+		// One leaf: the widths agree, the RECORD-typed slot does not.
+		"SELECT solo, COUNT(*) FROM T_S GROUP BY solo",
+	} {
+		if served(q) {
+			t.Fatalf("a RECORD-typed grouping key is served by an aggregate index over nested struct fields: "+
+				"RFC-248's residual rewrite (grouping column i = leaf-row ordinal i, below the projection) "+
+				"needs a rows pin over this shape first, and Java cannot plan this query at all\n  sql: %s", q)
+		}
+	}
+}
+
+// TestAggregateIndexNestedLeafGroupingColumns: a GROUP BY over nested LEAF
+// fields is served by the aggregate index that groups by them, the leaves one
+// to one with the candidate's columns by full path (RFC-257 WS-J 3.3b). The
+// first three are the measured Java shapes ("WS-J nested-grouping aggregate
+// index plan oracle"): unbound, a residual on the third key, the leading
+// equality bound. Rows ride on TestFDB_AggregateIndexNestedLeafGrouping. A
+// nested AGGREGATED column is not creatable through SQL in either engine (the
+// "sum_grouped_by_nested_and_top" WS-J shape), so it is pinned at the rule
+// (TestAggregateDataAccessRule_NestedColumnPaths).
+func TestAggregateIndexNestedLeafGroupingColumns(t *testing.T) {
+	t.Parallel()
+	const schema = `
+CREATE TYPE AS STRUCT ADDR (city STRING, zip BIGINT)
+CREATE TABLE T_S (id BIGINT, home ADDR, office ADDR, city STRING, cat STRING, v BIGINT, PRIMARY KEY (id))
+CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat
+CREATE INDEX sum_home_cat AS SELECT SUM(v) FROM T_S GROUP BY home.city, home.zip, cat
+CREATE INDEX sum_home_cat_nn AS SELECT COUNT(v) FROM T_S GROUP BY home.city, home.zip, cat
+CREATE INDEX cnt_home_office AS SELECT COUNT(*) FROM T_S GROUP BY home.city, office.city
+CREATE INDEX cnt_cat AS SELECT COUNT(*) FROM T_S GROUP BY cat`
+	cases := []struct {
+		name      string
+		sql       string
+		wantAgg   bool
+		wantScan  int
+		wantResid int
+		wantSort  bool
+	}{
+		{"unbound", "SELECT home.city, home.zip, cat, COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat", true, 0, -1, false},
+		{"residual_on_third_key", "SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE cat = 'x' GROUP BY home.city, home.zip, cat", true, 0, 1, false},
+		{"leading_equality_bound", "SELECT home.city, home.zip, cat, SUM(v) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat", true, 1, -1, false},
+		{"equality_then_range", "SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE home.city = 'a' AND home.zip > 3 GROUP BY home.city, home.zip, cat", true, 2, -1, false},
+		{"bound_and_residual", "SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE home.city = 'a' AND cat = 'x' GROUP BY home.city, home.zip, cat", true, 1, 1, false},
+		{"residual_on_nested_key", "SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE home.zip = 3 GROUP BY home.city, home.zip, cat", true, 0, 1, false},
+		{"order_by_nested_tail_after_binding", "SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE home.city = 'a' GROUP BY home.city, home.zip, cat ORDER BY home.zip, cat", true, 1, -1, false},
+		// The plan's row carries the GroupBy's names (T_S.HOME.CITY), not the
+		// index's labels (CITY): the ordering key is the row's slot under the
+		// row's own name.
+		{"order_by_nested_unbound", "SELECT home.city, home.zip, cat, COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat ORDER BY home.city, home.zip", true, 0, -1, false},
+		{"same_leaf_name_two_parents", "SELECT home.city, office.city, COUNT(*) FROM T_S WHERE office.city = 'b' GROUP BY home.city, office.city", true, 0, 1, false},
+		// The top-level CITY is not HOME.CITY: no index groups by it.
+		{"top_level_same_leaf_declines", "SELECT city, home.zip, cat, COUNT(*) FROM T_S GROUP BY city, home.zip, cat", false, 0, -1, true},
+		// Java matches the grouping as a set (GroupByExpression.groupingSubsumedBy),
+		// so the keys in the other order are the index's groups, projected.
+		{"swapped_parents_match_as_a_set", "SELECT office.city, home.city, COUNT(*) FROM T_S GROUP BY office.city, home.city", true, 0, -1, false},
+		// A residual reading a nested field that is not a grouping column reads
+		// the aggregation input and declines.
+		{"input_leaf_declines", "SELECT home.city, home.zip, cat, COUNT(*) FROM T_S WHERE office.zip = 1 GROUP BY home.city, home.zip, cat", false, 0, -1, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			plan, err := PlanPhysicalForTest(c.sql, schema, nil)
+			if err != nil {
+				t.Fatalf("plan: %v", err)
+			}
+			aggs, scan, resid := aggregateResidualShape(plan)
+			if (aggs > 0) != c.wantAgg {
+				t.Fatalf("aggregate index reached = %v, want %v\n  sql:  %s\n  plan: %s", aggs > 0, c.wantAgg, c.sql, plan.Explain())
+			}
+			if sorts := inMemorySortsIn(plan); (sorts > 0) != c.wantSort {
+				t.Errorf("in-memory sorts = %d, want sort=%v\n  sql:  %s\n  plan: %s", sorts, c.wantSort, c.sql, plan.Explain())
+			}
+			if !c.wantAgg {
+				return
+			}
+			if scan != c.wantScan {
+				t.Errorf("scan binds %d comparison(s), want %d\n  sql:  %s\n  plan: %s", scan, c.wantScan, c.sql, plan.Explain())
+			}
+			if resid != c.wantResid {
+				t.Errorf("residual filter carries %d predicate(s), want %d (-1 = no filter)\n  sql:  %s\n  plan: %s", resid, c.wantResid, c.sql, plan.Explain())
+			}
+		})
 	}
 }

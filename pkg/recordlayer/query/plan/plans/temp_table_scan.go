@@ -67,14 +67,14 @@ func (p *RecordQueryTempTableScanPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryTempTableScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTempTableScanPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryTempTableScanPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("temptablescan|")
+	hash := p.keyFor(p).Hash("temptablescan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

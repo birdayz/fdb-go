@@ -46,24 +46,32 @@ func TestAggColumnMatches_NestedShadowsTopLevel(t *testing.T) {
 		t.Fatalf("resolve ordinal CITY: %v", err)
 	}
 
-	if aggColumnMatches(nestedAddrCity, "CITY") {
+	if aggColumnMatches(nestedAddrCity, []string{"CITY"}) {
 		t.Fatal("nested addr.city matched a top-level CITY aggregate column (would aggregate wrong column)")
 	}
-	if !aggColumnMatches(flatCity, "CITY") {
+	if !aggColumnMatches(flatCity, []string{"CITY"}) {
 		t.Fatal("flat city failed to match the CITY aggregate column (regressed the positive match)")
 	}
-	if !aggColumnMatches(bakedCity, "CITY") {
+	if !aggColumnMatches(bakedCity, []string{"CITY"}) {
 		t.Fatal("baked city failed to match the CITY aggregate column (baked/lazy bridge regressed)")
 	}
 	// Case-insensitive, and a different leaf must not match.
-	if !aggColumnMatches(flatCity, "city") {
+	if !aggColumnMatches(flatCity, []string{"city"}) {
 		t.Fatal("aggregate column match is not case-insensitive")
 	}
 	name, err := values.ResolveFieldOrdinals(root, []int{2})
 	if err != nil {
 		t.Fatalf("resolve NAME: %v", err)
 	}
-	if aggColumnMatches(name, "CITY") {
+	if aggColumnMatches(name, []string{"CITY"}) {
 		t.Fatal("column NAME matched aggregate column CITY")
+	}
+	// A nested aggregate column is its full path: addr.city matches it, the
+	// top-level city does not.
+	if !aggColumnMatches(nestedAddrCity, []string{"ADDR", "CITY"}) {
+		t.Fatal("nested addr.city failed to match the ADDR.CITY aggregate column")
+	}
+	if aggColumnMatches(flatCity, []string{"ADDR", "CITY"}) || aggColumnMatches(bakedCity, []string{"ADDR", "CITY"}) {
+		t.Fatal("top-level city matched the ADDR.CITY aggregate column (would aggregate the wrong column)")
 	}
 }

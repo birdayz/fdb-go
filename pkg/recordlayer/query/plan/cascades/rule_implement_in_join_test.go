@@ -93,9 +93,11 @@ func TestImplementInJoinRule_MatchesSelectExpression(t *testing.T) {
 	rule := NewImplementInJoinRule()
 	scanRef := expressions.InitialOf(inRuleLogicalScan())
 	q := expressions.ForEachQuantifier(scanRef)
+	explode := expressions.ForEachQuantifier(expressions.InitialOf(inRuleExplode(
+		inRuleArray(values.NotNullLong, int64(1), int64(2)))))
 	sel := inRuleSelect(
 		inRuleFlowedObject(q),
-		[]expressions.Quantifier{q},
+		[]expressions.Quantifier{explode, q},
 		nil,
 	)
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), sel)
@@ -589,7 +591,21 @@ func TestImplementInJoinRule_SortedClaimComesFromAHomogeneousPartition(t *testin
 		nil,
 	)
 
-	results := mustInRuleFire(t, NewImplementInJoinRule(), expressions.InitialOf(sel))
+	// The request names A, so the explode bound to A is the sorted outer
+	// source wherever the inner fixes it.
+	selRef := expressions.InitialOf(sel)
+	cm := NewConstraintMap()
+	Set(cm, selRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{
+		properties.NewRequestedOrdering(
+			[]properties.RequestedOrderingPart{{
+				Value: boundRich.GetKeys()[0], SortOrder: properties.RequestedSortOrderAscending,
+			}},
+			properties.DistinctnessPreserveDistinctness, false),
+	})
+	results, err := FireImplementationRule(NewImplementInJoinRule(), selRef, cm)
+	if err != nil {
+		t.Fatalf("FireImplementationRule: %v", err)
+	}
 	sawInJoin, sawSorted := false, false
 	for _, r := range results {
 		inJoin, ok := r.(*plans.RecordQueryInJoinPlan)

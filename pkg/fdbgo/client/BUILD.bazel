@@ -74,6 +74,7 @@ go_test(
         "clusterfile_test.go",
         "commit_dummy_regression_test.go",
         "commit_lifetime_fdb_test.go",
+        "commit_no_proxy_test.go",
         "commit_path_grv_ctx_test.go",
         "commitpath_legalrange_test.go",
         "commitpath_test.go",
@@ -197,6 +198,7 @@ go_test(
     tags = [
         "exclusive",
         "resources:memory:2500",
+        "test-full",
     ],
     deps = [
         "//pkg/fdbgo/transport",

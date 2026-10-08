@@ -161,3 +161,47 @@ func TestClosureSparseUniqueIndex_MetadataReportsFiltering(t *testing.T) {
 		t.Fatal("SetPredicate published a proto")
 	}
 }
+
+// TestClosureSparseIndex_ServesNoQuery pins that an index filtered by a Go
+// closure is never scanned for a query, whatever the query binds or orders by.
+// Its entries cover only the records the closure admitted, and no predicate can
+// be proved to imply an opaque filter, so an ordered full scan, a range and an
+// equality probe of it all drop the excluded records. Before the candidate
+// refused to produce a scan, each of these planned over CS_EMAIL; only the
+// distinctness shortcuts consulted the flag.
+func TestClosureSparseIndex_ServesNoQuery(t *testing.T) {
+	t.Parallel()
+	const ddl = "CREATE TABLE CS (ID BIGINT, EMAIL STRING, KEEP BIGINT, PRIMARY KEY (ID))\n" +
+		"CREATE UNIQUE INDEX CS_EMAIL ON CS(EMAIL)"
+	tmpl, err := buildSchemaTemplateFromDDL(ddl)
+	if err != nil {
+		t.Fatalf("build schema: %v", err)
+	}
+	md := tmpl.Underlying()
+	queries := []string{
+		"SELECT EMAIL FROM CS ORDER BY EMAIL",
+		"SELECT EMAIL FROM CS WHERE EMAIL > 'a'",
+		"SELECT * FROM CS WHERE EMAIL = 'a'",
+	}
+	// The control: over the full index each query reads CS_EMAIL, so the
+	// refusal below is the closure's doing.
+	for _, q := range queries {
+		plan, err := PlanRecordQueryAssertingAllIndexesReadable(q, md, nil)
+		if err != nil {
+			t.Fatalf("plan the control %q: %v", q, err)
+		}
+		if !strings.Contains(plan.Explain(), "CS_EMAIL") {
+			t.Fatalf("control %q does not read the full index: %s", q, plan.Explain())
+		}
+	}
+	md.GetIndex("CS_EMAIL").SetPredicate(func(msg proto.Message) bool { return true })
+	for _, q := range queries {
+		plan, err := PlanRecordQueryAssertingAllIndexesReadable(q, md, nil)
+		if err != nil {
+			t.Fatalf("plan %q: %v", q, err)
+		}
+		if strings.Contains(plan.Explain(), "CS_EMAIL") {
+			t.Fatalf("%q reads the closure-filtered index as if it held every record: %s", q, plan.Explain())
+		}
+	}
+}

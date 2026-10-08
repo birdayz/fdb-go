@@ -203,7 +203,7 @@ func TestPhase3_FilterOnly(t *testing.T) {
 	scanRef := expressions.InitialOf(scan)
 
 	filter := phase3Filter(t,
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		expressions.ForEachQuantifier(scanRef),
 	)
 	rootRef := expressions.InitialOf(filter)
@@ -298,7 +298,7 @@ func TestPhase3_ProjectionOverFilter(t *testing.T) {
 	filterRef := expressions.InitialOf(filter)
 	filterQ := expressions.ForEachQuantifier(filterRef)
 
-	projValue, projErr := expressions.NewLogicalProjectionExpression(
+	projValue, projErr := newBlockSelectForTest(
 		[]values.Value{phase3Field(t, filterQ, 1)},
 		filterQ,
 	)
@@ -307,21 +307,21 @@ func TestPhase3_ProjectionOverFilter(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
-	// Check that the bare RecordQueryProjectionPlan appears (RFC-184 W2).
-	foundProjection := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
-		_, ok := expr.(*plans.RecordQueryProjectionPlan)
+	// The block's result is a Map.
+	foundMap := containsPhysical(rootRef, func(expr expressions.RelationalExpression) bool {
+		_, ok := expr.(*plans.RecordQueryMapPlan)
 		return ok
 	})
-	if !foundProjection {
+	if !foundMap {
 		for _, f := range rootRef.Members() {
-			if _, ok := f.(*plans.RecordQueryProjectionPlan); ok {
-				foundProjection = true
+			if _, ok := f.(*plans.RecordQueryMapPlan); ok {
+				foundMap = true
 				break
 			}
 		}
 	}
-	if !foundProjection {
-		t.Fatal("expected *plans.RecordQueryProjectionPlan in explored graph or final members")
+	if !foundMap {
+		t.Fatal("expected *plans.RecordQueryMapPlan in explored graph or final members")
 	}
 
 	// Check that a physical filter appears in the inner Reference.
@@ -429,6 +429,7 @@ func TestPhase3_PlanPropertyInvariant_ScanIsDistinct(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
+	scanRef = plannedSeedChild(t, rootRef)
 	pm := GetRefPlanPropertiesMap(scanRef)
 	if pm == nil {
 		t.Fatal("scanRef PlanPropertiesMap is nil after PLANNING phase")
@@ -477,7 +478,7 @@ func TestPhase3_PlanPropertyInvariant_FilterInheritsDistinct(t *testing.T) {
 	scanRef := expressions.InitialOf(scan)
 
 	filter := phase3Filter(t,
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		expressions.ForEachQuantifier(scanRef),
 	)
 	filterRef := expressions.InitialOf(filter)
@@ -491,6 +492,8 @@ func TestPhase3_PlanPropertyInvariant_FilterInheritsDistinct(t *testing.T) {
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
 
+	filterRef = plannedSeedChild(t, rootRef)
+	scanRef = plannedSeedChild(t, filterRef)
 	// The inner scanRef must have distinct=true (established by test 7).
 	scanPM := GetRefPlanPropertiesMap(scanRef)
 	if scanPM == nil {

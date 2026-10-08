@@ -41,6 +41,7 @@
 package explaindiff
 
 import (
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"os"
@@ -165,18 +166,22 @@ func collect(dir string, reach *cascades.ReachabilityCollector) ([]Entry, Stats,
 			return nil, Stats{}, fmt.Errorf("load %s: %w", base, loadErr)
 		}
 		for i, t := range s.Tests {
+			args, argErr := StatementArgs(&s.Tests[i])
+			if argErr != nil {
+				return nil, Stats{}, fmt.Errorf("%s#%d: %w", base, i, argErr)
+			}
 			// Pick the harness by statement class. SELECT/WITH/VALUES plan
 			// through the SELECT harness; DELETE/UPDATE through the DML harness;
 			// INSERT and other sequencing steps have no interesting plan and are
 			// counted (not planned) so the corpus total reconciles.
 			var plan planFn
 			switch {
-			case yamsql.IsQuery(t.Query):
-				st.Queries++
-				plan = planSelect
 			case isDML(t.Query):
 				st.DML++
-				plan = planDML
+				plan = planDML(args)
+			case yamsql.IsQuery(t.Query):
+				st.Queries++
+				plan = planSelect(args)
 			default:
 				st.NonQuery++
 				continue
@@ -221,18 +226,37 @@ type Stats struct {
 // shared through planOne.
 type planFn func(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error)
 
+// StatementArgs are a test's `args:`, numbered as database/sql numbers the
+// runner's positional arguments. A harness binds them, so a `?` plans with
+// its driver value's type, exactly as the runner executes it.
+func StatementArgs(t *yamsql.Test) ([]driver.NamedValue, error) {
+	values, err := t.ArgValues()
+	if err != nil {
+		return nil, err
+	}
+	named := make([]driver.NamedValue, len(values))
+	for i, v := range values {
+		named[i] = driver.NamedValue{Ordinal: i + 1, Value: v}
+	}
+	return named, nil
+}
+
 // planSelect routes a SELECT/WITH/VALUES statement through the SELECT harness.
-func planSelect(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
-	// Statistics are nil: planner defaults (see the package doc — the baseline
-	// is a regression key, not a live-cardinality prediction).
-	return embedded.PlanPhysicalForTestWithReachability(sql, schemaTemplate, nil, reach)
+func planSelect(args []driver.NamedValue) planFn {
+	return func(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
+		// Statistics are nil: planner defaults (see the package doc — the
+		// baseline is a regression key, not a live-cardinality prediction).
+		return embedded.PlanPhysicalForTestWithArgs(sql, schemaTemplate, args, nil, reach)
+	}
 }
 
 // planDML routes a DELETE/UPDATE statement through the DML harness — the same
 // no-FDB Cascades pipeline, entered via the DML logical builders and the DML
 // planning rule set (see embedded.PlanPhysicalDMLForTest).
-func planDML(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
-	return embedded.PlanPhysicalDMLForTestWithReachability(sql, schemaTemplate, nil, reach)
+func planDML(args []driver.NamedValue) planFn {
+	return func(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
+		return embedded.PlanPhysicalDMLForTestWithArgs(sql, schemaTemplate, args, nil, reach)
+	}
 }
 
 // isDML reports whether stmt is a DELETE or UPDATE — the two DML shapes with a

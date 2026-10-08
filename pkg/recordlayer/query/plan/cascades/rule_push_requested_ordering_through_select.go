@@ -33,17 +33,48 @@ func (r *PushRequestedOrderingThroughSelectRule) Matcher() matching.BindingMatch
 	return r.matcher
 }
 
+func (r *PushRequestedOrderingThroughSelectRule) hasConstraintEffect(cm *ConstraintMap, ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	orderings, _ := Get(cm, ref, RequestedOrderingConstraintKey)
+	pushes, err := selectOrderingPushes(expr.(*expressions.SelectExpression), orderings)
+	if err != nil {
+		// Keep the ordinary rule task responsible for reporting translation errors.
+		return true
+	}
+	for _, push := range pushes {
+		current, present := Get(cm, push.ref, RequestedOrderingConstraintKey)
+		if !present {
+			return true
+		}
+		if _, changed := properties.CombineRequestedOrderings(current, push.orderings); changed {
+			return true
+		}
+	}
+	return false
+}
+
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *PushRequestedOrderingThroughSelectRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *PushRequestedOrderingThroughSelectRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return
 	}
 
 	sel := call.Bindings.Get(r.matcher).(*expressions.SelectExpression)
+	pushes, err := selectOrderingPushes(sel, call.GetRequestedOrderings())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	for _, push := range pushes {
+		call.PushConstraint(push.ref, push.orderings)
+	}
+}
 
-	orderings := call.GetRequestedOrderings()
-	// Java: orElse(ImmutableSet.of()) — empty set means push nothing,
-	// but we still visit every ForEach child.
-
+func selectOrderingPushes(sel *expressions.SelectExpression, orderings []*properties.RequestedOrdering) ([]pendingRequestedOrderingConstraint, error) {
+	var pushes []pendingRequestedOrderingConstraint
 	resultValue := sel.GetResultValue()
 	localAliases := make(map[values.CorrelationIdentifier]struct{}, len(sel.GetQuantifiers()))
 	for _, quantifier := range sel.GetQuantifiers() {
@@ -80,8 +111,7 @@ func (r *PushRequestedOrderingThroughSelectRule) OnMatch(call *ImplementationRul
 						o, resultValue, innerQuantifier.GetAlias(), localAliases),
 					innerQuantifier)
 				if err != nil {
-					call.Fail(err)
-					return
+					return nil, err
 				}
 				toBePushed = append(toBePushed, pushed)
 				hasConcrete = hasConcrete || !pushed.IsPreserve()
@@ -98,8 +128,9 @@ func (r *PushRequestedOrderingThroughSelectRule) OnMatch(call *ImplementationRul
 		if !hasConcrete && !isFirstForEach {
 			continue
 		}
-		call.PushConstraint(lowerRef, toBePushed)
+		pushes = append(pushes, pendingRequestedOrderingConstraint{ref: lowerRef, orderings: toBePushed})
 	}
+	return pushes, nil
 }
 
 // pushRequestedOrderingToSelectChild translates a SELECT-output request into
@@ -197,7 +228,10 @@ func pushRequestedOrderingToSelectChildThroughOutput(
 		return properties.PreserveOrdering()
 	}
 	return properties.NewRequestedOrdering(
-		parts, pushed.GetDistinctness(), pushed.IsExhaustive())
+		parts, pushed.GetDistinctness(), pushed.IsExhaustive()).CarrySortable(pushed)
 }
 
-var _ ImplementationRule = (*PushRequestedOrderingThroughSelectRule)(nil)
+var (
+	_ ImplementationRule        = (*PushRequestedOrderingThroughSelectRule)(nil)
+	_ constraintPropagationRule = (*PushRequestedOrderingThroughSelectRule)(nil)
+)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,6 +54,14 @@ type FDBDatabase struct {
 	// from the system-key gate and read globally even on a tenant transaction.
 	isTenant bool
 
+	// resolverCache is the directory cache of committed resolver mappings
+	// (Java's FDBDatabase.getDirectoryCache); reverseCacheEntry the long of
+	// the reverse directory cache's directory, resolved once.
+	resolverCacheOnce sync.Once
+	resolverCache     *resolverCache
+	reverseCacheMu    sync.Mutex
+	reverseCacheEntry *int64
+
 	// storeStateCache caches store state across transactions.
 	// Default: PassThroughRecordStoreStateCache (no caching).
 	// Matches Java's FDBDatabase.storeStateCache field.
@@ -83,6 +92,16 @@ type FDBDatabase struct {
 	// atomic.Pointer because SetTimer may be called on a database other goroutines are
 	// already opening contexts against.
 	timer atomic.Pointer[StoreTimer]
+
+	// The attempt policy of Run and its variants (attempt_loop.go): Java's
+	// FDBDatabaseFactory maxAttempts / initialDelayMillis / maxDelayMillis.
+	// Zero means the default.
+	maxAttempts  atomic.Int64
+	initialDelay atomic.Int64
+	maxDelay     atomic.Int64
+	delaysSet    atomic.Bool
+
+	attemptObserver atomic.Pointer[AttemptObserver]
 }
 
 // SetTimer installs the StoreTimer that every context this database opens will record
@@ -130,6 +149,12 @@ type FDBDatabaseFactory struct {
 	mu        sync.Mutex
 	databases map[string]*FDBDatabase
 
+	// knobs are the client knobs set (SetKnob), knobOrder the order they were
+	// first set, and inited whether the client has started (the first open).
+	knobs     map[string]string
+	knobOrder []string
+	inited    bool
+
 	// StoreStateCacheFactory creates a store state cache for each new database.
 	// If nil, PassThroughStoreStateCache is used.
 	StoreStateCacheFactory func() FDBRecordStoreStateCache
@@ -151,6 +176,9 @@ func (f *FDBDatabaseFactory) GetDatabase(clusterFile string) (*FDBDatabase, erro
 
 	if db, ok := f.databases[clusterFile]; ok {
 		return db, nil
+	}
+	if err := f.startClientLocked(); err != nil {
+		return nil, fmt.Errorf("open database %q: %w", clusterFile, err)
 	}
 
 	// Open through the build-tag-selectable seam (RFC-109): the default build is
@@ -265,60 +293,141 @@ func (d *FDBDatabase) applyReadSystemKeys(o fdb.TransactionOptions) {
 	}
 }
 
-// Run executes a function within a transaction with automatic retry handling.
-// Before committing, flushes any queued versionstamp mutations.
-// Matches Java's FDBRecordContext.commitAsync() behavior.
+// Run executes fn in a transaction and commits it, retrying as Java's
+// FDBDatabaseRunner does (FDBDatabaseRunnerImpl.RunRetriable): at most
+// MaxAttempts attempts (default 10), each a fresh transaction, retried while
+// some cause of the error is retriable, with Java's ExponentialDelay between
+// attempts (attemptLoop). Before committing it runs the commit checks and
+// flushes queued versionstamp mutations, as FDBRecordContext.commitAsync does;
+// the post-commit hooks run once, after the attempt that committed.
 func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
-	var lastCtx *FDBRecordContext
-	var commitStart time.Time
-	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
-		d.applyReadSystemKeys(tx.Options())
-		recordCtx := &FDBRecordContext{
-			transactionID: nextTransactionID.Add(1),
-			tx:            tx,
-			ctx:           ctx,
-			env:           d.env,
-		}
-		recordCtx.SetTimer(d.Timer())
-		lastCtx = recordCtx
+	result, _, err := d.runContexts(ctx, d.policy("run"), RouteAttempt, nil, false, fn)
+	return result, err
+}
 
-		result, err := fn(recordCtx)
-		if err != nil {
-			return nil, err
-		}
+// RunWithMaxAttempts is Run with its own attempt bound in place of the
+// database's, as an FDBDatabaseRunner with setMaxAttempts runs. One attempt is
+// how the relational layer runs a DDL statement: a conflict surfaces instead of
+// re-executing the statement.
+func (d *FDBDatabase) RunWithMaxAttempts(ctx context.Context, maxAttempts int, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
+	policy := d.policy("run")
+	if maxAttempts > 0 {
+		policy.maxAttempts = maxAttempts
+	}
+	result, _, err := d.runContexts(ctx, policy, RouteAttempt, nil, false, fn)
+	return result, err
+}
 
-		// EventCommit spans the pre-commit checks plus the commit itself, which is
-		// the interval Java measures: startTimeNanos is taken at the first line of
-		// commitAsync, before runCommitChecks, and the event is recorded when the
-		// commit future completes (FDBRecordContext.java:478, :513-533; the
-		// FDBStoreTimer javadoc at :81-86 says so explicitly). Post-commit hooks
-		// are outside the span in Java and are outside it here.
-		//
-		// It has to be recorded out here rather than in FDBRecordContext.Commit
-		// because on this path the commit belongs to the transactor's retry loop —
-		// nothing ever calls Commit, which is why the whole autocommit SQL path
-		// reported zero commits while committing on every statement.
-		commitStart = time.Now()
+// runClientLoop runs fn through the transactor's own retry loop, which is
+// unbounded on the pure-Go client and libfdb_c and capped at 100 retries on
+// SimFDB. Only SPFresh's background lifecycles use it (spfreshRun): RFC-094
+// keeps them on the client loop, and nothing else may.
+func (d *FDBDatabase) runClientLoop(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
+	result, _, err := d.runContexts(ctx, attemptPolicy{owner: "spfresh.lifecycle", maxAttempts: 1}, RouteClientLoop, nil, false, fn)
+	return result, err
+}
 
-		// Run pre-commit checks before flushing
-		if err := recordCtx.runCommitChecks(); err != nil {
-			return nil, err
-		}
+// runContexts is Run and its variants. Each attempt is one transactor call
+// whose body opens a route-owned record context; on RouteAttempt the backend's
+// own retry limit is 0, so the backend makes exactly one attempt and the loop
+// counts it. weak applies to the first execution only, as Java's
+// TransactionalRunner clears weak-read semantics on a retry
+// (TransactionalRunner.java:181-192), so a retry never reuses an old read
+// version. versionstamp asks for the committed versionstamp.
+func (d *FDBDatabase) runContexts(ctx context.Context, policy attemptPolicy, route AttemptRoute, weak *WeakReadSemantics, versionstamp bool, fn func(rtx *FDBRecordContext) (any, error)) (any, []byte, error) {
+	var (
+		lastCtx     *FDBRecordContext
+		commitStart time.Time
+		vsFuture    fdb.FutureKey
+		body        bodyErrorRecorder
+	)
+	execute := func(call AttemptCall) (any, error) {
+		result, err := d.transactAttempt(ctx, call, func(tx fdb.WritableTransaction) (any, error) {
+			// Each execution starts clean: a previous execution's context,
+			// commit timing and versionstamp future are stale.
+			body.start()
+			lastCtx, commitStart, vsFuture = nil, time.Time{}, nil
+			if route == RouteAttempt {
+				if err := tx.Options().SetRetryLimit(0); err != nil {
+					return nil, body.record(err)
+				}
+			}
+			d.applyReadSystemKeys(tx.Options())
+			if weak != nil && weak.IsCausalReadRisky && call.Execution == 0 {
+				tx.Options().SetCausalReadRisky()
+			}
+			recordCtx := &FDBRecordContext{
+				transactionID: nextTransactionID.Add(1),
+				tx:            tx,
+				ctx:           ctx,
+				env:           d.env,
+				database:      d,
+				routeOwned:    true,
+			}
+			recordCtx.SetTimer(d.Timer())
+			lastCtx = recordCtx
 
-		// Flush queued version mutations before FDB's Transact commits.
-		recordCtx.flushVersionMutations()
+			result, err := fn(recordCtx)
+			if err != nil {
+				return nil, body.record(err)
+			}
+			result, err = d.precommit(recordCtx, result, &commitStart)
+			if err != nil {
+				return nil, body.record(err)
+			}
+			if versionstamp && recordCtx.HasVersionMutations() {
+				vsFuture = tx.GetVersionstamp()
+			}
+			return result, nil
+		})
+		return result, body.resolve(err)
+	}
 
-		return result, nil
-	})
+	var result any
+	var err error
+	if route == RouteClientLoop {
+		result, err = execute(AttemptCall{Route: route, Owner: policy.owner, CallID: nextAttemptCallID.Add(1)})
+	} else {
+		result, err = attemptLoop(ctx, d.env, d.observer(), policy, route, execute)
+	}
 	if err != nil {
-		return result, err
+		return nil, nil, err
 	}
 	recordCommitSince(lastCtx, commitStart)
-
-	// Run post-commit callbacks after successful commit
+	// Post-commit callbacks run once, after the attempt that committed.
 	if lastCtx != nil {
 		lastCtx.runPostCommits()
 	}
+	if vsFuture != nil {
+		vs, err := vsFuture.Get()
+		if err != nil {
+			return result, nil, fmt.Errorf("failed to get versionstamp: %w", err)
+		}
+		return result, []byte(vs), nil
+	}
+	return result, nil, nil
+}
+
+// precommit is the part of FDBRecordContext.commitAsync that runs before the
+// transactor commits: the commit checks and the versionstamp flush.
+func (d *FDBDatabase) precommit(recordCtx *FDBRecordContext, result any, commitStart *time.Time) (any, error) {
+	// EventCommit spans the pre-commit checks plus the commit itself, which is
+	// the interval Java measures: startTimeNanos is taken at the first line of
+	// commitAsync, before runCommitChecks, and the event is recorded when the
+	// commit future completes (FDBRecordContext.java:478, :513-533; the
+	// FDBStoreTimer javadoc at :81-86 says so explicitly). Post-commit hooks
+	// are outside the span in Java and are outside it here.
+	//
+	// It has to be recorded out here rather than in FDBRecordContext.Commit
+	// because on this path the commit belongs to the transactor's retry loop —
+	// nothing ever calls Commit, which is why the whole autocommit SQL path
+	// reported zero commits while committing on every statement.
+	*commitStart = time.Now()
+	if err := recordCtx.runCommitChecks(); err != nil {
+		return nil, err
+	}
+	// Flush queued version mutations before the transactor commits.
+	recordCtx.flushVersionMutations()
 	return result, nil
 }
 
@@ -372,12 +481,21 @@ func runReadTransactCtx(t fdb.ReadTransactor, ctx context.Context, fn func(fdb.R
 // ctx bounds the read-retry loop + backoff when the transactor supports it
 // (fdb.CtxReadTransactor); the entry check also returns early if already cancelled.
 func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransaction) (any, error)) (any, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return runReadTransactCtx(d.transactor, ctx, func(rtx fdb.ReadTransaction) (any, error) {
-		d.applyReadSystemKeys(rtx.Options())
-		return fn(rtx)
+	var body bodyErrorRecorder
+	return attemptLoop(ctx, d.env, d.observer(), d.policy("run.read"), RouteAttempt, func(call AttemptCall) (any, error) {
+		result, err := d.readTransactAttempt(ctx, call, func(rtx fdb.ReadTransaction) (any, error) {
+			body.start()
+			if err := rtx.Options().SetRetryLimit(0); err != nil {
+				return nil, body.record(err)
+			}
+			d.applyReadSystemKeys(rtx.Options())
+			result, err := fn(rtx)
+			if err != nil {
+				return nil, body.record(err)
+			}
+			return result, nil
+		})
+		return result, body.resolve(err)
 	})
 }
 
@@ -385,108 +503,15 @@ func (d *FDBDatabase) RunRead(ctx context.Context, fn func(rtx fdb.ReadTransacti
 // If IsCausalReadRisky is set, the transaction reads from any replica.
 // Matches Java's FDBDatabase.openContext(config, timer, weakReadSemantics, ...).
 func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemantics, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
-	var lastCtx *FDBRecordContext
-	var commitStart time.Time
-	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
-		d.applyReadSystemKeys(tx.Options())
-		if weak.IsCausalReadRisky {
-			tx.Options().SetCausalReadRisky()
-		}
-		recordCtx := &FDBRecordContext{
-			transactionID: nextTransactionID.Add(1),
-			tx:            tx,
-			ctx:           ctx,
-			env:           d.env,
-		}
-		recordCtx.SetTimer(d.Timer())
-		lastCtx = recordCtx
-
-		result, err := fn(recordCtx)
-		if err != nil {
-			return nil, err
-		}
-
-		commitStart = time.Now()
-		if err := recordCtx.runCommitChecks(); err != nil {
-			return nil, err
-		}
-		recordCtx.flushVersionMutations()
-		return result, nil
-	})
-	if err != nil {
-		return result, err
-	}
-	recordCommitSince(lastCtx, commitStart)
-	if lastCtx != nil {
-		lastCtx.runPostCommits()
-	}
-	return result, nil
+	result, _, err := d.runContexts(ctx, d.policy("run.weak"), RouteAttempt, &weak, false, fn)
+	return result, err
 }
 
 // RunWithVersionstamp is like Run but also returns the committed versionstamp.
 // Use this when you need the versionstamp after commit (e.g. for record versioning).
 // Returns (result, versionstamp, error). Versionstamp is nil for read-only transactions.
 func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, []byte, error) {
-	var vsFuture fdb.FutureKey
-	var hasVersionMutations bool
-	var lastCtx *FDBRecordContext
-	var commitStart time.Time
-
-	result, err := runTransactCtx(d.transactor, ctx, func(tx fdb.WritableTransaction) (any, error) {
-		// Reset on retry — previous attempt's future is stale
-		vsFuture = nil
-		hasVersionMutations = false
-
-		d.applyReadSystemKeys(tx.Options())
-		recordCtx := &FDBRecordContext{
-			transactionID: nextTransactionID.Add(1),
-			tx:            tx,
-			ctx:           ctx,
-			env:           d.env,
-		}
-		recordCtx.SetTimer(d.Timer())
-		lastCtx = recordCtx
-
-		result, err := fn(recordCtx)
-		if err != nil {
-			return nil, err
-		}
-
-		commitStart = time.Now()
-
-		// Run pre-commit checks
-		if err := recordCtx.runCommitChecks(); err != nil {
-			return nil, err
-		}
-
-		recordCtx.flushVersionMutations()
-
-		hasVersionMutations = recordCtx.HasVersionMutations()
-		if hasVersionMutations {
-			vsFuture = tx.GetVersionstamp()
-		}
-
-		return result, nil
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	recordCommitSince(lastCtx, commitStart)
-
-	// Run post-commit callbacks after successful commit
-	if lastCtx != nil {
-		lastCtx.runPostCommits()
-	}
-
-	if hasVersionMutations && vsFuture != nil {
-		vs, err := vsFuture.Get()
-		if err != nil {
-			return result, nil, fmt.Errorf("failed to get versionstamp: %w", err)
-		}
-		return result, []byte(vs), nil
-	}
-
-	return result, nil, nil
+	return d.runContexts(ctx, d.policy("run.versionstamp"), RouteAttempt, nil, true, fn)
 }
 
 // BackendCapabilityError is returned when an operation is not supported on the
@@ -606,6 +631,13 @@ type versionMutation struct {
 	value        []byte
 }
 
+// commitCheckRegistration keeps a canceled check distinguishable from a new
+// registration with the same name, including during a pre-commit snapshot.
+type commitCheckRegistration struct {
+	check  CommitCheckFunc
+	active bool // protected by FDBRecordContext.commitMu
+}
+
 // FDBRecordContext represents a transactional context for record operations.
 // It wraps an FDB transaction and provides additional record layer functionality.
 // Goroutine-safe: all mutable fields are protected by atomics, mutexes, or the
@@ -619,6 +651,20 @@ type FDBRecordContext struct {
 	tx            fdb.WritableTransaction
 	ctx           context.Context
 	transactionID int64 // unique ID for logging/tracing
+
+	// routeOwned marks a context a transaction route (Run and its variants,
+	// the runner's RunWithRetry) handed its body: the route commits it, and
+	// the body's own commit is refused before anything commits.
+	routeOwned bool
+	// deactivated is set by the first commit, whatever its outcome (Java's
+	// closeTransaction(false) on both arms of commitAsync); a later commit is
+	// refused as Java's ensureActive refuses it.
+	deactivated atomic.Bool
+
+	// database is the FDBDatabase that opened this context (Java's
+	// FDBRecordContext.getDatabase); nil for a context over an external
+	// transaction built by NewFDBRecordContext.
+	database *FDBDatabase
 
 	// env is the DST Tier-0 environment inherited from the FDBDatabase (Clock + Randomness +
 	// Buggify). Nil means production; read it through Env() which is nil-safe. Persisted-byte
@@ -641,9 +687,10 @@ type FDBRecordContext struct {
 
 	// Commit hooks — matches Java's CommitCheckAsync / PostCommit.
 	// Java uses synchronized blocks on all access.
-	commitMu     sync.Mutex
-	commitChecks []CommitCheckFunc
-	postCommits  []PostCommitFunc
+	commitMu          sync.Mutex
+	commitChecks      []*commitCheckRegistration
+	namedCommitChecks map[string]*commitCheckRegistration
+	postCommits       []PostCommitFunc
 
 	// Diagnostic: tracked read conflict ranges for debugging
 	conflictMu     sync.Mutex
@@ -670,8 +717,16 @@ type FDBRecordContext struct {
 	// SPFresh keeps its tx-local routing cache here so a same-transaction
 	// write-then-search pairs up even when the statements open separate
 	// stores.
+	// Keys are strings or typed ContextSessionKey names (contextSessionKeyID),
+	// which never equal a string key, as Java's ContextSessionKey never equals a
+	// String.
 	sessionMu sync.Mutex
-	session   map[string]any
+	session   map[any]any
+
+	pendingWriteQueueOptions atomic.Pointer[PendingWriteQueueOptions]
+
+	indexStateMu    sync.Mutex
+	indexStateViews map[string]*transactionIndexStateView
 }
 
 // Env returns the DST environment for this context (Clock + Randomness + Buggify),
@@ -700,7 +755,7 @@ func (rc *FDBRecordContext) PutSession(key string, value any) {
 	rc.sessionMu.Lock()
 	defer rc.sessionMu.Unlock()
 	if rc.session == nil {
-		rc.session = make(map[string]any)
+		rc.session = make(map[any]any)
 	}
 	rc.session[key] = value
 }
@@ -741,7 +796,15 @@ func NewFDBRecordContext(tx fdb.WritableTransaction, env *dst.Env) *FDBRecordCon
 func (d *FDBDatabase) NewRecordContext(tx fdb.WritableTransaction) *FDBRecordContext {
 	rc := NewFDBRecordContext(tx, d.Env())
 	rc.SetTimer(d.Timer())
+	rc.database = d
 	return rc
+}
+
+// GetDatabase is the database that opened this context, Java's
+// FDBRecordContext.getDatabase; nil for a context NewFDBRecordContext built
+// over an external transaction.
+func (rc *FDBRecordContext) GetDatabase() *FDBDatabase {
+	return rc.database
 }
 
 // Transaction returns the underlying FDB transaction
@@ -847,42 +910,17 @@ func (e *TransactionSizeWarningError) Error() string {
 	return fmt.Sprintf("transaction size %d bytes exceeds warning threshold %d bytes", e.CurrentBytes, e.LimitBytes)
 }
 
-// Commit commits the transaction.
-//
-// Records EventCommit, as every commit path must. Java has ONE commit method
-// (FDBRecordContext.commitAsync) and it records the event unconditionally
-// (FDBRecordContext.java:513-533); Go splits that method three ways — here,
-// CommitWithHooks and CommitWithVersionstamp — and a split where only one arm
-// records turns the metric into a function of which API the caller happened to
-// pick. Only CommitWithVersionstamp recorded, which is why explicit SQL
-// transactions committed on every COMMIT statement and reported none.
+// Commit runs pre-commit checks, flushes pending version mutations, commits the
+// transaction, and runs post-commit callbacks. All explicit commit APIs share
+// this lifecycle, matching Java's FDBRecordContext.commitAsync().
 func (rc *FDBRecordContext) Commit() error {
-	commitStart := time.Now()
-	err := rc.tx.Commit().Get()
-	rc.Timer().RecordSince(EventCommit, commitStart)
+	_, err := rc.CommitWithVersionstamp()
 	return err
 }
 
-// CommitWithHooks runs pre-commit checks, flushes pending version mutations,
-// commits the FDB transaction, and runs post-commit callbacks.
-// Use this instead of Commit() when the context was created manually (not via Run()).
-//
-// The EventCommit span starts before the pre-commit checks and ends when the
-// commit resolves, which is Java's interval — its startTimeNanos is taken at the
-// first line of commitAsync, ahead of runCommitChecks, and the post-commit hooks
-// are chained after the event is recorded (FDBRecordContext.java:478, :513-533).
+// CommitWithHooks is an alias for Commit; checks and hooks always run.
 func (rc *FDBRecordContext) CommitWithHooks() error {
-	commitStart := time.Now()
-	if err := rc.runCommitChecks(); err != nil {
-		return err
-	}
-	rc.flushVersionMutations()
-	if err := rc.tx.Commit().Get(); err != nil {
-		return err
-	}
-	rc.Timer().RecordSince(EventCommit, commitStart)
-	rc.runPostCommits()
-	return nil
+	return rc.Commit()
 }
 
 // Cancel cancels the transaction
@@ -930,17 +968,23 @@ func (rc *FDBRecordContext) RemoveLocalVersion(versionKey []byte) {
 // mutationType selects SET_VERSIONSTAMPED_KEY or SET_VERSIONSTAMPED_VALUE.
 // The key or value (depending on type) must include the versionstamp placeholder bytes.
 // Goroutine-safe via versionMu.
-// Matches Java's FDBRecordContext.addVersionMutation(MutationType, key, value).
-func (rc *FDBRecordContext) AddVersionMutation(mutationType VersionMutationType, versionKey []byte, value []byte) {
+// Returns the previous value for this key, or nil if absent, matching Java's
+// FDBRecordContext.addVersionMutation(MutationType, key, value).
+func (rc *FDBRecordContext) AddVersionMutation(mutationType VersionMutationType, versionKey []byte, value []byte) []byte {
 	rc.versionMu.Lock()
 	defer rc.versionMu.Unlock()
 	if rc.versionMutations == nil {
 		rc.versionMutations = make(map[string]versionMutation)
 	}
+	previous, existed := rc.versionMutations[string(versionKey)]
+	if existed && previous.value == nil {
+		previous.value = []byte{}
+	}
 	rc.versionMutations[string(versionKey)] = versionMutation{
 		mutationType: mutationType,
 		value:        value,
 	}
+	return previous.value
 }
 
 // UpdateVersionMutation queues or updates a versionstamp mutation with a merge function.
@@ -990,6 +1034,19 @@ func (rc *FDBRecordContext) RemoveVersionMutationsInRange(begin, end fdb.Key) {
 	}
 }
 
+// HasVersionMutationsInRange checks surviving buffered mutations in [begin, end).
+// It shares the registry and mutex used by context-aware clears.
+func (rc *FDBRecordContext) HasVersionMutationsInRange(begin, end fdb.Key) bool {
+	rc.versionMu.Lock()
+	defer rc.versionMu.Unlock()
+	for key := range rc.versionMutations {
+		if bytes.Compare([]byte(key), begin) >= 0 && bytes.Compare([]byte(key), end) < 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // RemoveLocalVersionsInRange removes all cached local versions whose key
 // falls in [begin, end). Goroutine-safe via versionMu.
 // Matches Java's FDBRecordContext.removeLocalVersionRange().
@@ -1002,6 +1059,22 @@ func (rc *FDBRecordContext) RemoveLocalVersionsInRange(begin, end fdb.Key) {
 			delete(rc.localVersionCache, k)
 		}
 	}
+}
+
+// ClearRange clears transactional data and pending version state together, so
+// flushing version mutations at commit cannot restore keys inside the range.
+// Matches Java's FDBRecordContext.clear(Range).
+func (rc *FDBRecordContext) ClearRange(keyRange fdb.ExactRange) {
+	rc.clearRange(keyRange, true)
+}
+
+// clearRange permits store-aware callers to supply an already-applied metadata
+// invalidation policy, while preserving state projections and version cleanup.
+func (rc *FDBRecordContext) clearRange(keyRange fdb.ExactRange, invalidateState bool) {
+	begin, end := keyRange.FDBRangeKeys()
+	rc.clearRangeWithIndexStateViews(keyRange, invalidateState)
+	rc.RemoveVersionMutationsInRange(begin.FDBKey(), end.FDBKey())
+	rc.RemoveLocalVersionsInRange(begin.FDBKey(), end.FDBKey())
 }
 
 // flushVersionMutations applies all queued versionstamp mutations
@@ -1029,7 +1102,62 @@ func (rc *FDBRecordContext) flushVersionMutations() {
 func (rc *FDBRecordContext) AddCommitCheck(check CommitCheckFunc) {
 	rc.commitMu.Lock()
 	defer rc.commitMu.Unlock()
-	rc.commitChecks = append(rc.commitChecks, check)
+	rc.commitChecks = append(rc.commitChecks, &commitCheckRegistration{check: check, active: true})
+}
+
+// getOrCreateCommitCheck returns the named check, invoking ifNotExists only when
+// absent. The supplier runs under the registration lock and must not call back
+// into context hook registration. The supplied check runs outside that lock.
+// Matches Java's FDBRecordContext.getOrCreateCommitCheck().
+func (rc *FDBRecordContext) getOrCreateCommitCheck(name string, ifNotExists func(string) CommitCheckFunc) CommitCheckFunc {
+	rc.commitMu.Lock()
+	defer rc.commitMu.Unlock()
+	if entry := rc.namedCommitChecks[name]; entry != nil {
+		return entry.check
+	}
+	entry := &commitCheckRegistration{check: ifNotExists(name), active: true}
+	if rc.namedCommitChecks == nil {
+		rc.namedCommitChecks = make(map[string]*commitCheckRegistration)
+	}
+	rc.namedCommitChecks[name] = entry
+	rc.commitChecks = append(rc.commitChecks, entry)
+	return entry.check
+}
+
+// getCommitCheck returns a previously registered named check, or nil.
+// Matches Java's FDBRecordContext.getCommitCheck().
+func (rc *FDBRecordContext) getCommitCheck(name string) CommitCheckFunc {
+	rc.commitMu.Lock()
+	defer rc.commitMu.Unlock()
+	if entry := rc.namedCommitChecks[name]; entry != nil {
+		return entry.check
+	}
+	return nil
+}
+
+// removeCommitCheck cancels a named check that has not started, including one
+// in the current run's snapshot. It does not stop an already executing check.
+// Store deletion uses this before clearing data to prevent deferred retirement
+// from recreating deleted index-state keys.
+func (rc *FDBRecordContext) removeCommitCheck(name string) {
+	rc.commitMu.Lock()
+	defer rc.commitMu.Unlock()
+	if entry := rc.namedCommitChecks[name]; entry != nil {
+		entry.active = false
+		delete(rc.namedCommitChecks, name)
+	}
+}
+
+// removeCommitChecksWithPrefix cancels pending store-scoped callback families.
+func (rc *FDBRecordContext) removeCommitChecksWithPrefix(prefix string) {
+	rc.commitMu.Lock()
+	defer rc.commitMu.Unlock()
+	for name, entry := range rc.namedCommitChecks {
+		if strings.HasPrefix(name, prefix) {
+			entry.active = false
+			delete(rc.namedCommitChecks, name)
+		}
+	}
 }
 
 // AddPostCommit registers a post-commit callback.
@@ -1044,15 +1172,21 @@ func (rc *FDBRecordContext) AddPostCommit(hook PostCommitFunc) {
 
 // runCommitChecks runs all registered pre-commit checks.
 // Returns the first error encountered, or nil if all pass.
-// Called at commit time when all goroutines should be done; holds commitMu
-// for race-detector cleanliness.
+// Called at commit time when all goroutines should be done. Registration state
+// is locked, but checks run without the lock so they can cancel pending checks.
 func (rc *FDBRecordContext) runCommitChecks() error {
 	rc.commitMu.Lock()
-	checks := make([]CommitCheckFunc, len(rc.commitChecks))
+	checks := make([]*commitCheckRegistration, len(rc.commitChecks))
 	copy(checks, rc.commitChecks)
 	rc.commitMu.Unlock()
-	for _, check := range checks {
-		if err := check(); err != nil {
+	for _, entry := range checks {
+		rc.commitMu.Lock()
+		active := entry.active
+		rc.commitMu.Unlock()
+		if !active {
+			continue
+		}
+		if err := entry.check(); err != nil {
 			return err
 		}
 	}
@@ -1229,8 +1363,15 @@ func (rc *FDBRecordContext) GetMetaDataVersionStamp() ([]byte, error) {
 // Runs post-commit hooks after successful commit.
 // Matches Java's FDBRecordContext.commitAsync() which always runs checks and hooks.
 func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
-	// Run pre-commit checks before committing
+	// Java's ensureActive, the first statement of commitAsync: a committed
+	// context, and one its route owns, commits nothing.
+	if rc.routeOwned || !rc.deactivated.CompareAndSwap(false, true) {
+		return nil, errTransactionNotActive()
+	}
+	// Include pre-commit checks in the commit span, but not post-commit hooks.
+	commitStart := time.Now()
 	if err := rc.runCommitChecks(); err != nil {
+		rc.Timer().RecordSince(EventCommit, commitStart)
 		return nil, err
 	}
 
@@ -1244,28 +1385,24 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 		vsFuture = rc.tx.GetVersionstamp()
 	}
 
-	// Commit the transaction — timed as EventCommit
-	commitStart := time.Now()
 	if err := rc.tx.Commit().Get(); err != nil {
 		rc.Timer().RecordSince(EventCommit, commitStart)
 		return nil, err
 	}
-	rc.Timer().RecordSince(EventCommit, commitStart)
 
-	// Run post-commit callbacks after successful commit
-	rc.runPostCommits()
-
-	// Retrieve the committed versionstamp only if mutations were queued.
+	// Java resolves the committed versionstamp before running post-commit hooks.
+	var versionstamp []byte
 	if hasVersionMutations && vsFuture != nil {
 		vs, err := vsFuture.Get()
 		if err != nil {
+			rc.Timer().RecordSince(EventCommit, commitStart)
 			return nil, fmt.Errorf("get versionstamp after commit: %w", err)
 		}
-		return []byte(vs), nil
+		versionstamp = []byte(vs)
 	}
-
-	// No versionstamp mutations — read-only or no versioned writes.
-	return nil, nil
+	rc.Timer().RecordSince(EventCommit, commitStart)
+	rc.runPostCommits()
+	return versionstamp, nil
 }
 
 // buildVersionstampedValue builds the value for SET_VERSIONSTAMPED_VALUE mutation.
@@ -1284,43 +1421,89 @@ func buildVersionstampedValue(version *FDBRecordVersion) ([]byte, error) {
 // lockRegistry provides per-key read-write locks within a transaction context.
 // Matches Java's LockRegistry (ConcurrentHashMap<LockIdentifier, AtomicReference<AsyncLock>>).
 // Used by tree-structured indexes (HNSW, R-tree) to serialize mutations.
+//
+// An entry lives while anyone holds or waits for its lock, and is removed when
+// the last of them releases (Java 4.14 #4545: a completed lock is removed only
+// when no registered work depends on it). Removing it any earlier would let a
+// later caller create a second live lock for the same key.
 type lockRegistry struct {
 	mu    sync.Mutex
-	locks map[string]*sync.RWMutex
+	locks map[string]*lockEntry
 }
 
-func (r *lockRegistry) getOrCreate(key string) *sync.RWMutex {
+// lockEntry is one key's lock and the number of holders and waiters it has,
+// counted under lockRegistry.mu.
+type lockEntry struct {
+	rw   sync.RWMutex
+	refs int
+}
+
+// acquire registers one more holder or waiter of key's lock.
+func (r *lockRegistry) acquire(key string) *lockEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.locks == nil {
-		r.locks = make(map[string]*sync.RWMutex)
+		r.locks = make(map[string]*lockEntry)
 	}
-	if m, ok := r.locks[key]; ok {
-		return m
+	e, ok := r.locks[key]
+	if !ok {
+		e = &lockEntry{}
+		r.locks[key] = e
 	}
-	m := &sync.RWMutex{}
-	r.locks[key] = m
-	return m
+	e.refs++
+	return e
+}
+
+// held is key's entry, which the caller holds.
+func (r *lockRegistry) held(key string) *lockEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.locks[key]
+	if !ok {
+		panic(fmt.Sprintf("recordlayer: unlock of an unlocked key %q", key))
+	}
+	return e
+}
+
+// release drops one holder of key's lock, removing the entry with the last.
+func (r *lockRegistry) release(key string, e *lockEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e.refs--
+	if e.refs == 0 {
+		delete(r.locks, key)
+	}
+}
+
+// size is the number of live entries.
+func (r *lockRegistry) size() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.locks)
 }
 
 // WriteLock acquires an exclusive lock for the given key.
 // Matches Java's FDBRecordContext.doWithWriteLock(LockIdentifier).
 func (r *lockRegistry) WriteLock(key string) {
-	r.getOrCreate(key).Lock()
+	r.acquire(key).rw.Lock()
 }
 
 // WriteUnlock releases the exclusive lock for the given key.
 func (r *lockRegistry) WriteUnlock(key string) {
-	r.getOrCreate(key).Unlock()
+	e := r.held(key)
+	e.rw.Unlock()
+	r.release(key, e)
 }
 
 // ReadLock acquires a shared lock for the given key.
 // Matches Java's FDBRecordContext.doWithReadLock(LockIdentifier).
 func (r *lockRegistry) ReadLock(key string) {
-	r.getOrCreate(key).RLock()
+	r.acquire(key).rw.RLock()
 }
 
 // ReadUnlock releases the shared lock for the given key.
 func (r *lockRegistry) ReadUnlock(key string) {
-	r.getOrCreate(key).RUnlock()
+	e := r.held(key)
+	e.rw.RUnlock()
+	r.release(key, e)
 }

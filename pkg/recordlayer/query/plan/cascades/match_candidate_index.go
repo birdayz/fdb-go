@@ -5,6 +5,8 @@ import (
 	"sync"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/indexpredicate"
+	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -107,8 +109,24 @@ type ValueIndexScanMatchCandidate struct {
 	// fan-out parent. It is always stored as a defensive clone.
 	rootKeyExpression *gen.KeyExpression
 
-	traversalOnce sync.Once
-	traversal     *Traversal
+	columnsOnce sync.Once
+	columns     *valueIndexExpansion
+	expansion   *valueIndexExpansion
+
+	// pkEntryOrdinals is IndexDefWithPrimaryKeyEntryOrdinals, aligned with
+	// pkColumnNames; nil when the def does not state it.
+	pkEntryOrdinals []int
+
+	logicalRecordOnce sync.Once
+	logicalRecord     *indexEntryToLogicalRecord
+}
+
+// indexEntryToLogicalRecord is ScanWithFetchMatchCandidate's
+// IndexEntryToLogicalRecord: the reader that builds the queried record from an
+// entry, and the record's fields it covers.
+type indexEntryToLogicalRecord struct {
+	reader        *values.RecordConstructorValue
+	logicalFields []values.FieldValue
 }
 
 // WithRecordTypeRowTypes attaches the per-record-type row layouts to a freshly
@@ -137,6 +155,75 @@ func (c *ValueIndexScanMatchCandidate) GetKeyComponentTypes() []values.Type {
 func (c *ValueIndexScanMatchCandidate) WithPrimaryKeyComponentTypes(types []values.Type) *ValueIndexScanMatchCandidate {
 	c.primaryKeyComponentTypes = normalizePhysicalKeyTypes(types, len(c.pkColumnNames))
 	return c
+}
+
+// WithPrimaryKeyEntryOrdinals attaches the entry KEY positions of the primary
+// key columns to a freshly constructed candidate.
+func (c *ValueIndexScanMatchCandidate) WithPrimaryKeyEntryOrdinals(ordinals []int) *ValueIndexScanMatchCandidate {
+	if len(ordinals) == len(c.pkColumnNames) {
+		c.pkEntryOrdinals = append([]int(nil), ordinals...)
+	}
+	return c
+}
+
+// indexEntryToLogicalRecord is the candidate's logical record, or nil when an
+// entry cannot be read into one.
+func (c *ValueIndexScanMatchCandidate) indexEntryToLogicalRecord() *indexEntryToLogicalRecord {
+	c.logicalRecordOnce.Do(func() { c.logicalRecord = c.computeIndexEntryToLogicalRecord() })
+	return c.logicalRecord
+}
+
+// computeIndexEntryToLogicalRecord is
+// ScanWithFetchMatchCandidate.computeIndexEntryToLogicalRecord over the entry's
+// KEY (index columns, then the trimmed primary key) and VALUE columns. Java
+// also refuses a builder missing a proto-required field or covering a repeated
+// one; Go rows carry no required-ness, and no array is ever extracted.
+func (c *ValueIndexScanMatchCandidate) computeIndexEntryToLogicalRecord() *indexEntryToLogicalRecord {
+	expansion := c.indexExpansion()
+	if expansion == nil || len(c.recordTypes) != 1 {
+		return nil
+	}
+	baseType, ok := c.flowedType.(*values.RecordType)
+	if !ok {
+		return nil
+	}
+	alias := expansion.base.Correlation()
+	covered := &values.IndexEntryRecordReader{}
+	var logical []values.FieldValue
+	add := func(v values.Value, source values.TupleSource, ordinal int) bool {
+		field, reader, ok := values.ExtractFromIndexEntry(v, alias, source, []int{ordinal})
+		if !ok {
+			return true
+		}
+		if !covered.CoverField(field, reader) {
+			return false
+		}
+		logical = append(logical, field)
+		return true
+	}
+	for i, keyValue := range expansion.keyValues {
+		if !add(keyValue, values.TupleSourceKey, i) {
+			return nil
+		}
+	}
+	for j, column := range c.pkColumnNames {
+		if j >= len(c.pkEntryOrdinals) || c.pkEntryOrdinals[j] < 0 {
+			continue
+		}
+		field, err := resolveKeyFieldPath(expansion.base, []string{column})
+		if err != nil {
+			return nil
+		}
+		if !add(field, values.TupleSourceKey, c.pkEntryOrdinals[j]) {
+			return nil
+		}
+	}
+	for i, valueValue := range expansion.valueValues {
+		if !add(valueValue, values.TupleSourceValue, i) {
+			return nil
+		}
+	}
+	return &indexEntryToLogicalRecord{reader: covered.ToRecordValue(baseType), logicalFields: logical}
 }
 
 // GetPrimaryKeyComponentTypes returns types aligned with pkColumnNames.
@@ -187,16 +274,114 @@ func (c *ValueIndexScanMatchCandidate) orderingKeyLayout() *values.RecordType {
 // longer Values, and an unaddressable ordering key must decline the claim.
 //
 // Resolution is UNIQUE-match, matching the runtime authority this key is
-// verified against (bakedIntersectionKeys). It must not be first-match: the
-// candidate's column list drops nesting parents (metadataIndexDef
-// .IndexColumnNames), so the name reaching here is a bare leaf, and
-// first-matching a leaf against a duplicate-named layout would silently bake
-// some other column's slot. A nested leaf whose name collides with a top-level
-// field is a stronger version of the same hazard and is fenced one level up:
-// NewPlanContextFromIndexDefs refuses a root key expression containing a
-// non-fan-out nested leaf outright, so no such column ever reaches a candidate.
+// verified against (bakedIntersectionKeys): first-matching a name against a
+// duplicate-named layout would silently bake some other column's slot. A key
+// column is baked by its whole field path (bakeOrderingPath), so a nested leaf
+// never stands for a top-level field of the same name.
 func (c *ValueIndexScanMatchCandidate) bakeOrderingColumn(name string) values.Value {
 	return bakeOrderingColumnIn(c.orderingKeyLayout(), name)
+}
+
+// bakeOrderingPath is bakeOrderingColumn over a key column's field path, each
+// step resolved by its unique name in the record it descends.
+func (c *ValueIndexScanMatchCandidate) bakeOrderingPath(path []string) values.Value {
+	layout := c.orderingKeyLayout()
+	if len(path) == 1 {
+		return bakeOrderingColumnIn(layout, path[0])
+	}
+	if layout == nil || len(path) == 0 {
+		return nil
+	}
+	root, ok := orderingKeyCarrier(layout)
+	if !ok {
+		return nil
+	}
+	return resolveUpperFieldPath(root, path)
+}
+
+// keyColumnPath is key column i's field path (nil for a column that reads no
+// field path, such as an exploded element).
+func (c *ValueIndexScanMatchCandidate) keyColumnPath(i int) []string {
+	described := c.indexColumns()
+	if described == nil || i < 0 || i >= len(described.keyColumns) {
+		return nil
+	}
+	return layoutFieldPath(described.keyColumns[i].path)
+}
+
+// nestedKeyColumnPath is keyColumnPath for a nested leaf only.
+func (c *ValueIndexScanMatchCandidate) nestedKeyColumnPath(i int) []string {
+	if path := c.keyColumnPath(i); len(path) > 1 {
+		return path
+	}
+	return nil
+}
+
+// columnPaths returns the nested field path of every key and value column,
+// nil for a top-level one, for the plan's column metadata.
+func (c *ValueIndexScanMatchCandidate) columnPaths() (keyPaths, valuePaths [][]string) {
+	described := c.indexColumns()
+	if described == nil {
+		return nil, nil
+	}
+	nested := func(columns []keyExpansionColumn) [][]string {
+		var out [][]string
+		for i, column := range columns {
+			if len(column.path) > 1 {
+				if out == nil {
+					out = make([][]string, len(columns))
+				}
+				out[i] = layoutFieldPath(column.path)
+			}
+		}
+		return out
+	}
+	return nested(described.keyColumns), nested(described.valueColumns)
+}
+
+// trimmableKeyColumnNames are the key columns a primary-key column of the same
+// name is trimmed against: top-level fields only, as Java's trimPrimaryKey
+// compares key expressions, and CARDINALITY(x) or S.X is not field X.
+func (c *ValueIndexScanMatchCandidate) trimmableKeyColumnNames() []string {
+	names := make([]string, 0, len(c.columnNames))
+	for i, name := range c.columnNames {
+		if i < len(c.columnFunctions) && c.columnFunctions[i] == FunctionKindCardinality {
+			continue
+		}
+		if c.nestedKeyColumnPath(i) != nil {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// keyColumnCanExtendOrderingClaim is values.ColumnCanExtendOrderingClaim for
+// key column i, answered for a nested leaf by the type its path reads.
+func (c *ValueIndexScanMatchCandidate) keyColumnCanExtendOrderingClaim(i int) bool {
+	path := c.nestedKeyColumnPath(i)
+	if path == nil {
+		return values.ColumnCanExtendOrderingClaim(c.orderingKeyLayout(), c.columnNames[i])
+	}
+	if i < len(c.keyComponentTypes) && c.keyComponentTypes[i] != nil &&
+		c.keyComponentTypes[i].Code() != values.TypeCodeUnknown {
+		return !values.TypeTerminatesOrderingClaim(c.keyComponentTypes[i])
+	}
+	leaf := c.bakeOrderingPath(path)
+	return leaf != nil && !values.TypeTerminatesOrderingClaim(leaf.Type())
+}
+
+// floatQuestionColumnNames is columnNames with a nested leaf's name blanked:
+// it is no top-level column, so a name-keyed float question must not find one
+// (a blank name could be a float).
+func (c *ValueIndexScanMatchCandidate) floatQuestionColumnNames() []string {
+	names := append([]string(nil), c.columnNames...)
+	for i := range names {
+		if c.nestedKeyColumnPath(i) != nil {
+			names[i] = ""
+		}
+	}
+	return names
 }
 
 // bakeOrderingColumnIn is bakeOrderingColumn's body, shared with the
@@ -283,30 +468,58 @@ func orderingKeyCarrier(record *values.RecordType) (values.QuantifiedObjectValue
 // orderingColumnValue is ColumnValue for the ordering-key mint: the same Value
 // shape, with the plain-field case carrying its resolved identity.
 //
-// A function-keyed column is deliberately left alone. CARDINALITY(x) is not a
-// column of the row layout, so it is matched as a whole Value rather than by
-// column identity, and baking the wrapped child would make an otherwise
-// structurally equal pair unequal.
+// A CARDINALITY column is no column of the row layout: it is the function over
+// its argument baked like any key column, so it is minted on the same carrier
+// root and compares as a whole Value against the request's.
 func (c *ValueIndexScanMatchCandidate) orderingColumnValue(i int) values.Value {
 	if i < len(c.columnFunctions) && c.columnFunctions[i] != "" {
-		if _, isOrder := OrderFunctionDirection(c.columnFunctions[i]); isOrder {
-			// An order-wrapped column ORDERS BY its underlying field — the
-			// wrapper only changes the physical encoding and the direction,
-			// which columnMatchedSortOrder carries separately. Java derives the
-			// same split by simplifying ToOrderedBytesValue(fv) to (fv,
-			// direction) when minting ordering parts
-			// (OrderingValueComputationRuleSet's ToOrderedBytes rule).
-			return c.bakeOrderingColumn(c.columnNames[i])
+		if _, isOrder := OrderFunctionDirection(c.columnFunctions[i]); !isOrder {
+			if c.columnFunctions[i] != FunctionKindCardinality {
+				return c.keyValueOverOrderingCarrier(i)
+			}
+			argument := c.bakeOrderingPath(c.keyColumnPath(i))
+			if argument == nil {
+				return nil
+			}
+			return values.NewCardinalityValue(argument)
 		}
-		return c.ColumnValue(i, nil)
+		// An order-wrapped column ORDERS BY its underlying field — the
+		// wrapper only changes the physical encoding and the direction,
+		// which columnMatchedSortOrder carries separately. Java derives the
+		// same split by simplifying ToOrderedBytesValue(fv) to (fv,
+		// direction) when minting ordering parts
+		// (OrderingValueComputationRuleSet's ToOrderedBytes rule).
 	}
-	return c.bakeOrderingColumn(c.columnNames[i])
+	path := c.keyColumnPath(i)
+	if len(path) == 0 {
+		return nil
+	}
+	return c.bakeOrderingPath(path)
 }
 
-// coveredOrdinalSets resolves the covered-column names against every row
-// layout the index serves — see buildCoveredOrdinalSets.
-func (c *ValueIndexScanMatchCandidate) coveredOrdinalSets(coveredColumns map[string]struct{}) []coveredOrdinalSet {
-	return buildCoveredOrdinalSets(c.rowLayouts(), coveredColumns)
+// keyValueOverOrderingCarrier is key column i's Value as the expansion built
+// it (FunctionKeyExpression.toValue), re-rooted on the ordering carrier the
+// baked columns use.
+func (c *ValueIndexScanMatchCandidate) keyValueOverOrderingCarrier(i int) values.Value {
+	expansion := c.indexExpansion()
+	layout := c.orderingKeyLayout()
+	if expansion == nil || layout == nil || i < 0 || i >= len(expansion.keyValues) ||
+		expansion.keyValues[i] == nil {
+		return nil
+	}
+	root, ok := orderingKeyCarrier(layout)
+	if !ok {
+		return nil
+	}
+	translation := values.NewTranslationMapBuilder().
+		When(expansion.base.Correlation()).
+		Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value { return root }).
+		Build()
+	translated, err := values.TranslateCorrelationsChecked(expansion.keyValues[i], translation)
+	if err != nil {
+		return nil
+	}
+	return translated
 }
 
 // WithValueColumns attaches the covering-only (FDB VALUE part) column names of
@@ -377,8 +590,8 @@ func (c *ValueIndexScanMatchCandidate) WithPredicateProto(pred *gen.Predicate) *
 		c.predicateProto = nil
 		return c
 	}
-	normalized := NormalizeIndexPredicateProto(pred)
-	if constantPredicateArmIsTrue(normalized) {
+	normalized := indexpredicate.Normalize(pred)
+	if indexpredicate.ConstantArmIsTrue(normalized) {
 		c.predicateProto = nil
 		return c
 	}
@@ -624,7 +837,12 @@ func NewValueIndexScanMatchCandidateWithFunctions(
 // matching both consult, so a CARDINALITY() query value binds to the index by
 // Value-tree equality (Java: the match candidate carries the column's Value).
 func (c *ValueIndexScanMatchCandidate) ColumnValue(i int, base values.Value) values.Value {
-	if i < 0 || i >= len(c.columnNames) {
+	described := c.indexColumns()
+	if described == nil || i < 0 || i >= len(described.keyColumns) {
+		return nil
+	}
+	column := described.keyColumns[i]
+	if len(column.path) == 0 {
 		return nil
 	}
 	if base == nil {
@@ -642,23 +860,15 @@ func (c *ValueIndexScanMatchCandidate) ColumnValue(i int, base values.Value) val
 	if !ok {
 		return nil
 	}
-	record, ok := qov.FlowedType().(*values.RecordType)
-	if !ok {
+	fv := resolveUpperFieldPath(qov, layoutFieldPath(column.path))
+	if fv == nil {
 		return nil
 	}
-	ordinal, unique := uniqueUpperFieldIndex(record, c.columnNames[i])
-	if !unique {
-		return nil
-	}
-	fv, err := values.ResolveFieldOrdinals(qov, []int{ordinal})
-	if err != nil {
-		return nil
-	}
-	if i < len(c.columnFunctions) {
-		if c.columnFunctions[i] == FunctionKindCardinality {
+	if column.function != "" {
+		if column.function == FunctionKindCardinality {
 			return values.NewCardinalityValue(fv)
 		}
-		if dir, isOrder := OrderFunctionDirection(c.columnFunctions[i]); isOrder {
+		if dir, isOrder := OrderFunctionDirection(column.function); isOrder {
 			// The column's stored bytes are the TupleOrdering encoding, so the
 			// candidate-side Value is ToOrderedBytesValue(field, direction)
 			// (OrderFunctionKeyExpression.toValue). A query comparison on the
@@ -672,25 +882,20 @@ func (c *ValueIndexScanMatchCandidate) ColumnValue(i int, base values.Value) val
 	return fv
 }
 
-// duplicateProducingColumns returns the per-index-column analogue of Java's
-// normalizedKeyExpression.createsDuplicates(). A direct FAN_OUT field marks
-// its one position; every child position underneath a fan-out nesting parent
-// is duplicate-producing. If metadata says the index duplicates but does not
-// provide a classifiable key tree, every position is conservatively marked.
+// duplicateProducingColumns returns, per index key column, Java's
+// normalizedKeyExpression.createsDuplicates(): whether the expansion registered
+// it below a FAN_OUT. If metadata says the index duplicates but no expansion
+// classifies its columns, every position is conservatively marked.
 func (c *ValueIndexScanMatchCandidate) duplicateProducingColumns() []bool {
 	result := make([]bool, len(c.columnNames))
-	if c.rootKeyExpression != nil {
-		if classified, ok := classifyDuplicateProducingColumns(
-			c.rootKeyExpression,
-			false,
-		); ok && len(classified) == len(result) {
-			hasDuplicate := false
-			for _, duplicate := range classified {
-				hasDuplicate = hasDuplicate || duplicate
-			}
-			if hasDuplicate || !c.createsDuplicates {
-				return classified
-			}
+	if described := c.indexColumns(); described != nil &&
+		len(described.keyDuplicates) == len(result) {
+		hasDuplicate := false
+		for _, duplicate := range described.keyDuplicates {
+			hasDuplicate = hasDuplicate || duplicate
+		}
+		if hasDuplicate || !c.createsDuplicates {
+			return append(result[:0], described.keyDuplicates...)
 		}
 	}
 	if c.CreatesDuplicates() {
@@ -701,72 +906,105 @@ func (c *ValueIndexScanMatchCandidate) duplicateProducingColumns() []bool {
 	return result
 }
 
-func classifyDuplicateProducingColumns(
-	expression *gen.KeyExpression,
-	inheritedFanOut bool,
-) ([]bool, bool) {
-	if expression == nil || keyExpressionShapeCount(expression) != 1 {
-		return nil, false
-	}
-	switch {
-	case expression.Field != nil:
-		if expression.Field.FanType == nil {
-			return nil, false
-		}
-		return []bool{
-			inheritedFanOut ||
-				expression.Field.GetFanType() == gen.Field_FAN_OUT,
-		}, true
-
-	case expression.Then != nil:
-		var result []bool
-		for _, child := range expression.Then.GetChild() {
-			childColumns, ok := classifyDuplicateProducingColumns(
-				child,
-				inheritedFanOut,
-			)
-			if !ok {
-				return nil, false
-			}
-			result = append(result, childColumns...)
-		}
-		return result, true
-
-	case expression.Nesting != nil:
-		nesting := expression.Nesting
-		if nesting.Parent == nil || nesting.Parent.FanType == nil ||
-			nesting.Child == nil {
-			return nil, false
-		}
-		switch nesting.Parent.GetFanType() {
-		case gen.Field_SCALAR:
-			return classifyDuplicateProducingColumns(
-				nesting.Child,
-				inheritedFanOut,
-			)
-		case gen.Field_FAN_OUT:
-			return classifyDuplicateProducingColumns(nesting.Child, true)
-		default:
-			return nil, false
-		}
-
-	default:
-		return nil, false
-	}
-}
-
 // CandidateName returns the index name.
 func (c *ValueIndexScanMatchCandidate) CandidateName() string { return c.indexName }
 
 // GetTraversal returns the Traversal of this candidate's expression
-// tree, built lazily on first access via ExpandValueIndex. The
-// traversal is stable once computed (sync.Once). Ports Java's
+// tree, built lazily on first access by the key-expression expansion and stable
+// once computed (sync.Once). Ports Java's
 // ValueIndexScanMatchCandidate.getTraversal().
 func (c *ValueIndexScanMatchCandidate) GetTraversal() *Traversal {
-	c.traversalOnce.Do(func() {
-		c.traversal = ExpandValueIndex(c)
+	if expansion := c.indexExpansion(); expansion != nil {
+		return expansion.traversal
+	}
+	return nil
+}
+
+// effectiveRootKeyExpression is the stored root, or the root the flat column
+// metadata spells when the candidate carries none.
+func (c *ValueIndexScanMatchCandidate) effectiveRootKeyExpression() *gen.KeyExpression {
+	if c.rootKeyExpression != nil {
+		return c.rootKeyExpression
+	}
+	return flatColumnsRootKeyExpression(c.columnNames, c.columnFunctions)
+}
+
+// indexColumns is the candidate's admission: its key expression's columns, as
+// the expansion visitor registers them, when the metadata names exactly those
+// columns; nil when the index is not a candidate.
+//
+// Without FAN_OUT structure only an affirmative createsDuplicates=false signal
+// admits the candidate: UNKNOWN metadata may hide a fan-out index, and a known
+// duplicate-producing index without a FAN_OUT AST has no Explode with which to
+// repair cardinality.
+func (c *ValueIndexScanMatchCandidate) indexColumns() *valueIndexExpansion {
+	if c == nil {
+		return nil
+	}
+	c.columnsOnce.Do(func() {
+		fanOut := keyExpressionContainsFanOut(c.rootKeyExpression)
+		if !fanOut && (!c.createsDuplicatesKnown || c.createsDuplicates) {
+			return
+		}
+		described, err := describeValueIndexRoot(c, c.effectiveRootKeyExpression())
+		if err != nil || !c.columnsDescribe(described) {
+			return
+		}
+		if fanOut {
+			for _, function := range c.columnFunctions {
+				if function != "" {
+					return
+				}
+			}
+		}
+		// With a base type, the index is a candidate only if it expands: a
+		// function key's Value depends on its arguments' types.
+		if _, typed := candidateBaseType(c); typed {
+			expansion, err := expandValueIndexRoot(c, c.effectiveRootKeyExpression(), c.predicateProto)
+			if err != nil {
+				return
+			}
+			c.expansion = expansion
+		}
+		c.columns = described
 	})
-	return c.traversal
+	return c.columns
+}
+
+// indexExpansion is the candidate graph of an admitted candidate, or nil when
+// it has none (no exact base type).
+func (c *ValueIndexScanMatchCandidate) indexExpansion() *valueIndexExpansion {
+	if c.indexColumns() == nil {
+		return nil
+	}
+	return c.expansion
+}
+
+// columnsDescribe reports whether the flat column metadata names exactly the
+// columns the expansion registered, so the name-keyed surfaces and the
+// candidate graph speak of the same entry.
+func (c *ValueIndexScanMatchCandidate) columnsDescribe(expansion *valueIndexExpansion) bool {
+	if len(expansion.keyColumns) != len(c.columnNames) ||
+		len(expansion.valueColumns) != len(c.valueColumnNames) {
+		return false
+	}
+	for i, column := range expansion.keyColumns {
+		function := ""
+		if i < len(c.columnFunctions) {
+			function = c.columnFunctions[i]
+		}
+		// The expansion registers the key expression's stored names; the
+		// candidate holds layout names (layoutFieldPath).
+		if !strings.EqualFold(protoname.ToUserIdentifier(column.name), c.columnNames[i]) || column.function != function {
+			return false
+		}
+	}
+	for i, column := range expansion.valueColumns {
+		if column.function != "" || !strings.EqualFold(protoname.ToUserIdentifier(column.name), c.valueColumnNames[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // GetColumnNames returns the ordered column-name list (one per index
@@ -828,7 +1066,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// the physical key type first and the layout second — the plan side's
 	// splitKeyOrder asks the same function, which is what keeps the two
 	// derivations classifying every coordinate alike.
-	columnCouldBeFloat := plans.IndexColumnCouldBeFloat(c.keyComponentTypes, c.orderingKeyLayout(), c.columnNames)
+	columnCouldBeFloat := plans.IndexColumnCouldBeFloat(c.keyComponentTypes, c.orderingKeyLayout(), c.floatQuestionColumnNames())
 	for _, paramID := range sortParameterIDs {
 		idx := -1
 		for i, alias := range c.sargableAliases {
@@ -899,9 +1137,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		// the predicate comparator and the sort comparator disagree on signed
 		// zeros by design (see plans.EqualityBoundCoordinateClaimsOwnOrder), so
 		// the claim is directional and a DESC request is not free.
-		canExtend := values.ColumnCanExtendOrderingClaim(
-			c.orderingKeyLayout(), c.columnNames[idx],
-		)
+		canExtend := c.keyColumnCanExtendOrderingClaim(idx)
 		claimsOwnOrder := plans.EqualityBoundCoordinateClaimsOwnOrder(cr) || canExtend
 		// canExtend ("this column is not a float") still short-circuits: a
 		// non-float coordinate has no signed zero, so it carries the suffix
@@ -998,7 +1234,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// not sufficient, since a coordinate that claims only its OWN order can sit
 	// at the end of the key.
 	if !c.CreatesDuplicates() && len(parts) == len(c.columnNames) && suffixCarried {
-		for _, col := range plans.TrimmedPKSuffix(c.columnNames, c.pkColumnNames) {
+		for _, col := range plans.TrimmedPKSuffix(c.trimmableKeyColumnNames(), c.pkColumnNames) {
 			// The suffix terminates on the same rule as the key columns: a
 			// FLOAT/DOUBLE PK column cannot extend the claim.
 			if !values.ColumnCanExtendOrderingClaim(c.orderingKeyLayout(), col) {
@@ -1055,10 +1291,16 @@ func (c *ValueIndexScanMatchCandidate) ComputeBoundParameterPrefixMap(
 			// comparison as a residual filter.
 			return prefix
 		}
-		// A raw NaN endpoint is incomplete for equality and ordered predicates:
-		// logical comparison canonicalizes every payload, while FDB tuple order
-		// preserves distinct NaN regions. Keep the predicate as compensation.
+		// A raw NaN endpoint is incomplete for ordered predicates: logical
+		// comparison canonicalizes every payload, while FDB tuple order
+		// preserves distinct NaN regions. Keep those as compensation. A NaN
+		// EQUALITY binds as the terminal component: the executor reads both
+		// NaN key blocks, every NaN the per-row `=` matches, and the
+		// components after it stay residual (RFC-257 WS-E 5.3).
 		if candidateRangeHasKnownConstantNaN(cr, c.keyComponentTypes, i) {
+			if cr.GetRangeType() == predicates.ComparisonRangeEquality {
+				prefix[alias] = cr
+			}
 			return prefix
 		}
 		switch cr.GetRangeType() {
@@ -1111,13 +1353,15 @@ func (c *ValueIndexScanMatchCandidate) ToScanPlan(
 	}
 	indexPlan = stampIndexMetadata(c, indexPlan)
 
-	// Build the TranslateValueFunction for this index: translates
-	// FieldValues whose field name matches a covered index column.
-	translateFn := c.buildTranslateValueFunction()
-
+	// ValueIndexScanMatchCandidate.toEquivalentPlan: a fetch over an entry read
+	// into the logical record, or the bare index plan when it cannot be.
+	logicalRecord := c.indexEntryToLogicalRecord()
+	if logicalRecord == nil {
+		return indexPlan
+	}
 	fetch, err := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		indexPlan,
-		translateFn,
+		indexPlan.WithEntryReader(logicalRecord.reader),
+		c.buildTranslateValueFunction(),
 		c.flowedType,
 		plans.FetchIndexRecordsPrimaryKey,
 	)
@@ -1164,83 +1408,26 @@ func (c *ValueIndexScanMatchCandidate) DistinctRecordsSignal() *bool {
 }
 
 // metadataSufficientForPlanning is the single admission authority for a value
-// candidate's flat scan, coverage, ordering, and PK-suffix surfaces.
-//
-// A structural FAN_OUT root is sufficient because ExpandValueIndex must build
-// and successfully match through an Explode graph before a scan can exist.
-// Without FAN_OUT structure, only an affirmative createsDuplicates=false
-// signal permits the historical flat compatibility path. UNKNOWN metadata may
-// hide a sparse/multiplying fan-out index, and createsDuplicates=true without
-// a FAN_OUT AST lacks the topology needed for cardinality compensation.
-// Scalar nested leaves are rejected regardless: their full accessor path is
-// not represented by the flat candidate column bridge.
+// candidate's scan, coverage, ordering, and PK-suffix surfaces: the index's
+// columns are the ones the metadata names (indexColumns).
 func (c *ValueIndexScanMatchCandidate) metadataSufficientForPlanning() bool {
-	if c == nil ||
-		keyExpressionContainsNonFanOutNestedLeaf(c.rootKeyExpression) {
-		return false
-	}
-	if keyExpressionContainsFanOut(c.rootKeyExpression) {
-		// The structural fan-out expansion models Field/Then/Nesting, not
-		// function-tagged columns. Any such combination is inconsistent
-		// metadata and must decline.
-		for _, function := range c.columnFunctions {
-			if function != "" {
-				return false
-			}
-		}
-		return true
-	}
-	if !c.createsDuplicatesKnown || c.createsDuplicates {
-		return false
-	}
-	for _, function := range c.columnFunctions {
-		if function != "" && function != FunctionKindCardinality {
-			if _, isOrder := OrderFunctionDirection(function); !isOrder {
-				return false
-			}
-		}
-	}
-	if c.rootKeyExpression == nil {
-		// Legacy flat metadata: the explicit false signal and supported
-		// function tags are the caller's semantic authority.
-		return true
-	}
-	keyDescriptors, valueDescriptors, ok := keyExpressionKeyValueColumnDescriptors(
-		c.rootKeyExpression,
-	)
-	if !ok || len(keyDescriptors) != len(c.columnNames) ||
-		len(valueDescriptors) != len(c.valueColumnNames) {
-		return false
-	}
-	for i, descriptor := range keyDescriptors {
-		function := ""
-		if i < len(c.columnFunctions) {
-			function = c.columnFunctions[i]
-		}
-		if !strings.EqualFold(descriptor.name, c.columnNames[i]) ||
-			descriptor.function != function {
-			return false
-		}
-	}
-	// Value-part columns are covering-only: a function-valued value column
-	// (e.g. a CARDINALITY in the VALUE part) cannot be translated by covered
-	// name, so the whole candidate declines fail-closed rather than serve a
-	// mis-translated covering row.
-	for i, descriptor := range valueDescriptors {
-		if descriptor.function != "" ||
-			!strings.EqualFold(descriptor.name, c.valueColumnNames[i]) {
-			return false
-		}
-	}
-	return true
+	return c.indexColumns() != nil
 }
 
 // canProduceScanPlan additionally proves that a structural fan-out root was
-// successfully expanded. This keeps the individual planning/coverage/ordering
-// methods fail-closed even for a prebuilt candidate whose FAN_OUT appears under
-// an unsupported key-expression wrapper or disagrees with its column metadata.
+// successfully expanded, keeping the planning/coverage/ordering methods
+// fail-closed for a fan-out candidate with no candidate graph.
 func (c *ValueIndexScanMatchCandidate) canProduceScanPlan() bool {
 	if !c.metadataSufficientForPlanning() {
+		return false
+	}
+	// An index filtered by a Go closure holds entries only for the records the
+	// closure admits, and no query can be proved to imply an opaque filter, so
+	// a scan of it never answers for the base table: not as a full scan, a
+	// range, an equality probe or an ordered read. A stored (proto) predicate
+	// is different: the candidate graph carries it and the matcher compensates
+	// for it.
+	if c.opaqueFilter {
 		return false
 	}
 	if keyExpressionContainsFanOut(c.rootKeyExpression) {
@@ -1275,12 +1462,46 @@ func (c *ValueIndexScanMatchCandidate) plainFieldColumnsForShortcut() ([]string,
 			return nil, false
 		}
 		for i, rootName := range rootNames {
-			if !strings.EqualFold(rootName, c.columnNames[i]) {
+			if !strings.EqualFold(protoname.ToUserIdentifier(rootName), c.columnNames[i]) {
 				return nil, false
 			}
 		}
 	}
 	return c.columnNames, true
+}
+
+// orderingColumns states what each key column orders the scan plan by: a
+// plain field tuple-natural ascending, an order-wrapped field in the function's
+// direction, a CARDINALITY column by the cardinality of its field. ok=false
+// when the key carries another shape.
+func (c *ValueIndexScanMatchCandidate) orderingColumns() ([]plans.IndexOrderingColumn, bool) {
+	if !c.canProduceScanPlan() || c.rootKeyExpression == nil {
+		return nil, false
+	}
+	described := c.indexColumns()
+	columns := make([]plans.IndexOrderingColumn, len(described.keyColumns))
+	for i, column := range described.keyColumns {
+		if described.keyDuplicates[i] || (len(column.path) == 0 && column.function == "") {
+			return nil, false
+		}
+		switch column.function {
+		case "":
+		case FunctionKindCardinality:
+			columns[i].Cardinality = true
+		default:
+			if direction, isOrder := OrderFunctionDirection(column.function); isOrder {
+				columns[i].Direction = direction
+				continue
+			}
+			expansion := c.indexExpansion()
+			if expansion == nil || expansion.keyValues[i] == nil {
+				return nil, false
+			}
+			columns[i].Key = expansion.keyValues[i]
+			columns[i].KeyRoot = expansion.base.Correlation()
+		}
+	}
+	return columns, true
 }
 
 // HasAndOrderedByRecordTypeKey reports whether the index key starts
@@ -1313,93 +1534,43 @@ func (c *ValueIndexScanMatchCandidate) PushValueThroughFetch(
 	return fn(value, sourceAlias, targetAlias)
 }
 
-// buildTranslateValueFunction creates a TranslateValueFunction that
-// can translate values from the full-record domain to the index-entry
-// domain. A FieldValue is translatable if its field name matches one
-// of the non-fan-out index columns or primary-key columns (case-insensitive).
-// An exploded element cannot cover the original repeated field.
-//
-// Ports the conceptual equivalent of Java's
-// ScanWithFetchMatchCandidate.createTranslateValueFunction.
+// buildTranslateValueFunction is the Fetch's pushValueThroughFetch
+// (ScanWithFetchMatchCandidate.pushValueThroughFetch over the logical record's
+// fields): a field of the source is pushed when the logical record covers its
+// exact path, a value not of the source passes unchanged, anything else stays
+// above the fetch.
 func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.TranslateValueFunction {
-	if !c.canProduceScanPlan() {
-		return func(
-			values.Value,
-			values.CorrelationIdentifier,
-			values.CorrelationIdentifier,
-		) (values.Value, bool) {
+	logicalRecord := c.indexEntryToLogicalRecord()
+	if !c.canProduceScanPlan() || logicalRecord == nil {
+		return func(values.Value, values.CorrelationIdentifier, values.CorrelationIdentifier) (values.Value, bool) {
 			return nil, false
 		}
 	}
-	hasFunctionKey := false
-	for _, function := range c.columnFunctions {
-		if function != "" {
-			hasFunctionKey = true
-			break
-		}
+	covered := make(map[string]struct{}, len(logicalRecord.logicalFields))
+	for _, field := range logicalRecord.logicalFields {
+		covered[ordinalPathKey(field.Path().Ordinals())] = struct{}{}
 	}
-	duplicateProducingColumns := c.duplicateProducingColumns()
-	blockedColumns := make(map[string]struct{})
-	for i, col := range c.columnNames {
-		functionKey := i < len(c.columnFunctions) &&
-			c.columnFunctions[i] != ""
-		if duplicateProducingColumns[i] || functionKey {
-			blockedColumns[strings.ToUpper(col)] = struct{}{}
-		}
-	}
-
-	coveredColumns := make(map[string]struct{}, len(c.columnNames)+len(c.pkColumnNames))
-	// A function-key covering row retains every key position for tuple/logical
-	// row alignment, but those positions are semantic expressions rather than
-	// their raw leaf fields. Until physical plans carry semantic key Values,
-	// expose none of the index-key fields through Fetch translation. The PK
-	// suffix remains independently safe and index-resident (the real FDB
-	// CARDINALITY test pins SELECT ID as covering); function-name collisions
-	// are blocked below.
-	if !hasFunctionKey {
-		for i, col := range c.columnNames {
-			if duplicateProducingColumns[i] {
-				continue
-			}
-			coveredColumns[strings.ToUpper(col)] = struct{}{}
-		}
-	}
-	// The VALUE part of a KeyWithValue root is stored RAW in the FDB value
-	// (only key columns can carry an order-function encoding, and the
-	// admission check declines a function-valued value column), so covering
-	// translation of these columns is safe even when a key column is
-	// function-wrapped. This is the whole point of the covering split
-	// (KeyWithValueExpression: "additional query-relevant columns can be read
-	// without fetching the record").
-	for _, col := range c.valueColumnNames {
-		coveredColumns[strings.ToUpper(col)] = struct{}{}
-	}
-	for _, col := range c.pkColumnNames {
-		upperColumn := strings.ToUpper(col)
-		if _, blocked := blockedColumns[upperColumn]; !blocked {
-			coveredColumns[upperColumn] = struct{}{}
-		}
-	}
-	coveredSets := c.coveredOrdinalSets(coveredColumns)
-
+	rowType := c.flowedType
+	domain := values.OrdinalDomainOfType(rowType)
 	return func(value values.Value, sourceAlias, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
 		if field, isField := values.AsFieldValue(value); isField {
-			// A covering translation is valid only for one top-level field of
-			// this exact source object. Fused paths and foreign correlations
-			// decline instead of falling back to the display name.
 			root, isSource := values.AsQuantifiedObjectValue(field.ChildValue())
-			if !isSource || root.Correlation() != sourceAlias || field.Path().Len() != 1 {
+			if !isSource || root.Correlation() != sourceAlias {
 				return nil, false
 			}
-			ordinal, _, rowType, covered := pushCoveredOrdinalWithType(coveredSets, field)
-			if !covered {
+			// The path's ordinals must index the candidate's own layout.
+			if field.Path().RootDomain() != domain {
+				return nil, false
+			}
+			ordinals := field.Path().Ordinals()
+			if _, ok := covered[ordinalPathKey(ordinals)]; !ok {
 				return nil, false
 			}
 			target, err := values.NewQuantifiedObjectValue(targetAlias, rowType)
 			if err != nil {
 				return nil, false
 			}
-			translated, err := values.ResolveFieldOrdinals(target, []int{ordinal})
+			translated, err := values.ResolveFieldOrdinals(target, ordinals)
 			if err != nil {
 				return nil, false
 			}

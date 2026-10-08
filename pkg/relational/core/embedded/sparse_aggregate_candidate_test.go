@@ -32,6 +32,7 @@ func TestSparseAggregateIndexIsNotACandidate_ProgrammaticPredicate(t *testing.T)
 	const ddl = `
 CREATE TABLE ai (pk BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (pk))
 CREATE INDEX ai_sum_g AS SELECT SUM(v) FROM ai GROUP BY g
+CREATE INDEX ai_sum_g_nn AS SELECT COUNT(v) FROM ai GROUP BY g
 `
 	const query = "SELECT g, SUM(v) FROM ai GROUP BY g"
 

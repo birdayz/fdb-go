@@ -19,6 +19,14 @@ const (
 	AggMin
 	AggMax
 	AggAvg
+	// AggMinEver and AggMaxEver are Java's IndexOnlyAggregateValue.MinEver /
+	// MaxEver: non-evaluable, answerable only from a MIN_EVER / MAX_EVER index.
+	AggMinEver
+	AggMaxEver
+	// AggBitmapConstructAgg is Java's NumericAggregationValue.BitmapConstructAgg.
+	AggBitmapConstructAgg
+	// AggArrayAgg is Java's ArrayAggValue.
+	AggArrayAgg
 )
 
 func (f AggregateFunction) String() string {
@@ -33,8 +41,28 @@ func (f AggregateFunction) String() string {
 		return "MAX"
 	case AggAvg:
 		return "AVG"
+	case AggMinEver:
+		return "MIN_EVER"
+	case AggMaxEver:
+		return "MAX_EVER"
+	case AggBitmapConstructAgg:
+		return "BITMAP_CONSTRUCT_AGG"
+	case AggArrayAgg:
+		return "ARRAY_AGG"
 	default:
 		return "UNKNOWN"
+	}
+}
+
+// HasStreamingAccumulator reports whether the streaming aggregation can
+// compute f over a group's rows. MIN_EVER and MAX_EVER are index-only in Java
+// too (IndexOnlyAggregateValue is non-evaluable).
+func (f AggregateFunction) HasStreamingAccumulator() bool {
+	switch f {
+	case AggCount, AggSum, AggMin, AggMax, AggAvg, AggArrayAgg, AggBitmapConstructAgg:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -80,6 +108,10 @@ type AggregateSpec struct {
 	// per-row type derivation. TypeCodeUnknown retains the legacy runtime-carrier
 	// dispatch with int64 overflow checks; resolved SQL operands state their code.
 	OperandIntType values.TypeCode
+	// IgnoreNulls and Limit are ARRAY_AGG's options (values.ArrayAggNoLimit
+	// when uncapped).
+	IgnoreNulls bool
+	Limit       int
 }
 
 // IsCountStar reports whether agg is a COUNT(*)-equivalent aggregate: COUNT with
@@ -127,9 +159,22 @@ func NewGroupByExpression(
 	aggregates []AggregateSpec,
 	inner Quantifier,
 ) (*GroupByExpression, error) {
+	return newGroupByExpression(groupingKeys, aggregates, inner,
+		GroupByOutputColumnNames(groupingKeys, aggregates))
+}
+
+func newGroupByExpression(
+	groupingKeys []values.Value,
+	aggregates []AggregateSpec,
+	inner Quantifier,
+	names []string,
+) (*GroupByExpression, error) {
 	groupingCopy := slices.Clone(groupingKeys)
 	aggregateCopy := slices.Clone(aggregates)
-	names := GroupByOutputColumnNames(groupingCopy, aggregateCopy)
+	if len(names) != len(groupingCopy)+len(aggregateCopy) {
+		return nil, fmt.Errorf("GroupByExpression: %d output names for %d keys and %d aggregates",
+			len(names), len(groupingCopy), len(aggregateCopy))
+	}
 	fields := make([]values.RecordConstructorField, 0, len(names))
 	for i, groupingKey := range groupingCopy {
 		if groupingKey == nil {
@@ -165,6 +210,16 @@ func NewGroupByExpression(
 		inner:        inner,
 		resultValue:  resultValue,
 	}, nil
+}
+
+// WithTranslatedValues rebuilds the aggregate over translated keys, aggregates
+// and input, keeping its output columns' names: a correlation rewrite changes
+// what the row is computed from, not the row, and the names are data, as Java
+// keeps a Field's name on its Type.
+func (e *GroupByExpression) WithTranslatedValues(
+	groupingKeys []values.Value, aggregates []AggregateSpec, inner Quantifier,
+) (*GroupByExpression, error) {
+	return newGroupByExpression(groupingKeys, aggregates, inner, e.OutputColumnNames())
 }
 
 func groupByAggregateResultValue(aggregate AggregateSpec) (values.Value, error) {
@@ -208,6 +263,52 @@ func groupByAggregateResultValue(aggregate AggregateSpec) (values.Value, error) 
 			op = values.AggMax
 			resultType = values.WithNullability(operandType.Type(), true)
 		}
+	case AggMinEver, AggMaxEver:
+		// Java's MinEverFn / MaxEverFn take any single operand and keep its
+		// type (IndexOnlyAggregateValue.encapsulate); what the index may store
+		// is the index generator's to decide.
+		if aggregate.Operand == nil {
+			return nil, fmt.Errorf("%s requires an operand", aggregate.Function)
+		}
+		operandType, err := snapshotExpressionResultType(aggregate.Function.String()+" operand", aggregate.Operand.Type())
+		if err != nil {
+			return nil, err
+		}
+		indexOnlyOp := values.IndexOnlyMinEverLong
+		if aggregate.Function == AggMaxEver {
+			indexOnlyOp = values.IndexOnlyMaxEverLong
+		}
+		exactResult, err := snapshotExpressionResultType(aggregate.Function.String(), values.WithNullability(operandType.Type(), true))
+		if err != nil {
+			return nil, err
+		}
+		return values.NewDerivedValueWithType(
+			[]values.Value{values.NewIndexOnlyAggregateValue(indexOnlyOp, aggregate.Operand)}, exactResult.Type()), nil
+	case AggBitmapConstructAgg:
+		// Java's operator map has BITMAP_CONSTRUCT_AGG over INT and LONG only
+		// (NumericAggregationValue.PhysicalOperator), yielding BYTES.
+		if aggregate.Operand == nil {
+			return nil, fmt.Errorf("%s requires an operand", aggregate.Function)
+		}
+		operandType, err := snapshotExpressionResultType(aggregate.Function.String()+" operand", aggregate.Operand.Type())
+		if err != nil {
+			return nil, err
+		}
+		if code := operandType.Type().Code(); code != values.TypeCodeInt && code != values.TypeCodeLong {
+			return nil, fmt.Errorf("%s requires an INT or LONG operand, got %v", aggregate.Function, operandType.Type())
+		}
+		op = values.AggBitmapConstructAgg
+		resultType = values.NullableBytes
+	case AggArrayAgg:
+		if aggregate.Operand == nil {
+			return nil, fmt.Errorf("%s requires an operand", aggregate.Function)
+		}
+		av := values.NewArrayAggValue(aggregate.Operand, aggregate.IgnoreNulls, aggregate.Limit)
+		exactResult, err := snapshotExpressionResultType(aggregate.Function.String(), av.Type())
+		if err != nil {
+			return nil, err
+		}
+		return values.NewDerivedValueWithType([]values.Value{av}, exactResult.Type()), nil
 	default:
 		return nil, fmt.Errorf("unsupported aggregate function %d", aggregate.Function)
 	}
@@ -335,6 +436,8 @@ func AggregateResultColumnName(agg AggregateSpec) string {
 		return fmt.Sprintf("MAX(%s)", opName)
 	case AggAvg:
 		return fmt.Sprintf("AVG(%s)", opName)
+	case AggArrayAgg, AggMinEver, AggMaxEver, AggBitmapConstructAgg:
+		return fmt.Sprintf("%s(%s)", agg.Function, opName)
 	default:
 		return fmt.Sprintf("AGG(%s)", opName)
 	}
@@ -362,6 +465,17 @@ func GroupByOutputColumnNames(groupingKeys []values.Value, aggregates []Aggregat
 	return names
 }
 
+// OutputColumnNames is the aggregate row's column names, stated once at
+// construction and kept across rewrites; consumers read them rather than
+// derive them again from keys that a rewrite may have re-rooted.
+func (e *GroupByExpression) OutputColumnNames() []string {
+	names := make([]string, len(e.resultValue.Fields))
+	for i, field := range e.resultValue.Fields {
+		names[i] = field.Name
+	}
+	return names
+}
+
 func (e *GroupByExpression) GetGroupingKeys() []values.Value { return slices.Clone(e.groupingKeys) }
 func (e *GroupByExpression) GetAggregates() []AggregateSpec  { return slices.Clone(e.aggregates) }
 func (e *GroupByExpression) GetInner() Quantifier            { return e.inner }
@@ -369,38 +483,12 @@ func (e *GroupByExpression) GetQuantifiers() []Quantifier    { return []Quantifi
 func (e *GroupByExpression) CanCorrelate() bool              { return false }
 func (e *GroupByExpression) ChildrenAsSet() bool             { return false }
 
-// GetResultValue passes the inner's flowed object through with the TYPE
-// DELIBERATELY STRIPPED. Both halves need saying, and the passthrough half is
-// already a known, measured divergence.
-//
-// Java's GroupByExpression.getResultValue() (:129) is
-// `resultValueFunction.apply(groupingValue, aggregateValue)` (:152) — a record
-// constructor of the GROUPING columns and the AGGREGATE columns, i.e. the row the
-// operator OUTPUTS. Go returns the inner's row, which is the row it CONSUMES.
-// The consequence is measured and documented at the site that pays for it
-// (rule_push_requested_ordering_through_groupby.go): pushing an output-slot
-// reference through Go's result value is the identity, so a request for output
-// slot 0 pushes to input slot 0, value equality fails on every group-by in the
-// corpus, and an index that served the grouping order is replaced by a
-// materialized sort.
-//
-// While the flowed accessor carried no type that wrongness was confined to the
-// Value's shape. Typed, the site additionally ASSERTS that a GROUP BY flows its
-// input row — legs and all — and a reader that believes a stated row takes it at
-// its word. Stating no type is the honest interim; stating the input's is a wrong
-// answer with a stated type on it.
-//
-// The real fix is the output row, built from GetGroupingKeys and GetAggregates,
-// and it is CQ-59's exact territory: it changes the space every downstream
-// reference to a group-by's result is baked against, so it is that item's unit of
-// work rather than a rider here. Until it lands this site must not be "cleaned up"
-// back onto the typed accessor.
 func (e *GroupByExpression) GetResultValue() values.Value {
 	return e.resultValue
 }
 
 func (e *GroupByExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return map[values.CorrelationIdentifier]struct{}{}
+	return values.GetCorrelatedToOfValue(e.resultValue)
 }
 
 func (e *GroupByExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
@@ -424,7 +512,7 @@ func (e *GroupByExpression) EqualsWithoutChildren(other RelationalExpression, al
 		}
 	}
 	for i, a := range e.aggregates {
-		if a.Function != o.aggregates[i].Function {
+		if a.Function != o.aggregates[i].Function || a.IgnoreNulls != o.aggregates[i].IgnoreNulls || a.Limit != o.aggregates[i].Limit {
 			return false
 		}
 		if !values.SemanticEqualsUnderAliasMap(a.Operand, o.aggregates[i].Operand, vm) {
@@ -444,7 +532,7 @@ func (e *GroupByExpression) HashCodeWithoutChildren() uint64 {
 		h.Write([]byte("|"))
 	}
 	for _, a := range e.aggregates {
-		binary.LittleEndian.PutUint64(b[:], uint64(a.Function))
+		binary.LittleEndian.PutUint64(b[:], uint64(a.Function)|uint64(uint32(a.Limit))<<16)
 		h.Write(b[:])
 		binary.LittleEndian.PutUint64(b[:], values.SemanticHashCode(a.Operand))
 		h.Write(b[:])
@@ -457,7 +545,7 @@ func (e *GroupByExpression) WithQuantifiers(quantifiers []Quantifier) (Relationa
 	if err := requireQuantifierArity("GroupByExpression", len(quantifiers), 1); err != nil {
 		return nil, err
 	}
-	return NewGroupByExpression(e.groupingKeys, e.aggregates, quantifiers[0])
+	return e.WithTranslatedValues(e.groupingKeys, e.aggregates, quantifiers[0])
 }
 
 var _ RelationalExpression = (*GroupByExpression)(nil)

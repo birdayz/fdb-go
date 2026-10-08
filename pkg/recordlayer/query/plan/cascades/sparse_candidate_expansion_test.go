@@ -77,7 +77,15 @@ func TestSparseCandidateExpansionCarriesPredicate(t *testing.T) {
 	var comparisons, placeholders int
 	for _, p := range preds {
 		switch p.(type) {
-		case *predicates.ComparisonPredicate:
+		case *predicates.PredicateWithValueAndRanges:
+			residual, err := predicates.ToResidualPredicate(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			comparison, ok := residual.(*predicates.ComparisonPredicate)
+			if !ok || comparison.Comparison.Type != predicates.ComparisonLessThan {
+				t.Fatalf("sparse bound = %T %v, want COL1 < 200", residual, residual)
+			}
 			comparisons++
 		case *predicates.Placeholder:
 			placeholders++

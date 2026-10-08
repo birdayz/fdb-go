@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"slices"
 	"sync"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -20,12 +21,19 @@ import (
 // `com.apple.foundationdb.record.query.plan.cascades.AggregateIndexMatchCandidate`,
 // carrying the surface AggregateDataAccessRule consumes.
 type AggregateIndexMatchCandidate struct {
-	indexName   string
-	recordTypes []string
-	groupCols   []string
-	aggFunction expressions.AggregateFunction
-	aggColumn   string
-	aliases     []values.CorrelationIdentifier
+	bitmapEntrySize int64
+	permuted        bool
+	indexName       string
+	recordTypes     []string
+	groupCols       []string
+	aggFunction     expressions.AggregateFunction
+	aggColumn       string
+	// groupPaths and aggPath are the columns' identities: the full field path
+	// each reads from the base (Java's expansion Values are FieldValues over
+	// these paths). groupCols and aggColumn are their labels, the leaf names.
+	groupPaths [][]string
+	aggPath    []string
+	aliases    []values.CorrelationIdentifier
 	// groupKeyTypes and physicalGroupingPrefixCount answer a SARGABILITY
 	// question — which grouping coordinates a scan range can bind, and how far
 	// the logical grouping columns stay a contiguous prefix of the physical
@@ -48,45 +56,6 @@ type AggregateIndexMatchCandidate struct {
 	// a descriptor: no single declared layout exists, and the claim then falls
 	// back to the fail-open direction the predicate documents.
 	baseRowType values.Type
-
-	// countsRows records that this index's stored value is the number of ROWS in
-	// the group — i.e. it is a COUNT(*) index (record-layer type `count`), not a
-	// COUNT(col) one (`count_not_null`). Both surface as AggCount with the same
-	// grouping, so the aggregate function alone cannot tell them apart, and the
-	// difference is decisive twice over (RFC-209):
-	//
-	//   - only a row count makes a stored zero mean "vacated group", because a
-	//     live group always has at least one row (§5.3(a)); and
-	//   - only a row count can serve as another index's group-existence
-	//     companion, because it never looks at the aggregated value and so never
-	//     drops a live group whose values are all NULL (§5.1).
-	//
-	// COUNT(col) is neither: an all-NULL live group legitimately answers 0.
-	countsRows bool
-
-	// groupingSignature is the normalized proto encoding of the index's GROUPING
-	// key expression — the leading, non-aggregated half of its root. Two
-	// aggregate indexes group identically iff their signatures are equal, which
-	// is how a group-existence companion is discovered STRUCTURALLY rather than
-	// through a stored reference (RFC-209 §5.2). nil when the signature could
-	// not be derived, which declines every companion match rather than guessing.
-	groupingSignature []byte
-
-	// predicateSignature is the normalized proto encoding of the index's SPARSE
-	// (WHERE) predicate, nil for a dense index. A companion must count exactly
-	// the rows the owner aggregated: a dense COUNT(*) over a sparse SUM lists
-	// groups holding no qualifying row, so driving the merge from it invents
-	// groups — the very over-approximation the companion exists to remove.
-	predicateSignature []byte
-
-	// needsGroupExistenceCompanion records that this index's own key set can
-	// neither prove nor disprove that a group exists, so a grouped query over it
-	// MUST be companion-joined or must not use the index at all (RFC-209
-	// §5.3(b)/(c)). True for a grouped SUM or COUNT(col); false for a COUNT(*)
-	// (its own oracle), for MIN/MAX (a real per-record entry the record's
-	// deletion removes), and for every ungrouped spelling (one group, which
-	// exists regardless).
-	needsGroupExistenceCompanion bool
 
 	traversalOnce sync.Once
 	traversal     *Traversal
@@ -145,17 +114,61 @@ func NewAggregateIndexMatchCandidate(
 	if physicalGroupingPrefixCount > len(groupCols) {
 		physicalGroupingPrefixCount = len(groupCols)
 	}
+	groupPaths := make([][]string, len(groupCols))
+	for i, name := range groupCols {
+		groupPaths[i] = []string{name}
+	}
+	var aggPath []string
+	if aggColumn != "" {
+		aggPath = []string{aggColumn}
+	}
 	return &AggregateIndexMatchCandidate{
 		indexName:                   indexName,
 		recordTypes:                 recordTypes,
 		groupCols:                   groupCols,
 		aggFunction:                 aggFunction,
 		aggColumn:                   aggColumn,
+		groupPaths:                  groupPaths,
+		aggPath:                     aggPath,
 		aliases:                     aliases,
 		baseRowType:                 baseRowType,
 		groupKeyTypes:               groupKeyTypes,
 		physicalGroupingPrefixCount: physicalGroupingPrefixCount,
 	}
+}
+
+// WithColumnPaths states the full field paths of the grouping columns and the
+// aggregated column, for an index whose columns read nested fields; each
+// path's leaf is the column's label. A path list that does not name every
+// labelled column leaves the top-level reading in place.
+func (c *AggregateIndexMatchCandidate) WithColumnPaths(groupPaths [][]string, aggPath []string) *AggregateIndexMatchCandidate {
+	if len(groupPaths) != len(c.groupPaths) || (len(aggPath) == 0) != (len(c.aggPath) == 0) {
+		return c
+	}
+	for _, path := range groupPaths {
+		if len(path) == 0 {
+			return c
+		}
+	}
+	c.groupPaths = make([][]string, len(groupPaths))
+	for i, path := range groupPaths {
+		c.groupPaths[i] = slices.Clone(path)
+	}
+	c.aggPath = slices.Clone(aggPath)
+	return c
+}
+
+// GetGroupColumnPaths returns each grouping column's full field path.
+func (c *AggregateIndexMatchCandidate) GetGroupColumnPaths() [][]string { return c.groupPaths }
+
+// GetAggColumnPath returns the aggregated column's full field path, nil for
+// COUNT(*).
+func (c *AggregateIndexMatchCandidate) GetAggColumnPath() []string { return c.aggPath }
+
+// WithPermutedOrdering records that the aggregate itself occupies a key coordinate.
+func (c *AggregateIndexMatchCandidate) WithPermutedOrdering(permuted bool) *AggregateIndexMatchCandidate {
+	c.permuted = permuted
+	return c
 }
 
 // GetBaseRowType returns the declared layout the grouping-column names resolve
@@ -194,46 +207,6 @@ func (c *AggregateIndexMatchCandidate) GetKeyComponentTypes() []values.Type {
 func (c *AggregateIndexMatchCandidate) GetPhysicalGroupingPrefixCount() int {
 	return c.physicalGroupingPrefixCount
 }
-
-// WithGroupExistence records the two structural facts RFC-209 needs about the
-// underlying index: whether its stored value counts ROWS (a COUNT(*) index),
-// and the normalized encoding of its grouping key expression. Both come from
-// the record-layer Index and are supplied by the candidate builder; see the
-// field docs for what each decides.
-func (c *AggregateIndexMatchCandidate) WithGroupExistence(countsRows bool, groupingSignature []byte) *AggregateIndexMatchCandidate {
-	c.countsRows = countsRows
-	c.groupingSignature = groupingSignature
-	return c
-}
-
-// WithGroupExistenceCompanionNeed records the remaining two facts: the index's
-// sparse-predicate signature (which a companion must match, or it counts a
-// different row population) and whether a grouped query over this index needs a
-// companion at all.
-func (c *AggregateIndexMatchCandidate) WithGroupExistenceCompanionNeed(
-	predicateSignature []byte, needsCompanion bool,
-) *AggregateIndexMatchCandidate {
-	c.predicateSignature = predicateSignature
-	c.needsGroupExistenceCompanion = needsCompanion
-	return c
-}
-
-// PredicateSignature returns the normalized encoding of the index's sparse
-// predicate, nil for a dense index.
-func (c *AggregateIndexMatchCandidate) PredicateSignature() []byte { return c.predicateSignature }
-
-// NeedsGroupExistenceCompanion reports whether a GROUPED query over this index
-// must be companion-joined to answer correctly.
-func (c *AggregateIndexMatchCandidate) NeedsGroupExistenceCompanion() bool {
-	return c.needsGroupExistenceCompanion && len(c.groupCols) > 0
-}
-
-// CountsRows reports whether the index's stored value is the group's row count.
-func (c *AggregateIndexMatchCandidate) CountsRows() bool { return c.countsRows }
-
-// GroupingSignature returns the normalized encoding of the grouping key
-// expression, or nil when it could not be derived.
-func (c *AggregateIndexMatchCandidate) GroupingSignature() []byte { return c.groupingSignature }
 
 func (c *AggregateIndexMatchCandidate) CandidateName() string { return c.indexName }
 
@@ -317,44 +290,11 @@ func (c *AggregateIndexMatchCandidate) ToScanPlan(
 }
 
 // MatchesGroupBy reports whether this aggregate index can directly satisfy
-// the given GroupByExpression. Returns true when:
-//   - The grouping keys match the index's groupCols
-//   - The GroupBy has exactly one aggregate that matches the index's function + column
+// the given GroupByExpression: its grouping keys are the index's grouping
+// columns, and its one aggregate is the index's function over its column.
 func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExpression) bool {
-	// Grouping subsumption is leaf-level (Java expands the grouping value
-	// via Values.primitiveAccessorsForType before matching,
-	// GroupByExpression.java:434): a RECORD-typed key contributes its
-	// primitive leaves, so it can never falsely name-match a candidate's
-	// scalar grouping column. Identity for all-primitive keys.
-	keys, err := expandGroupingKeysToPrimitives(gb.GetGroupingKeys())
-	if err != nil {
-		return false
-	}
-	if len(keys) != len(c.groupCols) {
-		return false
-	}
-	for i, k := range keys {
-		if !aggColumnMatches(k, c.groupCols[i]) {
-			return false
-		}
-	}
-
 	aggs := gb.GetAggregates()
-	if len(aggs) != 1 {
-		return false
-	}
-	if aggs[0].Function != c.aggFunction {
-		return false
-	}
-	if c.aggFunction == expressions.AggCount {
-		// Single source of truth for count-star (RFC-164 WS-3) — must match the
-		// executor's group cursors and the translator's normalization.
-		if expressions.IsCountStar(aggs[0]) {
-			return c.aggColumn == ""
-		}
-		return c.aggColumn != "" && aggColumnMatches(aggs[0].Operand, c.aggColumn)
-	}
-	return aggColumnMatches(aggs[0].Operand, c.aggColumn)
+	return len(aggs) == 1 && c.groupingKeysMatch(gb) && c.aggregateMatches(aggs[0])
 }
 
 // MatchesSingleAggregateOf reports whether this candidate's grouping
@@ -363,25 +303,38 @@ func (c *AggregateIndexMatchCandidate) MatchesGroupBy(gb *expressions.GroupByExp
 // intersection path: each candidate covers one aggregate while all
 // share the same grouping columns.
 func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.GroupByExpression, aggIndex int) bool {
-	// Same leaf-level matching as MatchesGroupBy (GroupByExpression.java:434).
-	keys, err := expandGroupingKeysToPrimitives(gb.GetGroupingKeys())
-	if err != nil {
-		return false
-	}
-	if len(keys) != len(c.groupCols) {
+	aggs := gb.GetAggregates()
+	return aggIndex >= 0 && aggIndex < len(aggs) && c.groupingKeysMatch(gb) && c.aggregateMatches(aggs[aggIndex])
+}
+
+// groupingKeysMatch is GroupByExpression.groupingSubsumedBy followed by the
+// pull-up of the query's grouping values from the candidate's result. The
+// subsumption is leaf-level: each grouping value is expanded to its primitive
+// accessors (Values.primitiveAccessorsForType) and the leaves are the
+// candidate's grouping columns, in order. The aggregate row then publishes
+// the GroupBy's grouping values slot for slot, so each must itself be one
+// candidate column: a RECORD-typed key is built from several, which the
+// result value cannot be pulled up through (Java plans no match for it).
+func (c *AggregateIndexMatchCandidate) groupingKeysMatch(gb *expressions.GroupByExpression) bool {
+	groupingKeys := gb.GetGroupingKeys()
+	keys, err := expandGroupingKeysToPrimitives(groupingKeys)
+	if err != nil || len(keys) != len(c.groupCols) {
 		return false
 	}
 	for i, k := range keys {
-		if !aggColumnMatches(k, c.groupCols[i]) {
+		if !c.groupKeyMatches(k, i) {
 			return false
 		}
 	}
-
-	aggs := gb.GetAggregates()
-	if aggIndex < 0 || aggIndex >= len(aggs) {
-		return false
+	for _, k := range groupingKeys {
+		if _, isRecord := k.Type().(*values.RecordType); isRecord {
+			return false
+		}
 	}
-	agg := aggs[aggIndex]
+	return len(groupingKeys) == len(keys)
+}
+
+func (c *AggregateIndexMatchCandidate) aggregateMatches(agg expressions.AggregateSpec) bool {
 	if agg.Function != c.aggFunction {
 		return false
 	}
@@ -389,24 +342,53 @@ func (c *AggregateIndexMatchCandidate) MatchesSingleAggregateOf(gb *expressions.
 		// Single source of truth for count-star (RFC-164 WS-3) — must match the
 		// executor's group cursors and the translator's normalization.
 		if expressions.IsCountStar(agg) {
-			return c.aggColumn == ""
+			return c.aggPath == nil
 		}
-		return c.aggColumn != "" && aggColumnMatches(agg.Operand, c.aggColumn)
+		return c.aggPath != nil && aggColumnMatches(agg.Operand, c.aggPath)
 	}
-	return aggColumnMatches(agg.Operand, c.aggColumn)
+	return c.aggregateOperandMatches(agg.Operand)
 }
 
 // aggColumnMatches reports whether a query grouping-key / aggregate-operand
-// value denotes the aggregate index's declared column `col` — by full accessor
-// PATH, not leaf name, so a nested `addr.city` grouping key never matches a
-// same-leaf-named top-level `city` aggregate index (RFC-187 S4/S5/S8). The
-// candidate carries single top-level column names today, so a multi-accessor
-// (nested) query path does not match and the query falls back to a base-record
-// StreamingAgg (correct rows, slower) — the transitional reject-nested until the
-// candidate exposes real nested column paths end-to-end (construction, index
-// expansion, and execution), tracked as the RFC-187 §3.2 follow-up.
-func aggColumnMatches(v values.Value, col string) bool {
-	return values.AccessorNamePathMatchesNames(v, []string{col})
+// value reads the candidate column at path — by the full accessor PATH, so a
+// nested `addr.city` and a top-level `city` are different columns (RFC-187
+// S4/S5/S8), as Java's FieldValues over the expansion's base are.
+func aggColumnMatches(v values.Value, path []string) bool {
+	return values.AccessorNamePathMatchesNames(v, path)
 }
 
 var _ MatchCandidate = (*AggregateIndexMatchCandidate)(nil)
+
+// WithBitmapEntrySize carries the two arithmetic expressions introduced by
+// Java BitmapAggregateIndexExpansionVisitor: bucket offset and bit position.
+func (c *AggregateIndexMatchCandidate) WithBitmapEntrySize(size int64) *AggregateIndexMatchCandidate {
+	c.bitmapEntrySize = size
+	return c
+}
+
+func (c *AggregateIndexMatchCandidate) groupKeyMatches(v values.Value, ordinal int) bool {
+	if c.bitmapEntrySize > 0 && ordinal == len(c.groupCols)-1 {
+		return c.bitmapArithmeticMatches(v, values.OpBitmapBucketOffset)
+	}
+	return aggColumnMatches(v, c.groupPaths[ordinal])
+}
+
+func (c *AggregateIndexMatchCandidate) aggregateOperandMatches(v values.Value) bool {
+	if c.bitmapEntrySize > 0 {
+		return c.bitmapArithmeticMatches(v, values.OpBitmapBitPosition)
+	}
+	return aggColumnMatches(v, c.aggPath)
+}
+
+func (c *AggregateIndexMatchCandidate) bitmapArithmeticMatches(v values.Value, op values.ArithmeticOp) bool {
+	arithmetic, ok := v.(*values.ArithmeticValue)
+	if !ok || arithmetic.Op != op || !aggColumnMatches(arithmetic.Left, c.aggPath) {
+		return false
+	}
+	size, ok := arithmetic.Right.(*values.ConstantValue)
+	if !ok {
+		return false
+	}
+	n, ok := size.Value.(int64)
+	return ok && n == c.bitmapEntrySize
+}

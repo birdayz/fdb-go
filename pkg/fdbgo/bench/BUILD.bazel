@@ -44,7 +44,10 @@ go_test(
         "interop_test.go",
     ],
     data = glob(["testdata/**"]),
-    tags = ["resources:memory:500"],
+    tags = [
+        "resources:memory:500",
+        "test-full",
+    ],
     deps = [
         "//pkg/dst",
         "//pkg/fdbgo/client",

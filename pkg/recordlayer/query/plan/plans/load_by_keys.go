@@ -148,7 +148,7 @@ func (p *RecordQueryLoadByKeysPlan) structuralKey() *structuralKey {
 // EqualsWithoutChildren compares the key sources.
 func (p *RecordQueryLoadByKeysPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryLoadByKeysPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mixes the type discriminator + key source
@@ -157,7 +157,7 @@ func (p *RecordQueryLoadByKeysPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("loadbykeysplan|")
+	hash := p.keyFor(p).Hash("loadbykeysplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

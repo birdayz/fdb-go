@@ -52,8 +52,8 @@ func TestDistanceValue_Type(t *testing.T) {
 	v := NewDistanceValue(DistanceEuclidean,
 		LiteralValue([]float64{1, 0, 0}),
 		LiteralValue([]float64{0, 1, 0}))
-	if !v.Type().Equals(NotNullDouble) {
-		t.Fatalf("Type = %v, want NotNullDouble", v.Type())
+	if !v.Type().Equals(NullableDouble) {
+		t.Fatalf("Type = %v, want NullableDouble", v.Type())
 	}
 }
 

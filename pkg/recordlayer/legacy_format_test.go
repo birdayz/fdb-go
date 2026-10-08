@@ -70,7 +70,7 @@ var _ = Describe("Legacy format compatibility", func() {
 		recSub := ss.Sub(RecordKey)
 		verSub := ss.Sub(RecordVersionKey)
 		for i, o := range orders {
-			data, serErr := serializeUnion(o, rt)
+			data, serErr := serializeUnionOver(o, rt, nil)
 			Expect(serErr).NotTo(HaveOccurred())
 			pk := tuple.Tuple{o.GetOrderId()}
 			if omit {
@@ -320,7 +320,7 @@ var _ = Describe("Legacy format compatibility", func() {
 				rt := md.GetRecordType("Order")
 				for i, id := range []int64{1, 2} {
 					o := order(id, int32(id*10))
-					data, _ := serializeUnion(o, rt)
+					data, _ := serializeUnionOver(o, rt, nil)
 					pk := tuple.Tuple{orderTypeKey, id}
 					tx.Set(fdb.Key(recSub.Pack(pk)), data)
 					ver, _ := NewCompleteVersion(completeGlobalFor(byte(i)), i)
@@ -520,14 +520,14 @@ var _ = Describe("Legacy format compatibility", func() {
 				rt := md.GetRecordType("Order")
 
 				// small record at pk+0 (unsplit-but-suffixed, because the store splits)
-				sd, sErr := serializeUnion(small, rt)
+				sd, sErr := serializeUnionOver(small, rt, nil)
 				Expect(sErr).NotTo(HaveOccurred())
 				tx.Set(fdb.Key(recSub.Pack(appendToTuple(tuple.Tuple{int64(1)}, unsplitRecord))), sd)
 				v1, _ := NewCompleteVersion(completeGlobalFor(0), 0)
 				tx.Set(fdb.Key(verSub.Pack(tuple.Tuple{int64(1)})), v1.ToBytes())
 
 				// big record split across pk+1, pk+2, ...
-				bd, bErr := serializeUnion(big, rt)
+				bd, bErr := serializeUnionOver(big, rt, nil)
 				Expect(bErr).NotTo(HaveOccurred())
 				Expect(len(bd)).To(BeNumerically(">", splitRecordSize))
 				idx := startSplitRecord

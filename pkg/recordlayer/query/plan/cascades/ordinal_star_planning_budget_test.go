@@ -64,14 +64,10 @@ func buildOrdinalStar(t testing.TB, n int) *expressions.SelectExpression {
 // starWallClockCeiling is a DELIBERATELY GENEROUS bound — a catastrophe
 // detector, not a micro-benchmark.
 //
-// Observed ~265ms at 13226 tasks on a 24-thread box, i.e. ~19x headroom. The
-// figure this comment used to carry, ~90ms at ~55x, was measured before RFC-232
-// took the sentinel from 9481 tasks to 13226 and was never re-taken; it is
-// recorded here with the task count it belongs to so the next change can see it
-// go stale rather than inherit a number from a search that no longer exists.
-// (Checked against this specific change: the memo's exact admission moved the
-// figure from 263/270ms to 261ms — inside the noise, because admission runs
-// once per NEW group rather than per memoize call.)
+// Observed ~75-85ms at 2093 tasks on a 24-thread box (2026-10-01), i.e.
+// ~60x headroom; ~265ms at the earlier 13226-task sentinel. Recorded with the
+// task count it belongs to so the next change can see it go stale rather than
+// inherit a number from a search that no longer exists.
 //
 // Its job is
 // to catch a per-Insert bijection-enumeration blowup (e.g. a MemoEqual that
@@ -88,11 +84,11 @@ const starWallClockCeiling = 5 * time.Second
 // spokes, 4-way, every spoke live) four ways:
 //
 //   - CONVERGES (no MaxTasks cap) — a count-level interning regression that
-//     re-explodes shared sub-products blows past the 100k budget (measured at
-//     HEAD: hub+4 is the widest all-live star that still converges, at ~67k
-//     tasks; hub+5 exhausts the budget — see TestOrdinalStarRightDeepBudget).
-//   - task-count == 13226 ±2% — the STAR-topology search/admission sentinel,
-//     complementing the CHAIN baseline (1484/10965): a different topology
+//     re-explodes shared sub-products blows past the 100k budget (measured
+//     2026-10-01: hub+4 is the widest all-live star that still converges, at
+//     12,860 tasks; hub+5 exhausts the budget — see TestOrdinalStarRightDeepBudget).
+//   - task-count == 2379 ±2% — the STAR-topology search/admission sentinel,
+//     complementing the CHAIN baseline (546/2219): a different topology
 //     stresses structurally-identical sub-product proposals differently.
 //     IsOrdinalJoinRV admitting bare TYPED QOV fields keeps the
 //     post-translation MIXED upper RVs (ofOrdinal-over-merge alongside bare leg
@@ -138,7 +134,19 @@ func TestOrdinalStarPlanningBudget(t *testing.T) {
 	// the exact runtime binding cannot execute. Disabling only that predicate
 	// rebuild restores 13550 and reproduces the executor.layout mismatch; the
 	// enabled count is deterministic and retains the same star topology.
-	const wantTasks = 13226
+	// Match-driven unions and duplicate-yield suppression avoid idle tasks.
+	// The normalized hub range spans all spokes; eligible spanning predicates
+	// now form correlated lower partitions instead of always remaining upper.
+	// Impossible root patterns, inputless work, and completed pins enqueue no idle tasks.
+	// Subsumed SELECT orderings enqueue no transform (see TestSelectOrderingAdmissionPreservesJoinExploration).
+	// A member differing from another only in a planner merge alias is that
+	// member (ExactReplica): 6488→2093. A filter over one same-typed leg no
+	// longer claims another leg's pinned outer read as its own row: 2093→2087.
+	// Partitioning splits the merged hub range per spoke, so each spoke's part
+	// can be placed on its own: 2087→2559. A re-exploration re-queues only
+	// the rules whose declared constraint changed (Java's dependency gate,
+	// RFC-257 WS-F D2): 2559→2379.
+	const wantTasks = 2379
 	tol := wantTasks / 50 // ±2%
 
 	best := time.Hour

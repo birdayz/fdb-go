@@ -226,3 +226,48 @@ func TestFilterMergeRule_PredicateOrderPreserved(t *testing.T) {
 		t.Fatal("merged inner is not the original f3 filter")
 	}
 }
+
+func TestFilterToLogicalUnionRule(t *testing.T) {
+	t.Parallel()
+	q := expressions.ForEachQuantifier(expressions.InitialOf(filterRuleScan("T")))
+	pred := qFieldPred(t, q, "x", predicates.Comparison{Type: predicates.ComparisonIsNotNull})
+	f := filterRuleFilter([]predicates.QueryPredicate{pred}, q)
+	out, err := FireExpressionRule(NewFilterToLogicalUnionRule(), expressions.InitialOf(f))
+	if err != nil || len(out) != 0 {
+		t.Fatalf("atomic filter gained a redundant access-path population: %v %v", out, err)
+	}
+	other := qFieldPred(t, q, "a", predicates.Comparison{Type: predicates.ComparisonIsNotNull})
+	disjunction := predicates.NewOr(pred, other)
+	filterRef := expressions.InitialOf(filterRuleFilter([]predicates.QueryPredicate{disjunction}, q))
+	out, err = FireExpressionRule(NewFilterToLogicalUnionRule(), filterRef)
+	if err != nil || len(out) != 0 {
+		t.Fatalf("unmatched OR explored: %v %v", out, err)
+	}
+	flowed, err := q.RequireFlowedObjectValue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parameter := values.UniqueCorrelationIdentifier()
+	candidateSelect := mustMatchSelect(t, flowed, []expressions.Quantifier{q}, []predicates.QueryPredicate{predicates.NewPlaceholder(parameter, pred.Operand)})
+	candidate := NewPrimaryScanMatchCandidate(NewTraversal(expressions.InitialOf(candidateSelect)), []values.CorrelationIdentifier{parameter}, []string{"T"}, []string{"T"}, []string{"x"}, true, flowed.Type())
+	ctx := testPlanContextForMatching{candidates: []MatchCandidate{candidate}}
+	mustFireExpressionRuleWithMemo(t, NewMatchLeafRule(), q.GetRangesOver(), ctx, nil)
+	mustFireExpressionRuleWithMemo(t, NewMatchIntermediateRule(), filterRef, ctx, nil)
+	out, err = FireExpressionRule(NewFilterToLogicalUnionRule(), filterRef)
+	if err != nil || len(out) != 1 {
+		t.Fatalf("disjunction lost union exploration: %v %v", out, err)
+	}
+	unique, ok := out[0].(*expressions.LogicalUniqueExpression)
+	if !ok {
+		t.Fatalf("adapter published %T instead of the deduplicated union alternative", out[0])
+	}
+	if _, ok := unique.GetQuantifiers()[0].GetRangesOver().Get().(*expressions.LogicalUnionExpression); !ok {
+		t.Fatal("disjunctive alternative does not contain a union")
+	}
+	for _, ps := range [][]predicates.QueryPredicate{nil, {predicates.NewConstantPredicate(predicates.TriTrue)}} {
+		out, err := FireExpressionRule(NewFilterToLogicalUnionRule(), expressions.InitialOf(filterRuleFilter(ps, q)))
+		if err != nil || len(out) != 0 {
+			t.Fatalf("vacuous filter explored: %v %v", out, err)
+		}
+	}
+}

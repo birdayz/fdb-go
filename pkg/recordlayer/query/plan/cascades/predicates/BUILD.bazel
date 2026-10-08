@@ -11,11 +11,13 @@ go_library(
         "distance_rank_transform.go",
         "existential_value_predicate.go",
         "leaf_query_predicate.go",
+        "partition.go",
         "placeholder.go",
         "predicate_correlation.go",
         "predicate_with_value_and_ranges.go",
         "predicates.go",
         "range_constraints.go",
+        "range_enclosure.go",
         "rebase.go",
         "replace_values.go",
         "semantic_equals.go",
@@ -29,8 +31,8 @@ go_library(
     importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/predicates",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/recordlayer/query/plan/cascades/internal/fnv64",
         "//pkg/recordlayer/query/plan/cascades/values",
-        "//pkg/relational/core/functions",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
     ],
@@ -47,22 +49,28 @@ go_test(
         "comparisons_null_table_test.go",
         "comparisons_test.go",
         "distance_rank_transform_test.go",
+        "effective_constant_test.go",
         "eval_must_test.go",
         "existential_value_predicate_test.go",
         "explain_fallback_identity_test.go",
         "fuzz_test.go",
         "leaf_query_predicate_test.go",
         "new_predicates_test.go",
+        "partition_test.go",
         "placeholder_test.go",
         "predicates_equivalence_test.go",
         "predicates_test.go",
         "predrow_test.go",
+        "range_compile_time_test.go",
         "range_constraints_rebuild_test.go",
+        "range_enclosure_test.go",
+        "range_semantic_equality_test.go",
         "rebase_fail_closed_test.go",
         "rebase_test.go",
         "scan_range_classification_test.go",
         "semantic_equals_test.go",
         "semantic_hash_invariant_test.go",
+        "semantic_hasher_test.go",
         "simplifier_predicate_values_test.go",
         "structural_equal_test.go",
         "tautology_test.go",
@@ -72,15 +80,4 @@ go_test(
     ],
     embed = [":predicates"],
     deps = ["//pkg/recordlayer/query/plan/cascades/values"],
-)
-
-# keep: staged as `data` for //pkg/docscheck's memo-hash census, which asks a
-# SOURCE question — "does any type here define HashCodeWithoutChildren" — that Go
-# cannot answer at runtime, since an interface's implementations are not
-# enumerable. Without these files staged the census reads an absent directory;
-# its file-count floor is what turns that into a failure instead of a pass.
-filegroup(
-    name = "predicates_sources",
-    srcs = glob(["*.go"]),
-    visibility = ["//visibility:public"],
 )

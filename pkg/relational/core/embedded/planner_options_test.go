@@ -10,6 +10,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
@@ -81,6 +82,19 @@ func explainWithOptions(t *testing.T, sql, schemaDDL string, opts *api.Options) 
 	return plan.Explain()
 }
 
+// explainWithResult is the plan's explain followed by its root result value, in
+// the stable correlation namespace plan explains use. A block's columns are the
+// root's own result when the block folds into a join or flat-map, so a test
+// pinning which slot a column reads must look there.
+func explainWithResult(t *testing.T, sql, schemaDDL string) string {
+	t.Helper()
+	plan, _, err := planWithOptions(t, sql, schemaDDL, nil)
+	if err != nil {
+		t.Fatalf("planning %q: %v", sql, err)
+	}
+	return plan.Explain() + " => " + values.ExplainPlanValues([]values.Value{plan.GetResultValue()})[0]
+}
+
 // indexedTableDDL gives the planner a real access-path choice: without index
 // matching, `WHERE a = ?` can only be a full scan plus a residual filter.
 const indexedTableDDL = `CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, c STRING, PRIMARY KEY (id))
@@ -95,14 +109,15 @@ CREATE TABLE S1 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
 CREATE TABLE S2 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
 CREATE TABLE S3 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
 CREATE TABLE S4 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
-CREATE TABLE S5 (id BIGINT, hid BIGINT, PRIMARY KEY (id))`
+CREATE TABLE S5 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
+CREATE TABLE S6 (id BIGINT, hid BIGINT, PRIMARY KEY (id))`
 
-// fiveSpokeStarSQL is the hub+5 all-live star. Its Cascades twin
-// (buildOrdinalStar(5)) is the narrowest all-live star that exhausts the
-// embedded planner task budget at default settings.
-const fiveSpokeStarSQL = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id " +
-	"FROM H, S1, S2, S3, S4, S5 " +
-	"WHERE H.id = S1.hid AND H.id = S2.hid AND H.id = S3.hid AND H.id = S4.hid AND H.id = S5.hid"
+// sixSpokeStarSQL is the hub+6 all-live star, the narrowest all-live star that
+// exhausts the embedded planner task budget at default settings (hub+5
+// converges in ~130k of 150k tasks).
+const sixSpokeStarSQL = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id, S6.id " +
+	"FROM H, S1, S2, S3, S4, S5, S6 " +
+	"WHERE H.id = S1.hid AND H.id = S2.hid AND H.id = S3.hid AND H.id = S4.hid AND H.id = S5.hid AND H.id = S6.hid"
 
 // TestPlannerOptions_PlanRightDeep pins PLAN_RIGHT_DEEP end to end from
 // api.Options to the join enumeration, on the shape CQ-9 named: an all-live
@@ -112,17 +127,17 @@ const fiveSpokeStarSQL = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id " +
 func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 	t.Parallel()
 
-	_, tasks, err := planWithOptions(t, fiveSpokeStarSQL, starJoinDDL, nil)
+	_, tasks, err := planWithOptions(t, sixSpokeStarSQL, starJoinDDL, nil)
 	if !errors.Is(err, cascades.ErrPlannerCapHit) {
-		t.Fatalf("hub+5 star at default options: err=%v (tasks=%d), want the task cap — "+
+		t.Fatalf("hub+6 star at default options: err=%v (tasks=%d), want the task cap — "+
 			"if the budget now covers this shape, widen the star rather than weakening the test",
 			err, tasks)
 	}
 
 	rightDeep := api.NewOptionsBuilder().Set(api.OptPlanRightDeep, true).Build()
-	plan, rdTasks, rdErr := planWithOptions(t, fiveSpokeStarSQL, starJoinDDL, rightDeep)
+	plan, rdTasks, rdErr := planWithOptions(t, sixSpokeStarSQL, starJoinDDL, rightDeep)
 	if rdErr != nil {
-		t.Fatalf("hub+5 star with PLAN_RIGHT_DEEP: %v (tasks=%d) — the option is not reaching "+
+		t.Fatalf("hub+6 star with PLAN_RIGHT_DEEP: %v (tasks=%d) — the option is not reaching "+
 			"PartitionSelectRule", rdErr, rdTasks)
 	}
 	if plan == nil {
@@ -131,24 +146,32 @@ func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 	if rdTasks >= embeddedRightDeepPlannerMaxTasks {
 		t.Fatalf("PLAN_RIGHT_DEEP tasks=%d is not under the %d cap", rdTasks, embeddedRightDeepPlannerMaxTasks)
 	}
-	// THE CAP IS A CLIFF, NOT A GAUGE. The check above still passes at 249,999
-	// — one commit before this mode stops converging at all — so it cannot warn
-	// while there is still room to act. The band below watches the CONSUMPTION.
-	//
-	// Population: the hub+5 all-live star above (fiveSpokeStarSQL over
-	// starJoinDDL), PLAN_RIGHT_DEEP on, default rule set, measured at 173542 —
-	// 69% of the 250k ceiling, i.e. 1.44x headroom. That is the number to
-	// re-measure when this fails; do not widen the band to make it pass.
-	//
-	// Both directions are alarms, for different reasons. GROWTH means the search
-	// is eating the remaining 30% and the tier needs a decision before it is
-	// gone. COLLAPSE means either a genuine win worth re-baselining or that this
-	// star stopped being all-live — a spoke that can be pruned makes the whole
-	// test a much weaker statement while still reporting green.
-	const rightDeepObservedTasks = 173542
+	tables := make(map[string]bool)
+	var visit func(plans.RecordQueryPlan)
+	visit = func(node plans.RecordQueryPlan) {
+		if leaf, ok := node.(interface{ GetRecordTypes() []string }); ok && len(node.GetChildren()) == 0 {
+			for _, name := range leaf.GetRecordTypes() {
+				tables[name] = true
+			}
+		}
+		for _, child := range node.GetChildren() {
+			visit(child)
+		}
+	}
+	visit(plan)
+	for _, name := range []string{"H", "S1", "S2", "S3", "S4", "S5", "S6"} {
+		if !tables[name] {
+			t.Fatalf("all-live star lost table %s: %s", name, plan.Explain())
+		}
+	}
+	// Keep both growth and collapse alarms over the hub+6 all-live population.
+	// 9308→7071: a re-exploration re-queues only the rules whose declared
+	// constraint changed (Java's dependency gate, RFC-257 WS-F D2); the table
+	// check above confirms the star is still all-live.
+	const rightDeepObservedTasks = 7071
 	rdTol := rightDeepObservedTasks / 50 // +/-2%, matching the Cascades-level star sentinel
 	if rdTasks < rightDeepObservedTasks-rdTol || rdTasks > rightDeepObservedTasks+rdTol {
-		t.Errorf("PLAN_RIGHT_DEEP tasks=%d, want %d +/-2%% ([%d,%d]) over the hub+5 all-live star. "+
+		t.Errorf("PLAN_RIGHT_DEEP tasks=%d, want %d +/-2%% ([%d,%d]) over the hub+6 all-live star. "+
 			"Above the band: consumption is climbing toward the %d ceiling (%.0f%% used at the "+
 			"baseline, %.0f%% now) — re-measure and decide the tier, do not widen this. Below it: "+
 			"re-baseline if the search genuinely shrank, but first check the star is still all-live.",
@@ -157,12 +180,12 @@ func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 			100*float64(rightDeepObservedTasks)/float64(embeddedRightDeepPlannerMaxTasks),
 			100*float64(rdTasks)/float64(embeddedRightDeepPlannerMaxTasks))
 	}
-	t.Logf("hub+5 star: default CAPS; PLAN_RIGHT_DEEP converges in %d tasks (%.0f%% of the %d ceiling)",
+	t.Logf("hub+6 star: default CAPS; PLAN_RIGHT_DEEP converges in %d tasks (%.0f%% of the %d ceiling)",
 		rdTasks, 100*float64(rdTasks)/float64(embeddedRightDeepPlannerMaxTasks), embeddedRightDeepPlannerMaxTasks)
 
 	// Explicit false must behave exactly like unset — the default is
 	// Java-identical and setting it must not be a way to change it.
-	if _, _, offErr := planWithOptions(t, fiveSpokeStarSQL, starJoinDDL,
+	if _, _, offErr := planWithOptions(t, sixSpokeStarSQL, starJoinDDL,
 		api.NewOptionsBuilder().Set(api.OptPlanRightDeep, false).Build()); !errors.Is(offErr, cascades.ErrPlannerCapHit) {
 		t.Fatalf("PLAN_RIGHT_DEEP=false: err=%v, want the same cap the unset default hits", offErr)
 	}
@@ -184,7 +207,7 @@ func TestPlannerOptions_DisabledPlannerRules(t *testing.T) {
 	// A bare IndexScan IS a fetching scan since RFC-220 (Java semantics), and
 	// MergeFetchIntoCoveringIndexRule collapses Fetch(Covering(Index)) into it.
 	// The fixture still starts from an INDEX plan, which is all the contrast needs.
-	const wantBase = "Project([_current.ID#0, _current.C#3], IndexScan(IDX_A, [=]))"
+	const wantBase = "Map(IndexScan(IDX_A, [=]), {ID: _current.ID#0, C: _current.C#3})"
 	if base != wantBase {
 		t.Fatalf("default plan = %q, want %q — the fixture must start from an INDEX plan for "+
 			"the disabled-rule contrast to mean anything", base, wantBase)
@@ -193,7 +216,7 @@ func TestPlannerOptions_DisabledPlannerRules(t *testing.T) {
 	disabled := api.NewOptionsBuilder().
 		Set(api.OptDisabledPlannerRules, []string{"MatchLeafRule"}).Build()
 	got := explainWithOptions(t, sql, indexedTableDDL, disabled)
-	const wantDisabled = "Project([_current.ID#0, _current.C#3], PredicatesFilter(Scan(T), [1 preds]))"
+	const wantDisabled = "Map(PredicatesFilter(Scan(T), [1 preds]), {ID: _current.ID#0, C: _current.C#3})"
 	if got != wantDisabled {
 		t.Fatalf("with MatchLeafRule disabled, plan = %q, want %q — the option is accepted and "+
 			"ignored if the plan is unchanged", got, wantDisabled)
@@ -299,8 +322,11 @@ func TestPlannerOptions_DisablePlannerRewriting(t *testing.T) {
 		// refused at memo admission for carrying a differently-NAMED row, a
 		// rejection that went away when record names left exact-type identity.
 		// The fixture's point is the SHAPE (a rewritten outer join: FlatMap over a
-		// DefaultOnEmpty index probe), which is unchanged.
-		const wantBase = "Project([_current.ID#0], FlatMap(outer=Scan(T), inner=DefaultOnEmpty(IndexScan(IDX_A, [=]))))"
+		// DefaultOnEmpty index probe), which is unchanged. The preserved leg is
+		// a full IDX_A scan: its match climbs to the candidate's MatchableSort
+		// as Java's does (SelectExpression.adjustMatch), and Java's own plan
+		// for this shape is ISCAN(..) | FLATMAP (WS-F w6_left_join_indexed).
+		const wantBase = "FlatMap(outer=IndexScan(IDX_A, [*]), inner=DefaultOnEmpty(IndexScan(IDX_A, [=])))"
 		if base != wantBase {
 			t.Fatalf("default plan = %q, want %q — the fixture must start from the REWRITTEN "+
 				"outer join for the contrast to mean anything", base, wantBase)
@@ -308,7 +334,7 @@ func TestPlannerOptions_DisablePlannerRewriting(t *testing.T) {
 
 		off := api.NewOptionsBuilder().Set(api.OptDisablePlannerRewriting, true).Build()
 		got := explainWithOptions(t, sql, indexedTableDDL, off)
-		const wantOff = "Project([_current.ID#0], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(T), Scan(T)))"
+		const wantOff = "NestedLoopJoin(LEFT OUTER, [1 preds], IndexScan(IDX_A, [*]), IndexScan(IDX_A, [*]))"
 		if got != wantOff {
 			t.Fatalf("with rewriting disabled, plan = %q, want %q — the option is accepted and "+
 				"ignored if the plan is unchanged", got, wantOff)
@@ -348,13 +374,11 @@ func TestPlannerOptions_Defaults(t *testing.T) {
 		if len(po.disabledRules) != 0 {
 			t.Errorf("%s: disabled rules = %v, want none", name, po.disabledRules)
 		}
-		// reflect.DeepEqual, not ==: PlannerConfiguration carries the
-		// readable-index view, which holds a set and so makes the struct
-		// non-comparable. That is deliberate — a set is the right shape for an
-		// allow-list — and a stray `==` on the config now fails to compile
-		// rather than comparing a pointer-ish field by accident.
-		if !reflect.DeepEqual(po.config, cascades.DefaultPlannerConfiguration()) {
-			t.Errorf("%s: config = %+v, want the Cascades default", name, po.config)
+		want := cascades.DefaultPlannerConfiguration()
+		want.IndexScanPreference = cascades.PreferIndex // Java's SQL configuration
+		want.AttemptFailedInJoinAsUnionMaxSize = 24     // PlannerConfiguration.java:161
+		if !reflect.DeepEqual(po.config, want) {
+			t.Errorf("%s: config = %+v, want %+v", name, po.config, want)
 		}
 		if po.config.ShouldJoinRightDeep {
 			t.Errorf("%s: right-deep must default OFF (Java's JOIN_RIGHT_DEEP_MASK is unset)", name)
@@ -497,14 +521,24 @@ func TestPlannerOptions_CacheKeyPart(t *testing.T) {
 	both := part(api.NewOptionsBuilder().
 		Set(api.OptPlanRightDeep, true).
 		Set(api.OptDisabledPlannerRules, []string{"MatchLeafRule"}))
+	// VECTOR_INDEX_ENGINE_PREFERENCE is part of Java's PlannerConfiguration
+	// equality and hash (PlannerConfiguration.java:131,153), so each preference
+	// keys its own plans; NO_PREFERENCE is the default's key.
+	preferHNSW := part(api.NewOptionsBuilder().Set(api.OptVectorIndexEnginePreference, api.VectorIndexPreferHNSW))
+	preferGuardiann := part(api.NewOptionsBuilder().Set(api.OptVectorIndexEnginePreference, api.VectorIndexPreferGuardiann))
+	if noPreference := part(api.NewOptionsBuilder().Set(api.OptVectorIndexEnginePreference, api.VectorIndexNoPreference)); noPreference != base {
+		t.Fatalf("NO_PREFERENCE keys %q, want the default's %q", noPreference, base)
+	}
 
 	seen := map[string]string{}
 	for label, got := range map[string]string{
-		"default":    base,
-		"right-deep": rightDeep,
-		"one rule":   oneRule,
-		"no rewrite": noRewrite,
-		"both":       both,
+		"default":          base,
+		"right-deep":       rightDeep,
+		"one rule":         oneRule,
+		"no rewrite":       noRewrite,
+		"both":             both,
+		"prefer hnsw":      preferHNSW,
+		"prefer guardiann": preferGuardiann,
 	} {
 		if prev, dup := seen[got]; dup {
 			t.Fatalf("%q and %q share cache key part %q — one would serve the other's plan", label, prev, got)

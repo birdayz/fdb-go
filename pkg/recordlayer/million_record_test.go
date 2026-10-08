@@ -3,7 +3,6 @@ package recordlayer
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -15,9 +14,6 @@ import (
 
 var _ = Describe("MillionRecordScan", func() {
 	It("scans 1M records across multiple transactions", Serial, Label("manual"), func() {
-		if os.Getenv("RUN_MILLION_RECORD_TEST") == "" {
-			Skip("set RUN_MILLION_RECORD_TEST=1 to run")
-		}
 		ctx := context.Background()
 
 		const numRecords = 1_000_000

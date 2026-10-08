@@ -1,0 +1,24 @@
+# exists_multivalued_version_index.yaml
+#
+# An EXISTS over a repeated field matches a multi-valued index whose key follows
+# the exploded element with the record version: the expansion visitor builds the
+# version column as the __ROW_VERSION field of the base (VersionKeyExpression.
+# toValue), so the index is a candidate and the element equality binds it. The
+# rows arrive in version order, as in Java's versions-tests.yamsql (line 454).
+name: exists_multivalued_version_index
+schema_template: |
+  CREATE TABLE t4 (id BIGINT, col1 STRING, col4 BIGINT ARRAY, PRIMARY KEY (id))
+  CREATE INDEX t4_col4_version AS SELECT "e", "__ROW_VERSION" FROM t4 AS t, t.col4 AS "e" ORDER BY "e", "__ROW_VERSION"
+  WITH OPTIONS (store_row_versions=true)
+setup:
+  - INSERT INTO t4 VALUES (9, 'a', [3]), (11, 'b', [1, 3]), (13, 'a', [2, 3]), (15, 'b', [1])
+  - INSERT INTO t4 VALUES (4, 'b', [3, 4]), (6, 'a', [1, 3, 4]), (8, 'b', [2])
+tests:
+  - query: SELECT id, col1 FROM t4 WHERE EXISTS (SELECT 1 FROM t4.col4 WHERE col4 = 3)
+    plan_contains: "IndexScan(T4_COL4_VERSION, [=, *]"
+    rows:
+      - [9, a]
+      - [11, b]
+      - [13, a]
+      - [4, b]
+      - [6, a]

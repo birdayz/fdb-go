@@ -57,9 +57,9 @@ func TestWholeRowIdentityProjectionIsRejectedAtAdmission(t *testing.T) {
 	t.Parallel()
 	_, q := projectionElimScanQ()
 	root := mustProjectionElimConstruct(q.RequireFlowedObjectValue())
-	p, err := expressions.NewLogicalProjectionExpression([]values.Value{root}, q)
+	p, err := values.ProjectionResultValueForOutputSchema([]values.Value{root}, nil, nil)
 	if !errors.Is(err, values.ErrWholeRowProjection) || p != nil {
-		t.Fatalf("whole-row identity projection = %T, %v; want ErrWholeRowProjection", p, err)
+		t.Fatalf("whole-row identity projection = %v, %v; want ErrWholeRowProjection", p, err)
 	}
 }
 
@@ -67,13 +67,9 @@ func TestWholeRowIdentityProjectionWithAnExplicitEmptyAliasIsRejectedToo(t *test
 	t.Parallel()
 	_, q := projectionElimScanQ()
 	root := mustProjectionElimConstruct(q.RequireFlowedObjectValue())
-	p, err := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{root},
-		[]string{""},
-		q,
-	)
+	p, err := values.ProjectionResultValueForOutputSchema([]values.Value{root}, []string{""}, nil)
 	if !errors.Is(err, values.ErrWholeRowProjection) || p != nil {
-		t.Fatalf("empty-alias whole-row projection = %T, %v; want ErrWholeRowProjection", p, err)
+		t.Fatalf("empty-alias whole-row projection = %v, %v; want ErrWholeRowProjection", p, err)
 	}
 }
 

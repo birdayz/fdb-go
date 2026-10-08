@@ -16,6 +16,11 @@ import (
 // (AbstractDataAccessRule: realizedAlias -> TranslationMap.ofAliases(candidateTopAlias, realizedAlias)).
 type TranslationMapFunc func(realizedAlias values.CorrelationIdentifier) TranslationMap
 
+// Memoizer places logical intermediates in shared groups and physical plans in fresh final groups.
+type Memoizer interface {
+	MemoizeUnknownExpression(expressions.RelationalExpression) *expressions.Reference
+}
+
 // ---------------------------------------------------------------------------
 // Compensation interface
 // ---------------------------------------------------------------------------
@@ -1005,6 +1010,7 @@ func compensationIsPreFinalNeeded(compensation Compensation) bool {
 // including the else-branch (multi-join compensation with unmatched
 // ForEach quantifiers pulled up into a new SelectExpression).
 func (c *ForMatchCompensation) Apply(
+	memoizer Memoizer,
 	expr expressions.RelationalExpression,
 	translationMapFunc TranslationMapFunc,
 ) (expressions.RelationalExpression, bool) {
@@ -1022,7 +1028,7 @@ func (c *ForMatchCompensation) Apply(
 		if !ok {
 			return nil, false
 		}
-		expr, ok = child.Apply(expr, translationMapFunc)
+		expr, ok = child.Apply(memoizer, expr, translationMapFunc)
 		if !ok {
 			return nil, false
 		}
@@ -1094,7 +1100,7 @@ func (c *ForMatchCompensation) Apply(
 		// matchedForEachAlias)). The residual predicates already reference this
 		// alias for scan-record columns, and the surrounding graph correlates to
 		// it, so reusing it keeps both linkages intact.
-		newBaseQ := newCompensationBaseQuantifier(matchedForEachAlias, expr)
+		newBaseQ := expressions.NamedForEachQuantifier(matchedForEachAlias, memoizer.MemoizeUnknownExpression(expr))
 
 		if len(toBePulledUp) == 0 {
 			// Then-branch: simple filter, no join needed.
@@ -1132,7 +1138,7 @@ func (c *ForMatchCompensation) Apply(
 		// Distinct belongs after every child and local residual filter, but
 		// before ApplyFinal reshapes the row and can hide its primary key.
 		unique, err := expressions.NewRequiredLogicalUniqueExpression(
-			newCompensationBaseQuantifier(matchedForEachAlias, expr),
+			expressions.NamedForEachQuantifier(matchedForEachAlias, memoizer.MemoizeUnknownExpression(expr)),
 		)
 		if err != nil {
 			return nil, false
@@ -1151,6 +1157,7 @@ func (c *ForMatchCompensation) Apply(
 // uses GraphExpansion.builder().addQuantifier(base).build()
 // .buildSelectWithResultValue(resultValue).
 func (c *ForMatchCompensation) ApplyFinal(
+	memoizer Memoizer,
 	expr expressions.RelationalExpression,
 	translationMapFunc TranslationMapFunc,
 ) (expressions.RelationalExpression, bool) {
@@ -1175,7 +1182,7 @@ func (c *ForMatchCompensation) ApplyFinal(
 	// Reuse the matched query-side ForEach alias for the realized base
 	// quantifier (Java: Quantifier.forEach(ref, matchedForEachAlias)), so the
 	// translated result value (keyed to that alias) resolves against it.
-	newBaseQ := newCompensationBaseQuantifier(matchedForEachAlias, expr)
+	newBaseQ := expressions.NamedForEachQuantifier(matchedForEachAlias, memoizer.MemoizeUnknownExpression(expr))
 	builder := NewGraphExpansionBuilder()
 	builder.AddQuantifier(newBaseQ)
 	expansion := builder.Build()
@@ -1194,6 +1201,7 @@ func (c *ForMatchCompensation) ApplyFinal(
 //
 // Ports Java's Compensation.applyAllNeededCompensations.
 func (c *ForMatchCompensation) ApplyAllNeeded(
+	memoizer Memoizer,
 	expr expressions.RelationalExpression,
 	translationMapFunc TranslationMapFunc,
 ) (expressions.RelationalExpression, bool) {
@@ -1202,43 +1210,18 @@ func (c *ForMatchCompensation) ApplyAllNeeded(
 	}
 	var ok bool
 	if c.isPreFinalNeeded() {
-		expr, ok = c.Apply(expr, translationMapFunc)
+		expr, ok = c.Apply(memoizer, expr, translationMapFunc)
 		if !ok {
 			return nil, false
 		}
 	}
 	if c.IsFinalNeeded() {
-		expr, ok = c.ApplyFinal(expr, translationMapFunc)
+		expr, ok = c.ApplyFinal(memoizer, expr, translationMapFunc)
 		if !ok {
 			return nil, false
 		}
 	}
 	return expr, true
-}
-
-// newCompensationBaseQuantifier builds the ForEach quantifier that the
-// compensation expression ranges over, on the matched query-side ForEach alias
-// (Java Quantifier.forEach(ref, matchedForEachAlias)) so the compensated
-// predicates and the surrounding query graph keep resolving against the same
-// alias.
-//
-// There is deliberately no fresh-alias fallback. The alias is not a detail the
-// compensation may choose — it is the name the rest of the graph already uses
-// to reach these rows, so a substitute silently detaches them. Callers get the
-// alias from MatchedForEachAliasMaybe and bail when it is not well-defined.
-func newCompensationBaseQuantifier(matchedForEachAlias values.CorrelationIdentifier, expr expressions.RelationalExpression) expressions.Quantifier {
-	ref := expressions.InitialOf(expr)
-	if isPhysical(expr) {
-		// Java's compensation memoizer receives a realized plan and memoizes it
-		// as a FINAL child. Keeping a physical scan in the exploratory set
-		// strands enforcers such as required LogicalUnique: its implementation
-		// rule reads physical child partitions/properties, sees none, and the
-		// fanout match loses to the fallback table scan. StagePlanned also
-		// freezes the exact realized access under the compensation; later
-		// exploration must not float the wrapper onto an unrelated sibling.
-		ref = expressions.FinalOf(expr)
-	}
-	return expressions.NamedForEachQuantifier(matchedForEachAlias, ref)
 }
 
 // Intersect combines this compensation with another by keeping only

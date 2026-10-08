@@ -1,3 +1,5 @@
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+
 # Vendored, verbatim yamsql acceptance corpus from Apple's fdb-record-layer.
 # See README.md for provenance and the re-sync procedure; VERSION pins the tag.
 
@@ -5,6 +7,37 @@
 filegroup(
     name = "yamsql_corpus",
     srcs = glob(["yaml-tests/src/test/resources/**/*.yamsql"]),
+    visibility = ["//visibility:public"],
+)
+
+# The yaml-tests protos, under Java's file names (strip_import_prefix makes
+# each file's name its upstream proto-root-relative path, which is what the
+# metadata JSON's `dependency` lists and the descriptor's file name carry).
+# Their default outputs are binary FileDescriptorSets the javacorpus runner
+# loads for `load schema template`.
+proto_library(
+    name = "yamltests_main_proto",
+    srcs = glob(["yaml-tests/src/main/proto/*.proto"]),
+    strip_import_prefix = "/third_party/apple/fdb-record-layer/yaml-tests/src/main/proto",
+    visibility = ["//visibility:public"],
+    deps = ["//proto/apple:apple_proto"],
+)
+
+proto_library(
+    name = "yamltests_test_proto",
+    srcs = glob(["yaml-tests/src/test/proto/*.proto"]),
+    strip_import_prefix = "/third_party/apple/fdb-record-layer/yaml-tests/src/test/proto",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//proto/apple:apple_proto",
+        "@protobuf//:descriptor_proto",
+    ],
+)
+
+# The metadata JSON files `load schema template` reads.
+filegroup(
+    name = "yamltests_metadata_json",
+    srcs = glob(["yaml-tests/src/**/*.json"]),
     visibility = ["//visibility:public"],
 )
 

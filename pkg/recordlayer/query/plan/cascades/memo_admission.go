@@ -25,6 +25,7 @@ type preparedReferenceBatch struct {
 	final            []expressions.RelationalExpression
 	inserted         []bool
 	aliasAwareDedups int
+	equality         expressions.PreparedMemberEquality
 }
 
 // prepareReferenceMemberBatch performs every fallible/method-driven operation
@@ -47,8 +48,8 @@ func prepareReferenceMemberBatch(
 		return nil, err
 	}
 
-	existingExploratory := view.Members(expressions.ReferenceExploratoryMembers)
-	existingFinal := view.Members(expressions.ReferenceFinalMembers)
+	existingExploratory := view.BorrowedMembers(expressions.ReferenceExploratoryMembers)
+	existingFinal := view.BorrowedMembers(expressions.ReferenceFinalMembers)
 	all := make([]expressions.RelationalExpression, 0, len(existingExploratory)+len(existingFinal)+len(intents))
 	all = append(all, existingExploratory...)
 	all = append(all, existingFinal...)
@@ -116,26 +117,15 @@ func prepareReferenceMemberBatch(
 		relationType: relationType,
 		inserted:     make([]bool, len(intents)),
 	}
-	exploratoryScratch := append([]expressions.RelationalExpression(nil), existingExploratory...)
-	finalScratch := append([]expressions.RelationalExpression(nil), existingFinal...)
-	// Member hashes are derived ONCE per batch and grown as intents are
-	// admitted, rather than re-derived for every intent. HashCodeWithoutChildren
-	// walks a member's whole result Value through FNV, and a memo member is
-	// immutable, so the per-intent form spent O(intents × members) walks
-	// re-deriving values that could not have changed.
-	exploratoryHashes := reference.MemberHashes(exploratoryScratch)
-	finalHashes := reference.MemberHashes(finalScratch)
+	prepared.equality.SeedMemberCorrelations(reference)
+	exploratoryIndex := prepared.equality.NewMemberIndex(existingExploratory, reference.MemberHashes(existingExploratory))
+	finalIndex := prepared.equality.NewMemberIndex(existingFinal, reference.MemberHashes(existingFinal))
 	for i, intent := range intents {
-		var scratch *[]expressions.RelationalExpression
-		var hashes *[]uint64
-		switch intent.set {
-		case expressions.ReferenceExploratoryMembers:
-			scratch, hashes = &exploratoryScratch, &exploratoryHashes
-		case expressions.ReferenceFinalMembers:
-			scratch, hashes = &finalScratch, &finalHashes
+		index := exploratoryIndex
+		if intent.set == expressions.ReferenceFinalMembers {
+			index = finalIndex
 		}
-		duplicate, aliasAware := expressions.PreparedMemberDuplicateWithHashes(
-			*scratch, *hashes, intent.expression)
+		duplicate, aliasAware := index.Duplicate(intent.expression)
 		if duplicate {
 			if aliasAware {
 				prepared.aliasAwareDedups++
@@ -143,14 +133,14 @@ func prepareReferenceMemberBatch(
 			continue
 		}
 		prepared.inserted[i] = true
-		*scratch = append(*scratch, intent.expression)
-		*hashes = append(*hashes, intent.expression.HashCodeWithoutChildren())
+		index.Add(intent.expression)
 		if intent.set == expressions.ReferenceExploratoryMembers {
 			prepared.exploratory = append(prepared.exploratory, intent.expression)
 		} else {
 			prepared.final = append(prepared.final, intent.expression)
 		}
 	}
+	prepared.equality.PrepareCorrelations(reference, append(append([]expressions.RelationalExpression(nil), prepared.exploratory...), prepared.final...))
 	return prepared, nil
 }
 
@@ -158,13 +148,19 @@ func (p *preparedReferenceBatch) commit() error {
 	if p == nil || p.reference == nil || p.view == nil {
 		return memoAdmissionError(values.MemoInvalidHandle, "memo.batch", "prepared Reference batch is nil or incomplete")
 	}
-	return p.reference.ApplyPreparedMemberBatch(
+	if err := p.equality.ApplyPreparedMemberBatch(
+		p.reference,
 		p.view,
 		p.relationType,
 		p.exploratory,
 		p.final,
 		p.aliasAwareDedups,
-	)
+	); err != nil {
+		return err
+	}
+	p.equality.PublishCorrelations()
+	p.equality.PublishMemberCorrelations(p.reference)
+	return nil
 }
 
 func checkedStoredRelationType(handle values.ExactTypeHandle) (values.ExactTypeHandle, error) {
@@ -244,10 +240,6 @@ func admitMemoRegistry(expression expressions.RelationalExpression) error {
 			return unsupportedTypedNilExpression()
 		}
 	case *expressions.LogicalLimitExpression:
-		if typed == nil {
-			return unsupportedTypedNilExpression()
-		}
-	case *expressions.LogicalProjectionExpression:
 		if typed == nil {
 			return unsupportedTypedNilExpression()
 		}
@@ -396,10 +388,6 @@ func admitMemoRegistry(expression expressions.RelationalExpression) error {
 			return unsupportedTypedNilExpression()
 		}
 	case *plans.RecordQueryPredicatesFilterPlan:
-		if typed == nil {
-			return unsupportedTypedNilExpression()
-		}
-	case *plans.RecordQueryProjectionPlan:
 		if typed == nil {
 			return unsupportedTypedNilExpression()
 		}

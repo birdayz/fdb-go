@@ -50,8 +50,8 @@ func TestFDBVersionstampSelectionBeforeMetrics(t *testing.T) {
 	if got := readCommitLifetimeValue(t, ctx, db, key); !bytes.Equal(got, stamp) {
 		t.Fatalf("selected CommitID differs from stored stamp: %x != %x", stamp, got)
 	}
-	if _, err := tx.GetCommittedVersion(); fdbCodeOf(err) != 2015 {
-		t.Fatalf("stale success published metadata: %v", err)
+	if got, err := tx.GetCommittedVersion(); err != nil || got != -1 {
+		t.Fatalf("stale success published metadata: %d, %v", got, err)
 	}
 }
 

@@ -343,27 +343,20 @@ func (r *Runner) Run(ctx context.Context, cand Candidate) Outcome {
 // call; MatchIntermediateRule and AdjustMatchRule both extend matches that
 // already exist), so disabling it does starve the whole match/data-access
 // pipeline — but the match pipeline is not the only thing that builds an index
-// scan. Four paths construct one WITHOUT ever touching a PartialMatch:
-// ImplementNestedLoopJoinRule.tryExistsFlatMap
-// (rule_implement_nested_loop_join.go:4330), AggregateDataAccessRule,
-// OrderedIndexScanRule and StreamingAggFromIndexRule — each reads
-// GetMatchCandidates() directly.
+// scan. AggregateDataAccessRule, OrderedIndexScanRule and
+// StreamingAggFromIndexRule each read GetMatchCandidates() directly and
+// construct one WITHOUT ever touching a PartialMatch; they pass an empty
+// comparison prefix, so they emit full-range scans.
 //
-// The correlated-`NOT EXISTS` counterexample the first factory run hit is the
-// first of those: tryExistsFlatMap builds a `RecordQueryIndexPlan` from one
-// `ComparisonEquals` range, which renders as `IndexScan(IDX_A, [=])` in the
-// FlatMap's inner leg, and it survives MatchLeafRule being off because the
-// correlated probe is genuinely not what that rule produces. (The other three
-// pass an empty comparison prefix, so they emit only full-range scans and
-// cannot produce a `[=]` bound.) TestFDB_SecondPlanKeepsCorrelatedIndexProbe
-// pins that shape so the claim stays checkable.
+// `GROUP BY` an indexed column is such a counterexample: with MatchLeafRule off
+// it still plans `IndexScan(IDX_A, [*] COVERING)` under the streaming aggregate.
+// TestFDB_SecondPlanIndexFreePreconditionStaysRetired pins that shape so the
+// claim stays checkable.
 //
-// Measuring it turned up more than the counterexample: on a correlated-EXISTS
-// query the OUTER leg is a filtered full scan in the baseline too, even with
-// its filtered column indexed, so the two plans come out IDENTICAL and this
-// oracle skips every such candidate. Combined with the both-oracles blessing
-// rule below, that is why no committed scenario carries an `exists=` feature
-// vector. TestFDB_SecondPlanIsBlindToCorrelatedExists holds that measurement.
+// Outer predicates beside EXISTS now participate in index matching, so
+// disabling MatchLeafRule can change the outer access path while preserving
+// the correlated inner probe. TestFDB_SecondPlanReachesCorrelatedExists pins
+// plan inequality and row agreement; EXISTS no longer has a TLP-only exemption.
 //
 // The proxy would therefore have reported a correct engine as a broken option
 // on every such query. What actually guards against the option being accepted

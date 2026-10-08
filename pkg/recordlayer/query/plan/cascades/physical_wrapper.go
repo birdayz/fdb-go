@@ -30,18 +30,6 @@ func scanComparisonCorrelations(comps []*predicates.ComparisonRange) map[values.
 		for a := range values.GetCorrelatedToOfValue(c.Operand) {
 			out[a] = struct{}{}
 		}
-		// A query-parameter (ConstantObjectValue) comparand is an execution constant
-		// bound at run time, NOT a row correlation — its constant-pool alias appears
-		// in GetCorrelatedToOfValue but must not make a `Scan(T,[k=?param])` look
-		// join-correlated to planning (B1 leg detection) or to the
-		// probe-fed-residual guard (compensationProbeCorrelations). Subtract any such
-		// aliases — the value-level twin of deletePredicateConstantObjectAliases.
-		values.WalkValue(c.Operand, func(node values.Value) bool {
-			if cov, ok := node.(*values.ConstantObjectValue); ok {
-				delete(out, cov.Alias)
-			}
-			return true
-		})
 	}
 	for _, cr := range comps {
 		if cr == nil || cr.IsEmpty() {
@@ -55,95 +43,6 @@ func scanComparisonCorrelations(comps []*predicates.ComparisonRange) map[values.
 			}
 		}
 	}
-	return out
-}
-
-// valueCorrelationsNoParams returns the outer correlations a value references with
-// query-parameter (ConstantObjectValue) aliases subtracted — the value-tree twin of the
-// param exclusion scanComparisonCorrelations applies to a SARG comparand.
-func valueCorrelationsNoParams(v values.Value) map[values.CorrelationIdentifier]struct{} {
-	out := map[values.CorrelationIdentifier]struct{}{}
-	if v == nil {
-		return out
-	}
-	for a := range values.GetCorrelatedToOfValue(v) {
-		out[a] = struct{}{}
-	}
-	values.WalkValue(v, func(node values.Value) bool {
-		if cov, ok := node.(*values.ConstantObjectValue); ok {
-			delete(out, cov.Alias)
-		}
-		return true
-	})
-	return out
-}
-
-// dataAccessExprCorrelations collects the COMPLETE set of outer correlations a
-// data-access subplan reports — SARG comparands (scan/index), residual filter
-// predicates, and map result values — query-parameter aliases subtracted. Used by the
-// plan-backed leaf expression scanPlanExpression so a SARGed PK-scan probe
-// (`pk = QOV(outer).fk`) and an RFC-153 buried-merge-rebased FlatMap inner report the
-// correlations their executable plan actually carries, instead of nil/stale (an
-// under-reported correlation lets join-leg / winner / root bookkeeping treat a
-// correlated probe as self-contained — a latent planning hazard, the same
-// incomplete-coverage family as the fail-open verifier). Complete for the data-access
-// node shapes scanPlanExpression wraps (a single PK scan; a fully-rebased recognized
-// inner — the verifier declines any inner with an unrecognized node, so a rebased inner
-// reaching this point contains only scan/index/filter/map/pass-through nodes).
-func dataAccessExprCorrelations(p plans.RecordQueryPlan) map[values.CorrelationIdentifier]struct{} {
-	out := map[values.CorrelationIdentifier]struct{}{}
-	if p == nil {
-		return out
-	}
-	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
-		switch sp := n.(type) {
-		case *plans.RecordQueryScanPlan:
-			for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
-				out[a] = struct{}{}
-			}
-		case *plans.RecordQueryIndexPlan:
-			for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
-				out[a] = struct{}{}
-			}
-		case *plans.RecordQueryCoveringIndexPlan:
-			// plans.Walk cannot descend into the wrapper's scan — it is a FIELD,
-			// not a child — so without this arm the SARG correlations on an
-			// index-backed access are invisible here. That is the UNDER-reported
-			// direction this function's doc comment names as the latent hazard:
-			// a correlated probe read as self-contained by join-leg / winner
-			// bookkeeping. GetScanComparisons delegates to the wrapped scan.
-			for a := range scanComparisonCorrelations(sp.GetScanComparisons()) {
-				out[a] = struct{}{}
-			}
-		case *plans.RecordQueryPredicatesFilterPlan:
-			for _, pr := range sp.GetPredicates() {
-				c := map[values.CorrelationIdentifier]struct{}{}
-				for a := range predicates.GetCorrelatedToOfPredicate(pr) {
-					c[a] = struct{}{}
-				}
-				deletePredicateConstantObjectAliases(pr, c)
-				for a := range c {
-					out[a] = struct{}{}
-				}
-			}
-		case *plans.RecordQueryFilterPlan:
-			for _, pr := range sp.GetPredicates() {
-				c := map[values.CorrelationIdentifier]struct{}{}
-				for a := range predicates.GetCorrelatedToOfPredicate(pr) {
-					c[a] = struct{}{}
-				}
-				deletePredicateConstantObjectAliases(pr, c)
-				for a := range c {
-					out[a] = struct{}{}
-				}
-			}
-		case *plans.RecordQueryMapPlan:
-			for a := range valueCorrelationsNoParams(sp.GetResultValue()) {
-				out[a] = struct{}{}
-			}
-		}
-		return true
-	})
 	return out
 }
 

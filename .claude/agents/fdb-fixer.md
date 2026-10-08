@@ -169,6 +169,5 @@ produced real, observed damage twice, so these are not hygiene suggestions:
   names; if you must touch something else, say so in the report.
 - No Python — Go, Node, or CLI tools.
 - Tests call `t.Parallel()`. No `t.Skip` except the sanctioned Docker check.
-- No reviewer names, shift tags, or review-round labels in comments —
-  `pkg/docscheck`'s `TestSourceCommentHygiene` fails the build on them.
+- No reviewer names, shift tags, or review-round labels in comments.
   Comments explain WHY, never WHO or WHEN.

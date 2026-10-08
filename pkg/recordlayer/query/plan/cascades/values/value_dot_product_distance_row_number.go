@@ -37,8 +37,8 @@ func NewDotProductDistanceRowNumberValue(partitioningValues, argumentValues []Va
 // Name returns the value name matching Java's NAME constant.
 func (*DotProductDistanceRowNumberValue) Name() string { return "DotProductDistanceRowNumber" }
 
-// Type returns NotNullLong — ROW_NUMBER is always populated, 1-based.
-func (*DotProductDistanceRowNumberValue) Type() Type { return NotNullLong }
+// Type is nullable LONG, Java's primitiveType(LONG).
+func (*DotProductDistanceRowNumberValue) Type() Type { return NullableLong }
 
 // IsIndexOnly returns true — K-NN row numbers are computed during
 // HNSW index traversal and cannot be reproduced from base records.

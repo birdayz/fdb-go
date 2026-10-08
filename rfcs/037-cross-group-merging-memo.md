@@ -107,7 +107,18 @@ Rationale, not punt:
   exploration state, which the merge folds explicitly.
 * A debug assertion guards it: merging a Reference that already has partial matches or
   winners panics — a tripwire that forces a deliberate scope extension rather than a silent
-  bug. PLANNING-phase merging is Future Work.
+  bug.
+
+**Superseded (2026-10-01):** the first bullet's premise is false — PLANNING runs logical
+rules (NormalizePredicatesRule, PartitionBinarySelectRule, PredicateToLogicalUnionRule) that
+yield expressions already present in other groups; fixed-factor seed 1884206 enumerated its
+511 union subsets in two equivalent groups. PLANNING now merges on the paper's duplicate key
+(operator + input groups, `expressions.ExactReplica`) through
+`Planner.integratePlanningYield` (`planner_memo_merge.go`), which folds the PLANNING
+bookkeeping this REWRITING path cannot: partial matches, re-homed constraints, consumed
+match partitions and queued group tasks. The REWRITING tripwire above still guards
+`Memo.merge`. A planner merge alias is renamed in the replica test for every expression:
+nothing outside the expression binding it can name it.
 
 ### 1. Reference identity + forwarding (union-find, path-compressed)
 

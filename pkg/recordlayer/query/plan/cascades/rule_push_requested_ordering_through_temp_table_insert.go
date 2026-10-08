@@ -33,6 +33,12 @@ func (r *PushRequestedOrderingThroughTempTableInsertRule) Matcher() matching.Bin
 	return r.matcher
 }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING)
+// (PushRequestedOrderingThroughInsertTempTableRule).
+func (r *PushRequestedOrderingThroughTempTableInsertRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *PushRequestedOrderingThroughTempTableInsertRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return

@@ -39,16 +39,16 @@ func TestStatsInvariant_PurePlannerSweep(t *testing.T) {
 	var familyChanged, explainChanged, plannabilityDiverged int
 	var samples, planDivSamples []string
 
-	addViolation := func(seed uint64, sql, kind, v string) {
-		violations++
-		if len(samples) < 10 {
-			samples = append(samples, fmt.Sprintf("seed %d: %s [%s: %s]", seed, sql, kind, v))
-		}
+	type seedResult struct {
+		checked, familyChanged, explainChanged int
+		violations, planDiverged               []string
 	}
-
-	for seed := uint64(1); seed <= seeds; seed++ {
-		c := Generate(seed)
-		ddl := c.DDL()
+	swept, release := defaultSweep(seeds)
+	defer release()
+	sweepSeeds(seeds, func(seed uint64) seedResult {
+		var r seedResult
+		sc := swept[seed-1]
+		c, ddl := sc.c, sc.ddl
 		// Representative cardinality: the case's actual row count (20..120),
 		// four to five orders of magnitude below the default LeafScanCardinality,
 		// so the cost model genuinely re-decides. Both PerType (keyed by the
@@ -59,46 +59,57 @@ func TestStatsInvariant_PurePlannerSweep(t *testing.T) {
 			PerType:  map[string]float64{c.Table.Name: card},
 			Fallback: card,
 		}
-		for _, q := range c.Queries {
-			for _, proj := range c.ProjectionsFor(q) {
-				sqlText := c.SQL(q, proj)
-				planStats, errS := embedded.PlanPhysicalForTest(sqlText, ddl, stats)
-				planDflt, errD := embedded.PlanPhysicalForTest(sqlText, ddl, nil)
+		for _, sp := range sc.plans {
+			q, sqlText := sp.q, sp.sql
+			planStats, errS := embedded.PlanPhysicalForTest(sqlText, ddl, stats)
+			planDflt, errD := sp.plan, sp.err
 
-				// Plannability parity: statistics change cost, never whether a
-				// plan exists. A divergence is a finding.
-				if (errS == nil) != (errD == nil) {
-					plannabilityDiverged++
-					if len(planDivSamples) < 10 {
-						planDivSamples = append(planDivSamples,
-							fmt.Sprintf("seed %d: %s (stats err=%v, default err=%v)", seed, sqlText, errS, errD))
-					}
-					continue
-				}
-				if errS != nil {
-					continue // both errored — the row harness's concern, not this check's
-				}
-				checked++
+			// Plannability parity: statistics change cost, never whether a
+			// plan exists. A divergence is a finding.
+			if (errS == nil) != (errD == nil) {
+				r.planDiverged = append(r.planDiverged, fmt.Sprintf("%s (stats err=%v, default err=%v)", sqlText, errS, errD))
+				continue
+			}
+			if errS != nil {
+				continue // both errored — the row harness's concern, not this check's
+			}
+			r.checked++
 
-				// The stats-driven plan must satisfy every cost/ordering
-				// invariant a correct plan can never violate.
-				for _, v := range checkPlanCost(planStats, q) {
-					addViolation(seed, sqlText, "cost", v)
-				}
-				for _, v := range checkPlanOrdering(planStats, q) {
-					addViolation(seed, sqlText, "ordering", v)
-				}
+			// The stats-driven plan must satisfy every cost/ordering
+			// invariant a correct plan can never violate.
+			for _, v := range checkPlanCost(planStats, q) {
+				r.violations = append(r.violations, fmt.Sprintf("%s [cost: %s]", sqlText, v))
+			}
+			for _, v := range checkPlanOrdering(planStats, q) {
+				r.violations = append(r.violations, fmt.Sprintf("%s [ordering: %s]", sqlText, v))
+			}
 
-				// Reach telemetry: proof the stats path actually re-decides.
-				if !sameStringSet(classifyPlan(planStats), classifyPlan(planDflt)) {
-					familyChanged++
-				}
-				if planStats.Explain() != planDflt.Explain() {
-					explainChanged++
-				}
+			// Reach telemetry: proof the stats path actually re-decides.
+			if !sameStringSet(classifyPlan(planStats), classifyPlan(planDflt)) {
+				r.familyChanged++
+			}
+			if planStats.Explain() != planDflt.Explain() {
+				r.explainChanged++
 			}
 		}
-	}
+		return r
+	}, func(seed uint64, r seedResult) {
+		checked += r.checked
+		familyChanged += r.familyChanged
+		explainChanged += r.explainChanged
+		for _, v := range r.violations {
+			violations++
+			if len(samples) < 10 {
+				samples = append(samples, fmt.Sprintf("seed %d: %s", seed, v))
+			}
+		}
+		for _, v := range r.planDiverged {
+			plannabilityDiverged++
+			if len(planDivSamples) < 10 {
+				planDivSamples = append(planDivSamples, fmt.Sprintf("seed %d: %s", seed, v))
+			}
+		}
+	})
 
 	t.Logf("stats-invariant sweep: %d plans checked across %d seeds; plan family changed under stats=%d, plan shape changed=%d",
 		checked, seeds, familyChanged, explainChanged)

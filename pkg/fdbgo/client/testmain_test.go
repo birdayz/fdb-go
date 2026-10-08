@@ -43,19 +43,9 @@ func startFDBContainer(ctx context.Context) (*tcfdb.Container, *ClusterFile, err
 		return nil, nil, fmt.Errorf("parse cluster string: %w", err)
 	}
 
-	// Wait for health.
-	for i := 0; i < 30; i++ {
-		time.Sleep(1 * time.Second)
-		code, reader, execErr := container.Exec(ctx, []string{"fdbcli", "--exec", "status minimal"})
-		if execErr != nil || reader == nil {
-			continue
-		}
-		if code == 0 {
-			out, _ := io.ReadAll(reader)
-			if strings.Contains(string(out), "Healthy") {
-				break
-			}
-		}
+	if err := container.WaitAvailable(ctx); err != nil {
+		container.Terminate(ctx)
+		return nil, nil, err
 	}
 
 	// Read internal cluster file for correct cluster key.

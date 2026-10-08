@@ -61,8 +61,9 @@ func NewRowNumberValue(partitioningValues, argumentValues []Value, efSearch *int
 // Name returns the SQL function name.
 func (*RowNumberValue) Name() string { return "ROW_NUMBER" }
 
-// Type returns NotNullLong — ROW_NUMBER is always populated.
-func (*RowNumberValue) Type() Type { return NotNullLong }
+// Type is nullable LONG, Java's primitiveType(LONG): Evaluate returns NULL
+// without a row number in its context.
+func (*RowNumberValue) Type() Type { return NullableLong }
 
 // IsIndexOnly returns true — ROW_NUMBER cannot be computed outside
 // of an index scan (the row-number value is computed during the

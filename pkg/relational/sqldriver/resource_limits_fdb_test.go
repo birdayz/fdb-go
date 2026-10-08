@@ -18,36 +18,12 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/sqltest/testkit"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
-
-// pinEmbeddedConn pins a single *sql.Conn and hands back its underlying
-// *embedded.EmbeddedConnection so a test can install the RFC-106a
-// connection-local config (options / fail-on-scan / statement timeout /
-// result-byte cap). The returned *sql.Conn MUST be used for every
-// subsequent statement so the configured connection is the one that
-// executes them.
-func pinEmbeddedConn(t *testing.T, db *sql.DB, configure func(*embedded.EmbeddedConnection)) *sql.Conn {
-	t.Helper()
-	conn, err := db.Conn(context.Background())
-	if err != nil {
-		t.Fatalf("pin conn: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	if err := conn.Raw(func(driverConn any) error {
-		ec, ok := driverConn.(*embedded.EmbeddedConnection)
-		if !ok {
-			t.Fatalf("driver conn is %T, want *embedded.EmbeddedConnection", driverConn)
-		}
-		configure(ec)
-		return nil
-	}); err != nil {
-		t.Fatalf("Raw: %v", err)
-	}
-	return conn
-}
 
 // seedItemsOnConn inserts n rows (id, payload) into table Item via the pinned conn.
 func seedItemsOnConn(t *testing.T, ctx context.Context, conn *sql.Conn, n int, payload string) {
@@ -122,7 +98,7 @@ func drainIDs(ctx context.Context, conn *sql.Conn, sqlText string) (int, error) 
 // the same option just paginates and the query completes with every row.
 func TestFDB_RFC106a_ScanLimitFail(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_scanfail", "scanfail",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_scanfail", "scanfail",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -130,7 +106,7 @@ func TestFDB_RFC106a_ScanLimitFail(t *testing.T) {
 	const scanLimit = 5
 
 	// --- fail mode: scan limit + FailOnScanLimitReached → 54F01 ---
-	failConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	failConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 		ec.SetFailOnScanLimitReached(true)
@@ -141,7 +117,7 @@ func TestFDB_RFC106a_ScanLimitFail(t *testing.T) {
 	wantExecLimit(t, err)
 
 	// --- paginate mode (default): same scan limit, NO fail flag → all rows ---
-	pageConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	pageConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 		// FailOnScanLimitReached left false (default) → paginate.
@@ -161,7 +137,7 @@ func TestFDB_RFC106a_ScanLimitFail(t *testing.T) {
 // a 30-row table, EXACTLY 10 rows come back.
 func TestFDB_RFC106a_MaxRowsStatementWide(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_maxrows", "maxrows",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_maxrows", "maxrows",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -169,7 +145,7 @@ func TestFDB_RFC106a_MaxRowsStatementWide(t *testing.T) {
 	const maxRows = 10
 	const perPage = 4 // force several pages so a per-page misread would over/under-count
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptMaxRows, maxRows).
 			Set(api.OptExecutionScannedRowsLimit, perPage). // paginate every perPage rows
@@ -193,18 +169,18 @@ func TestFDB_RFC106a_MaxRowsStatementWide(t *testing.T) {
 // race. The same query with NO timeout completes and returns every row.
 func TestFDB_RFC106a_StatementTimeout(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_timeout", "timeout",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_timeout", "timeout",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
 	const rows = 20
 
 	// Seed via a no-config conn so the timeout never bites the inserts.
-	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	seedItemsOnConn(t, ctx, seedConn, rows, "x")
 
 	// --- timeout fires: 1ns is already expired at execution time ---
-	toConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	toConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetStatementTimeout(1 * time.Nanosecond)
 	})
 	_, err := drainIDs(ctx, toConn, "SELECT id FROM Item ORDER BY id")
@@ -215,7 +191,7 @@ func TestFDB_RFC106a_StatementTimeout(t *testing.T) {
 	}
 
 	// --- no timeout: same query completes ---
-	okConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	okConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		// statementTimeout left 0 → off.
 	})
 	got, oerr := drainIDs(ctx, okConn, "SELECT id FROM Item ORDER BY id")
@@ -232,7 +208,7 @@ func TestFDB_RFC106a_StatementTimeout(t *testing.T) {
 // with no cap completes.
 func TestFDB_RFC106a_ResultSizeCap(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_bytes", "bytes",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_bytes", "bytes",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
@@ -244,11 +220,11 @@ func TestFDB_RFC106a_ResultSizeCap(t *testing.T) {
 	}
 	const byteCap = 1024
 
-	seedConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seedConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	seedItemsOnConn(t, ctx, seedConn, rows, string(wide))
 
 	// --- cap fires ---
-	capConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	capConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetMaxResultBytes(byteCap)
 	})
 	_, err := func() (int, error) {
@@ -271,7 +247,7 @@ func TestFDB_RFC106a_ResultSizeCap(t *testing.T) {
 	wantExecLimit(t, err)
 
 	// --- no cap: completes ---
-	okConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	okConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	r, qerr := okConn.QueryContext(ctx, "SELECT id, payload FROM Item")
 	if qerr != nil {
 		t.Fatalf("no-cap query: %v", qerr)
@@ -313,7 +289,7 @@ func TestFDB_RFC106a_ResultSizeCap(t *testing.T) {
 // control (revert-proof: drop the props thread → subject goes green).
 func TestFDB_RFC106a_ScalarSubqueryHonorsLimit(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_ssqlimit", "ssqlimit",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_ssqlimit", "ssqlimit",
 		"CREATE TABLE Big (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE Small (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
@@ -321,7 +297,7 @@ func TestFDB_RFC106a_ScalarSubqueryHonorsLimit(t *testing.T) {
 	const bigRows = 50
 	const scanLimit = 5 // COUNT(*) over 50 rows >> 5; Small has a single row
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 		ec.SetFailOnScanLimitReached(true)
@@ -362,7 +338,7 @@ func TestFDB_RFC106a_ScalarSubqueryHonorsLimit(t *testing.T) {
 // drop errIfBufferTruncated in scalar_subquery.go → this returns 0 rows, no err).
 func TestFDB_RFC106a_BufferedScanLimitErrorsNotTruncates(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_buftrunc", "buftrunc",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_buftrunc", "buftrunc",
 		"CREATE TABLE Big (id BIGINT, val STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE Small (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
@@ -370,7 +346,7 @@ func TestFDB_RFC106a_BufferedScanLimitErrorsNotTruncates(t *testing.T) {
 	const bigRows = 50
 	const scanLimit = 5 // the only matching Big row is id=49, well past 5
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 		// FailOnScanLimitReached deliberately LEFT FALSE → paginate mode. The
@@ -404,7 +380,7 @@ func TestFDB_RFC106a_BufferedScanLimitErrorsNotTruncates(t *testing.T) {
 // ScannedRecordsLimit branch from countKVCursor.OnNext → all 50 groups return.
 func TestFDB_RFC106a_AggregateIndexScanLimit(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_aggscan", "aggscan",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_aggscan", "aggscan",
 		"CREATE TABLE ga (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g")
 	ctx := context.Background()
@@ -416,11 +392,11 @@ func TestFDB_RFC106a_AggregateIndexScanLimit(t *testing.T) {
 	// leaf review flagged), not a full-scan fallback that would hit a different
 	// cursor. EXPLAIN is static — no data needed.
 	const groupedCount = "SELECT g, COUNT(*) FROM ga GROUP BY g"
-	if plan := planExplainVia(t, ctx, db, groupedCount); !strings.Contains(plan, "AggregateIndex") {
+	if plan := testkit.ExplainVia(t, ctx, db, groupedCount); !strings.Contains(plan, "AggregateIndex") {
 		t.Fatalf("grouped COUNT must plan as AggregateIndex (exercises countKVCursor), got: %s", plan)
 	}
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 		ec.SetFailOnScanLimitReached(true)
@@ -453,13 +429,13 @@ func TestFDB_RFC106a_AggregateIndexScanLimit(t *testing.T) {
 // before ReturnedRowLimit in countKVCursor → MAX_ROWS=5 errors 54F01.
 func TestFDB_RFC106a_RowLimitBeatsScanLimit(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_rowbeats", "rowbeats",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_rowbeats", "rowbeats",
 		"CREATE TABLE ga (id BIGINT, g BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g")
 	ctx := context.Background()
 	const groups = 50
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptMaxRows, 5).
 			Set(api.OptExecutionScannedRowsLimit, 5).Build())
@@ -488,12 +464,12 @@ func TestFDB_RFC106a_RowLimitBeatsScanLimit(t *testing.T) {
 // error.) Revert-proof: stream the DELETE (delete-as-you-go) → 5 rows commit, 45 remain.
 func TestFDB_RFC106a_DMLNoPartialMutationInExplicitTx(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_dmltx", "dmltx",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_dmltx", "dmltx",
 		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	const rows = 50
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 5).Build())
 		// non-fail (paginate): the DELETE's inner scan stops OUT-OF-BAND at 5 →
@@ -515,7 +491,7 @@ func TestFDB_RFC106a_DMLNoPartialMutationInExplicitTx(t *testing.T) {
 	// pre-materialize there are none, so all rows survive.
 	_ = tx.Commit()
 
-	plain := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	plain := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	n, cerr := drainIDs(ctx, plain, "SELECT id FROM t")
 	if cerr != nil {
 		t.Fatalf("count after failed DELETE: %v", cerr)
@@ -536,19 +512,19 @@ func TestFDB_RFC106a_DMLNoPartialMutationInExplicitTx(t *testing.T) {
 // (honest scope — this pins atomic abort, not the specific defensive line).
 func TestFDB_RFC106a_DMLDeadlineAbortsCleanly(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_dmldeadline", "dmldeadline",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_dmldeadline", "dmldeadline",
 		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 	const rows = 30
 
-	seed := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seed := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	for i := 0; i < rows; i++ {
 		if _, err := seed.ExecContext(ctx, fmt.Sprintf("INSERT INTO t (id) VALUES (%d)", i)); err != nil {
 			t.Fatalf("INSERT %d: %v", i, err)
 		}
 	}
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetStatementTimeout(1 * time.Nanosecond) // already expired at execution
 	})
 	tx, err := conn.BeginTx(ctx, nil)
@@ -580,12 +556,12 @@ func TestFDB_RFC106a_DMLDeadlineAbortsCleanly(t *testing.T) {
 // (row count > 51) or a loud out-of-band error — either fails this pin.
 func TestFDB_UnionAllResumesAcrossScanLimitPages(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_unionall", "unionall",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_unionall", "unionall",
 		"CREATE TABLE A (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE B (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
-	conn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, 5).Build())
 		// non-fail: the first branch's scan stops OUT-OF-BAND at 5 → concat errors.
@@ -650,14 +626,14 @@ func TestFDB_UnionAllResumesAcrossScanLimitPages(t *testing.T) {
 // pages).
 func TestFDB_RFC106a_INJoinScanLimitAggregatesAcrossLegs(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_injoinscan", "injoinscan",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_injoinscan", "injoinscan",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id))")
 	ctx := context.Background()
 
 	const rows = 30
 	const scanLimit = 5
 
-	seed := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seed := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	seedItemsOnConn(t, ctx, seed, rows, "x")
 
 	inList := make([]string, rows)
@@ -669,13 +645,13 @@ func TestFDB_RFC106a_INJoinScanLimitAggregatesAcrossLegs(t *testing.T) {
 	// Plan-shape guard: this must be an IN-JOIN over a primary-key equality
 	// scan (the leaf cursor this test pins), not some other shape a future
 	// planner change might substitute.
-	if plan := planExplainVia(t, ctx, db, q); !strings.Contains(plan, "InJoin(Scan(") {
-		t.Fatalf("want InJoin(Scan(...)) plan shape, got: %s", plan)
+	if plan := testkit.ExplainVia(t, ctx, db, q); !strings.HasPrefix(plan, "InJoin(") || !strings.Contains(plan, "Scan(ITEM, [=])") {
+		t.Fatalf("want an InJoin over the primary-key equality Scan(ITEM, [=]), got: %s", plan)
 	}
 
 	// --- fail mode: the AGGREGATE scan across every leg must trip the limit,
 	// even though no single leg (1 row) comes close to it on its own.
-	failConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	failConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 		ec.SetFailOnScanLimitReached(true)
@@ -686,7 +662,7 @@ func TestFDB_RFC106a_INJoinScanLimitAggregatesAcrossLegs(t *testing.T) {
 	// --- paginate mode: the same aggregate limit forces multiple pages, but
 	// every row still comes back — the fix bounds the scan, it does not drop
 	// rows or fail to resume across the IN-list.
-	pageConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	pageConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 	})
@@ -703,19 +679,23 @@ func TestFDB_RFC106a_INJoinScanLimitAggregatesAcrossLegs(t *testing.T) {
 // of the InJoin test above — the exact "indexFetchCursor" mechanism named in
 // the original hang report (a many-legged IN-union over a SECONDARY index,
 // each leg's entries fetched by indexFetchCursor wrapping the index_scan.go
-// leaf cursor). ORDER BY on the IN column forces the InUnion (merge-sort)
-// plan shape instead of InJoin (verified by EXPLAIN).
+// leaf cursor). ORDER BY the primary key forces the InUnion (merge-sort) plan
+// shape: across IN values only the merge delivers it (verified by EXPLAIN). The
+// index names id in its own key, as an in-union ordered by a primary key
+// reached only past the entry's record-type coordinate is not built (RFC-257
+// WS-F 4.3 item 2), and the list stays within the relational configuration's
+// in-union size.
 func TestFDB_RFC106a_INUnionScanLimitAggregatesAcrossLegs(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_rfc106a_inunionscan", "inunionscan",
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_rfc106a_inunionscan", "inunionscan",
 		"CREATE TABLE Item (id BIGINT, payload STRING, PRIMARY KEY (id)) "+
-			"CREATE INDEX payload_idx ON Item (payload)")
+			"CREATE INDEX payload_idx ON Item (payload, id)")
 	ctx := context.Background()
 
-	const rows = 30
+	const rows = 24
 	const scanLimit = 5
 
-	seed := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
+	seed := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {})
 	for i := 0; i < rows; i++ {
 		if _, err := seed.ExecContext(ctx,
 			fmt.Sprintf("INSERT INTO Item (id, payload) VALUES (%d, 'p%d')", i, i)); err != nil {
@@ -727,13 +707,13 @@ func TestFDB_RFC106a_INUnionScanLimitAggregatesAcrossLegs(t *testing.T) {
 	for i := range inList {
 		inList[i] = fmt.Sprintf("'p%d'", i)
 	}
-	q := "SELECT id FROM Item WHERE payload IN (" + strings.Join(inList, ",") + ") ORDER BY payload"
+	q := "SELECT id FROM Item WHERE payload IN (" + strings.Join(inList, ",") + ") ORDER BY id"
 
-	if plan := planExplainVia(t, ctx, db, q); !strings.Contains(plan, "InUnion(IndexScan(") {
-		t.Fatalf("want InUnion(IndexScan(...)) plan shape, got: %s", plan)
+	if plan := testkit.ExplainVia(t, ctx, db, q); !strings.Contains(plan, "InUnion(Map(IndexScan(PAYLOAD_IDX") {
+		t.Fatalf("want InUnion(Map(IndexScan(PAYLOAD_IDX...))) plan shape, got: %s", plan)
 	}
 
-	failConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	failConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 		ec.SetFailOnScanLimitReached(true)
@@ -741,7 +721,7 @@ func TestFDB_RFC106a_INUnionScanLimitAggregatesAcrossLegs(t *testing.T) {
 	_, err := drainIDs(ctx, failConn, q)
 	wantScanLimitReached(t, err, recordlayer.ScanLimitReached)
 
-	pageConn := pinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+	pageConn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
 	})

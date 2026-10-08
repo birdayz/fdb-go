@@ -1,6 +1,10 @@
 package cascades
 
 import (
+	"fmt"
+	"slices"
+	"strings"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -12,7 +16,13 @@ import (
 //
 // Ports Java's PlannerConstraint.
 type PlannerConstraint[T any] struct {
-	name string
+	name          string
+	optimizerOnly bool
+}
+
+// AffectsExploration excludes retention requirements that no expression rule reads.
+func (c *PlannerConstraint[T]) AffectsExploration() bool {
+	return !c.optimizerOnly
 }
 
 // RequestedOrderingConstraintKey is the constraint key for requested orderings.
@@ -23,7 +33,7 @@ var RequestedOrderingConstraintKey = &PlannerConstraint[[]*properties.RequestedO
 // positional requirement per child edge; OptimizeGroup retains the cheapest
 // final satisfying every accumulated requirement instead of allowing the
 // group's single global winner to erase a costlier compatible alternative.
-var OrdinalLayoutConstraintKey = &PlannerConstraint[[]plans.OrdinalLayoutRequirement]{name: "ordinalLayout"}
+var OrdinalLayoutConstraintKey = &PlannerConstraint[[]plans.OrdinalLayoutRequirement]{name: "ordinalLayout", optimizerOnly: true}
 
 // ReferencedFieldsConstraintKey is the constraint key for referenced
 // fields. Pushed top-down by PushReferencedFieldsThrough* rules to
@@ -85,11 +95,15 @@ func Set[T any](cm *ConstraintMap, ref *expressions.Reference, key *PlannerConst
 	if cm == nil {
 		return false
 	}
+	return cm.push(ref, key, any(value))
+}
+
+func (cm *ConstraintMap) push(ref *expressions.Reference, key, value any) bool {
 	combine := combineForKey(key)
 	entry := constraintEntry{ref: ref.Canonical(), key: key}
-	stored := any(value)
+	stored := value
 	if existing, ok := cm.constraints[entry]; ok {
-		combined, changed := combine(existing, any(value))
+		combined, changed := combine(existing, value)
 		if !changed {
 			// Subsumed: nothing to store, no epoch tick.
 			return false
@@ -100,6 +114,51 @@ func Set[T any](cm *ConstraintMap, ref *expressions.Reference, key *PlannerConst
 	ref.ConstraintsMap().PushProperty(key, stored, combine)
 	return true
 }
+
+// constraintValue is one key's constraint on one group.
+type constraintValue struct {
+	key   any
+	value any
+}
+
+// constraintsOf returns ref's constraints in key-name order. Entries are
+// keyed by the group that was canonical when they were pushed.
+func (cm *ConstraintMap) constraintsOf(ref *expressions.Reference) []constraintValue {
+	if cm == nil {
+		return nil
+	}
+	var result []constraintValue
+	for entry, value := range cm.constraints {
+		if entry.ref == ref {
+			result = append(result, constraintValue{key: entry.key, value: value})
+		}
+	}
+	slices.SortFunc(result, func(a, b constraintValue) int {
+		return strings.Compare(constraintName(a.key), constraintName(b.key))
+	})
+	return result
+}
+
+// rehome moves loser's constraints onto survivor through the per-key lattice
+// combine, so the merged group answers every parent of both groups. Returns
+// loser's constraints as they were.
+func (cm *ConstraintMap) rehome(loser, survivor *expressions.Reference) []constraintValue {
+	moved := cm.constraintsOf(loser)
+	for _, constraint := range moved {
+		delete(cm.constraints, constraintEntry{ref: loser, key: constraint.key})
+		cm.push(survivor, constraint.key, constraint.value)
+	}
+	return moved
+}
+
+func constraintName(key any) string {
+	if named, ok := key.(interface{ constraintName() string }); ok {
+		return named.constraintName()
+	}
+	return fmt.Sprintf("%T", key)
+}
+
+func (c *PlannerConstraint[T]) constraintName() string { return c.name }
 
 func init() {
 	// Register the typed lattice dispatch for constraint folds performed

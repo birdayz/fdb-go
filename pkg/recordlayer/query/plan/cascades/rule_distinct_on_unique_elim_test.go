@@ -159,7 +159,7 @@ func buildDistinctOverProjection(
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.NamedForEachQuantifier(distinctReadAlias(recType), scanRef)
 
-	proj := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(projected, scanQ))
+	proj := mustDistinctConstruct(newBlockSelectForTest(projected, scanQ))
 	projRef := expressions.InitialOf(proj)
 	projRef.Insert(makeFakePlanWrapperForType(recType, proj.GetResultValue().Type(), false))
 	projQ := expressions.ForEachQuantifier(projRef)
@@ -352,12 +352,12 @@ func TestCollectProjectedOrdinals_BuriedFieldNotCredited(t *testing.T) {
 	layoutType := distinctScanType("USERS")
 	layout := values.OrdinalDomainOfType(layoutType)
 	bareID := distinctRead("USERS", "ID")
-	buildProj := func(v values.Value) *expressions.LogicalProjectionExpression {
+	buildProj := func(v values.Value) *expressions.SelectExpression {
 		scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression(
 			[]string{"USERS"}, layoutType))
 		scanQ := expressions.NamedForEachQuantifier(
 			distinctReadAlias("USERS"), expressions.InitialOf(scan))
-		return mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+		return mustDistinctConstruct(newBlockSelectForTest(
 			[]values.Value{v}, scanQ))
 	}
 
@@ -437,7 +437,7 @@ func TestDistinctFinal_ThroughFilter(t *testing.T) {
 	filterRef := expressions.InitialOf(filter)
 	filterQ := expressions.NamedForEachQuantifier(distinctReadAlias("USERS"), filterRef)
 
-	proj := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+	proj := mustDistinctConstruct(newBlockSelectForTest(
 		[]values.Value{
 			distinctRead("USERS", "ID"),
 		},
@@ -779,7 +779,7 @@ func TestDistinctFinal_MultiTypeVisiblePrimaryKeyDoesNotEliminate(t *testing.T) 
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	scanRow := mustDistinctConstruct(scanQ.RequireFlowedObjectValue())
 	id := mustDistinctConstruct(values.ResolveFieldOrdinals(scanRow, []int{0}))
-	projection := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+	projection := mustDistinctConstruct(newBlockSelectForTest(
 		[]values.Value{id}, scanQ))
 	projectionRef := expressions.InitialOf(projection)
 	projectionRef.Insert(mustDistinctConstruct(plans.NewRecordQueryScanPlan(
@@ -814,7 +814,7 @@ func TestDistinctFinal_WrapsAllMembers(t *testing.T) {
 	scanQ := expressions.NamedForEachQuantifier(distinctReadAlias("ITEMS"), scanRef)
 
 	// Project a non-PK column so elimination does NOT fire.
-	proj := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+	proj := mustDistinctConstruct(newBlockSelectForTest(
 		[]values.Value{
 			distinctRead("ITEMS", "NAME"),
 		},
@@ -920,13 +920,18 @@ func TestNewPhysicalDistinctFor_FreezesStreamingInner(t *testing.T) {
 		t.Fatal("non-streaming-eligible member must yield Streaming=false")
 	}
 	plainInnerRef := dpPlain.GetInnerQuantifier().GetRangesOver()
-	// LIVE: the plain inner is the exploratory edge (no final members), so a
-	// later push-rule canonicalization of the leg stays reachable.
-	if len(plainInnerRef.FinalMembers()) != 0 {
-		t.Fatalf("a plain distinct must carry the LIVE exploratory edge (no frozen final members), got %d", len(plainInnerRef.FinalMembers()))
+	// A PLAN, memoized as Java's memoizePlan does: the member as the one final
+	// of a planned-stage reference, an ordinary group (not pinned), so a later
+	// push-rule canonicalization of the leg still explores it. Never a plan in
+	// the exploratory lane of a canonical-stage group, which would cross into
+	// PLANNING with no final.
+	if finals := plainInnerRef.FinalMembers(); len(finals) != 1 || finals[0] != plainMember || len(plainInnerRef.Members()) != 0 {
+		t.Fatalf("a plain distinct must memoize its member as the one final (got %d finals, %d members)",
+			len(plainInnerRef.FinalMembers()), len(plainInnerRef.Members()))
 	}
-	if len(plainInnerRef.Members()) == 0 {
-		t.Fatal("the plain distinct's live edge must hold the member as an exploratory member")
+	if plainInnerRef.Stage() != expressions.StagePlanned || plainInnerRef.IsPinnedFinal() {
+		t.Fatalf("the plain inner must be an unpinned planned-stage group, got stage %v pinned=%t",
+			plainInnerRef.Stage(), plainInnerRef.IsPinnedFinal())
 	}
 	if dpPlain.GetInner() != plainMember {
 		t.Fatalf("the plain inner must resolve to the member's plan; got %T", dpPlain.GetInner())
@@ -1022,7 +1027,7 @@ func TestDistinctFinal_SecondaryUniqueMultiTypeStreamDoesNotEliminate(t *testing
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	scanRow := mustDistinctConstruct(scanQ.RequireFlowedObjectValue())
 	code := mustDistinctConstruct(values.ResolveFieldOrdinals(scanRow, []int{0}))
-	projection := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+	projection := mustDistinctConstruct(newBlockSelectForTest(
 		[]values.Value{code}, scanQ))
 	projectionRef := expressions.InitialOf(projection)
 	projectionRef.Insert(mustDistinctConstruct(plans.NewRecordQueryScanPlan(
@@ -1135,7 +1140,7 @@ func soleUniqueProjectionFor(t *testing.T, column string) expressions.Relational
 		[]string{"T"}, distinctScanType("T")))
 	scanQ := expressions.NamedForEachQuantifier(
 		distinctReadAlias("T"), expressions.InitialOf(scan))
-	return mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+	return mustDistinctConstruct(newBlockSelectForTest(
 		[]values.Value{distinctRead("T", column)}, scanQ,
 	))
 }

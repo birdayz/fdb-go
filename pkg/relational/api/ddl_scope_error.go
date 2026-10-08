@@ -12,7 +12,7 @@ import "fmt"
 // type and read which database was asked for.
 //
 // There is no Java counterpart: Java's SemanticAnalyzer resolves a qualified
-// "/db/SCHEMA" identifier lexically and never consults the connection, so no
+// "/FRL/db/SCHEMA" identifier lexically and never consults the connection, so no
 // Java exception describes this condition. The option that produces it is
 // off by default for exactly that reason.
 type CrossDatabaseDDLError struct {

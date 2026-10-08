@@ -141,8 +141,9 @@ func TestRecordConstructorNullableArrayPreservesEmptyAndNull(t *testing.T) {
 		})
 	}
 
+	// A CAST is NULL only when its operand can be, so the operand is nullable.
 	empty := newConstructor(NewCastValue(
-		NewArrayConstructorValue(NoneType, nil), arrayType))
+		nullableTypedValue{&ConstantValue{Value: []any{}, Typ: NewArrayType(true, NotNullInt)}}, arrayType))
 	emptyDescriptor := stampRecordConstructorForMessageTest(t, empty)
 	emptyResult, err := empty.Evaluate(nil)
 	if err != nil {
@@ -210,3 +211,7 @@ func TestRecordConstructorNullableArrayRejectsForeignElementType(t *testing.T) {
 		t.Fatal("failed array materialization mutated the constructor source or descriptor")
 	}
 }
+
+type nullableTypedValue struct{ *ConstantValue }
+
+func (v nullableTypedValue) Type() Type { return v.Typ }

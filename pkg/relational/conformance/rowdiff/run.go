@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
@@ -78,7 +80,7 @@ const maxPlanErrorSamples = 3
 // projection variant, and diffs each result against Oracle M.
 //
 // setupDB executes DDL (CREATE SCHEMA TEMPLATE / CREATE SCHEMA); dbPath is
-// the database path the caller created (e.g. "/testdb_rowdiff");
+// the database path the caller created (e.g. "/FRL/testdb_rowdiff");
 // clusterFile connects the per-schema query DB.
 func RunSeed(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, seed uint64) *SeedResult {
 	return RunCase(ctx, setupDB, dbPath, clusterFile, Generate(seed), fmt.Sprintf("rd%d", seed), 0)
@@ -119,7 +121,7 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 		}
 	}
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFile, schemaName))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFile, strings.ToUpper(schemaName)))
 	if err != nil {
 		res.Kind = OutcomeInfra
 		res.InfraErr = fmt.Errorf("open: %w", err)
@@ -127,32 +129,39 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 	}
 	defer db.Close()
 
-	// Paging mode: pin ONE connection and give it a scanned-rows limit, so
+	// Paging mode: pin connections and give each a scanned-rows limit, so
 	// every query below internally pages (a NEW Execute per page). The pooled
-	// DB would hand out fresh unconfigured connections.
-	var qdb execQuerier = db
-	if scanLimit > 0 {
-		conn, cerr := db.Conn(ctx)
-		if cerr != nil {
-			res.Kind = OutcomeInfra
-			res.InfraErr = fmt.Errorf("pin conn: %w", cerr)
-			return res
-		}
-		defer conn.Close()
-		if rerr := conn.Raw(func(dc any) error {
-			ec, ok := dc.(*embedded.EmbeddedConnection)
-			if !ok {
-				return fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", dc)
-			}
-			ec.SetOptions(api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
-			return nil
-		}); rerr != nil {
-			res.Kind = OutcomeInfra
-			res.InfraErr = fmt.Errorf("set scan limit: %w", rerr)
-			return res
-		}
-		qdb = conn
+	// DB would hand out fresh unconfigured connections. Statements run on
+	// up to execWorkers connections at once (see executeConcurrently).
+	qdbs := make([]execQuerier, execWorkers)
+	for i := range qdbs {
+		qdbs[i] = db
 	}
+	if scanLimit > 0 {
+		for i := range qdbs {
+			conn, cerr := db.Conn(ctx)
+			if cerr != nil {
+				res.Kind = OutcomeInfra
+				res.InfraErr = fmt.Errorf("pin conn: %w", cerr)
+				return res
+			}
+			defer conn.Close()
+			if rerr := conn.Raw(func(dc any) error {
+				ec, ok := dc.(*embedded.EmbeddedConnection)
+				if !ok {
+					return fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", dc)
+				}
+				ec.SetOptions(api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, scanLimit).Build())
+				return nil
+			}); rerr != nil {
+				res.Kind = OutcomeInfra
+				res.InfraErr = fmt.Errorf("set scan limit: %w", rerr)
+				return res
+			}
+			qdbs[i] = conn
+		}
+	}
+	qdb := qdbs[0]
 
 	insertSQL := c.InsertSQL()
 	if _, err := qdb.ExecContext(ctx, insertSQL); err != nil {
@@ -161,9 +170,25 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 		return res
 	}
 
+	// The typed-plan checks below plan each statement a second time, purely
+	// in memory and independently of the engine run. They are planned up
+	// front on a worker pool and consumed in statement order, so the seed's
+	// histogram, mismatches and their order are exactly the serial ones; the
+	// engine queries stay serial on their (possibly pinned) connection.
+	typed := planTypedConcurrently(c, ddl)
+	execCtx, cancelExec := context.WithCancel(ctx)
+	engine, wait := executeConcurrently(execCtx, c, qdbs)
+	// Registered after the connection closes above, so these run BEFORE them:
+	// an early (INFRA) return abandons the statements not yet consumed and
+	// must not close a connection one of them is still using.
+	defer wait()
+	defer cancelExec()
+
+	n := -1
 	for _, q := range c.Queries {
 		for _, projection := range c.ProjectionsFor(q) {
 			sqlText := c.SQL(q, projection)
+			n++
 
 			// Plan-family telemetry from the TYPED plan tree (never EXPLAIN
 			// text), via the embedded planner over the same DDL. Classified
@@ -171,7 +196,7 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 			// an identical WHERE (a star variant can fetch where the narrow
 			// variant is covering), so star-only classification under-reports
 			// executed families.
-			if plan, planErr := embedded.PlanPhysicalForTest(sqlText, ddl, nil); planErr == nil {
+			if plan, planErr := typed[n].await(); planErr == nil {
 				for _, fam := range classifyPlan(plan) {
 					res.Histogram[fam]++
 				}
@@ -202,7 +227,7 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 				}
 			}
 
-			engineRows, cols, err := queryRows(ctx, qdb, sqlText)
+			engineRows, cols, err := engine[n].await()
 			if err != nil {
 				// RFC-182 §4: INFRA must never masquerade as a soundness
 				// finding. A context/transport failure aborts the seed as
@@ -267,6 +292,116 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 	}
 
 	return finalizeResult(res)
+}
+
+// typedPlan is one statement's in-memory physical plan, filled by a worker.
+type typedPlan struct {
+	done chan struct{}
+	plan plans.RecordQueryPlan
+	err  error
+}
+
+func (p *typedPlan) await() (plans.RecordQueryPlan, error) {
+	<-p.done
+	return p.plan, p.err
+}
+
+// planTypedConcurrently starts PlanPhysicalForTest for every (query,
+// projection) statement of c, in RunCase's iteration order, on up to four
+// goroutines (sweeps already run several seeds at once). Callers that return early leave the remaining
+// workers to finish on their own; they touch nothing but their own slot.
+func planTypedConcurrently(c *Case, ddl string) []*typedPlan {
+	var out []*typedPlan
+	var sqls []string
+	for _, q := range c.Queries {
+		for _, projection := range c.ProjectionsFor(q) {
+			sqls = append(sqls, c.SQL(q, projection))
+			out = append(out, &typedPlan{done: make(chan struct{})})
+		}
+	}
+	sem := make(chan struct{}, Concurrency())
+	go func() {
+		for i, sqlText := range sqls {
+			sem <- struct{}{}
+			go func(p *typedPlan, sqlText string) {
+				defer func() { <-sem }()
+				defer close(p.done)
+				p.plan, p.err = embedded.PlanPhysicalForTest(sqlText, ddl, nil)
+			}(out[i], sqlText)
+		}
+	}()
+	return out
+}
+
+// Concurrency is how many things a sweep does at once at each level: cases
+// (seeds), one case's statements (on that many connections) and its typed
+// plans. A sixth of the cores, at most 4, at least 1: on a 24-core box that is
+// 4, while a 4-vCPU CI runner stays serial, where 4 seeds' fixture INSERTs
+// outran FDB's 5 s transaction limit (40001, reported INFRA).
+func Concurrency() int { return max(1, min(4, runtime.GOMAXPROCS(0)/6)) }
+
+// execWorkers is how many of a seed's statements run on the engine at once.
+var execWorkers = Concurrency()
+
+// engineResult is one statement's engine rows, filled by a worker.
+type engineResult struct {
+	done chan struct{}
+	rows []Row
+	cols []string
+	err  error
+}
+
+func (r *engineResult) await() ([]Row, []string, error) {
+	<-r.done
+	return r.rows, r.cols, r.err
+}
+
+// executeConcurrently runs every (query, projection) statement of c through
+// the engine, in RunCase's iteration order, one worker per querier in qdbs.
+// The statements are read-only over the already-committed fixture, so their
+// answers do not depend on which connection or in which order they run; the
+// caller consumes them in statement order. Cancelling ctx stops handing out
+// statements and resolves the rest with ctx's error; wait blocks until every
+// worker is done with its connection.
+func executeConcurrently(ctx context.Context, c *Case, qdbs []execQuerier) (out []*engineResult, wait func()) {
+	var sqls []string
+	for _, q := range c.Queries {
+		for _, projection := range c.ProjectionsFor(q) {
+			sqls = append(sqls, c.SQL(q, projection))
+			out = append(out, &engineResult{done: make(chan struct{})})
+		}
+	}
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for _, qdb := range qdbs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				r := out[i]
+				r.rows, r.cols, r.err = queryRows(ctx, qdb, sqls[i])
+				close(r.done)
+			}
+		}()
+	}
+	go func() {
+		defer close(next)
+		for i := range sqls {
+			select {
+			case next <- i:
+			case <-ctx.Done():
+				// The caller awaits every statement in order, so the ones
+				// never handed out are resolved with the context's error
+				// rather than left open (a hang).
+				for _, r := range out[i:] {
+					r.err = ctx.Err()
+					close(r.done)
+				}
+				return
+			}
+		}
+	}()
+	return out, wg.Wait
 }
 
 // finalizeResult resolves the seed's single Kind with MISMATCH precedence:

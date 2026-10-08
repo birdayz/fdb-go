@@ -4,19 +4,76 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
+	"slices"
 	"sort"
+	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// UpdateTransform is one column-update of an UPDATE statement: a
-// FieldPath identifying the target column (dot-separated for nested
-// records — e.g. "header.priority") and a replacement Value to evaluate
-// against the row being updated. Mirrors Java's `Update.TransformSpec`
-// shape, kept to the path + replacement Value the executor consumes.
+// UpdateTransform is one field-update of an UPDATE statement: the target
+// field, resolved, and a replacement Value to evaluate against the row being
+// updated. Java's transformation map is keyed by a FieldValue.FieldPath of
+// ResolvedAccessors, and RecordQueryUpdatePlan keys its trie by their ordinals
+// (MessageHelpers.transformMessage addresses each field by it). FieldOrdinals
+// is that path: a column's position in the target, then, for a field of a
+// struct column, each field's position in the struct before it. FieldNames
+// are the fields' names along it, which the plan and the executor check
+// against the ordinals and errors name.
 type UpdateTransform struct {
-	FieldPath string
-	NewValue  values.Value
+	FieldOrdinals []int
+	FieldNames    []string
+	NewValue      values.Value
+}
+
+// CloneUpdateTransforms copies transforms and each one's path, so a caller's
+// later change to its slices reaches no expression or plan built from them.
+func CloneUpdateTransforms(transforms []UpdateTransform) []UpdateTransform {
+	out := make([]UpdateTransform, len(transforms))
+	for i, t := range transforms {
+		out[i] = UpdateTransform{FieldOrdinals: slices.Clone(t.FieldOrdinals), FieldNames: slices.Clone(t.FieldNames), NewValue: t.NewValue}
+	}
+	return out
+}
+
+// FieldPath is the transform's field path for display, its names joined by '.'.
+func (t UpdateTransform) FieldPath() string { return strings.Join(t.FieldNames, ".") }
+
+// updateOrdinalsLess is Java's FieldValue.FieldPath.comparator: the ordinal
+// paths compared lexicographically.
+func updateOrdinalsLess(a, b []int) bool {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if a[i] != b[i] {
+			return a[i] < b[i]
+		}
+	}
+	return len(a) < len(b)
+}
+
+// UpdateOrdinalsPrefix reports whether path a is a prefix of path b (or
+// equal to it), FieldValue.FieldPath.isPrefixOf over the ordinals.
+func UpdateOrdinalsPrefix(a, b []int) bool {
+	if len(a) > len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// UpdateTransformAmbiguousError is Java's SemanticException
+// UPDATE_TRANSFORM_AMBIGUOUS: one transform's field path is a prefix of
+// another's, so which value the shared field takes is ambiguous
+// (RecordQueryUpdatePlan.checkAndPrepareOrderedFieldPaths).
+type UpdateTransformAmbiguousError struct {
+	Prefix, Path string
+}
+
+func (e *UpdateTransformAmbiguousError) Error() string {
+	return fmt.Sprintf("the transformations used in an UPDATE statement are ambiguous: %s is a prefix of %s", e.Prefix, e.Path)
 }
 
 // UpdateExpression represents UPDATE <recordType> SET col=expr WHERE ...
@@ -26,20 +83,26 @@ type UpdateTransform struct {
 // Ports the structural surface of Java's
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.UpdateExpression`.
 // Java's full implementation includes a Type.Record `targetType` and
-// a `transformations` map keyed by FieldPath. We keep the simpler
-// list-of-transforms shape with a plain-string FieldPath (Java
-// models it as a list of accessors, but the planner serialises to
-// dot-separated form anyway).
+// a `transformations` map keyed by FieldPath. Go keeps a list of
+// transforms, each a resolved field path (Java's FieldPath of
+// ResolvedAccessors), ordered by ordinals as Java orders the map's paths.
 type UpdateExpression struct {
 	inner            Quantifier
 	targetRecordType string
-	targetType       values.ExactTypeHandle
-	transforms       []UpdateTransform // canonicalised: sorted by FieldPath
-	resultValue      values.Value
+	// targetAlias is the correlation the SET values read the target row through,
+	// carried apart from targetRecordType (the stored record-type name, the
+	// structural identity), RFC-238 §7c. The SQL translator scopes the SET list
+	// under the table's SQL name, which differs from the stored name for an
+	// escaped table (`MY$TABLE` stored as `MY__1TABLE`). The zero value reads the
+	// target through NamedCorrelationIdentifier(targetRecordType).
+	targetAlias values.CorrelationIdentifier
+	targetType  values.ExactTypeHandle
+	transforms  []UpdateTransform // canonicalised: sorted by FieldOrdinals
+	resultValue values.Value
 }
 
 // NewUpdateExpression builds an UPDATE. The transforms slice is
-// copied AND sorted by FieldPath (canonicalisation — two UPDATEs
+// copied AND sorted by the field paths' ordinals (canonicalisation — two UPDATEs
 // with the same SET-list in different SQL textual order should be
 // EqualsWithoutChildren-equal).
 func NewUpdateExpression(inner Quantifier, targetRecordType string, targetType values.Type, transforms []UpdateTransform) (*UpdateExpression, error) {
@@ -55,16 +118,17 @@ func NewUpdateExpression(inner Quantifier, targetRecordType string, targetType v
 		return nil, err
 	}
 	resultType := &values.RecordType{Fields: []values.Field{
-		{Name: "OLD", Ordinal: 0, FieldType: oldValue.FlowedType()},
-		{Name: "NEW", Ordinal: 1, FieldType: exactTarget.Type()},
+		{Name: "old", Ordinal: 0, FieldType: oldValue.FlowedType()},
+		{Name: "new", Ordinal: 1, FieldType: values.WithNullability(exactTarget.Type(), true)},
 	}}
 	exactResult, err := snapshotExpressionResultType("UpdateExpression", resultType)
 	if err != nil {
 		return nil, err
 	}
-	copied := make([]UpdateTransform, len(transforms))
-	copy(copied, transforms)
-	sort.SliceStable(copied, func(i, j int) bool { return copied[i].FieldPath < copied[j].FieldPath })
+	copied := CloneUpdateTransforms(transforms)
+	// Java orders the transformation map's paths by their ordinals
+	// (FieldValue.FieldPath.comparator).
+	sort.SliceStable(copied, func(i, j int) bool { return updateOrdinalsLess(copied[i].FieldOrdinals, copied[j].FieldOrdinals) })
 	return &UpdateExpression{
 		inner:            inner,
 		targetRecordType: targetRecordType,
@@ -80,11 +144,27 @@ func (e *UpdateExpression) GetInner() Quantifier { return e.inner }
 // GetTargetRecordType returns the target record-type name.
 func (e *UpdateExpression) GetTargetRecordType() string { return e.targetRecordType }
 
+// WithTargetAlias returns a copy whose SET values read the target row through
+// alias (see the targetAlias field).
+func (e *UpdateExpression) WithTargetAlias(alias values.CorrelationIdentifier) *UpdateExpression {
+	cp := *e
+	cp.targetAlias = alias
+	return &cp
+}
+
+// GetTargetAlias is the correlation the SET values read the target row through.
+func (e *UpdateExpression) GetTargetAlias() values.CorrelationIdentifier {
+	if e.targetAlias.IsZero() {
+		return values.NamedCorrelationIdentifier(e.targetRecordType)
+	}
+	return e.targetAlias
+}
+
 // GetTargetType returns a defensive copy of the exact target record type.
 func (e *UpdateExpression) GetTargetType() values.Type { return e.targetType.Type() }
 
-// GetTransforms returns the canonical (sorted-by-FieldPath) transform
-// list. Read-only.
+// GetTransforms returns the canonical transform list, sorted by the field
+// paths' ordinals. Read-only.
 func (e *UpdateExpression) GetTransforms() []UpdateTransform { return e.transforms }
 
 // GetResultValue passes the inner's flowed object through with the TYPE
@@ -95,7 +175,7 @@ func (e *UpdateExpression) GetTransforms() []UpdateTransform { return e.transfor
 // `new QueriedValue(computeResultType(inner.getFlowedObjectType(), targetType))`,
 // and computeResultType (:209-213) builds a TWO-FIELD record — `OLD` carrying the
 // inner's row and `NEW` carrying the target's. An UPDATE flows the before/after
-// pair, which is what makes `UPDATE … RETURNING "OLD"."X", "NEW"."X"` expressible.
+// pair, which is what makes `UPDATE … RETURNING "old".x, "new".x` expressible.
 // Go returns the inner's row: not a differently-shaped version of the same claim,
 // a different row with a different column count.
 //
@@ -152,11 +232,12 @@ func (e *UpdateExpression) EqualsWithoutChildren(other RelationalExpression, ali
 	if len(e.transforms) != len(o.transforms) {
 		return false
 	}
-	// Alias-aware SET-value equality (RFC-040 040.2). FieldPath is a string
-	// path (alias-free). Inert under the memo's empty-alias path until PR-A.
+	// Alias-aware SET-value equality (RFC-040 040.2). A field path compares
+	// by its ordinals, as Java's ResolvedAccessor equality does; it is
+	// alias-free. Inert under the memo's empty-alias path until PR-A.
 	vm := aliases.ToValuesAliasMap()
 	for i := range e.transforms {
-		if e.transforms[i].FieldPath != o.transforms[i].FieldPath {
+		if !slices.Equal(e.transforms[i].FieldOrdinals, o.transforms[i].FieldOrdinals) {
 			return false
 		}
 		if !values.SemanticEqualsUnderAliasMap(e.transforms[i].NewValue, o.transforms[i].NewValue, vm) {
@@ -175,7 +256,10 @@ func (e *UpdateExpression) HashCodeWithoutChildren() uint64 {
 	h.Write([]byte{0})
 	var buf [8]byte
 	for _, tx := range e.transforms {
-		h.Write([]byte(tx.FieldPath))
+		for _, o := range tx.FieldOrdinals {
+			binary.LittleEndian.PutUint64(buf[:], uint64(o)) //nolint:gosec
+			h.Write(buf[:])
+		}
 		h.Write([]byte{0x1})
 		binary.LittleEndian.PutUint64(buf[:], values.SemanticHashCode(tx.NewValue))
 		h.Write(buf[:])
@@ -188,7 +272,11 @@ func (e *UpdateExpression) WithQuantifiers(quantifiers []Quantifier) (Relational
 	if err := requireQuantifierArity("UpdateExpression", len(quantifiers), 1); err != nil {
 		return nil, err
 	}
-	return NewUpdateExpression(quantifiers[0], e.targetRecordType, e.targetType.Type(), e.transforms)
+	rebuilt, err := NewUpdateExpression(quantifiers[0], e.targetRecordType, e.targetType.Type(), e.transforms)
+	if err != nil {
+		return nil, err
+	}
+	return rebuilt.WithTargetAlias(e.targetAlias), nil
 }
 
 var _ RelationalExpression = (*UpdateExpression)(nil)

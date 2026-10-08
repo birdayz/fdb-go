@@ -64,15 +64,20 @@ func distinctUnionScan(recordType string, rowType values.Type) *plans.RecordQuer
 		[]string{recordType}, rowType, false))
 }
 
-func TestImplementDistinctUnionRule_MatchesLogicalDistinct(t *testing.T) {
+// Java's rule hangs off its primary-key dedup node, which is Go's
+// LogicalUnique; Go's full-row LogicalDistinct is a different operator.
+func TestImplementDistinctUnionRule_MatchesThePrimaryKeyDedup(t *testing.T) {
 	t.Parallel()
 	rule := NewImplementDistinctUnionRule()
 	scanRef := expressions.InitialOf(mustDistinctUnionConstruct(expressions.NewFullUnorderedScanExpression(
 		[]string{"T"}, distinctUnionScanRowType())))
+	unique := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(expressions.ForEachQuantifier(scanRef)))
+	if len(rule.Matcher().BindMatches(matching.NewBindings(), unique)) == 0 {
+		t.Fatal("should match LogicalUniqueExpression")
+	}
 	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(scanRef)))
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), distinct)
-	if len(bindings) == 0 {
-		t.Fatal("should match LogicalDistinctExpression")
+	if len(rule.Matcher().BindMatches(matching.NewBindings(), distinct)) != 0 {
+		t.Fatal("should not match the full-row LogicalDistinctExpression")
 	}
 }
 
@@ -98,7 +103,7 @@ func TestImplementDistinctUnionRule_RequiresUnionChild(t *testing.T) {
 	pm.Add(sw)
 	innerRef.SetPlanProperties(pm)
 
-	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(innerRef)))
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(expressions.ForEachQuantifier(innerRef)))
 	outerRef := expressions.InitialOf(distinct)
 
 	results := mustFireImplementationRule(t, NewImplementDistinctUnionRule(), outerRef)
@@ -136,7 +141,7 @@ func TestImplementDistinctUnionRule_FiresWithPKAndStoredRecord(t *testing.T) {
 
 	unionRef := expressions.InitialOf(union)
 
-	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(unionRef)))
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(expressions.ForEachQuantifier(unionRef)))
 	outerRef := expressions.InitialOf(distinct)
 
 	results := mustFireImplementationRule(t, NewImplementDistinctUnionRule(), outerRef)
@@ -153,6 +158,47 @@ func TestImplementDistinctUnionRule_FiresWithPKAndStoredRecord(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("should yield *plans.RecordQueryMergeSortUnionPlan")
+	}
+}
+
+// TestImplementDistinctUnionRule_LegKeepsEveryMergeableMember pins that the
+// rule pre-selects no leg member (RFC-257 WS-F F-8): a merge leg ranges over
+// every member of its group that can feed the merge, each spine pinned, as
+// Java's leg ranges over its whole partition, so the leg's own optimization
+// chooses and a rule over the merge sees every alternative.
+func TestImplementDistinctUnionRule_LegKeepsEveryMergeableMember(t *testing.T) {
+	t.Parallel()
+	scan, scanRef := makeScanWithPK("T", "id")
+	typeFiltered := mustDistinctUnionConstruct(plans.NewRecordQueryTypeFilterPlanFromQuantifier(
+		[]string{"T"}, expressions.NewPhysicalQuantifier(scanRef)))
+	refA := expressions.InitialOf(scan)
+	refA.Insert(typeFiltered)
+	pm := NewPlanPropertiesMap()
+	pm.Add(scan)
+	pm.Add(typeFiltered)
+	refA.SetPlanProperties(pm)
+	_, refB := makeScanWithPK("T", "id")
+
+	union := mustDistinctUnionConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		expressions.ForEachQuantifier(refA),
+		expressions.ForEachQuantifier(refB),
+	}))
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(
+		expressions.ForEachQuantifier(expressions.InitialOf(union))))
+
+	merges := 0
+	for _, r := range mustFireImplementationRule(t, NewImplementDistinctUnionRule(), expressions.InitialOf(distinct)) {
+		merge, ok := r.(*plans.RecordQueryMergeSortUnionPlan)
+		if !ok {
+			continue
+		}
+		merges++
+		if got := len(merge.GetQuantifiers()[0].GetRangesOver().AllMembers()); got != 2 {
+			t.Fatalf("leg A ranges over %d members, want both the scan and the type-filtered scan", got)
+		}
+	}
+	if merges == 0 {
+		t.Fatal("no merge yielded")
 	}
 }
 
@@ -179,7 +225,7 @@ func TestImplementDistinctUnionRule_NoFireWithoutPK(t *testing.T) {
 
 	unionRef := expressions.InitialOf(union)
 
-	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(unionRef)))
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(expressions.ForEachQuantifier(unionRef)))
 	outerRef := expressions.InitialOf(distinct)
 
 	results := mustFireImplementationRule(t, NewImplementDistinctUnionRule(), outerRef)
@@ -200,102 +246,12 @@ func TestImplementDistinctUnionRule_IncompatiblePK(t *testing.T) {
 
 	unionRef := expressions.InitialOf(union)
 
-	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(unionRef)))
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(expressions.ForEachQuantifier(unionRef)))
 	outerRef := expressions.InitialOf(distinct)
 
 	results := mustFireImplementationRule(t, NewImplementDistinctUnionRule(), outerRef)
 	if len(results) != 0 {
 		t.Fatalf("should not fire with incompatible PKs, got %d", len(results))
-	}
-}
-
-func TestGetCommonPK_AllSame(t *testing.T) {
-	t.Parallel()
-	pk := distinctUnionNamedFields("id")
-	p1 := &PlanPartition{
-		partitionProps: properties.PropertyMap{properties.PropPrimaryKey: pk},
-	}
-	p2 := &PlanPartition{
-		partitionProps: properties.PropertyMap{properties.PropPrimaryKey: pk},
-	}
-	result := getCommonPK([]*PlanPartition{p1, p2})
-	if result == nil {
-		t.Fatal("same PK should return non-nil")
-	}
-}
-
-func TestGetCommonPK_OneMissing(t *testing.T) {
-	t.Parallel()
-	pk := distinctUnionNamedFields("id")
-	p1 := &PlanPartition{
-		partitionProps: properties.PropertyMap{properties.PropPrimaryKey: pk},
-	}
-	p2 := &PlanPartition{
-		partitionProps: properties.PropertyMap{properties.PropPrimaryKey: nil},
-	}
-	result := getCommonPK([]*PlanPartition{p1, p2})
-	if result != nil {
-		t.Fatal("missing PK should return nil")
-	}
-}
-
-func TestRemoveCommonEqualityBoundParts_NoCommon(t *testing.T) {
-	t.Parallel()
-	keys := distinctUnionNamedFields("a", "b")
-	keyA, keyB := keys[0], keys[1]
-	o1 := properties.NewRichOrdering(
-		map[values.Value][]properties.OrderingBinding{keyA: {properties.FixedBinding(nil)}},
-		[]values.Value{keyA}, properties.NotDistinct())
-	o2 := properties.NewRichOrdering(
-		map[values.Value][]properties.OrderingBinding{keyB: {properties.FixedBinding(nil)}},
-		[]values.Value{keyB}, properties.NotDistinct())
-	result := removeCommonEqualityBoundParts([]*properties.RichOrdering{o1, o2})
-	if len(result) != 2 {
-		t.Fatalf("expected 2 orderings, got %d", len(result))
-	}
-	if len(result[0].GetKeys()) != 1 || len(result[1].GetKeys()) != 1 {
-		t.Fatal("no keys should be removed")
-	}
-}
-
-func TestRemoveCommonEqualityBoundParts_CommonRemoved(t *testing.T) {
-	t.Parallel()
-	keys := distinctUnionNamedFields("a", "b")
-	keyA, keyB := keys[0], keys[1]
-	o1 := properties.NewRichOrdering(
-		map[values.Value][]properties.OrderingBinding{
-			keyA: {properties.FixedBinding(nil)},
-			keyB: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
-		},
-		[]values.Value{keyA, keyB}, properties.NotDistinct())
-	o2 := properties.NewRichOrdering(
-		map[values.Value][]properties.OrderingBinding{
-			keyA: {properties.FixedBinding(nil)},
-			keyB: {properties.SortedBinding(properties.ProvidedSortOrderDescending)},
-		},
-		[]values.Value{keyA, keyB}, properties.NotDistinct())
-	result := removeCommonEqualityBoundParts([]*properties.RichOrdering{o1, o2})
-	if len(result) != 2 {
-		t.Fatalf("expected 2 orderings, got %d", len(result))
-	}
-	if len(result[0].GetKeys()) != 1 {
-		t.Fatalf("expected 1 key after removal, got %d", len(result[0].GetKeys()))
-	}
-	field, ok := values.AsFieldValue(result[0].GetKeys()[0])
-	if !ok || field.DisplayName() != "b" {
-		t.Fatalf("expected key 'b', got %q", values.ExplainValue(result[0].GetKeys()[0]))
-	}
-}
-
-func TestRemoveCommonEqualityBoundParts_SingleOrdering(t *testing.T) {
-	t.Parallel()
-	keyA := distinctUnionNamedFields("a")[0]
-	o := properties.NewRichOrdering(
-		map[values.Value][]properties.OrderingBinding{keyA: {properties.FixedBinding(nil)}},
-		[]values.Value{keyA}, properties.NotDistinct())
-	result := removeCommonEqualityBoundParts([]*properties.RichOrdering{o})
-	if len(result) != 1 || len(result[0].GetKeys()) != 1 {
-		t.Fatal("single ordering should not be modified")
 	}
 }
 
@@ -348,7 +304,7 @@ func TestImplementDistinctUnionRule_LyingDelegatorLegPinned(t *testing.T) {
 	}))
 
 	unionRef := expressions.InitialOf(union)
-	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(unionRef)))
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(expressions.ForEachQuantifier(unionRef)))
 	outerRef := expressions.InitialOf(distinct)
 
 	results := mustFireImplementationRule(t, NewImplementDistinctUnionRule(), outerRef)
@@ -405,7 +361,7 @@ func distinctUnionOverLegs(legs ...*expressions.Reference) *expressions.Referenc
 		quantifiers[i] = expressions.ForEachQuantifier(leg)
 	}
 	union := mustDistinctUnionConstruct(expressions.NewLogicalUnionExpression(quantifiers))
-	distinct := mustDistinctUnionConstruct(expressions.NewLogicalDistinctExpression(
+	distinct := mustDistinctUnionConstruct(expressions.NewRequiredLogicalUniqueExpression(
 		expressions.ForEachQuantifier(expressions.InitialOf(union))))
 
 	return expressions.InitialOf(distinct)
@@ -510,7 +466,7 @@ func distinctUnionProjectedLeg(constant int64) *expressions.Reference {
 	projectionQ := expressions.ForEachQuantifier(scanRef)
 	projectionRoot := mustDistinctUnionConstruct(projectionQ.RequireFlowedObjectValue())
 	id := mustDistinctUnionConstruct(values.ResolveFieldOrdinals(projectionRoot, []int{0}))
-	projection := mustDistinctUnionConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+	projection := mustDistinctUnionConstruct(newProjectionMapFromQuantifierForTest(
 		[]values.Value{id, &values.ConstantValue{Value: constant, Typ: values.NotNullLong}},
 		[]string{"ID", "V"},
 		projectionQ))
@@ -550,17 +506,16 @@ func TestImplementDistinctUnionRule_RejectsPrimaryKeyThroughReshapingProjection(
 	}
 }
 
-// TestImplementDistinctUnionRule_FetchDoesNotRestoreProjectedRows pins the Go
-// executor contract (which differs from the Java plan model): Fetch currently
-// executes its child unchanged because index scans already return record
-// payloads. It therefore cannot turn (ID,constant) back into the full stored
-// row, and must not make a row-shaping projection eligible for PK dedup.
+// TestImplementDistinctUnionRule_FetchDoesNotRestoreProjectedRows pins that a
+// row-shaping projection below a Fetch stays ineligible for PK dedup: the
+// proof admits only operators that select rows between a Fetch and its covering
+// scan, and (ID,constant) carries no stored-row identity of its own.
 func TestImplementDistinctUnionRule_FetchDoesNotRestoreProjectedRows(t *testing.T) {
 	t.Parallel()
 
 	fetchLeg := func(constant int64) *expressions.Reference {
 		projectionRef := distinctUnionProjectedLeg(constant)
-		projection := projectionRef.FinalMembers()[0].(*plans.RecordQueryProjectionPlan)
+		projection := projectionRef.FinalMembers()[0].(*plans.RecordQueryMapPlan)
 		resultType := projection.GetResultType()
 		fetch := mustDistinctUnionConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 			expressions.ForEachQuantifier(projectionRef),
@@ -603,7 +558,7 @@ func TestMergeDistinctStoredRecordIdentity_RejectsPlannerIdentityRowWrappers(t *
 
 	projectionQ := expressions.ForEachQuantifier(scanRef)
 	projectionRoot := mustDistinctUnionConstruct(projectionQ.RequireFlowedObjectValue())
-	if projection, err := plans.NewRecordQueryProjectionPlanFromQuantifier(
+	if projection, err := newProjectionMapFromQuantifierForTest(
 		[]values.Value{projectionRoot}, nil, projectionQ,
 	); !errors.Is(err, values.ErrWholeRowProjection) || projection != nil {
 		t.Fatalf("whole-row identity Projection = (%#v, %v), want constructor rejection", projection, err)
@@ -704,6 +659,34 @@ func TestMergeDistinctLegProducesDistinctRecords_IndexSignal(t *testing.T) {
 	scalar, _ := distinctUnionIndexLeg(&createsDuplicates)
 	if !mergeDistinctLegProducesDistinctRecords(scalar) {
 		t.Fatal("scalar index with an explicit !createsDuplicates signal should prove distinctness")
+	}
+}
+
+// TestMergeDistinctStoredRecordIdentity_CoveringOnlyUnderAFetch pins the
+// covering arm: a bare covering index emits a partial row its base primary key
+// does not identify, so it proves nothing; under a primary-key Fetch, which
+// loads the stored record that key names, it proves the index's record type,
+// as the plain index scan does. It is what lets an ordered union of covering
+// legs push below one fetch (Java's `COVERING ∪ COVERING COMPARE BY (_.ID) |
+// FETCH`, w8_or_two_indexes).
+func TestMergeDistinctStoredRecordIdentity_CoveringOnlyUnderAFetch(t *testing.T) {
+	t.Parallel()
+
+	index, _ := distinctUnionIndexLeg(nil)
+	pk := index.GetCommonPrimaryKeyValues()
+	if recordType, ok := mergeDistinctStoredRecordIdentity(index, pk); !ok || recordType != "T" {
+		t.Fatalf("index scan identity = (%q,%v), want (T,true)", recordType, ok)
+	}
+	covering := mustDistinctUnionConstruct(plans.NewRecordQueryCoveringIndexPlan(index))
+	if recordType, ok := mergeDistinctStoredRecordIdentity(covering, pk); ok {
+		t.Fatalf("a bare covering scan proved identity %q", recordType)
+	}
+	coveringRef := expressions.FinalOf(covering)
+	computeRefPlanProperties(coveringRef)
+	fetch := mustDistinctUnionConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+		expressions.ForEachQuantifier(coveringRef), nil, index.GetResultType(), plans.FetchIndexRecordsPrimaryKey))
+	if recordType, ok := mergeDistinctStoredRecordIdentity(fetch, pk); !ok || recordType != "T" {
+		t.Fatalf("Fetch(Covering) identity = (%q,%v), want (T,true)", recordType, ok)
 	}
 }
 

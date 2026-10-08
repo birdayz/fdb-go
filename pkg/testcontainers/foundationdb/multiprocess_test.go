@@ -38,7 +38,7 @@ func TestWithProcessCount_Single(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fdbcli: %v", err)
 	}
-	if !strings.Contains(output, "available") && !strings.Contains(output, "Healthy") {
+	if !DatabaseAvailable(output) {
 		t.Fatalf("expected available/Healthy, got: %s", output)
 	}
 }
@@ -76,7 +76,7 @@ func TestWithProcessCount_Three(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fdbcli: %v", err)
 	}
-	if !strings.Contains(output, "available") && !strings.Contains(output, "Healthy") {
+	if !DatabaseAvailable(output) {
 		t.Fatalf("expected available/Healthy, got: %s", output)
 	}
 

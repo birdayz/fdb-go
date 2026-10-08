@@ -178,6 +178,27 @@ func TestPushReferencedFieldsThroughSelect(t *testing.T) {
 	}
 }
 
+func TestReferencedFieldsFromRangeOperands(t *testing.T) {
+	t.Parallel()
+	_, q := referencedFieldsScanQ()
+	p := predicates.NewPredicateWithValueAndRanges(referencedField(q, 0), []*predicates.RangeConstraints{
+		predicates.NewRangeConstraints(nil, []predicates.Comparison{
+			{Type: predicates.ComparisonGreaterThan, Operand: referencedField(q, 1)},
+			{Type: predicates.ComparisonLessThan, Operand: referencedField(q, 2)},
+		}),
+	})
+	out := map[string]struct{}{}
+	collectPredicateFieldValues(p, out)
+	for _, name := range []string{"X", "A", "B"} {
+		if _, ok := out[name]; !ok {
+			t.Errorf("range lost referenced field %s: %v", name, out)
+		}
+	}
+	if len(out) != 3 {
+		t.Fatalf("referenced fields = %v, want exactly X, A, B", out)
+	}
+}
+
 func TestPushReferencedFieldsThroughUnique(t *testing.T) {
 	t.Parallel()
 
@@ -198,6 +219,57 @@ func TestPushReferencedFieldsThroughUnique(t *testing.T) {
 	}
 	if !rf.Contains("PK") {
 		t.Fatal("expected PK in referenced fields")
+	}
+}
+
+func TestReferencedFieldPassThroughPreservesConstraintPresence(t *testing.T) {
+	t.Parallel()
+	for _, operator := range []string{"unique", "distinct"} {
+		for _, state := range []string{"absent", "empty", "populated"} {
+			t.Run(operator+"/"+state, func(t *testing.T) {
+				t.Parallel()
+				child, q := referencedFieldsScanQ()
+				var parent expressions.RelationalExpression
+				var rule ImplementationRule
+				if operator == "unique" {
+					parent = mustReferencedFieldsConstruct(expressions.NewLogicalUniqueExpression(q))
+					rule = NewPushReferencedFieldsThroughUniqueRule()
+				} else {
+					parent = mustReferencedFieldsConstruct(expressions.NewLogicalDistinctExpression(q))
+					rule = NewPushReferencedFieldsThroughDistinctRule()
+				}
+				ref := expressions.InitialOf(parent)
+				cm := NewConstraintMap()
+				incoming := EmptyReferencedFields()
+				if state == "populated" {
+					incoming = NewReferencedFields(map[string]struct{}{"PK": {}})
+				}
+				if state != "absent" {
+					Set(cm, ref, ReferencedFieldsConstraintKey, incoming)
+				}
+				child.ConstraintsMap().SetExplored()
+				tick := child.ConstraintsMap().CurrentTick()
+				fireConstraintRule(t, rule, ref, cm)
+				got, present := Get(cm, child, ReferencedFieldsConstraintKey)
+				if state == "absent" {
+					if present || child.ConstraintsMap().CurrentTick() != tick || child.NeedsExploration() {
+						t.Fatalf("absent constraint was manufactured: present=%v tick=%d->%d needsExploration=%v",
+							present, tick, child.ConstraintsMap().CurrentTick(), child.NeedsExploration())
+					}
+					return
+				}
+				if !present || got != incoming || !child.NeedsExploration() {
+					t.Fatalf("present %s constraint was not propagated: present=%v fields=%v needsExploration=%v",
+						state, present, got, child.NeedsExploration())
+				}
+				propagatedTick := child.ConstraintsMap().CurrentTick()
+				child.ConstraintsMap().SetExplored()
+				fireConstraintRule(t, rule, ref, cm)
+				if child.ConstraintsMap().CurrentTick() != propagatedTick || child.NeedsExploration() {
+					t.Fatal("identical constraint push rearmed the child")
+				}
+			})
+		}
 	}
 }
 

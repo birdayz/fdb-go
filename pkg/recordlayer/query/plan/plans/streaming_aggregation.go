@@ -65,6 +65,22 @@ func NewRecordQueryStreamingAggregationPlanFromQuantifier(
 	return newRecordQueryStreamingAggregationPlan(innerQ, groupingKeys, aggregates, nil)
 }
 
+// NewRecordQueryStreamingAggregationPlanForGroupBy implements a GroupBy
+// whose output columns carry outputNames: the logical aggregate's names,
+// which its keys, re-rooted onto the physical input, would not re-derive.
+func NewRecordQueryStreamingAggregationPlanForGroupBy(
+	innerQ expressions.Quantifier,
+	groupingKeys []values.Value,
+	aggregates []expressions.AggregateSpec,
+	outputNames []string,
+) (*RecordQueryStreamingAggregationPlan, error) {
+	if len(outputNames) != len(groupingKeys)+len(aggregates) {
+		return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan: %d output names for %d keys and %d aggregates",
+			len(outputNames), len(groupingKeys), len(aggregates))
+	}
+	return newRecordQueryStreamingAggregationPlan(innerQ, groupingKeys, aggregates, outputNames)
+}
+
 func newRecordQueryStreamingAggregationPlan(
 	innerQ expressions.Quantifier,
 	groupingKeys []values.Value,
@@ -182,7 +198,37 @@ func (p *RecordQueryStreamingAggregationPlan) GetQuantifiers() []expressions.Qua
 	return []expressions.Quantifier{p.innerQ}
 }
 
+// GetCorrelatedToWithoutChildren is Java's
+// RecordQueryStreamingAggregationPlan.computeCorrelatedToWithoutChildren: the
+// grouping key and aggregate values' correlations. The framework subtracts the
+// plan's own inner alias, so what survives is an outer quantifier a key or an
+// aggregate operand reads (`SUM(h.f * w.f)` in a lateral block).
+func (p *RecordQueryStreamingAggregationPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	out := map[values.CorrelationIdentifier]struct{}{}
+	for _, key := range p.groupingKeys {
+		for k := range values.GetCorrelatedToOfValue(key) {
+			out[k] = struct{}{}
+		}
+	}
+	for _, agg := range p.aggregates {
+		if agg.Operand == nil {
+			continue
+		}
+		for k := range values.GetCorrelatedToOfValue(agg.Operand) {
+			out[k] = struct{}{}
+		}
+	}
+	delete(out, values.CurrentCorrelation())
+	return out
+}
+
 func (p *RecordQueryStreamingAggregationPlan) GetGroupingKeys() []values.Value { return p.groupingKeys }
+
+// GetOutputNames is the output row's column names.
+func (p *RecordQueryStreamingAggregationPlan) GetOutputNames() []string {
+	return append([]string(nil), p.outputNames...)
+}
+
 func (p *RecordQueryStreamingAggregationPlan) GetAggregates() []expressions.AggregateSpec {
 	return p.aggregates
 }
@@ -243,6 +289,16 @@ func streamingAggregationOutputRecordType(
 				return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan aggregate %d %s requires an operand", i, aggregate.Function)
 			}
 			resultType = values.WithNullability(aggregate.Operand.Type(), true)
+		case expressions.AggBitmapConstructAgg:
+			if aggregate.Operand == nil {
+				return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan aggregate %d BITMAP_CONSTRUCT_AGG requires an operand", i)
+			}
+			resultType = values.NullableBytes
+		case expressions.AggArrayAgg:
+			if aggregate.Operand == nil {
+				return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan aggregate %d ARRAY_AGG requires an operand", i)
+			}
+			resultType = values.NewArrayAggValue(aggregate.Operand, aggregate.IgnoreNulls, aggregate.Limit).Type()
 		default:
 			return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan aggregate %d has unsupported function %d", i, aggregate.Function)
 		}
@@ -273,21 +329,21 @@ func (p *RecordQueryStreamingAggregationPlan) GetChildren() []RecordQueryPlan {
 func (p *RecordQueryStreamingAggregationPlan) structuralKey() *structuralKey {
 	k := newStructuralKey().Values(p.groupingKeys)
 	for _, a := range p.aggregates {
-		k.Int(int(a.Function)).Value(a.Operand)
+		k.Int(int(a.Function)).Value(a.Operand).Bool(a.IgnoreNulls).Int(a.Limit)
 	}
 	return k
 }
 
 func (p *RecordQueryStreamingAggregationPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryStreamingAggregationPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryStreamingAggregationPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("streamagg|")
+	hash := p.keyFor(p).Hash("streamagg|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }
@@ -423,12 +479,32 @@ func validateStreamingAggregationOldInputRoots(
 		if providesErr == nil && provided {
 			return true
 		}
+		if !layoutRetainsCorrelation(layout, root.Correlation()) {
+			// Neither the input nor a source it retains: an enclosing block's
+			// row (`MAX(a.x)` in a lateral derived table over `a`), bound at
+			// runtime by the enclosing FlatMap as a projection's outer read is.
+			// Java's aggregate operands may be correlated to any outer
+			// quantifier.
+			return true
+		}
 		rootErr = fmt.Errorf(
 			"QOV root correlation %s is foreign to input edge %s",
 			root.Correlation().Name(), input.Correlation().Name())
 		return false
 	})
 	return rootErr
+}
+
+// layoutRetainsCorrelation reports whether layout retains a source window
+// under correlation — a root the input row owns, which must then be provided
+// exactly rather than accepted as an outer read.
+func layoutRetainsCorrelation(layout values.OrdinalLayout, correlation values.CorrelationIdentifier) bool {
+	for _, source := range layout.WindowSources() {
+		if source != nil && source.Correlation() == correlation {
+			return true
+		}
+	}
+	return false
 }
 
 // rebaseStreamingAggregationInputValue validates both sides of the edge

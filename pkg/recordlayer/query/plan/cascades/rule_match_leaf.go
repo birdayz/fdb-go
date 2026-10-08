@@ -1,11 +1,13 @@
 package cascades
 
 import (
+	"reflect"
 	"sort"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // MatchLeafRule is the Cascades rule that seeds the partial-match
@@ -30,15 +32,45 @@ type MatchLeafRule struct {
 // NewMatchLeafRule constructs a MatchLeafRule.
 func NewMatchLeafRule() *MatchLeafRule {
 	return &MatchLeafRule{
-		matcher: NewExpressionMatcher[expressions.RelationalExpression]("match_leaf"),
+		matcher: NewExpressionMatcher[expressions.RelationalExpression]("match_leaf").WithRootPredicate(
+			func(expr expressions.RelationalExpression) bool { return len(expr.GetQuantifiers()) == 0 },
+		),
 	}
 }
 
-// Matcher returns the binding matcher. Matches any RelationalExpression
-// (the leaf check is performed inside OnMatch). This mirrors Java's
-// MatchLeafRule which returns Optional.empty() from getRootOperator()
-// so it fires on all expression types.
+// ConstraintDependencies mirrors Java's constraint-independent matching rule.
+func (r *MatchLeafRule) ConstraintDependencies() []any { return nil }
+
+// Matcher admits leaves of any expression type, matching Java's empty-quantifier pattern.
 func (r *MatchLeafRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+// These query implementations require the same concrete candidate type.
+// Unknown implementations may define cross-type equality and remain eligible.
+func (p *Planner) canMatchLeaf(expr expressions.RelationalExpression) bool {
+	switch expr.(type) {
+	case *expressions.FullUnorderedScanExpression, *expressions.ExplodeExpression,
+		*plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan, *plans.RecordQueryCoveringIndexPlan:
+	default:
+		return true
+	}
+	if p.ctx == nil {
+		return false
+	}
+	if p.leafCandidateTypes == nil {
+		p.leafCandidateTypes = make(map[reflect.Type]struct{})
+		for _, candidate := range p.ctx.GetMatchCandidates() {
+			if traversal := candidate.GetTraversal(); traversal != nil {
+				for _, pair := range traversal.refExprPairs {
+					if len(pair.expr.GetQuantifiers()) == 0 {
+						p.leafCandidateTypes[reflect.TypeOf(pair.expr)] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	_, possible := p.leafCandidateTypes[reflect.TypeOf(expr)]
+	return possible
+}
 
 // OnMatch iterates all MatchCandidates, finds leaf references in each
 // candidate's Traversal, and attempts a structural match between the

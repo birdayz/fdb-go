@@ -1,319 +1,399 @@
 package expressions
 
 import (
+	"slices"
+	"strings"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// MemoEqual reports whether two expressions are the SAME memo member —
-// alias-aware structural equality where two sub-expressions identical up to a
-// consistent renaming of quantifier aliases are recognized as one member.
-//
-// Faithful port of Java Reference.isMemoizedExpression (RFC-039). Sequence:
-// hashCodeWithoutChildren → quantifier count → external-correlation guard →
-// canCorrelate → bindIdentities/combine → directional in-memo child match
-// (containsAllInMemo; ChildrenAsSet via capped permutation) →
-// equalsWithoutChildren under the BUILT (node's own) quantifier-alias map.
-//
-// This is the activation (RFC-038 PR-A) of the RFC-040 foundation: the
-// foundation made EqualsWithoutChildren alias-aware and HashCodeWithoutChildren
-// alias-invariant; memoEqual builds the node's own quantifier-alias map and
-// feeds it to EqualsWithoutChildren — which the memo's compare sites use so
-// rule-rewritten equivalents (fresh aliases) intern/merge together.
-//
-// Distinct from SemanticEquals (which passes only the INCOMING alias map to the
-// top-level EqualsWithoutChildren, missing same-level quantifier-alias
-// canonicalization — exactly why interning was alias-limited before).
+// MemoEqual implements Java Reference.isMemoizedExpression: external bindings
+// stay fixed, while child bindings are matched before comparing node information.
 func MemoEqual(a, b RelationalExpression) bool {
+	return newMemoEquality().equal(a, b, EmptyAliasMap())
+}
+
+// MemoEqualWithHashes reuses the caller's verified immutable node hashes.
+func MemoEqualWithHashes(a, b RelationalExpression, aHash, bHash uint64) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	return memoEqual(a, b, EmptyAliasMap(), nil)
+	equality := newMemoEquality()
+	equality.hashes[a] = aHash
+	equality.hashes[b] = bHash
+	return equality.equal(a, b, EmptyAliasMap())
 }
 
-// refPair keys the on-path cycle guard for childRefsMatchInMemo (see
-// childRefsMatchInMemo for why).
+// MemoComparison runs several MemoEqual tests against one unchanged graph,
+// sharing what they derive. Discard it before the graph changes.
+type MemoComparison struct {
+	equality memoEquality
+}
+
+// MemberEqual is MemoEqualWithHashes for a member of ref, with the hash both
+// sides share.
+func (c *MemoComparison) MemberEqual(ref *Reference, member, expression RelationalExpression, hash uint64) bool {
+	if member == nil || expression == nil {
+		return member == nil && expression == nil
+	}
+	if c.equality.hashes == nil {
+		c.equality.hashes = make(map[RelationalExpression]uint64)
+	}
+	c.equality.hashes[member] = hash
+	c.equality.hashes[expression] = hash
+	return c.equality.equalIn(canonicalReferenceReadOnly(ref), member, nil, expression, EmptyAliasMap())
+}
+
 type refPair struct{ a, b *Reference }
 
-func memoEqual(member, expr RelationalExpression, equiv *AliasMap, visited map[refPair]struct{}) bool {
-	if member == expr {
-		return true
-	}
-	if member.HashCodeWithoutChildren() != expr.HashCodeWithoutChildren() {
-		return false
-	}
-	mq := member.GetQuantifiers()
-	eq := expr.GetQuantifiers()
-	if len(mq) != len(eq) {
-		return false
-	}
-	// External-correlation guard (Java Reference.java:764–773): correlations
-	// these nodes depend on (excluding their own quantifiers) must correspond
-	// under equiv — prevents interning nodes that differ only in an outer
-	// correlation (…=a.x vs …=b.y).
-	if !correlatedToMatches(member, expr, equiv) {
-		return false
-	}
-	if member.CanCorrelate() != expr.CanCorrelate() {
-		return false
-	}
-	// bindIdentities + combine: fold the shared external correlations into
-	// equiv as identities so a node correlated to a sibling/outer quantifier
-	// is canonicalized identically on both sides.
-	equiv = combineIdentities(equiv, member)
-	// Match children, building the node's own quantifier-alias map.
-	built, ok := matchChildrenInMemo(member, expr, mq, eq, equiv, visited)
-	if !ok {
-		return false
-	}
-	return member.EqualsWithoutChildren(expr, built)
+type memoEquality struct {
+	correlations referenceCorrelationReader
+	hashes       map[RelationalExpression]uint64
+	active       map[refPair]struct{}
+	// matched remembers reference comparisons on a stable graph. A comparison
+	// depends on the bindings only through the left reference's free aliases:
+	// the bindings it is given are its ancestors', which no descendant
+	// quantifier shares in an acyclic memo.
+	matched map[refPair][]refMatch
+	// cycles counts comparisons cut short by the cycle guard; a result that
+	// relied on one is not remembered.
+	cycles int
+	// quantifierOrder caches each expression's quantifier dependencies.
+	quantifierOrder map[RelationalExpression][][]int
 }
 
-// matchChildrenInMemo matches member's and expr's child Quantifiers, building
-// the node's own quantifier-alias map (member.q[i]↦expr.q[i]). Order-significant
-// children pair positionally; ChildrenAsSet nodes try permutations (capped at
-// MaxPermutationChildren). Each child pair is compared via DIRECTIONAL
-// childRefsMatchInMemo. Returns the built map.
-func matchChildrenInMemo(member, expr RelationalExpression, mq, eq []Quantifier, equiv *AliasMap, visited map[refPair]struct{}) (*AliasMap, bool) {
-	n := len(mq)
-	if n == 0 {
-		return equiv, true
+func (e *memoEquality) dependencies(expression RelationalExpression) [][]int {
+	if deps, ok := e.quantifierOrder[expression]; ok {
+		return deps
 	}
-	if member.ChildrenAsSet() && expr.ChildrenAsSet() && n <= MaxPermutationChildren {
-		indices := make([]int, n)
-		for i := range indices {
-			indices[i] = i
-		}
-		var built *AliasMap
-		found := permute(indices, 0, func(perm []int) bool {
-			b := equiv
-			for i := 0; i < n; i++ {
-				if !quantifierAttributesEqual(mq[i], eq[perm[i]]) {
-					return false
-				}
-				if !childRefsMatchInMemo(mq[i].GetRangesOver(), eq[perm[i]].GetRangesOver(), b, visited) {
-					return false
-				}
-				nb, ok := b.With(mq[i].GetAlias(), eq[perm[i]].GetAlias())
-				if !ok {
-					return false
-				}
-				b = nb
-			}
-			built = b
-			return true
-		})
-		if found {
-			return built, true
-		}
-		return nil, false
+	deps := quantifierDependencies(expression.GetQuantifiers(), expression.CanCorrelate(), e.correlations.correlatedTo)
+	if e.quantifierOrder == nil {
+		e.quantifierOrder = make(map[RelationalExpression][][]int)
 	}
-	b := equiv
-	for i := 0; i < n; i++ {
-		// Edge attributes (kind / null-on-empty / strict-single) are part
-		// of memo identity — see sameChildReferences and
-		// quantifierAttributesEqual.
-		if !quantifierAttributesEqual(mq[i], eq[i]) {
-			return nil, false
+	e.quantifierOrder[expression] = deps
+	return deps
+}
+
+type refMatch struct {
+	bindings []values.AliasPair
+	result   bool
+}
+
+func newMemoEquality() *memoEquality {
+	return &memoEquality{hashes: make(map[RelationalExpression]uint64)}
+}
+
+func (e *memoEquality) hash(expression RelationalExpression) uint64 {
+	if hash, ok := e.hashes[expression]; ok {
+		return hash
+	}
+	hash := expression.HashCodeWithoutChildren()
+	if e.hashes == nil {
+		e.hashes = make(map[RelationalExpression]uint64)
+	}
+	e.hashes[expression] = hash
+	return hash
+}
+
+func (e *memoEquality) equal(member, expression RelationalExpression, aliases *AliasMap) bool {
+	return e.equalIn(nil, member, nil, expression, aliases)
+}
+
+// equalIn is equal for a member of memberRef and an expression of
+// expressionRef, either nil when unknown; a member's group carries its
+// correlation snapshot from earlier reads.
+func (e *memoEquality) equalIn(memberRef *Reference, member RelationalExpression, expressionRef *Reference, expression RelationalExpression, aliases *AliasMap) bool {
+	if member == nil || expression == nil {
+		return member == nil && expression == nil
+	}
+	if aliases == nil {
+		aliases = EmptyAliasMap()
+	}
+	if member == expression && aliases.DefinesOnlyIdentities() {
+		return true
+	}
+	if member.CanCorrelate() != expression.CanCorrelate() ||
+		len(member.GetQuantifiers()) != len(expression.GetQuantifiers()) ||
+		e.hash(member) != e.hash(expression) {
+		return false
+	}
+	if !childGroupsCanMatch(member, expression) {
+		return false
+	}
+	memberCorrelations := e.correlations.expressionIn(memberRef, member)
+	otherCorrelations := e.correlations.expressionIn(expressionRef, expression)
+	if len(memberCorrelations) != len(otherCorrelations) {
+		return false
+	}
+	bound := aliases
+	for source := range memberCorrelations {
+		target := aliases.GetTargetOrDefault(source, source)
+		if _, present := otherCorrelations[target]; !present {
+			return false
 		}
-		if !childRefsMatchInMemo(mq[i].GetRangesOver(), eq[i].GetRangesOver(), b, visited) {
-			return nil, false
-		}
-		nb, ok := b.With(mq[i].GetAlias(), eq[i].GetAlias())
+		var ok bool
+		bound, ok = bound.With(source, target)
 		if !ok {
-			return nil, false
+			return false
 		}
-		b = nb
 	}
-	return b, true
+	return matchQuantifierBindings(member, expression, bound, e.dependencies, e.references, nil)
 }
 
-// childRefsMatchInMemo is DIRECTIONAL containsAllInMemo (Java
-// Reference.containsAllInMemo, Reference.java:433-454): every member of `b`
-// must be matched by SOME member of `a` under equiv. Pointer-canonical equality
-// is the fast path (Java's `this == otherRef`); otherwise it recurses — rule
-// rewrites yield fresh InitialOf children (e.g. PushFilterThroughDistinct), so
-// equal children can be distinct pointers. Recursion descends strictly through
-// child References, which form an acyclic DAG (the cross-group merge guard in
-// memo_merge.go, walking AllMembers(), forbids creating a cycle), so it
-// terminates. The `visited` on-path pair set is defense-in-depth for that
-// invariant: in normal (acyclic) operation no reference pair is revisited on a
-// single descent path, so it never triggers and behavior is identical; should a
-// cycle ever reach here (a merge-guard under-approximation, a future bug), the
-// re-entered pair is treated as NOT matching — a missed intern (harmless
-// duplicate member), never a non-terminating recursion. A hang is worse than a
-// wrong row. The set is backtracking (delete on return) so it stays a strict
-// on-path set: a pair reachable via two SIBLING paths (a memo diamond) still
-// compares normally.
-//
-// Exploratory and final members match SEPARATELY (exploratory↦exploratory,
-// final↦final) — exactly Java's two-call structure (Reference.java:439-440),
-// never cross-matching a logical rewrite against a physical plan. During the
-// REWRITING-phase interning that drives the activation, finalMembers are empty
-// so the second check is a no-op; the explicit final↦final pass keeps the port
-// faithful for any future PLANNING-phase caller.
-func childRefsMatchInMemo(a, b *Reference, equiv *AliasMap, visited map[refPair]struct{}) bool {
+// References compare complete exploratory and final populations separately.
+// Containment is directional: an existing group may expose more alternatives.
+func (e *memoEquality) references(a, b *Reference, aliases *AliasMap) bool {
+	a, b = canonicalReferenceReadOnly(a), canonicalReferenceReadOnly(b)
 	if a == nil || b == nil {
-		return a == b
+		return a == nil && b == nil
 	}
-	a = a.Canonical()
-	b = b.Canonical()
-	if a == b {
+	if a == b && aliases.DefinesOnlyIdentities() {
 		return true
 	}
-	key := refPair{a, b}
-	if _, onPath := visited[key]; onPath {
+	if !a.memberSignature().covers(b.memberSignature()) {
 		return false
 	}
-	if visited == nil {
-		visited = make(map[refPair]struct{}, 4)
-	}
-	visited[key] = struct{}{}
-	ok := membersContainAllInMemo(a.Members(), b.Members(), equiv, visited) &&
-		membersContainAllInMemo(a.FinalMembers(), b.FinalMembers(), equiv, visited)
-	delete(visited, key)
-	return ok
-}
-
-// membersContainAllInMemo reports whether every expression in want is matched
-// by SOME expression in have under equiv (Java Members.containsInMemo loop,
-// Reference.java:444-453 / 1013-1018). Directional, not bidirectional.
-func membersContainAllInMemo(have, want []RelationalExpression, equiv *AliasMap, visited map[refPair]struct{}) bool {
-	for _, w := range want {
-		matched := false
-		for _, h := range have {
-			if memoEqual(h, w, equiv, visited) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-	return true
-}
-
-// correlatedToMatches ports Java Reference.java:764–773: maps member's external
-// correlations through equiv (identity fast path when equiv defines only
-// identities) and requires the mapped set to equal expr's external correlations.
-func correlatedToMatches(member, expr RelationalExpression, equiv *AliasMap) bool {
-	mc := expressionCorrelatedTo(member)
-	ec := expressionCorrelatedTo(expr)
-	if len(mc) != len(ec) {
+	pair := refPair{a, b}
+	if _, cycle := e.active[pair]; cycle {
+		e.cycles++
 		return false
 	}
-	identities := equiv.DefinesOnlyIdentities()
-	for alias := range mc {
-		mapped := alias
-		if !identities {
-			mapped = equiv.GetTargetOrDefault(alias, alias)
-		}
-		if _, ok := ec[mapped]; !ok {
-			return false
+	bindings := e.boundFreeAliases(a, aliases)
+	for _, m := range e.matched[pair] {
+		if slices.Equal(m.bindings, bindings) {
+			return m.result
 		}
 	}
-	return true
-}
-
-// combineIdentities binds member's external correlations into equiv as identity
-// bindings (alias↦alias) when not already bound — Java's bindIdentities +
-// combine. correlatedToMatches has verified the correspondence.
-func combineIdentities(equiv *AliasMap, member RelationalExpression) *AliasMap {
-	out := equiv
-	for alias := range expressionCorrelatedTo(member) {
-		if _, bound := out.GetTarget(alias); bound {
-			continue
-		}
-		if next, ok := out.With(alias, alias); ok {
-			out = next
-		}
+	if e.active == nil {
+		e.active = make(map[refPair]struct{})
 	}
-	return out
-}
-
-// expressionCorrelatedTo returns the full external correlation set of an
-// expression — its own correlations plus children's, minus the aliases bound by
-// its own quantifiers. Mirrors the per-member body of Reference.GetCorrelatedTo.
-func expressionCorrelatedTo(e RelationalExpression) map[values.CorrelationIdentifier]struct{} {
-	own := make(map[values.CorrelationIdentifier]struct{})
-	for _, q := range e.GetQuantifiers() {
-		own[q.GetAlias()] = struct{}{}
-	}
-	result := make(map[values.CorrelationIdentifier]struct{})
-	// EXTERNAL correlations only: a node's own node-info (e.g. a Filter's
-	// predicate) may reference its own quantifier alias, which is LOCALLY
-	// BOUND, not external — exclude own aliases from every contribution.
-	for k := range e.GetCorrelatedToWithoutChildren() {
-		if _, bound := own[k]; !bound {
-			result[k] = struct{}{}
+	e.active[pair] = struct{}{}
+	cycles := e.cycles
+	result := e.members(a, a.members, b, b.members, aliases) && e.members(a, a.finalMembers, b, b.finalMembers, aliases)
+	delete(e.active, pair)
+	if e.cycles == cycles {
+		if e.matched == nil {
+			e.matched = make(map[refPair][]refMatch)
 		}
-	}
-	for _, q := range e.GetQuantifiers() {
-		child := q.GetRangesOver()
-		if child == nil {
-			continue
-		}
-		// Java filters own aliases from the children contribution only when
-		// canCorrelate() (RelationalExpression.computeCorrelatedTo, line 72:
-		// `!canCorrelate() || ...`). Subtracting unconditionally here is safe:
-		// a child Reference cannot correlate to the alias that names it, so the
-		// own-alias set never intersects the children's correlations — the
-		// guard is structurally unreachable, and dropping it can only ever
-		// remove an alias that wasn't present.
-		for k := range child.GetCorrelatedTo() {
-			if _, bound := own[k]; !bound {
-				result[k] = struct{}{}
-			}
-		}
+		e.matched[pair] = append(e.matched[pair], refMatch{bindings, result})
 	}
 	return result
 }
 
-// GetCorrelatedToOfExpression returns the exact external correlations of one
-// expression member. Unlike Reference.GetCorrelatedTo, it does not union the
-// correlations of alternate members in the same memo group. Match metadata
-// pull-up needs the member-local answer: treating an alias exposed only by an
-// alternative member as constant can preserve a value that this expression
-// does not actually hold constant.
-func GetCorrelatedToOfExpression(
-	e RelationalExpression,
-) map[values.CorrelationIdentifier]struct{} {
+// boundFreeAliases is aliases restricted to ref's free aliases, ordered by
+// name; an order tie only costs a cache miss.
+func (e *memoEquality) boundFreeAliases(ref *Reference, aliases *AliasMap) []values.AliasPair {
+	free := e.correlations.correlatedTo(ref)
+	if len(free) == 0 || aliases.IsEmpty() {
+		return nil
+	}
+	var pairs []values.AliasPair
+	for source := range free {
+		if target, ok := aliases.GetTarget(source); ok {
+			pairs = append(pairs, values.AliasPair{Source: source, Target: target})
+		}
+	}
+	slices.SortFunc(pairs, func(x, y values.AliasPair) int {
+		if c := strings.Compare(x.Source.Name(), y.Source.Name()); c != 0 {
+			return c
+		}
+		return strings.Compare(x.Target.Name(), y.Target.Name())
+	})
+	return pairs
+}
+
+func (e *memoEquality) members(haveRef *Reference, have []RelationalExpression, wantRef *Reference, want []RelationalExpression, aliases *AliasMap) bool {
+	for _, wanted := range want {
+		found := false
+		for _, member := range have {
+			if e.equalIn(haveRef, member, wantRef, wanted, aliases) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// GetCorrelatedToOfExpression returns member-local external correlations rather
+// than the union of correlations over the member's entire memo group.
+func GetCorrelatedToOfExpression(e RelationalExpression) map[values.CorrelationIdentifier]struct{} {
+	return expressionCorrelations(e, func(ref *Reference) map[values.CorrelationIdentifier]struct{} {
+		if ref == nil {
+			return nil
+		}
+		return ref.GetCorrelatedTo()
+	})
+}
+
+// Java overrides computeCorrelatedTo for operators with non-quantifier bindings.
+// Child reads must stay in the caller's dependency-tracking traversal.
+type correlationComputer interface {
+	ComputeCorrelatedTo(func(*Reference) map[values.CorrelationIdentifier]struct{}) map[values.CorrelationIdentifier]struct{}
+}
+
+func expressionCorrelations(e RelationalExpression, childCorrelations func(*Reference) map[values.CorrelationIdentifier]struct{}) map[values.CorrelationIdentifier]struct{} {
 	if e == nil {
 		return nil
 	}
-	if recursiveUnion, ok := e.(*RecursiveUnionExpression); ok {
-		// RecursiveUnion satisfies the two temporary-table correlations
-		// itself. Java overrides computeCorrelatedTo for this expression
-		// instead of using the generic with-children implementation.
-		result := make(map[values.CorrelationIdentifier]struct{})
-		for _, quantifier := range recursiveUnion.GetQuantifiers() {
-			for alias := range quantifier.GetCorrelatedTo() {
-				if alias != recursiveUnion.GetTempTableScanAlias() &&
-					alias != recursiveUnion.GetTempTableInsertAlias() {
-					result[alias] = struct{}{}
-				}
-			}
-		}
-		return result
-	}
-
-	ownAliases := make(map[values.CorrelationIdentifier]struct{})
-	for _, quantifier := range e.GetQuantifiers() {
-		ownAliases[quantifier.GetAlias()] = struct{}{}
+	if custom, ok := e.(correlationComputer); ok {
+		return custom.ComputeCorrelatedTo(childCorrelations)
 	}
 	result := make(map[values.CorrelationIdentifier]struct{})
+	quantifiers := e.GetQuantifiers()
+	owned := func(alias values.CorrelationIdentifier) bool {
+		for _, quantifier := range quantifiers {
+			if quantifier.GetAlias() == alias {
+				return true
+			}
+		}
+		return false
+	}
 	for alias := range e.GetCorrelatedToWithoutChildren() {
-		if _, bound := ownAliases[alias]; !bound {
+		if !owned(alias) {
 			result[alias] = struct{}{}
 		}
 	}
-	for _, quantifier := range e.GetQuantifiers() {
-		for alias := range quantifier.GetCorrelatedTo() {
-			_, bound := ownAliases[alias]
-			if !e.CanCorrelate() || !bound {
+	canCorrelate := e.CanCorrelate()
+	for _, quantifier := range quantifiers {
+		for alias := range childCorrelations(quantifier.GetRangesOver()) {
+			if !canCorrelate || !owned(alias) {
 				result[alias] = struct{}{}
 			}
 		}
 	}
 	return result
+}
+
+// memberSignature is the set of member shapes a group's lanes hold: the
+// (hash, arity, correlatability) every memo-equal pair agrees on.
+type memberSignature struct {
+	version            uint64
+	exploratory, final []uint64
+	// hashes are the exploratory members' hashes, sorted.
+	hashes []uint64
+}
+
+// memberSignature returns r's signature for its current members. r must be
+// canonical.
+func (r *Reference) memberSignature() *memberSignature {
+	if signature := r.signature.Load(); signature != nil && signature.version == r.memberVersion {
+		return signature
+	}
+	signature := &memberSignature{version: r.memberVersion}
+	signature.exploratory, signature.hashes = r.memberShapes(r.members, true)
+	signature.final, _ = r.memberShapes(r.finalMembers, false)
+	r.signature.Store(signature)
+	return signature
+}
+
+// hasExploratoryHash reports whether an exploratory member has hash.
+func (s *memberSignature) hasExploratoryHash(hash uint64) bool {
+	_, found := slices.BinarySearch(s.hashes, hash)
+	return found
+}
+
+func (r *Reference) memberShapes(members []RelationalExpression, withHashes bool) (shapes, hashes []uint64) {
+	shapes = make([]uint64, 0, len(members))
+	if withHashes {
+		hashes = make([]uint64, 0, len(members))
+	}
+	for _, member := range members {
+		hash, ok := r.memberHash[member]
+		if !ok {
+			hash = member.HashCodeWithoutChildren()
+		}
+		if withHashes {
+			hashes = append(hashes, hash)
+		}
+		shape := (hash*31+uint64(len(member.GetQuantifiers())))*2 + 1
+		if member.CanCorrelate() {
+			shape++
+		}
+		shapes = append(shapes, shape)
+	}
+	slices.Sort(shapes)
+	slices.Sort(hashes)
+	return slices.Compact(shapes), hashes
+}
+
+// covers reports whether every shape of other occurs in s, lane by lane: a
+// group can contain another only if each of its members has a candidate.
+func (s *memberSignature) covers(other *memberSignature) bool {
+	return shapesCover(s.exploratory, other.exploratory) && shapesCover(s.final, other.final)
+}
+
+func shapesCover(have, want []uint64) bool {
+	i := 0
+	for _, shape := range want {
+		for i < len(have) && have[i] < shape {
+			i++
+		}
+		if i == len(have) || have[i] != shape {
+			return false
+		}
+	}
+	return true
+}
+
+// childGroupsCanMatch reports whether the children of member and expression
+// pair up, as the binding search may pair them, into groups whose signatures
+// allow containment. The search needs such a pairing; finding none here spares
+// deriving correlations and descending.
+func childGroupsCanMatch(member, expression RelationalExpression) bool {
+	left, right := member.GetQuantifiers(), expression.GetQuantifiers()
+	if len(left) == 0 || len(left) != len(right) {
+		return true
+	}
+	var buf [16]*memberSignature
+	signatures := buf[:0]
+	if 2*len(left) > len(buf) {
+		signatures = make([]*memberSignature, 0, 2*len(left))
+	}
+	for _, quantifiers := range [][]Quantifier{left, right} {
+		for _, quantifier := range quantifiers {
+			var signature *memberSignature
+			if ref := canonicalReferenceReadOnly(quantifier.rangesOver); ref != nil {
+				signature = ref.memberSignature()
+			}
+			signatures = append(signatures, signature)
+		}
+	}
+	have, want := signatures[:len(left)], signatures[len(left):]
+	if !member.ChildrenAsSet() || !expression.ChildrenAsSet() {
+		for i := range have {
+			if !signatureCovers(have[i], want[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	var used uint32
+	var pair func(int) bool
+	pair = func(i int) bool {
+		if i == len(have) {
+			return true
+		}
+		for j := range want {
+			if used&(1<<j) == 0 && signatureCovers(have[i], want[j]) {
+				used |= 1 << j
+				if pair(i + 1) {
+					return true
+				}
+				used &^= 1 << j
+			}
+		}
+		return false
+	}
+	return len(want) > 32 || pair(0)
+}
+
+func signatureCovers(have, want *memberSignature) bool {
+	if have == nil || want == nil {
+		return have == nil && want == nil
+	}
+	return have.covers(want)
 }

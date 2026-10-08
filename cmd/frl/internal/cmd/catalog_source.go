@@ -70,9 +70,10 @@ func relationalKeyspace() *relkeyspace.RelationalKeyspace {
 }
 
 // relationalStoreSubspace resolves the FDB subspace of the record store
-// backing (database, schema) — tuple(dbPath, schemaName) under the
-// relational root. This is the keyspace half of relational addressing;
-// catalogSource is the metadata half.
-func relationalStoreSubspace(database, schema string) (subspace.Subspace, error) {
-	return relationalKeyspace().SchemaSubspace(database, schema)
+// backing (database, schema): Java's (domain, database, schema) longs, looked
+// up without interning anything, so a mistyped address creates nothing. This
+// is the keyspace half of relational addressing; catalogSource is the
+// metadata half.
+func relationalStoreSubspace(ctx context.Context, db *recordlayer.FDBDatabase, database, schema string) (subspace.Subspace, error) {
+	return relationalKeyspace().LookupSchemaSubspace(ctx, db, database, schema)
 }

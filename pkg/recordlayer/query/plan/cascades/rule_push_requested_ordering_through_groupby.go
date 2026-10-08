@@ -48,6 +48,11 @@ func (r *PushRequestedOrderingThroughGroupByRule) Matcher() matching.BindingMatc
 	return r.matcher
 }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *PushRequestedOrderingThroughGroupByRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *PushRequestedOrderingThroughGroupByRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return
@@ -134,6 +139,11 @@ func (r *PushRequestedOrderingThroughGroupByRule) OnMatch(call *ImplementationRu
 	}
 
 	if len(synthesized) > 0 {
+		// Go's aggregation sorts its input in memory when no access provides
+		// the grouping order, so each request is marked sortable.
+		for i, req := range synthesized {
+			synthesized[i] = req.Sortable()
+		}
 		call.PushConstraint(innerRef, synthesized)
 	}
 }

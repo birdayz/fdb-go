@@ -26,18 +26,40 @@ THE SOFTWARE.
 
 lexer grammar RelationalLexer;
 
-channels { MYSQLCOMMENT }
+// Comments follow Java's RelationalLexer.g4: they are skipped (never tokens),
+// a line comment is `--` to CR, LF, CRLF or EOF, block comments nest through the
+// IN_BLOCK_COMMENT mode stack, and `#` is not a comment. Java reports a block
+// comment still open at EOF from emitEOF; the Go target has no emitEOF hook, so
+// the members below count the mode stack and report it from NextToken.
+@lexer::members {
+func (l *RelationalLexer) PushMode(m int) {
+	l.openBlockComments++
+	l.BaseLexer.PushMode(m)
+}
 
-// SKIP
+func (l *RelationalLexer) PopMode() int {
+	l.openBlockComments--
+	return l.BaseLexer.PopMode()
+}
+
+func (l *RelationalLexer) NextToken() antlr.Token {
+	t := l.BaseLexer.NextToken()
+	if t.GetTokenType() == antlr.TokenEOF && l.openBlockComments > 0 {
+		l.openBlockComments = 0
+		l.GetErrorListenerDispatch().SyntaxError(l, nil, l.TokenStartLine, l.TokenStartColumn,
+			"unterminated block comment", nil)
+	}
+	return t
+}
+}
+
+@lexer::structmembers {
+	openBlockComments int
+}
 
 SPACE:                               [ \t\r\n]+    -> skip;
-SPEC_MYSQL_COMMENT:                  '/*!' .+? '*/' -> channel(MYSQLCOMMENT);
-COMMENT_INPUT:                       '/*' .*? '*/' -> channel(HIDDEN);
-LINE_COMMENT:                        (
-                                       ('--' [ \t] | '#') ~[\r\n]* ('\r'? '\n' | EOF)
-                                       | '--' ('\r'? '\n' | EOF)
-                                     ) -> channel(HIDDEN);
-
+COMMENT_INPUT:                       '/*'          -> skip, pushMode(IN_BLOCK_COMMENT);
+LINE_COMMENT:                        '--' ~[\r\n]* ('\r' '\n'? | '\n' | EOF) -> skip;
 
 // Keywords
 // Common Keywords
@@ -79,6 +101,7 @@ CURSOR:                              'CURSOR';
 DATABASE:                            'DATABASE';
 DATABASES:                           'DATABASES';
 DECLARE:                             'DECLARE';
+DEEP:                                'DEEP';
 DEFAULT:                             'DEFAULT';
 DELAYED:                             'DELAYED';
 DELETE:                              'DELETE';
@@ -113,6 +136,7 @@ GRANT:                               'GRANT';
 GROUP:                               'GROUP';
 HAVING:                              'HAVING';
 HNSW:                                'HNSW';
+GUARDIANN:                           'GUARDIANN';
 SPFRESH:                             'SPFRESH';
 HIGH_PRIORITY:                       'HIGH_PRIORITY';
 HISTOGRAM:                           'HISTOGRAM';
@@ -168,6 +192,7 @@ OVER:                                'OVER';
 OUTER:                               'OUTER';
 OUTFILE:                             'OUTFILE';
 PARTITION:                           'PARTITION';
+PLAN:                                'PLAN';
 PRIMARY:                             'PRIMARY';
 PROCEDURE:                           'PROCEDURE';
 PURGE:                               'PURGE';
@@ -338,6 +363,7 @@ JSON_OBJECTAGG:                      'JSON_OBJECTAGG';
 
 // Group function Keywords
 
+ARRAY_AGG:                           'ARRAY_AGG';
 AVG:                                 'AVG';
 BIT_AND:                             'BIT_AND';
 BITMAP_BIT_POSITION:                 'BITMAP_BIT_POSITION';
@@ -655,6 +681,7 @@ REPLICATE_WILD_DO_TABLE:             'REPLICATE_WILD_DO_TABLE';
 REPLICATE_WILD_IGNORE_TABLE:         'REPLICATE_WILD_IGNORE_TABLE';
 REPLICATION:                         'REPLICATION';
 RESET:                               'RESET';
+RESPECT:                             'RESPECT';
 RESUME:                              'RESUME';
 RETURNED_SQLSTATE:                   'RETURNED_SQLSTATE';
 RETURNING:                           'RETURNING';
@@ -1391,3 +1418,9 @@ fragment DECIMAL_TYPE_MODIFIER:      (INT_TYPE_MODIFIER | LONG_TYPE_MODIFIER);
 ERROR_RECOGNITION
     : .
     ;
+
+mode IN_BLOCK_COMMENT;
+
+BLOCK_COMMENT_OPEN:                  '/*' -> skip, pushMode(IN_BLOCK_COMMENT);
+BLOCK_COMMENT_CLOSE:                 '*/' -> skip, popMode;
+BLOCK_COMMENT_BODY:                  .    -> skip;

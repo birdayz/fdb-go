@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sort"
+	"strings"
 	"sync/atomic"
 
 	"fdb.dev/pkg/dst"
@@ -43,7 +44,7 @@ const nlValRange = int32(1000)
 
 // nlDBPath is FIXED across runs (only the cache key varies), so the persisted keyspace for a
 // given seed is byte-identical run-to-run and hunt.Fingerprint is a valid determinism probe.
-const nlDBPath = "/nulldb"
+const nlDBPath = "/FRL/nulldb"
 
 // nlKeyCounter uniquifies the per-run cache key so concurrent workers never collide on the
 // backend registry. It is NOT part of the persisted data (the database path is fixed), so it
@@ -184,7 +185,7 @@ func nlNewHarness(seed uint64) (*nlHarness, error) {
 	h := &nlHarness{env: env, simDB: simDB}
 	h.closes = append(h.closes, sqldriver.RegisterBackend(key, simDB))
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+nlDBPath+"?cluster_file="+key)
+	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(nlDBPath)+"?cluster_file="+key)
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open setup: %w", err)
@@ -202,7 +203,7 @@ func nlNewHarness(seed uint64) (*nlHarness, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+nlDBPath+"?cluster_file="+key+"&schema=s")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(nlDBPath)+"?cluster_file="+key+"&schema=S")
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open db: %w", err)

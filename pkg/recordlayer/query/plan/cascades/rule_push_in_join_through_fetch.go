@@ -40,12 +40,6 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// The InJoin is its own cascades expression now (RFC-184 W2).
 	inJoinPlan := matching.Get[*plans.RecordQueryInJoinPlan](call.Bindings, r.matcher)
 
-	// Java excludes InComparandJoinPlan: comparand values depend on the
-	// outer record and cannot be safely pushed past a fetch boundary.
-	if inJoinPlan.GetSourceKind() == plans.InSourceComparand {
-		return
-	}
-
 	innerRef := inJoinPlan.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
 		return
@@ -99,6 +93,8 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	}
 	if inValues := inJoinPlan.GetInValues(); inValues != nil {
 		pushedInJoinPlan = pushedInJoinPlan.WithInValues(inValues)
+	} else if comparand := inJoinPlan.GetInComparand(); comparand != nil {
+		pushedInJoinPlan = pushedInJoinPlan.WithInComparand(comparand)
 	}
 	pushedInJoinPlan = pushedInJoinPlan.WithSourceKind(inJoinPlan.GetSourceKind())
 
@@ -107,7 +103,7 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 
 	// Build: Fetch(InJoin(fetchInner)) as its own cascades expression carrying
 	// the live pushedInJoinRef edge (RFC-184 W2).
-	newFetchQ := expressions.ForEachQuantifier(pushedInJoinRef)
+	newFetchQ := expressions.NewPhysicalQuantifier(pushedInJoinRef)
 	newFetchPlan, err := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 		newFetchQ,
 		fetchPlan.GetTranslateValueFunction(),

@@ -32,9 +32,8 @@ func TestTableFunction_GetResultValue(t *testing.T) {
 		values.LiteralValue(int64(1)))
 	tf := mustExpression(NewTableFunctionExpression(r))
 	rv := tf.GetResultValue()
-	// RangeValue's Type() is NotNullLong; QueriedValue typed at NotNullLong.
-	if !rv.Type().Equals(values.NotNullLong) {
-		t.Fatalf("ResultValue type = %v, want NotNullLong", rv.Type())
+	if !rv.Type().Equals(r.Type()) {
+		t.Fatalf("ResultValue type = %v, want %v", rv.Type(), r.Type())
 	}
 }
 

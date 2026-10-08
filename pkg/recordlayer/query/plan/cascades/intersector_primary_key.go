@@ -3,6 +3,8 @@ package cascades
 import (
 	"slices"
 
+	"google.golang.org/protobuf/proto"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -19,10 +21,24 @@ import (
 // This avoids the task cascade that would occur if a logical intersection were
 // inserted and then explored — fresh child References trigger re-exploration
 // loops.
-func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
+func WithPrimaryKeyIntersector(memoizer Memoizer, ctx PlanContext) IntersectorFunc {
+	return func(accesses []Vectored[*SingleMatchedAccess], requestedOrderings []*properties.RequestedOrdering) *IntersectionResult {
+		return withPrimaryKeyIntersector(memoizer, ctx)(accesses, requestedOrderings, make(accessRealizations))
+	}
+}
+
+type realizingIntersectorFunc func(
+	accesses []Vectored[*SingleMatchedAccess],
+	requestedOrderings []*properties.RequestedOrdering,
+	realizations accessRealizations,
+) *IntersectionResult
+
+// Planner consumption shares its private batch across standalone and intersected accesses.
+func withPrimaryKeyIntersector(memoizer Memoizer, ctx PlanContext) realizingIntersectorFunc {
 	return func(
 		accesses []Vectored[*SingleMatchedAccess],
 		requestedOrderings []*properties.RequestedOrdering,
+		realizations accessRealizations,
 	) *IntersectionResult {
 		if len(accesses) < 2 {
 			return NoViableIntersection()
@@ -43,7 +59,10 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 			}
 		}
 
-		intersectionInfos := initializeSingletonIntersectionInfos(accesses, ctx)
+		if realizations == nil {
+			realizations = make(accessRealizations)
+		}
+		intersectionInfos := initializeSingletonIntersectionInfos(memoizer, accesses, ctx, realizations)
 		var intersectionInfoOrder []intersectionInfoKey
 
 		// Java's AbstractDataAccessRule enumerates ChooseK(accesses, k) for
@@ -61,7 +80,7 @@ func WithPrimaryKeyIntersector(ctx PlanContext) IntersectorFunc {
 					return
 				}
 
-				built := createPrimaryKeyIntersection(partition, requestedOrderings, ctx)
+				built := createPrimaryKeyIntersection(memoizer, partition, requestedOrderings, ctx, realizations)
 				if !built.structurallyCompatible {
 					if size == 2 {
 						badPairs[orderedPositionPair(partition[0].Position, partition[1].Position)] = struct{}{}
@@ -214,8 +233,10 @@ func immediateSubpartitions(
 }
 
 func initializeSingletonIntersectionInfos(
+	memoizer Memoizer,
 	accesses []Vectored[*SingleMatchedAccess],
 	ctx PlanContext,
+	realizations accessRealizations,
 ) map[intersectionInfoKey]*IntersectionInfo {
 	infos := make(map[intersectionInfoKey]*IntersectionInfo, len(accesses))
 	for _, vectored := range accesses {
@@ -231,9 +252,8 @@ func initializeSingletonIntersectionInfos(
 		}
 
 		compensation := access.GetCompensation()
-		scan := createScanForAccess(access)
-		expr, ok := compensatedSingleAccessExpression(access, scan)
-		if !ok {
+		expr := realizations.single(memoizer, access)
+		if expr == nil {
 			infos[intersectionInfoKeyForPartition(partition)] = IntersectionInfoOfImpossibleAccess(ordering, compensation)
 			continue
 		}
@@ -245,39 +265,6 @@ func initializeSingletonIntersectionInfos(
 		)
 	}
 	return infos
-}
-
-func compensatedSingleAccessExpression(
-	access *SingleMatchedAccess,
-	scan plans.RecordQueryPlan,
-) (expressions.RelationalExpression, bool) {
-	if access == nil || scan == nil {
-		return nil, false
-	}
-	expr, err := wrapAccessScan(access, scan)
-	if err != nil {
-		return nil, false
-	}
-	compensation := access.GetCompensation()
-	if compensation == nil || compensation.IsImpossible() {
-		return nil, false
-	}
-	if !compensation.IsNeeded() {
-		return expr, true
-	}
-	forMatch, ok := compensation.(*ForMatchCompensation)
-	if !ok || forMatch == nil {
-		return nil, false
-	}
-	return forMatch.ApplyAllNeeded(
-		expr,
-		func(realizedAlias values.CorrelationIdentifier) TranslationMap {
-			return TranslationMapOfAliases(
-				access.GetCandidateTopAlias(),
-				realizedAlias,
-			)
-		},
-	)
 }
 
 // maxCardinalityForRedundancy computes only proof-grade upper bounds. Unknown
@@ -306,7 +293,6 @@ func maxCardinalityForRedundancy(
 
 	switch expr.(type) {
 	case *expressions.LogicalFilterExpression,
-		*expressions.LogicalProjectionExpression,
 		*expressions.LogicalTypeFilterExpression,
 		*expressions.LogicalDistinctExpression,
 		*expressions.LogicalUniqueExpression,
@@ -584,9 +570,11 @@ func translateIntersectionRequestedOrdering(
 // compensation fold cannot be realized; callers must not turn that semantic
 // miss into an ordering-sieve failure.
 func createPrimaryKeyIntersection(
+	memoizer Memoizer,
 	partition []Vectored[*SingleMatchedAccess],
 	requestedOrderings []*properties.RequestedOrdering,
 	ctx PlanContext,
+	realizations accessRealizations,
 ) primaryKeyIntersectionBuild {
 	accesses := make([]*SingleMatchedAccess, 0, len(partition))
 	scans := make([]plans.RecordQueryPlan, 0, len(partition))
@@ -599,7 +587,7 @@ func createPrimaryKeyIntersection(
 		}
 		seenCandidates[name] = struct{}{}
 
-		scan := createScanForAccess(access)
+		scan := realizations.realize(access).scan
 		if scan == nil {
 			return primaryKeyIntersectionBuild{}
 		}
@@ -729,34 +717,10 @@ func createPrimaryKeyIntersection(
 	}
 
 	childQs := make([]expressions.Quantifier, 0, len(partition))
-	for i, access := range accesses {
-		expr, err := wrapAccessScan(
-			access,
-			scans[i],
-		)
-		if err != nil {
+	for _, access := range accesses {
+		expr := realizations.distinctPlan(access)
+		if expr == nil {
 			return primaryKeyIntersectionBuild{}
-		}
-		if candidateCreatesDuplicates(
-			access.GetPartialMatch().GetMatchCandidate(),
-		) {
-			// Java's distinctMatchToScanMap inserts an unordered primary-key
-			// distinct on every fan-out leg before it participates in a merge
-			// intersection. The merge executor has set semantics and the
-			// intersection property advertises distinct records; allowing
-			// duplicate PKs into a leg would violate both contracts.
-			var distinctErr error
-			expr, distinctErr = plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
-				expressions.NewPhysicalQuantifier(
-					expressions.FinalOfAtStage(
-						expr,
-						expressions.StageCanonical,
-					),
-				),
-			)
-			if distinctErr != nil {
-				return primaryKeyIntersectionBuild{}
-			}
 		}
 		childQs = append(childQs, expressions.NewPhysicalQuantifier(
 			expressions.FinalOfAtStage(expr, expressions.StageCanonical),
@@ -779,7 +743,7 @@ func createPrimaryKeyIntersection(
 		if planErr != nil || intersectionPlan == nil {
 			continue
 		}
-		expr, viable := compensateIntersection(accesses, intersectionPlan)
+		expr, viable := compensateIntersection(memoizer, accesses, intersectionPlan)
 		if viable {
 			built.expressions = append(built.expressions, expr)
 		}
@@ -1330,6 +1294,7 @@ func containsComparisonAlternative(
 // a bare Intersection(idx_a, idx_b) and the c residual VANISHED — wrong
 // rows, confirmed live against FDB (see the pinned regression tests).
 func compensateIntersection(
+	memoizer Memoizer,
 	accesses []*SingleMatchedAccess,
 	intersectionExpr expressions.RelationalExpression,
 ) (expressions.RelationalExpression, bool) {
@@ -1351,7 +1316,7 @@ func compensateIntersection(
 		// impossible arm rather than drop the residual.
 		return nil, false
 	}
-	return fmc.ApplyAllNeeded(intersectionExpr, func(realizedAlias values.CorrelationIdentifier) TranslationMap {
+	return fmc.ApplyAllNeeded(memoizer, intersectionExpr, func(realizedAlias values.CorrelationIdentifier) TranslationMap {
 		b := NewTranslationMapBuilder()
 		for _, a := range accesses {
 			topAlias := a.GetCandidateTopAlias()
@@ -1618,5 +1583,35 @@ func createScanForAccess(access *SingleMatchedAccess) plans.RecordQueryPlan {
 		return nil
 	}
 	prefix := candidate.ComputeBoundParameterPrefixMap(bindings)
-	return candidate.ToScanPlan(prefix, access.IsReverseScanOrder())
+	scan := candidate.ToScanPlan(prefix, access.IsReverseScanOrder())
+	vc, isValue := candidate.(*ValueIndexScanMatchCandidate)
+	if !isValue || vc.predicateProto == nil {
+		return scan
+	}
+	// A root match has discharged every filtering candidate predicate through
+	// select subsumption. A leaf match cannot prove sparse-index completeness.
+	pmi, ok := pm.(*PartialMatchImpl)
+	if !ok || vc.GetTraversal() == nil || pmi.GetCandidateRef() != vc.GetTraversal().GetRootReference() {
+		return nil
+	}
+	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(vc.predicateProto)
+	if err != nil {
+		return nil
+	}
+	if bare, ok := scan.(*plans.RecordQueryIndexPlan); ok {
+		return bare.WithMatchedIndexPredicate(encoded)
+	}
+	fetch, ok := scan.(*plans.RecordQueryFetchFromPartialRecordPlan)
+	if !ok {
+		return nil
+	}
+	index, ok := plans.IndexPlanOf(fetch.GetInner())
+	if !ok {
+		return nil
+	}
+	proved := index.WithMatchedIndexPredicate(encoded)
+	if covering, ok := fetch.GetInner().(*plans.RecordQueryCoveringIndexPlan); ok {
+		return fetch.WithInner(covering.WithIndexPlan(proved))
+	}
+	return fetch.WithInner(proved)
 }

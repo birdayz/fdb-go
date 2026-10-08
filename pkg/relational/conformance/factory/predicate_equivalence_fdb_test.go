@@ -341,7 +341,7 @@ func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 				return
 			}
 			defer setupDB.Close()
-			dbPath := fmt.Sprintf("/EQUIV_%d", w)
+			dbPath := fmt.Sprintf("/FRL/EQUIV_%d", w)
 			if _, err := setupDB.ExecContext(ctx, "CREATE DATABASE "+dbPath); err != nil {
 				t.Errorf("worker %d: create database: %v", w, err)
 				return
@@ -451,7 +451,7 @@ func equivSeed(ctx context.Context, t *testing.T, setupDB *sql.DB, dbPath string
 	defer setupDB.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA %s/%s", dbPath, schema)) //nolint:errcheck
 	defer setupDB.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA TEMPLATE %s", tmpl))     //nolint:errcheck
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schema))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schema)))
 	if err != nil {
 		t.Errorf("seed %d: open: %v", seed, err)
 		return res

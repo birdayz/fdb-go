@@ -45,7 +45,7 @@ those tags (`layouts/_partials/head.html`), so **the tag served at `/` resolves 
 package in the root module** — present and future. Packages need no stub page and must
 not get one; a per-package list would rot on every new package for no benefit.
 
-Nested modules (`fdb.dev/cmd/frl`, `fdb.dev/tools/bazelscaleset`) are the one case the
+Nested modules (`fdb.dev/tools/bazelscaleset`) are the one case the
 prefix walk can't reach: it finds the `fdb.dev` tag first and resolves the package against
 the root module, which doesn't contain it — a nested `go.mod` carves that subtree out of
 the parent. Each nested module root therefore needs an HTTP 200 at its exact path, which

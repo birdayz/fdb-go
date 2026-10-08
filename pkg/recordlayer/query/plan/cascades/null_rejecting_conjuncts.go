@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"slices"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -131,20 +133,40 @@ func nullRejectedOrdinals(
 	}
 	ords := map[int]struct{}{}
 	for _, pred := range conjunctsBetweenScanAnd(expr) {
-		cmp, ok := pred.(*predicates.ComparisonPredicate)
-		if !ok {
+		operand, rejects := nullRejectingOperand(pred)
+		if !rejects {
 			continue
 		}
-		if !nullRejectingComparison(cmp.Comparison.Type) {
-			continue
-		}
-		identity, stated := values.CorrelatedFieldIdentityIn(cmp.Operand, layout)
+		identity, stated := values.CorrelatedFieldIdentityIn(operand, layout)
 		if !stated {
 			continue
 		}
 		ords[identity.Ordinal] = struct{}{}
 	}
 	return ords
+}
+
+// nullRejectingOperand is the value pred rejects NULL for. A value-and-ranges
+// predicate holds when the value lies in ANY of its ranges, so every range must
+// carry a NULL-rejecting comparison.
+func nullRejectingOperand(pred predicates.QueryPredicate) (values.Value, bool) {
+	switch p := pred.(type) {
+	case *predicates.ComparisonPredicate:
+		return p.Operand, nullRejectingComparison(p.Comparison.Type)
+	case *predicates.PredicateWithValueAndRanges:
+		if len(p.GetRanges()) == 0 {
+			return nil, false
+		}
+		for _, r := range p.GetRanges() {
+			if !slices.ContainsFunc(r.GetComparisons(), func(c predicates.Comparison) bool {
+				return nullRejectingComparison(c.Type)
+			}) {
+				return nil, false
+			}
+		}
+		return p.GetValue(), true
+	}
+	return nil, false
 }
 
 // conjunctsBetweenScanAnd collects the top-level conjuncts of every filter on
@@ -168,8 +190,12 @@ func conjunctsBetweenScanAnd(expr expressions.RelationalExpression) []predicates
 		case *expressions.LogicalFilterExpression:
 			out = append(out, typed.GetPredicates()...)
 			inner = typed.GetInner()
-		case *expressions.LogicalProjectionExpression:
-			inner = typed.GetInner()
+		case *expressions.SelectExpression:
+			if !isProjectionBlock(typed) {
+				return out
+			}
+			out = append(out, typed.GetPredicates()...)
+			inner = typed.GetQuantifiers()[0]
 		case *expressions.LogicalSortExpression:
 			inner = typed.GetInner()
 		case *expressions.LogicalDistinctExpression:

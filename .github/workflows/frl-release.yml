@@ -1,14 +1,16 @@
 # Release the frl CLI: static cross-compiled binaries + checksums + provenance.
 #
-# Trigger: push a Go nested-module tag (the maintainer's release act, per
+# Trigger: push the project's release tag (the maintainer's release act, per
 # RELEASE.md):
 #
-#   git tag cmd/frl/v0.1.0 && git push origin cmd/frl/v0.1.0
+#   git tag v0.2.0 && git push origin v0.2.0
 #
-# The cmd/frl/vX.Y.Z tag form is what makes `go install fdb.dev/cmd/frl@vX.Y.Z`
-# resolve the same version: the binaries here are byte-for-byte what the Go
-# toolchain would build (GOWORK=off, CGO_ENABLED=0, -trimpath), and
-# `frl version` reports vX.Y.Z via Go's VCS stamping, no ldflags injection.
+# frl is a package of the root module, so the root tag is what
+# `go install fdb.dev/cmd/frl@vX.Y.Z` resolves: the binaries here are
+# byte-for-byte what the Go toolchain would build (CGO_ENABLED=0, -trimpath),
+# and `frl version` reports vX.Y.Z via Go's VCS stamping, no ldflags injection.
+# v0.1.0 shipped frl from a nested module under the tag cmd/frl/v0.1.0;
+# install.sh still finds that release.
 #
 # workflow_dispatch runs the whole pipeline as a dry run (build + smoke +
 # checksums, no release published).
@@ -20,7 +22,7 @@ name: frl release
 
 on:
   push:
-    tags: ["cmd/frl/v*"]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -40,23 +42,21 @@ jobs:
         uses: actions/checkout@v5
         with:
           # Full history + tags: Go's buildvcs derives the module version
-          # from the cmd/frl/vX.Y.Z tag; a shallow clone would stamp a
+          # from the vX.Y.Z tag; a shallow clone would stamp a
           # pseudo-version and the smoke check below would fail the release.
           fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: cmd/frl/go.mod
-          cache-dependency-path: cmd/frl/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Cross-compile static binaries
         working-directory: cmd/frl
         env:
-          # GOWORK=off: build exactly what `go install fdb.dev/cmd/frl@<tag>`
-          # builds: the published module graph with the pinned fdb.dev, not
-          # the workspace. A stale pin fails here, at release time, loudly.
-          GOWORK: "off"
+          # Build exactly what `go install fdb.dev/cmd/frl@<tag>` builds: the
+          # root module's graph, no cgo.
           CGO_ENABLED: "0"
         run: |
           set -euo pipefail
@@ -68,8 +68,8 @@ jobs:
           VERSION="$(./dist/frl-host version --short)"
           echo "stamped version: $VERSION"
 
-          if [[ "$GITHUB_REF" == refs/tags/cmd/frl/* ]]; then
-            TAG_VERSION="${GITHUB_REF_NAME#cmd/frl/}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG_VERSION="$GITHUB_REF_NAME"
             if [[ "$VERSION" != "$TAG_VERSION" ]]; then
               echo "::error::stamped version $VERSION != tag $TAG_VERSION (VCS stamping broke?)"
               exit 1
@@ -113,12 +113,14 @@ jobs:
             cmd/frl/dist/checksums.txt
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/cmd/frl/v')
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           notes="$(cat <<EOF
+          Changes and compatibility notes: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md).
+
           Static, dependency-free binaries of the \`frl\` CLI (pure Go, no cgo; the
           linux binaries run on glibc, musl, and \`FROM scratch\`).
 
@@ -137,16 +139,16 @@ jobs:
           EOF
           )"
           gh release create "$GITHUB_REF_NAME" \
-            --title "frl $VERSION" \
+            --title "$VERSION" \
             --notes "$notes" \
             cmd/frl/dist/frl_*.tar.gz cmd/frl/dist/checksums.txt
 
       - name: Verify published download URL (what install.sh fetches)
-        if: startsWith(github.ref, 'refs/tags/cmd/frl/v')
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
-          # The install script downloads via the slashed-tag URL; prove it
-          # resolves and serves the exact bytes we just published.
+          # The install script downloads via the tag's URL; prove it resolves
+          # and serves the exact bytes we just published.
           url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/frl_${VERSION}_linux_amd64.tar.gz"
           for i in {1..10}; do
             curl -fsSL -o /tmp/published.tar.gz "$url" && break

@@ -33,21 +33,9 @@ type structuralInapplicability struct {
 
 // secondPlanInapplicable is the whole ledger of families that may bless on TLP
 // alone. It is deliberately short and expensive to extend.
-var secondPlanInapplicable = []structuralInapplicability{
-	{
-		Family: "correlated-exists",
-		Pin:    "TestFDB_SecondPlanIsBlindToCorrelatedExists",
-		// A perturbation the EXISTS plan actually responds to. Disabling
-		// index matching cannot help: the outer leg of a correlated EXISTS is
-		// a filtered scan in the baseline too, so both plans come out
-		// byte-identical. A decorrelation-perturbing oracle — forcing the
-		// semi-join to be answered by a different join strategy, or disabling
-		// the EXISTS-to-FlatMap lowering — would give the comparison two
-		// genuinely different plans and retire this entry.
-		Upgrade: "a decorrelation-perturbing oracle (RFC-201 §5.5)",
-		Applies: func(c Candidate) bool { return c.Query.Exists != nil },
-	},
-}
+// Correlated EXISTS is no longer exempt: outer predicates now admit index
+// matching, so the second-plan oracle can compare different access paths.
+var secondPlanInapplicable = []structuralInapplicability{}
 
 // secondPlanInapplicableFor returns the family covering a candidate, or nil.
 //

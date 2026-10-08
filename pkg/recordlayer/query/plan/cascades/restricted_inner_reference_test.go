@@ -72,152 +72,47 @@ func describeEnumMember(m expressions.RelationalExpression) string {
 	return fmt.Sprintf("%T", m)
 }
 
-// TestImplementFilterRuleEnumeratesDistinctRestrictedInners drives the RULE,
-// not the helper it calls.
-//
-// physicalMembersForParentEnumeration returning N members is necessary but not
-// sufficient: the rule must also give each yielded parent an inner reference
-// RESTRICTED to that one member. Memoizing a member through the interning path
-// hands back the group that ALREADY CONTAINS it — the child group itself — so
-// every one of the N yields is the structurally identical Filter(childGroup)
-// and they collapse to one on insert. The loop then enumerates nothing.
-//
-// That collapse is invisible to a helper-level test (the helper is correct) and
-// invisible to any plan-shape assertion (an alternative that was never
-// constructed does not lose, it does not exist). Only counting the DISTINCT
-// inners the rule actually built can tell the two apart.
-//
-// Java's shape is FinalMemoizer.memoizeMemberPlansFromOther
-// (CascadesRuleCall.java:518 → Reference.newReferenceFromFinalMembers:587),
-// used by ImplementFilterRule.java:89. Its contract is explicit: "The reference
-// that is returned is always newly created and never reused."
+// Property-equivalent children share a restricted partition, while opposite
+// scan directions must remain separate alternatives.
 func TestImplementFilterRuleEnumeratesDistinctRestrictedInners(t *testing.T) {
 	t.Parallel()
-
-	a := mkEnumIndexPlan("IDX_A")
-	b := mkEnumIndexPlan("IDX_B")
-	c := mkEnumIndexPlan("IDX_C")
-
+	a, b := mkEnumIndexPlan("IDX_A"), mkEnumIndexPlan("IDX_B")
+	c := mustRestrictedInnerConstruct(plans.NewRecordQueryIndexPlan("IDX_C", []*predicates.ComparisonRange{predicates.EmptyComparisonRange()}, []string{"T"}, restrictedInnerRowType(), true)).WithIndexMetadata([]string{"A"}, []string{"ID"}, false)
 	innerRef := expressions.InitialOf(a)
-	innerRef.InsertFinal(a)
-	innerRef.InsertFinal(b)
-	innerRef.InsertFinal(c)
-
+	for _, member := range []expressions.RelationalExpression{a, b, c} {
+		innerRef.InsertFinal(member)
+	}
 	innerQ := expressions.ForEachQuantifier(innerRef)
 	pred := predicates.NewValuePredicate(restrictedInnerField(innerQ, 2))
-	filter := mustRestrictedInnerConstruct(expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{pred},
-		innerQ,
-	))
-	topRef := expressions.InitialOf(filter)
-
-	// A MEMO is mandatory here. Without one MemoizeExpression falls back to
-	// expressions.InitialOf, which mints a fresh reference per member and
-	// therefore hides the defect completely — a memo-less version of this test
-	// passes with the interning bug fully present.
-	memo := NewMemo(topRef)
-	yielded := mustFireExpressionRuleWithMemo(t, NewImplementFilterRule(), topRef, EmptyPlanContext(), memo)
-
-	byMember := map[expressions.RelationalExpression]bool{}
-	seenRefs := map[*expressions.Reference]bool{}
-	for _, y := range yielded {
-		fp, ok := y.(*plans.RecordQueryPredicatesFilterPlan)
-		if !ok {
-			continue
-		}
-		ref := fp.GetInnerQuantifier().GetRangesOver()
-		m, why := singleMemberOf(ref)
-		if why != "" {
-			t.Fatalf("a yielded Filter ranges over a reference that %s.\n"+
-				"Each enumerated parent must range over a reference RESTRICTED to "+
-				"the single child member it was built over. Handing back the whole "+
-				"child group makes every yield structurally identical, so the N "+
-				"alternatives collapse into one and the enumeration is a no-op.\n"+
-				"Java: Reference.newReferenceFromFinalMembers — 'always newly "+
-				"created and never reused'.", why)
-		}
-		seenRefs[ref.Canonical()] = true
-		byMember[m] = true
+	filter := mustRestrictedInnerConstruct(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, innerQ))
+	root := expressions.InitialOf(filter)
+	yielded := mustFireExpressionRuleWithMemo(t, NewImplementFilterRule(), root, EmptyPlanContext(), NewMemo(root))
+	if len(yielded) != 2 {
+		t.Fatalf("got %d filters, want two ordering partitions", len(yielded))
 	}
-
-	if len(byMember) != 3 {
-		var names []string
-		for m := range byMember {
-			names = append(names, describeEnumMember(m))
+	seen := make(map[expressions.RelationalExpression]bool)
+	for _, expression := range yielded {
+		ref := expression.(*plans.RecordQueryPredicatesFilterPlan).GetInnerQuantifier().GetRangesOver()
+		if ref.Canonical() == innerRef.Canonical() {
+			t.Fatal("filter reused the unrestricted child reference")
 		}
-		t.Fatalf("the rule built parents over %d DISTINCT child members %v, want 3.\n"+
-			"yielded %d expressions in total. Fewer distinct inners than child "+
-			"members means some alternative was never constructed.",
-			len(byMember), names, len(yielded))
+		members := physicalMembersForParentEnumeration(ref)
+		if len(members) == 0 {
+			t.Fatal("empty partition")
+		}
+		reverse := members[0].(*plans.RecordQueryIndexPlan).IsReverse()
+		for _, member := range members {
+			if member.(*plans.RecordQueryIndexPlan).IsReverse() != reverse {
+				t.Fatal("partition mixes scan directions")
+			}
+			if seen[member] {
+				t.Fatal("child appears in multiple partitions")
+			}
+			seen[member] = true
+		}
 	}
-	if len(seenRefs) != 3 {
-		t.Fatalf("the 3 parents share %d distinct inner references, want 3 — "+
-			"two parents ranging over the same reference are the same expression",
-			len(seenRefs))
-	}
-}
-
-// TestImplementProjectionRuleEnumeratesDistinctRestrictedInners pins the
-// parent half of the covering cost ladder. The projection implementation rule
-// must construct a separate parent over every retained physical child, rather
-// than selecting one local child and making every other access path invisible
-// to root-level costing.
-func TestImplementProjectionRuleEnumeratesDistinctRestrictedInners(t *testing.T) {
-	t.Parallel()
-
-	a := mkEnumIndexPlan("IDX_PROJ_A")
-	b := mkEnumIndexPlan("IDX_PROJ_B")
-	c := mkEnumIndexPlan("IDX_PROJ_C")
-
-	innerRef := expressions.InitialOf(a)
-	innerRef.InsertFinal(a)
-	innerRef.InsertFinal(b)
-	innerRef.InsertFinal(c)
-	innerQ := expressions.ForEachQuantifier(innerRef)
-	logicalAlias := innerQ.GetAlias()
-	projected := restrictedInnerField(innerQ, 0)
-	projection := mustRestrictedInnerConstruct(expressions.NewLogicalProjectionExpression(
-		[]values.Value{projected}, innerQ))
-	topRef := expressions.InitialOf(projection)
-
-	memo := NewMemo(topRef)
-	yielded := mustFireExpressionRuleWithMemo(
-		t, NewImplementProjectionRule(), topRef, EmptyPlanContext(), memo)
-
-	byMember := map[expressions.RelationalExpression]bool{}
-	seenRefs := map[*expressions.Reference]bool{}
-	for _, yieldedExpression := range yielded {
-		projectionPlan, ok := yieldedExpression.(*plans.RecordQueryProjectionPlan)
-		if !ok {
-			continue
-		}
-		ref := projectionPlan.GetInnerQuantifier().GetRangesOver()
-		if got := projectionPlan.GetInnerQuantifier().GetAlias(); got != logicalAlias {
-			t.Fatalf("projection physical edge alias = %s, want logical child alias %s; "+
-				"retained Values and fetch translation are expressed in that domain", got.Name(), logicalAlias.Name())
-		}
-		if got := ref.Stage(); got != expressions.StagePlanned {
-			t.Fatalf("a restricted physical projection child has stage %v, want StagePlanned; "+
-				"a canonical-stage visit promotes the chosen final out of the final lane, "+
-				"allowing a later physical rewrite to replace rather than compete with it", got)
-		}
-		if !ref.IsPinnedFinal() {
-			t.Fatal("a restricted physical projection child is not marked as a pinned final selection")
-		}
-		member, why := singleMemberOf(ref)
-		if why != "" {
-			t.Fatalf("a yielded Projection ranges over a reference that %s", why)
-		}
-		seenRefs[ref.Canonical()] = true
-		byMember[member] = true
-	}
-
-	if len(byMember) != 3 {
-		t.Fatalf("the rule built parents over %d distinct child members, want 3 (yielded %d expressions)",
-			len(byMember), len(yielded))
-	}
-	if len(seenRefs) != 3 {
-		t.Fatalf("the 3 projection parents share %d distinct inner references, want 3", len(seenRefs))
+	if !seen[a] || !seen[b] || !seen[c] || len(seen) != 3 {
+		t.Fatal("partitioning lost a competing access path")
 	}
 }
 
@@ -270,7 +165,7 @@ func TestImplementDeleteRuleMixedGroupDoesNotBypassTheDedup(t *testing.T) {
 	// Project every slot so it stays an exact co-member of the pass-through
 	// filter while still carrying projection's non-distinct property.
 	projectionQ := expressions.ForEachQuantifier(childRef)
-	nonDistinctPlan := mustRestrictedInnerConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+	nonDistinctPlan := mustRestrictedInnerConstruct(newProjectionMapFromQuantifierForTest(
 		[]values.Value{
 			restrictedInnerField(projectionQ, 0),
 			restrictedInnerField(projectionQ, 1),
@@ -364,5 +259,150 @@ func TestImplementDeleteRuleMixedGroupDoesNotBypassTheDedup(t *testing.T) {
 	if !sawUndeduped {
 		t.Fatal("no UNDEDUPED delete was yielded; the distinct member never took " +
 			"the dedup-skipping arm, so the bypass assertion above held vacuously")
+	}
+}
+
+func TestImplementFilterRuleGroupsPropertyEquivalentChildren(t *testing.T) {
+	t.Parallel()
+	a, b := mkEnumIndexPlan("GROUP_A"), mkEnumIndexPlan("GROUP_B")
+	inner := expressions.InitialOf(a)
+	inner.InsertFinal(a)
+	inner.InsertFinal(b)
+	computeRefPlanProperties(inner)
+	q := expressions.ForEachQuantifier(inner)
+	filter := mustRestrictedInnerConstruct(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{predicates.NewValuePredicate(restrictedInnerField(q, 2))}, q))
+	root := expressions.InitialOf(filter)
+	yielded := mustFireExpressionRuleWithMemo(t, NewImplementFilterRule(), root, EmptyPlanContext(), NewMemo(root))
+	if len(yielded) != 1 {
+		t.Fatalf("equivalent child properties produced %d parent filters, want one partition", len(yielded))
+	}
+	plan := yielded[0].(*plans.RecordQueryPredicatesFilterPlan)
+	ref := plan.GetInnerQuantifier().GetRangesOver()
+	if ref.Canonical() == inner.Canonical() {
+		t.Fatal("partition must have its own restricted reference")
+	}
+	members := physicalMembersForParentEnumeration(ref)
+	if len(members) != 2 || members[0] != a || members[1] != b {
+		t.Fatal("partition lost a competing child plan")
+	}
+}
+
+func TestCompensatedFiltersDeduplicateLocalAliases(t *testing.T) {
+	t.Parallel()
+	scan := mkEnumIndexPlan("ALIAS_DEDUP")
+	child := expressions.PinnedFinalOf(scan)
+	makeFilter := func(ordinal int) *plans.RecordQueryPredicatesFilterPlan {
+		q := expressions.ForEachQuantifier(child)
+		predicate := predicates.NewComparisonPredicate(restrictedInnerField(q, ordinal), predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))})
+		return mustRestrictedInnerConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(q, []predicates.QueryPredicate{predicate}, q.GetAlias()))
+	}
+	first, same, different := makeFilter(0), makeFilter(0), makeFilter(1)
+	ref := expressions.FinalOf(first)
+	if ref.InsertFinal(same) {
+		t.Error("alpha-equivalent compensation minted another physical filter")
+	}
+	if !ref.InsertFinal(different) {
+		t.Error("different filter predicate was discarded")
+	}
+	if len(ref.FinalMembers()) != 2 {
+		t.Fatalf("final members=%d, want two predicate alternatives", len(ref.FinalMembers()))
+	}
+}
+
+func TestUnboundFiltersDeduplicateLocalAliases(t *testing.T) {
+	t.Parallel()
+	child := expressions.PinnedFinalOf(mkEnumIndexPlan("UNBOUND_ALIAS_DEDUP"))
+	makeFilter := func() *plans.RecordQueryPredicatesFilterPlan {
+		q := expressions.ForEachQuantifier(child)
+		predicate := predicates.NewComparisonPredicate(restrictedInnerField(q, 0), predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))})
+		return mustRestrictedInnerConstruct(plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(q, []predicates.QueryPredicate{predicate}))
+	}
+	first, same := makeFilter(), makeFilter()
+	if !first.InternsAliasAware() {
+		t.Fatal("filter without an extra binding must permit renaming its local quantifier")
+	}
+	if expressions.FinalOf(first).InsertFinal(same) {
+		t.Fatal("alpha-equivalent unbound filter minted another final")
+	}
+}
+
+func TestMemoizedPhysicalFinalStartsAtPlannedStage(t *testing.T) {
+	t.Parallel()
+	plan := mkEnumIndexPlan("MEMOIZED_FINAL_STAGE")
+	for _, ref := range []*expressions.Reference{
+		(&ExpressionRuleCall{}).MemoizeFinalExpression(plan),
+		(&ImplementationRuleCall{}).MemoizeFinalExpression(plan),
+	} {
+		if ref.Stage() != expressions.StagePlanned {
+			t.Fatalf("physical final stage = %v, want planned", ref.Stage())
+		}
+		if !ref.NeedsExploration() {
+			t.Fatal("new physical plan still needs physical-rule exploration")
+		}
+	}
+}
+
+func TestMemoizedFinalPartitionPreservesSourceStage(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []expressions.PlannerStage{expressions.StageCanonical, expressions.StagePlanned} {
+		t.Run(fmt.Sprint(stage), func(t *testing.T) {
+			t.Parallel()
+			a, b := mkEnumIndexPlan("PARTITION_A"), mkEnumIndexPlan("PARTITION_B")
+			source := expressions.FinalOfAtStage(a, stage)
+			source.InsertFinal(b)
+			constraints := NewConstraintMap()
+			Set(constraints, source, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{properties.PreserveOrdering()})
+			source.ConstraintsMap().SetExplored()
+			ref := (&ImplementationRuleCall{Constraints: constraints}).MemoizeFinalExpressionsFromOther(source, []expressions.RelationalExpression{a, b})
+			if ref.Stage() != stage || ref.NeedsExploration() {
+				t.Fatalf("restricted partition stage=%v needsExploration=%v, want stage=%v and completed exploration", ref.Stage(), ref.NeedsExploration(), stage)
+			}
+			if len(ref.FinalMembers()) != 2 || len(ref.Members()) != 0 {
+				t.Fatal("restriction changed final membership")
+			}
+		})
+	}
+}
+
+func TestRestrictedFinalReferencePreservesCompletedExploration(t *testing.T) {
+	t.Parallel()
+	a, b := mkEnumIndexPlan("EXPLORED_A"), mkEnumIndexPlan("EXPLORED_B")
+	source := expressions.FinalOfAtStage(a, expressions.StagePlanned)
+	source.InsertFinal(b)
+	source.ConstraintsMap().SetExplored()
+	ref := newRestrictedFinalReference("test", source, []expressions.RelationalExpression{a, b}, expressions.StagePlanned)
+	if ref.NeedsExploration() {
+		t.Fatal("restricted completed plans were scheduled for fresh exploration")
+	}
+	ref.ConstraintsMap().ReArm()
+	if !ref.NeedsExploration() {
+		t.Fatal("new constraint could not rearm restricted plans")
+	}
+}
+
+func TestLogicalCompensationsDeduplicateLocalAliases(t *testing.T) {
+	t.Parallel()
+	child := expressions.PinnedFinalOf(mkEnumIndexPlan("LOGICAL_ALIAS_DEDUP"))
+	makeFilter := func(outer values.CorrelationIdentifier) *expressions.LogicalFilterExpression {
+		q := expressions.ForEachQuantifier(child)
+		operand := values.Value(values.LiteralValue(int64(1)))
+		if !outer.IsZero() {
+			operand = mustRestrictedInnerConstruct(values.NewQuantifiedObjectValue(outer, values.NotNullLong))
+		}
+		predicate := predicates.NewComparisonPredicate(restrictedInnerField(q, 0), predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand})
+		return mustRestrictedInnerConstruct(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{predicate}, q))
+	}
+	first, same := makeFilter(values.CorrelationIdentifier{}), makeFilter(values.CorrelationIdentifier{})
+	ref := expressions.InitialOf(first)
+	if ref.Insert(same) {
+		t.Error("alpha-equivalent logical compensation minted another member")
+	}
+	for range 2 {
+		if !ref.Insert(makeFilter(values.UniqueCorrelationIdentifier())) {
+			t.Error("different outer correlation was discarded")
+		}
+	}
+	if len(ref.Members()) != 3 {
+		t.Fatalf("members=%d, want one local and two outer-correlated filters", len(ref.Members()))
 	}
 }

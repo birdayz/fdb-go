@@ -11,7 +11,7 @@ type tieBreakHashProvider interface {
 }
 
 // tieBreakNodeHash returns the schema-neutral per-node hash used by every
-// logical/designation/extraction tie-break. HashCodeWithoutChildren remains the
+// logical/REWRITING/extraction tie-break. HashCodeWithoutChildren remains the
 // sole memo identity hash.
 func tieBreakNodeHash(e expressions.RelationalExpression) uint64 {
 	if provider, ok := e.(tieBreakHashProvider); ok {

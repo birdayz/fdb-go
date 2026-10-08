@@ -17,7 +17,7 @@ import (
 // share the identical spine so predicate-value rewrites can never diverge
 // between the two layers.
 func ReplaceValues(p QueryPredicate, fn func(values.Value) values.Value) QueryPredicate {
-	return transformEmbeddedValues(p, func(v values.Value) values.Value {
+	return TransformEmbeddedValues(p, func(v values.Value) values.Value {
 		return values.Replace(v, fn)
 	})
 }
@@ -66,13 +66,13 @@ func TransformEmbeddedValuesChecked(
 // DependsOnStatementClock reports whether any Value tree embedded in the
 // predicate contains a CURRENT_TIMESTAMP-family function (see
 // values.DependsOnStatementClock). It probes through the SAME spine the
-// value-rewrite families walk (transformEmbeddedValues), so a predicate
+// value-rewrite families walk (TransformEmbeddedValues), so a predicate
 // shape that carries values cannot be visible to rewrites yet invisible
 // to the statement-clock need check. The probe transform returns every
 // value unchanged, so the pointer-stable spine rebuilds nothing.
 func DependsOnStatementClock(p QueryPredicate) bool {
 	found := false
-	transformEmbeddedValues(p, func(v values.Value) values.Value {
+	TransformEmbeddedValues(p, func(v values.Value) values.Value {
 		if !found && values.DependsOnStatementClock(v) {
 			found = true
 		}
@@ -81,11 +81,9 @@ func DependsOnStatementClock(p QueryPredicate) bool {
 	return found
 }
 
-// transformEmbeddedValues is the ONE predicate spine both value-rewrite
-// families walk: transform is applied to each embedded Value tree WHOLE
-// (operands, ValuePredicate value, Placeholder value), and only the changed
-// spine is rebuilt.
-func transformEmbeddedValues(p QueryPredicate, transform func(values.Value) values.Value) QueryPredicate {
+// TransformEmbeddedValues applies transform once per complete embedded Value
+// tree, not per interior node. An identity transform rebuilds no predicate nodes.
+func TransformEmbeddedValues(p QueryPredicate, transform func(values.Value) values.Value) QueryPredicate {
 	if p == nil {
 		return nil
 	}
@@ -110,7 +108,7 @@ func transformEmbeddedValues(p QueryPredicate, transform func(values.Value) valu
 		changed := false
 		newSubs := make([]QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			newSubs[i] = transformEmbeddedValues(s, transform)
+			newSubs[i] = TransformEmbeddedValues(s, transform)
 			if newSubs[i] != s {
 				changed = true
 			}
@@ -118,12 +116,12 @@ func transformEmbeddedValues(p QueryPredicate, transform func(values.Value) valu
 		if !changed {
 			return p
 		}
-		return NewAnd(newSubs...)
+		return WithAtomicity(NewAnd(newSubs...), pred.atomic)
 	case *OrPredicate:
 		changed := false
 		newSubs := make([]QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			newSubs[i] = transformEmbeddedValues(s, transform)
+			newSubs[i] = TransformEmbeddedValues(s, transform)
 			if newSubs[i] != s {
 				changed = true
 			}
@@ -131,13 +129,13 @@ func transformEmbeddedValues(p QueryPredicate, transform func(values.Value) valu
 		if !changed {
 			return p
 		}
-		return NewOr(newSubs...)
+		return WithAtomicity(NewOr(newSubs...), pred.atomic)
 	case *NotPredicate:
-		newChild := transformEmbeddedValues(pred.Child, transform)
+		newChild := TransformEmbeddedValues(pred.Child, transform)
 		if newChild == pred.Child {
 			return p
 		}
-		return NewNot(newChild)
+		return WithAtomicity(NewNot(newChild), pred.atomic)
 	case *Placeholder:
 		newVal := transform(pred.Value)
 		if newVal == pred.Value {
@@ -186,7 +184,7 @@ func transformEmbeddedValues(p QueryPredicate, transform func(values.Value) valu
 }
 
 // transformEmbeddedValuesChecked is the fallible twin of
-// transformEmbeddedValues. It builds only invocation-local predicate nodes and
+// TransformEmbeddedValues. It builds only invocation-local predicate nodes and
 // returns no graph after the first Value or structural error.
 func transformEmbeddedValuesChecked(
 	p QueryPredicate,
@@ -232,7 +230,7 @@ func transformEmbeddedValuesChecked(
 		if !changed {
 			return p, nil
 		}
-		return NewAnd(newSubs...), nil
+		return WithAtomicity(NewAnd(newSubs...), pred.atomic), nil
 	case *OrPredicate:
 		changed := false
 		newSubs := make([]QueryPredicate, len(pred.SubPredicates))
@@ -247,7 +245,7 @@ func transformEmbeddedValuesChecked(
 		if !changed {
 			return p, nil
 		}
-		return NewOr(newSubs...), nil
+		return WithAtomicity(NewOr(newSubs...), pred.atomic), nil
 	case *NotPredicate:
 		newChild, err := transformEmbeddedValuesChecked(pred.Child, transform)
 		if err != nil {
@@ -256,7 +254,7 @@ func transformEmbeddedValuesChecked(
 		if newChild == pred.Child {
 			return p, nil
 		}
-		return NewNot(newChild), nil
+		return WithAtomicity(NewNot(newChild), pred.atomic), nil
 	case *Placeholder:
 		newVal, err := transform(pred.Value)
 		if err != nil {

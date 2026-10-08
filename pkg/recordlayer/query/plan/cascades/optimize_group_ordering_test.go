@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -132,6 +133,10 @@ func TestOptimizeGroup_UnrequestedOrderingStillPruned(t *testing.T) {
 	if ref.FinalMembers()[0] != cheap {
 		t.Fatalf("the surviving final must be the cost winner, got %T", ref.FinalMembers()[0])
 	}
+	partitions := ToPlanPartitions(ref)
+	if len(partitions) != 1 || len(partitions[0].GetExpressions()) != 1 || partitions[0].GetExpressions()[0] != cheap {
+		t.Fatalf("pruned sort remains visible in plan partitions: %v", partitions)
+	}
 }
 
 // TestOptimizeGroup_RetainsNonOrderingPartitionWinners pins that genuinely
@@ -203,6 +208,62 @@ func TestExploreGroup_PinnedPhysicalSelectionDoesNotGrow(t *testing.T) {
 	}
 	if got := ref.Winner(); got != fetch {
 		t.Fatalf("pinned winner = %T, want the exact Fetch member", got)
+	}
+}
+
+func TestOptimizeInputsCompletesPinnedSelection(t *testing.T) {
+	t.Parallel()
+	for _, pinned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pinned=%t", pinned), func(t *testing.T) {
+			t.Parallel()
+			rowType := optimizeOrderingRowType()
+			index, err := plans.NewRecordQueryIndexPlan("idx_x", nil, []string{"T"}, rowType, false)
+			index = mustConstruct(t, index, err).WithIndexMetadata([]string{"X"}, []string{"Y"}, false)
+			covering, err := plans.NewRecordQueryCoveringIndexPlan(index)
+			covering = mustConstruct(t, covering, err)
+			fetch, err := plans.NewRecordQueryFetchFromPartialRecordPlan(covering, nil, rowType, plans.FetchIndexRecordsPrimaryKey)
+			fetch = mustConstruct(t, fetch, err)
+			child := expressions.FinalOf(fetch)
+			if pinned {
+				child = expressions.PinnedFinalOf(fetch)
+			}
+			p := NewPlanner(nil, nil).WithImplementationRules([]ImplementationRule{NewMergeFetchIntoCoveringIndexRule()})
+			p.constraintMap = NewConstraintMap()
+			for i := range 3 {
+				parent, err := plans.NewRecordQueryLimitPlanFromQuantifier(expressions.NewPhysicalQuantifier(child), int64(i+1), 0, nil)
+				parent = mustConstruct(t, parent, err)
+				(&OptimizeInputsTask{Phase: PhasePlanning, Ref: expressions.FinalOf(parent), Expr: parent}).Run(t.Context(), p)
+				if p.capErr != nil {
+					t.Fatal(p.capErr)
+				}
+			}
+			if pinned {
+				if len(p.stack) != 0 {
+					t.Fatalf("selected child queued %d tasks, want none", len(p.stack))
+				}
+				if child.Winner() != fetch || child.NeedsExploration() || len(child.FinalMembers()) != 1 {
+					t.Fatal("pin was not completed with its exact selected member")
+				}
+				if props := GetRefPlanPropertiesMap(child); props == nil || props.GetProperties(fetch) == nil {
+					t.Fatal("completed pin has no physical properties")
+				}
+				return
+			}
+			if len(p.stack) == 0 {
+				t.Fatal("ordinary singleton must still be explored and optimized")
+			}
+			indexProduced := false
+			for len(p.stack) != 0 {
+				p.pop().Run(t.Context(), p)
+				if p.capErr != nil {
+					t.Fatal(p.capErr)
+				}
+				indexProduced = indexProduced || child.ContainsExactly(index)
+			}
+			if !indexProduced {
+				t.Fatal("ordinary Fetch group lost its Index transformation")
+			}
+		})
 	}
 }
 

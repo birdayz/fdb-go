@@ -63,9 +63,9 @@ func TestFullStack_Pipeline(t *testing.T) {
 		t.Fatalf("WalkPredicate: %v", err)
 	}
 
-	// 6. Run through the simplifier. `5 = 5` tautology should fold
-	// out of the AND.
-	simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	// 6. Run through the simplifier. `5 = 5` stays: two literals are not
+	// effective constants under Java's ConstantFoldingRuleSet.
+	simplified, err := cascades.Simplify(pred, cascades.ConstantFoldingRules())
 	if err != nil {
 		t.Fatalf("Simplify: %v", err)
 	}
@@ -115,22 +115,21 @@ func TestFullStack_Pipeline(t *testing.T) {
 		})
 	}
 
-	// 8. Bonus: `5 = 5` tautology should have been dropped by the
-	// simplifier — the surviving AND should have at most 2 children
-	// (id >= 18 AND (name IS NOT NULL OR active)).
+	// 8. `5 = 5` is kept by the simplifier, as Java keeps `@c EQUALS @c`:
+	// the AND has its three children.
 	and, ok := simplified.(*predicates.AndPredicate)
 	if !ok {
 		t.Fatalf("expected AND at top, got %T", simplified)
 	}
-	if len(and.SubPredicates) != 2 {
-		t.Fatalf("after simplify: expected 2 children (tautology dropped), got %d: %s",
+	if len(and.SubPredicates) != 3 {
+		t.Fatalf("after simplify: expected 3 children (the literal comparison kept), got %d: %s",
 			len(and.SubPredicates), simplified.Explain())
 	}
 
 	// 9. Pin the Explain output so Simplify regressions or
 	// Explain-formatting changes surface here. Bare boolean ACTIVE lifts
 	// to `ACTIVE = TRUE` (RFC-146), matching Java's toUnderlyingPredicate.
-	wantExplain := "(USERS.ID#0 >= 18 AND (USERS.NAME#1 IS NOT NULL OR USERS.ACTIVE#3 = TRUE))"
+	wantExplain := "(USERS.ID#0 >= 18 AND (USERS.NAME#1 IS NOT NULL OR USERS.ACTIVE#3 = TRUE) AND 5 = 5)"
 	if got := simplified.Explain(); got != wantExplain {
 		t.Fatalf("Explain: got %q, want %q", got, wantExplain)
 	}
@@ -255,7 +254,7 @@ func TestFullStack_RichPredicates(t *testing.T) {
 			if err != nil {
 				t.Fatalf("WalkPredicate: %v", err)
 			}
-			simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+			simplified, err := cascades.Simplify(pred, cascades.ConstantFoldingRules())
 			if err != nil {
 				t.Fatalf("Simplify: %v", err)
 			}

@@ -133,6 +133,8 @@ type retryOnceBackend struct {
 	everyOnce atomic.Bool
 	mu        sync.Mutex
 	failedOrd map[int64]bool
+	// callOrd maps an attempt-loop call to its ordinal (TransactAttempt).
+	callOrd map[uint64]int64
 }
 
 func newRetryOnceBackend(sim *simfdb.SimDB) *retryOnceBackend {
@@ -203,7 +205,32 @@ func (b *retryOnceBackend) takeEveryOnce(ordinal int64) bool {
 }
 
 func (b *retryOnceBackend) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
-	ordinal := b.seen.Add(1) - 1
+	return b.transactOrdinal(b.seen.Add(1)-1, fn)
+}
+
+// TransactAttempt is recordlayer.AttemptTransactor: Run's attempt loop makes a
+// fresh Transact call per attempt, so the ORDINAL is per call (CallID), not per
+// attempt. A "fail once" fault then fails the call's first attempt and lets its
+// retry through, and a permanent one fails every attempt of the call.
+func (b *retryOnceBackend) TransactAttempt(_ context.Context, call recordlayer.AttemptCall, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	b.mu.Lock()
+	if b.callOrd == nil {
+		b.callOrd = map[uint64]int64{}
+	}
+	ordinal, ok := b.callOrd[call.CallID]
+	if !ok {
+		ordinal = b.seen.Add(1) - 1
+		b.callOrd[call.CallID] = ordinal
+	}
+	b.mu.Unlock()
+	return b.transactOrdinal(ordinal, fn)
+}
+
+func (b *retryOnceBackend) ReadTransactAttempt(_ context.Context, _ recordlayer.AttemptCall, fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	return b.SimDB.ReadTransact(fn)
+}
+
+func (b *retryOnceBackend) transactOrdinal(ordinal int64, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	if target := b.simInjectAt.Load(); target >= 0 && target == ordinal {
 		b.simInjectAt.Store(-1)
 		b.fired.Store(true)
@@ -243,16 +270,16 @@ func openRetryOnceSchema(t *testing.T, seed uint64, tableDDL string) (*sql.DB, *
 	t.Cleanup(func() { fdbDBCache.Delete(key) })
 
 	ctx := context.Background()
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///simdb?cluster_file=%s", key))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s", key))
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
 	defer setup.Close()
-	mustExecSQL(t, setup, ctx, "CREATE DATABASE /simdb")
+	mustExecSQL(t, setup, ctx, "CREATE DATABASE /FRL/simdb")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA TEMPLATE tmpl "+tableDDL)
-	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl")
+	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///simdb?cluster_file=%s&schema=s", key))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s&schema=S", key))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}
@@ -407,9 +434,9 @@ const staleFormatVersion = 13
 // pageRetrySchemaSubspace returns the subspace the driver stored the schema
 // under. The driver canonicalises the schema name to upper case, so an
 // out-of-band handle must ask for the same name the driver wrote.
-func pageRetrySchemaSubspace(t *testing.T) subspace.Subspace {
+func pageRetrySchemaSubspace(t *testing.T, ctx context.Context, rdb *recordlayer.FDBDatabase) subspace.Subspace {
 	t.Helper()
-	ss, err := relkeyspace.New(subspace.Sub()).SchemaSubspace("/simdb", "S")
+	ss, err := relkeyspace.New(subspace.Sub()).LookupSchemaSubspace(ctx, rdb, "/FRL/SIMDB", "S")
 	if err != nil {
 		t.Fatalf("schema subspace: %v", err)
 	}
@@ -511,7 +538,7 @@ func TestPageRetry_StoreOpenWritesHeaderOnStaleFormat(t *testing.T) {
 	mustExecSQL(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 1)")
 
 	rdb := recordlayer.NewFDBDatabaseWithBackend(backend)
-	ss := pageRetrySchemaSubspace(t)
+	ss := pageRetrySchemaSubspace(t, ctx, rdb)
 
 	if got := readStoreFormatVersion(t, ctx, rdb, ss); got == staleFormatVersion {
 		t.Fatalf("the freshly created store already carries format version %d, which is the "+
@@ -572,7 +599,7 @@ func TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict(t *testing.T) {
 	conn := seedPageRetryRows(t, ctx, db)
 
 	rdb := recordlayer.NewFDBDatabaseWithBackend(backend)
-	ss := pageRetrySchemaSubspace(t)
+	ss := pageRetrySchemaSubspace(t, ctx, rdb)
 
 	// Warm the connection first: the one-shot catalog bootstrap and the metadata
 	// load each run their own transaction, and they would otherwise sit between
@@ -972,7 +999,7 @@ func seedRecursiveChain(t *testing.T, ctx context.Context, db *sql.DB) *sql.Conn
 // (recursiveUnionCursor) is the only caller of checkDepth — the eager and DFS
 // arms have their own separate caps and would not exercise this at all.
 const recursiveChainQuery = "WITH RECURSIVE r(n) AS (" +
-	"SELECT id FROM edges WHERE parent = 0 " +
+	"SELECT id AS n FROM edges WHERE parent = 0 " +
 	"UNION ALL " +
 	"SELECT e.id FROM edges AS e, r WHERE e.parent = r.n" +
 	") TRAVERSAL ORDER level_order SELECT n FROM r"

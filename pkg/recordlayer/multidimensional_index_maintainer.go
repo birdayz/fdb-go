@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"strconv"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/async/rtree"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -20,21 +20,32 @@ import (
 // Matches Java's MultidimensionalIndexMaintainer.
 type multidimensionalIndexMaintainer struct {
 	standardIndexMaintainer
-	rTreeConfig RTreeConfig
+	rTreeConfig rtree.RTreeConfig
+	// nodeSlotIndexSubspace is where the R-trees' node slot indexes live:
+	// the index's secondary subspace, then the indicator 0
+	// (MultidimensionalIndexMaintainer.getNodeSlotIndexSubspace), then an
+	// R-tree's prefix.
+	nodeSlotIndexSubspace subspace.Subspace
 }
 
 func newMultidimensionalIndexMaintainer(
 	index *Index,
-	indexSubspace subspace.Subspace,
+	indexSubspace, secondarySubspace subspace.Subspace,
 	tx fdb.WritableTransaction,
 	store indexStoreContext,
 	numDimensions int,
-) *multidimensionalIndexMaintainer {
-	config := parseRTreeConfig(index, numDimensions)
+) (*multidimensionalIndexMaintainer, error) {
+	// Java's maintainer constructor reads the config the same way
+	// (MultidimensionalIndexMaintainer's MultiDimensionalIndexHelper.getConfig).
+	config, err := parseRTreeConfig(index, numDimensions)
+	if err != nil {
+		return nil, err
+	}
 	return &multidimensionalIndexMaintainer{
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		rTreeConfig:             config,
-	}
+		nodeSlotIndexSubspace:   secondarySubspace.Sub(int64(0)),
+	}, nil
 }
 
 // R-tree index option keys for configuring the Hilbert R-tree.
@@ -56,32 +67,49 @@ const (
 	IndexOptionRTreeUseNodeSlotIndex = "rtreeUseNodeSlotIndex"
 )
 
-// parseRTreeConfig reads R-tree configuration from index options.
-// Supports IndexOptionRTreeMaxM, IndexOptionRTreeMinM, IndexOptionRTreeSplitS.
-func parseRTreeConfig(index *Index, numDimensions int) RTreeConfig {
-	config := DefaultRTreeConfig(numDimensions)
-	if v, ok := index.Options[IndexOptionRTreeMaxM]; ok {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			config.MaxM = n
+// parseRTreeConfig reads R-tree configuration from index options, as Java's
+// MultiDimensionalIndexHelper.getConfig does and in its order: minM, maxM and
+// splitS by Integer.parseInt (no range check; Java's builder takes any int),
+// the storage by RTree.Storage.valueOf, then the Hilbert-values flag, then the
+// node slot index flag, both by Boolean.parseBoolean.
+//
+// The Hilbert-values flag is read only when the storage option is set, and
+// then an absent flag parses as false (MultiDimensionalIndexHelper.java:62-65
+// tests rtreeStorage, not the flag). So {storage} stores no Hilbert values,
+// and {rtreeStoreHilbertValues: false} alone keeps the default, true. Go reads
+// it the same way because it decides the bytes of every leaf slot.
+func parseRTreeConfig(index *Index, numDimensions int) (rtree.RTreeConfig, error) {
+	config := rtree.DefaultRTreeConfig(numDimensions)
+	for _, o := range []struct {
+		key    string
+		target *int
+	}{
+		{IndexOptionRTreeMinM, &config.MinM},
+		{IndexOptionRTreeMaxM, &config.MaxM},
+		{IndexOptionRTreeSplitS, &config.SplitS},
+	} {
+		if v, ok := index.Options[o.key]; ok {
+			n, err := javaParseInt(v)
+			if err != nil {
+				return rtree.RTreeConfig{}, err
+			}
+			*o.target = int(n)
 		}
 	}
-	if v, ok := index.Options[IndexOptionRTreeMinM]; ok {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			config.MinM = n
+	storage, hasStorage := index.Options[IndexOptionRTreeStorage]
+	if hasStorage {
+		switch rtree.RTreeStorage(storage) {
+		case rtree.RTreeStorageBySlot, rtree.RTreeStorageByNode:
+			config.Storage = rtree.RTreeStorage(storage)
+		default:
+			return rtree.RTreeConfig{}, &IllegalArgumentError{Message: "No enum constant com.apple.foundationdb.async.rtree.RTree.Storage." + storage}
 		}
+		config.StoreHilbertValues = javaParseBoolean(index.Options[IndexOptionRTreeStoreHilbertValues])
 	}
-	if v, ok := index.Options[IndexOptionRTreeSplitS]; ok {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			config.SplitS = n
-		}
+	if v, ok := index.Options[IndexOptionRTreeUseNodeSlotIndex]; ok {
+		config.UseNodeSlotIndex = javaParseBoolean(v)
 	}
-	if v, ok := index.Options["rtreeStoreHilbertValues"]; ok {
-		if v == "false" {
-			config.StoreHilbertValues = false
-		}
-	}
-	// "rtreeStorage" = "BY_SLOT" is not supported in Go; BY_NODE is the default and recommended.
-	return config
+	return config, nil
 }
 
 // getDimensionsExpression extracts the DimensionsKeyExpression from the index.
@@ -121,14 +149,14 @@ func (m *multidimensionalIndexMaintainer) Update(oldRecord, newRecord *FDBStored
 	var oldEntries, newEntries []indexEntry
 
 	if oldRecord != nil {
-		entries, err := m.evaluateIndex(oldRecord)
+		entries, err := m.filteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for old record: %w", m.index.Name, err)
 		}
 		oldEntries = entries
 	}
 	if newRecord != nil {
-		entries, err := m.evaluateIndex(newRecord)
+		entries, err := m.filteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for new record: %w", m.index.Name, err)
 		}
@@ -166,19 +194,13 @@ func (m *multidimensionalIndexMaintainer) Update(oldRecord, newRecord *FDBStored
 func (m *multidimensionalIndexMaintainer) insertEntry(dimExpr *DimensionsKeyExpression, entry indexEntry) error {
 	prefix, dims, suffix := dimExpr.SplitIndexEntry(entry.key)
 
-	// Build the R-tree subspace (per-prefix).
-	rtSubspace := m.indexSubspace
-	if len(prefix) > 0 {
-		rtSubspace = m.indexSubspace.Sub(prefix...)
-	}
-
 	// Validate dimensional coordinates are int64.
 	for i, d := range dims {
 		if _, ok := asInt64(d); !ok {
 			return fmt.Errorf("MULTIDIMENSIONAL index %q: dimension %d must be int64, got %T", m.index.Name, i, d)
 		}
 	}
-	point := Point{Coordinates: dims}
+	point := rtree.Point{Coordinates: dims}
 
 	// Build key suffix: remaining index columns + trimmed PK.
 	trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
@@ -195,25 +217,18 @@ func (m *multidimensionalIndexMaintainer) insertEntry(dimExpr *DimensionsKeyExpr
 		value = tuple.Tuple{}
 	}
 
-	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
-	storage.env = m.store.Env()
-	rtree, err := NewRTree(storage, m.rTreeConfig)
+	rt, err := m.rtreeFor(prefix)
 	if err != nil {
 		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
 	}
-	return rtree.InsertOrUpdate(m.tx, point, keySuffix, value)
+	return rt.InsertOrUpdate(m.tx, point, keySuffix, value)
 }
 
 // deleteEntry removes a single index entry from the appropriate R-tree.
 func (m *multidimensionalIndexMaintainer) deleteEntry(dimExpr *DimensionsKeyExpression, entry indexEntry) error {
 	prefix, dims, suffix := dimExpr.SplitIndexEntry(entry.key)
 
-	rtSubspace := m.indexSubspace
-	if len(prefix) > 0 {
-		rtSubspace = m.indexSubspace.Sub(prefix...)
-	}
-
-	point := Point{Coordinates: dims}
+	point := rtree.Point{Coordinates: dims}
 
 	trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
 	if err != nil {
@@ -223,13 +238,11 @@ func (m *multidimensionalIndexMaintainer) deleteEntry(dimExpr *DimensionsKeyExpr
 	keySuffix = append(keySuffix, suffix...)
 	keySuffix = append(keySuffix, trimmedPK...)
 
-	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
-	storage.env = m.store.Env()
-	rtree, err := NewRTree(storage, m.rTreeConfig)
+	rt, err := m.rtreeFor(prefix)
 	if err != nil {
 		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
 	}
-	return rtree.Delete(m.tx, point, keySuffix)
+	return rt.Delete(m.tx, point, keySuffix)
 }
 
 // UpdateWhileWriteOnly handles updates during WRITE_ONLY state.
@@ -265,7 +278,7 @@ func (m *multidimensionalIndexMaintainer) Scan(
 		var resumePrefixBytes, resumeInnerBytes []byte
 		if len(continuation) > 0 {
 			var flatMapCont gen.FlatMapContinuation
-			if err := flatMapCont.UnmarshalVT(continuation); err != nil {
+			if err := UnmarshalVTAsJava(&flatMapCont, continuation); err != nil {
 				return &errorCursor[*IndexEntry]{
 					err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid prefix skip-scan continuation: %w", m.index.Name, err),
 				}
@@ -326,10 +339,8 @@ func (m *multidimensionalIndexMaintainer) scanBoundPrefix(
 ) RecordCursor[*IndexEntry] {
 	// 2. Extract prefix from scanRange to scope the R-tree subspace.
 	var prefix tuple.Tuple
-	rtSubspace := m.indexSubspace
 	if dimExpr.PrefixSize > 0 && scanRange.Low != nil && len(scanRange.Low) >= dimExpr.PrefixSize {
 		prefix = scanRange.Low[:dimExpr.PrefixSize]
-		rtSubspace = m.indexSubspace.Sub(prefix...)
 	}
 
 	// 3. Extract spatial bounds from scanRange for MBR-based subtree pruning.
@@ -345,10 +356,10 @@ func (m *multidimensionalIndexMaintainer) scanBoundPrefix(
 	if len(continuation) > 0 {
 		var parsed bool
 		var flatMapCont gen.FlatMapContinuation
-		if err := flatMapCont.UnmarshalVT(continuation); err == nil && flatMapCont.InnerContinuation != nil {
+		if err := UnmarshalVTAsJava(&flatMapCont, continuation); err == nil && flatMapCont.InnerContinuation != nil {
 			// Java-compatible FlatMapContinuation wrapper.
 			var cont gen.MultidimensionalIndexScanContinuation
-			if err := cont.UnmarshalVT(flatMapCont.InnerContinuation); err == nil {
+			if err := UnmarshalVTAsJava(&cont, flatMapCont.InnerContinuation); err == nil {
 				if cont.LastHilbertValue != nil {
 					lastHV = new(big.Int).SetBytes(cont.LastHilbertValue)
 				}
@@ -368,7 +379,7 @@ func (m *multidimensionalIndexMaintainer) scanBoundPrefix(
 		if !parsed {
 			// Fallback: try raw MultidimensionalIndexScanContinuation (old Go format).
 			var cont gen.MultidimensionalIndexScanContinuation
-			if err := cont.UnmarshalVT(continuation); err != nil {
+			if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 				return &errorCursor[*IndexEntry]{
 					err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation: %w", m.index.Name, err),
 				}
@@ -389,13 +400,11 @@ func (m *multidimensionalIndexMaintainer) scanBoundPrefix(
 	}
 
 	// 5. Create R-tree iterator (lazy — fetches leaf nodes on demand).
-	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
-	storage.env = m.store.Env()
-	rtree, err := NewRTree(storage, m.rTreeConfig)
+	rt, err := m.rtreeFor(prefix)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)}
 	}
-	iter := rtree.ScanIterator(m.tx, lastHV, lastKey, mbrPredicate)
+	iter := rt.ScanIterator(m.tx, lastHV, lastKey, mbrPredicate)
 
 	// 6. Build exact point filter from dimensional bounds (matches Java's containsPosition).
 	pointFilter := m.buildPointFilter(dimExpr, scanRange)
@@ -422,7 +431,7 @@ func (m *multidimensionalIndexMaintainer) scanBoundPrefix(
 // buildMBRPredicate extracts dimensional bounds from scanRange and creates an
 // MBR overlap predicate for R-tree subtree pruning. Returns nil if scanRange
 // does not contain dimensional bounds.
-func (m *multidimensionalIndexMaintainer) buildMBRPredicate(dimExpr *DimensionsKeyExpression, scanRange TupleRange) func(MBR) bool {
+func (m *multidimensionalIndexMaintainer) buildMBRPredicate(dimExpr *DimensionsKeyExpression, scanRange TupleRange) func(rtree.MBR) bool {
 	if dimExpr.DimensionsSize <= 0 {
 		return nil
 	}
@@ -437,7 +446,7 @@ func (m *multidimensionalIndexMaintainer) buildMBRPredicate(dimExpr *DimensionsK
 		return nil
 	}
 
-	queryMBR := MBR{
+	queryMBR := rtree.MBR{
 		Low:  make([]int64, dimExpr.DimensionsSize),
 		High: make([]int64, dimExpr.DimensionsSize),
 	}
@@ -456,7 +465,7 @@ func (m *multidimensionalIndexMaintainer) buildMBRPredicate(dimExpr *DimensionsK
 		}
 	}
 
-	return func(nodeMBR MBR) bool {
+	return func(nodeMBR rtree.MBR) bool {
 		return nodeMBR.Overlaps(queryMBR)
 	}
 }
@@ -465,7 +474,7 @@ func (m *multidimensionalIndexMaintainer) buildMBRPredicate(dimExpr *DimensionsK
 // dimensional bounds. This is applied per-item after MBR subtree pruning,
 // matching Java's SpatialPredicate.containsPosition() post-filter.
 // Returns nil if scanRange doesn't specify dimensional bounds.
-func (m *multidimensionalIndexMaintainer) buildPointFilter(dimExpr *DimensionsKeyExpression, scanRange TupleRange) func(Point) bool {
+func (m *multidimensionalIndexMaintainer) buildPointFilter(dimExpr *DimensionsKeyExpression, scanRange TupleRange) func(rtree.Point) bool {
 	if dimExpr.DimensionsSize <= 0 {
 		return nil
 	}
@@ -502,7 +511,7 @@ func (m *multidimensionalIndexMaintainer) buildPointFilter(dimExpr *DimensionsKe
 		}
 	}
 
-	return func(p Point) bool {
+	return func(p rtree.Point) bool {
 		for d := 0; d < len(bounds) && d < p.NumDimensions(); d++ {
 			c := p.Coordinate(d)
 			if bounds[d].hasLow && c < bounds[d].low {
@@ -558,17 +567,23 @@ func (m *multidimensionalIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error 
 	if err := m.CanDeleteWhere(prefix); err != nil {
 		return err
 	}
-	rtSubspace := m.indexSubspace
-	if len(prefix) > 0 {
-		rtSubspace = m.indexSubspace.Sub(prefix...)
-	}
-	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
-	storage.env = m.store.Env()
-	rtree, err := NewRTree(storage, m.rTreeConfig)
+	rt, err := m.rtreeFor(prefix)
 	if err != nil {
 		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
 	}
-	return rtree.Clear(m.tx)
+	return rt.Clear(m.tx)
+}
+
+// rtreeFor is the R-tree of one prefix: under the index subspace and, for its
+// node slot index, under the node slot index subspace, both extended by the
+// prefix (MultidimensionalIndexMaintainer.java:137-146, :261-269).
+func (m *multidimensionalIndexMaintainer) rtreeFor(prefix tuple.Tuple) (*rtree.RTree, error) {
+	rtSubspace, nsiSubspace := m.indexSubspace, m.nodeSlotIndexSubspace
+	if len(prefix) > 0 {
+		rtSubspace, nsiSubspace = m.indexSubspace.Sub(prefix...), m.nodeSlotIndexSubspace.Sub(prefix...)
+	}
+	storage := rtree.NewStorageAdapter(rtSubspace, m.rTreeConfig).WithNodeSlotIndex(nsiSubspace).WithEnv(m.store.Env())
+	return rtree.NewRTree(storage, m.rTreeConfig)
 }
 
 // rtreeScanCursor wraps an RTreeIterator into a RecordCursor with support
@@ -579,7 +594,7 @@ func (m *multidimensionalIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error 
 // false positives allowed). This cursor applies exact point-in-range filtering on each
 // item, matching Java's containsPosition() post-filter.
 type rtreeScanCursor struct {
-	iter      *RTreeIterator
+	iter      *rtree.RTreeIterator
 	index     *Index
 	prefix    tuple.Tuple
 	limit     int // 0 = unlimited
@@ -588,7 +603,7 @@ type rtreeScanCursor struct {
 	lastKey   tuple.Tuple
 	// Exact point filter: checks each item's coordinates against the scan range.
 	// nil means no filtering (return all items).
-	pointFilter func(Point) bool
+	pointFilter func(rtree.Point) bool
 	// outerContinuation carries prefix skip-scan state for FlatMapContinuation.
 	// nil for single-prefix (non-skip-scan) scans.
 	outerContinuation []byte
@@ -1120,7 +1135,7 @@ func unwrapMultidimensionalInner(cont RecordCursorContinuation) ([]byte, error) 
 		return nil, nil
 	}
 	var fmc gen.FlatMapContinuation
-	if err := fmc.UnmarshalVT(b); err != nil {
+	if err := UnmarshalVTAsJava(&fmc, b); err != nil {
 		return nil, fmt.Errorf("invalid per-prefix continuation: %w", err)
 	}
 	return fmc.InnerContinuation, nil

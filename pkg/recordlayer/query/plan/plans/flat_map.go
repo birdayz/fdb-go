@@ -36,6 +36,7 @@ type RecordQueryFlatMapPlan struct {
 	innerAlias                   values.CorrelationIdentifier
 	resultValue                  values.Value
 	inheritOuterRecordProperties bool
+	nullSupplyingOuter           bool
 	nullSupplyingInner           bool
 }
 
@@ -47,7 +48,7 @@ func NewRecordQueryFlatMapPlan(
 ) (*RecordQueryFlatMapPlan, error) {
 	return newRecordQueryFlatMapPlanFromQuantifiers(
 		QuantifierOverPlan(outer), QuantifierOverPlan(inner),
-		outerAlias, innerAlias, resultValue, inheritOuterRecordProperties, false)
+		outerAlias, innerAlias, resultValue, inheritOuterRecordProperties, false, false)
 }
 
 // NewRecordQueryFlatMapPlanFromQuantifiers builds a correlated FlatMap whose two
@@ -71,22 +72,26 @@ func NewRecordQueryFlatMapPlanFromQuantifiers(
 ) (*RecordQueryFlatMapPlan, error) {
 	return newRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ, outerAlias, innerAlias, resultValue,
-		inheritOuterRecordProperties, false)
+		inheritOuterRecordProperties, false, false)
 }
 
-// NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplyingInner builds a
-// FlatMap whose inner edge may be absent and therefore supplies SQL NULLs. The
-// fact is explicit at lowering; plans never rediscover it by traversing an
-// executor-specific wrapper spine.
-func NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplyingInner(
+// NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying builds a FlatMap
+// whose outer and/or inner edge may be absent and therefore supplies SQL
+// NULLs: the leg the lowering wrapped in DefaultOnEmpty, which is either one —
+// Java's planPartitionToPhysical wraps any null-on-empty quantifier, the outer
+// of a partitioned lower as much as a LEFT OUTER's inner. The fact is explicit
+// at lowering; plans never rediscover it by traversing an executor-specific
+// wrapper spine.
+func NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplying(
 	outerQ, innerQ expressions.Quantifier,
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 	inheritOuterRecordProperties bool,
+	nullSupplyingOuter, nullSupplyingInner bool,
 ) (*RecordQueryFlatMapPlan, error) {
 	return newRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ, outerAlias, innerAlias, resultValue,
-		inheritOuterRecordProperties, true)
+		inheritOuterRecordProperties, nullSupplyingOuter, nullSupplyingInner)
 }
 
 func newRecordQueryFlatMapPlanFromQuantifiers(
@@ -94,15 +99,28 @@ func newRecordQueryFlatMapPlanFromQuantifiers(
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 	inheritOuterRecordProperties bool,
-	nullSupplyingInner bool,
+	nullSupplyingOuter, nullSupplyingInner bool,
 ) (*RecordQueryFlatMapPlan, error) {
+	if !outerAlias.IsZero() {
+		outerQ = outerQ.WithAlias(outerAlias)
+	}
+	if !innerAlias.IsZero() {
+		innerQ = innerQ.WithAlias(innerAlias)
+	}
 	var nullSupplying []values.QuantifiedObjectValue
-	if nullSupplyingInner {
-		innerSource, err := exactQOVForResultSource(innerAlias, resultValue)
-		if err != nil {
-			return nil, fmt.Errorf("RecordQueryFlatMapPlan null-supplying inner: %w", err)
+	for _, leg := range []struct {
+		alias         values.CorrelationIdentifier
+		nullSupplying bool
+		role          string
+	}{{outerAlias, nullSupplyingOuter, "outer"}, {innerAlias, nullSupplyingInner, "inner"}} {
+		if !leg.nullSupplying {
+			continue
 		}
-		if innerSource != nil {
+		source, err := exactQOVForResultSource(leg.alias, resultValue)
+		if err != nil {
+			return nil, fmt.Errorf("RecordQueryFlatMapPlan null-supplying %s: %w", leg.role, err)
+		}
+		if source != nil {
 			// Java's Quantifier.pullUpResultColumnsWithNullability(true):
 			// QuantifiedObjectValue.of(alias, type.withNullability(true)). A leg
 			// this FlatMap null-extends flows a row that can BE null, and the
@@ -111,11 +129,11 @@ func newRecordQueryFlatMapPlanFromQuantifiers(
 			// about the same leg. The result program is rewritten in the same
 			// step so the program and the window never disagree about which
 			// exact row the alias names.
-			resultValue, innerSource, err = pullUpNullSupplyingSource(resultValue, innerSource)
+			resultValue, source, err = pullUpNullSupplyingSource(resultValue, source)
 			if err != nil {
-				return nil, fmt.Errorf("RecordQueryFlatMapPlan null-supplying inner: %w", err)
+				return nil, fmt.Errorf("RecordQueryFlatMapPlan null-supplying %s: %w", leg.role, err)
 			}
-			nullSupplying = []values.QuantifiedObjectValue{innerSource}
+			nullSupplying = append(nullSupplying, source)
 		}
 	}
 	base, err := newPlanExprBaseForRetainedResult(
@@ -125,7 +143,7 @@ func newRecordQueryFlatMapPlanFromQuantifiers(
 	}
 	base, err = flatMapBaseWithRetainedSources(
 		base, outerQ, innerQ, outerAlias, innerAlias,
-		resultValue, nullSupplying, nullSupplyingInner)
+		resultValue, nullSupplying, nullSupplyingOuter, nullSupplyingInner)
 	if err != nil {
 		return nil, err
 	}
@@ -137,6 +155,7 @@ func newRecordQueryFlatMapPlanFromQuantifiers(
 		innerAlias:                   innerAlias,
 		resultValue:                  resultValue,
 		inheritOuterRecordProperties: inheritOuterRecordProperties,
+		nullSupplyingOuter:           nullSupplyingOuter,
 		nullSupplyingInner:           nullSupplyingInner,
 	}, nil
 }
@@ -192,7 +211,7 @@ func flatMapBaseWithRetainedSources(
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 	nullSupplying []values.QuantifiedObjectValue,
-	nullSupplyingInner bool,
+	nullSupplyingOuter, nullSupplyingInner bool,
 ) (PlanExprBase, error) {
 	baseLayout, err := base.ProvidedOutputLayout()
 	if err != nil {
@@ -204,7 +223,7 @@ func flatMapBaseWithRetainedSources(
 		nullSupplying bool
 	}
 	legs := []selectedLeg{
-		{quantifier: outerQ, alias: outerAlias},
+		{quantifier: outerQ, alias: outerAlias, nullSupplying: nullSupplyingOuter},
 		{quantifier: innerQ, alias: innerAlias, nullSupplying: nullSupplyingInner},
 	}
 	// A record-valued UNNEST can be retained directly as one RC output slot.
@@ -491,8 +510,13 @@ func (p *RecordQueryFlatMapPlan) WithQuantifiers(qs []expressions.Quantifier) (e
 	}
 	return newRecordQueryFlatMapPlanFromQuantifiers(
 		qs[0], qs[1], p.outerAlias, p.innerAlias, relinked,
-		p.inheritOuterRecordProperties, p.nullSupplyingInner)
+		p.inheritOuterRecordProperties, p.nullSupplyingOuter, p.nullSupplyingInner)
 }
+
+// NullSupplyingOuter reports whether the outer edge is a DefaultOnEmpty the
+// lowering installed for a null-on-empty outer quantifier: its one row per
+// empty input is SQL NULL, and the output layout carries that leg's presence.
+func (p *RecordQueryFlatMapPlan) NullSupplyingOuter() bool { return p.nullSupplyingOuter }
 
 func relinkFlatMapResultSource(
 	resultValue values.Value,
@@ -596,8 +620,8 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 	traverseInner := !currentRooted
 	if !currentRooted {
 		correlations := values.GetCorrelatedToOfValue(reanchored)
-		_, ownedByOuter := correlations[p.outerAlias]
-		_, ownedByInner := correlations[p.innerAlias]
+		ownedByOuter := correlationsReadChildLineage(correlations, outer, p.outerAlias)
+		ownedByInner := correlationsReadChildLineage(correlations, inner, p.innerAlias)
 		// A declared FlatMap binding is direct lineage authority. Do not send an
 		// inner-owned value through the outer producer (or vice versa): a projection
 		// on the wrong leg can have a uniquely named field and would otherwise claim
@@ -711,7 +735,8 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 				if innerErr != nil {
 					return nil, fmt.Errorf("RecordQueryFlatMapPlan inner layout: %w", innerErr)
 				}
-				traverseInner = answeredByInner
+				traverseInner = answeredByInner ||
+					correlationsReadChildLineage(values.GetCorrelatedToOfValue(reanchored), inner, p.innerAlias)
 			}
 		}
 	}
@@ -736,43 +761,11 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 			}
 		}
 	}
-	// The retained result program is the first authority for the FlatMap's
-	// authored AS/AT bindings. This ordering is load-bearing when a user alias
-	// spells a private Explode field name: AS "_1" AT "O" has logical slots
-	// [_1,O], while the selected Explode carrier has physical slots [_0,_1]. If
-	// O is normalized to physical _1 before consulting this program, the generic
-	// producer matcher can mistake it for the authored element named _1.
-	beforeResult := reanchored
 	reanchored, err = values.ReanchorOwnedValueThroughProducer(
 		reanchored, p.resultValue, layout.Carrier(),
 		producerOwnedCorrelations(p.resultValue))
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryFlatMapPlan result lineage: %w", err)
-	}
-	// Some exploratory/result programs retain the selected Explode's physical
-	// [_0,_1] row instead of authored AS/AT fields. Only when the retained result
-	// program could not prove a mapping do we use that exact selected operator as
-	// authority to normalize logical field names, then retry the same producer.
-	// The bridge still requires correlation, record identity, width, nullability,
-	// ordinals, and leaf types; foreign and structurally drifted roots remain
-	// unchanged for the final layout check.
-	if reanchored == beforeResult && inner != nil && !p.innerAlias.IsZero() &&
-		selectedOrdinalityExplode(inner) {
-		innerLayout, layoutErr := inner.ProvidedOutputLayout()
-		if layoutErr != nil {
-			return nil, fmt.Errorf("RecordQueryFlatMapPlan inner layout: %w", layoutErr)
-		}
-		reanchored, err = values.TranslateProjectionInputNameNormalizationToCorrelation(
-			reanchored, p.innerAlias, values.PhysicalCarrierType(innerLayout))
-		if err != nil {
-			return nil, fmt.Errorf("RecordQueryFlatMapPlan inner ordinality lineage: %w", err)
-		}
-		reanchored, err = values.ReanchorOwnedValueThroughProducer(
-			reanchored, p.resultValue, layout.Carrier(),
-			producerOwnedCorrelations(p.resultValue))
-		if err != nil {
-			return nil, fmt.Errorf("RecordQueryFlatMapPlan normalized result lineage: %w", err)
-		}
 	}
 	reanchored, err = values.ReanchorValueForLayout(
 		reanchored, layout.Carrier(), layout)
@@ -832,6 +825,33 @@ func valueNamesChild(
 	return valueReferencesExactQOV(value, layout.Carrier()), nil
 }
 
+// correlationsReadChildLineage reports whether correlations name child's
+// binding or a source retained inside child's selected materializer chain. A
+// leg buried under the binding is read without ever naming the binding, so the
+// binding alone cannot decide which lineage a value belongs to.
+func correlationsReadChildLineage(
+	correlations map[values.CorrelationIdentifier]struct{},
+	child RecordQueryPlan,
+	bindingAlias values.CorrelationIdentifier,
+) bool {
+	if !bindingAlias.IsZero() {
+		if _, named := correlations[bindingAlias]; named {
+			return true
+		}
+	}
+	if child == nil {
+		return false
+	}
+	buried := make(map[values.CorrelationIdentifier]struct{})
+	addSelectedMaterializerRetainedCorrelations(child, buried)
+	for correlation := range correlations {
+		if _, ok := buried[correlation]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // valueAnsweredByChild reports whether value is now expressed on child's own
 // row. A layout error is answered as "no": this is a narrowing question asked
 // after a crossing already succeeded, and a child that cannot state a layout
@@ -843,23 +863,6 @@ func valueAnsweredByChild(
 ) bool {
 	named, err := valueNamesChild(value, child, bindingAlias)
 	return err == nil && named
-}
-
-// selectedOrdinalityExplode recognizes the exact physical producer whose SQL
-// binding names intentionally differ from its positional carrier. A predicate
-// filter is transparent to that row shape; no other wrapper is admitted.
-func selectedOrdinalityExplode(plan RecordQueryPlan) bool {
-	for plan != nil {
-		switch typed := plan.(type) {
-		case *RecordQueryExplodePlan:
-			return typed.IsWithOrdinality()
-		case *RecordQueryPredicatesFilterPlan:
-			plan = typed.GetInner()
-		default:
-			return false
-		}
-	}
-	return false
 }
 
 // valueReferencesExactQOV reports whether value is rooted in the exact QOV
@@ -909,14 +912,14 @@ func (p *RecordQueryFlatMapPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryFlatMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("flatmap|")
+	hash := p.keyFor(p).Hash("flatmap|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }
@@ -938,7 +941,7 @@ var (
 // its physical output layout through the memo's alpha-renaming.
 func (p *RecordQueryFlatMapPlan) EqualsWithoutChildren(other expressions.RelationalExpression, aliases *expressions.AliasMap) bool {
 	o, ok := other.(*RecordQueryFlatMapPlan)
-	return ok && p.structuralKey().EqualUnderAliases(o.structuralKey(), aliases.ToValuesAliasMap())
+	return ok && p.keyFor(p).EqualUnderAliases(o.keyFor(o), aliases.ToValuesAliasMap())
 }
 
 // CanCorrelate reports that this operator anchors a correlation between its
@@ -962,6 +965,7 @@ func (p *RecordQueryFlatMapPlan) GetCorrelatedToWithoutChildren() map[values.Cor
 	for k := range values.GetCorrelatedToOfValue(p.resultValue) {
 		out[k] = struct{}{}
 	}
+	delete(out, values.CurrentCorrelation())
 	return out
 }
 

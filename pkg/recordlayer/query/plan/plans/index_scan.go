@@ -42,6 +42,14 @@ type RecordQueryIndexPlan struct {
 	// distinctProofIndexName names the secondary UNIQUE index whose uniqueness
 	// licensed eliding a DISTINCT above this scan (distinct_proof_stamp.go).
 	distinctProofIndexName string
+	// matchedIndexPredicate is the deterministic encoding of the normalized
+	// metadata predicate proved by a complete candidate match. Empty means no proof.
+	matchedIndexPredicate string
+	// entryReader builds the queried record from an entry (the candidate's
+	// IndexEntryToLogicalRecord), read by a covering scan over this plan. A pure
+	// function of the index and its record type, so it stays out of identity,
+	// explain and execution salt.
+	entryReader *values.RecordConstructorValue
 	// keyComponentTypes is aligned with scanComparisons. It carries the
 	// physical index-key width (not the RHS type), which is load-bearing for
 	// FLOAT versus DOUBLE tuple encoding.
@@ -85,6 +93,13 @@ type RecordQueryIndexPlan struct {
 	// surface (the executor reads them from the entry VALUE tuple) but are not
 	// key columns: they never order the scan and never bound its range.
 	valueColumnNames []string
+	// keyColumnPaths and valueColumnPaths are parallel to columnNames and
+	// valueColumnNames: the field path an entry column reads from the record
+	// when it is a NESTED leaf (S.X), nil for a top-level field. A nested
+	// leaf's name is its last step only, so it never stands for a top-level
+	// column of the same name.
+	keyColumnPaths   [][]string
+	valueColumnPaths [][]string
 	// orderingKeyNamesKnown/orderingKeyNamesSafe state whether columnNames are
 	// semantic bare-field ordering keys. Function indexes retain leaf names for
 	// row layout, but CARDINALITY(TAGS) must not advertise ordering on TAGS.
@@ -93,6 +108,9 @@ type RecordQueryIndexPlan struct {
 	// metadata-preserving copies cannot accidentally turn an unsafe plan safe.
 	orderingKeyNamesKnown bool
 	orderingKeyNamesSafe  bool
+	// orderingColumns is parallel to columnNames: what each key column orders
+	// the scan by. Nil means every column is its field, tuple-natural ascending.
+	orderingColumns []IndexOrderingColumn
 	// createsDuplicates and distinctRecordsKnown carry the match candidate's
 	// fan-out signal onto the plan for the DistinctRecords property. Java's
 	// DistinctRecordsProperty.visitIndexPlan returns !matchCandidate.createsDuplicates()
@@ -266,6 +284,67 @@ func (p *RecordQueryIndexPlan) WithValueColumnNames(names []string) *RecordQuery
 	return &cp
 }
 
+// WithColumnPaths returns a copy carrying the nested field path of each key
+// and value column (nil for a top-level field). Like the names, a function of
+// the index the plan names, outside the structural key.
+func (p *RecordQueryIndexPlan) WithColumnPaths(keyPaths, valuePaths [][]string) *RecordQueryIndexPlan {
+	cp := *p
+	cp.keyColumnPaths = clonePaths(keyPaths)
+	cp.valueColumnPaths = clonePaths(valuePaths)
+	return &cp
+}
+
+func clonePaths(paths [][]string) [][]string {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([][]string, len(paths))
+	for i, path := range paths {
+		out[i] = slices.Clone(path)
+	}
+	return out
+}
+
+// NestedKeyColumnPath returns key column i's nested field path, or nil for a
+// top-level field.
+func (p *RecordQueryIndexPlan) NestedKeyColumnPath(i int) []string {
+	if i < 0 || i >= len(p.keyColumnPaths) || len(p.keyColumnPaths[i]) < 2 {
+		return nil
+	}
+	return p.keyColumnPaths[i]
+}
+
+// HasNestedKeyColumn reports whether any key column is a nested leaf.
+func (p *RecordQueryIndexPlan) HasNestedKeyColumn() bool {
+	for i := range p.keyColumnPaths {
+		if p.NestedKeyColumnPath(i) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// AllCoveredEntryColumnPaths is parallel to AllCoveredEntryColumns: each
+// entry column's nested field path, nil for a top-level field.
+func (p *RecordQueryIndexPlan) AllCoveredEntryColumnPaths() [][]string {
+	out := make([][]string, 0, len(p.columnNames)+len(p.valueColumnNames))
+	for i := range p.columnNames {
+		var path []string
+		if i < len(p.keyColumnPaths) && len(p.keyColumnPaths[i]) > 1 {
+			path = p.keyColumnPaths[i]
+		}
+		out = append(out, path)
+	}
+	for i := range p.valueColumnNames {
+		var path []string
+		if i < len(p.valueColumnPaths) && len(p.valueColumnPaths[i]) > 1 {
+			path = p.valueColumnPaths[i]
+		}
+		out = append(out, path)
+	}
+	return out
+}
+
 // AllCoveredEntryColumns returns the entry's column names in ENTRY layout
 // order — key columns, then the KeyWithValue VALUE part — the list the
 // covering executor aligns positionally against (index key values ++ entry
@@ -333,6 +412,31 @@ func (p *RecordQueryIndexPlan) WithIndexMetadata(columnNames, pkColumnNames []st
 		cp.orderingKeyNamesKnown = true
 		cp.orderingKeyNamesSafe = true
 	}
+	return &cp
+}
+
+// IndexOrderingColumn is what one index key column orders a scan by: its field
+// in Direction (an order function's, else tuple-natural ascending), or the
+// field's CARDINALITY.
+type IndexOrderingColumn struct {
+	Direction   values.OrderedBytesDirection
+	Cardinality bool
+	// Key, when set, is the column's Value over the record QOV KeyRoot: a
+	// function key such as ArithmeticValue(bitmap_bucket_offset, ID, 10000),
+	// which orders the scan as a whole Value rather than by a field.
+	Key     values.Value
+	KeyRoot values.CorrelationIdentifier
+}
+
+// WithOrderingColumns returns a copy whose key columns order the scan as given:
+// Java's ordering parts for an index, where ToOrderedBytesValue(field,
+// direction) simplifies to (field, direction) and a CARDINALITY column orders
+// by the cardinality value.
+func (p *RecordQueryIndexPlan) WithOrderingColumns(columns []IndexOrderingColumn) *RecordQueryIndexPlan {
+	cp := *p
+	cp.orderingColumns = slices.Clone(columns)
+	cp.orderingKeyNamesKnown = true
+	cp.orderingKeyNamesSafe = true
 	return &cp
 }
 
@@ -404,19 +508,20 @@ func (p *RecordQueryIndexPlan) structuralKey() *structuralKey {
 		Bool(p.strictlySorted).
 		Strs(p.recordTypes).
 		Type(p.flowedType).
-		Str(p.distinctProofIndexName)
+		Str(p.distinctProofIndexName).
+		Str(p.matchedIndexPredicate)
 }
 
 func (p *RecordQueryIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryIndexPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryIndexPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("indexplan|")
+	hash := p.keyFor(p).Hash("indexplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }
@@ -441,14 +546,7 @@ func (p *RecordQueryIndexPlan) explainScan(covering bool) string {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		switch cr.GetRangeType() {
-		case predicates.ComparisonRangeEmpty:
-			b.WriteString("*")
-		case predicates.ComparisonRangeEquality:
-			b.WriteString("=")
-		case predicates.ComparisonRangeInequality:
-			b.WriteString("<>")
-		}
+		b.WriteString(scanComparisonGlyph(cr))
 	}
 	b.WriteString("]")
 	if covering {
@@ -509,3 +607,32 @@ func (p *RecordQueryIndexPlan) WithDistinctProofIndexName(indexName string) Reco
 }
 
 var _ DistinctProofStampable = (*RecordQueryIndexPlan)(nil)
+
+// WithMatchedIndexPredicate carries the predicate discharged by the candidate
+// matcher. It is part of plan identity so memo dedup cannot discard the proof.
+func (p *RecordQueryIndexPlan) WithMatchedIndexPredicate(encoded []byte) *RecordQueryIndexPlan {
+	cp := *p
+	cp.matchedIndexPredicate = string(encoded)
+	return &cp
+}
+
+// WithEntryReader attaches the reader a covering scan builds its record with.
+func (p *RecordQueryIndexPlan) WithEntryReader(reader *values.RecordConstructorValue) *RecordQueryIndexPlan {
+	cp := *p
+	cp.entryReader = reader
+	return &cp
+}
+
+// GetEntryReader is the reader that builds the queried record from an entry,
+// or nil when an entry cannot be read into one.
+func (p *RecordQueryIndexPlan) GetEntryReader() *values.RecordConstructorValue {
+	if p == nil {
+		return nil
+	}
+	return p.entryReader
+}
+
+// GetMatchedIndexPredicate returns an owned copy of the matched predicate bytes.
+func (p *RecordQueryIndexPlan) GetMatchedIndexPredicate() []byte {
+	return []byte(p.matchedIndexPredicate)
+}

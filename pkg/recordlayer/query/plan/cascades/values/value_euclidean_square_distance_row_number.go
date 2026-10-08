@@ -40,8 +40,8 @@ func (*EuclideanSquareDistanceRowNumberValue) Name() string {
 	return "EuclideanSquareDistanceRowNumber"
 }
 
-// Type returns NotNullLong — ROW_NUMBER is always populated, 1-based.
-func (*EuclideanSquareDistanceRowNumberValue) Type() Type { return NotNullLong }
+// Type is nullable LONG, Java's primitiveType(LONG).
+func (*EuclideanSquareDistanceRowNumberValue) Type() Type { return NullableLong }
 
 // IsIndexOnly returns true — K-NN row numbers are computed during
 // HNSW index traversal and cannot be reproduced from base records.

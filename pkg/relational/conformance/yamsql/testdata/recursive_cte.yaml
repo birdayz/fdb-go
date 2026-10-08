@@ -110,12 +110,12 @@ tests:
     error_code: "0A000"
 
   # Column-list rename on a recursive CTE. Outer columns come from the
-  # rename list, not the inner query.
+  # rename list; the recursive branch reads the seed's names.
   - query: |-
       WITH RECURSIVE ancestors(node, up) AS (
         SELECT id, parent FROM t WHERE id = 250
         UNION ALL
-        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.up
+        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent
       )
       SELECT node FROM ancestors ORDER BY node DESC
     rows:
@@ -221,7 +221,7 @@ tests:
       WITH RECURSIVE reach(n) AS (
         SELECT src FROM edge WHERE src = 1
         UNION
-        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n
+        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.src
       )
       TRAVERSAL ORDER pre_order
       SELECT n FROM reach ORDER BY n
@@ -236,7 +236,7 @@ tests:
       WITH RECURSIVE reach(n) AS (
         SELECT src FROM edge WHERE src = 1
         UNION ALL
-        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n
+        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.src
       )
       TRAVERSAL ORDER pre_order
       SELECT n FROM reach
@@ -259,13 +259,10 @@ tests:
       - [10]
       - [1]
 
-  # Counter (1..5) via a depth predicate. The seed is a FROM-less
-  # SELECT literal (`SELECT 1 AS n`); fdb-relational 4.11.1.0 rejects
-  # at parse time via QueryVisitor.visitSimpleTable's
-  # `Assert.notNullUnchecked(fromClause(), UNSUPPORTED_QUERY,
-  # "query is not supported")` — the assertion fires on every
-  # SimpleTable visit, including ones inside a recursive CTE base.
-  # Per the project conformance principle, Go aligns. ErrCode 0AF00.
+  # Counter (1..5) from the singleton seed. The main-query sort consumes
+  # the completed recursive row, not the provisional NOT NULL seed type.
+  # ORDER BY over this recursive result uses Go's existing sort extension;
+  # Java 4.14.2.0's refusal is pinned in FromlessSelectJavaProbe.
   - query: |-
       WITH RECURSIVE counter(n) AS (
         SELECT 1 AS n
@@ -273,7 +270,12 @@ tests:
         SELECT n + 1 FROM counter WHERE n < 5
       )
       SELECT n FROM counter ORDER BY n
-    error_code: "0AF00"
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
 
   # Cycle + UNION DISTINCT: reachable set on a 1→2→3→1 cycle must be
   # {1,2,3} and the recursion must terminate (via the seen-row filter,
@@ -282,7 +284,7 @@ tests:
       WITH RECURSIVE reach(n) AS (
         SELECT src FROM edge WHERE src = 1
         UNION
-        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n
+        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.src
       )
       SELECT n FROM reach ORDER BY n
     rows:
@@ -296,7 +298,7 @@ tests:
       WITH RECURSIVE reach(n) AS (
         SELECT src FROM edge WHERE src = 1
         UNION ALL
-        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.n
+        SELECT e.dst FROM reach AS r, edge AS e WHERE e.src = r.src
       )
       SELECT n FROM reach
     error_code: "54F01"
@@ -427,3 +429,36 @@ tests:
       - [1]
       - [10]
       - [20]
+  # A column list names the CTE only for the main query: the recursive
+  # branch cannot read it, and the main query cannot read the seed's names
+  # (QueryVisitor.handleRecursiveNamedQuery).
+  - query: |-
+      WITH RECURSIVE ancestors(node, up) AS (
+        SELECT id, parent FROM t WHERE id = 250
+        UNION ALL
+        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.up
+      )
+      SELECT node FROM ancestors
+    error_code: "42703"
+  - query: |-
+      WITH RECURSIVE ancestors(node, up) AS (
+        SELECT id, parent FROM t WHERE id = 250
+        UNION ALL
+        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent
+      )
+      SELECT parent FROM ancestors
+    error_code: "42703"
+  # Swapped names: the branch's `a.parent` is the seed's second column, not
+  # the list's column named PARENT (the first).
+  - query: |-
+      WITH RECURSIVE ancestors(parent, id) AS (
+        SELECT id, parent FROM t WHERE id = 250
+        UNION ALL
+        SELECT b.id, b.parent FROM ancestors AS a, t AS b WHERE b.id = a.parent
+      )
+      SELECT parent, id FROM ancestors ORDER BY parent DESC
+    rows:
+      - [250, 50]
+      - [50, 10]
+      - [10, 1]
+      - [1, -1]

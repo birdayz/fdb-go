@@ -935,7 +935,7 @@ func TestRewritingCostModel_ResidualConjunctRung(t *testing.T) {
 		[]predicates.QueryPredicate{rungPredicate("A"), rungPredicate("B")},
 	)
 
-	scope := newDesignationScope()
+	scope := &rewritingComparator{clientTrees: true}
 	if got := scope.exprCount(oneConjunct, isSelectExpression, map[*expressions.Reference]bool{}); got != 1 {
 		t.Fatalf("one-conjunct Select count = %d, want 1", got)
 	}
@@ -950,6 +950,26 @@ func TestRewritingCostModel_ResidualConjunctRung(t *testing.T) {
 	}
 
 	assertStrictPlanningPreference(t, RewritingCostModelLess, oneConjunct, twoConjuncts)
+}
+
+// TestRewritingCostModel_TautologyCountsNoConjunct pins Java's tautology drop
+// on the residual-conjunct rung (NormalizedResidualPredicateProperty.java:81-121):
+// a TRUE predicate counts 0, so a fold that leaves `[A, TRUE]` beats the
+// original `[A, B]` on the count rather than tying into the hash (WS-E 5.4(g)).
+func TestRewritingCostModel_TautologyCountsNoConjunct(t *testing.T) {
+	t.Parallel()
+
+	scanRef := expressions.InitialOf(rungFullScan("T"))
+	withTrue := makeRewritingRungSelect(scanRef, []predicates.QueryPredicate{
+		rungPredicate("A"), predicates.NewConstantPredicate(predicates.TriTrue),
+	})
+	original := makeRewritingRungSelect(scanRef, []predicates.QueryPredicate{rungPredicate("A"), rungPredicate("B")})
+
+	scope := &rewritingComparator{clientTrees: true}
+	if got := scope.residualConjuncts(withTrue, map[*expressions.Reference]bool{}); got != 1 {
+		t.Fatalf("[A, TRUE] residual count = %d, want 1", got)
+	}
+	assertStrictPlanningPreference(t, RewritingCostModelLess, withTrue, original)
 }
 
 // TestRewritingCostModel_PredicateDepthRung ties the first three REWRITING
@@ -973,7 +993,7 @@ func TestRewritingCostModel_PredicateDepthRung(t *testing.T) {
 		[]predicates.QueryPredicate{predicate},
 	)
 
-	scope := newDesignationScope()
+	scope := &rewritingComparator{clientTrees: true}
 	if pushedSelects, pulledSelects := scope.exprCount(pushed, isSelectExpression, map[*expressions.Reference]bool{}), scope.exprCount(pulled, isSelectExpression, map[*expressions.Reference]bool{}); pushedSelects != 2 || pulledSelects != 2 {
 		t.Fatalf("Select-count precondition = (%d, %d), want (2, 2)", pushedSelects, pulledSelects)
 	}
@@ -992,4 +1012,31 @@ func TestRewritingCostModel_PredicateDepthRung(t *testing.T) {
 	}
 
 	assertStrictPlanningPreference(t, RewritingCostModelLess, pushed, pulled)
+}
+
+// TestPlanningCostModel_DistinctDepthRanksAbsentAsDeepest pins Java's
+// ExpressionDepthProperty: a plan without a distinct has it at
+// Integer.MAX_VALUE, deeper than any (ExpressionDepthProperty.java:107-113), so
+// the distinct-depth rung prefers it to a plan with one. Without that the rung
+// abstained whenever one side had no distinct and the simple-operation count
+// below decided: the distinct plan, which has no Map, won.
+func TestPlanningCostModel_DistinctDepthRanksAbsentAsDeepest(t *testing.T) {
+	t.Parallel()
+
+	withoutDistinct := rungMap(rungScan("T"))
+	withDistinct := mustRungConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(rungScan("T")))
+	if depth := costExprDepth(withoutDistinct, matchDistinct); depth >= 0 {
+		t.Fatalf("Map(Scan) distinct depth = %d, want none", depth)
+	}
+	if depth := costExprDepth(withDistinct, matchDistinct); depth != 0 {
+		t.Fatalf("PKDistinct(Scan) distinct depth = %d, want 0", depth)
+	}
+	opsWithout := concretePlanCounts(withoutDistinct, nil)
+	opsWith := concretePlanCounts(withDistinct, nil)
+	if opsWithout.mapCount+opsWithout.predicatesFilterCount <= opsWith.mapCount+opsWith.predicatesFilterCount {
+		t.Fatalf("precondition: the simple-operation rung must favour the distinct side (%d vs %d)",
+			opsWithout.mapCount+opsWithout.predicatesFilterCount, opsWith.mapCount+opsWith.predicatesFilterCount)
+	}
+
+	assertStrictPlanningPreference(t, PlanningCostModelLess, withoutDistinct, withDistinct)
 }

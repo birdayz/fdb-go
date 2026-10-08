@@ -9,8 +9,6 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"fdb.dev/pkg/relational/core/functions"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -170,15 +168,17 @@ func (c ComparisonType) Negate() (ComparisonType, bool) {
 }
 
 // Commute returns the operator that holds when the two operands are swapped:
-// `a OP b` is equivalent to `b Commute(OP) a`. Equality and not-equals are
-// symmetric (unchanged); the binary inequalities flip direction. Unary
-// operators (IS NULL / IS NOT NULL) and non-commutable operators (IN,
-// STARTS_WITH, LIKE, the DISTINCT variants) return (c, false). Used by index/PK
-// matching, which is commutative: a join predicate `outer.fk = inner.pk`
-// constrains inner.pk exactly as `inner.pk = outer.fk` does.
+// `a OP b` is equivalent to `b Commute(OP) a`. Equality, not-equals and the
+// null-safe IS [NOT] DISTINCT FROM are symmetric (unchanged); the binary
+// inequalities flip direction, as Java's RelOpValue.swapBinaryComparisonOperator
+// (RelOpValue.java:297-312). Unary operators (IS NULL / IS NOT NULL) and
+// non-commutable operators (IN, STARTS_WITH, LIKE) return (c, false). Used by
+// index/PK matching, which is commutative: a join predicate `outer.fk =
+// inner.pk` constrains inner.pk exactly as `inner.pk = outer.fk` does.
 func (c ComparisonType) Commute() (ComparisonType, bool) {
 	switch c {
-	case ComparisonEquals, ComparisonNotEquals:
+	case ComparisonEquals, ComparisonNotEquals,
+		ComparisonNotDistinctFrom, ComparisonIsDistinctFrom:
 		return c, true
 	case ComparisonLessThan:
 		return ComparisonGreaterThan, true
@@ -259,16 +259,11 @@ func (c ComparisonType) Symbol() string {
 // NewLiteralComparison / LiteralValue. IN-list RHS is carried as a
 // ConstantValue whose Value is a `[]any` of evaluated literals.
 //
-// Escape is the LIKE-pattern escape rune (`LIKE 'a\%b' ESCAPE '\'`).
-// Zero (the default) means "no escape" — `%` and `_` retain their
-// SQL wildcard meaning everywhere in the pattern. Non-zero values
-// flip the next character after the escape from wildcard to
-// literal. Only Type==ComparisonLike consults Escape; other types
-// ignore it.
+// A LIKE's Operand is its values.PatternForLikeValue, which carries the
+// pattern and the escape (Java's ValueComparison(LIKE, patternValue)).
 type Comparison struct {
 	Type    ComparisonType
 	Operand values.Value
-	Escape  rune
 
 	// --- Optional fields for Java Comparison subclass variants ---
 
@@ -334,22 +329,16 @@ func NewDistanceRankComparison(typ ComparisonType, queryVector, comparand values
 // comparison bindings to explode aliases.
 func (c Comparison) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
-	if c.Operand != nil {
-		for k := range values.GetCorrelatedToOfValue(c.Operand) {
-			out[k] = struct{}{}
-		}
-	}
-	// DistanceRank comparisons also carry a query-vector Value, which may
-	// reference a parameter/correlation.
-	if c.QueryVector != nil {
-		for k := range values.GetCorrelatedToOfValue(c.QueryVector) {
-			out[k] = struct{}{}
-		}
-	}
+	c.collectCorrelations(out)
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func (c Comparison) collectCorrelations(out map[values.CorrelationIdentifier]struct{}) {
+	values.CollectCorrelatedToOfValue(c.Operand, out)
+	values.CollectCorrelatedToOfValue(c.QueryVector, out)
 }
 
 // NewLiteralComparison is the common-case constructor for a binary
@@ -357,7 +346,12 @@ func (c Comparison) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} 
 // appropriate Value subtype (NullValue for nil, BooleanValue for
 // bool, ConstantValue otherwise). For unary types callers should
 // set Operand to nil directly: `Comparison{Type: ComparisonIsNull}`.
+// A LIKE comparand is always a PatternForLikeValue, so a LIKE literal is
+// wrapped as a pattern with no escape.
 func NewLiteralComparison(typ ComparisonType, lit any) Comparison {
+	if typ == ComparisonLike {
+		return Comparison{Type: typ, Operand: values.NewPatternForLikeValue(values.LiteralValue(lit), values.LiteralValue(nil))}
+	}
 	return Comparison{Type: typ, Operand: values.LiteralValue(lit)}
 }
 
@@ -458,6 +452,14 @@ func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 				sawNull = true
 				continue
 			}
+			// A record or array element compares by ordinal
+			// (MessageHelpers.compareMessageEquals), as `=` does.
+			if _, isMsg := asProtoMessage(left); isMsg || isCompositeOperand(left) {
+				if deepValueEqual(left, elem) {
+					return TriTrue, nil
+				}
+				continue
+			}
 			cmp, ok := cmpAny(left, elem)
 			if !ok {
 				if isNumericStringMismatch(left, elem) {
@@ -506,17 +508,14 @@ func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 		}
 		return TriFalse, nil
 	}
-	// LIKE: SQL pattern with `%` (zero-or-more chars) and `_` (exactly
-	// one char). When c.Escape is non-zero, the rune preceding `%`
-	// or `_` makes the next character literal (`LIKE 'a\%b' ESCAPE '\'`
-	// matches `a%b`). Escape == 0 disables escape handling.
+	// LIKE: Java's compareLike (Comparisons.java:284-295) over the pattern
+	// record the PatternForLikeValue operand evaluated to.
 	if c.Type == ComparisonLike {
-		ls, lok := left.(string)
-		ps, rok := right.(string)
-		if !lok || !rok {
-			return TriUnknown, nil
+		match, err := values.LikeOperation(left, right)
+		if err != nil || match == nil {
+			return TriUnknown, err
 		}
-		if likeMatch(ps, ls, c.Escape) {
+		if match.(bool) {
 			return TriTrue, nil
 		}
 		return TriFalse, nil
@@ -573,30 +572,6 @@ func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
 	return TriFalse, nil
 }
 
-// likeMatch implements SQL LIKE pattern matching against `s`:
-//   - `%` matches zero or more characters (runes), none of which
-//     may be a line terminator
-//   - `_` matches exactly one non-line-terminator character (rune)
-//   - every other character matches itself
-//   - a non-zero `escape` rune makes a following `%` or `_` literal;
-//     in every other position it falls through to the ordinary
-//     per-character rules, so it is a literal UNLESS the escape rune
-//     is itself `%` or `_`, in which case it is still that wildcard
-//
-// Delegates to values.LikeMatch — the canonical LIKE matcher shared
-// between the QueryPredicate-layer ComparisonLike and the
-// Value-layer LikeOperatorValue; its doc comment
-// (values/like_match.go) carries the full contract, including the
-// escape fallthrough and the newline/`$` semantics. The spec is
-// Java's `PatternForLikeValue.eval` (PatternForLikeValue.java:96-117)
-// + `LikeOperatorValue.likeOperation` (LikeOperatorValue.java:93-99):
-// SQL pattern → `^<regex>$` → `Pattern.compile` with no flags →
-// `.find()`. Pinned by FuzzLikeMatch / FuzzLikeMatchEscape against
-// an oracle that models exactly that composition.
-func likeMatch(pattern, s string, escape rune) bool {
-	return values.LikeMatch(pattern, s, escape)
-}
-
 // cmpAny is a total-order comparator over the primitive types the
 // predicates exercise: signed-int{8,16,32,64}, int, float{32,64},
 // string. Returns (cmp, ok); ok=false signals a genuine type
@@ -641,17 +616,6 @@ func cmpAny(a, b any) (int, bool) {
 				return 0, true
 			}
 		}
-		if bt, ok2 := b.(time.Time); ok2 {
-			if at, pOK := functions.ParseTimestamp(av); pOK {
-				switch {
-				case at.Before(bt):
-					return -1, true
-				case at.After(bt):
-					return 1, true
-				}
-				return 0, true
-			}
-		}
 		return 0, false
 	}
 	// Bool equality: FALSE < TRUE (following SQL's TRUE > FALSE
@@ -670,45 +634,6 @@ func cmpAny(a, b any) (int, bool) {
 		default: // av && !bv: true > false
 			return 1, true
 		}
-	}
-	// time.Time comparison (DATE/TIMESTAMP values from CAST or CURRENT_TIMESTAMP).
-	// Also handles time.Time vs string cross-type (stored dates are strings).
-	if at, ok := a.(time.Time); ok {
-		switch bv := b.(type) {
-		case time.Time:
-			switch {
-			case at.Before(bv):
-				return -1, true
-			case at.After(bv):
-				return 1, true
-			}
-			return 0, true
-		case string:
-			if bt, pOK := functions.ParseTimestamp(bv); pOK {
-				switch {
-				case at.Before(bt):
-					return -1, true
-				case at.After(bt):
-					return 1, true
-				}
-				return 0, true
-			}
-		}
-		return 0, false
-	}
-	if at, ok := b.(time.Time); ok {
-		if as, ok2 := a.(string); ok2 {
-			if parsed, pOK := functions.ParseTimestamp(as); pOK {
-				switch {
-				case parsed.Before(at):
-					return -1, true
-				case parsed.After(at):
-					return 1, true
-				}
-				return 0, true
-			}
-		}
-		return 0, false
 	}
 	// Bytes comparison is lexicographic — matches SQL's BINARY / VARBINARY
 	// collation and proto `bytes` semantics. Mixed bytes/string degrades
@@ -940,19 +865,10 @@ func (*ComparisonPredicate) Children() []QueryPredicate { return []QueryPredicat
 // GetCorrelatedTo returns the union of correlations from the LHS operand Value
 // and everything the RHS Comparison carries.
 //
-// The RHS goes through Comparison.GetCorrelatedTo rather than reading its
-// Operand directly: a comparison can carry more than one Value — a DistanceRank
-// comparison also holds a query vector — and reading only Operand silently
-// drops those correlations.
+// The comparison's collector includes its query vector as well as its operand;
+// reading only Operand would silently drop DistanceRank correlations.
 func (p *ComparisonPredicate) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
-	out := map[values.CorrelationIdentifier]struct{}{}
-	for k := range values.GetCorrelatedToOfValue(p.Operand) {
-		out[k] = struct{}{}
-	}
-	for k := range p.Comparison.GetCorrelatedTo() {
-		out[k] = struct{}{}
-	}
-	return out
+	return GetCorrelatedToOfPredicate(p)
 }
 
 func (p *ComparisonPredicate) Eval(evalCtx any) (TriBool, error) {
@@ -974,7 +890,25 @@ func (p *ComparisonPredicate) Eval(evalCtx any) (TriBool, error) {
 		}
 		right = r
 	}
+	if t, isTime := left.(time.Time); isTime {
+		return TriUnknown, &TemporalCarrierError{Operand: values.ExplainValue(p.Operand), Value: t}
+	}
+	if t, isTime := right.(time.Time); isTime {
+		return TriUnknown, &TemporalCarrierError{Operand: values.ExplainValue(p.Comparison.Operand), Value: t}
+	}
 	return p.Comparison.EvalAgainst(left, right)
+}
+
+// TemporalCarrierError is a comparison operand that evaluated to a time.Time.
+// DATE and TIMESTAMP values are canonical text, so this is an internal error:
+// a time.Time compared as text or skipped would answer silently wrong.
+type TemporalCarrierError struct {
+	Operand string
+	Value   time.Time
+}
+
+func (e *TemporalCarrierError) Error() string {
+	return fmt.Sprintf("internal error: comparison operand %s evaluated to the time.Time %v, not DATE/TIMESTAMP text", e.Operand, e.Value)
 }
 
 func (p *ComparisonPredicate) Explain() string {
@@ -988,19 +922,7 @@ func (p *ComparisonPredicate) Explain() string {
 	if p.Comparison.Type.IsUnary() {
 		return fmt.Sprintf("%s %s", operandText, p.Comparison.Type.Symbol())
 	}
-	// LIKE with escape: append the ESCAPE clause so Explain output
-	// round-trips back to recognisable SQL. Plain LIKE elides the
-	// (default-zero) escape. The escape rune is rendered SQL-escaped
-	// — single quote becomes '' inside the literal so `ESCAPE ''''`
-	// stays valid SQL, not `ESCAPE '''` (broken).
 	rhs := formatComparisonRHS(p.Comparison.Operand)
-	if p.Comparison.Type == ComparisonLike && p.Comparison.Escape != 0 {
-		escLit := string(p.Comparison.Escape)
-		if p.Comparison.Escape == '\'' {
-			escLit = "''"
-		}
-		return fmt.Sprintf("%s %s %s ESCAPE '%s'", operandText, p.Comparison.Type.Symbol(), rhs, escLit)
-	}
 	return fmt.Sprintf("%s %s %s", operandText, p.Comparison.Type.Symbol(), rhs)
 }
 

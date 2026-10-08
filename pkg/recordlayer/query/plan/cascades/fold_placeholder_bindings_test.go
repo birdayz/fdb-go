@@ -158,7 +158,8 @@ func TestFoldPlaceholderBindings_CandidateDecidesTheWholeRange(t *testing.T) {
 	knownDistinct := false
 	valueCandidate := NewValueIndexScanMatchCandidateWithFunctions(
 		"idx_s", []string{"T"}, []string{"S"}, nil, aliases,
-		physicalKeyRowType(), false, nil, &knownDistinct,
+		values.NewRecordType("T", false, []values.Field{{Name: "S", FieldType: values.NullableString, Ordinal: 0}}),
+		false, nil, &knownDistinct,
 	).WithKeyComponentTypes([]values.Type{values.NullableString})
 	if prefix := valueCandidate.ComputeBoundParameterPrefixMap(map[values.CorrelationIdentifier]*predicates.ComparisonRange{aliases[0]: folded}); len(prefix) != 0 {
 		t.Fatalf("value index accepted a STARTS_WITH beside an inequality: prefix %v", prefix)

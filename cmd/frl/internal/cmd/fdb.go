@@ -52,14 +52,14 @@ func newFdbUpCmd() *cobra.Command {
 			"commands work with no further setup.\n\n" +
 			"UNIX stdout contract: progress goes to stderr; stdout carries " +
 			"exactly the cluster-file path, so the command chains:\n\n" +
-			"  frl sql --cluster-file $(frl fdb up) --database /demo\n\n" +
+			"  frl sql --cluster-file $(frl fdb up) --database /FRL/demo\n\n" +
 			"--output / -o: 'text' (default — bare path) or 'json' " +
 			"({cluster_file, container, context}).\n\n" +
 			"--port sets the fdbserver port inside the container (host " +
 			"network) — pick distinct ports to run several instances.",
 		Example: `  frl fdb up
   frl fdb up --name myfdb --context myfdb --port 4689
-  frl sql --cluster-file $(frl fdb up) --database /demo`,
+  frl sql --cluster-file $(frl fdb up) --database /FRL/demo`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
@@ -76,7 +76,10 @@ func newFdbUpCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(progress, "Starting %s (container %q)...\n", image, name)
+			// Match the image's address selection to Docker's host network:
+			// container mode resolves hostname addresses, which can be IPv6.
 			if o, err := runDocker("run", "-d", "--name", name, "--network", "host",
+				"--env", "FDB_NETWORKING_MODE=host",
 				"--env", fmt.Sprintf("FDB_PORT=%d", port), image); err != nil {
 				return fmt.Errorf("docker run: %w\n%s", err, o)
 			}
@@ -129,7 +132,7 @@ func newFdbUpCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(progress, "\nFoundationDB is up. Context %q is active (cluster file %s).\n", ctxName, clusterFile)
-			fmt.Fprintf(progress, "Try: frl tx read-version   |   frl sql --database /myapp\n")
+			fmt.Fprintf(progress, "Try: frl tx read-version   |   frl sql --database /FRL/myapp\n")
 			fmt.Fprintf(progress, "Tear down with: frl fdb down --name %s\n", name)
 
 			if outputFmt == "json" {

@@ -2,7 +2,9 @@ package memoinvariant
 
 import (
 	"fmt"
+	"runtime"
 	"sort"
+	"sync"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
@@ -91,14 +93,15 @@ func identityHashViolations(root plans.RecordQueryPlan) []string {
 //
 // RFC-184 §7 exit criterion: W4 must exercise every compensating-rule site
 // (FlatMap, RecursiveDfsJoin, InJoin, UnorderedUnion, PredicatesFilter,
-// Projection) with generated shapes — that coverage is what licenses W2. Family
+// Map) with generated shapes — that coverage is what licenses W2. A block's
+// result value is compensated by a Map, as in Java. Family
 // membership is read from the typed plan node, never from EXPLAIN text
 // (CLAUDE.md: NO TEXT MATCHING ON PLAN TREES).
 // ---------------------------------------------------------------------------
 
 var requiredFamilies = []string{
 	"FlatMap", "RecursiveDfsJoin", "InJoin",
-	"UnorderedUnion", "PredicatesFilter", "Projection",
+	"UnorderedUnion", "PredicatesFilter", "Map",
 }
 
 // planFamilies returns the compensating-rule families present in a plan tree,
@@ -117,8 +120,8 @@ func planFamilies(root plans.RecordQueryPlan) map[string]int {
 			fams["UnorderedUnion"]++
 		case *plans.RecordQueryPredicatesFilterPlan:
 			fams["PredicatesFilter"]++
-		case *plans.RecordQueryProjectionPlan:
-			fams["Projection"]++
+		case *plans.RecordQueryMapPlan:
+			fams["Map"]++
 		}
 		return true
 	})
@@ -179,7 +182,7 @@ var familyProbes = []familyProbe{
 		sql:    "SELECT id FROM orders WHERE amount > 5 AND status = 'x'",
 	},
 	{
-		name:   "Projection",
+		name:   "Map",
 		schema: probeOrdersSchema,
 		sql:    "SELECT status, amount FROM orders WHERE customer_id = 3",
 	},
@@ -290,28 +293,50 @@ func TestMemoInvariants_GeneratedShapes(t *testing.T) {
 		}
 	}
 
-	for s := 0; s < n; s++ {
-		c := rowdiff.Generate(uint64(s))
-		ddl := c.DDL()
-		for _, q := range c.Queries {
-			for _, proj := range c.ProjectionsFor(q) {
-				sql := c.SQL(q, proj)
-				plan, err := embedded.PlanPhysicalForTestWithReachability(sql, ddl, nil, reach)
-				if err != nil {
-					// The generator emits some shapes the engine legitimately
-					// rejects (unsupported query, etc.); those are not soundness
-					// findings. Count them so a sweep that planned NOTHING cannot
-					// pass vacuously.
-					planErrs++
-					continue
+	// Seeds plan independently (the collector is mutex-guarded), so they run on
+	// every core; the tallies merge under mu. Serially this sweep was the fast
+	// lane's longest pole (~90 s on one core).
+	var mu sync.Mutex
+	seeds := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < runtime.GOMAXPROCS(0); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for s := range seeds {
+				c := rowdiff.Generate(uint64(s))
+				ddl := c.DDL()
+				for _, q := range c.Queries {
+					for _, proj := range c.ProjectionsFor(q) {
+						sql := c.SQL(q, proj)
+						plan, err := embedded.PlanPhysicalForTestWithReachability(sql, ddl, nil, reach)
+						if err != nil {
+							// The generator emits some shapes the engine legitimately
+							// rejects (unsupported query, etc.); those are not soundness
+							// findings. Count them so a sweep that planned NOTHING cannot
+							// pass vacuously.
+							mu.Lock()
+							planErrs++
+							mu.Unlock()
+							continue
+						}
+						arity, idhash := arityViolations(plan, arityAllow), identityHashViolations(plan)
+						mu.Lock()
+						planned++
+						reportArity(sql, arity)
+						reportIDHash(sql, idhash)
+						tallyFamilies(plan, "generator")
+						mu.Unlock()
+					}
 				}
-				planned++
-				reportArity(sql, arityViolations(plan, arityAllow))
-				reportIDHash(sql, identityHashViolations(plan))
-				tallyFamilies(plan, "generator")
 			}
-		}
+		}()
 	}
+	for s := 0; s < n; s++ {
+		seeds <- s
+	}
+	close(seeds)
+	wg.Wait()
 
 	// Targeted probes — deterministic coverage of every required family, run
 	// through the identical invariant checks and the same collector.

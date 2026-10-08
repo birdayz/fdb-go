@@ -55,20 +55,24 @@ func TestSubqueryClauseAdmissionUsesOneRetainedGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lowered.constraint != logical.ExistsPositivePredicateOnly {
-		t.Fatalf("child constraint = %v, want positive predicate only", lowered.constraint)
+	// An outer-only conjunct beside a nested EXISTS no longer constrains the
+	// edge: it stays inside the existential for every consumer. The
+	// admission protocol below is exercised with an explicitly constrained
+	// edge, the shape a programmatic constrained edge still takes.
+	if lowered.constraint != logical.ExistsAnyConsumer {
+		t.Fatalf("child constraint = %v, want any consumer", lowered.constraint)
 	}
 	input, err := query.LowerExistsInput(lowered.plan, md, lowered.retained...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	edge := logical.ExistsSubquery{Alias: owner.mintSubqueryAlias(), Plan: lowered.plan, Input: input, FlowedType: input.ResultType(), JoinPredicate: lowered.join, Constraint: lowered.constraint}
+	edge := logical.ExistsSubquery{Alias: owner.mintSubqueryAlias(), Plan: lowered.plan, Input: input, FlowedType: input.ResultType(), JoinPredicate: lowered.join, Constraint: logical.ExistsPositivePredicateOnly}
 	exists, err := values.NewExistsValue(edge.Alias, edge.FlowedType)
 	if err != nil {
 		t.Fatal(err)
 	}
 	positive := predicates.ExistsValueToQueryPredicate(exists)
-	for _, name := range []string{"where_positive", "on_positive", "where_negative", "on_negative", "projection_positive", "projection_negative", "mixed_uses", "unknown_use"} {
+	for _, name := range []string{"where_positive", "on_positive", "where_negative", "on_negative", "projection_positive", "projection_negative", "mixed_uses", "unknown_use", "boolean_use"} {
 		t.Run(name, func(t *testing.T) {
 			// Sequential subtests intentionally consume the SAME immutable input;
 			// no child construction or memo-property mutation occurs here.
@@ -97,6 +101,8 @@ func TestSubqueryClauseAdmissionUsesOneRetainedGraph(t *testing.T) {
 				admission = clause.admitPredicate(predicates.NewAnd(positive, predicates.NewNot(positive)))
 			case "unknown_use":
 				admission = clause.admitValues([]values.Value{exists.Value})
+			case "boolean_use":
+				admission = clause.admitPredicate(predicates.NewOr(positive, predicates.NewConstantPredicate(predicates.TriUnknown)))
 			}
 			wantSuccess := name == "where_positive" || name == "on_positive"
 			if wantSuccess {

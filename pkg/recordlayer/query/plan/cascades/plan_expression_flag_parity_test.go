@@ -11,12 +11,8 @@ package cascades
 // side of the pair is not a cosmetic drift — it silently changes what the memo
 // considers the same expression, or which bound aliases reach a child.
 //
-// Seven plan types override the PlanExprBase default of false/false. Nothing
-// pinned them: they were transcribed from the wrappers by hand, and a future
-// edit to either side could flip one without a single test noticing, because
-// the memo asks the WRAPPER and the plan-side value is unreachable until the
-// gated wrapper deletion (RFC-183 §11) flips the caller over. This test is that
-// missing dimension — it asserts, for every pair, that the two agree.
+// Non-default flags are pinned explicitly against Java; paired equality alone
+// would not detect both sides drifting together.
 //
 // Both methods are compile-time constants that never touch their receiver, so
 // zero-value instances answer them exactly as production ones do; using them
@@ -72,7 +68,7 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 			childrenAsSet: true,
 		},
 
-		// --- the three CanCorrelate overrides ---
+		// --- correlation contracts ---
 		{
 			// FlatMap lost its wrapper (RFC-184 W2) but keeps the non-default
 			// CanCorrelate=true override, so the plan side stays pinned here with no
@@ -86,6 +82,9 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 			plan:         &plans.RecordQueryRecursiveDfsJoinPlan{},
 			canCorrelate: true,
 		},
+		// Java's IN plans bind source aliases independently of their child edge.
+		{name: "InJoin", plan: &plans.RecordQueryInJoinPlan{}, canCorrelate: true},
+		{name: "InUnion", plan: &plans.RecordQueryInUnionPlan{}, canCorrelate: true},
 		{
 			// Java's RecordQueryRecursiveLevelUnionPlan has NO canCorrelate
 			// override → false. The temp-table level binding is satisfied via
@@ -108,11 +107,6 @@ func TestPlanWrapperFlagParity(t *testing.T) {
 		// NestedLoopJoin lost its wrapper (RFC-184 W2) but keeps the false/false
 		// default, so the plan side stays pinned here with no wrapper pair.
 		{name: "NestedLoopJoin", plan: &plans.RecordQueryNestedLoopJoinPlan{}},
-		// InJoin and InUnion lost their wrappers (RFC-184 W2) but keep the
-		// false/false default, so the plan side stays pinned here with no wrapper
-		// pair.
-		{name: "InJoin", plan: &plans.RecordQueryInJoinPlan{}},
-		{name: "InUnion", plan: &plans.RecordQueryInUnionPlan{}},
 		{name: "MultiIntersection", plan: &plans.RecordQueryMultiIntersectionOnValuesPlan{}},
 		// StreamingAggregation and Distinct lost their wrappers (RFC-184 W2) but
 		// keep the false/false default, so the plan side stays pinned here with no

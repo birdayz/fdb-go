@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"sort"
@@ -47,6 +48,10 @@ type Config struct {
 	MaxPKs      int64   // primary-key range [0,MaxPKs); smaller = more overwrite/conflict (default 30)
 	VerifyEvery int     // run the oracle every N ops, plus once at the end (default 25)
 	FaultProb   float64 // Buggify activation+fire probability for the commit faults (default 0.25; 0 = fault-free)
+
+	// MaxExhausted is the ceiling on operations whose faults outlast Run's attempts in one
+	// run; above it the run fails (default NumOps/10).
+	MaxExhausted int
 
 	// Workload is the surface under test — record layer, SQL, or a future one. Nil selects the
 	// record-layer workload over Metadata (or the kitchen-sink schema). This is the extension
@@ -82,6 +87,9 @@ func (c Config) withDefaults() Config {
 	if c.FaultProb == 0 {
 		c.FaultProb = 0.25
 	}
+	if c.MaxExhausted <= 0 {
+		c.MaxExhausted = c.NumOps / 10
+	}
 	if c.Workload == nil {
 		md := c.Metadata
 		if md == nil {
@@ -111,6 +119,7 @@ type Report struct {
 	Seed        uint64
 	Ops         int      // operations executed before the run stopped
 	FaultsFired int      // commit faults actually injected (0 = happy-path-only this seed)
+	Exhausted   int      // operations whose faults outlasted Run's attempts (reconciled, see driver.apply)
 	Violations  []string // oracle violations found (a store/model divergence)
 	Err         string   // an unexpected harness error (an op that should never have failed)
 	Fingerprint string   // sha256 of the final persisted keyspace (determinism probe); empty on failure
@@ -167,13 +176,7 @@ func (rw recordWorkload) Run(seed uint64, cfg Config) *Report {
 	cleanEnv := &dst.Env{Clock: env.Clock, Random: env.Random, Buggify: dst.DisabledBuggifier()}
 	cleanDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(cleanEnv)
 
-	d := &driver{
-		db:      db,
-		cleanDB: cleanDB,
-		md:      md,
-		sub:     subspace.FromBytes(tuple.Tuple{"hunt"}.Pack()),
-		model:   chaos.NewStoreModel(md),
-	}
+	d := newDriver(backend, db, cleanDB, md)
 	rng := rand.New(rand.NewPCG(seed, opStream))
 	rep := &Report{Seed: seed}
 
@@ -206,10 +209,14 @@ func (rw recordWorkload) Run(seed uint64, cfg Config) *Report {
 			err = d.deleteAll(ctx)
 		}
 		rep.Ops = i + 1
+		if err == nil && d.exhausted > cfg.MaxExhausted {
+			err = fmt.Errorf("%d operations exhausted their attempts, above the ceiling %d", d.exhausted, cfg.MaxExhausted)
+		}
 		if err != nil {
 			// On this schema (no UNIQUE index) a save/delete has no legitimate domain error,
-			// and faults are retried transparently by db.Run, so any surfaced error is a real
-			// retry/idempotency failure — a bug the hunt just caught.
+			// and an operation whose faults outlast Run's attempts is reconciled against the
+			// model (driver.apply), so any surfaced error is a real retry/idempotency failure —
+			// a bug the hunt just caught.
 			rep.Err = fmt.Sprintf("op %d %s: %v", i, op, err)
 			rep.FaultsFired = env.Buggify.Fired()
 			return rep
@@ -231,6 +238,7 @@ func (rw recordWorkload) Run(seed uint64, cfg Config) *Report {
 	}
 
 	rep.FaultsFired = env.Buggify.Fired()
+	rep.Exhausted = d.exhausted
 	rep.Fingerprint = d.fingerprint(ctx)
 	return rep
 }
@@ -243,6 +251,33 @@ type driver struct {
 	md      *recordlayer.RecordMetaData
 	sub     subspace.Subspace
 	model   *chaos.StoreModel
+
+	attempts  []attemptOutcome
+	exhausted int
+}
+
+// newDriver builds a driver over db (faulted) and cleanDB (the oracle's view),
+// both on backend, and installs the attempt observer apply reconciles from.
+func newDriver(backend *simfdb.SimDB, db, cleanDB *recordlayer.FDBDatabase, md *recordlayer.RecordMetaData) *driver {
+	d := &driver{
+		db:      db,
+		cleanDB: cleanDB,
+		md:      md,
+		sub:     subspace.FromBytes(tuple.Tuple{"hunt"}.Pack()),
+		model:   chaos.NewStoreModel(md),
+	}
+	// The observer runs on the committing goroutine as each attempt ends, the
+	// scope LastCommitUnknownApplied requires.
+	db.SetAttemptObserver(func(_ recordlayer.AttemptCall, err error) {
+		var out attemptOutcome
+		var fe fdb.Error
+		if errors.As(err, &fe) {
+			out.code = fe.Code
+			out.applied = fe.Code == 1021 && backend.LastCommitUnknownApplied()
+		}
+		d.attempts = append(d.attempts, out)
+	})
+	return d
 }
 
 func (d *driver) open(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
@@ -255,58 +290,101 @@ func (d *driver) open(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecord
 
 func (d *driver) save(ctx context.Context, pk int64, price, qty int32) error {
 	rec := &gen.Order{OrderId: proto.Int64(pk), Price: proto.Int32(price), Quantity: proto.Int32(qty)}
-	_, err := d.db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-		store, err := d.open(rtx)
-		if err != nil {
-			return nil, err
-		}
-		_, err = store.SaveRecord(rec)
-		return nil, err
-	})
-	if err == nil {
-		d.model.Save(rec)
-	}
-	return err
+	return d.apply(ctx, func(store *recordlayer.FDBRecordStore) error {
+		_, err := store.SaveRecord(rec)
+		return err
+	}, func(m *chaos.StoreModel) { m.Save(rec) })
 }
 
 func (d *driver) delete(ctx context.Context, pk int64) error {
-	_, err := d.db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-		store, err := d.open(rtx)
-		if err != nil {
-			return nil, err
-		}
-		_, err = store.DeleteRecord(tuple.Tuple{pk})
-		return nil, err
-	})
-	if err == nil {
-		d.model.Delete(tuple.Tuple{pk})
-	}
-	return err
+	return d.apply(ctx, func(store *recordlayer.FDBRecordStore) error {
+		_, err := store.DeleteRecord(tuple.Tuple{pk})
+		return err
+	}, func(m *chaos.StoreModel) { m.Delete(tuple.Tuple{pk}) })
 }
 
 func (d *driver) deleteAll(ctx context.Context) error {
+	return d.apply(ctx, func(store *recordlayer.FDBRecordStore) error {
+		return store.DeleteAllRecords()
+	}, func(m *chaos.StoreModel) { m.DeleteAll() })
+}
+
+// attemptOutcome is one attempt of the current operation, as the database's
+// attempt observer reported it.
+type attemptOutcome struct {
+	code    int  // the attempt's FDB error code, 0 for success or a non-FDB error
+	applied bool // a 1021 whose commit SimFDB applied (simulator ground truth)
+}
+
+// apply runs one operation through the faulted db and keeps the model in step.
+// On success the model takes the operation. Run's attempts are bounded (10), so
+// faults can outlast them: a call that surfaced a retryable error after using
+// every attempt is EXHAUSTED, not a bug, and its store must equal the model
+// from before the operation (no attempt applied) or from after it (an attempt
+// applied). Which one is predicted from the attempts, not read off the store:
+//   - every attempt failed with a not-committed code: before;
+//   - some attempt was a 1021 or 1039: after when SimFDB says one applied,
+//     before when none did.
+//
+// The store is then checked against the predicted model; a store that does not
+// match it (a double or partial apply) fails the hunt at this operation. Any
+// other surfaced error is a bug, as before.
+func (d *driver) apply(ctx context.Context, body func(*recordlayer.FDBRecordStore) error, mutate func(*chaos.StoreModel)) error {
+	d.attempts = d.attempts[:0]
 	_, err := d.db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := d.open(rtx)
 		if err != nil {
 			return nil, err
 		}
-		return nil, store.DeleteAllRecords()
+		return nil, body(store)
 	})
 	if err == nil {
-		d.model.DeleteAll()
+		mutate(d.model)
+		return nil
 	}
-	return err
+	var fe fdb.Error
+	if !errors.As(err, &fe) || !fdb.IsRetryable(fe.Code) || len(d.attempts) < d.db.MaxAttempts() {
+		return err
+	}
+	applied := false
+	for _, a := range d.attempts {
+		switch {
+		case a.applied:
+			applied = true
+		case a.code == 1021 || a.code == 1039:
+			// a maybe-committed attempt SimFDB discarded
+		case a.code != 0 && fdb.IsRetryable(a.code):
+			// not committed
+		default:
+			return fmt.Errorf("exhausted with an attempt that is neither not-committed nor maybe-committed (code %d): %w", a.code, err)
+		}
+	}
+	predicted := d.model
+	side := "before"
+	if applied {
+		predicted = d.model.Clone()
+		mutate(predicted)
+		side = "after"
+	}
+	if v := d.verifyAgainst(ctx, predicted); len(v) > 0 {
+		return fmt.Errorf("exhausted (%v) and the store does not match the model from %s the operation: %v", err, side, v)
+	}
+	d.model = predicted
+	d.exhausted++
+	return nil
 }
 
 // verify opens the store through the fault-free view and returns any oracle violations as
 // strings (empty = the store matches the model on every invariant).
-func (d *driver) verify(ctx context.Context) []string {
+func (d *driver) verify(ctx context.Context) []string { return d.verifyAgainst(ctx, d.model) }
+
+func (d *driver) verifyAgainst(ctx context.Context, model *chaos.StoreModel) []string {
 	res, err := d.cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := d.open(rtx)
 		if err != nil {
 			return nil, err
 		}
-		return chaos.Verify(store, d.model), nil
+		return chaos.Verify(store, model), nil
 	})
 	if err != nil {
 		return []string{fmt.Sprintf("verify open failed: %v", err)}
@@ -441,7 +519,7 @@ func KitchenSinkMetadata() *recordlayer.RecordMetaData {
 		recordlayer.GroupAll(recordlayer.Field("price"))))
 	b.AddIndex("Order", recordlayer.NewSumIndex("hunt_sum",
 		recordlayer.Ungrouped(recordlayer.Field("price"))))
-	b.AddIndex("Order", recordlayer.NewRankIndex("hunt_rank", recordlayer.Field("price")))
+	b.AddIndex("Order", recordlayer.NewRankIndex("hunt_rank", recordlayer.Ungrouped(recordlayer.Field("price"))))
 	b.AddIndex("Order", recordlayer.NewMaxEverLongIndex("hunt_maxever",
 		recordlayer.Ungrouped(recordlayer.Field("price"))))
 	b.AddIndex("Order", recordlayer.NewVersionIndex("hunt_version", recordlayer.VersionKey()))

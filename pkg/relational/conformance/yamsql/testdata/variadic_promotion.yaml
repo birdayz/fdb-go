@@ -1,0 +1,36 @@
+# variadic_promotion.yaml — COALESCE/GREATEST/LEAST promote each argument
+#
+# Java's VariadicFunctionValue.encapsulate promotes every argument to the
+# common type while keeping its own nullability (VariadicFunctionValue.java:
+# 263-268, PromoteValue.inject), so an INTEGER argument beside a DOUBLE one
+# yields a DOUBLE value whichever argument is chosen. exact_rows compares the
+# driver carrier and IEEE bits (0x4014000000000000 is 5.0).
+name: variadic_promotion
+schema_template: |
+  CREATE TABLE t (id BIGINT, i INTEGER, d DOUBLE, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 5, NULL), (2, NULL, 2.5)
+tests:
+  - query: SELECT COALESCE(i, d) FROM t WHERE id = 1
+    column_types: [DOUBLE]
+    exact_rows:
+      - [{kind: float64, value: "4014000000000000"}]
+  - query: SELECT COALESCE(d, i) FROM t WHERE id = 1
+    column_types: [DOUBLE]
+    exact_rows:
+      - [{kind: float64, value: "4014000000000000"}]
+  - query: SELECT COALESCE(i, d) FROM t WHERE id = 2
+    exact_rows:
+      - [{kind: float64, value: "4004000000000000"}]
+  - query: SELECT GREATEST(i, 1.5) FROM t WHERE id = 1
+    column_types: [DOUBLE]
+    exact_rows:
+      - [{kind: float64, value: "4014000000000000"}]
+  - query: SELECT LEAST(i, 7.5) FROM t WHERE id = 1
+    exact_rows:
+      - [{kind: float64, value: "4014000000000000"}]
+  # Arguments of the common type are not promoted.
+  - query: SELECT COALESCE(i, 7) FROM t WHERE id = 2
+    column_types: [INTEGER]
+    exact_rows:
+      - [{kind: int64, value: "7"}]

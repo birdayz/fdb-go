@@ -257,10 +257,9 @@ func BenchmarkAllOf_BindMatches(b *testing.B) {
 	}
 }
 
-// Fixed-point Simplify driver over a tree that exercises every rule
-// DefaultSimplifyRules ships (flatten + constant folds + dedup). Same
-// shape as TestSimplify_FullPipeline so regressions show up against a
-// known capstone.
+// Fixed-point Simplify driver over ConstantFoldingRules (Java's
+// ConstantFoldingRuleSet). Same shape as TestSimplify_FullPipeline so
+// regressions show up against a known capstone.
 func BenchmarkSimplify_FullPipeline(b *testing.B) {
 	b.ReportAllocs()
 	_, fields := benchExactFields(b, "age")
@@ -284,7 +283,7 @@ func BenchmarkSimplify_FullPipeline(b *testing.B) {
 			predicates.NewConstantPredicate(predicates.TriTrue),
 		)
 	}
-	rules := DefaultSimplifyRules()
+	rules := ConstantFoldingRules()
 	// The whole tree must collapse to `agePred` (same expectation as
 	// TestSimplify_FullPipeline). A rule set that stops firing would leave the
 	// full tree standing and time a cheap no-op as if it were the pipeline.
@@ -312,7 +311,7 @@ func BenchmarkSimplify_Absorption(b *testing.B) {
 		fields[1],
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(2))},
 	)
-	rules := DefaultSimplifyRules()
+	rules := ConstantFoldingRules()
 	// Absorption must reduce `p AND (p OR q)` to `p`; if it stops firing the
 	// benchmark would time the un-absorbed tree and read as a speedup.
 	if got := mustSimplify(b, predicates.NewAnd(p, predicates.NewOr(p, q)), rules); got != predicates.QueryPredicate(p) {
@@ -371,10 +370,9 @@ func BenchmarkAllElementsMatcher_BindMatches(b *testing.B) {
 	}
 }
 
-// BenchmarkSimplify_DeMorgan exercises the NormalizationRules path:
-// NOT(AND(p,q)) → OR(NOT p, NOT q) → OR(p<>, q<>) once
-// NotComparisonRewriteRule fires. Establishes a baseline for the
-// extra rule set's overhead vs DefaultSimplifyRules-only.
+// BenchmarkSimplify_DeMorgan exercises the De Morgan path of
+// ConstantFoldingRules: NOT(AND(p,q)) → OR(NOT p, NOT q) → OR(p<>, q<>)
+// once NotComparisonRewriteRule fires.
 func BenchmarkSimplify_DeMorgan(b *testing.B) {
 	b.ReportAllocs()
 	_, fields := benchExactFields(b, "a", "b")
@@ -386,7 +384,7 @@ func BenchmarkSimplify_DeMorgan(b *testing.B) {
 			predicates.NewComparisonPredicate(bb, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(2))}),
 		))
 	}
-	rules := NormalizationRules()
+	rules := ConstantFoldingRules()
 	// De Morgan must turn the NOT(AND(...)) into an OR. Timing an input the
 	// rules no longer rewrite would misreport the normalization cost as cheap.
 	if got, ok := mustSimplify(b, build(), rules).(*predicates.OrPredicate); !ok {
@@ -409,7 +407,7 @@ func BenchmarkSimplify_NoOp(b *testing.B) {
 		fields[0],
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
-	rules := DefaultSimplifyRules()
+	rules := ConstantFoldingRules()
 	// The point of this benchmark is that NOTHING yields: the driver must walk
 	// every rule and hand back the identical predicate. If some rule starts
 	// rewriting it, this stops being the pure-dispatch baseline it claims to be.
@@ -466,14 +464,9 @@ func BenchmarkExpressionMatcher_BindMatch(b *testing.B) {
 	}
 }
 
-// BenchmarkOptimise_StackedSorts exercises SortMergeRule +
-// DistinctOverSortElim cooperation on:
+// BenchmarkOptimise_StackedSorts exercises SortMergeRule on:
 //
 //	Distinct → Sort(k1) → Sort(k2) → Sort(k3) → Scan(Order)
-//
-// Optimal output is Distinct(Scan) (DistinctOverSortElim absorbs
-// the entire Sort stack iteratively). Pins the cooperation cost
-// for that rewrite chain.
 func BenchmarkOptimise_StackedSorts(b *testing.B) {
 	build := func() *expressions.Reference {
 		scan := mustFullUnorderedScan(b, []string{"Order"}, benchRowType("K1", "K2", "K3"))

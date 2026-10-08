@@ -803,12 +803,24 @@ func TestFromVersionstampToVersionstampRoundTrip(t *testing.T) {
 		}
 	})
 
-	t.Run("incomplete ToVersionstamp errors", func(t *testing.T) {
+	t.Run("incomplete conversion preserves marker and local version", func(t *testing.T) {
 		t.Parallel()
-		v, _ := IncompleteVersion(0)
-		_, err := v.ToVersionstamp()
-		if err == nil {
-			t.Fatal("expected error for incomplete version")
+		for _, local := range []int{0, 5, 65535} {
+			v, err := IncompleteVersion(local)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stamp, err := v.ToVersionstamp()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stamp != tuple.IncompleteVersionstamp(uint16(local)) {
+				t.Fatalf("local=%d: wrong incomplete stamp %v", local, stamp)
+			}
+			back := FromVersionstamp(stamp)
+			if back.IsComplete() || back.GetLocalVersion() != local {
+				t.Fatalf("incomplete stamp changed completeness/local version: %v", back)
+			}
 		}
 	})
 }

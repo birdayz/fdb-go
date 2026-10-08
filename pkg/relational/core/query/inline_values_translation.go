@@ -13,6 +13,14 @@ import (
 // agree before publishing the physical leaf so a later mutation of the
 // collection's ordinary Type graph cannot split logical and physical schemas.
 func (t *cascadesTranslator) translateInlineValues(source *logical.LogicalInlineValues) expressions.RelationalExpression {
+	if source != nil && source.StreamValue() != nil {
+		tf, err := expressions.NewTableFunctionExpression(source.StreamValue())
+		if err != nil {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "table function source: %v", err))
+			return nil
+		}
+		return tf
+	}
 	if source == nil || source.CollectionValue() == nil {
 		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
 			"inline VALUES source has no exact literal collection"))
@@ -51,4 +59,20 @@ func arrayElementType(array *values.ArrayType) values.Type {
 		return nil
 	}
 	return array.ElementType
+}
+
+// translateSingleton matches QueryVisitor's one-element BOOLEAN Explode while
+// publishing an empty record. The private element supplies multiplicity, not a
+// SQL attribute; every SELECT-list consumer sees the same zero-column row.
+func (t *cascadesTranslator) translateSingleton() expressions.RelationalExpression {
+	collection := values.NewArrayConstructorValue(values.NotNullBoolean, []values.Value{
+		&values.ConstantValue{Value: true, Typ: values.NotNullBoolean},
+	})
+	explode, err := expressions.NewExplodeExpression(collection)
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "singleton source: %v", err))
+		return nil
+	}
+	inner := expressions.ForEachQuantifier(expressions.InitialOf(explode))
+	return t.blockOf(nil, nil, nil, inner)
 }

@@ -78,12 +78,12 @@ func FuzzPlanner_WithBatchA_NoPanic(f *testing.F) {
 	f.Add([]byte{7, 5, 0, 0, 0, 0, 0, 0}) // Intersection over Union
 	// Regression: Union(TypeFilter(TypeFilter(Scan)), TypeFilter(Filter(Scan)))
 	// — ASYMMETRIC union legs. The right leg's group, merged with the left
-	// leg's inner via constant-true filter elimination, crossed
-	// REWRITING→PLANNING with no finals and never reset its exploration state,
-	// so it never implemented and the union produced no winner while Plan()
-	// reported success — the exact "root has no BestMember" nightly crash on
-	// THIS target (seed 9bd9b3661b501312, 2026-07-19). Fixed by
-	// Reference.AdvanceStagePreservingMembers.
+	// leg's never-explored inner via constant-true filter elimination,
+	// inherited the right leg's exploration progress, so no rule ran on the
+	// survivor's own member and the union reached PLANNING unfinalized — once
+	// the "root has no BestMember" nightly crash on THIS target (seed
+	// 9bd9b3661b501312, 2026-07-19). Fixed in Reference.Absorb: a survivor that
+	// never explored takes the loser's constraints but not its progress.
 	f.Add([]byte{35, 4, 4, 1})
 	// Regression: Union(TypeFilter(TypeFilter(Scan)), TypeFilter(Projection(Scan)))
 	// over a row whose field names are not upper-case. The implementation rule

@@ -76,13 +76,10 @@ func (r *ImplementDistinctFinalRule) OnMatch(call *ImplementationRuleCall) {
 	pkDistinct := false
 	var proof secondaryUniqueProof
 	if call.Context != nil {
-		for _, m := range innerRef.Members() {
-			if proj, ok := m.(*expressions.LogicalProjectionExpression); ok {
-				pkDistinct = distinctEliminatedByUniqueKey(proj, call.Context)
-				if !pkDistinct {
-					proof = secondaryUniqueEliminationProof(proj, call.Context)
-				}
-				break
+		if m := distinctInputBlock(innerRef); m != nil {
+			pkDistinct = distinctEliminatedByUniqueKey(m, call.Context)
+			if !pkDistinct {
+				proof = secondaryUniqueEliminationProof(m, call.Context)
 			}
 		}
 	}
@@ -379,7 +376,7 @@ func secondaryUniqueEliminationProof(
 	// reading the branch as untested. The DECLINE below cannot be reached
 	// through the live SQL/FDB path, and that is a fact about the generator
 	// rather than a gap in coverage: cascadesGenerator.fetchIndexStateSnapshot
-	// reads states through FDBRecordStore.GetAllIndexStates, which iterates the
+	// reads states through FDBRecordStore.PeekIndexStates, which iterates the
 	// METADATA's indexes and defaults an absent entry to READABLE. The snapshot
 	// is therefore DENSE — exactly one entry per metadata index — so a schema
 	// that has a unique index to prove anything from can never produce the empty
@@ -704,13 +701,25 @@ func collectProjectedOrdinals(
 	expr expressions.RelationalExpression,
 	layout values.OrdinalDomain,
 ) (map[int]struct{}, bool) {
-	proj, isProj := expr.(*expressions.LogicalProjectionExpression)
-	if !isProj {
+	var projected []values.Value
+	switch e := expr.(type) {
+	case *expressions.SelectExpression:
+		if !isProjectionBlock(e) {
+			return nil, true
+		}
+		columns, isRecord := e.GetResultValue().(*values.RecordConstructorValue)
+		if !isRecord {
+			return nil, true
+		}
+		for _, column := range columns.Fields {
+			projected = append(projected, column.Value)
+		}
+	default:
 		return nil, true
 	}
 
 	ords := make(map[int]struct{})
-	for _, v := range proj.GetProjectedValues() {
+	for _, v := range projected {
 		// TOP-LEVEL type assertion only — a FieldValue nested inside an
 		// ArithmeticValue/function is deliberately not unwrapped here.
 		fv, isFV := values.AsFieldValue(v)
@@ -756,8 +765,10 @@ func findRecordTypes(expr expressions.RelationalExpression) []string {
 	switch e := expr.(type) {
 	case *expressions.FullUnorderedScanExpression:
 		return e.GetRecordTypes()
-	case *expressions.LogicalProjectionExpression:
-		return findRecordTypesViaQuantifier(e.GetInner())
+	case *expressions.SelectExpression:
+		if isProjectionBlock(e) {
+			return findRecordTypesViaQuantifier(e.GetQuantifiers()[0])
+		}
 	case *expressions.LogicalFilterExpression:
 		return findRecordTypesViaQuantifier(e.GetInner())
 	case *expressions.LogicalSortExpression:
@@ -831,13 +842,11 @@ func uniqueKeysCovered(uniqueKeyCols []string, layout values.Type, projectedOrds
 //     floated to a cost-tied but differently-ordered sibling would run the
 //     streaming dedup over unordered input and LEAK a duplicate. The frozen edge
 //     makes planFromQuantifier resolve that exact member, never a group winner.
-//   - PLAIN (hash) → carry the LIVE edge the wrapper's innerQuant presented
-//     (ForEachQuantifier over InitialOf(member)). A hash distinct dedups over
-//     ANY inner, so freezing buys nothing and instead strands a pre-push
-//     snapshot once a push rule (push_distinct_below_filter / _through_fetch)
-//     re-explores the leg — the parent would then cost an unreachable edge.
-//     The live exploratory edge resolves the member's plan (== the concrete
-//     inner) exactly as the wrapper did, byte-identically.
+//   - PLAIN (hash) → memoize the member as a plan (MemoizeFinalExpression,
+//     Java's memoizePlan: a final reference at the planned stage). A hash
+//     distinct dedups over ANY inner, so the reference stays an ordinary
+//     explorable group (not pinned): a push rule (push_distinct_below_filter /
+//     _through_fetch) and the physical rewrites still explore the leg.
 //
 // A follow-up will REQUEST the dedup-key ordering (inserting an InMemorySort
 // when no index provides it) so the unordered `SELECT DISTINCT col` — the
@@ -855,12 +864,12 @@ func newPhysicalDistinctFor(call *ImplementationRuleCall, member expressions.Rel
 		// Freeze the ordering-critical inner: a detached single-member final
 		// reference over the concrete plan whose ordering this flag was measured
 		// against, so it can never float to a differently-ordered sibling.
-		innerQ := expressions.ForEachQuantifier(call.MemoizeFinalExpression(concreteInner))
+		innerQ := expressions.NewPhysicalQuantifier(call.MemoizeFinalExpression(concreteInner))
 		return plans.NewRecordQueryDistinctPlanFromQuantifier(innerQ, true)
 	}
-	// Plain hash distinct: carry the live exploratory edge (what the wrapper's
-	// innerQuant presented) so a later push-rule canonicalization stays reachable.
-	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(member))
+	// Plain hash distinct: the member memoized as a plan (Java's memoizePlan, a
+	// final reference at the planned stage), which push rules still explore.
+	innerQ := expressions.NewPhysicalQuantifier(call.MemoizeFinalExpression(member))
 	return plans.NewRecordQueryDistinctPlanFromQuantifier(innerQ, false)
 }
 
@@ -893,20 +902,21 @@ func distinctStreamingEligible(member expressions.RelationalExpression, innerPla
 
 // distinctKeyColumns returns the inner plan's output columns as Values — the
 // whole-row DISTINCT dedup key (distinctKey packs exactly these positional
-// slots). A projection carries its output columns as projected Values directly
-// (read from GetProjections, the authority on what a projection outputs — this
-// line used to say "its GetResultType is always UnknownType", true before
-// RFC-226 and false now that a projection states its produced row. The
-// short-circuit stays because the projected Values are the RICHER answer, not
-// because the type is unavailable); a BARE-column projection yields
-// FieldValues in the same representation the inner ordering's keys use, so
-// orderingSatisfiesGroupingKeys can prove adjacency. A COMPUTED projection
-// (g/2, f(g)) yields non-FieldValue projected values that won't match — the
-// distinct is then conservatively left on the hash-set. A non-projection inner
-// (e.g. SELECT DISTINCT *) exposes its columns via a RecordType schema.
+// slots). A block's Map states them as its row's field Values: a BARE column
+// yields a FieldValue in the same representation the inner ordering's keys
+// use, so orderingSatisfiesGroupingKeys can prove adjacency, while a COMPUTED
+// column (g/2, f(g)) won't match and the distinct stays on the hash-set. Any
+// other inner (e.g. SELECT DISTINCT *) exposes its columns via a RecordType
+// schema.
 func distinctKeyColumns(inner plans.RecordQueryPlan) []values.Value {
-	if proj, ok := inner.(*plans.RecordQueryProjectionPlan); ok {
-		return proj.GetProjections()
+	if m, ok := inner.(*plans.RecordQueryMapPlan); ok {
+		if rc, isRC := m.GetResultValue().(*values.RecordConstructorValue); isRC && len(rc.Fields) > 0 {
+			cols := make([]values.Value, len(rc.Fields))
+			for i, f := range rc.Fields {
+				cols[i] = f.Value
+			}
+			return cols
+		}
 	}
 	recordResultTypeRead("distinctKeyColumns", inner.GetResultType())
 	if rt, ok := inner.GetResultType().(*values.RecordType); ok && len(rt.Fields) > 0 {
@@ -937,8 +947,10 @@ func findScanExpression(expr expressions.RelationalExpression) *expressions.Full
 	switch e := expr.(type) {
 	case *expressions.FullUnorderedScanExpression:
 		return e
-	case *expressions.LogicalProjectionExpression:
-		return findScanViaQuantifier(e.GetInner())
+	case *expressions.SelectExpression:
+		if isProjectionBlock(e) {
+			return findScanViaQuantifier(e.GetQuantifiers()[0])
+		}
 	case *expressions.LogicalFilterExpression:
 		return findScanViaQuantifier(e.GetInner())
 	case *expressions.LogicalSortExpression:
@@ -959,4 +971,35 @@ func findScanViaQuantifier(q expressions.Quantifier) *expressions.FullUnorderedS
 		return nil
 	}
 	return findScanExpression(ref.Get())
+}
+
+// distinctInputBlock is the query block producing a distinct's input rows: a
+// projection block of ref, or of the input of a sort in ref, since an ORDER BY
+// below the DISTINCT reorders the block's rows without changing them.
+func distinctInputBlock(ref *expressions.Reference) expressions.RelationalExpression {
+	for depth := 0; ref != nil && depth < 2; depth++ {
+		var below *expressions.Reference
+		for _, m := range ref.Members() {
+			if isProjectionBlock(m) {
+				return m
+			}
+			if sort, ok := m.(*expressions.LogicalSortExpression); ok && below == nil {
+				below = sort.GetInner().GetRangesOver()
+			}
+		}
+		ref = below
+	}
+	return nil
+}
+
+// isProjectionBlock reports whether e is a query block over one source: a
+// select whose only quantifier is a plain ForEach. Its predicates are the
+// block's WHERE and its result value is the block's projection.
+func isProjectionBlock(e expressions.RelationalExpression) bool {
+	sel, ok := e.(*expressions.SelectExpression)
+	if !ok || len(sel.GetQuantifiers()) != 1 {
+		return false
+	}
+	q := sel.GetQuantifiers()[0]
+	return q.Kind() == expressions.QuantifierForEach && !q.IsNullOnEmpty() && !q.IsStrictSingle()
 }

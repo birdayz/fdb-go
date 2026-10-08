@@ -14,7 +14,6 @@ import (
 var comparisonFieldMutators = map[string]func(*Comparison){
 	"Type":               func(c *Comparison) { c.Type = ComparisonTextContainsAny },
 	"Operand":            func(c *Comparison) { c.Operand = values.LiteralValue("goodbye") },
-	"Escape":             func(c *Comparison) { c.Escape = '#' },
 	"ParameterName":      func(c *Comparison) { c.ParameterName = "other" },
 	"TextTokenizerName":  func(c *Comparison) { c.TextTokenizerName = "ngram" },
 	"TextAnalyzerName":   func(c *Comparison) { c.TextAnalyzerName = "other" },
@@ -35,7 +34,6 @@ func baselineComparison() Comparison {
 	return Comparison{
 		Type:               ComparisonTextContainsAll,
 		Operand:            values.LiteralValue("hello"),
-		Escape:             '\\',
 		ParameterName:      "p",
 		TextTokenizerName:  "default",
 		TextAnalyzerName:   "std",
@@ -194,11 +192,11 @@ func TestComparisonIdentity_ExcludedFieldsAreInvisibleHere(t *testing.T) {
 	}
 
 	// The arm itself, driven from an INJECTED map, because a loop that never
-	// executes is not a passing check. Escape is a folded field, so declaring it
+	// executes is not a passing check. ParameterName is a folded field, so declaring it
 	// excluded is a lie the check must catch; if it does not, the check is
 	// broken and the real call above is worthless.
 	if got := checkExcludedFieldsInvisible(map[string]string{
-		"Escape": "deliberately wrong: Escape IS folded",
+		"ParameterName": "deliberately wrong: ParameterName IS folded",
 	}); len(got) == 0 {
 		t.Error("the invisibility check accepted a FOLDED field as excluded. It cannot " +
 			"detect a wrong exclusion, so its clean report on the real map means nothing.")

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -20,16 +21,14 @@ type RecordQueryInUnionPlan struct {
 	bindingAliases []values.CorrelationIdentifier
 	comparisonKeys []values.Value
 	reverse        bool
-	// maxSize is DELIBERATELY EXCLUDED from structuralKey, and the reason is not
-	// self-evident — it changes whether the rule produces this plan at all, which is
-	// exactly the shape of thing identity normally has to carry (compare
-	// liveGroupsOnly on the aggregate-index plan, which IS in its key for precisely
-	// that reason).
-	//
-	// It is safe to exclude only because it is a per-RUN constant: every value comes
-	// from GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
-	// (rule_implement_in_union.go), so no two InUnion plans within one planner run can
-	// differ in it, and the memo therefore never has two candidates to confuse.
+	// maxSize is the most child executions (the product of the IN sources'
+	// sizes) the plan runs; execution refuses more with "too many IN values"
+	// before any child opens, as Java's executePlan does. It decides execution,
+	// not identity: it is DELIBERATELY EXCLUDED from structuralKey because every
+	// planned value comes from GetPlannerConfiguration().
+	// AttemptFailedInJoinAsUnionMaxSize (rule_implement_in_union.go, and the
+	// fetch push-through's rebuild copies it), a constant for every plan of one
+	// planner run, so the memo never holds two candidates differing in it.
 	//
 	// THAT ARGUMENT EXPIRES the moment maxSize becomes per-plan — a per-call override,
 	// a hint, a rule that derives it from the IN-list — at which point two plans
@@ -37,34 +36,34 @@ type RecordQueryInUnionPlan struct {
 	// be served. Add it to structuralKey in the same change that makes it vary.
 	maxSize   int
 	inSources [][]any
+	// inComparands parallels inSources: entry i is the row-independent
+	// collection value of source i when planning could not evaluate it (its
+	// inSources entry is then nil). The executor evaluates it when the plan
+	// opens, as Java's InComparandSource.getValues does, so a runtime item (a
+	// CAST that fails, say) raises its own error instead of the source being
+	// dropped. Nil when every source was extracted at planning.
+	inComparands []values.Value
 }
 
+// UnboundedInUnionSize is the size of an in-union whose child executions are
+// not limited, for a caller that builds the plan by hand.
+const UnboundedInUnionSize = math.MaxInt32
+
+// NewRecordQueryInUnionPlan builds an in-union over named bindings. Like Java's
+// factory it requires the size: the most child executions the plan runs.
 func NewRecordQueryInUnionPlan(
 	inner RecordQueryPlan,
 	bindingNames []string,
 	comparisonKeys []values.Value,
 	reverse bool,
+	maxSize int,
 ) (*RecordQueryInUnionPlan, error) {
 	bindingAliases := make([]values.CorrelationIdentifier, len(bindingNames))
 	for i, name := range bindingNames {
 		bindingAliases[i] = values.NamedCorrelationIdentifier(name)
 	}
-	return NewRecordQueryInUnionPlanWithBindingAliases(
-		inner, bindingAliases, comparisonKeys, reverse)
-}
-
-// NewRecordQueryInUnionPlanWithBindingAliases preserves the exact correlation
-// kind of every IN binding. Planner-minted aliases are Unique identifiers; a
-// string round-trip remints them as Named identifiers with the same spelling,
-// which exact QOV lookup correctly treats as a different binding.
-func NewRecordQueryInUnionPlanWithBindingAliases(
-	inner RecordQueryPlan,
-	bindingAliases []values.CorrelationIdentifier,
-	comparisonKeys []values.Value,
-	reverse bool,
-) (*RecordQueryInUnionPlan, error) {
-	return NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
-		QuantifierOverPlan(inner), bindingAliases, comparisonKeys, reverse, 0)
+	return NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize(
+		inner, bindingAliases, comparisonKeys, reverse, maxSize)
 }
 
 func newRecordQueryInUnionPlanFromQuantifier(
@@ -90,6 +89,10 @@ func newRecordQueryInUnionPlanFromQuantifier(
 	}, nil
 }
 
+// NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize preserves the exact
+// correlation kind of every IN binding. Planner-minted aliases are Unique
+// identifiers; a string round-trip remints them as Named identifiers with the
+// same spelling, which exact QOV lookup correctly treats as a different binding.
 func NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize(
 	inner RecordQueryPlan,
 	bindingAliases []values.CorrelationIdentifier,
@@ -134,6 +137,19 @@ func NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
 }
 
 func (p *RecordQueryInUnionPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+func (p *RecordQueryInUnionPlan) CanCorrelate() bool { return true }
+
+// Each IN source binds its exact alias independently of the child quantifier.
+func (p *RecordQueryInUnionPlan) ComputeCorrelatedTo(childCorrelations func(*expressions.Reference) map[values.CorrelationIdentifier]struct{}) map[values.CorrelationIdentifier]struct{} {
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for alias := range childCorrelations(p.innerQ.GetRangesOver()) {
+		if !slices.Contains(p.bindingAliases, alias) {
+			result[alias] = struct{}{}
+		}
+	}
+	return result
+}
 
 // GetInnerQuantifier returns the live child quantifier — the single memo edge the
 // InUnion ranges over. derivationsForInUnion reads its alias to decorrelate the
@@ -195,6 +211,22 @@ func (p *RecordQueryInUnionPlan) GetMaxSize() int                   { return p.m
 // reads these per costing call, so a defensive copy would sit in the planner's hot
 // loop.
 func (p *RecordQueryInUnionPlan) GetInSources() [][]any { return p.inSources }
+
+// GetInComparands returns the per-source runtime comparands (see the field).
+func (p *RecordQueryInUnionPlan) GetInComparands() []values.Value { return p.inComparands }
+
+// WithInComparands returns a copy carrying the per-source runtime comparands.
+func (p *RecordQueryInUnionPlan) WithInComparands(comparands []values.Value) *RecordQueryInUnionPlan {
+	cp := *p
+	cp.inComparands = nil
+	for _, c := range comparands {
+		if c != nil {
+			cp.inComparands = append([]values.Value(nil), comparands...)
+			break
+		}
+	}
+	return &cp
+}
 
 // WithInSources returns a COPY carrying the materialized IN sources, because a plan
 // method must never write through its receiver.
@@ -317,26 +349,36 @@ func (p *RecordQueryInUnionPlan) structuralKey() *structuralKey {
 	for _, d := range p.inSources {
 		dims = binary.BigEndian.AppendUint64(dims, uint64(len(d)))
 	}
-	return newStructuralKey().
+	k := newStructuralKey().
 		Bool(p.reverse).
 		Int(len(p.bindingAliases)).
 		Values(p.comparisonKeys).
 		Equatable(p.inSources, func(other any) bool {
 			o, ok := other.([][]any)
 			return ok && reflect.DeepEqual(p.inSources, o)
-		}, dims)
+		}, dims).
+		Int(len(p.inComparands))
+	// The comparands fold as Values, so two plans over the same comparand
+	// hash alike whatever it will evaluate to.
+	for _, c := range p.inComparands {
+		k = k.Bool(c != nil)
+		if c != nil {
+			k = k.Value(c)
+		}
+	}
+	return k
 }
 
 func (p *RecordQueryInUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInUnionPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryInUnionPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("inunionplan|")
+	hash := p.keyFor(p).Hash("inunionplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

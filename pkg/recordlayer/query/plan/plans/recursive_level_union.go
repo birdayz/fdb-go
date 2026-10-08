@@ -146,14 +146,14 @@ func (p *RecordQueryRecursiveLevelUnionPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryRecursiveLevelUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryRecursiveLevelUnionPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryRecursiveLevelUnionPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("recursivelevel|")
+	hash := p.keyFor(p).Hash("recursivelevel|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

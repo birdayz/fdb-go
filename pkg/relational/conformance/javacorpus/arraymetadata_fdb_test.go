@@ -4,32 +4,28 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/relational/api"
 	_ "fdb.dev/pkg/relational/sqldriver"
 )
 
-// TestFDB_ArrayColumnMetadataIsTruncated is the LIVE sentinel for CQ-74's array
-// half, and it is what makes `unsupported:result-metadata-nested` a temporary
-// decline rather than a permanent one.
+// TestFDB_ResultColumnMetadataCarriesNestedTypes pins CQ-74's close: a result
+// column keeps its full type, as Java's RelationalResultSetMetaData does.
 //
-// It runs a real query against a real array column and reads back exactly what
-// `database/sql` gives a caller. Java's `RelationalResultSetMetaData` reports
-// `ARRAY(INTEGER)` for this column (`ArrayMetaData.getElementTypeName` folded
-// by `CheckResultMetadataConfig.buildArrayTypeName`) and a scan type that is
-// not a scalar; Go reports the bare ELEMENT type and an int32 scan type. Both
-// are wrong, and both are consequences of one truncation — `executor.ColumnDef`
-// carrying a single type-name string.
+//   - database/sql's DatabaseTypeName is Java's getColumnTypeName: "ARRAY" for
+//     an array column, "STRUCT" for a struct column (SqlTypeNamesSupport), and
+//     neither advertises a scalar scan type.
+//   - The metadata the driver hands api.WithResultSetMetaDataObserver carries
+//     the array's element type and the struct's declared type name and fields
+//     (Java's getArrayMetaData / getStructMetaData), which the corpus runner's
+//     `resultMetadata:` check reads.
 //
-// No INSERT is needed and none is used: `integer array` is accepted by the DDL,
-// and column metadata is derived from the PLAN, so an empty table exercises the
-// derivation exactly.
-//
-// WHEN THIS TEST FAILS, THAT IS THE HAND-OVER: the driver has started carrying
-// the array type, so delete this test, delete the runner's `{array: …}`
-// declining branch in metadataDescends, and let the directive be compared.
-func TestFDB_ArrayColumnMetadataIsTruncated(t *testing.T) {
+// Column metadata comes from the plan, so an empty table exercises it exactly.
+func TestFDB_ResultColumnMetadataCarriesNestedTypes(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -45,12 +41,13 @@ func TestFDB_ArrayColumnMetadataIsTruncated(t *testing.T) {
 	}
 	defer cat.Close()
 
-	tmpl, dbPath, schema := id+"_TEMPLATE", "/"+id+"_DB", id+"_SCHEMA"
+	tmpl, dbPath, schema := id+"_TEMPLATE", "/FRL/"+id+"_DB", id+"_SCHEMA"
 	for _, stmt := range []string{
 		"DROP SCHEMA TEMPLATE IF EXISTS " + tmpl,
 		"DROP DATABASE IF EXISTS " + dbPath,
 		"CREATE SCHEMA TEMPLATE " + tmpl +
-			" CREATE TABLE t1(pk integer, x integer array, primary key(pk))",
+			" CREATE TYPE AS STRUCT point(x bigint, y bigint)" +
+			" CREATE TABLE t1(pk integer, x integer array, pt point, pts point array, primary key(pk))",
 		"CREATE DATABASE " + dbPath,
 		fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s", dbPath, schema, tmpl),
 	} {
@@ -63,13 +60,15 @@ func TestFDB_ArrayColumnMetadataIsTruncated(t *testing.T) {
 		_, _ = cat.Exec("DROP SCHEMA TEMPLATE IF EXISTS " + tmpl)
 	})
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schema))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schema)))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
 
-	rows, err := db.QueryContext(ctx, "SELECT pk, x FROM t1")
+	var meta api.ResultSetMetaData
+	qctx := api.WithResultSetMetaDataObserver(ctx, func(md api.ResultSetMetaData) { meta = md })
+	rows, err := db.QueryContext(qctx, "SELECT pk, x, pt, pts FROM t1")
 	if err != nil {
 		t.Fatalf("select: %v", err)
 	}
@@ -79,35 +78,54 @@ func TestFDB_ArrayColumnMetadataIsTruncated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ColumnTypes: %v", err)
 	}
-	if len(cts) != 2 {
-		t.Fatalf("got %d columns, want 2 (PK, X)", len(cts))
+	wantNames := []string{"INTEGER", "ARRAY", "STRUCT", "ARRAY"}
+	if len(cts) != len(wantNames) {
+		t.Fatalf("got %d columns, want %d", len(cts), len(wantNames))
+	}
+	for i, want := range wantNames {
+		if got := cts[i].DatabaseTypeName(); got != want {
+			t.Errorf("column %s: DatabaseTypeName %q, want Java's getColumnTypeName %q", cts[i].Name(), got, want)
+		}
+	}
+	anyType := reflect.TypeOf((*any)(nil)).Elem()
+	for _, i := range []int{1, 2, 3} {
+		if st := cts[i].ScanType(); st != anyType {
+			t.Errorf("column %s advertises scan type %v; a composite column is not a scalar", cts[i].Name(), st)
+		}
 	}
 
-	// The scalar column is the control: it proves the metadata path works and
-	// that the array column's answer is not a general failure to report types.
-	if got := cts[0].DatabaseTypeName(); got != "INTEGER" {
-		t.Fatalf("PK reports %q, want INTEGER — the control column is wrong, so this "+
-			"probe cannot say anything about the array column", got)
+	if meta == nil {
+		t.Fatal("the driver reported no result set metadata to the observer")
 	}
+	point := api.NewStructType("POINT", []api.StructField{
+		api.NewStructField("X", api.NewLongType(true), 0),
+		api.NewStructField("Y", api.NewLongType(true), 1),
+	}, true)
+	// An array's elements are NOT NULL (Java's arrays hold no NULL element;
+	// the DDL declares the element so).
+	for i, want := range []api.DataType{
+		api.NewIntegerType(true),
+		api.NewArrayType(api.NewIntegerType(false), true),
+		point,
+		api.NewArrayType(point.WithNullable(false), true),
+	} {
+		got, err := meta.ColumnDataType(i + 1)
+		if err != nil {
+			t.Fatalf("ColumnDataType(%d): %v", i+1, err)
+		}
+		if !got.Equal(want) || !strings.EqualFold(nameOf(got), nameOf(want)) {
+			t.Errorf("column %d: ColumnDataType %v (%s), want %v (%s)", i+1, got, nameOf(got), want, nameOf(want))
+		}
+	}
+}
 
-	const javaArrayTypeName = "ARRAY(INTEGER)"
-	gotName := cts[1].DatabaseTypeName()
-	if gotName == javaArrayTypeName {
-		t.Fatalf("X now reports %q, which is Java's spelling — CQ-74's array half is CLOSED. "+
-			"Delete this test and the `{array: …}` branch of metadataDescends so the "+
-			"resultMetadata directive compares array columns instead of declining them.", gotName)
+// nameOf is a struct type's (or an array of structs' element's) declared name.
+func nameOf(dt api.DataType) string {
+	if at, ok := dt.(*api.ArrayType); ok {
+		dt = at.ElementType()
 	}
-	if gotName != "INTEGER" {
-		t.Fatalf("X reports %q; the measured truncation is the bare ELEMENT type %q. A THIRD "+
-			"answer means the derivation changed without closing the gap — re-measure CQ-74 "+
-			"before trusting its booking.", gotName, "INTEGER")
+	if st, ok := dt.(*api.StructType); ok {
+		return st.Name()
 	}
-
-	// The second consequence, same root cause: an array column advertises a
-	// scalar scan type, so a caller following ScanType would allocate an int32
-	// for a list.
-	if st := cts[1].ScanType(); st == nil || st.Kind().String() != "int32" {
-		t.Fatalf("X advertises scan type %v; the measured truncation makes it int32 (it follows "+
-			"DatabaseTypeName). If this changed, CQ-74's second consequence needs re-measuring.", st)
-	}
+	return ""
 }

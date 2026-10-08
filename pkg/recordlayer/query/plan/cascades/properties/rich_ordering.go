@@ -26,6 +26,22 @@ type RichOrdering struct {
 	// that reshapes an ordering has no way to know, so it must not inherit the
 	// claim by omission.
 	storageComplete CoordinateBoundClaim
+	// recordIdentity states that its coordinates are the primary key of the
+	// one stored record each row came from, and that no record flows twice.
+	// Unlike a per-stream distinctness claim it holds across every binding of
+	// the stream's correlations, because a record has one primary key.
+	recordIdentity CoordinateBoundClaim
+	// pastRecordTypeHorizon holds the keys (by ExplainValue) an index scan
+	// reaches only past the record-type coordinate of its primary key, which no
+	// comparison binds (RFC-257 WS-F 4.3 item 2). Java's match ordering stops at
+	// that coordinate (ValueIndexLikeMatchCandidate.computeMatchedOrderingParts),
+	// so its data-access rule never yields such a plan for a request naming one
+	// of these keys. Go's read extension yields it, and every ordering consumer
+	// reads the keys as usual; the in-union rule alone asks this set
+	// (RequestReachesPastRecordTypeHorizon) so that it builds only the in-unions
+	// the target's reference could hold. Renaming carries the marks; a merge of
+	// several legs starts without them.
+	pastRecordTypeHorizon map[string]struct{}
 }
 
 // NewRichOrdering creates a new ordering from bindings, key sequence,
@@ -122,6 +138,35 @@ func (o *RichOrdering) ValueForKey(key string) values.Value {
 	return o.keyLookup[key]
 }
 
+// PlainOrdering is the partition-key projection of a rich ordering. Fixed keys
+// do not consume a sort position; directional bindings retain both direction
+// and counterflow NULL placement. Sort satisfaction itself still uses the full
+// RichOrdering.
+func (o *RichOrdering) PlainOrdering() Ordering {
+	if o == nil {
+		return Ordering{}
+	}
+	var (
+		keys       []values.Value
+		descending []bool
+		nullsFirst []bool
+	)
+	for _, key := range o.keys {
+		sortOrder := SortOrderOf(o.bindingMap[key])
+		if !sortOrder.IsDirectional() {
+			continue
+		}
+		keys = append(keys, key)
+		descending = append(descending, sortOrder.IsAnyDescending())
+		nullsFirst = append(nullsFirst,
+			sortOrder == ProvidedSortOrderAscending || sortOrder == ProvidedSortOrderDescendingNullsFirst)
+	}
+	if len(keys) == 0 {
+		return Ordering{}
+	}
+	return Ordering{IsKnown: true, Keys: keys, Descending: descending, NullsFirst: nullsFirst}
+}
+
 // IsDistinct returns whether the ordering guarantees distinct output — that
 // is, whether its carried claim still holds over the coordinates it actually
 // has. A claim proved over a longer key set does not answer for a reduced one.
@@ -180,6 +225,121 @@ func (o *RichOrdering) StorageKeyIsComplete() bool {
 		return false
 	}
 	return o.storageComplete.holdsOver(o.keyLookup)
+}
+
+// WithRecordIdentity stamps the record-identity claim over pk, the producer's
+// primary-key coordinates. Every one of them must be a coordinate of this
+// ordering, or nothing is claimed.
+func (o *RichOrdering) WithRecordIdentity(pk []values.Value) *RichOrdering {
+	if o == nil {
+		return nil
+	}
+	stamped := *o
+	stamped.recordIdentity = NotDistinct()
+	if len(pk) == 0 {
+		return &stamped
+	}
+	over := make([]string, 0, len(pk))
+	for _, k := range pk {
+		s := values.ExplainValue(k)
+		if _, present := o.keyLookup[s]; !present {
+			return &stamped
+		}
+		over = append(over, s)
+	}
+	stamped.recordIdentity = CoordinateBoundClaim{claimed: true, over: sortedUniqueKeys(over)}
+	return &stamped
+}
+
+// WithPastRecordTypeHorizon marks the given keys of this ordering as reached
+// only past the record-type coordinate (see the field). A value that is not a
+// key of this ordering is ignored.
+func (o *RichOrdering) WithPastRecordTypeHorizon(marked []values.Value) *RichOrdering {
+	if o == nil || len(marked) == 0 {
+		return o
+	}
+	stamped := *o
+	stamped.pastRecordTypeHorizon = make(map[string]struct{}, len(o.pastRecordTypeHorizon)+len(marked))
+	for k := range o.pastRecordTypeHorizon {
+		stamped.pastRecordTypeHorizon[k] = struct{}{}
+	}
+	for _, v := range marked {
+		if s := values.ExplainValue(v); o.keyLookup[s] != nil {
+			stamped.pastRecordTypeHorizon[s] = struct{}{}
+		}
+	}
+	return &stamped
+}
+
+// IsPastRecordTypeHorizon reports whether key, a key of this ordering, is
+// marked as reached only past the record-type coordinate.
+func (o *RichOrdering) IsPastRecordTypeHorizon(key values.Value) bool {
+	if o == nil || key == nil {
+		return false
+	}
+	_, marked := o.pastRecordTypeHorizon[values.ExplainValue(key)]
+	return marked
+}
+
+// RequestReachesPastRecordTypeHorizon reports whether a part of requested
+// resolves, as Satisfies resolves it, to a key marked past the record-type
+// coordinate: Java's AbstractDataAccessRule.satisfiesRequestedOrdering stops
+// at the unbound record-type part before such a key, so the target holds no
+// plan of this ordering for this request.
+func (o *RichOrdering) RequestReachesPastRecordTypeHorizon(requested *RequestedOrdering) bool {
+	if o == nil || requested == nil || len(o.pastRecordTypeHorizon) == 0 {
+		return false
+	}
+	for _, part := range requested.GetParts() {
+		if k, ok := o.orderingKeyFor(part.Value); ok {
+			if _, marked := o.pastRecordTypeHorizon[k]; marked {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RecordIdentityClaim returns the record-identity claim when it still holds
+// over this ordering's coordinates, for a consumer that folds several legs'
+// identities together (IntersectClaims) before checking them against a key.
+func (o *RichOrdering) RecordIdentityClaim() CoordinateBoundClaim {
+	if o == nil || !o.recordIdentity.holdsOver(o.keyLookup) {
+		return NotDistinct()
+	}
+	return o.recordIdentity
+}
+
+// RecordIdentityWithin reports whether the record-identity claim holds and its
+// primary-key coordinates are all among keys.
+func (o *RichOrdering) RecordIdentityWithin(keys []values.Value) bool {
+	if o == nil || !o.recordIdentity.holdsOver(o.keyLookup) {
+		return false
+	}
+	within := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		within[values.ExplainValue(k)] = struct{}{}
+	}
+	return o.recordIdentity.coordinatesWithin(within)
+}
+
+// RowsIdentifiedBy reports whether equal values of keys can only come from the
+// same row: a distinctness, storage-key or record-identity claim still holds
+// and every coordinate it was proved over is among keys.
+func (o *RichOrdering) RowsIdentifiedBy(keys []values.Value) bool {
+	if o == nil {
+		return false
+	}
+	within := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		within[values.ExplainValue(k)] = struct{}{}
+	}
+	for _, claim := range []CoordinateBoundClaim{o.distinct, o.storageComplete, o.recordIdentity} {
+		if claim.holdsOver(o.keyLookup) && claim.coordinatesWithin(within) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetEqualityBoundValues returns the set of values that have at least
@@ -330,6 +490,32 @@ func (o *RichOrdering) Satisfies(requested *RequestedOrdering) bool {
 
 func valuesEqual(a, b values.Value) bool {
 	return values.ValuesStructurallyEqual(a, b)
+}
+
+// BindingsFor returns the key a requested value resolves to, under the
+// resolution Satisfies uses, and that key's bindings.
+func (o *RichOrdering) BindingsFor(v values.Value) (string, []OrderingBinding, bool) {
+	k, ok := o.orderingKeyFor(v)
+	if !ok {
+		return "", nil, false
+	}
+	bindings := o.bindingMapForExplain(k)
+	return k, bindings, bindings != nil
+}
+
+// WithoutKeys drops the given keys unless singular and non-fixed — Java's
+// getOrderingSet().filterElements(v -> isSingularNonFixedValue(v) ||
+// !dropped.contains(v)) in ImplementInJoinRule.
+func (o *RichOrdering) WithoutKeys(drop map[string]struct{}) *RichOrdering {
+	mapping := make(map[string]values.Value, len(o.keys))
+	for _, k := range o.keys {
+		s := values.ExplainValue(k)
+		if _, dropped := drop[s]; dropped && !o.IsSingularNonFixedValue(k) {
+			continue
+		}
+		mapping[s] = k
+	}
+	return o.translateKeys(mapping)
 }
 
 func (o *RichOrdering) bindingMapForExplain(explain string) []OrderingBinding {
@@ -813,7 +999,20 @@ func ConcatOrderings(outer, inner *RichOrdering) *RichOrdering {
 	// without interleaving. The concatenated rows themselves are distinct
 	// exactly when the RIGHT ordering is distinct; outer distinctness alone
 	// does not prevent duplicate rows within one inner run.
-	return NewRichOrderingWithDeps(bm, keys, deps, inner.DistinctnessClaim())
+	concat := NewRichOrderingWithDeps(bm, keys, deps, inner.DistinctnessClaim())
+	// Each key keeps its leg's horizon mark; a key both legs carry is the
+	// outer's, as its bindings are.
+	for _, k := range keys {
+		s := values.ExplainValue(k)
+		_, fromOuter := outerKeySet[s]
+		if (fromOuter && outer.IsPastRecordTypeHorizon(k)) || (!fromOuter && inner.IsPastRecordTypeHorizon(k)) {
+			if concat.pastRecordTypeHorizon == nil {
+				concat.pastRecordTypeHorizon = make(map[string]struct{})
+			}
+			concat.pastRecordTypeHorizon[s] = struct{}{}
+		}
+	}
+	return concat
 }
 
 // PullUp translates this ordering through a string-keyed value mapping.
@@ -859,7 +1058,16 @@ func (o *RichOrdering) PushDown(mapping map[string]values.Value) *RichOrdering {
 // Ports Java's Ordering.pullUp(Value, EvaluationContext, AliasMap,
 // Set<CorrelationIdentifier>) using the direct algorithmic pullUp
 // from values.PullUpValue.
-func (o *RichOrdering) PullUpThroughValue(resultValue values.Value, alias values.CorrelationIdentifier) (*RichOrdering, error) {
+//
+// localAliases are the aliases the operator itself binds. A fixed binding's
+// operand reading none of them is constant over the operator and passes
+// through unchanged: Java's MatchConstantValueRule over constantAliases, the
+// operator's external correlations.
+func (o *RichOrdering) PullUpThroughValue(
+	resultValue values.Value,
+	alias values.CorrelationIdentifier,
+	localAliases map[values.CorrelationIdentifier]struct{},
+) (*RichOrdering, error) {
 	if o == nil {
 		return nil, nil
 	}
@@ -882,6 +1090,9 @@ func (o *RichOrdering) PullUpThroughValue(resultValue values.Value, alias values
 	pulled := o.translateKeysAndBindings(translated, func(value values.Value) values.Value {
 		if translateErr != nil {
 			return nil
+		}
+		if values.IsConstantOver(value, localAliases) {
+			return value
 		}
 		var translatedValue values.Value
 		translatedValue, translateErr = values.PullUpValue(value, resultValue, alias)
@@ -1022,6 +1233,15 @@ func (o *RichOrdering) translateKeysWithOverrides(
 	translated := NewRichOrderingWithDeps(
 		newBM, newKeys, mappedSet.DependencyMap(), o.distinct.translate(survived))
 	translated.storageComplete = o.storageComplete.translate(survived)
+	translated.recordIdentity = o.recordIdentity.translate(survived)
+	for oldKey := range o.pastRecordTypeHorizon {
+		if mappedKey, ok := survived[oldKey]; ok {
+			if translated.pastRecordTypeHorizon == nil {
+				translated.pastRecordTypeHorizon = make(map[string]struct{}, len(o.pastRecordTypeHorizon))
+			}
+			translated.pastRecordTypeHorizon[mappedKey] = struct{}{}
+		}
+	}
 	return translated
 }
 
@@ -1198,10 +1418,14 @@ func mergeOrderings(
 	for !leftES.IsEmpty() && !rightES.IsEmpty() {
 		leftElems := leftES.EligibleElements()
 		rightElems := rightES.EligibleElements()
+		// The merged key sequence follows the inputs' set order, never map
+		// iteration order.
+		leftOrdered := leftES.EligibleElementsInOrder()
+		rightOrdered := rightES.EligibleElementsInOrder()
 
 		var intersected []string
-		for le := range leftElems {
-			for re := range rightElems {
+		for _, le := range leftOrdered {
+			for _, re := range rightOrdered {
 				if le == re {
 					lv := a.keyLookup[le]
 					rv := b.keyLookup[re]
@@ -1218,7 +1442,7 @@ func mergeOrderings(
 			}
 		}
 
-		for le := range leftElems {
+		for _, le := range leftOrdered {
 			if _, inRight := rightElems[le]; !inRight {
 				lv := a.keyLookup[le]
 				combined := combine(a.bindingMap[lv], nil)
@@ -1227,7 +1451,7 @@ func mergeOrderings(
 				}
 			}
 		}
-		for re := range rightElems {
+		for _, re := range rightOrdered {
 			if _, inLeft := leftElems[re]; !inLeft {
 				rv := b.keyLookup[re]
 				combined := combine(nil, b.bindingMap[rv])

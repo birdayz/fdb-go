@@ -14,7 +14,6 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -140,7 +139,7 @@ func TestExplodePlanElementRow_TrustsOnlyItsFinalizedElementConstructor(t *testi
 		if err != nil {
 			t.Fatalf("construct explode: %v", err)
 		}
-		if err := cascades.FinalizePlan(plan); err != nil {
+		if err := plans.FinalizePlan(plan); err != nil {
 			t.Fatalf("FinalizePlan: %v", err)
 		}
 		if constructor.MessageDescriptor() == nil {
@@ -317,7 +316,7 @@ func TestExecuteExplode_NullableLiteralElement(t *testing.T) {
 	)
 	declared := values.WithNullability(constructor.Type(), true)
 	plan := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(values.NewArrayConstructorValue(declared, []values.Value{constructor})))
-	if err := cascades.FinalizePlan(plan); err != nil {
+	if err := plans.FinalizePlan(plan); err != nil {
 		t.Fatal(err)
 	}
 	cur, err := ExecutePlan(context.Background(), plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())

@@ -37,7 +37,9 @@ tests:
   - query: SELECT s + s FROM t WHERE id = 1
     rows:
       - [abcabc]
-  # Non-ADD operators on strings still error (runtime mismatch today;
-  # the WS-T plan-time promotion lattice will move this to plan time).
+  # Non-ADD operators on strings have no lane: refused when the value is
+  # built, XX000 "unable to encapsulate arithmetic operation due to type
+  # mismatch(es)", as Java's ArithmeticValue.encapsulate refuses it (RFC-257
+  # WS-J section 6; measured against the JVM, WS-E row sub_string_int_select).
   - query: SELECT s - n FROM t WHERE id = 1
-    error_code: "22000"
+    error_code: "XX000"

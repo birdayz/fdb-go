@@ -92,7 +92,7 @@ func TestGetTypedRecordStore_InvalidType(t *testing.T) {
 		t.Fatal("Expected error for non-existent record type")
 	}
 
-	if err.Error() != "record type 'NonExistentType' not found in metadata" {
+	if err.Error() != "Unknown record type NonExistentType" {
 		t.Errorf("Unexpected error message: %v", err)
 	}
 

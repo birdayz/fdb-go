@@ -64,6 +64,15 @@ tests:
   - query: UPDATE customer SET nosuchcol = 'z' WHERE id = 1
     error: "42F01"
 
+  # AND THE SAME FOR A SET VALUE naming no column. The value's scope finds its
+  # table by the folded name, so once an UPDATE resolved each element's value
+  # in Java's order this answered `42703 NOSUCHCOL` for a column of a table the
+  # statement cannot name; Java's getTable refuses the table before any
+  # element is visited. The value is not resolved against a target that does
+  # not exist, and the table is the answer, as for the SET column above.
+  - query: UPDATE customer SET name = nosuchcol WHERE id = 1
+    error: "42F01"
+
   # THE WHERE SIDE STILL ANSWERS 42703, AND THAT IS AGREEMENT, NOT AN OVERSIGHT.
   # The WHERE-column resolver runs during logical construction and folds case,
   # so it names the column before the target guard runs on the built operator.

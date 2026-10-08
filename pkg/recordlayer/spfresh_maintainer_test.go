@@ -462,7 +462,8 @@ var _ = Describe("SPFresh §8 staging interleaving", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// The build starts: coarse table commits.
-		config := parseSPFreshConfig(idx)
+		config, cerr := readSPFreshConfig(idx)
+		Expect(cerr).NotTo(HaveOccurred())
 		bld := newSPFreshBuilder(sharedDB, storage, config, "build-test")
 		sample := make([][]float64, len(inputs))
 		for i := range inputs {
@@ -656,7 +657,8 @@ var _ = Describe("SPFresh §8 fence regressions (Torvalds 094.2)", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		storage := newSPFreshStorage(indexSubspace, 1)
-		config := parseSPFreshConfig(idx)
+		config, cerr := readSPFreshConfig(idx)
+		Expect(cerr).NotTo(HaveOccurred())
 		bld := newSPFreshBuilder(sharedDB, storage, config, "ghost-build")
 		Expect(bld.coarsePass(ctx, [][]float64{{10, 10}, {11, 11}, {12, 12}}, 3, 7)).To(Succeed())
 

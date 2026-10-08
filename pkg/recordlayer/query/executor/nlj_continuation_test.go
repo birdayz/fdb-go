@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -263,52 +264,43 @@ func TestNLJContinuation_HashBucketRepositionsByInnerPK(t *testing.T) {
 	requireStringSliceEqual(t, got, fullKeys[1:])
 }
 
+// A probe whose key has no hashable form degrades to an identity view over
+// every inner row, where the per-pair predicate decides. DATE and TIMESTAMP
+// values are text, so a time.Time probe is a loud internal error rather than a
+// scan comparing it as something else; a NaN probe equals no indexed inner key,
+// so a LEFT join pads it once, and a resume from the pad emits nothing more.
 func TestNLJContinuation_DegradedHashProbeUsesIdentityView(t *testing.T) {
 	t.Parallel()
 
-	target := time.Date(2026, time.July, 23, 12, 30, 0, 0, time.UTC)
-	matchPositions := []int{4, 73, 118}
-	inners := make([]QueryResult, 120)
-	for i := range inners {
-		key := target.Add(time.Duration(i+1) * time.Hour).Format(time.RFC3339)
-		for _, matchPosition := range matchPositions {
-			if i == matchPosition {
-				key = target.Format(time.RFC3339)
-			}
-		}
-		inners[i] = dmapPK(tuple.Tuple{"inner", int64(i)}, map[string]any{"J": key})
+	inners := nljTestRows("J", 120)
+	timeProbe := nljTestCursor(t, recordlayer.FromList([]QueryResult{
+		dmapPK(tuple.Tuple{"outer", int64(1)}, map[string]any{"K": time.Date(2026, time.July, 23, 12, 30, 0, 0, time.UTC)}),
+	}), inners, plans.JoinInner, nljEquiPreds(t))
+	defer timeProbe.Close()
+	if timeProbe.hashIndex == nil {
+		t.Fatal("the inner keys must build the hash index")
 	}
-	outers := []QueryResult{
-		dmapPK(tuple.Tuple{"outer", int64(1)}, map[string]any{"K": target}),
+	var carrier *predicates.TemporalCarrierError
+	if _, err := timeProbe.OnNext(context.Background()); !errors.As(err, &carrier) {
+		t.Fatalf("time.Time probe: want a TemporalCarrierError, got %v", err)
 	}
 
-	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinInner, nljEquiPreds(t))
+	outers := []QueryResult{dmapPK(tuple.Tuple{"outer", int64(1)}, map[string]any{"K": math.NaN()})}
+	full := nljTestCursor(t, recordlayer.FromList(outers), inners, plans.JoinLeftOuter, nljEquiPreds(t))
 	defer full.Close()
-	if full.hashIndex == nil {
-		t.Fatal("string inner keys must build the hash index")
+	keys, conts := drainNLJ(t, full)
+	if len(keys) != 1 {
+		t.Fatalf("NaN probe emitted %d rows, want the one LEFT pad", len(keys))
 	}
-	fullKeys, conts := drainNLJ(t, full)
-	if len(fullKeys) != len(matchPositions) {
-		t.Fatalf("degraded probe emitted %d rows, want %d", len(fullKeys), len(matchPositions))
+	outerCont, resumeState, err := decodeNLJContinuation(conts[0])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-
-	for split := 1; split <= len(fullKeys); split++ {
-		outerCont, resumeState, err := decodeNLJContinuation(conts[split-1])
-		if err != nil {
-			t.Fatalf("split %d decode: %v", split, err)
-		}
-		wantPosition := matchPositions[split-1] + 1
-		if resumeState == nil || resumeState.innerIdx != wantPosition {
-			t.Fatalf("split %d saved inner position = %+v, want identity-view %d",
-				split, resumeState, wantPosition)
-		}
-		resumed := nljTestCursor(t,
-			recordlayer.FromListWithContinuation(outers, outerCont),
-			inners, plans.JoinInner, nljEquiPreds(t))
-		resumed.armResume(outerCont, resumeState)
-		got, _ := drainNLJ(t, resumed)
-		_ = resumed.Close()
-		requireStringSliceEqual(t, got, fullKeys[split:])
+	resumed := nljTestCursor(t, recordlayer.FromListWithContinuation(outers, outerCont), inners, plans.JoinLeftOuter, nljEquiPreds(t))
+	defer resumed.Close()
+	resumed.armResume(outerCont, resumeState)
+	if got, _ := drainNLJ(t, resumed); len(got) != 0 {
+		t.Fatalf("resume after the pad emitted %v", got)
 	}
 }
 

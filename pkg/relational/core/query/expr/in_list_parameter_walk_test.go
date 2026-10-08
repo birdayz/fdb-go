@@ -3,14 +3,8 @@ package expr_test
 // A PREPARED PARAMETER among IN-list items, at the seam where one actually
 // exists.
 //
-// This test exists because the test that was supposed to cover it could not.
-// Through database/sql the driver never plans a parameter at all:
-// substituteParams "replaces positional '?' placeholders in a query with SQL
-// literal representations of the supplied driver values" (embedded/utilities.go)
-// BEFORE the parser runs, so `x IN (?, 999)` reaches the engine as the constant
-// list `x IN (5, 999)` and takes the plan-time fold exactly as it always did.
-// A driver-level test of that shape is green whether or not a ParameterValue is
-// handled at all — it is not testing what its name says.
+// Through database/sql a parameter is bound to a typed constant before the
+// walker sees it, so an UNBOUND `?` reaches the walker only here.
 //
 // The walker is the seam that keeps the `?`. parseFirstWhereExpr parses SQL
 // text directly, so the QUESTION token reaches walkPreparedStatementParameter

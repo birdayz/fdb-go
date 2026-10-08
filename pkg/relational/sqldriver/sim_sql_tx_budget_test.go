@@ -50,16 +50,16 @@ func openSimSchemaWithEnv(t *testing.T, seed uint64, tableDDL string) (*sql.DB, 
 	t.Cleanup(func() { fdbDBCache.Delete(key) })
 
 	ctx := context.Background()
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///simdb?cluster_file=%s", key))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s", key))
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
 	defer setup.Close()
-	mustExecSQL(t, setup, ctx, "CREATE DATABASE /simdb")
+	mustExecSQL(t, setup, ctx, "CREATE DATABASE /FRL/simdb")
 	mustExecSQL(t, setup, ctx, "CREATE SCHEMA TEMPLATE tmpl "+tableDDL)
-	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /simdb/s WITH TEMPLATE tmpl")
+	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /FRL/simdb/s WITH TEMPLATE tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///simdb?cluster_file=%s&schema=s", key))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/SIMDB?cluster_file=%s&schema=S", key))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}

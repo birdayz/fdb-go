@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sort"
+	"strings"
 	"sync/atomic"
 
 	"fdb.dev/pkg/dst"
@@ -42,7 +43,7 @@ const siKeyDomain = int64(5)
 // siDBPath is FIXED across runs (only the cache key varies), so the persisted keyspace for a given
 // seed is byte-identical run-to-run and hunt.Fingerprint is a valid determinism probe. Each run
 // gets its own SimFDB backend under a unique cache key, so concurrent runs never collide.
-const siDBPath = "/sidb"
+const siDBPath = "/FRL/sidb"
 
 // siKeyCounter uniquifies the per-run cache key (concurrent workers + shrink re-runs of the same
 // seed). It is NOT persisted — the database path is fixed — so it does not perturb determinism.
@@ -180,7 +181,7 @@ func siNewHarness(seed uint64, faultProb float64) (*siHarness, error) {
 	h := &siHarness{env: env, faults: faults, simDB: simDB, backend: backend}
 	h.closes = append(h.closes, sqldriver.RegisterBackend(key, simDB))
 
-	setup, err := sql.Open("fdbsql", "fdbsql://"+siDBPath+"?cluster_file="+key)
+	setup, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(siDBPath)+"?cluster_file="+key)
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open setup: %w", err)
@@ -200,7 +201,7 @@ func siNewHarness(seed uint64, faultProb float64) (*siHarness, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+siDBPath+"?cluster_file="+key+"&schema=s")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(siDBPath)+"?cluster_file="+key+"&schema=S")
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open db: %w", err)

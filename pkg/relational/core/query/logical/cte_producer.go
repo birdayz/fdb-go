@@ -88,6 +88,11 @@ type CTEProducer struct {
 	traversalOrder TraversalOrder
 	defining       CTERegistry
 	prepared       bool
+	// buildingSeed is a recursive declaration's seed leg while its recursive
+	// leg is still being built and body is nil: Java types the temporary
+	// table a self-reference reads by the seed (handleRecursiveNamedQuery),
+	// so a reference met mid-build is typed by it.
+	buildingSeed LogicalOperator
 }
 
 func (p *CTEProducer) Identity() *CTEIdentity                      { return p.identity }
@@ -96,10 +101,23 @@ func (p *CTEProducer) InsertBinding() values.CorrelationIdentifier { return p.in
 func (p *CTEProducer) Name() string                                { return p.name }
 func (p *CTEProducer) NamePath() []string                          { return slices.Clone(p.namePath) }
 func (p *CTEProducer) Body() LogicalOperator                       { return p.body }
-func (p *CTEProducer) ColumnAliases() []string                     { return slices.Clone(p.columnAliases) }
-func (p *CTEProducer) Recursive() bool                             { return p.recursive }
-func (p *CTEProducer) TraversalOrder() TraversalOrder              { return p.traversalOrder }
-func (p *CTEProducer) DefiningRegistry() CTERegistry               { return p.defining }
+
+// BuildingSeed is the seed leg of a recursive declaration whose body is still
+// being built, else nil.
+func (p *CTEProducer) BuildingSeed() LogicalOperator {
+	if p.body != nil {
+		return nil
+	}
+	return p.buildingSeed
+}
+
+// SetBuildingSeed records a recursive declaration's seed leg for references
+// met while its body is being built.
+func (p *CTEProducer) SetBuildingSeed(seed LogicalOperator) { p.buildingSeed = seed }
+func (p *CTEProducer) ColumnAliases() []string              { return slices.Clone(p.columnAliases) }
+func (p *CTEProducer) Recursive() bool                      { return p.recursive }
+func (p *CTEProducer) TraversalOrder() TraversalOrder       { return p.traversalOrder }
+func (p *CTEProducer) DefiningRegistry() CTERegistry        { return p.defining }
 
 type CTEOption struct {
 	columns                  []string
@@ -284,6 +302,33 @@ func ReferencesCTEInScope(op LogicalOperator, producer *CTEProducer, registry CT
 		return false
 	}
 	return walk(op, registry)
+}
+
+// ReadsBuildingCTE reports whether op reads a recursive declaration whose
+// body is still being built: the self-reference of a recursive leg, which
+// only the recursive translation can lower (to its temporary table scan).
+func ReadsBuildingCTE(op LogicalOperator) bool {
+	if op == nil {
+		return false
+	}
+	if scan, ok := op.(*LogicalScan); ok {
+		producer := scan.Source.Producer()
+		return producer != nil && producer.BuildingSeed() != nil
+	}
+	if cte, ok := op.(*LogicalCTE); ok {
+		return ReadsBuildingCTE(cte.Main)
+	}
+	for _, child := range op.Children() {
+		if ReadsBuildingCTE(child) {
+			return true
+		}
+	}
+	for _, child := range AttachedPlans(op) {
+		if ReadsBuildingCTE(child) {
+			return true
+		}
+	}
+	return false
 }
 
 // FindVisibleScan resolves a FROM qualifier without entering a definition.

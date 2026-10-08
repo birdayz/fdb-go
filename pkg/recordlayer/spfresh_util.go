@@ -7,9 +7,11 @@ import (
 	"fdb.dev/pkg/rabitq"
 )
 
-// spfreshRun adapts FDBDatabase.Run for error-only transaction bodies.
+// spfreshRun runs an SPFresh background lifecycle's error-only body on the
+// transactor's own retry loop (runClientLoop), not Run's bounded attempts:
+// RFC-094 lifecycles keep the client loop.
 func spfreshRun(ctx context.Context, db *FDBDatabase, fn func(rtx *FDBRecordContext) error) error {
-	_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	_, err := db.runClientLoop(ctx, func(rtx *FDBRecordContext) (any, error) {
 		return nil, fn(rtx)
 	})
 	return err

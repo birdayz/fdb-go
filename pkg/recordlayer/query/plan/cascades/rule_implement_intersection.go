@@ -4,6 +4,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -18,8 +19,14 @@ import (
 // RecordQueryIntersectionPlan is a sorted merge: merely finding an arbitrary
 // physical member for each leg is not sufficient. A leg that does not emit the
 // comparison key monotonically can make the merge permanently advance past a
-// real match. This rule therefore pins one ordering-satisfying physical spine
-// per child and declines when any leg cannot provide it.
+// real match. Each leg therefore ranges over EVERY stored-record member of its
+// group that satisfies the comparison-key ordering, each with its ordering
+// spine pinned, in one fresh final reference, and the rule declines when any
+// leg has none. This is Java's ImplementIntersectionRule, which ranges each
+// leg over its rolled-up stored-record partition
+// (memoizeMemberPlansFromOther): no member is pre-selected, OptimizeGroup
+// chooses (RFC-257 WS-F F-8). Java's legs are ordered by construction (the
+// data-access rule memoizes them so); Go's filter and pins state it.
 //
 // LogicalIntersectionExpression currently carries comparison values but no
 // direction, so this implementation is the natural forward/ascending variant.
@@ -67,27 +74,37 @@ func (r *ImplementIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 		false,
 	)
 
-	winners := make([]expressions.RelationalExpression, 0, len(children))
-	childPlans := make([]plans.RecordQueryPlan, 0, len(children))
+	legs := make([][]expressions.RelationalExpression, 0, len(children))
+	var rowType values.Type
 	for _, q := range children {
-		innerRef := q.GetRangesOver()
-		if innerRef == nil {
+		var leg []expressions.RelationalExpression
+		for _, candidate := range storedRecordDMLCandidates(q.GetRangesOver()) {
+			if !memberSatisfiesOrdering(candidate.expr, requested) {
+				continue
+			}
+			pinned := pinOrderedSpine(candidate.expr, requested, call.CostModel())
+			physical, ok := pinned.(physicalPlanExpression)
+			if !ok || physical.GetRecordQueryPlan() == nil {
+				continue
+			}
+			// The comparison keys are baked against one row type, so every
+			// member of every leg must present it.
+			resultType := physical.GetRecordQueryPlan().GetResultType()
+			if rowType == nil {
+				rowType = resultType
+			} else if !rowType.Equals(resultType) {
+				continue
+			}
+			leg = append(leg, pinned)
+		}
+		if len(leg) == 0 {
 			return
 		}
-		winner, satisfied := getWinnerForOrdering(innerRef, requested, call.CostModel())
-		if winner == nil || !satisfied {
-			return
-		}
-		pinned := pinOrderedSpine(winner, requested, call.CostModel())
-		if pinned == nil {
-			return
-		}
-		physical, ok := pinned.(physicalPlanExpression)
-		if !ok || physical.GetRecordQueryPlan() == nil {
-			return
-		}
-		winners = append(winners, pinned)
-		childPlans = append(childPlans, physical.GetRecordQueryPlan())
+		legs = append(legs, leg)
+	}
+	childPlans := make([]plans.RecordQueryPlan, len(legs))
+	for i, leg := range legs {
+		childPlans[i] = leg[0].(physicalPlanExpression).GetRecordQueryPlan()
 	}
 
 	bakedComparisonKeys := bakedIntersectionKeys(comparisonKeyValues, childPlans)
@@ -101,14 +118,16 @@ func (r *ImplementIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 			SortOrder: properties.ProvidedSortOrderAscending,
 		}
 	}
-	// Each ordering proof is tied to the exact executable spine selected above.
-	// A final singleton reference prevents a later generic child relink from
-	// swapping in an unordered sibling after the merge has dropped its sort.
-	childQs := make([]expressions.Quantifier, 0, len(winners))
-	for _, winner := range winners {
-		childQs = append(childQs, expressions.NewPhysicalQuantifier(
-			call.MemoizeFinalExpression(winner),
-		))
+	// Each ordering proof is tied to the exact executable spines pinned above.
+	// A fresh final reference holding only them prevents a later generic child
+	// relink from swapping in an unordered sibling.
+	childQs := make([]expressions.Quantifier, 0, len(legs))
+	for _, leg := range legs {
+		legRef := call.MemoizeFinalExpression(leg[0])
+		for _, member := range leg[1:] {
+			legRef.InsertFinal(member)
+		}
+		childQs = append(childQs, expressions.NewPhysicalQuantifier(legRef))
 	}
 
 	intersection, err := plans.NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering(

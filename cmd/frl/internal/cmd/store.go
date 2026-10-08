@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -46,7 +45,7 @@ func newStoreInfoCmd() *cobra.Command {
 		Short: "Print DataStoreInfo for the current context's store",
 		Example: `  frl store info
   frl store info --context prod
-  frl store info --database /myapp --schema main
+  frl store info --database /FRL/myapp --schema main
   frl store info -o json | jq '.formatVersion'`,
 		Long: "Reads the store header (format version, metadata version, " +
 			"user version, record count state, lock state, user fields) " +
@@ -186,7 +185,7 @@ func readStoreInfo(ctx context.Context, rec *recordlayer.FDBDatabase, ss subspac
 		return nil, fmt.Errorf("no store header at keyspace %s — store does not exist", keyHex(key))
 	}
 	info := &gen.DataStoreInfo{}
-	if err := proto.Unmarshal(bytes, info); err != nil {
+	if err := recordlayer.UnmarshalAsJava(bytes, info); err != nil {
 		return nil, fmt.Errorf("unmarshal DataStoreInfo: %w", err)
 	}
 	return info, nil

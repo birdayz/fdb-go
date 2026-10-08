@@ -13,13 +13,11 @@ import (
 // drops.
 //
 // The swap marker is the case that was actually broken, and it is the one that
-// matters most: BOTH of its readers are safety DECLINES. RemoveRangeOneRule
-// refuses a swapped Select outright ("reconstructing it would have to restore
-// the swap + its SQL column ordering, which the removal path does not model"),
-// and ImplementNestedLoopJoinRule gates its correlated-scan FlatMap fast path on
-// `!sel.IsQuantifiersSwapped()`. A copy that reports UNSWAPPED therefore does
-// not lose an optimization — it admits a shape two rules explicitly refuse to
-// handle, and the observable is a wrong SQL column ORDER, not a slower plan.
+// matters most: its reader is a safety DECLINE. ImplementNestedLoopJoinRule
+// gates its correlated-scan FlatMap fast path on `!sel.IsQuantifiersSwapped()`.
+// A copy that reports UNSWAPPED therefore does not lose an optimization — it
+// admits a shape the rule explicitly refuses to handle, and the observable is a
+// wrong SQL column ORDER, not a slower plan.
 //
 // Reachability, measured rather than assumed, so the pin's status is honest:
 // a logging probe in this method over an uncached
@@ -66,10 +64,9 @@ func TestSelectWithQuantifiers_PreservesEveryNonQuantifierField(t *testing.T) {
 	if !got.IsQuantifiersSwapped() {
 		t.Error("WithQuantifiers dropped the quantifier-swap marker. " +
 			"A rebound swapped Select now reports itself UNSWAPPED, so " +
-			"RemoveRangeOneRule will strip a RANGE leg it declines to model the " +
-			"swap for, and ImplementNestedLoopJoinRule will take the correlated-scan " +
+			"ImplementNestedLoopJoinRule will take the correlated-scan " +
 			"fast path its `!IsQuantifiersSwapped()` guard exists to refuse. " +
-			"Both failures are silent and both come out as a wrong SQL column order. " +
+			"The failure is silent and comes out as a wrong SQL column order. " +
 			"Copy the struct; do not re-list the fields.")
 	}
 	if got.GetJoinType() != JoinCross {
@@ -89,6 +86,43 @@ func TestSelectWithQuantifiers_PreservesEveryNonQuantifierField(t *testing.T) {
 	// pass just as happily on a method that ignored its argument.
 	if got.GetQuantifiers()[0].GetAlias() == swapped.GetQuantifiers()[0].GetAlias() {
 		t.Error("WithQuantifiers did not install the replacement quantifiers")
+	}
+}
+
+func TestSelectWithTranslatedValuesPreservesNodeInfo(t *testing.T) {
+	t.Parallel()
+	for _, swapped := range []bool{false, true} {
+		name := "unswapped"
+		if swapped {
+			name = "swapped"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			leaf := &leafScan{name: "T"}
+			qs := []Quantifier{ForEachQuantifier(InitialOf(leaf)), ForEachQuantifier(InitialOf(leaf))}
+			base := mustExpression(NewSelectExpressionWithJoinType(values.NewBooleanValue(true), qs, nil, []string{"A", "B"}, JoinCross))
+			if swapped {
+				base = base.WithSwappedQuantifiers()
+			}
+			rv := values.NewBooleanValue(false)
+			pred := predicates.NewConstantPredicate(predicates.TriFalse)
+			got, err := base.WithTranslatedValues(rv, base.GetQuantifiers(), []predicates.QueryPredicate{pred})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.IsQuantifiersSwapped() != swapped || got.GetJoinType() != JoinCross || got.GetSourceAliases()[0] != base.GetSourceAliases()[0] {
+				t.Fatal("translation lost select node metadata")
+			}
+			if got.GetResultValue() != rv || len(got.GetPredicates()) != 1 || got.GetPredicates()[0] != pred {
+				t.Fatal("translation did not replace value programs")
+			}
+			if bad, err := base.WithTranslatedValues(rv, nil, nil); err == nil || bad != nil {
+				t.Fatal("translation accepted the wrong quantifier arity")
+			}
+			if bad, err := base.WithTranslatedValues(nil, qs, nil); err == nil || bad != nil {
+				t.Fatal("translation accepted an invalid result value")
+			}
+		})
 	}
 }
 

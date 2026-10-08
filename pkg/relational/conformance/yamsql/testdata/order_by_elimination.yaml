@@ -49,10 +49,10 @@ schema_template: |
   CREATE TABLE rp (
     id BIGINT,
     region STRING,
-    plan STRING,
+    plan_name STRING,
     PRIMARY KEY (id)
   )
-  CREATE INDEX idx_region_plan ON rp (region, plan)
+  CREATE INDEX idx_region_plan ON rp (region, plan_name)
 setup:
   - INSERT INTO t VALUES (3, 10, 'c'), (1, 30, 'a'), (2, 20, 'b'), (4, 40, 'd'), (5, 15, 'e')
   - INSERT INTO ab VALUES (1, 10, 100), (2, 20, 200), (1, 20, 150), (2, 10, 250), (1, 30, 130)
@@ -76,7 +76,7 @@ tests:
 
   # Full scan + ORDER BY on non-PK col — must actually sort (v).
   - query: SELECT id, v FROM t ORDER BY v
-    plan_contains: "IndexScan(IDX_V, [*])"
+    plan_contains: "Map(IndexScan(IDX_V, [*] COVERING), {ID: _current.ID#0, V: _current.V#1})"
     plan_not_contains: "InMemorySort"
     rows:
       - [3, 10]
@@ -139,7 +139,7 @@ tests:
 
   # Secondary-index range + ORDER BY on DIFFERENT col — must sort.
   - query: SELECT id, v, name FROM t WHERE v >= 20 ORDER BY name
-    plan_contains: "Project([_current.ID#0, _current.V#1, _current.NAME#2], InMemorySort([_current.NAME#2 ASC], IndexScan(IDX_V, [<>])))"
+    plan_contains: "InMemorySort([_current.NAME#2 ASC], Map(IndexScan(IDX_V, [<>]), {ID: _current.ID#0, V: _current.V#1, NAME: _current.NAME#2}))"
     rows:
       - [1, 30, 'a']
       - [2, 20, 'b']
@@ -185,7 +185,7 @@ tests:
   # Composite secondary-index range + ORDER BY (region, plan)
   # -------------------------------------------------------------------
 
-  - query: SELECT id, region, plan FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY region, plan
+  - query: SELECT id, region, plan_name FROM rp WHERE region = 'us' AND plan_name > 'a' ORDER BY region, plan_name
     plan_contains: "IndexScan(IDX_REGION_PLAN, [=, <>] COVERING)"
     plan_not_contains: "InMemorySort"
     rows:
@@ -196,8 +196,8 @@ tests:
   # ORDER BY id on a secondary-index scan: id is in PK suffix, and
   # natural order is (region, plan, id). ORDER BY [id] alone is NOT
   # a prefix of (region, plan, id) — must sort.
-  - query: SELECT id FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY id
-    plan_contains: "Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, <>])))"
+  - query: SELECT id FROM rp WHERE region = 'us' AND plan_name > 'a' ORDER BY id
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_REGION_PLAN, [=, <>] COVERING), {ID: _current.ID#0}))"
     rows:
       - [1]
       - [2]
@@ -231,15 +231,14 @@ tests:
       - [4]
       - [5]
 
-  # ASC + NULLS LAST on PK: the query SUCCEEDS. id is the NOT NULL
-  # primary key, so the scan emits no NULLs and the PK-order ASC scan
-  # satisfies the explicit NULLS LAST request — rows come back [1..5]
-  # in PK order. (An earlier comment here claimed this shape was
-  # rejected via "no scan satisfies"; that contradicted the pinned
-  # rows below, which have always asserted success.)
+  # ASC + NULLS LAST on PK: the query SUCCEEDS with rows [1..5] in PK
+  # order (Java cannot plan it). A forward scan provides ASC NULLS FIRST
+  # and no ordering property states the primary key holds no NULL, so the
+  # request sorts in memory; the elimination it had came from the Go-only
+  # OrderedPrimaryScanRule, which a sort over the block no longer reaches.
+  # Under PREFER_INDEX (F-7c) the sort reads the covering index whole.
   - query: SELECT id FROM t ORDER BY id ASC NULLS LAST
-    plan_contains: "Scan(T)"
-    plan_not_contains: "InMemorySort"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(IndexScan(IDX_NAME, [*] COVERING), {ID: _current.ID#0}))"
     rows:
       - [1]
       - [2]
@@ -276,12 +275,11 @@ tests:
       - [4]
 
   # ID is the PK suffix carried by every IDX_V entry, so this projection is
-  # fully covered. MergeProjectionAndFetchRule and ImplementProjectionRule each
-  # independently remove the fetch; disabling BOTH restores the fetching scan.
+  # fully covered, and PushMapThroughFetchRule removes the fetch.
   # The positive COVERING pin prevents either the projection/limit placement or
   # parent-alternative enumeration from silently hiding that index-only path.
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v LIMIT 3
-    plan_contains: "Limit(3, Project([_current.ID#0, _current.V#1], IndexScan(IDX_V, [<>] COVERING)))"
+    plan_contains: "Limit(3, Map(IndexScan(IDX_V, [<>] COVERING), {ID: _current.ID#0, V: _current.V#1}))"
     plan_not_contains: "InMemorySort"
     rows:
       - [3, 10]
@@ -311,7 +309,7 @@ tests:
       - [4]
 
   - query: SELECT DISTINCT v FROM t WHERE v > 0 ORDER BY v LIMIT 3
-    plan_contains: "Distinct(Project([_current.V#1], IndexScan(IDX_V, [<>] COVERING)))"
+    plan_contains: "Distinct(Map(IndexScan(IDX_V, [<>] COVERING), {V: _current.V#1}))"
     plan_not_contains: "InMemorySort"
     rows:
       - [10]
@@ -337,7 +335,7 @@ tests:
 
   # Alias + LIMIT (Go extension, RFC-128).
   - query: SELECT id AS pk FROM t ORDER BY pk LIMIT 2
-    plan_contains: "Limit(2, Project([_current.ID#0], Scan(T)))"
+    plan_contains: "Limit(2, Map(Scan(T), {PK: _current.ID#0}))"
     plan_not_contains: "InMemorySort"
     rows:
       - [1]
@@ -346,7 +344,7 @@ tests:
   # Alias that shadows a different col — ORDER BY matches the
   # alias's underlying column, not the alias's own name.
   - query: SELECT v AS id FROM t ORDER BY id
-    plan_contains: "IndexScan(IDX_V, [*])"
+    plan_contains: "Map(IndexScan(IDX_V, [*] COVERING), {ID: _current.V#1})"
     plan_not_contains: "InMemorySort"
     rows:
       - [10]
@@ -446,7 +444,7 @@ tests:
   # descending sub-sorts; rejection emerges from "no scan satisfies".
   # Same architectural reason in both engines.
   - query: SELECT a, b FROM ab WHERE a > 0 ORDER BY a ASC, b DESC
-    plan_contains: "Project([_current.A#0, _current.B#1], InMemorySort([_current.A#0 ASC, _current.B#1 DESC], Scan(AB, [<>])))"
+    plan_contains: "InMemorySort([_current.A#0 ASC, _current.B#1 DESC], Map(Scan(AB, [<>]), {A: _current.A#0, B: _current.B#1}))"
     rows:
       - [1, 30]
       - [1, 20]
@@ -458,7 +456,7 @@ tests:
   # exercises the alias-resolves-to-PK-col reverse-scan path with a
   # row bound.
   - query: SELECT id AS pk FROM t ORDER BY pk DESC LIMIT 3
-    plan_contains: "Limit(3, Project([_current.ID#0], Scan(T) REVERSE))"
+    plan_contains: "Limit(3, Map(Scan(T) REVERSE, {PK: _current.ID#0}))"
     plan_not_contains: "InMemorySort"
     rows:
       - [5]
@@ -496,7 +494,7 @@ tests:
   # Leading PK col equated + LIMIT (Go extension, RFC-128) — the
   # equality-prefix-relaxation forward-scan path with a row bound.
   - query: SELECT a, b FROM ab WHERE a = 2 ORDER BY b ASC LIMIT 1
-    plan_contains: "Limit(1, Project([_current.A#0, _current.B#1], Scan(AB, [=])))"
+    plan_contains: "Limit(1, Map(Scan(AB, [=]), {A: _current.A#0, B: _current.B#1}))"
     plan_not_contains: "InMemorySort"
     rows:
       - [2, 10]
@@ -528,7 +526,7 @@ tests:
   # equated, effective naturalOrder is (plan, id). ORDER BY plan
   # matches → sort eliminated. The DESC twin below uses the same
   # equality-prefix relaxation with a reverse secondary-index scan.
-  - query: SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan
+  - query: SELECT id, region, plan_name FROM rp WHERE region = 'us' ORDER BY plan_name
     plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *] COVERING)"
     plan_not_contains: "InMemorySort"
     rows:
@@ -541,7 +539,7 @@ tests:
   # the orderBy unchanged with orderBy[0]=c ≠ na[0]=b → falls through
   # to in-memory sort. Rows come out sorted by c ASC.
   - query: SELECT a, b, c FROM ab WHERE a = 1 ORDER BY c
-    plan_contains: "Project([_current.A#0, _current.B#1, _current.C#2], InMemorySort([_current.C#2 ASC], Scan(AB, [=])))"
+    plan_contains: "InMemorySort([_current.C#2 ASC], Map(Scan(AB, [=]), {A: _current.A#0, B: _current.B#1, C: _current.C#2}))"
     rows:
       - [1, 10, 100]
       - [1, 30, 130]
@@ -584,7 +582,7 @@ tests:
   # plan DESC, id DESC). Within region='us' and plan='pro' (two
   # rows), id=3 comes before id=1 under reverse; then region='us'
   # + plan='free' trails.
-  - query: SELECT id, region, plan FROM rp WHERE region = 'us' ORDER BY plan DESC
+  - query: SELECT id, region, plan_name FROM rp WHERE region = 'us' ORDER BY plan_name DESC
     plan_contains: "IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE"
     plan_not_contains: "InMemorySort"
     rows:
@@ -595,15 +593,14 @@ tests:
   # Equated leading + DESC on trailing non-equated col + LIMIT (Go
   # extension, RFC-128). region='eu' rows: (4, 'pro'), (5, 'free');
   # plan DESC puts 'pro' first, LIMIT 1 keeps id=4. ID is the PK suffix
-  # carried by IDX_REGION_PLAN, so the projection is covered. Either
-  # MergeProjectionAndFetchRule or ImplementProjectionRule removes the fetch;
-  # disabling BOTH restores the fetching scan and fails this positive pin.
+  # carried by IDX_REGION_PLAN, so the projection is covered and
+  # PushMapThroughFetchRule removes the fetch.
   # The LIMIT stays ABOVE the projection: a rewrite that pushes it below prunes
   # the un-pushed shape out of REWRITING and the covering member is then never
   # offered to PLANNING at all. That reachability half is pinned in
   # embedded.TestLimitOverProjectionKeepsTheCoveringRewrite.
-  - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
-    plan_contains: "Limit(1, Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE))"
+  - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY plan_name DESC LIMIT 1
+    plan_contains: "Limit(1, Map(Map(IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE, {ID: _current.ID#0, _1: _current.PLAN_NAME#2}), {ID: _current.ID#0}))"
     plan_not_contains: "InMemorySort"
     rows:
       - [4]

@@ -89,7 +89,7 @@ func (p *RecordQueryDeletePlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryDeletePlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryDeletePlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mixes class + targetRecordType.
@@ -97,7 +97,7 @@ func (p *RecordQueryDeletePlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("deleteplan|")
+	hash := p.keyFor(p).Hash("deleteplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }
@@ -108,7 +108,7 @@ func (p *RecordQueryDeletePlan) Explain() string {
 	if inner := p.GetInner(); inner != nil {
 		innerLabel = inner.Explain()
 	}
-	return fmt.Sprintf("Delete(%s, %s)", p.targetRecordType, innerLabel)
+	return fmt.Sprintf("Delete(%s, %s)", explainRecordTypeName(p.targetRecordType), innerLabel)
 }
 
 var (

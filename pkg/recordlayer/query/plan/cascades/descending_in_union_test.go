@@ -97,15 +97,6 @@ func descendingInUnionLogicalUnion(
 	return mustConstruct(t, union, err)
 }
 
-func descendingInUnionLogicalDistinct(
-	t testing.TB,
-	inner expressions.Quantifier,
-) *expressions.LogicalDistinctExpression {
-	t.Helper()
-	distinct, err := expressions.NewLogicalDistinctExpression(inner)
-	return mustConstruct(t, distinct, err)
-}
-
 func descendingInUnionKeyTypes(size int) []values.Type {
 	types := make([]values.Type, size)
 	for i := range types {
@@ -542,12 +533,14 @@ func TestInUnionRuleRefusesMixedDirectionMerge(t *testing.T) {
 	})
 }
 
-// mixedDirectionDistinctUnion builds Distinct(Union(leg1, leg2)) whose merged
-// ordering is (ID equality-bound, K ascending). The legs bind ID to DIFFERENT
-// values, so the equality binding is not common to both and survives into the
-// merged ordering as a key the request can give a direction to.
+// mixedDirectionDistinctUnion builds Unique(Union(leg1, leg2)) whose merged
+// ordering is (ID equality-bound, K in the scans' direction). The legs bind ID
+// to DIFFERENT values, so the union merge keeps both equality bindings (Java's
+// Ordering.merge for a union or-s them) and the request can give ID a
+// direction of its own.
 func mixedDirectionDistinctUnion(
 	t *testing.T,
+	scanReverse bool,
 	idDir properties.RequestedSortOrder,
 	kDir properties.RequestedSortOrder,
 ) (*expressions.Reference, *ConstraintMap) {
@@ -564,7 +557,7 @@ func mixedDirectionDistinctUnion(
 		if !merged.Complete() {
 			t.Fatal("fixture: equality range did not merge")
 		}
-		scan := descendingInUnionScan(t, []string{"T"}, rowType, false).
+		scan := descendingInUnionScan(t, []string{"T"}, rowType, scanReverse).
 			WithPrimaryKey([]values.Value{idValue, kValue}).
 			WithScanComparisons([]*predicates.ComparisonRange{merged.Range}).
 			WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
@@ -577,10 +570,9 @@ func mixedDirectionDistinctUnion(
 		expressions.ForEachQuantifier(leg(1)),
 		expressions.ForEachQuantifier(leg(2)),
 	})
-	distinct := descendingInUnionLogicalDistinct(t,
-		expressions.ForEachQuantifier(expressions.InitialOf(union)),
-	)
-	distinctRef := expressions.InitialOf(distinct)
+	unique, err := expressions.NewRequiredLogicalUniqueExpression(
+		expressions.ForEachQuantifier(expressions.InitialOf(union)))
+	uniqueRef := expressions.InitialOf(mustConstruct(t, unique, err))
 
 	requested := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{
@@ -591,59 +583,51 @@ func mixedDirectionDistinctUnion(
 		false,
 	)
 	cm := NewConstraintMap()
-	Set(cm, distinctRef, RequestedOrderingConstraintKey,
+	Set(cm, uniqueRef, RequestedOrderingConstraintKey,
 		[]*properties.RequestedOrdering{requested})
-	return distinctRef, cm
+	return uniqueRef, cm
 }
 
-// TestDistinctUnionMergedOrderingCarriesNoEqualityBoundKeys pins WHY the
-// sibling gate in ImplementDistinctUnionRule cannot be driven the same way, so
-// that "it declines nothing" stays a measured fact rather than an assumption.
-//
-// A mixed-direction key needs a NON-directional key for the request to give a
-// direction to. The union merge has none to give: an equality binding common to
-// every leg is stripped as redundant, and one that differs between legs does
-// not survive the merge either. Every key that reaches the gate therefore
-// carries a leg's own uniform scan direction. If this ever stops holding, the
-// fence in that rule becomes live and needs the rule-level test its in-union
-// twin has.
-func TestDistinctUnionMergedOrderingCarriesNoEqualityBoundKeys(t *testing.T) {
+// TestDistinctUnionRuleRefusesMixedDirectionMerge is the union twin of
+// TestInUnionRuleRefusesMixedDirectionMerge: (ID DESC, K ASC) would merge one
+// key the wrong way round, so the rule yields no merge; the uniform controls
+// prove the fixture reaches the yield.
+func TestDistinctUnionRuleRefusesMixedDirectionMerge(t *testing.T) {
 	t.Parallel()
 
-	rowType := descendingInUnionRowType("T")
-	keyRoot := descendingInUnionQOV(
-		t, values.UniqueCorrelationIdentifier(), rowType)
-	idValue := descendingInUnionField(t, keyRoot, 0)
-	kValue := descendingInUnionField(t, keyRoot, 1)
-	legOrdering := func(literal int64) *properties.RichOrdering {
-		comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
-		merged := predicates.EmptyComparisonRange().Merge(&comparison)
-		if !merged.Complete() {
-			t.Fatal("fixture: equality range did not merge")
+	merges := func(t *testing.T, scanReverse bool, idDir, kDir properties.RequestedSortOrder) []*plans.RecordQueryMergeSortUnionPlan {
+		ref, cm := mixedDirectionDistinctUnion(t, scanReverse, idDir, kDir)
+		yielded, err := FireImplementationRule(NewImplementDistinctUnionRule(), ref, cm)
+		if err != nil {
+			t.Fatalf("FireImplementationRule() unexpected error: %v", err)
 		}
-		scan := descendingInUnionScan(t, []string{"T"}, rowType, false).
-			WithPrimaryKey([]values.Value{idValue, kValue}).
-			WithScanComparisons([]*predicates.ComparisonRange{merged.Range}).
-			WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
-		return computeWrapperRichOrdering(scan)
+		var result []*plans.RecordQueryMergeSortUnionPlan
+		for _, y := range yielded {
+			if m, ok := y.(*plans.RecordQueryMergeSortUnionPlan); ok {
+				result = append(result, m)
+			}
+		}
+		return result
 	}
 
-	// Precondition: each leg on its own DOES carry the equality-bound key.
-	legs := []*properties.RichOrdering{legOrdering(1), legOrdering(2)}
-	if _, bound := legs[0].GetEqualityBoundValues()[idValue]; !bound {
-		t.Fatal("fixture: the leg scan does not report ID as equality-bound")
-	}
-
-	legs = removeCommonEqualityBoundParts(legs)
-	merged := properties.MergeOrderings(properties.CreateUnionOrdering(legs[0]), legs[1])
-	for _, key := range merged.GetKeys() {
-		if !properties.SortOrderOf(merged.GetBindingMap()[key]).IsDirectional() {
-			t.Fatalf("the union merge now carries a non-directional key (%s) — "+
-				"the mixed-direction gate in ImplementDistinctUnionRule is reachable "+
-				"and needs a rule-level test",
-				values.ExplainValue(key))
+	t.Run("mixed directions yield no merge", func(t *testing.T) {
+		t.Parallel()
+		for _, m := range merges(t, false, properties.RequestedSortOrderDescending, properties.RequestedSortOrderAscending) {
+			t.Fatalf("rule built a mixed-direction merge: %s (reverse=%v)", m.Explain(), m.IsReverse())
 		}
-	}
+	})
+	t.Run("uniform ascending still yields a merge", func(t *testing.T) {
+		t.Parallel()
+		if len(merges(t, false, properties.RequestedSortOrderAscending, properties.RequestedSortOrderAscending)) == 0 {
+			t.Fatal("control: the fixture never reaches the yield, so the mixed-direction case proves nothing")
+		}
+	})
+	t.Run("uniform descending still yields a merge", func(t *testing.T) {
+		t.Parallel()
+		if len(merges(t, true, properties.RequestedSortOrderDescending, properties.RequestedSortOrderDescending)) == 0 {
+			t.Fatal("control: the fixture never reaches the yield, so the mixed-direction case proves nothing")
+		}
+	})
 }
 
 // descendingInUnionCurrentField is descendingInUnionField on the RESERVED-CURRENT

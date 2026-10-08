@@ -5,7 +5,7 @@ name: Nightly Self-Checking Oracles
 # scaling them up is nearly free, the same reasoning nightly-rowdiff.yml
 # applies to its own generative sweep:
 #
-#   - TestFDB_SargabilityDifferentialOracle (pkg/relational/sqldriver): for
+#   - TestFDB_SargabilityDifferentialOracle (pkg/relational/sqltest/metamorphic): for
 #     any predicate over an indexed column, an index-driven plan and a
 #     full-scan-plus-residual-filter plan (MatchLeafRule disabled) must
 #     return the SAME rows. Sized small (SARG_ORACLE_COMBOS) so the PR gate
@@ -57,11 +57,8 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # The permitted band, declared as two explicit hours so it is
-          # machine-readable: pkg/docscheck's TestNightlyWindowAdmitsMeasuredLandings
-          # parses these and replays against them every job-allocation hour this net
-          # has ever actually been given. WINDOW_START > WINDOW_END means the band
-          # WRAPS midnight; here it wraps to the date line, so the band is 13:00-24:00.
+          # The permitted band, as two explicit hours. WINDOW_START > WINDOW_END means
+          # the band WRAPS midnight; here it wraps to the date line, so the band is 13:00-24:00.
           #
           # This net deliberately sits in the afternoon rather than the 00:00+ cluster
           # the other nightlies occupy. The cron hour predicts nothing — GitHub's own
@@ -126,7 +123,7 @@ jobs:
         # and SILENTLY PASS a red sweep.
         run: |
           set -o pipefail
-          bazelisk test //pkg/relational/sqldriver:sqldriver_test \
+          bazelisk test //pkg/relational/sqltest/metamorphic:metamorphic_test \
             --test_output=streamed \
             --test_arg="--test.run=TestFDB_SargabilityDifferentialOracle" \
             --test_arg="--test.v" \

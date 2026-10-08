@@ -596,7 +596,7 @@ func TestSyntheticVerdictTouchesNoIO(t *testing.T) {
 
 	// DB and Keyspace deliberately nil: the read path cannot run without them,
 	// so reaching the read at all is observable rather than merely slower.
-	c := &EmbeddedConnection{sess: &session.Session{Schema: "S", DBPath: "/db"}}
+	c := &EmbeddedConnection{sess: &session.Session{Schema: "S", DBPath: "/FRL/db"}}
 
 	var st StatisticsStatus
 	func() {
@@ -700,7 +700,7 @@ func TestAmbiguousVerdictTouchesNoIO(t *testing.T) {
 			md.RecordTypes())
 	}
 
-	c := &EmbeddedConnection{sess: &session.Session{Schema: "S", DBPath: "/db"}}
+	c := &EmbeddedConnection{sess: &session.Session{Schema: "S", DBPath: "/FRL/db"}}
 
 	var st StatisticsStatus
 	func() {

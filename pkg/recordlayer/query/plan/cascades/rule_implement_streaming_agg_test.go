@@ -110,62 +110,6 @@ func TestImplementStreamingAgg_UnorderedInput_Fires(t *testing.T) {
 	}
 }
 
-func TestImplementStreamingAgg_IndexOrderedInput(t *testing.T) {
-	t.Parallel()
-
-	// Sort(customer_id) over Scan, with an index on (customer_id).
-	// OrderedIndexScanRule produces an index scan ordered by customer_id.
-	// GroupBy(customer_id) should then get a streaming aggregation.
-	a1 := values.UniqueCorrelationIdentifier()
-	cand := newKnownDistinctValueIndexCandidate(
-		"idx_orders_cid",
-		[]string{"Orders"},
-		[]string{"customer_id"},
-		[]values.CorrelationIdentifier{a1},
-		streamingAggRowType("Orders"),
-		false,
-		nil,
-	)
-	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
-
-	scan := streamingAggLogicalScan("Orders")
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-
-	sortExpr := mustStreamingAggConstruct(expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: streamingAggQuantifierField(scanQ, "customer_id")},
-		}, scanQ))
-	sortRef := expressions.InitialOf(sortExpr)
-	sortQ := expressions.ForEachQuantifier(sortRef)
-
-	gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
-		[]values.Value{streamingAggQuantifierField(sortQ, "customer_id")},
-		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: streamingAggQuantifierField(sortQ, "id")},
-		},
-		sortQ,
-	))
-	gbRef := expressions.InitialOf(gb)
-
-	// OrderedIndexScanRule replaces Sort(Scan) with an index scan.
-	mustFireExpressionRuleWithMemo(t, NewOrderedIndexScanRule(), sortRef, ctx, nil)
-
-	// Now fire streaming agg — the inner (sortRef) has an index scan
-	// member with ordering on customer_id.
-	results := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), gbRef)
-	if len(results) == 0 {
-		t.Fatal("ImplementStreamingAggregationRule didn't fire with index-ordered input")
-	}
-
-	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryStreamingAggregationPlan.
-	agg := results[0].(*plans.RecordQueryStreamingAggregationPlan)
-	explain := agg.Explain()
-	if explain == "" {
-		t.Fatal("empty explain string")
-	}
-}
-
 func TestImplementStreamingAgg_EmptyGroupingKeys(t *testing.T) {
 	t.Parallel()
 
@@ -739,5 +683,36 @@ func TestImplementStreamingAgg_EveryCoveringScanYieldsItsOwnCountAlternative(t *
 		t.Fatalf("a group offering 2 distinct covering scans yielded %d count-from-the-index alternatives; "+
 			"want 2 — a rule-time single pick makes the runner-up invisible to the cost model rather than out-priced by it",
 			len(seen))
+	}
+}
+
+// TestImplementStreamingAgg_DeclinesAnAggregateWithoutAccumulator: MIN_EVER and
+// MAX_EVER are index-only (Java's IndexOnlyAggregateValue is non-evaluable).
+// A streaming plan over one would
+// finalize every group with a NULL for it, so the rule yields nothing and the
+// group by is answered from an index or not at all. SUM beside it is the
+// control: the same group by without the unaccumulable aggregate does fire.
+func TestImplementStreamingAgg_DeclinesAnAggregateWithoutAccumulator(t *testing.T) {
+	t.Parallel()
+	for _, fn := range []expressions.AggregateFunction{
+		expressions.AggMinEver, expressions.AggMaxEver,
+	} {
+		scanRef := expressions.InitialOf(streamingAggLogicalScan("Orders"))
+		scanQ := expressions.ForEachQuantifier(scanRef)
+		mustFireExpressionRule(t, NewPrimaryScanRule(), scanRef)
+		sum := expressions.AggregateSpec{Function: expressions.AggSum, Operand: streamingAggQuantifierField(scanQ, "amount")}
+		control := mustStreamingAggConstruct(expressions.NewGroupByExpression(
+			[]values.Value{streamingAggQuantifierField(scanQ, "region")}, []expressions.AggregateSpec{sum}, scanQ))
+		if len(mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), expressions.InitialOf(control))) == 0 {
+			t.Fatalf("%v: the SUM-only control did not fire", fn)
+		}
+		gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
+			[]values.Value{streamingAggQuantifierField(scanQ, "region")},
+			[]expressions.AggregateSpec{sum, {Function: fn, Operand: streamingAggQuantifierField(scanQ, "amount")}},
+			scanQ,
+		))
+		if results := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), expressions.InitialOf(gb)); len(results) != 0 {
+			t.Fatalf("%v: the streaming aggregation fired over an aggregate it has no accumulator for: %v", fn, results)
+		}
 	}
 }

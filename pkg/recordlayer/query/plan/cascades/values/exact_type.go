@@ -48,14 +48,18 @@ type exactField struct {
 
 type exactType struct {
 	code       TypeCode
+	precision  int
+	dimensions int
 	nullable   bool
 	anyRecord  bool
 	name       string
 	fields     []exactField
 	element    *exactType
 	enumValues []EnumValue
-	canonical  []byte
-	hash       uint64
+	// enumStorageName is EnumType.StorageName; provenance, not identity.
+	enumStorageName string
+	canonical       []byte
+	hash            uint64
 	// internHashValue buckets this node in the intern table. It is NOT the
 	// canonical hash above: the intern probe has to be computable BEFORE the
 	// node exists, so it folds the source shape plus the children's intern
@@ -190,6 +194,8 @@ func (e *exactType) RelationInner() (ExactTypeHandle, bool) {
 
 func (e *exactType) thaw() Type {
 	switch e.code {
+	case TypeCodeVector:
+		return NewVectorType(e.nullable, e.precision, e.dimensions)
 	case TypeCodeRecord:
 		if e.anyRecord {
 			return anyRecordType{nullable: e.nullable}
@@ -209,9 +215,10 @@ func (e *exactType) thaw() Type {
 		return &ArrayType{Nullable: e.nullable, ElementType: e.element.thaw()}
 	case TypeCodeEnum:
 		return &EnumType{
-			EnumName: e.name,
-			Nullable: e.nullable,
-			Values:   append([]EnumValue(nil), e.enumValues...),
+			EnumName:    e.name,
+			Nullable:    e.nullable,
+			Values:      append([]EnumValue(nil), e.enumValues...),
+			StorageName: e.enumStorageName,
 		}
 	case TypeCodeRelation:
 		return &RelationType{InnerType: e.element.thaw()}
@@ -403,6 +410,11 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 			return nil, resolutionError(TypeTypedNil, path, "record type is typed nil")
 		}
 		identity = typed
+	case *VectorType:
+		if typed == nil {
+			return nil, resolutionError(TypeTypedNil, path, "vector type is typed nil")
+		}
+		identity = typed
 	case *ArrayType:
 		if typed == nil {
 			return nil, resolutionError(TypeTypedNil, path, "array type is typed nil")
@@ -486,6 +498,11 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 				fields:   fields,
 			}
 		}), nil
+	case *VectorType:
+		probe := exactProbe{code: TypeCodeVector, nullable: typed.Nullable, precision: typed.Precision, dimensions: typed.Dimensions}
+		return internedExactType(&probe, func() *exactType {
+			return &exactType{code: TypeCodeVector, nullable: typed.Nullable, precision: typed.Precision, dimensions: typed.Dimensions}
+		}), nil
 	case *ArrayType:
 		if typed.ElementType == nil {
 			return nil, resolutionError(TypeErased, path, "array element type is erased")
@@ -515,17 +532,19 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 			seenNumbers[value.Number] = struct{}{}
 		}
 		probe := exactProbe{
-			code:       TypeCodeEnum,
-			nullable:   typed.Nullable,
-			name:       typed.EnumName,
-			enumValues: typed.Values,
+			code:            TypeCodeEnum,
+			nullable:        typed.Nullable,
+			name:            typed.EnumName,
+			enumValues:      typed.Values,
+			enumStorageName: typed.StorageName,
 		}
 		return internedExactType(&probe, func() *exactType {
 			return &exactType{
-				code:       TypeCodeEnum,
-				nullable:   typed.Nullable,
-				name:       typed.EnumName,
-				enumValues: append([]EnumValue(nil), typed.Values...),
+				code:            TypeCodeEnum,
+				nullable:        typed.Nullable,
+				name:            typed.EnumName,
+				enumValues:      append([]EnumValue(nil), typed.Values...),
+				enumStorageName: typed.StorageName,
 			}
 		}), nil
 	case *RelationType:
@@ -589,6 +608,10 @@ func (e *exactType) finishCanonical() {
 		encoded = appendCanonicalString(encoded, value.Name)
 		encoded = binary.AppendVarint(encoded, int64(value.Number))
 	}
+	if e.code == TypeCodeVector {
+		encoded = binary.AppendVarint(encoded, int64(e.precision))
+		encoded = binary.AppendVarint(encoded, int64(e.dimensions))
+	}
 	e.canonical = encoded
 	h := fnv.New64a()
 	_, _ = h.Write(encoded)
@@ -650,7 +673,7 @@ func exactRowShapesAgree(left, right *exactType) bool {
 		}
 	}
 	for i := range left.enumValues {
-		if left.enumValues[i] != right.enumValues[i] {
+		if !left.enumValues[i].Equals(right.enumValues[i]) {
 			return false
 		}
 	}
@@ -701,6 +724,8 @@ func describeExactType(e *exactType) string {
 			out += ":" + describeExactType(field.typ)
 		}
 		out += ")"
+	case e.code == TypeCodeVector:
+		out += "(" + uitoa(uint64(e.precision)) + "," + uitoa(uint64(e.dimensions)) + ")"
 	case e.code == TypeCodeEnum:
 		if e.name != "" {
 			out += "@" + e.name
@@ -825,6 +850,9 @@ func typeShapesAgreeBelowTheTop(left, right Type) bool {
 		// RecordName is deliberately not compared, because RecordType.Equals
 		// does not compare it either — provenance, not shape, matching Java.
 		return true
+	case *VectorType:
+		r, ok := right.(*VectorType)
+		return ok && l.Precision == r.Precision && l.Dimensions == r.Dimensions
 	case *ArrayType:
 		r, ok := right.(*ArrayType)
 		if !ok {

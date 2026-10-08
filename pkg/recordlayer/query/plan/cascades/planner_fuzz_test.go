@@ -146,11 +146,10 @@ func FuzzPlanner_PlanFullPipeline(f *testing.F) {
 	// Regression seed: decodes to
 	//   Union(TypeFilter(TypeFilter(Scan)), TypeFilter(Filter(Scan)))
 	// — asymmetric union legs. The right leg's group, merged with the left
-	// leg's inner via constant-true filter elimination, crossed
-	// REWRITING→PLANNING through the no-finals stage path and never reset
-	// its exploration state, so it never implemented and the union produced
-	// no winner while Plan() reported success. Fixed by
-	// AdvanceStagePreservingMembers (see asymmetric_union_planning_test.go).
+	// leg's never-explored inner via constant-true filter elimination,
+	// inherited the right leg's exploration progress, so the union reached
+	// PLANNING unfinalized. Fixed in Reference.Absorb (see
+	// asymmetric_union_planning_test.go).
 	f.Add([]byte{35, 4, 4, 1})
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if len(b) < 4 {
@@ -274,7 +273,7 @@ func buildFuzzExpression(b []byte, start, depth int) expressions.RelationalExpre
 		// whole-row wrapper.
 		inner := buildFuzzExpression(b, (start+1)%len(b), depth+1)
 		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
-		return mustPlannerFuzzConstruct(expressions.NewLogicalProjectionExpression(
+		return mustPlannerFuzzConstruct(newBlockSelectForTest(
 			plannerFuzzProjectedFields(q), q))
 	case 4:
 		// TypeFilter over a random child.

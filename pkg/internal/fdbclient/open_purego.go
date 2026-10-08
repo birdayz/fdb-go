@@ -2,7 +2,11 @@
 
 package fdbclient
 
-import "fdb.dev/pkg/fdbgo/fdb"
+import (
+	"strings"
+
+	"fdb.dev/pkg/fdbgo/fdb"
+)
 
 // Backend names the FDB client compiled into this binary.
 const Backend = "pure-go"
@@ -28,3 +32,22 @@ func Open(clusterFile string) (fdb.BackendDatabase, error) {
 	}
 	return fdb.OpenDatabase(clusterFile)
 }
+
+// SetKnob refuses every client knob: the pure-Go client has no knob table, and
+// claiming to honor a native knob it ignores would hide the configuration.
+func SetKnob(knob string) error {
+	name, _, _ := strings.Cut(knob, "=")
+	return &UnsupportedKnobError{Knob: name}
+}
+
+// UnsupportedKnobError is a client knob the compiled-in client cannot honor.
+type UnsupportedKnobError struct{ Knob string }
+
+func (e *UnsupportedKnobError) Error() string {
+	return "client knob " + e.Knob + " is not supported by the " + Backend +
+		" client (build with -tags libfdbc to set libfdb_c knobs)"
+}
+
+// FDBCode is invalid_option_value (2006), libfdb_c's answer to a knob it
+// cannot set.
+func (e *UnsupportedKnobError) FDBCode() int { return 2006 }

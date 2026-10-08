@@ -10,11 +10,11 @@ import (
 func TestWriteCatalogDatabases_Text(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	if err := writeCatalogDatabases(&buf, []string{"/myapp", "/other"}, "text"); err != nil {
+	if err := writeCatalogDatabases(&buf, []string{"/FRL/myapp", "/FRL/other"}, "text"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	got := buf.String()
-	for _, want := range []string{"/myapp\n", "/other\n"} {
+	for _, want := range []string{"/FRL/myapp\n", "/FRL/other\n"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q:\n%s", want, got)
 		}
@@ -35,14 +35,14 @@ func TestWriteCatalogDatabases_TextEmpty(t *testing.T) {
 func TestWriteCatalogDatabases_JSON(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	if err := writeCatalogDatabases(&buf, []string{"/myapp", "/other"}, "json"); err != nil {
+	if err := writeCatalogDatabases(&buf, []string{"/FRL/myapp", "/FRL/other"}, "json"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	var rows []map[string]string
 	if err := json.Unmarshal(buf.Bytes(), &rows); err != nil {
 		t.Fatalf("decode: %v\nraw:\n%s", err, buf.String())
 	}
-	if len(rows) != 2 || rows[0]["id"] != "/myapp" || rows[1]["id"] != "/other" {
+	if len(rows) != 2 || rows[0]["id"] != "/FRL/myapp" || rows[1]["id"] != "/FRL/other" {
 		t.Errorf("rows = %v", rows)
 	}
 }
@@ -50,15 +50,15 @@ func TestWriteCatalogDatabases_JSON(t *testing.T) {
 func TestWriteCatalogSchemas_Text(t *testing.T) {
 	t.Parallel()
 	rows := []schemaRow{
-		{Database: "/myapp", Name: "main", Template: "orders", TemplateVersion: 2},
-		{Database: "/other", Name: "users", Template: "users_tpl", TemplateVersion: 1},
+		{Database: "/FRL/myapp", Name: "main", Template: "orders", TemplateVersion: 2},
+		{Database: "/FRL/other", Name: "users", Template: "users_tpl", TemplateVersion: 1},
 	}
 	var buf bytes.Buffer
 	if err := writeCatalogSchemas(&buf, rows, "text"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	got := buf.String()
-	for _, want := range []string{"DATABASE", "SCHEMA", "TEMPLATE", "VERSION", "/myapp", "orders", "2"} {
+	for _, want := range []string{"DATABASE", "SCHEMA", "TEMPLATE", "VERSION", "/FRL/myapp", "orders", "2"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q:\n%s", want, got)
 		}
@@ -81,7 +81,7 @@ func TestWriteCatalogSchemas_JSONEmptyIsArray(t *testing.T) {
 
 func TestWriteCatalogSchemas_JSONShape(t *testing.T) {
 	t.Parallel()
-	rows := []schemaRow{{Database: "/d", Name: "s", Template: "t", TemplateVersion: 7}}
+	rows := []schemaRow{{Database: "/FRL/d", Name: "s", Template: "t", TemplateVersion: 7}}
 	var buf bytes.Buffer
 	if err := writeCatalogSchemas(&buf, rows, "json"); err != nil {
 		t.Fatalf("write: %v", err)
@@ -94,7 +94,7 @@ func TestWriteCatalogSchemas_JSONShape(t *testing.T) {
 		t.Fatalf("rows = %d; want 1", len(got))
 	}
 	r := got[0]
-	if r["database"] != "/d" || r["name"] != "s" || r["template"] != "t" ||
+	if r["database"] != "/FRL/d" || r["name"] != "s" || r["template"] != "t" ||
 		r["template_version"].(float64) != 7 {
 		t.Errorf("row shape wrong: %v", r)
 	}

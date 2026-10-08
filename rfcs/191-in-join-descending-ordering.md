@@ -1,12 +1,18 @@
 # RFC-191: Derive a real ordering for sorted IN-joins — Java parity for the no-sort shape (CQ-10f)
 
-**Status:** Draft — revision 4. The full-table-scan **regression is CLOSED** (shipped as CQ-20, `8e12a1b59` +
-`da2c6d57b`, outside this RFC). What remains is a **parity enhancement**: defects (a) and (b) below, needed to
-reach Java's no-sort IN-join shape. **The Graefe ruling requested in revision 3 is IN: option (ii), diverge
-deliberately** — ACK on the design choice, **NAK on revision 3's RFC text**, which made several load-bearing
-claims that measurement does not support. This revision corrects each in place and records the ruling's binding
-conditions A–F, which gate implementation before it starts. See "Revision 4" below and "Design decision — RULED:
-option (ii)."
+**Status:** Implemented (RFC-257 migration). Defect (a): `RecordQueryInJoinPlan.HintRichOrdering` ports
+`OrderingProperty.visitInJoinPlan`; defect (b): the source enumeration ports `enumerateInSourcesForRequestedOrdering`.
+Ruling (ii) stands under its conditions: A, the comparand gate in `PushInJoinThroughFetchRule` is deleted (corpus
+no-op, 0 of 2834 queries); B, `in_over_primary_scan_sarg.yaml` pins `Fetch(InJoin(...))` with ordered rows; C,
+`conformance/in_join_ordering_java_probe_test.go` measures Java 4.14.2.0 in both directions (Java cannot plan the
+three-column index order at all, UnableToPlanException; over `ORDER BY a` it elects INUNION ascending, INJOIN SORTED
+DESC descending); D, `DIVERGENCES.md` "Plan choice: an ordered IN over a non-covering index"; E.1,
+`BenchmarkFDB_InFetch_*` finds no N in {3, 10, 100} where the IN-union is significantly faster (numbers in the
+DIVERGENCES entry); E.2/E.3, `TestFDB_SortedInJoinDeliversTheOrder` (non-monotonic `IN (30, 10, 20)`, both
+directions, paged); E.4 no longer applies, as (b) is now Java's enumeration and declines what Java's declines;
+E.5, every moved corpus pin is reblessed and two corpus dumps agree. Every primary-key shape of this RFC now plans
+Java's `INJOIN ... SORTED [DESC]` with no sort.
+The history below is the design record; its present-tense defect statements describe the code before this change.
 **Area:** Cascades query engine — `RecordQueryInJoinPlan.HintOrdering`, `ImplementInJoinRule`/`ImplementInUnionRule`
 requested-ordering enumeration, plan partitioning (`ToPlanPartitions`/`orderingsEqual`), `PlanningCostModel`
 **Reviewers:** Graefe (Cascades alignment + the InJoin-vs-InUnion cost decision, and the ruling this revision

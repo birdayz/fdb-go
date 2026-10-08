@@ -70,6 +70,15 @@ type IndexDefWithPrimaryKeyComponentTypes interface {
 	IndexPrimaryKeyComponentTypes() []values.Type
 }
 
+// IndexDefWithPrimaryKeyEntryOrdinals optionally supplies, aligned with
+// IndexPrimaryKeyColumns, each column's position in the entry KEY tuple, or -1
+// where the index key already holds it (Index.trimPrimaryKey). The candidate
+// reads the primary key into its logical record from there.
+type IndexDefWithPrimaryKeyEntryOrdinals interface {
+	IndexDef
+	IndexPrimaryKeyEntryOrdinals() []int
+}
+
 // IndexDefWithCreatesDuplicates is an optional extension of IndexDef for indexes
 // that can state whether their root key expression FANS OUT (a repeated/collection
 // field produces multiple entries per record). Ports Java's
@@ -168,15 +177,6 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 		if withRoot, ok := def.(IndexDefWithRootKeyExpression); ok {
 			rootKeyExpression = withRoot.IndexRootKeyExpression()
 		}
-		if keyExpressionContainsNonFanOutNestedLeaf(rootKeyExpression) {
-			// The candidate's column/coverage bridge cannot yet preserve the
-			// path identity of a scalar nested leaf: ADDR.CITY could bind a
-			// top-level CITY. Reject the whole root even when another branch
-			// fans out. Leaves below a fan-out parent, and nested leaves that
-			// fan out themselves, are structurally represented by the
-			// Explode-based expansion and remain supported.
-			continue
-		}
 		cols := def.IndexColumnNames()
 		if len(cols) == 0 {
 			continue
@@ -232,6 +232,9 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 		}
 		if typedPK, ok := def.(IndexDefWithPrimaryKeyComponentTypes); ok {
 			candidate.WithPrimaryKeyComponentTypes(typedPK.IndexPrimaryKeyComponentTypes())
+		}
+		if pkOrdinals, ok := def.(IndexDefWithPrimaryKeyEntryOrdinals); ok {
+			candidate.WithPrimaryKeyEntryOrdinals(pkOrdinals.IndexPrimaryKeyEntryOrdinals())
 		}
 		if perType, ok := def.(IndexDefWithRecordTypeRowTypes); ok {
 			candidate.WithRecordTypeRowTypes(perType.IndexRecordTypeRowTypes())

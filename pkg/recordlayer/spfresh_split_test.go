@@ -2,12 +2,14 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
@@ -334,6 +336,70 @@ var _ = Describe("SPFresh fine-split primitives", func() {
 		Expect(err).NotTo(HaveOccurred())
 		// And it is findable.
 		Expect(knn(storeBuilder, "spf_split_ins", []float64{10, 10}, 7)).To(ContainElement(int64(999)))
+	})
+
+	// sealOnlyPosting builds an index whose points all land in ONE posting and
+	// seals it, so every centroid a write can reach is SEALED: the split window
+	// a foreground write waits out (SPFreshSplitWindowError).
+	sealOnlyPosting := func(name string) (func(*FDBRecordContext) (*FDBRecordStore, error), *spfreshStorage, int64, int64) {
+		storeBuilder, _, storage := setupBuilt(name, map[int64][2]int32{1: {10, 10}, 2: {10, 11}, 3: {11, 10}})
+		cellID, fineID, members := largestPosting(storage)
+		Expect(members).To(HaveLen(3), "the fixture needs every point in one posting")
+		fileTask(storage, fineID)
+		out, err := spfreshSealFine(ctx, sharedDB, storage, "splitter-1", cellID, fineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(out.proceed).To(BeTrue())
+		return storeBuilder, storage, cellID, fineID
+	}
+	// simEnvDB is sharedDB's backend under a simulated environment, where the
+	// attempt loop draws its delays without waiting and bounds a stalled seal.
+	simEnvDB := func() *FDBDatabase {
+		return NewFDBDatabaseWithTransactor(sharedDB.transactor, sharedDB.db).SetEnv(dst.NewSim(9))
+	}
+	saveAt := func(db *FDBDatabase, storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error), id int64) error {
+		_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := storeBuilder(rtx)
+			if serr != nil {
+				return nil, serr
+			}
+			return store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+		})
+		return err
+	}
+
+	It("a write meeting only a stalled seal fails with SPFreshStalledSealError after 100 uncounted retries under simulation", func() {
+		storeBuilder, _, _, fineID := sealOnlyPosting("spf_split_stall")
+		db := simEnvDB()
+		var calls []AttemptCall
+		db.SetAttemptObserver(func(call AttemptCall, _ error) { calls = append(calls, call) })
+		err := saveAt(db, storeBuilder, 900)
+		var stalled *SPFreshStalledSealError
+		Expect(errors.As(err, &stalled)).To(BeTrue(), "got %v", err)
+		Expect(stalled.Sealed).NotTo(BeEmpty())
+		Expect(stalled.Sealed[0].PostingID).To(Equal(fineID))
+		Expect(calls).To(HaveLen(spfreshStalledSealBound))
+		Expect(calls[len(calls)-1].Attempt).To(BeZero(), "split-window retries must not count as attempts")
+	})
+
+	It("a write meeting a seal completes once a takeover publishes the split, without spending attempts", func() {
+		storeBuilder, storage, cellID, fineID := sealOnlyPosting("spf_split_takeover")
+		db := simEnvDB()
+		var calls []AttemptCall
+		split := false
+		db.SetAttemptObserver(func(call AttemptCall, err error) {
+			calls = append(calls, call)
+			var window *SPFreshSplitWindowError
+			if !split && errors.As(err, &window) {
+				// The takeover: finish the split between the write's attempts.
+				split = true
+				Expect(spfreshSplitFine(ctx, sharedDB, storage, DefaultSPFreshConfig(2), "splitter-1", cellID, fineID, 7)).To(Succeed())
+			}
+		})
+		Expect(saveAt(db, storeBuilder, 901)).To(Succeed())
+		Expect(split).To(BeTrue(), "the write never met the seal: the fixture exercised nothing")
+		Expect(len(calls)).To(BeNumerically(">=", 2))
+		Expect(calls[len(calls)-1].Attempt).To(BeZero(), "the split window must not have used an attempt")
+		Expect(knn(storeBuilder, "spf_split_takeover", []float64{10, 10}, 4)).To(ContainElement(int64(901)))
 	})
 
 	It("a foreground probe never clobbers a claimed task row", func() {

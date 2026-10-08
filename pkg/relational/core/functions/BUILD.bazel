@@ -5,15 +5,15 @@ go_library(
     srcs = [
         "arith.go",
         "ast_util.go",
-        "cast.go",
         "compare.go",
         "flatten.go",
         "proto_value.go",
-        "time.go",
+        "text.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/functions",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
         "//pkg/relational/core/parser/gen",
@@ -27,11 +27,8 @@ go_test(
     name = "functions_test",
     srcs = [
         "ast_util_test.go",
-        "cast_float_test.go",
-        "cast_numeric_boundary_test.go",
         "functions_test.go",
         "proto_value_test.go",
-        "time_test.go",
     ],
     embed = [":functions"],
     deps = [

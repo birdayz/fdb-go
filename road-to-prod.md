@@ -104,11 +104,11 @@ because an unguarded count in a status doc is a claim with a shelf life:
 |---|---|---|
 | Byte-identity differential vs `libfdb_c`, `pkg/fdbgo/bench/` | **80** (75 `TestDifferential_*` + 5 `FuzzDifferential*`) | **No** |
 | Chaos with model verification, `pkg/recordlayer/chaos/` | **228** test funcs | **No** |
-| Java conformance vs a real 4.12.11.0 server | **1363** Ginkgo specs | **No** |
+| Java conformance vs a real 4.14.2.0 server | **1363** Ginkgo specs | **No** |
 | SQL corpus coverage | **342 scenarios · 2740 cases · 2401 supported (87.6%)**, 109 unsupported-feature pins, 230 error-path pins | **Yes** — `TestSQLCoverageUpToDate` regenerates `SQL_COVERAGE.md`; `FEATURE_MATRIX.md` carries the same generated totals |
 | Java yamsql corpus (RFC-201, NEW since the audit) | **238** files vendored · **32** pass · **0** fail · **206** on the skip ledger · **487** asserted queries | **Yes** — `pinnedLedger` + `pinnedFileTotal` + `pinnedAssignmentDigest` in `pkg/relational/conformance/javacorpus/pinned_ledger_test.go` |
 | Generation factory corpus (NEW, #555) | **5000** scenarios · **20000** tests · **4952** feature vectors; blessings **4469 `metamorphic` + 531 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenario/test totals and each feature vector, plus per-scenario authority keyed by dedup key; `ByBlessing` is report-only (`factorycorpus/census_baseline.json`) |
-| `.Field`-decides ratchet (RFC-197) | **16** sites, per-bucket totals gate-checked | **Yes** — `TestFieldNameNeverDecides` + `TestFieldDebtBucketsArePartition`, and `TestStatusPageQuotesTheLiveFieldDebt` for the numbers ON THIS PAGE |
+| `.Field`-decides ratchet (RFC-197) | **12** sites | **No** — its gates lived in `pkg/docscheck`, since removed |
 
 The first four run per-PR. Both former P0s of the client prod-readiness RFC are verified CLOSED in
 code: cluster-file rotation (`pkg/fdbgo/client/database.go:614` re-reads the file when the
@@ -160,17 +160,17 @@ entries mean the same query returns different rows or different errors on the tw
 | B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S → M | **DONE — confirmed genuinely green 2026-08-02 and 08-03 (reconcile runs 30744450066, 30814146026, all eleven nets artifact-backed inside limits).** Detection merged (#523); the window shape fixed and merged (#556). #523 gave every windowed job a heartbeat and made the reconciler fail on silence — which then correctly exposed that three fuzz lanes had never recorded one. #556 found the cause was the band's shape, not the lanes (a non-wrapping band calling 18:00–24:00 "daytime"), fixed it across all five nets, and published the honest history: **107 of 177 scheduled runs were fake-green**. Stress 07-17 root-caused (see Tier 1, CQ-46); binding-stress 0/50 root-caused and fixed 2026-08-05 (CQ-47) |
 | B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | **DONE — merged 2026-08-04 (#607, `d6f635073`), Tier 2 confirmed.** RFC-198 all five phases; joint Graefe+Torvalds lap ACK'd; 1M stress clean; the OQ-1 GRV-cache span survived a C++-client + Torvalds design review (fence reshape) and fifteen codex rounds, every finding folded before merge |
 | B3 | RFC-195: cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | **DONE, merged (#547.)** `rfcs/195-cost-must-not-contradict-proof.md:3` — "ACCEPTED, revision 3 … implemented". Seven shapes fixed in the end, not six; zero exclusions and no mechanism to add one (`cardinality_cost_bound_test.go:36-45`). **Residual: CQ-30 in `TODO.md`, open** — criterion 2's data-access maxima are still forked; held visible by a standing test |
-| B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 16 now** |
-| B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (production `UnknownType` mints: see the live census, `pkg/docscheck/unknown_type_mint_census_test.go` — 43 across 20 files at `aba271454`; five name-keyed guessers, enumerated in `shifts/handoff-ws-n-phase-d-typed-metadata.md:65-81`) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work. Entry point: RFC-226 (projection states its row) |
-| B6 | Documentation authority contradictory/stale | Trust/decision risk, not code | S | **This revision.** Authority headers added to `PRODUCTION_READINESS.md` and `rfcs/prod-readiness-go-client.md`; stale TODO entries fixed; `TestProductionStatusAuthority` added so the redirects cannot silently rot |
+| B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 12 now** |
+| B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (production `UnknownType` mints: 43 across 20 files at `aba271454`; five name-keyed guessers, enumerated in `shifts/handoff-ws-n-phase-d-typed-metadata.md:65-81`) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work. Entry point: RFC-226 (projection states its row) |
+| B6 | Documentation authority contradictory/stale | Trust/decision risk, not code | S | **This revision.** Authority headers added to `PRODUCTION_READINESS.md` and `rfcs/prod-readiness-go-client.md`; stale TODO entries fixed |
 
 **B5's count was refuted and is corrected above, recorded here rather than quietly changed.**
 It read *"~347 UnknownType mints repo-wide; three named guessers"*. Neither number was right and
 the first counted the wrong population. `347` was a raw line count of *mentions* —
 `git grep -n UnknownType a1d281a63 -- 'pkg/**/*.go' | grep -v '_test.go:' | wc -l` → **352** at
 the SHA this page measured at — which folds mints, declines, comparisons and reads together. The
-repo has an authoritative AST census of *mints* (`pkg/docscheck/unknown_type_mint_census_test.go`,
-ratcheted, red in both directions): **43** across 20 files. The raw number has since risen to 417
+repo had an AST census of *mints* (in the since-removed `pkg/docscheck`): **43** across 20
+files. The raw number has since risen to 417
 while the real mint population *fell* (45 when the census landed at `1e64d6e75` → 43), so anyone
 tracking B5 by its stated metric read progress as regression. The guessers are **five**, not
 three (`shifts/handoff-ws-n-phase-d-typed-metadata.md:65-81` plus the surviving last-wins
@@ -180,13 +180,11 @@ point (RFC-226) will not move this number, and must not be judged by it.
 
 ### B4 residual, per bucket — MEASURED on the current deliverable
 
-These are the gate-enforced group headers in `pkg/docscheck/field_name_decision_test.go`, which
-`TestFieldDebtBucketsArePartition` checks against the entries they advertise. The buckets are a
-partition, so they sum to the list: **16**.
+These are the group headers of the field-debt list that lived in the since-removed
+`pkg/docscheck/field_name_decision_test.go`. The buckets are a partition, so they sum to the
+list: **12**. The table is now a snapshot; nothing checks it against the code.
 
-**The numbers in this table and the totals quoted around it are now gate-checked ON THIS PAGE**
-(`TestStatusPageQuotesTheLiveFieldDebt`). They were not before, and the guarantee column above
-said they were: the two ratchet tests check the debt list against ITSELF — entries against group
+Before it was gate-checked on this page, the guarantee column above said it was: the two ratchet tests check the debt list against ITSELF — entries against group
 headers, headers against entries — and neither one reads this file. So the quote could drift from
 its source, and it had. This table said `boundary 1` / total **52** while the list held
 `boundary 2` / **53**; the second `boundary` entry arrived with `#601` (RFC-204 struct types,
@@ -200,19 +198,19 @@ about, one level up and in the page an adopter is handed first.
 | boundary | 0 | **2** | No. Not a regression: the call-boundary taint made a site visible that was always there (a name handed to a helper as a plain string parameter). Reporting the bucket migrated while the walk could not reach one of its members is the false green the pass existed to end. It rose 1 → 2 for a SECOND spelling attempt inside that same nested descent, not a second site; both retire on the same ordinal resolution |
 | escape | 0 | **0** | Migrated (found + fixed a live wrong-type defect on the way) |
 | contract | 11 | **4** | Output naming remains at `explainValueOrdinalsWithAliases` and `ProjectionColumnName`; RFC-232 retired the former group-by compatibility maps and their five contract decisions |
-| dotted | 6 | **2** | One lazy-accessor decline and one projection metadata mint remain; the group-by registration/read pair and correlated-scalar compatibility label are gone |
+| dotted | 6 | **1** | One lazy-accessor decline remains; the group-by registration/read pair, the correlated-scalar compatibility label and the projection metadata mint are gone |
 | name-keyed | 3 | **4** | Measured machinery gaps, each recorded on its debt entry (planner-budget re-fire on constraint growth, CQ-51; lazy carriers with no other identity). It fell 5 → 4 by REMOVAL: the projection-merge site's recorded "HEAVILY LIVE" reason was refuted by counting instead of panicking — the rule fires 897 times across the relational suite and its name-matching arm takes ZERO of them, so it was dead debt and is now a fail-closed decline |
-| translator | 17 | **4** | Bounded — three projection metadata decisions and the declared UNNEST alias selector remain at resolution boundaries |
+| translator | 17 | **1** | Bounded — the declared UNNEST alias selector remains at a resolution boundary; the projection metadata decisions went with the per-operator column derivation |
 | harness | 1 | **0** | Migrated; no production-identity decision remains in a test harness |
 
 **The total first rose from 41 to 53 when the detector learned to follow a display
-name across call boundaries and helpers, and has since fallen to 16 through
+name across call boundaries and helpers, and has since fallen to 12 through
 structural retirement.** The temporary rise was the gate working: sites that
 were always making the decision became reportable before they could be removed.
 
 *Refuted while verifying:* the previous revision's "68 at inception → 38" and its `dotted 6 /
 translator 17` cells were audit-day figures presented as current. Measured trajectory of the list:
-**68** at inception (#520) → **41** (#527/#528/#529) → **54** (#544) → **52** (#556) → **53** (#601) → **52** (`b3ac5fe31`) → **46** (`46a00357a`) → **47** (`f599685d2`, RFC-218 adds the nested-key re-anchor's name match) → **48** (RFC-222 adds its nested-SUFFIX sibling) → **47** (`c5ffbb986`, RFC-229 retires the buildAggColumns mirror) → **44** (CQ-52 retires the leg-window re-split) → **25** (RFC-232 exact-value migration) → **18** (retirement of the dead group-by and nested-suffix compatibility islands) → **17** (the rebased structural leg reader retires the duplicate exact-FieldValue qualified-name mint) → **16** (the shared full-query scalar builder retires its separate qualified-name mint). `contract`, `name-keyed`, and `translator` hold four sites each; `dotted` and `boundary` hold two each.
+**68** at inception (#520) → **41** (#527/#528/#529) → **54** (#544) → **52** (#556) → **53** (#601) → **52** (`b3ac5fe31`) → **46** (`46a00357a`) → **47** (`f599685d2`, RFC-218 adds the nested-key re-anchor's name match) → **48** (RFC-222 adds its nested-SUFFIX sibling) → **47** (`c5ffbb986`, RFC-229 retires the buildAggColumns mirror) → **44** (CQ-52 retires the leg-window re-split) → **25** (RFC-232 exact-value migration) → **18** (retirement of the dead group-by and nested-suffix compatibility islands) → **17** (the rebased structural leg reader retires the duplicate exact-FieldValue qualified-name mint) → **16** (the shared full-query scalar builder retires its separate qualified-name mint) → **12** (result-set columns read the plan's result row type; the per-operator column derivation and its four decisions are gone). `contract` and `name-keyed` hold four sites each, `boundary` two, `dotted` and `translator` one each.
 
 Two further corrections to the migration's bookkeeping, both found by reading the ratchet against
 `TODO.md`:
@@ -285,7 +283,7 @@ Two further corrections to the migration's bookkeeping, both found by reading th
 
 - **CQ-53 is marked done but has a surviving producer.** `TODO.md`'s CQ-53 closes it as subsumed by
   CQ-67 (#549) "carrying no separate remainder", while
-  `pkg/docscheck/field_name_decision_test.go:447` pins `cascades_translator.go:3598` as "dotted:
+  the since-removed `pkg/docscheck/field_name_decision_test.go:447` pinned `cascades_translator.go:3598` as "dotted:
   MINT. **CQ-53's surviving producer**" — and the mint is live at that line, on the unnest-merge
   path. Its NLJ twin was deleted; this one "dies with the same work", and that work was owned by
   nothing. **This is a real gap between a closed checkbox and the gate.** Now booked as **CQ-79**,
@@ -679,9 +677,8 @@ COUNT-index sources, without the `excluded` set, so it keeps working for the ver
 rebuilt. That exception is load-bearing in the migration recipe in `DIVERGENCES.md`, which cites this
 page as authority. *Narrowed 2026-08-05:* "every relational SQL schema" overstated it. SQL can create a COUNT
 index explicitly (`CREATE INDEX … AS SELECT COUNT(*) … GROUP BY …`, `RelationalParser.g4:172` →
-`core/metadata/builder.go:1176`, pinned by `yamsql/testdata/aggregate_index_count_star.yaml:13`) and
-implicitly (the auto-emitted `__GROUP_COUNT` companion beside any grouped aggregate index,
-`builder.go:660`), relational primary keys ARE record-type-prefixed (`builder.go:1232`,
+`core/metadata/builder.go:1176`, pinned by `yamsql/testdata/aggregate_index_count_star.yaml:13`),
+relational primary keys ARE record-type-prefixed (`builder.go:1232`,
 `:1239-1240`), and a grouped COUNT index still qualifies as a count source
 (`store_builder.go:900`). So a schema carrying one flips to the INLINE arm — which is not
 automatically better, since that rebuild runs inside the store-open transaction. Which arm a store
@@ -816,8 +813,7 @@ stop. Three green runs are on record and they do not settle it.
 - Two LIKE implementations that provably disagree (trailing escape), one live on the
   `INFORMATION_SCHEMA` WHERE path — part of a shadow evaluator family that violates "no parallel
   pipelines". S.
-- `API_PARITY.md` contradicts `options.go` on two options (doc says no-op, code rejects) + a
-  docscheck gate to keep the table honest. S.
+- `API_PARITY.md` contradicts `options.go` on two options (doc says no-op, code rejects). S.
 - `SetSpecialKeySpaceRelaxed`/`EnableWrites` still silent no-ops — record the decision. S.
 - `pkg/fdbgo` README/doc.go missing the bounded-context requirement. S.
 - Two stated-unprobed differential axes (1021 idempotency — needs wire fault injection; cross-shard

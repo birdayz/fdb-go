@@ -67,16 +67,7 @@ func (p *PredicateWithValueAndRanges) GetComparisons() []Comparison {
 // GetCorrelatedTo returns the union of correlation identifiers from the
 // value and all range constraints.
 func (p *PredicateWithValueAndRanges) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
-	out := values.GetCorrelatedToOfValue(p.value)
-	if out == nil {
-		out = map[values.CorrelationIdentifier]struct{}{}
-	}
-	for _, rc := range p.ranges {
-		for alias := range rc.GetCorrelatedTo() {
-			out[alias] = struct{}{}
-		}
-	}
-	return out
+	return GetCorrelatedToOfPredicate(p)
 }
 
 // Explain returns a human-readable representation.
@@ -93,19 +84,7 @@ func (p *PredicateWithValueAndRanges) Explain() string {
 			if j > 0 {
 				sb.WriteString(" AND ")
 			}
-			// ExplainValue, not %v. A Value is an interface over pointer
-			// structs, and fmt renders a NESTED pointer field as a hex
-			// ADDRESS — so `%v` on a comparison operand made this rendering
-			// allocation-dependent. That is not cosmetic here: both
-			// StructurallyEqual and writeSemanticHash fall through to their
-			// default arm for this type and fold Explain(), each documenting it
-			// as a stable structural discriminator. Measured before the fix:
-			// two independently built but structurally identical predicates
-			// over a field reference rendered
-			//   "1 IN {> &{A LONG NULL 0x3df9bb6a0450 0x3df9bb6a04b0 ...}}"
-			// with different addresses, and compared unequal and hashed apart
-			// under BOTH mechanisms. Two identical sargables would not share a
-			// memo bucket, and the hash would differ across processes.
+			// ExplainValue avoids allocation-dependent addresses from nested pointers.
 			sb.WriteString(c.Type.Symbol())
 			sb.WriteString(" ")
 			sb.WriteString(values.ExplainValue(c.Operand))

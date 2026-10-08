@@ -25,10 +25,9 @@ import (
 // Pointer-identity dedup on second fire — the inner is the same
 // expression object as before.
 //
-// Edge case — empty sort: Sort([]) is the Unsorted form, which
-// UnsortedSortElim handles independently. Letting both rules fire
-// is harmless (UnsortedSortElim hits first; this rule's emptiness
-// check declines).
+// Edge case — empty sort: Sort([]) is the unsorted form, which the sort's
+// implementation passes through (RemoveSortRule's preserve arm), so this
+// rule declines it.
 type SortConstantKeysElimRule struct {
 	matcher matching.BindingMatcher
 }
@@ -49,7 +48,7 @@ func (r *SortConstantKeysElimRule) OnMatch(call *ExpressionRuleCall) {
 	s := matching.Get[*expressions.LogicalSortExpression](call.Bindings, r.matcher)
 	keys := s.GetSortKeys()
 	if len(keys) == 0 {
-		return // UnsortedSortElim's territory
+		return // the unsorted form
 	}
 	for _, k := range keys {
 		if !values.IsConstantValue(k.Value) {

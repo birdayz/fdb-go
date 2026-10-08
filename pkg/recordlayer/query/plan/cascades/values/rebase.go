@@ -37,7 +37,7 @@ func RebaseValueChecked(v Value, aliases AliasMap) (Value, error) {
 	return rebaseValueChecked(v, validated)
 }
 
-func rebaseValueChecked(v Value, validated *aliasMap) (Value, error) {
+func rebaseValueChecked(v Value, validated ownedAliasMap) (Value, error) {
 	if v == nil {
 		return nil, resolutionError(RewriteNilReplacement, "rebase.value", "rebase encountered a nil Value")
 	}

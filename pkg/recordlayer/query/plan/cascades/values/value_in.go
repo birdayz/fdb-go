@@ -3,6 +3,8 @@ package values
 import (
 	"bytes"
 	"reflect"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // InOpValue is the Value-layer SQL `IN` operator: tests whether a
@@ -71,10 +73,15 @@ func equalsAny(a, b any) bool {
 // dynamic types. Go's `==` on an `any` holding a slice/map/func panics; for
 // those (and for differing dynamic types) it falls back to reflect.DeepEqual,
 // which is panic-safe and gives structural equality for nested array/map
-// elements. Comparable same-type values use fast `==`.
+// elements. Protobuf messages use value equality, like Java Message.equals;
+// other comparable same-type values use fast `==`.
 func comparableEqual(a, b any) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
+	}
+	if am, ok := a.(proto.Message); ok {
+		bm, ok := b.(proto.Message)
+		return ok && proto.Equal(am, bm)
 	}
 	ta := reflect.TypeOf(a)
 	if ta == reflect.TypeOf(b) && ta.Comparable() {

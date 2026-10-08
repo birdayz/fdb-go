@@ -112,22 +112,22 @@ cd "$STAGE"
 # Parser reads the lexer's .tokens via `-lib $STAGE_OUT`.
 "$JAVA_BIN" -jar "$JAR" -Dlanguage=Go -package antlrgen -visitor -lib "$STAGE_OUT" -o "$STAGE_OUT" RelationalParser.g4
 
-# Preserve the committed BUILD.bazel (gazelle-managed) across regen.
-BUILD_BAZEL=""
-if [[ -f "$OUT_DIR/BUILD.bazel" ]]; then
-    BUILD_BAZEL="$(mktemp)"
-    cp "$OUT_DIR/BUILD.bazel" "$BUILD_BAZEL"
-fi
+# Preserve the committed BUILD.bazel (gazelle-managed) and the hand-written
+# fresh_atn.go across regen.
+KEEP="$(mktemp -d)"
+for f in BUILD.bazel fresh_atn.go; do
+    if [[ -f "$OUT_DIR/$f" ]]; then
+        cp "$OUT_DIR/$f" "$KEEP/$f"
+    fi
+done
 
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 # Use `cp -a` plus an explicit glob so the STAGE_OUT itself isn't nested.
 cp -a "$STAGE_OUT"/. "$OUT_DIR"/
 
-if [[ -n "$BUILD_BAZEL" ]]; then
-    cp "$BUILD_BAZEL" "$OUT_DIR/BUILD.bazel"
-    rm -f "$BUILD_BAZEL"
-fi
+cp -a "$KEEP"/. "$OUT_DIR"/
+rm -rf "$KEEP"
 
 echo "Generated parser files in $OUT_DIR"
 echo "Run 'bazelisk run //:gazelle' if any Go files were added/removed."

@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"errors"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -148,11 +149,17 @@ type ImplementInUnionRule struct {
 
 func NewImplementInUnionRule() *ImplementInUnionRule {
 	return &ImplementInUnionRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("implement_in_union"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("implement_in_union").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool { return len(sel.GetQuantifiers()) >= 2 }),
 	}
 }
 
 func (r *ImplementInUnionRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *ImplementInUnionRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
 
 func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 	selectExpr := call.Bindings.Get(r.matcher).(*expressions.SelectExpression)
@@ -215,6 +222,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 
 	bindingAliases := make([]values.CorrelationIdentifier, len(explodeQuantifiers))
 	inSources := make([][]any, len(explodeQuantifiers))
+	inComparands := make([]values.Value, len(explodeQuantifiers))
 	for i, eq := range explodeQuantifiers {
 		bindingAliases[i] = eq.GetAlias()
 		if ref := eq.GetRangesOver(); ref != nil {
@@ -222,13 +230,23 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				if expl, ok := member.(*expressions.ExplodeExpression); ok {
 					cv := expl.GetCollectionValue()
 					if cv != nil {
-						// Plan-time IN-list extraction: an erroring value
-						// declines (leaves the source nil) rather than
-						// failing planning.
+						// Plan-time IN-list extraction. A row-independent
+						// source planning cannot evaluate (a runtime CAST
+						// item, say) is carried as a comparand and evaluated
+						// when the plan opens, Java's InComparandSource; it
+						// is never dropped.
 						if ev, err := cv.Evaluate(nil); err == nil {
 							if arr, ok := ev.([]any); ok {
 								inSources[i] = arr
 							}
+						} else if values.IsConstantValue(cv) {
+							// Deduplicated at evaluation, as Java's
+							// ValueComparison arm explodes
+							// ArrayDistinctValue(comparand).
+							if _, distinct := cv.(*values.ArrayDistinctValue); !distinct {
+								cv = &values.ArrayDistinctValue{Child: cv, Typ: cv.Type()}
+							}
+							inComparands[i] = cv
 						}
 					}
 					break
@@ -262,6 +280,16 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		requestedOrderings = []*properties.RequestedOrdering{properties.PreserveOrdering()}
 	}
 
+	// Every plan this rule yields carries the configured maximum product of
+	// IN-source sizes; execution refuses a larger one (Java's
+	// ImplementInUnionRule reads it once, as here). Java's rule call always has
+	// a planner context, so a call without one is a harness defect, not size 0.
+	if call.Context == nil {
+		call.Fail(errors.New("ImplementInUnionRule: rule call has no planner context to read the in-union size from"))
+		return
+	}
+	maxSize := call.Context.GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
+
 	for _, partition := range partitions {
 		innerPlans := partition.GetPlans()
 		if len(innerPlans) == 0 {
@@ -270,9 +298,19 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		innerExprs := partition.GetExpressions()
 
 		richOrdering, _ := partition.GetPartitionPropertyValue(properties.PropRichOrdering).(*properties.RichOrdering)
+		var partitionRef *expressions.Reference
 
 		for _, requestedOrdering := range requestedOrderings {
 			if requestedOrdering.IsPreserve() {
+				continue
+			}
+			// A requested part this partition reaches only past the record-type
+			// coordinate of its primary key is one the target's data access never
+			// satisfies, so its reference holds no such leg and it builds no
+			// in-union over one (WS-F 4.3 item 2). The marked key may still be a
+			// free comparison-key suffix past the request, as in the target's
+			// `COMPARE BY (_.COL1, _.ID)`.
+			if richOrdering.RequestReachesPastRecordTypeHorizon(requestedOrdering) {
 				continue
 			}
 
@@ -296,8 +334,8 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				// the candidate rather than merge a descending key forward.
 				// This is the same fail-closed gate the intersection plans use.
 				//
-				// Reachable: it declines exactly twice over the 2475-query
-				// corpus, both times parts=[ASC, DESC] against a forward merge.
+				// Reachable: over the 2834-query corpus 6 of 424 candidate
+				// evaluations decline, each a two-part key mixing ASC and DESC.
 				comparisonKeys, natural := properties.NaturalComparisonKeyValues(comparisonParts, isReverse)
 				if !natural {
 					continue
@@ -329,80 +367,69 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 					continue
 				}
 
-				// The comparison keys are the inner's ORDERING CONTRACT for
-				// the InUnion merge-dedup — the partition-level first-member
-				// ESTIMATE (a delegator's group hint) is not tethered to the
-				// baked plan. Pick the cheapest member that STRUCTURALLY
-				// satisfies the contract (delegators resolve through their
-				// source groups), spine-PIN it (executable-plan verified),
-				// and bake THAT plan over a FinalOf singleton; an unpinnable
-				// partition skips this candidate — the sort-based
-				// alternative still plans.
-				legReqParts := make([]properties.RequestedOrderingPart, len(comparisonParts))
-				for i, p := range comparisonParts {
-					so := properties.RequestedSortOrderAny
-					if p.SortOrder != properties.ProvidedSortOrderFixed {
-						so = p.SortOrder.ToRequestedSortOrder()
-					}
-					legReqParts[i] = properties.RequestedOrderingPart{Value: p.Value, SortOrder: so}
-				}
-				legReq := properties.NewRequestedOrdering(legReqParts, properties.DistinctnessPreserveDistinctness, false)
-				tieBrokenLess := lessWithHashTieBreak(call.CostModel())
-				var best expressions.RelationalExpression
-				for _, pe := range innerExprs {
-					if !memberSatisfiesOrdering(pe, legReq) {
-						continue
-					}
-					if best == nil || tieBrokenLess(pe, best) {
-						best = pe
-					}
-				}
-				if best == nil {
-					continue
-				}
-				pinned := pinOrderedSpine(best, legReq, call.CostModel())
-				if pinned == nil {
-					continue
-				}
-				if _, isPhys := pinned.(physicalPlanExpression); !isPhys {
+				// Go's own soundness gate (Java checks nothing): the merge's
+				// dedup on the key must never collapse two rows of the join,
+				// whichever member of the partition runs.
+				if !partitionMergeKeyIdentifiesRows(innerExprs, comparisonParts) {
 					continue
 				}
 
-				maxSize := 0
-				if call.Context != nil {
-					maxSize = call.Context.GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
+				// The partition is memoized WHOLE, as Java's
+				// memoizeMemberPlansFromOther(innerReference,
+				// planPartition.getPlans()) does (WS-F 4.3 item 3): every
+				// member provides the partition's ordering, so costing chooses
+				// among them, and push-through rules see every member (a
+				// covering member under its fetch included). The memoizer
+				// carries the inner reference's requested orderings, so the
+				// copy's optimization keeps the members that satisfy them;
+				// extraction verifies the chosen child provides the comparison
+				// keys' order (checkInUnionChildOrdering).
+				if partitionRef == nil {
+					partitionRef = call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
 				}
-				// The InUnion is its own cascades expression over the live pinned
-				// inner edge (RFC-184 W2); no plan snapshot.
 				inUnionPlan, err := plans.NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
-					expressions.NewPhysicalQuantifier(expressions.FinalOf(pinned)),
+					expressions.NewPhysicalQuantifier(partitionRef),
 					bindingAliases, comparisonKeys, isReverse, maxSize)
 				if err != nil {
 					call.Fail(err)
 					return
 				}
-				inUnionPlan = inUnionPlan.WithInSources(inSources)
+				inUnionPlan = inUnionPlan.WithInSources(inSources).WithInComparands(inComparands)
 				call.YieldFinalExpression(inUnionPlan)
 			}
 		}
+	}
+}
 
-		if richOrdering == nil || len(richOrdering.GetKeys()) == 0 {
-			newRef := call.MemoizeFinalExpressionsFromOther(innerRef, innerExprs)
-			// The InUnion is its own cascades expression carrying the live newRef
-			// inner edge (RFC-184 W2); its per-ordering winner resolves at
-			// extraction via ref.Winner(). No plan snapshot — the deferred-winner
-			// case.
-			inUnionPlan, err := plans.NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
-				expressions.NewPhysicalQuantifier(newRef),
-				bindingAliases, nil, false, 0)
-			if err != nil {
-				call.Fail(err)
-				return
-			}
-			inUnionPlan = inUnionPlan.WithInSources(inSources)
-			call.YieldFinalExpression(inUnionPlan)
+// inUnionMergeKeyIdentifiesRows reports whether the merge's dedup on the
+// comparison key can never collapse two rows of the join it implements: the
+// baked inner must prove its rows distinct over coordinates inside the key. A
+// per-stream claim names the explode-bound coordinates that separate the
+// branches; a record-identity claim is a key across all of them. Java's
+// ImplementInUnionRule checks nothing, and its UnionCursor drops the tied rows
+// of a projection that lost the primary key.
+func inUnionMergeKeyIdentifiesRows(inner physicalPlanExpression, parts []properties.ProvidedOrderingPart) bool {
+	keys := make([]values.Value, len(parts))
+	for i, part := range parts {
+		keys[i] = part.Value
+	}
+	return computeWrapperRichOrdering(inner).RowsIdentifiedBy(keys)
+}
+
+// partitionMergeKeyIdentifiesRows is inUnionMergeKeyIdentifiesRows for every
+// member of a partition: the merge ranges over the whole partition, and
+// extraction may choose any member, so each must prove its rows identified.
+func partitionMergeKeyIdentifiesRows(members []expressions.RelationalExpression, parts []properties.ProvidedOrderingPart) bool {
+	if len(members) == 0 {
+		return false
+	}
+	for _, member := range members {
+		plan, ok := member.(physicalPlanExpression)
+		if !ok || !inUnionMergeKeyIdentifiesRows(plan, parts) {
+			return false
 		}
 	}
+	return true
 }
 
 // adjustBindingsForInUnion adjusts the inner ordering's bindings:

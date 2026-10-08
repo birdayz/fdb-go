@@ -86,11 +86,10 @@ func TestNewParser_ReleaseDetachesPredictionState(t *testing.T) {
 func TestPredictionStatePool_BoundsRetainedStates(t *testing.T) {
 	t.Parallel()
 
-	lexer := antlrgen.NewRelationalLexer(newCaseInsensitiveCharStream("SELECT 1"))
-	var pool predictionStatePool
+	pool := predictionStatePool{newATN: antlrgen.NewRelationalLexerATN}
 	states := make([]*predictionState, maxRetainedPredictionStates+1)
 	for i := range states {
-		states[i] = pool.acquire(lexer.Interpreter.ATN())
+		states[i] = pool.acquire()
 	}
 	for _, state := range states {
 		pool.release(state)
@@ -101,6 +100,26 @@ func TestPredictionStatePool_BoundsRetainedStates(t *testing.T) {
 	pool.mu.Unlock()
 	if retained != maxRetainedPredictionStates {
 		t.Fatalf("retained prediction states = %d, want cap %d", retained, maxRetainedPredictionStates)
+	}
+}
+
+// The runtime locks a parser's ATN for every DFA edge it adds, so two leases
+// sharing an ATN serialize concurrent parses on it.
+func TestPredictionStatePool_LeasesDoNotShareAnATN(t *testing.T) {
+	t.Parallel()
+	for name, pool := range map[string]*predictionStatePool{
+		"lexer":  &relationalLexerPredictionStates,
+		"parser": &relationalParserPredictionStates,
+	} {
+		a, b := pool.acquire(), pool.acquire()
+		if a.atn == b.atn {
+			t.Errorf("%s leases share one ATN", name)
+		}
+		if a.atn == antlrgen.NewRelationalLexer(nil).Interpreter.ATN() || a.atn == antlrgen.NewRelationalParser(nil).Interpreter.ATN() {
+			t.Errorf("%s lease uses the generated parser's global ATN", name)
+		}
+		pool.release(a)
+		pool.release(b)
 	}
 }
 
@@ -718,5 +737,63 @@ func TestParseView_EmptyInput(t *testing.T) {
 		if !errors.As(err, &apiErr) {
 			t.Errorf("ParseView(%q): non-api error %T: %v", sql, err, err)
 		}
+	}
+}
+
+// TestParse_Comments pins Java's comment lexing: comments are skipped, `--`
+// needs no following space and ends at CR, LF, CRLF or EOF, block comments
+// nest, an unterminated block comment is 42601, `#` is not a comment, and
+// `/*! … */` is an ordinary block comment.
+func TestParse_Comments(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		sql string
+		ok  bool
+	}{
+		{"SELECT 1--1", true},
+		{"SELECT 1 --x\r, 2", true},
+		{"SELECT 1 --x\r\n, 2", true},
+		{"SELECT 1 --x", true},
+		{"SELECT /* a /* b */ c */ 1", true},
+		{"SELECT /*! 1 */ 2", true},
+		{"SELECT '--x', '/*y'", true},
+		{"SELECT 1 /* open", false},
+		{"SELECT 1 /* a /* b */", false},
+		{"SELECT 1 # x", false},
+	} {
+		_, err := Parse(tc.sql)
+		var apiErr *api.Error
+		switch {
+		case tc.ok && err != nil:
+			t.Errorf("%q: %v", tc.sql, err)
+		case !tc.ok && (!errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeSyntaxError):
+			t.Errorf("%q: want 42601, got %v", tc.sql, err)
+		}
+	}
+}
+
+// SQL text that is not valid UTF-8 is refused before lexing, never lexed with
+// the bad bytes replaced by U+FFFD (which would change the caller's literal).
+func TestParse_InvalidUTF8TextRefused(t *testing.T) {
+	t.Parallel()
+	for name, parse := range map[string]func(string) error{
+		"Parse":           func(s string) error { _, err := Parse("INSERT INTO t VALUES (1, " + s + ")"); return err },
+		"ParseView":       func(s string) error { _, err := ParseView("SELECT " + s + " FROM t"); return err },
+		"ParseExpression": func(s string) error { _, err := ParseExpression(s + " || 'x'"); return err },
+		"ParseFunction": func(s string) error {
+			_, err := ParseFunction("CREATE FUNCTION f(IN x STRING) AS SELECT " + s + " FROM t")
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var apiErr *api.Error
+			if err := parse("'ab\xffcd'"); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeCharacterNotInRepertoire {
+				t.Fatalf("invalid UTF-8 literal: want 22021, got %v", err)
+			}
+			if err := parse("'naïve 日本'"); err != nil {
+				t.Fatalf("valid UTF-8 literal refused: %v", err)
+			}
+		})
 	}
 }

@@ -26,6 +26,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/relational/api",
+        "//pkg/relational/core/embedded",
         "@in_gopkg_yaml_v3//:yaml_v3",
     ],
 )
@@ -51,6 +52,7 @@ go_test(
         "coverage_internal_test.go",
         "coverage_test.go",
         "diff_struct_test.go",
+        "domain_registration_test.go",
         "exact_runner_test.go",
         "exact_test.go",
         "featurematrix_test.go",
@@ -83,6 +85,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
         "//pkg/relational/conformance/plandiff",
+        "//pkg/relational/core/keyspace",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/rowstruct",

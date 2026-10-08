@@ -1,15 +1,5 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
-# keep: the corpus-wide plan rendering, exported so //pkg/docscheck can stage it
-# into runfiles. TestYamsqlPlanClaimsAreAsserted DERIVES its plan-operator
-# vocabulary from these rendered plans rather than maintaining a word list, so
-# the baseline is that gate's input, not just this package's golden.
-filegroup(
-    name = "plan_shape_golden",
-    srcs = ["testdata/plan_shape.golden"],
-    visibility = ["//visibility:public"],
-)
-
 go_library(
     name = "explaindiff",
     srcs = ["explaindiff.go"],
@@ -26,6 +16,7 @@ go_library(
 go_test(
     name = "explaindiff_test",
     srcs = [
+        "domain_registration_test.go",
         "explaindiff_internal_test.go",
         "explaindiff_test.go",
         "identifier_agreement_test.go",
@@ -33,7 +24,6 @@ go_test(
         "ordering_census_test.go",
         "plan_shape_golden_test.go",
         "projected_exists_coverage_test.go",
-        "projection_merge_census_test.go",
         "reachability_test.go",
     ],
     # keep: the tests plan every scenario in the yamsql corpus, which lives in
@@ -51,6 +41,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/relational/conformance/yamsql",
         "//pkg/relational/core/embedded",
+        "//pkg/relational/core/keyspace",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
         "@com_github_antlr4_go_antlr_v4//:antlr",

@@ -156,8 +156,7 @@ func promoteConstant(obj any, target Type) any {
 	return obj
 }
 
-// GetCorrelatedTo returns the singleton set containing the
-// alias — ConstantObjectValue depends on the alias's binding.
-func (v *ConstantObjectValue) GetCorrelatedTo() map[CorrelationIdentifier]struct{} {
-	return map[CorrelationIdentifier]struct{}{v.Alias: {}}
+// A constant-pool binding is not a row correlation, matching Java ConstantObjectValue.
+func (*ConstantObjectValue) GetCorrelatedTo() map[CorrelationIdentifier]struct{} {
+	return map[CorrelationIdentifier]struct{}{}
 }

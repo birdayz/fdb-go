@@ -79,7 +79,7 @@ func TestNotComparisonRewrite_CoverageIsJavasTable(t *testing.T) {
 				predicates.NewLiteralComparison(tc.in, int64(5)))
 		}
 
-		out, err := Simplify(predicates.NewNot(inner), DefaultSimplifyRules())
+		out, err := Simplify(predicates.NewNot(inner), ConstantFoldingRules())
 		if err != nil {
 			t.Fatalf("%s: Simplify: %v", tc.in.Symbol(), err)
 		}

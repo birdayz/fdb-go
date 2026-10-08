@@ -201,7 +201,7 @@ func rowNumberWindowSpecFromProto(p *gen.RowNumberWindowPredicate) (*RowNumberWi
 // keyspace-10 and HNSW contents would not be Java's.
 //
 // The same discipline is written down at
-// cascades.constantPredicateArmIsTrue: answer only for the arm the evaluator
+// indexpredicate.ConstantArmIsTrue: answer only for the arm the evaluator
 // would actually run.
 func findRowNumberWindowPredicateProto(p *gen.Predicate) *gen.RowNumberWindowPredicate {
 	if p == nil {
@@ -300,8 +300,7 @@ func (idx *Index) RowNumberWindowSpec() (*RowNumberWindowSpec, error) {
 	}
 	rn := qualifyRowNumberWindowPredicateProto(idx.predicateProto)
 	if rn == nil {
-		return nil, &MetaDataError{Message: fmt.Sprintf(
-			"sliding window index requires a RowNumberWindowPredicate (index %s)", idx.Name)}
+		return nil, &MetaDataError{Message: "sliding window index requires a RowNumberWindowPredicate"}
 	}
 	return rowNumberWindowSpecFromProto(rn)
 }
@@ -320,7 +319,9 @@ func validateRowNumberWindowPlacement(p *gen.Predicate) error {
 		return nil
 	}
 	if !rowNumberWindowValidInConjunctivePath(p) {
-		return &MetaDataError{Message: "RowNumberWindowPredicate must not appear under a disjunction (OR)"}
+		// Java's class: a RecordCoreException, not the MetaDataException of the
+		// validator's other arms (IndexPredicate.java:243).
+		return &RecordCoreError{Message: "RowNumberWindowPredicate must not appear under a disjunction (OR)"}
 	}
 	return nil
 }

@@ -31,6 +31,10 @@ type RecordQueryInJoinPlan struct {
 	reverse      bool
 	inValues     []any
 	sourceKind   InSourceKind
+	// inComparand is the row-independent source a plan-time extraction could
+	// not evaluate (an array holding a NULL element); the executor evaluates
+	// it when the plan opens, as Java's InComparandJoinPlan.getValues does.
+	inComparand values.Value
 }
 
 func NewRecordQueryInJoinPlan(
@@ -93,6 +97,19 @@ func NewRecordQueryInJoinPlanFromQuantifierWithBindingAlias(
 }
 
 func (p *RecordQueryInJoinPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
+func (p *RecordQueryInJoinPlan) CanCorrelate() bool { return true }
+
+// The IN source binds an alias that is not a child quantifier's alias.
+func (p *RecordQueryInJoinPlan) ComputeCorrelatedTo(childCorrelations func(*expressions.Reference) map[values.CorrelationIdentifier]struct{}) map[values.CorrelationIdentifier]struct{} {
+	result := make(map[values.CorrelationIdentifier]struct{})
+	for alias := range childCorrelations(p.innerQ.GetRangesOver()) {
+		if alias != p.bindingAlias {
+			result[alias] = struct{}{}
+		}
+	}
+	return result
+}
 
 // GetInnerQuantifier returns the live child quantifier — the single memo edge the
 // InJoin ranges over. derivationsForInJoin reads its alias to decorrelate the
@@ -198,6 +215,17 @@ func copyPreservingNil(src []any) []any {
 	return dup
 }
 
+// GetInComparand is the runtime-evaluated IN source, nil when the values were
+// extracted at plan time.
+func (p *RecordQueryInJoinPlan) GetInComparand() values.Value { return p.inComparand }
+
+// WithInComparand returns a copy that evaluates v for its IN values at run time.
+func (p *RecordQueryInJoinPlan) WithInComparand(v values.Value) *RecordQueryInJoinPlan {
+	cp := *p
+	cp.inComparand = v
+	return &cp
+}
+
 func (p *RecordQueryInJoinPlan) WithSourceKind(k InSourceKind) *RecordQueryInJoinPlan {
 	cp := *p
 	cp.sourceKind = k
@@ -227,25 +255,30 @@ func (p *RecordQueryInJoinPlan) GetChildren() []RecordQueryPlan {
 // The %#v hash pins Go type + value so inValuesEqual-equal lists fold identically.
 // Drives both Equals and Hash.
 func (p *RecordQueryInJoinPlan) structuralKey() *structuralKey {
-	return newStructuralKey().
+	k := newStructuralKey().
 		Bool(p.sorted).
 		Bool(p.reverse).
 		Equatable(p.inValues, func(other any) bool {
 			o, ok := other.([]any)
 			return ok && inValuesEqual(p.inValues, o)
-		}, []byte(fmt.Sprintf("inv:%d:%#v", len(p.inValues), p.inValues)))
+		}, []byte(fmt.Sprintf("inv:%d:%#v", len(p.inValues), p.inValues))).
+		Bool(p.inComparand != nil)
+	if p.inComparand != nil {
+		k = k.Value(p.inComparand)
+	}
+	return k
 }
 
 func (p *RecordQueryInJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInJoinPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryInJoinPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("injoinplan|")
+	hash := p.keyFor(p).Hash("injoinplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

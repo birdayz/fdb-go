@@ -4,13 +4,17 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/antlr4-go/antlr/v4"
+
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/metadata"
+	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query"
 	queryddl "fdb.dev/pkg/relational/core/query/ddl"
@@ -78,9 +82,6 @@ func parseOnSourceColSpec(spec antlrgen.IIndexColumnSpecContext) (onSourceIndexe
 // run the OnSourceIndexGenerator port below.
 func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, b *metadata.Builder) error {
 	indexName := functions.NormalizeIdentifier(def.GetIndexName().GetText())
-	if err := rejectReservedIndexName(indexName); err != nil {
-		return err
-	}
 	tableName := functions.NormalizeIdentifier(def.GetSource().GetText())
 	unique := def.UNIQUE() != nil
 	// OPTIONS(LEGACY_EXTREMUM_EVER) — Java reads it as a presence flag
@@ -154,7 +155,7 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 	// for a dot in the text. tableName comes from GetText(), which concatenates
 	// a multi-segment FullId into `S.T` -- indistinguishable from a table
 	// declared as the quoted identifier `"S.T"`, whose storage name is S__2T.
-	// Escaping the flattened form would then resolve a SCHEMA-QUALIFIED
+	// Escaping the flattened form would then resolve a TEMPLATE-QUALIFIED
 	// reference onto that unrelated table and attach the index, and any UNIQUE
 	// constraint with it, to the wrong record type. A qualified source keeps the
 	// raw lookup, which misses and reports the table as unknown -- the behaviour
@@ -166,6 +167,9 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 		rt = md.GetRecordType(tableName)
 	}
 	if rt == nil || rt.Descriptor == nil {
+		if view := findView(md, tableName); view != nil {
+			return onViewIndexDefinition(def, indexName, unique, useLegacyExtremum, keyCols, valueCols, view, md, b)
+		}
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"index %q references unknown table %q", indexName, tableName)
 	}
@@ -205,17 +209,27 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 		if fv, ok := resolvedByName[name]; ok {
 			return fv, nil
 		}
+		// The identifier is a SQL name, so it is looked up among the layout's
+		// names -- the descriptor names DECODED (FieldNameForProtoField), as
+		// Java's semantic analyzer resolves the column: "c$1" is the stored
+		// field c__1. The layout appends the __ROW_VERSION pseudo-field one past
+		// the descriptor's fields when the template stores row versions and no
+		// REAL column shadows it (real-column-wins; Java:
+		// RecordMetaData.getPlannerType → Type.Record.addPseudoFields,
+		// RecordMetaData.java:732-739). Two stored names that decode alike are
+		// ambiguous and resolve to neither.
 		ordinal := -1
-		if fd := fields.ByName(protoreflect.Name(name)); fd != nil {
-			ordinal = fd.Index()
-		} else if name == values.PseudoFieldRowVersion && md.IsStoreRecordVersions() {
-			// The planner-facing layout appends the __ROW_VERSION pseudo-field
-			// one past the descriptor's fields when the template stores row
-			// versions and no REAL column shadows it (real-column-wins — the
-			// ByName branch above; Java: RecordMetaData.getPlannerType →
-			// Type.Record.addPseudoFields, RecordMetaData.java:732-739).
-			ordinal = fields.Len()
-		} else {
+		for i := range rowFields {
+			if rowFields[i].Name != name {
+				continue
+			}
+			if ordinal >= 0 {
+				ordinal = -1
+				break
+			}
+			ordinal = i
+		}
+		if ordinal < 0 {
 			// Java: Assert.notNullUnchecked(column, ErrorCode.UNDEFINED_COLUMN,
 			// "could not find " + identifier) — OnSourceIndexGenerator.java:203,209.
 			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn, "could not find %s", name)
@@ -283,4 +297,119 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 	}
 	b.AddGeneratedIndex(gi.TableName, indexName, gi.Root, gi.IndexType, unique, gi.Options, gi.Predicate)
 	return nil
+}
+
+func findView(md *recordlayer.RecordMetaData, name string) *gen.PView {
+	for _, v := range md.Views() {
+		if strings.EqualFold(v.GetName(), name) {
+			return v
+		}
+	}
+	return nil
+}
+
+// onViewIndexDefinition is OnSourceIndexGenerator over a view source: the
+// view's own select with its projection replaced by the key and INCLUDE
+// columns, sorted by the keys, planned and generated as the AS-SELECT form is.
+// Java pushes the columns down through the view's top select; a view whose
+// select cannot be re-projected that way (a star, a set operation) is read
+// as `SELECT cols FROM view ORDER BY keys` instead.
+func onViewIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, indexName string, unique, legacyExtremum bool,
+	keyCols []onSourceIndexedColumn, valueCols []string, view *gen.PView, md *recordlayer.RecordMetaData, b *metadata.Builder,
+) error {
+	specs := def.IndexColumnList().AllIndexColumnSpec()
+	items := make([]string, 0, len(specs)+len(valueCols))
+	names := make([]string, 0, cap(items))
+	order := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		sc := spec.(*antlrgen.IndexColumnSpecContext)
+		items = append(items, ctxText(sc.GetColumnName()))
+		names = append(names, functions.NormalizeIdentifier(sc.GetColumnName().GetText()))
+		order = append(order, ctxText(sc))
+	}
+	if inc, ok := def.IncludeClause().(*antlrgen.IncludeClauseContext); ok && inc.UidList() != nil {
+		keySet := map[string]bool{}
+		for _, k := range keyCols {
+			keySet[k.name] = true
+		}
+		for _, uid := range inc.UidList().AllUid() {
+			if name := functions.NormalizeIdentifier(uid.GetText()); !keySet[name] {
+				items = append(items, ctxText(uid))
+				names = append(names, name)
+			}
+		}
+	}
+	sql, ok := reprojectView(view.GetDefinition(), names)
+	if !ok {
+		sql = "SELECT " + strings.Join(items, ", ") + " FROM " + ctxText(def.GetSource())
+	}
+	sql += " ORDER BY " + strings.Join(order, ", ")
+	q, err := parser.ParseView(sql)
+	if err != nil {
+		return err
+	}
+	visitor := NewPlanVisitorWithTemplate(md, b.Name())
+	op, err := visitor.VisitQuery(q)
+	if err != nil {
+		return fmt.Errorf("index %q: %w", indexName, err)
+	}
+	if err := runFromResolutionPostPasses(op, visitor.templateName, md, md); err != nil {
+		return fmt.Errorf("index %q: %w", indexName, err)
+	}
+	gi, err := queryddl.Generate(op, md, queryddl.Options{UseLegacyExtremumEver: legacyExtremum})
+	if err != nil {
+		return fmt.Errorf("index %q: %w", indexName, err)
+	}
+	b.AddGeneratedIndex(gi.TableName, indexName, gi.Root, gi.IndexType, unique, gi.Options, gi.Predicate)
+	return nil
+}
+
+func ctxText(t antlr.ParserRuleContext) string {
+	return t.GetStart().GetInputStream().GetText(t.GetStart().GetStart(), t.GetStop().GetStop())
+}
+
+// reprojectView rewrites a view's `SELECT items rest` to select, in order, the
+// items whose output names are names.
+func reprojectView(definition string, names []string) (string, bool) {
+	q, err := parser.ParseView(definition)
+	if err != nil || q.Ctes() != nil {
+		return "", false
+	}
+	term, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return "", false
+	}
+	st, ok := term.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !ok || st.DISTINCT() != nil || st.OrderByClause() != nil || st.LimitClause() != nil {
+		return "", false
+	}
+	byName := map[string]string{}
+	for _, el := range st.SelectElements().AllSelectElement() {
+		e, ok := el.(*antlrgen.SelectExpressionElementContext)
+		if !ok {
+			return "", false
+		}
+		name := selectOutputAlias(e)
+		if name == "" {
+			if p, ok := e.Expression().(*antlrgen.PredicatedExpressionContext); ok && p.Predicate() == nil {
+				if a, ok := p.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+					uids := a.FullColumnName().FullId().AllUid()
+					name = functions.NormalizeIdentifier(uids[len(uids)-1].GetText())
+				}
+			}
+		}
+		if name != "" {
+			byName[name] = ctxText(e)
+		}
+	}
+	items := make([]string, len(names))
+	for i, n := range names {
+		if items[i], ok = byName[n]; !ok {
+			return "", false
+		}
+	}
+	stop := st.GetStop().GetStop()
+	start := st.SelectElements().GetStop().GetStop() + 1
+	rest := st.GetStart().GetInputStream().GetText(start, stop)
+	return "SELECT " + strings.Join(items, ", ") + rest, true
 }

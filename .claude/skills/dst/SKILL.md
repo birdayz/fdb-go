@@ -28,11 +28,10 @@ chaos's double-commit fake). The brute-force loop-until-bug hunter that rides on
   pure-Go client) — that's **Track B**, a separate RFC. SimFDB simulates the *backend contract*
   (`fdb.BackendDatabase`), not the wire transport.
 
-**"Bit-exactly" has named exceptions — say them when you claim a replay.** The claim is enforced by
-`pkg/docscheck`'s `TestDSTSeamGate`, which requires every raw `time.Now` / `crypto/rand` /
-`math/rand` call in `pkg/recordlayer` and `pkg/relational` to sit on an allowlist with a written
-reason. Read that allowlist before asserting a run replays; everything on it is a latency metric,
-in-memory cache bookkeeping, or an asymmetric seam's production arm — **except**:
+**"Bit-exactly" has named exceptions — say them when you claim a replay.** A raw `time.Now` /
+`crypto/rand` / `math/rand` call in `pkg/recordlayer` or `pkg/relational` breaks replay unless it is
+a latency metric, in-memory cache bookkeeping, or an asymmetric seam's production arm. Check the
+calls before asserting a run replays. Known exceptions:
 
 - **`spfreshNowMs`** (`pkg/recordlayer/spfresh_util.go`, 23 call sites) — SPFresh task/lease
   timestamps DO reach persisted rows and are unseamed. A SPFresh-heavy run does not replay
@@ -431,7 +430,7 @@ commit-abort / identical reads. **libfdb_c is the spec.** This is exactly the 2-
 (Tier 1) plugs into as a 3rd oracle.
 
 ```sh
-# Bench differentials (part of `just test`; links libfdb_c, spins a container in TestMain)
+# Bench differentials (part of `just test-full` and PR CI, not the fast `just test`; links libfdb_c, spins a container in TestMain)
 bazelisk test //pkg/fdbgo/bench:bench_test --test_output=errors
 # Conflict-outcome oracle as an active fuzz (RFC-121: go-vs-cgo commit/abort agreement)
 mkdir -p /tmp/fuzz-cache && bazelisk test //pkg/fdbgo/bench:bench_test \
@@ -724,7 +723,7 @@ classification is a claim with a shelf life, not a result.)
    (`*_ever` vs Java's `permuted_*`)" — a wire/metadata-correctness bug, broader than the symptom. Some
    fixes are executor-contained (concat continuation); some are a planner/DDL change (Graefe *design*
    decision, larger blast radius); some are an RFC that changes a pinned semantics (value-`DISTINCT`
-   sort+dedup breaks `SELECT DISTINCT v ORDER BY <non-projected>` and collides with `DistinctOverSortElimRule`).
+   sort+dedup breaks `SELECT DISTINCT v ORDER BY <non-projected>`).
    **Don't force a planner redesign into a "fix" PR** — surface it. And check whether the code is already
    being rebuilt elsewhere (DISTINCT's `distinctKey` is RFC-173 name-burial site B7 → fold the fix into
    that slice, don't double-touch).

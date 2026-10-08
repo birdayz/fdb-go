@@ -55,8 +55,9 @@ func TestPinOrderedSpineMarksPrivateChildSelection(t *testing.T) {
 	}
 
 	source := expressions.InitialOf(index)
+	q := expressions.NewPhysicalQuantifier(source)
 	filter, err := plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(
-		expressions.ForEachQuantifier(source),
+		q,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 	)
 	filter = mustPinnedSpineConstruct(t, filter, err)
@@ -67,6 +68,9 @@ func TestPinOrderedSpineMarksPrivateChildSelection(t *testing.T) {
 	quantifiers := pinned.GetQuantifiers()
 	if len(quantifiers) != 1 {
 		t.Fatalf("pinned delegator has %d quantifiers, want 1", len(quantifiers))
+	}
+	if quantifiers[0].Kind() != expressions.QuantifierPhysical || quantifiers[0].GetAlias() != q.GetAlias() {
+		t.Fatal("ordered pin lost physical edge kind or binding alias")
 	}
 	privateRef := quantifiers[0].GetRangesOver()
 	if privateRef == nil {

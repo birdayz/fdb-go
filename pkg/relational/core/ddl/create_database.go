@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 // isSystemDatabasePath reports whether p names the system catalog database or
@@ -24,6 +25,11 @@ func NewCreateDatabaseConstantAction(dbPath string, catalog api.StoreCatalog) *C
 }
 
 func (a *CreateDatabaseConstantAction) Execute(txn api.Transaction) error {
+	// Java's first statement: the path must name a database of a registered
+	// domain (RelationalKeyspaceProvider.toDatabasePath).
+	if _, err := keyspace.ToDatabasePath(a.dbPath); err != nil {
+		return err
+	}
 	// The system catalog lives under /__SYS (Java: RecordLayerStoreCatalog's
 	// catalogSchemaPath is /__SYS/CATALOG). DROP already refuses that space;
 	// CREATE did not, so a nested path like /__SYS/anything could be planted

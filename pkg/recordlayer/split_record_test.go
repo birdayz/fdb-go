@@ -140,7 +140,7 @@ var _ = Describe("SplitRecords", func() {
 			largeOrder := makeLargeOrder(1, 150_000)
 			_, err = store.SaveRecord(largeOrder)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("exceeds limit"))
+			Expect(err.Error()).To(ContainSubstring("Record is too long to be stored in a single value"))
 
 			return nil, nil
 		})

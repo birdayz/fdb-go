@@ -94,13 +94,21 @@ class ConformanceBase {
     /**
      * Create an FDBDatabase instance using the provided cluster file content.
      * Caches the database and cluster file to avoid leaking connections and temp files.
+     *
+     * The file is private to this JVM. The FDB client keeps reading the cluster
+     * file it was opened with, and several conformance targets (each with its own
+     * FDB container and its own JVM server) run concurrently on one machine; a
+     * shared fixed path let one server's write repoint another server's open
+     * database at a different cluster ("Tenant does not exist", or a hang against
+     * a container that had already stopped).
      */
     static synchronized FDBDatabase createDatabase(String clusterFileContent) {
         if (cachedDatabase != null && clusterFileContent.equals(cachedClusterContent)) {
             return cachedDatabase;
         }
         try {
-            File tempFile = new File("/tmp/fdb_conformance.cluster");
+            File tempFile = File.createTempFile("fdb_conformance_", ".cluster");
+            tempFile.deleteOnExit();
             try (FileWriter writer = new FileWriter(tempFile)) {
                 writer.write(clusterFileContent);
             }

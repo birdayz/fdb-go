@@ -55,7 +55,7 @@ type Session struct {
 	// can plug in different factories.
 	Factory apiddl.MetadataOperationsFactory
 
-	// DBPath is the current database URI (e.g. "/mydb"). Set at
+	// DBPath is the current database URI (e.g. "/FRL/mydb"). Set at
 	// Conn/Session construction and updated by USE DATABASE (not yet
 	// implemented).
 	DBPath string

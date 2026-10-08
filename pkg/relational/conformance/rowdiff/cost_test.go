@@ -8,7 +8,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/core/embedded"
 )
 
 // TestCheckPlanCost_SpuriousSort proves the cost/ordering invariant both FIRES
@@ -73,22 +72,19 @@ func TestCostInvariant_PurePlannerSweep(t *testing.T) {
 	}
 	var checked, violations int
 	var samples []string
-	for seed := uint64(1); seed <= seeds; seed++ {
-		c := Generate(seed)
-		ddl := c.DDL()
-		for _, q := range c.Queries {
-			for _, proj := range c.ProjectionsFor(q) {
-				sqlText := c.SQL(q, proj)
-				plan, err := embedded.PlanPhysicalForTest(sqlText, ddl, nil)
-				if err != nil {
-					continue // plan errors are the row harness's concern, not this check's
-				}
-				checked++
-				for _, v := range checkPlanCost(plan, q) {
-					violations++
-					if len(samples) < 10 {
-						samples = append(samples, fmt.Sprintf("seed %d: %s [%s]", seed, sqlText, v))
-					}
+	swept, release := defaultSweep(seeds)
+	defer release()
+	for i, sc := range swept {
+		seed := uint64(i) + 1
+		for _, sp := range sc.plans {
+			if sp.err != nil {
+				continue // plan errors are the row harness's concern, not this check's
+			}
+			checked++
+			for _, v := range checkPlanCost(sp.plan, sp.q) {
+				violations++
+				if len(samples) < 10 {
+					samples = append(samples, fmt.Sprintf("seed %d: %s [%s]", seed, sp.sql, v))
 				}
 			}
 		}

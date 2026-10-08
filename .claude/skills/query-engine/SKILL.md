@@ -39,7 +39,7 @@ For planner changes, run determinism checks on affected tests:
 ```bash
 for i in $(seq 1 10); do
   echo -n "Run $i: "
-  bazelisk test //pkg/relational/sqldriver:sqldriver_test \
+  bazelisk test //pkg/relational/sqltest/<area>:<area>_test \
     --test_output=streamed --test_arg="--test.run=TestName$" \
     --test_arg="--test.v" --nocache_test_results 2>&1 | grep "PASS\|FAIL" | head -1
 done

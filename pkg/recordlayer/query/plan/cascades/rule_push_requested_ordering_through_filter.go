@@ -35,6 +35,17 @@ func (r *PushRequestedOrderingThroughFilterRule) Matcher() matching.BindingMatch
 	return r.matcher
 }
 
+func (r *PushRequestedOrderingThroughFilterRule) hasConstraintEffect(cm *ConstraintMap, ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	orderings, _ := Get(cm, ref, RequestedOrderingConstraintKey)
+	return len(orderings) != 0 && passThroughConstraintHasEffect(cm, ref, expr, RequestedOrderingConstraintKey)
+}
+
+// ConstraintDependencies: the rule reads the requested orderings (Go's
+// LogicalFilter twin of the select rule, which Java declares the same way).
+func (r *PushRequestedOrderingThroughFilterRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *PushRequestedOrderingThroughFilterRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return

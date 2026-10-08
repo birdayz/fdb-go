@@ -11,7 +11,7 @@ go_library(
         "drop_schema_template.go",
         "metadata_operations_factory.go",
         "save_schema_template.go",
-        "schema_evolution_validator.go",
+        "set_store_state.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/ddl",
     visibility = ["//visibility:public"],
@@ -28,6 +28,7 @@ go_test(
     name = "ddl_test",
     srcs = [
         "ddl_test.go",
+        "domain_registration_test.go",
         "fdb_ddl_test.go",
     ],
     tags = ["resources:memory:400"],

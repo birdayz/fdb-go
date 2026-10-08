@@ -66,14 +66,14 @@ func (p *RecordQueryUnorderedUnionPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryUnorderedUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryUnorderedUnionPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryUnorderedUnionPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("unorderedunionplan")
+	hash := p.keyFor(p).Hash("unorderedunionplan")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

@@ -1,6 +1,9 @@
 package cascades
 
 import (
+	"reflect"
+	"slices"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -27,7 +30,7 @@ import (
 //  2. Run CNF normalization (distribute OR over AND).
 //  3. If the result is already in CNF, bail (nothing to do).
 //  4. Extract the top-level AND conjuncts as the new predicate list.
-//  5. Yield a new SelectExpression with rebuilt quantifiers.
+//  5. Replace predicates while preserving the remaining Select metadata.
 //
 // The normalizer respects a complexity threshold (cnfSizeLimit) to
 // avoid exponential blow-up from deeply nested OR/AND trees. If the
@@ -65,9 +68,14 @@ type NormalizePredicatesRule struct {
 
 func NewNormalizePredicatesRule() *NormalizePredicatesRule {
 	return &NormalizePredicatesRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("normalize_predicates"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("normalize_predicates").
+			WithRootPredicate(func(sel *expressions.SelectExpression) bool {
+				return !isInNormalForm(buildAnd(sel.GetPredicates()), normalFormCNF)
+			}),
 	}
 }
+
+func (r *NormalizePredicatesRule) ConstraintDependencies() []any { return nil }
 
 func (r *NormalizePredicatesRule) Matcher() matching.BindingMatcher { return r.matcher }
 
@@ -95,19 +103,7 @@ func (r *NormalizePredicatesRule) OnMatch(call *ExpressionRuleCall) {
 	// Step 3: Extract conjuncts from the CNF result.
 	cnfConjuncts := andConjuncts(cnf)
 
-	// Step 4: Yield with original quantifiers and metadata preserved.
-	result, err := expressions.NewSelectExpressionWithJoinType(
-		sel.GetResultValue(),
-		sel.GetQuantifiers(),
-		cnfConjuncts,
-		sel.GetSourceAliases(),
-		sel.GetJoinType(),
-	)
-	if err != nil {
-		call.Fail(err)
-		return
-	}
-	call.Yield(result)
+	call.Yield(sel.WithPredicates(cnfConjuncts))
 }
 
 // applyAbsorption implements the absorption law on the CNF
@@ -126,9 +122,63 @@ func applyAbsorption(clauses [][]predicates.QueryPredicate) [][]predicates.Query
 		deduped[i] = dedupPredicateSlice(clause)
 	}
 
-	// Step 2: Remove clauses absorbed by shorter/equal clauses.
-	// A clause C_i is absorbed if some C_j (j != i) is a subset of C_i.
 	result := make([][]predicates.QueryPredicate, 0, len(deduped))
+	for _, i := range absorptionSurvivors(deduped, nil) {
+		result = append(result, deduped[i])
+	}
+	return result
+}
+
+// absorptionSurvivors returns the minimal clauses, retaining the last equal set
+// as Java does. The caller supplies deduplicated clauses and optional workspace.
+func absorptionSurvivors(deduped [][]predicates.QueryPredicate, workspace []int) []int {
+	// Union legs normalize every fixed-factor subset, so this runs over
+	// thousands of clauses; subset tests are bitset operations on equality
+	// classes rather than pairwise PredicateEquals scans.
+	atomCount := 0
+	for _, clause := range deduped {
+		atomCount += len(clause)
+	}
+	var classes predicateClasses
+	if atomCount > len(classes.inline) {
+		classes.byPointer = make(map[uintptr]int)
+	}
+	var idBuffer [64]int
+	ids := idBuffer[:0]
+	if atomCount > len(idBuffer) {
+		ids = make([]int, 0, atomCount)
+	}
+	for _, clause := range deduped {
+		for _, predicate := range clause {
+			ids = append(ids, classes.id(predicate))
+		}
+	}
+	words := (classes.size + 63) / 64
+	var setBuffer [64]uint64
+	sets := setBuffer[:]
+	if len(deduped)*words > len(setBuffer) {
+		sets = make([]uint64, len(deduped)*words)
+	} else {
+		sets = sets[:len(deduped)*words]
+	}
+	for i, clause := range deduped {
+		for _, id := range ids[:len(clause)] {
+			sets[i*words+id/64] |= 1 << (id % 64)
+		}
+		ids = ids[len(clause):]
+	}
+	containsAll := func(i, j int) bool {
+		for w := range words {
+			if sets[j*words+w]&^sets[i*words+w] != 0 {
+				return false
+			}
+		}
+		return true
+	}
+	result := workspace[:0]
+	if cap(result) < len(deduped) {
+		result = make([]int, 0, len(deduped))
+	}
 	for i, ci := range deduped {
 		absorbed := false
 		for j, cj := range deduped {
@@ -147,17 +197,58 @@ func applyAbsorption(clauses [][]predicates.QueryPredicate) [][]predicates.Query
 			// drops the first A and yields `[X, A]`; `i > j` drops the last
 			// and yields `[A, X]`. Go had the second.
 			if len(ci) > len(cj) || (len(ci) == len(cj) && i < j) {
-				if predicateSliceContainsAll(ci, cj) {
+				if containsAll(i, j) {
 					absorbed = true
 					break
 				}
 			}
 		}
 		if !absorbed {
-			result = append(result, ci)
+			result = append(result, i)
 		}
 	}
 	return result
+}
+
+// predicateClasses numbers PredicateEquals classes. Predicates are immutable, so
+// a pointer seen once keeps its class for the duration of one normalization.
+type predicateClasses struct {
+	byPointer map[uintptr]int
+	inline    [16]predicates.QueryPredicate
+	overflow  []predicates.QueryPredicate
+	size      int
+}
+
+func (c *predicateClasses) id(predicate predicates.QueryPredicate) int {
+	var pointer uintptr
+	if value := reflect.ValueOf(predicate); c.byPointer != nil && value.Kind() == reflect.Pointer && !value.IsNil() {
+		pointer = value.Pointer()
+		if id, seen := c.byPointer[pointer]; seen {
+			return id
+		}
+	}
+	equal := func(representative predicates.QueryPredicate) bool {
+		return predicates.PredicateEquals(predicate, representative)
+	}
+	id := slices.IndexFunc(c.inline[:min(c.size, len(c.inline))], equal)
+	if id < 0 {
+		if index := slices.IndexFunc(c.overflow, equal); index >= 0 {
+			id = len(c.inline) + index
+		}
+	}
+	if id < 0 {
+		id = c.size
+		if id < len(c.inline) {
+			c.inline[id] = predicate
+		} else {
+			c.overflow = append(c.overflow, predicate)
+		}
+		c.size++
+	}
+	if pointer != 0 {
+		c.byPointer[pointer] = id
+	}
+	return id
 }
 
 // dedupPredicateSlice removes duplicate predicates from a slice,
@@ -177,24 +268,6 @@ func dedupPredicateSlice(in []predicates.QueryPredicate) []predicates.QueryPredi
 		}
 	}
 	return out
-}
-
-// predicateSliceContainsAll returns true if `haystack` contains every
-// predicate in `needles` (by structural equality).
-func predicateSliceContainsAll(haystack, needles []predicates.QueryPredicate) bool {
-	for _, n := range needles {
-		found := false
-		for _, h := range haystack {
-			if predicates.PredicateEquals(n, h) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
 }
 
 // buildAnd constructs an AND predicate from a list, collapsing
@@ -231,7 +304,7 @@ func andConjuncts(pred predicates.QueryPredicate) []predicates.QueryPredicate {
 	if cp, ok := pred.(*predicates.ConstantPredicate); ok && cp.Value == predicates.TriTrue {
 		return nil
 	}
-	if and, ok := pred.(*predicates.AndPredicate); ok {
+	if and, ok := pred.(*predicates.AndPredicate); ok && !predicates.IsAtomic(and) {
 		return and.SubPredicates
 	}
 	return []predicates.QueryPredicate{pred}

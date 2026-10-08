@@ -136,7 +136,7 @@ func buildFuzzExpr(
 	case 3:
 		inner := buildFuzzExpr(t, b, (start+1)%len(b), depth+1)
 		q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
-		projectionValue, projectionErr := expressions.NewLogicalProjectionExpression(
+		projectionValue, projectionErr := newBlockSelectForTest(
 			extractionFuzzProjectedFields(t, q), q)
 		return mustConstruct(t, projectionValue, projectionErr)
 	case 4:

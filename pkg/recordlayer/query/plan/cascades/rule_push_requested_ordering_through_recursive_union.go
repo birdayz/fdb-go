@@ -27,6 +27,11 @@ func (r *PushRequestedOrderingThroughRecursiveUnionRule) Matcher() matching.Bind
 	return r.matcher
 }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *PushRequestedOrderingThroughRecursiveUnionRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *PushRequestedOrderingThroughRecursiveUnionRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return

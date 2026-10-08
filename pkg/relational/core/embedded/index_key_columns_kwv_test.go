@@ -93,8 +93,8 @@ func TestJavaAuthoredKeyWithValue_IndexColumnNamesRespectSplit(t *testing.T) {
 // TestJavaAuthoredKeyWithValue_CandidatePlansWithSplit: the same Java-authored
 // root produces a candidate whose sargable surface is the key part and whose
 // covering surface includes the value part — the candidate ADMITS (it used to
-// decline: keyExpressionFlatColumnDescriptors had no KeyWithValue arm, "safe
-// but not planned").
+// decline: the flat column bridge had no KeyWithValue arm, "safe but not
+// planned").
 func TestJavaAuthoredKeyWithValue_CandidatePlansWithSplit(t *testing.T) {
 	t.Parallel()
 	def := &metadataIndexDef{idx: javaAuthoredKWVIndex(t, 1), md: kwvTestMetadata(t)}

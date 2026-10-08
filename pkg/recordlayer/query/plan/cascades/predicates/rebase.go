@@ -43,18 +43,18 @@ func rebasePredicateMetadata(p QueryPredicate, aliases values.AliasMap) QueryPre
 	switch pred := p.(type) {
 	case *AndPredicate:
 		return rebasePredicateMetadataNary(pred, pred.SubPredicates, aliases, func(subs []QueryPredicate) QueryPredicate {
-			return NewAnd(subs...)
+			return WithAtomicity(NewAnd(subs...), pred.atomic)
 		})
 	case *OrPredicate:
 		return rebasePredicateMetadataNary(pred, pred.SubPredicates, aliases, func(subs []QueryPredicate) QueryPredicate {
-			return NewOr(subs...)
+			return WithAtomicity(NewOr(subs...), pred.atomic)
 		})
 	case *NotPredicate:
 		newChild := rebasePredicateMetadata(pred.Child, aliases)
 		if newChild == pred.Child {
 			return p
 		}
-		return NewNot(newChild)
+		return WithAtomicity(NewNot(newChild), pred.atomic)
 	case *Placeholder:
 		newAlias := pred.ParameterAlias
 		if aliases != nil {

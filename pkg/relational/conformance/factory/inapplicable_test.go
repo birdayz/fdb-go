@@ -19,9 +19,6 @@ import (
 // weakening that never announced it was temporary.
 func TestEveryInapplicabilityEntryCarriesAPin(t *testing.T) {
 	t.Parallel()
-	if len(secondPlanInapplicable) == 0 {
-		t.Skip("the ledger is empty; nothing to gate (this is the healthy state)")
-	}
 	for _, e := range secondPlanInapplicable {
 		if e.Family == "" {
 			t.Error("an inapplicability entry has no family name; the manifest could not report it")
@@ -79,74 +76,37 @@ func TestUnpinnedFamiliesAreRefused(t *testing.T) {
 		t.Fatalf("an entry with no predicate matched (family %q)", got.Family)
 	}
 
-	// The gate the pipeline calls must be the SAME gate, or the two checks
-	// above prove nothing about the execute path — they would pass just as
-	// happily if secondPlanInapplicableFor had grown its own copy of the rules.
-	//
-	// Comparing on a candidate the ledger does not claim would agree vacuously,
-	// both sides nil, so this insists on one it does. Seed 1's first candidate
-	// is not such a candidate, which is exactly how a vacuous version of this
-	// check reads as passing.
-	var matching Candidate
-	var found bool
-	for seed := uint64(1); seed <= 80 && !found; seed++ {
-		for _, c := range Candidates(seed) {
-			if inapplicableForIn(secondPlanInapplicable, c) != nil {
-				matching, found = c, true
-				break
-			}
-		}
+	// A local positive control keeps the admission arm covered even with
+	// the production exemption ledger empty.
+	pinned := []structuralInapplicability{{Family: "test", Pin: "TestUnpinnedFamiliesAreRefused", Upgrade: "test", Applies: func(Candidate) bool { return true }}}
+	if got := inapplicableForIn(pinned, cand); got != &pinned[0] {
+		t.Fatal("pinned local exemption was not admitted")
 	}
-	if !found {
-		t.Fatal("no candidate in 80 seeds is claimed by the committed ledger; this check would have compared " +
-			"two nils and proved nothing about the execute path")
-	}
-	if got, want := secondPlanInapplicableFor(matching), inapplicableForIn(secondPlanInapplicable, matching); got != want {
-		t.Fatalf("secondPlanInapplicableFor(%s) = %v, but the gate under test says %v; the execute path does "+
-			"not consult the ledger through the gate these checks exercise", matching.Name(), got, want)
+	if got := secondPlanInapplicableFor(cand); got != nil {
+		t.Fatal("production unexpectedly exempts the candidate")
 	}
 }
 
-// TestInapplicabilityMatchesOnTheSpecNotTheRun pins that membership is decided
-// by the candidate's SHAPE.
-//
-// This is the distinction the whole design rests on. "The oracle did not
-// apply" is an observation about one execution — the plans happened to match,
-// the data happened not to reach an index — and treating it as licence to
-// bless on fewer oracles turns every accident into an exemption. "The oracle
-// cannot apply" is a claim about the shape, and it is the only one that may
-// weaken a blessing.
-func TestInapplicabilityMatchesOnTheSpecNotTheRun(t *testing.T) {
+// EXISTS now responds to the second-plan perturbation. An unchanged plan
+// on one query is not permission to restore a family-wide TLP-only exemption.
+func TestCorrelatedExistsRequiresSecondPlanOracle(t *testing.T) {
 	t.Parallel()
-	var withExists, withoutExists int
+	withExists, withoutExists := 0, 0
 	for seed := uint64(1); seed <= 80; seed++ {
 		for _, c := range Candidates(seed) {
-			got := secondPlanInapplicableFor(c)
 			if c.Query.Exists != nil {
 				withExists++
-				if got == nil {
-					t.Fatalf("seed %d %s carries an EXISTS but matched no family", seed, c.Name())
-				}
-				if got.Family != "correlated-exists" {
-					t.Errorf("seed %d %s matched family %q, want correlated-exists", seed, c.Name(), got.Family)
-				}
-				continue
+			} else {
+				withoutExists++
 			}
-			withoutExists++
-			if got != nil {
-				t.Fatalf("seed %d %s carries no EXISTS but matched family %q — the exemption is broader than "+
-					"the structure that justifies it", seed, c.Name(), got.Family)
+			if got := secondPlanInapplicableFor(c); got != nil {
+				t.Fatalf("candidate %s has obsolete exemption %s", c.Name(), got.Family)
 			}
 		}
 	}
-	if withExists == 0 {
-		t.Fatal("no EXISTS candidate was generated in 80 seeds; this gate is vacuous and the corpus cannot " +
-			"be gaining EXISTS coverage either")
+	if withExists == 0 || withoutExists == 0 {
+		t.Fatalf("empty population: exists=%d other=%d", withExists, withoutExists)
 	}
-	if withoutExists == 0 {
-		t.Fatal("every candidate carried an EXISTS; the negative half of this check proved nothing")
-	}
-	t.Logf("matched %d EXISTS candidates, correctly declined %d others", withExists, withoutExists)
 }
 
 // TestInapplicabilityLedgerNamesPinsAndUpgrades pins that a run REPORTS which

@@ -355,11 +355,10 @@ func TestMemoMerge_CorrelatedToInvariant(t *testing.T) {
 }
 
 // TestMemoMerge_PanicsDuringPlanning pins the RFC-037 §0 phase tripwire:
-// once PLANNING is active, ANY cross-group merge must panic — the per-ref
-// winners/matches check alone has a blind spot for refs carrying only
-// pushed ConstraintMap entries, which a merge would orphan (the map keys
-// canonical refs at access time and cannot re-home entries written before
-// the union-find repoint).
+// once PLANNING is active, the REWRITING merge primitive must panic — the
+// per-ref winners/matches check alone has a blind spot for refs carrying
+// only pushed ConstraintMap entries, which this path does not re-home.
+// PLANNING merges go through Planner.integratePlanningYield.
 func TestMemoMerge_PanicsDuringPlanning(t *testing.T) {
 	t.Parallel()
 	a := expressions.InitialOf(fixtureScan("A"))
@@ -368,7 +367,7 @@ func TestMemoMerge_PanicsDuringPlanning(t *testing.T) {
 	m.MarkPlanningActive()
 	defer func() {
 		if recover() == nil {
-			t.Fatal("cross-group merge during PLANNING must panic (RFC-037 is REWRITING-only)")
+			t.Fatal("the REWRITING merge during PLANNING must panic")
 		}
 	}()
 	m.merge(a, b)
@@ -426,10 +425,8 @@ func TestMemoMerge_AliasRenamedSelectsMustNotMergeUngated(t *testing.T) {
 }
 
 // TestMemoMergeable_DeclinesDuringPlanning pins the soft path of the
-// RFC-037 §0 phase gate: expression rules still fire during PLANNING and
-// integrateOne consults mergeable — a PLANNING-time equivalence discovery
-// must DECLINE (keep the groups separate; always sound) instead of
-// running into the merge tripwire's panic and failing the query.
+// RFC-037 §0 phase gate: the REWRITING Integrate path consulted during
+// PLANNING must DECLINE instead of running into the merge tripwire's panic.
 func TestMemoMergeable_DeclinesDuringPlanning(t *testing.T) {
 	t.Parallel()
 	a := expressions.InitialOf(fixtureScan("A"))
@@ -441,5 +438,47 @@ func TestMemoMergeable_DeclinesDuringPlanning(t *testing.T) {
 	m.MarkPlanningActive()
 	if m.mergeable(a, b) {
 		t.Fatal("mergeable must decline once PLANNING is active")
+	}
+}
+
+// The parent-edge sets candidate lookup tests membership in stay equal to the
+// edge lists through merges, which move, rewrite and deduplicate edges.
+func TestMemoMerge_ParentEdgeSetsFollowEdges(t *testing.T) {
+	t.Parallel()
+	scanRef := expressions.InitialOf(fixtureScan("T"))
+	l := filterOver(t, scanRef)
+	r := filterOver(t, scanRef)
+	p1 := filterOver(t, l)
+	p2 := filterOver(t, r)
+	m := NewMemo(nil)
+	m.RegisterReference(p1)
+	m.RegisterReference(p2)
+	for child := range m.childToParents {
+		m.parentEdgeSet(child)
+	}
+	built := len(m.parentEdgeSets)
+
+	m.Integrate(r, freshFilterMember(t, scanRef))
+	if m.MergeCount() != 2 {
+		t.Fatalf("expected 2 merges, got %d", m.MergeCount())
+	}
+	if built == 0 {
+		t.Fatal("no edge set was built before the merges")
+	}
+	for child := range m.childToParents {
+		set, edges := m.parentEdgeSet(child), m.childToParents[child]
+		if len(set) != len(edges) {
+			t.Errorf("child %p: %d edges, %d in its set", child, len(edges), len(set))
+		}
+		for _, e := range edges {
+			if _, ok := set[e]; !ok {
+				t.Errorf("child %p: edge %v missing from its set", child, e)
+			}
+		}
+	}
+	for child := range m.parentEdgeSets {
+		if _, ok := m.childToParents[child]; !ok && len(m.parentEdgeSets[child]) > 0 {
+			t.Errorf("child %p keeps a set after losing its edges", child)
+		}
 	}
 }

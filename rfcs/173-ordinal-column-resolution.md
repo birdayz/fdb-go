@@ -1652,7 +1652,9 @@ from it by shape alone. **Ruling: disambiguate by PRODUCER CONTEXT.** `newFlatMa
 inner leg as an ordinality leg iff its inner plan IS a WITH-ORDINALITY Explode
 (`innerIsOrdinalityExplode` — the FlatMap knows its producer), and the birth binds a marked leg
 STRICTLY POSITIONALLY (`OrdinalityLegs`: slot i = Datum[`_i`]); `adaptLegPositional` reverts to pure
-name-match, so a name-model leg aliased `_0`/`_1` binds correctly by name. The **§5 name-model
+name-match, so a name-model leg aliased `_0`/`_1` binds correctly by name. (Superseded: the AT
+Explode now names its slots after the AS/AT aliases (`unnestExplode`), so every reader binds its
+own producer's names and `OrdinalityLegs` / `innerIsOrdinalityExplode` are deleted.) The **§5 name-model
 oracle** path (`DisablePositionalEmission`, test-only, bypasses `bindLeg`) needs the same producer
 context: `oracleNameDatum` reads the baked element/ordinal fields BY NAME (`OracleBakedNameFallback`),
 so the FlatMap rebinds the ordinality inner under its AS/AT alias names (positionally, `_i` → field-i

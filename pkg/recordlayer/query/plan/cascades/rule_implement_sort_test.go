@@ -6,7 +6,39 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+func TestMakeStrictlySorted_PreservesPhysicalFetchEdges(t *testing.T) {
+	t.Parallel()
+	for _, covering := range []bool{false, true} {
+		name := "index"
+		if covering {
+			name = "covering"
+		}
+		t.Run(name, func(t *testing.T) {
+			index := mustSortRuleConstruct(plans.NewRecordQueryIndexPlan("idx", nil, []string{"T"}, sortRuleRowType(), false))
+			var inner plans.RecordQueryPlan = index
+			if covering {
+				inner = mustSortRuleConstruct(plans.NewRecordQueryCoveringIndexPlan(index))
+			}
+			fetch := mustSortRuleConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(inner, nil, sortRuleRowType(), plans.FetchIndexRecordsSyntheticConstituents))
+			result, err := makeStrictlySorted(fetch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertProducerPhysicalQuantifiers(t, result)
+			rebuilt := result.(*plans.RecordQueryFetchFromPartialRecordPlan)
+			if rebuilt.GetFetchIndexRecords() != fetch.GetFetchIndexRecords() {
+				t.Fatal("fetch copy lost its fetch mode")
+			}
+			copiedIndex, ok := plans.IndexPlanOf(rebuilt.GetInner())
+			if !ok || !copiedIndex.IsStrictlySorted() || index.IsStrictlySorted() {
+				t.Fatal("strict sorting did not copy the selected index")
+			}
+		})
+	}
+}
 
 func sortRuleRowType() *values.RecordType {
 	return values.NewRecordType("SortRuleRow", false, []values.Field{

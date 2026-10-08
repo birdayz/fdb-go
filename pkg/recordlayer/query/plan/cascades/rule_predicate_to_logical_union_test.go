@@ -1,7 +1,7 @@
 package cascades
 
 import (
-	"context"
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -18,17 +18,22 @@ func mustPredicateUnionConstruct[T any](value T, err error) T {
 	return value
 }
 
-func mustFirePredicateUnionRule(
-	t testing.TB,
-	rule ExpressionRule,
-	ref *expressions.Reference,
-) []expressions.RelationalExpression {
+// Geometry tests supply admitted OR factors; matcher admission is tested separately.
+func mustExplorePredicateUnion(t testing.TB, ref *expressions.Reference) []expressions.RelationalExpression {
 	t.Helper()
-	yielded, err := FireExpressionRule(rule, ref)
-	if err != nil {
-		t.Fatalf("FireExpressionRule() unexpected error: %v", err)
+	sel := ref.Get().(*expressions.SelectExpression)
+	matched := make(map[predicates.QueryPredicate]struct{})
+	for _, predicate := range sel.GetPredicates() {
+		if _, ok := predicate.(*predicates.OrPredicate); ok {
+			matched[predicate] = struct{}{}
+		}
 	}
-	return yielded
+	call := NewExpressionRuleCall(ref, nil, nil)
+	explorePredicateUnion(call, sel, matched)
+	if err := call.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return call.Yielded()
 }
 
 func predicateUnionRowType() *values.RecordType {
@@ -100,50 +105,16 @@ func makeSelectWithOrPredicates(preds []predicates.QueryPredicate) (*expressions
 	return sel, ref
 }
 
-func mustExplorePredicateUnionRewriting(
-	t testing.TB,
-	p *Planner,
-	rootRef *expressions.Reference,
-) (int, bool) {
-	t.Helper()
-	if rootRef == nil {
-		return 0, true
-	}
-	if p.memo == nil {
-		p.memo = NewMemo(rootRef)
-	}
-	if p.constraintMap == nil {
-		p.constraintMap = NewConstraintMap()
-	}
-	if p.dataAccessConsumed == nil {
-		p.dataAccessConsumed = make(map[*expressions.Reference]int)
-	}
-	p.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: rootRef})
-	p.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: rootRef})
-	for len(p.stack) > 0 {
-		if p.tasksRun >= p.MaxTasks {
-			return p.tasksRun, false
-		}
-		p.pop().Run(context.Background(), p)
-		p.tasksRun++
-		if p.capErr != nil {
-			t.Fatalf("rewriting task failed: %v", p.capErr)
-		}
-	}
-	return p.tasksRun, true
-}
-
 func TestPredicateToLogicalUnionRule_SingleOR(t *testing.T) {
 	t.Parallel()
 
 	// SELECT WHERE (A OR B) -> DISTINCT(UNION(UNIQUE(SELECT WHERE A), UNIQUE(SELECT WHERE B)))
-	pA := predicates.NewConstantPredicate(predicates.TriTrue)
-	pB := predicates.NewConstantPredicate(predicates.TriFalse)
+	pA := predicateUnionEquals(predicateUnionSourceAlias, "a", 7)
+	pB := predicateUnionEquals(predicateUnionSourceAlias, "a", 8)
 	orPred := predicates.NewOr(pA, pB)
 
 	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{orPred})
-	rule := NewPredicateToLogicalUnionRule()
-	yielded := mustFirePredicateUnionRule(t, rule, ref)
+	yielded := mustExplorePredicateUnion(t, ref)
 
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
@@ -209,13 +180,12 @@ func TestPredicateToLogicalUnionRule_StrictSingleFailsClosed(t *testing.T) {
 		mustPredicateUnionConstruct(q.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{q},
 		[]predicates.QueryPredicate{predicates.NewOr(
-			predicates.NewConstantPredicate(predicates.TriTrue),
-			predicates.NewConstantPredicate(predicates.TriFalse),
+			predicateUnionEquals("STRICT", "x", 1),
+			predicateUnionEquals("STRICT", "y", 2),
 		)},
 	))
 
-	yielded := mustFirePredicateUnionRule(t,
-		NewPredicateToLogicalUnionRule(), expressions.InitialOf(sel))
+	yielded := mustExplorePredicateUnion(t, expressions.InitialOf(sel))
 	if len(yielded) != 0 {
 		t.Fatalf("strict-single OR select yielded %d logical-union rewrite(s), want zero", len(yielded))
 	}
@@ -227,13 +197,12 @@ func TestPredicateToLogicalUnionRule_ORWithFixedPredicates(t *testing.T) {
 	// SELECT WHERE fixed AND (A OR B)
 	// -> DISTINCT(UNION(UNIQUE(SELECT WHERE fixed AND A), UNIQUE(SELECT WHERE fixed AND B)))
 	fixed := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
-	pA := predicates.NewConstantPredicate(predicates.TriTrue)
-	pB := predicates.NewConstantPredicate(predicates.TriFalse)
+	pA := predicateUnionEquals(predicateUnionSourceAlias, "a", 7)
+	pB := predicateUnionEquals(predicateUnionSourceAlias, "a", 8)
 	orPred := predicates.NewOr(pA, pB)
 
 	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{fixed, orPred})
-	rule := NewPredicateToLogicalUnionRule()
-	yielded := mustFirePredicateUnionRule(t, rule, ref)
+	yielded := mustExplorePredicateUnion(t, ref)
 
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
@@ -256,12 +225,16 @@ func TestPredicateToLogicalUnionRule_ORWithFixedPredicates(t *testing.T) {
 		if len(sel.GetPredicates()) != 2 {
 			t.Fatalf("leg %d predicate count=%d, want 2", i, len(sel.GetPredicates()))
 		}
-		if sel.GetPredicates()[0] != fixed {
-			t.Fatalf("leg %d did not preserve the fixed predicate as its first conjunct", i)
+		residuals, err := predicates.ToResidualPredicates(sel.GetPredicates())
+		want := predicates.NewAnd(fixed, []predicates.QueryPredicate{pA, pB}[i])
+		if err != nil || !predicates.SemanticEqualsUnderAliasMap(predicates.NewAnd(residuals...), want, nil) {
+			t.Fatalf("leg %d did not preserve both the fixed predicate and its OR term: %v", i, err)
 		}
-		assertPredicateUnionOnlyAlias(t,
-			predicates.GetCorrelatedToOfPredicate(sel.GetPredicates()[0]),
-			predicateUnionSourceAlias)
+		for _, predicate := range sel.GetPredicates() {
+			assertPredicateUnionOnlyAlias(t,
+				predicates.GetCorrelatedToOfPredicate(predicate),
+				predicateUnionSourceAlias)
+		}
 	}
 }
 
@@ -275,19 +248,18 @@ func TestPredicateToLogicalUnionRule_MultipleORs(t *testing.T) {
 	//      UNIQUE(SELECT WHERE B AND C),
 	//      UNIQUE(SELECT WHERE B AND D),
 	//    ))
-	pA := predicates.NewConstantPredicate(predicates.TriTrue)
-	pB := predicates.NewConstantPredicate(predicates.TriFalse)
+	pA := predicateUnionEquals(predicateUnionSourceAlias, "a", 7)
+	pB := predicateUnionEquals(predicateUnionSourceAlias, "a", 8)
 	pC := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
 	pD := predicateUnionEquals(predicateUnionSourceAlias, "y", 2)
 	or1 := predicates.NewOr(pA, pB)
 	or2 := predicates.NewOr(pC, pD)
 
 	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{or1, or2})
-	rule := NewPredicateToLogicalUnionRule()
-	yielded := mustFirePredicateUnionRule(t, rule, ref)
+	yielded := mustExplorePredicateUnion(t, ref)
 
-	if len(yielded) != 1 {
-		t.Fatalf("yielded=%d, want 1", len(yielded))
+	if len(yielded) != 3 {
+		t.Fatalf("yielded=%d, want 3", len(yielded))
 	}
 
 	distinct := yielded[0].(*expressions.LogicalUniqueExpression)
@@ -303,12 +275,11 @@ func TestPredicateToLogicalUnionRule_DeclinesNoOR(t *testing.T) {
 	t.Parallel()
 
 	// SELECT WHERE A AND B (no ORs) -> rule declines.
-	pA := predicates.NewConstantPredicate(predicates.TriTrue)
-	pB := predicates.NewConstantPredicate(predicates.TriFalse)
+	pA := predicateUnionEquals(predicateUnionSourceAlias, "a", 7)
+	pB := predicateUnionEquals(predicateUnionSourceAlias, "a", 8)
 
 	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{pA, pB})
-	rule := NewPredicateToLogicalUnionRule()
-	yielded := mustFirePredicateUnionRule(t, rule, ref)
+	yielded := mustExplorePredicateUnion(t, ref)
 
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired despite no OR predicates — yielded %d, want 0", len(yielded))
@@ -319,39 +290,60 @@ func TestPredicateToLogicalUnionRule_DeclinesNoPredicates(t *testing.T) {
 	t.Parallel()
 
 	_, ref := makeSelectWithOrPredicates(nil)
-	rule := NewPredicateToLogicalUnionRule()
-	yielded := mustFirePredicateUnionRule(t, rule, ref)
+	yielded := mustExplorePredicateUnion(t, ref)
 
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired despite no predicates — yielded %d, want 0", len(yielded))
 	}
 }
 
-func TestPredicateToLogicalUnionRule_DeclinesExistentialQuantifier(t *testing.T) {
+func TestPredicateToLogicalUnionRule_SubsetsExistentialQuantifiers(t *testing.T) {
 	t.Parallel()
-
-	forEachQ := predicateUnionForEach("T", predicateUnionSourceAlias)
-
-	subquery := predicateUnionScan("S")
-	existQ := expressions.ExistentialQuantifier(expressions.InitialOf(subquery))
-
-	orPred := predicates.NewOr(
-		predicates.NewConstantPredicate(predicates.TriTrue),
-		predicates.NewConstantPredicate(predicates.TriFalse),
-	)
-
-	sel := mustPredicateUnionConstruct(expressions.NewSelectExpression(
-		mustPredicateUnionConstruct(forEachQ.RequireFlowedObjectValue()),
-		[]expressions.Quantifier{forEachQ, existQ},
-		[]predicates.QueryPredicate{orPred},
-	))
-	ref := expressions.InitialOf(sel)
-
-	rule := NewPredicateToLogicalUnionRule()
-	yielded := mustFirePredicateUnionRule(t, rule, ref)
-
-	if len(yielded) != 0 {
-		t.Fatalf("rule fired despite existential quantifier — yielded %d, want 0", len(yielded))
+	for _, fixed := range []bool{false, true} {
+		t.Run(fmt.Sprint(fixed), func(t *testing.T) {
+			t.Parallel()
+			q := predicateUnionForEach("T", predicateUnionSourceAlias)
+			ex := expressions.ExistentialQuantifier(expressions.InitialOf(predicateUnionScan("S")))
+			unused := expressions.ExistentialQuantifier(expressions.InitialOf(predicateUnionScan("U")))
+			ep := mustPredicateUnionConstruct(predicates.NewExistentialAlias(ex.GetAlias(), predicateUnionRowType()))
+			ps := []predicates.QueryPredicate{predicates.NewOr(predicateUnionEquals(predicateUnionSourceAlias, "x", 1), ep)}
+			if fixed {
+				ps = []predicates.QueryPredicate{ep, predicates.NewOr(predicateUnionEquals(predicateUnionSourceAlias, "x", 1), predicateUnionEquals(predicateUnionSourceAlias, "y", 2))}
+			}
+			sel := mustPredicateUnionConstruct(expressions.NewSelectExpression(mustPredicateUnionConstruct(q.RequireFlowedObjectValue()), []expressions.Quantifier{q, ex, unused}, ps))
+			yielded := mustExplorePredicateUnion(t, expressions.InitialOf(sel))
+			if len(yielded) != 1 {
+				t.Fatalf("yielded=%d, want union alternative", len(yielded))
+			}
+			unique := yielded[0].(*expressions.LogicalUniqueExpression)
+			union := unique.GetInner().GetRangesOver().Get().(*expressions.LogicalUnionExpression)
+			if len(union.GetQuantifiers()) != 2 {
+				t.Fatal("expected two union legs")
+			}
+			existentialLegs := 0
+			for _, legQ := range union.GetQuantifiers() {
+				legUnique := legQ.GetRangesOver().Get().(*expressions.LogicalUniqueExpression)
+				leg := legUnique.GetInner().GetRangesOver().Get().(*expressions.SelectExpression)
+				for _, lq := range leg.GetQuantifiers() {
+					if lq.GetAlias() == unused.GetAlias() {
+						t.Fatal("unused existential copied into leg")
+					}
+					if lq.Kind() == expressions.QuantifierExistential {
+						existentialLegs++
+						if lq.GetAlias() != ex.GetAlias() || lq.GetRangesOver() != ex.GetRangesOver() {
+							t.Fatal("existential binding changed")
+						}
+					}
+				}
+			}
+			want := 1
+			if fixed {
+				want = 2
+			}
+			if existentialLegs != want {
+				t.Fatalf("existential legs=%d want %d", existentialLegs, want)
+			}
+		})
 	}
 }
 
@@ -363,8 +355,8 @@ func TestPredicateToLogicalUnionRule_DeclinesMultipleForEach(t *testing.T) {
 	q2 := predicateUnionForEach("T2", "predicate_union_right")
 
 	orPred := predicates.NewOr(
-		predicates.NewConstantPredicate(predicates.TriTrue),
-		predicates.NewConstantPredicate(predicates.TriFalse),
+		predicateUnionEquals(q1.GetAlias().Name(), "x", 1),
+		predicateUnionEquals(q1.GetAlias().Name(), "y", 2),
 	)
 
 	sel := mustPredicateUnionConstruct(expressions.NewSelectExpression(
@@ -374,8 +366,7 @@ func TestPredicateToLogicalUnionRule_DeclinesMultipleForEach(t *testing.T) {
 	))
 	ref := expressions.InitialOf(sel)
 
-	rule := NewPredicateToLogicalUnionRule()
-	yielded := mustFirePredicateUnionRule(t, rule, ref)
+	yielded := mustExplorePredicateUnion(t, ref)
 
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired despite multiple ForEach quantifiers — yielded %d, want 0", len(yielded))
@@ -395,8 +386,8 @@ func TestPredicateToLogicalUnionRule_NonSimpleResultValue(t *testing.T) {
 	})
 
 	orPred := predicates.NewOr(
-		predicates.NewConstantPredicate(predicates.TriTrue),
-		predicates.NewConstantPredicate(predicates.TriFalse),
+		predicateUnionEquals(predicateUnionSourceAlias, "x", 1),
+		predicateUnionEquals(predicateUnionSourceAlias, "y", 2),
 	)
 
 	sel := mustPredicateUnionConstruct(expressions.NewSelectExpression(
@@ -406,8 +397,7 @@ func TestPredicateToLogicalUnionRule_NonSimpleResultValue(t *testing.T) {
 	))
 	ref := expressions.InitialOf(sel)
 
-	rule := NewPredicateToLogicalUnionRule()
-	yielded := mustFirePredicateUnionRule(t, rule, ref)
+	yielded := mustExplorePredicateUnion(t, ref)
 
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
@@ -442,39 +432,17 @@ func TestPredicateToLogicalUnionRule_NonSimpleResultValue(t *testing.T) {
 	}
 }
 
-func TestPredicateToLogicalUnionRule_Convergence(t *testing.T) {
-	t.Parallel()
-
-	// Verify the rule does NOT re-fire on its own output. Run through
-	// the planner with just this rule and NormalizePredicatesRule.
-	pA := predicates.NewConstantPredicate(predicates.TriTrue)
-	pB := predicates.NewConstantPredicate(predicates.TriFalse)
-	orPred := predicates.NewOr(pA, pB)
-
-	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{orPred})
-
-	rules := []ExpressionRule{
-		NewNormalizePredicatesRule(),
-		NewPredicateToLogicalUnionRule(),
-	}
-	_, converged := mustExplorePredicateUnionRewriting(t, NewPlanner(rules, nil), ref)
-	if !converged {
-		t.Fatal("did not converge — rule is re-firing on its own output")
-	}
-}
-
 func TestPredicateToLogicalUnionRule_ThreeWayOR(t *testing.T) {
 	t.Parallel()
 
 	// SELECT WHERE (A OR B OR C) -> DISTINCT(UNION(3 legs))
-	pA := predicates.NewConstantPredicate(predicates.TriTrue)
-	pB := predicates.NewConstantPredicate(predicates.TriFalse)
+	pA := predicateUnionEquals(predicateUnionSourceAlias, "a", 7)
+	pB := predicateUnionEquals(predicateUnionSourceAlias, "a", 8)
 	pC := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
 	orPred := predicates.NewOr(pA, pB, pC)
 
 	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{orPred})
-	rule := NewPredicateToLogicalUnionRule()
-	yielded := mustFirePredicateUnionRule(t, rule, ref)
+	yielded := mustExplorePredicateUnion(t, ref)
 
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
@@ -488,18 +456,54 @@ func TestPredicateToLogicalUnionRule_ThreeWayOR(t *testing.T) {
 	}
 }
 
+func TestPredicateUnionDeclinesSimplifiedConstantOrSingleton(t *testing.T) {
+	t.Parallel()
+	p := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
+	for _, pred := range []predicates.QueryPredicate{
+		predicates.NewOr(predicates.NewConstantPredicate(predicates.TriTrue), p),
+		predicates.NewOr(predicates.NewConstantPredicate(predicates.TriFalse), p),
+		predicates.NewOr(predicates.NewConstantPredicate(predicates.TriFalse), predicates.NewConstantPredicate(predicates.TriFalse)),
+	} {
+		_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{pred})
+		if got := mustExplorePredicateUnion(t, ref); len(got) != 0 {
+			t.Fatalf("simplified non-disjunction generated union alternatives: %s", pred.Explain())
+		}
+	}
+}
+
+func TestUnionDNFSimplifiesDistributedTerms(t *testing.T) {
+	t.Parallel()
+	a := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
+	b := predicateUnionEquals(predicateUnionSourceAlias, "y", 2)
+	c := predicateUnionEquals(predicateUnionSourceAlias, "y", 3)
+	terms := mustPredicateUnionConstruct(predicateUnionDNFTerms([]predicates.QueryPredicate{
+		predicates.NewOr(predicates.NewNot(a), predicates.NewConstantPredicate(predicates.TriFalse)),
+		predicates.NewOr(b, c),
+	}))
+	if len(terms) != 2 {
+		t.Fatalf("DNF retained annihilated branches: got %d terms, want 2", len(terms))
+	}
+	for _, term := range terms {
+		for _, conjunct := range andConjuncts(term) {
+			if _, not := conjunct.(*predicates.NotPredicate); not {
+				t.Fatal("DNF retained NOT over a comparison instead of its inverse")
+			}
+		}
+	}
+}
+
 func TestOrsToDNFTerms_TwoByTwo(t *testing.T) {
 	t.Parallel()
 
-	pA := predicates.NewConstantPredicate(predicates.TriTrue)
-	pB := predicates.NewConstantPredicate(predicates.TriFalse)
+	pA := predicateUnionEquals(predicateUnionSourceAlias, "a", 7)
+	pB := predicateUnionEquals(predicateUnionSourceAlias, "a", 8)
 	pC := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
 	pD := predicateUnionEquals(predicateUnionSourceAlias, "y", 2)
 
 	or1 := predicates.NewOr(pA, pB)
 	or2 := predicates.NewOr(pC, pD)
 
-	terms := orsToDNFTerms([]*predicates.OrPredicate{or1, or2})
+	terms := mustPredicateUnionConstruct(predicateUnionDNFTerms([]predicates.QueryPredicate{or1, or2}))
 
 	// 2 * 2 = 4 terms.
 	if len(terms) != 4 {
@@ -521,17 +525,131 @@ func TestOrsToDNFTerms_TwoByTwo(t *testing.T) {
 func TestOrsToDNFTerms_ThreeByTwo(t *testing.T) {
 	t.Parallel()
 
-	pA := predicates.NewConstantPredicate(predicates.TriTrue)
-	pB := predicates.NewConstantPredicate(predicates.TriFalse)
+	pA := predicateUnionEquals(predicateUnionSourceAlias, "a", 7)
+	pB := predicateUnionEquals(predicateUnionSourceAlias, "a", 8)
 	pC := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
 
 	or1 := predicates.NewOr(pA, pB)
 	or2 := predicates.NewOr(pC)
 
-	terms := orsToDNFTerms([]*predicates.OrPredicate{or1, or2})
+	terms := mustPredicateUnionConstruct(predicateUnionDNFTerms([]predicates.QueryPredicate{or1, or2}))
 
 	// 2 * 1 = 2 terms.
 	if len(terms) != 2 {
 		t.Fatalf("DNF terms=%d, want 2", len(terms))
+	}
+}
+
+func TestUnionDNFAbsorbsDistributedCrossProducts(t *testing.T) {
+	t.Parallel()
+	a := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
+	b := predicateUnionEquals(predicateUnionSourceAlias, "y", 2)
+	c := predicateUnionEquals(predicateUnionSourceAlias, "x", 3)
+	d := predicateUnionEquals(predicateUnionSourceAlias, "y", 4)
+	ors := []predicates.QueryPredicate{
+		predicates.NewOr(a, c), predicates.NewOr(a, d), predicates.NewOr(b, c), predicates.NewOr(b, d),
+	}
+	terms := mustPredicateUnionConstruct(predicateUnionDNFTerms(ors))
+	if len(terms) != 2 {
+		t.Fatalf("CNF of (a AND b) OR (c AND d) expanded into %d legs, want 2 after absorption", len(terms))
+	}
+}
+
+func TestPredicateToLogicalUnionRule_PreservesProjectedExistentialScope(t *testing.T) {
+	t.Parallel()
+	q := predicateUnionForEach("T", predicateUnionSourceAlias)
+	ex := expressions.ExistentialQuantifier(expressions.InitialOf(predicateUnionScan("S")))
+	rv := mustPredicateUnionConstruct(ex.RequireFlowedObjectValue())
+	sel := mustPredicateUnionConstruct(expressions.NewSelectExpression(rv, []expressions.Quantifier{q, ex}, []predicates.QueryPredicate{predicates.NewOr(predicateUnionEquals(predicateUnionSourceAlias, "x", 1), predicateUnionEquals(predicateUnionSourceAlias, "y", 2))}))
+	if out := mustExplorePredicateUnion(t, expressions.InitialOf(sel)); len(out) != 0 {
+		t.Fatal("union moved the projected existential outside its owning scope")
+	}
+}
+
+func TestPredicateUnionFixedFactorsStayAtomic(t *testing.T) {
+	t.Parallel()
+	first := predicates.NewOr(predicateUnionEquals(predicateUnionSourceAlias, "x", 1), predicateUnionEquals(predicateUnionSourceAlias, "x", 2))
+	second := predicates.NewOr(predicateUnionEquals(predicateUnionSourceAlias, "y", 3), predicateUnionEquals(predicateUnionSourceAlias, "y", 4))
+	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{first, second})
+	yielded := mustExplorePredicateUnion(t, ref)
+	if len(yielded) != 3 {
+		t.Fatalf("alternatives = %d, want full DNF plus either fixed factor", len(yielded))
+	}
+	counts := map[int]int{}
+	for _, expression := range yielded {
+		union := expression.(*expressions.LogicalUniqueExpression).GetInner().GetRangesOver().Get().(*expressions.LogicalUnionExpression)
+		counts[len(union.GetQuantifiers())]++
+		for _, q := range union.GetQuantifiers() {
+			leg := q.GetRangesOver().Get().(*expressions.LogicalUniqueExpression).GetInner().GetRangesOver().Get().(*expressions.SelectExpression)
+			for _, predicate := range leg.GetPredicates() {
+				if _, isOr := predicate.(*predicates.OrPredicate); isOr && !predicates.IsAtomic(predicate) {
+					t.Fatal("fixed factor remains expandable")
+				}
+			}
+			if result := mustExplorePredicateUnion(t, expressions.InitialOf(leg)); len(result) != 0 {
+				t.Fatal("fixed factor recursively expanded")
+			}
+		}
+	}
+	if counts[2] != 2 || counts[4] != 1 {
+		t.Fatalf("union leg counts = %v", counts)
+	}
+}
+
+func TestPredicateUnionRequiresOrTermMatch(t *testing.T) {
+	t.Parallel()
+	disjunction := predicates.NewOr(predicateUnionEquals(predicateUnionSourceAlias, "x", 1), predicateUnionEquals(predicateUnionSourceAlias, "y", 2))
+	_, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{disjunction})
+	yielded, err := FireExpressionRule(NewPredicateToLogicalUnionRule(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(yielded) != 0 {
+		t.Fatal("union expanded before any candidate matched an OR term")
+	}
+}
+
+func TestPredicateUnionKeepsUnmatchedOrFixed(t *testing.T) {
+	t.Parallel()
+	first := predicates.NewOr(predicateUnionEquals(predicateUnionSourceAlias, "x", 1), predicateUnionEquals(predicateUnionSourceAlias, "x", 2))
+	second := predicates.NewOr(predicateUnionEquals(predicateUnionSourceAlias, "y", 3), predicateUnionEquals(predicateUnionSourceAlias, "y", 4))
+	sel, ref := makeSelectWithOrPredicates([]predicates.QueryPredicate{first, second})
+	call := NewExpressionRuleCall(ref, nil, nil)
+	explorePredicateUnion(call, sel, map[predicates.QueryPredicate]struct{}{first: {}})
+	if err := call.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(call.Yielded()) != 1 {
+		t.Fatalf("want exactly the alternative fixing unmatched y OR, got %d", len(call.Yielded()))
+	}
+	union := call.Yielded()[0].(*expressions.LogicalUniqueExpression).GetInner().GetRangesOver().Get().(*expressions.LogicalUnionExpression)
+	if len(union.GetQuantifiers()) != 2 {
+		t.Fatal("unmatched OR was expanded")
+	}
+	for _, q := range union.GetQuantifiers() {
+		leg := q.GetRangesOver().Get().(*expressions.LogicalUniqueExpression).GetInner().GetRangesOver().Get().(*expressions.SelectExpression)
+		fixed := leg.GetPredicates()[0]
+		if !predicates.IsAtomic(fixed) || !predicates.PredicateEquals(predicates.WithAtomicity(fixed, false), second) {
+			t.Fatal("wrong fixed residual")
+		}
+	}
+}
+
+func TestPredicateUnionAboveSubsetLimitStillExpandsDNF(t *testing.T) {
+	t.Parallel()
+	a := predicateUnionEquals(predicateUnionSourceAlias, "x", 1)
+	b := predicateUnionEquals(predicateUnionSourceAlias, "y", 2)
+	var factors []predicates.QueryPredicate
+	for range DefaultMaxNumConjuncts + 1 {
+		factors = append(factors, predicates.NewOr(a, b))
+	}
+	_, ref := makeSelectWithOrPredicates(factors)
+	result := mustExplorePredicateUnion(t, ref)
+	if len(result) != 1 {
+		t.Fatalf("above subset limit: alternatives = %d, want full DNF only", len(result))
+	}
+	union := result[0].(*expressions.LogicalUniqueExpression).GetInner().GetRangesOver().Get().(*expressions.LogicalUnionExpression)
+	if len(union.GetQuantifiers()) != 2 {
+		t.Fatal("full DNF did not absorb repeated terms")
 	}
 }

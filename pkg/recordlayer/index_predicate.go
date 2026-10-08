@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	gen "fdb.dev/gen"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/indexpredicate"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -50,7 +50,7 @@ func predicateFromProto(p *gen.Predicate) (IndexPredicate, error) {
 //
 // The consequence for anything reasoning about index COMPLETENESS is the
 // opposite of what this `true` suggests, so it must not leak upward: the index
-// holds only the qualifying rows. NormalizeIndexPredicateProto deliberately
+// holds only the qualifying rows. indexpredicate.Normalize deliberately
 // refuses to fold this arm to a constant, and indexPredicateToQueryPredicate
 // refuses to convert it at all, so a candidate over such an index is excluded
 // rather than matched as a full index. Both of those are reachable from here
@@ -80,13 +80,13 @@ func rowNumberWindowPredicateFromProto(p *gen.RowNumberWindowPredicate) (IndexPr
 }
 
 // predicateProtoIsTautology reports whether a stored index predicate provably
-// rejects no record. The classification itself lives in the cascades package,
-// beside the candidate boundary that is its other consumer: the executor's
-// completeness backstop and the planner's sparseness gates must never answer
-// differently about the same stored bytes, and one function is the only way to
-// guarantee that.
+// rejects no record. The classification itself lives in package indexpredicate,
+// shared with the planner's candidate boundary: the executor's completeness
+// backstop and the planner's sparseness gates must never answer differently
+// about the same stored bytes, and one function is the only way to guarantee
+// that.
 func predicateProtoIsTautology(p *gen.Predicate) bool {
-	return cascades.IndexPredicateProtoIsTautology(p)
+	return indexpredicate.IsTautology(p)
 }
 
 func andPredicateFromProto(p *gen.AndPredicate) (IndexPredicate, error) {
@@ -198,7 +198,10 @@ func nullComparisonFromProto(nc *gen.NullComparison) (comparisonFunc, error) {
 
 func simpleComparisonFromProto(sc *gen.SimpleComparison) (comparisonFunc, error) {
 	cmpType := sc.GetType()
-	operand := extractValueOperand(sc.Operand)
+	operand, err := extractValueOperand(sc.Operand)
+	if err != nil {
+		return nil, err
+	}
 
 	switch cmpType {
 	case gen.ComparisonType_IS_NULL:
@@ -267,35 +270,27 @@ func simpleComparisonFromProto(sc *gen.SimpleComparison) (comparisonFunc, error)
 	}
 }
 
-// extractValueOperand converts a gen.Value proto to a Go value for comparison.
-func extractValueOperand(v *gen.Value) any {
-	if v == nil {
-		return nil
+// extractValueOperand is a comparison's operand as Java's
+// IndexComparison.SimpleComparison(proto) reads it:
+// Objects.requireNonNull(LiteralKeyExpression.fromProtoValue(operand)), so an
+// operand with more than one value is valueFromProto's RecordCoreError and one
+// with none is refused (Java's NullPointerException, which Go has no class for;
+// DIVERGENCES.md), both when the meta-data is loaded. Integers and floats widen
+// to the forms Go compares record values in.
+func extractValueOperand(v *gen.Value) (any, error) {
+	val, err := valueFromProto(v)
+	if err != nil {
+		return nil, err
 	}
-	// Check each field in priority order matching Java's Value semantics.
-	// proto2 optional fields use pointer types; check non-nil.
-	if v.LongValue != nil {
-		return *v.LongValue
+	switch x := val.(type) {
+	case nil:
+		return nil, &RecordCoreError{Message: "index comparison operand has no value"}
+	case int32:
+		return int64(x), nil
+	case float32:
+		return float64(x), nil
 	}
-	if v.IntValue != nil {
-		return int64(*v.IntValue)
-	}
-	if v.DoubleValue != nil {
-		return *v.DoubleValue
-	}
-	if v.FloatValue != nil {
-		return float64(*v.FloatValue)
-	}
-	if v.BoolValue != nil {
-		return *v.BoolValue
-	}
-	if v.StringValue != nil {
-		return *v.StringValue
-	}
-	if v.BytesValue != nil {
-		return v.BytesValue
-	}
-	return nil
+	return val, nil
 }
 
 // resolveFieldPath navigates into a proto message following a field path
@@ -312,8 +307,10 @@ func resolveFieldPath(msg proto.Message, path []string) (any, bool) {
 		}
 		isLast := i == len(path)-1
 		if !isLast {
-			// Navigate into sub-message
-			if fd.Kind() != protoreflect.MessageKind {
+			// Navigate into a sub-message, a group included: Java's FieldValue
+			// reads a group as the message it is (protobuf-java's MESSAGE java
+			// type), as key expressions do (isMessageField).
+			if !isMessageField(fd) {
 				return nil, false
 			}
 			if !m.Has(fd) {
@@ -343,7 +340,8 @@ func protoFieldToGoValue(m protoreflect.Message, fd protoreflect.FieldDescriptor
 	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
 		return v.Int()
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
-		return int64(v.Uint())
+		// Signed, as Java's protobuf-java reads a 32-bit unsigned field.
+		return int64(int32(uint32(v.Uint())))
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		return int64(v.Uint())
 	case protoreflect.FloatKind:

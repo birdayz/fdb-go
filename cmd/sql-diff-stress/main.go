@@ -17,15 +17,17 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"fdb.dev/pkg/relational/conformance/rowdiff"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 
-	_ "fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/relational/sqldriver"
 )
 
 func main() {
+	sqldriver.RegisterDomainIfNotExists("FRL")
 	seeds := flag.Uint64("seeds", 100, "number of seeds to run")
 	seedStart := flag.Uint64("seed-start", 1, "first seed number")
 	templates := flag.Bool("templates", true, "also run the directed template seeds (per-family hard gate)")
@@ -63,8 +65,8 @@ func run(seeds, seedStart uint64, templates bool) int {
 	tmp.Close()
 	clusterFile := tmp.Name()
 
-	const dbPath = "/sqldiffstress"
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", dbPath, clusterFile))
+	const dbPath = "/FRL/sqldiffstress"
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s", strings.ToUpper(dbPath), clusterFile))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "INFRA: open: %v\n", err)
 		return 2

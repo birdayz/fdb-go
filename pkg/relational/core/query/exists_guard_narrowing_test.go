@@ -92,23 +92,34 @@ func TestExistsBoundCTERebasesOnlyExportedBinding(t *testing.T) {
 	body.ProjectedValues = []values.Value{bodyValue}
 	carrier := logical.NewCTE("D", body, logical.NewScan("D", "D"), false)
 	carrier.Binding = bound.Name()
-	predicate := predicates.NewComparisonPredicate(exactDemoRef(t, "PRIVATE", "order_id"), predicates.Comparison{
+	md := demoMetaData(t)
+	input, err := LowerExistsInput(carrier, md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := values.NewQuantifiedObjectValue(bound, input.ResultType())
+	if err != nil {
+		t.Fatal(err)
+	}
+	field, err := values.ResolveFieldOrdinals(root, []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	predicate := predicates.NewComparisonPredicate(field, predicates.Comparison{
 		Type: predicates.ComparisonEquals, Operand: exactDemoRef(t, "D", "order_id"),
 	})
-	esq := logical.ExistsSubquery{Alias: target, Plan: carrier, JoinPredicate: predicate}
-	tr := &cascadesTranslator{}
-	name, got := tr.existsInnerCorrelation(esq)
-	if tr.translateErr != nil {
-		t.Fatal(tr.translateErr)
+	esq := logical.ExistsSubquery{Alias: target, Plan: carrier, Input: input, FlowedType: input.ResultType(), JoinPredicate: predicate}
+	tr := &cascadesTranslator{md: md}
+	ref := tr.existsInputRef(esq)
+	if tr.translateErr != nil || ref == nil {
+		t.Fatalf("attachment: ref=%v err=%v", ref, tr.translateErr)
 	}
-	correlations := predicates.GetCorrelatedToOfPredicate(got)
-	if name != target.Name() || len(correlations) != 2 {
-		t.Fatalf("binding=%s refs=%v, want existential and outer", name, correlations)
+	correlations := ref.GetCorrelatedTo()
+	if _, present := correlations[outer]; !present || len(correlations) != 1 {
+		t.Fatalf("input correlations=%v, want only outer D", correlations)
 	}
-	for _, want := range []values.CorrelationIdentifier{target, outer} {
-		if _, present := correlations[want]; !present {
-			t.Errorf("missing exact correlation %#v in %v", want, correlations)
-		}
+	if ref.Get().GetQuantifiers()[0].GetRangesOver() != input.Reference() {
+		t.Fatal("attachment rebuilt the owned derived producer")
 	}
 	original := predicates.GetCorrelatedToOfPredicate(predicate)
 	if _, present := original[bound]; !present {

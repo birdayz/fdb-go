@@ -134,10 +134,11 @@ type dataAccessTestCandidate struct {
 	fixedPlan         plans.RecordQueryPlan
 	unique            bool
 	createsDuplicates bool
+	traversal         *Traversal
 }
 
 func (c *dataAccessTestCandidate) CandidateName() string    { return c.name }
-func (c *dataAccessTestCandidate) GetTraversal() *Traversal { return nil }
+func (c *dataAccessTestCandidate) GetTraversal() *Traversal { return c.traversal }
 func (c *dataAccessTestCandidate) GetColumnNames() []string { return c.columnNames }
 func (c *dataAccessTestCandidate) GetKeyComponentTypes() []values.Type {
 	return append([]values.Type(nil), c.keyComponentTypes...)
@@ -291,8 +292,11 @@ func (m *testMatchInfo) GetRegularMatchInfo() *RegularMatchInfo {
 
 // testPartialMatch is a minimal PartialMatch for tests.
 type testPartialMatch struct {
-	candidate MatchCandidate
-	matchInfo MatchInfo
+	candidate    MatchCandidate
+	matchInfo    MatchInfo
+	candidateRef *expressions.Reference
+	// queryExpression is the member of the query reference the match is for.
+	queryExpression expressions.RelationalExpression
 }
 
 func (pm *testPartialMatch) GetMatchCandidate() MatchCandidate   { return pm.candidate }
@@ -300,6 +304,9 @@ func (pm *testPartialMatch) GetMatchInfo() MatchInfo             { return pm.mat
 func (pm *testPartialMatch) GetBoundAliasMap() *AliasMap         { return EmptyAliasMap() }
 func (pm *testPartialMatch) GetQueryRef() *expressions.Reference { return nil }
 func (pm *testPartialMatch) GetQueryExpression() expressions.RelationalExpression {
+	if pm != nil && pm.queryExpression != nil {
+		return pm.queryExpression
+	}
 	if pm == nil || pm.matchInfo == nil {
 		return nil
 	}
@@ -309,7 +316,7 @@ func (pm *testPartialMatch) GetQueryExpression() expressions.RelationalExpressio
 	}
 	return &dataAccessTestResultExpression{resultValue: maxMatchMap.GetQueryValue()}
 }
-func (pm *testPartialMatch) GetCandidateRef() *expressions.Reference { return nil }
+func (pm *testPartialMatch) GetCandidateRef() *expressions.Reference { return pm.candidateRef }
 func (pm *testPartialMatch) GetRegularMatchInfo() *RegularMatchInfo {
 	return pm.matchInfo.GetRegularMatchInfo()
 }
@@ -416,7 +423,9 @@ func makeDataAccessTestPartialMatchWithPK(name string, numParts int, plan plans.
 		))
 	}
 
+	root := expressions.InitialOf(mustPlannerTestConstruct(expressions.NewFullUnorderedScanExpression([]string{"TestRecord"}, dataAccessTestRow)))
 	candidate := &dataAccessTestCandidate{
+		traversal:         NewTraversal(root),
 		name:              name,
 		sargableAliases:   sargAliases,
 		columnNames:       columnNames,
@@ -426,7 +435,8 @@ func makeDataAccessTestPartialMatchWithPK(name string, numParts int, plan plans.
 	}
 
 	return &testPartialMatch{
-		candidate: candidate,
+		candidate:    candidate,
+		candidateRef: root,
 		matchInfo: &testMatchInfo{
 			orderingParts: parts,
 			paramBindings: paramBindings,
@@ -517,6 +527,77 @@ func TestPrepareMatchesAndCompensations_SingleMatch(t *testing.T) {
 	}
 	if accesses[0].GetPartialMatch() != pm {
 		t.Fatal("access should reference the original PartialMatch")
+	}
+}
+
+// TestPrepareMatchesAndCompensations_UnrestrictedScanNeedsAnOrder pins the
+// Go-only pruning: a match binding no search argument is realized only for a
+// request it orders, and a PRESERVE request (the top level's unsorted sort)
+// orders nothing.
+// TestPrepareMatchesAndCompensations_UnrestrictedScanIsKept pins F-7c: a full
+// index scan with no search argument is an access under PRESERVE, as in Java
+// (PRESERVE is satisfied by every scan; AbstractDataAccessRule keeps the
+// match), so PREFER_INDEX can rank it against the primary scan. Go used to
+// drop it.
+func TestPrepareMatchesAndCompensations_UnrestrictedScanIsKept(t *testing.T) {
+	t.Parallel()
+
+	pm := makeDataAccessTestPartialMatch("unrestricted", 0, &testPlan{name: "full_scan"})
+	if hasRestrictedScan(pm) {
+		t.Fatal("fixture binds a search argument")
+	}
+	if accesses := PrepareMatchesAndCompensations(
+		[]PartialMatch{pm},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
+		EmptyPlanContext(),
+	); len(accesses) != 1 {
+		t.Fatalf("PRESERVE realized %d unrestricted accesses, want 1", len(accesses))
+	}
+	byID := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: dataAccessTestKey("ID"), SortOrder: properties.RequestedSortOrderAscending},
+		},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+	if accesses := PrepareMatchesAndCompensations(
+		[]PartialMatch{pm},
+		[]*properties.RequestedOrdering{properties.PreserveOrdering(), byID},
+		EmptyPlanContext(),
+	); len(accesses) != 1 {
+		t.Fatalf("an order the scan provides realized %d accesses, want 1", len(accesses))
+	}
+}
+
+// TestPrepareMatchesAndCompensations_SkipsAMatchSatisfyingNoRequest pins
+// Java's skip (AbstractDataAccessRule.java:660-662): a match that satisfies
+// none of the requested orderings is no access. Go keeps it when a request is
+// sortable (its consumer sorts in memory, which Java cannot) and when the
+// reference has no request at all.
+func TestPrepareMatchesAndCompensations_SkipsAMatchSatisfyingNoRequest(t *testing.T) {
+	t.Parallel()
+
+	pm := makeDataAccessTestPartialMatch("unrestricted", 0, &testPlan{name: "full_scan"})
+	byOther := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{
+			{Value: dataAccessTestKey("NAME"), SortOrder: properties.RequestedSortOrderAscending},
+		},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+	for _, c := range []struct {
+		name      string
+		requested []*properties.RequestedOrdering
+		want      int
+	}{
+		{"unsatisfied request skips", []*properties.RequestedOrdering{byOther}, 0},
+		{"sortable request keeps", []*properties.RequestedOrdering{byOther.Sortable()}, 1},
+		{"preserve beside keeps", []*properties.RequestedOrdering{byOther, properties.PreserveOrdering()}, 1},
+		{"no request keeps", nil, 1},
+	} {
+		if got := len(PrepareMatchesAndCompensations([]PartialMatch{pm}, c.requested, EmptyPlanContext())); got != c.want {
+			t.Errorf("%s: %d accesses, want %d", c.name, got, c.want)
+		}
 	}
 }
 
@@ -825,7 +906,7 @@ func TestDataAccessForMatchPartition_SingleMatch(t *testing.T) {
 	plan := &testPlan{name: "single_idx"}
 	pm := makeDataAccessTestPartialMatch("idx", 2, plan)
 
-	exprs := DataAccessForMatchPartition(
+	exprs := DataAccessForMatchPartition(compensationTestMemoizer(),
 		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{pm},
 		EmptyPlanContext(),
@@ -849,7 +930,7 @@ func TestDataAccessForMatchPartition_SingleMatch(t *testing.T) {
 func TestDataAccessForMatchPartition_NoMatches(t *testing.T) {
 	t.Parallel()
 
-	exprs := DataAccessForMatchPartition(
+	exprs := DataAccessForMatchPartition(compensationTestMemoizer(),
 		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		nil, // no matches
 		EmptyPlanContext(),
@@ -887,7 +968,7 @@ func TestDataAccessForMatchPartition_MultipleMatchesWithIntersector(t *testing.T
 		)
 	}
 
-	exprs := DataAccessForMatchPartition(
+	exprs := DataAccessForMatchPartition(compensationTestMemoizer(),
 		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{pm1, pm2},
 		EmptyPlanContext(),
@@ -925,7 +1006,7 @@ func TestDataAccessForMatchPartition_MultipleMatchesNoIntersector(t *testing.T) 
 	pm2 := makeDataAccessTestPartialMatch("idx2", 1, plan2)
 
 	// nil intersector -- should just return individual scans.
-	exprs := DataAccessForMatchPartition(
+	exprs := DataAccessForMatchPartition(compensationTestMemoizer(),
 		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{pm1, pm2},
 		EmptyPlanContext(),
@@ -950,7 +1031,7 @@ func TestDataAccessForMatchPartition_IntersectorNoViable(t *testing.T) {
 		return NoViableIntersection()
 	}
 
-	exprs := DataAccessForMatchPartition(
+	exprs := DataAccessForMatchPartition(compensationTestMemoizer(),
 		[]*properties.RequestedOrdering{properties.PreserveOrdering()},
 		[]PartialMatch{pm1, pm2},
 		EmptyPlanContext(),

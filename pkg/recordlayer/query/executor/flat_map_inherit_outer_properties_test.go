@@ -39,7 +39,7 @@ func TestFlatMapInheritOuterRecordProperties(t *testing.T) {
 			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
-				c, err := newFlatMapCursorWithOuterProperties(
+				c, err := newFlatMapCursorForPlan(
 					recordlayer.FromList([]QueryResult{}),
 					nil,
 					nil,
@@ -50,9 +50,10 @@ func TestFlatMapInheritOuterRecordProperties(t *testing.T) {
 					seed,
 					recordlayer.ExecuteProperties{},
 					tc.inherit,
+					false,
 				)
 				if err != nil {
-					t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
+					t.Fatalf("newFlatMapCursorForPlan: %v", err)
 				}
 				defer c.Close()
 
@@ -79,7 +80,7 @@ func TestFlatMapInheritOuterRecordProperties(t *testing.T) {
 		t.Parallel()
 		outerPlan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"A"}, legA, false))
 		innerPlan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"B"}, legB, false))
-		c, err := newFlatMapCursorWithOuterProperties(
+		c, err := newFlatMapCursorForPlan(
 			recordlayer.FromList([]QueryResult{}),
 			outerPlan,
 			innerPlan,
@@ -90,9 +91,10 @@ func TestFlatMapInheritOuterRecordProperties(t *testing.T) {
 			qovB,
 			recordlayer.ExecuteProperties{},
 			true,
+			false,
 		)
 		if err != nil {
-			t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)
+			t.Fatalf("newFlatMapCursorForPlan: %v", err)
 		}
 		defer c.Close()
 

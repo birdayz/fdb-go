@@ -5,7 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"google.golang.org/protobuf/proto"
+
 	cascadesvalues "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 	"fdb.dev/pkg/relational/api"
@@ -75,7 +76,7 @@ func TestPlanLogging_MissThenHit(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		q := parseQuery(t, sql)
-		if _, err := g.planSelectCascades(ctx, q, md, true); err != nil {
+		if _, err := g.planSelectCascades(ctx, q, md, true, statementOptions{}); err != nil {
 			t.Fatalf("plan %d: %v", i, err)
 		}
 	}
@@ -128,7 +129,7 @@ func TestPlanLogging_LimitIsCacheable(t *testing.T) {
 	cap := &captureLogger{}
 	g, md := newLoggingGenerator(t, ordersSchema, cap)
 	q := parseQuery(t, "SELECT id, amount FROM orders WHERE id = 1 LIMIT 5")
-	if _, err := g.planSelectCascades(context.Background(), q, md, true); err != nil {
+	if _, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	if len(cap.events) != 1 {
@@ -138,13 +139,13 @@ func TestPlanLogging_LimitIsCacheable(t *testing.T) {
 		t.Errorf("cache = %v, want miss (LIMIT now cacheable)", cap.events[0].Cache)
 	}
 	// LIMIT query is now cached: the physical plan carries the limit operator.
-	if n := g.cache.Len(); n != 1 {
+	if n := g.cache.numEntries(); n != 1 {
 		t.Errorf("cache len = %d, want 1 (LIMIT now cacheable)", n)
 	}
 
 	// Re-plan the identical text → cache HIT.
 	q2 := parseQuery(t, "SELECT id, amount FROM orders WHERE id = 1 LIMIT 5")
-	if _, err := g.planSelectCascades(context.Background(), q2, md, true); err != nil {
+	if _, err := g.planSelectCascades(context.Background(), q2, md, true, statementOptions{}); err != nil {
 		t.Fatalf("re-plan: %v", err)
 	}
 	if len(cap.events) != 2 {
@@ -162,7 +163,7 @@ func TestPlanLogging_SkipWhenNoCache(t *testing.T) {
 	g.cache = nil // disable cache
 	g.c.planCache = nil
 	q := parseQuery(t, "SELECT id, amount FROM orders WHERE id = 1")
-	if _, err := g.planSelectCascades(context.Background(), q, md, true); err != nil {
+	if _, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	if len(cap.events) != 1 {
@@ -182,7 +183,7 @@ func TestPlanLogging_ErrorIsInconclusive(t *testing.T) {
 	g, md := newLoggingGenerator(t, ordersSchema, cap)
 	// References a column that doesn't exist → validation/planning error.
 	q := parseQuery(t, "SELECT nonexistent_col FROM orders")
-	if _, err := g.planSelectCascades(context.Background(), q, md, true); err == nil {
+	if _, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{}); err == nil {
 		t.Fatalf("expected an error for unknown column")
 	}
 	if len(cap.events) != 1 {
@@ -206,7 +207,7 @@ func TestPlanLogging_SlowQueryFlag(t *testing.T) {
 	g, md := newLoggingGenerator(t, ordersSchema, cap)
 	g.c.slowQueryThresholdMicros = 1 // 1µs: any real planning exceeds it
 	q := parseQuery(t, "SELECT id FROM orders WHERE id = 1")
-	if _, err := g.planSelectCascades(context.Background(), q, md, true); err != nil {
+	if _, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	if !cap.events[0].SlowQuery {
@@ -217,11 +218,48 @@ func TestPlanLogging_SlowQueryFlag(t *testing.T) {
 	g2, md2 := newLoggingGenerator(t, ordersSchema, cap2)
 	g2.c.slowQueryThresholdMicros = 1 << 40 // absurdly high
 	q2 := parseQuery(t, "SELECT id FROM orders WHERE id = 1")
-	if _, err := g2.planSelectCascades(context.Background(), q2, md2, true); err != nil {
+	if _, err := g2.planSelectCascades(context.Background(), q2, md2, true, statementOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	if cap2.events[0].SlowQuery {
 		t.Errorf("expected SlowQuery=false with huge threshold")
+	}
+}
+
+// OPTIONS (LOG QUERY) and the connection's LOG_QUERY option mark the planning
+// record for logging (Java: RelationalLoggingUtil.publishPlanGenerationLogs
+// logs it at INFO); neither present, the record is not marked.
+func TestPlanLogging_LogQueryFlag(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		sql      string
+		connOpts *api.Options
+		want     bool
+	}{
+		{name: "no option", sql: "SELECT id FROM orders WHERE id = 1", connOpts: api.NoOptions()},
+		{name: "statement option", sql: "SELECT id FROM orders WHERE id = 1 OPTIONS (LOG QUERY)", connOpts: api.NoOptions(), want: true},
+		{name: "beside another option", sql: "SELECT id FROM orders WHERE id = 1 OPTIONS (NOCACHE, LOG QUERY)", connOpts: api.NoOptions(), want: true},
+		{name: "connection option", sql: "SELECT id FROM orders WHERE id = 1", connOpts: api.NoOptions().With(api.OptLogQuery, true), want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cap := &captureLogger{}
+			g, md := newLoggingGenerator(t, ordersSchema, cap)
+			root, err := parser.Parse(test.sql)
+			if err != nil {
+				t.Fatalf("parse %q: %v", test.sql, err)
+			}
+			sel := root.Statements().AllStatement()[0].SelectStatement()
+			so := statementOptionsFor(sel, test.connOpts)
+			if _, err := g.planSelectCascades(context.Background(), sel.Query(), md, true, so); err != nil {
+				t.Fatalf("plan: %v", err)
+			}
+			if len(cap.events) != 1 || cap.events[0].LogQuery != test.want {
+				t.Fatalf("events = %+v, want one with LogQuery=%t", cap.events, test.want)
+			}
+		})
 	}
 }
 
@@ -230,7 +268,7 @@ func TestPlanLogging_NilLogger(t *testing.T) {
 	// No logger: planning must work and the nil-scope path must be safe.
 	g, md := newLoggingGenerator(t, ordersSchema, nil)
 	q := parseQuery(t, "SELECT id FROM orders WHERE id = 1")
-	if _, err := g.planSelectCascades(context.Background(), q, md, true); err != nil {
+	if _, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{}); err != nil {
 		t.Fatalf("plan with nil logger: %v", err)
 	}
 }
@@ -241,7 +279,7 @@ func TestPlanLogging_ExplainDoesNotLog(t *testing.T) {
 	g, md := newLoggingGenerator(t, ordersSchema, cap)
 	q := parseQuery(t, "SELECT id FROM orders WHERE id = 1")
 	// logMetrics=false simulates the EXPLAIN re-entry from computeExplainText.
-	if _, err := g.planSelectCascades(context.Background(), q, md, false); err != nil {
+	if _, err := g.planSelectCascades(context.Background(), q, md, false, statementOptions{}); err != nil {
 		t.Fatalf("plan: %v", err)
 	}
 	if len(cap.events) != 0 {
@@ -274,6 +312,40 @@ func TestTruncateSQL(t *testing.T) {
 	}
 }
 
+func TestComputedJoinResultMetadata(t *testing.T) {
+	t.Parallel()
+	g, md := newLoggingGenerator(t, `CREATE TABLE p (id BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE q (qid BIGINT, PRIMARY KEY (qid))`, &captureLogger{})
+	query := parseQuery(t, `SELECT a.qid, EXISTS (SELECT 1 FROM p WHERE id = 1) AS e
+FROM p AS a, q AS a ORDER BY a.qid DESC`)
+	planned, err := g.planSelectCascades(context.Background(), query, md, true, statementOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := planned.(*cascadesPlan)
+	t.Logf("physical plan: %s", plan.physicalPlan.Explain())
+	var computedJoin bool
+	plans.Walk(plan.physicalPlan, func(node plans.RecordQueryPlan) bool {
+		if join, ok := node.(*plans.RecordQueryNestedLoopJoinPlan); ok {
+			cascadesvalues.WalkValue(join.GetResultValue(), func(value cascadesvalues.Value) bool {
+				if _, ok := value.(*cascadesvalues.ExistsValue); ok {
+					computedJoin = true
+				}
+				return true
+			})
+		}
+		return true
+	})
+	if !computedJoin {
+		t.Fatal("fixture did not select a nested-loop join with a computed EXISTS result")
+	}
+	// EXISTS is a nullable BOOLEAN, as Java's ExistsValue (a BooleanValue).
+	columns := resultColumns(plan.physicalPlan)
+	if len(columns) != 2 || columns[0].TypeName != "BIGINT" || columns[1].TypeName != "BOOLEAN" || columns[1].Nullable != api.ColumnNullable {
+		t.Fatalf("computed result metadata = %+v, want BIGINT and nullable BOOLEAN", columns)
+	}
+}
+
 func TestPlanCacheEvent_String(t *testing.T) {
 	t.Parallel()
 	cases := map[PlanCacheEvent]string{
@@ -293,12 +365,8 @@ func TestPlanCacheEvent_String(t *testing.T) {
 // column-metadata typing against PLAN SHAPE: `doubled` (val * 2) through
 // two derived-table levels must report BIGINT no matter whether the
 // planner reused identical output rows or disabled composition kept renamed
-// projection boundaries stacked. The inherit path in deriveColumnsFromProjection only
-// fired for FLAT (childless) FieldValues; the pinned/unmerged shape reads
-// the inner output through a QUANTIFIER-ADDRESSED FieldValue (Child=QOV),
-// which skipped inheritance and reported UNKNOWN — a cross-engine
-// metadata divergence (Java types it from the flowed result type
-// regardless of shape).
+// projection boundaries stacked, as Java types it from the result type
+// regardless of shape.
 func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.T) {
 	t.Parallel()
 	const original = "SELECT id, doubled FROM (SELECT id, doubled FROM (SELECT id, val * 2 AS doubled FROM t_nd8) AS d2) AS d1 ORDER BY id"
@@ -309,15 +377,15 @@ func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.
 		minProjections int
 	}{
 		{"default", original, nil, 1},
-		{"identity_reuse", original, []string{"ProjectionMergeRule", "RemoveProjectionRule"}, 1},
-		{"renamed_unmerged", "SELECT id, d2_value AS doubled FROM (SELECT id, doubled AS d2_value FROM (SELECT id, val * 2 AS doubled FROM t_nd8) AS d2) AS d1 ORDER BY id", []string{"ProjectionMergeRule", "RemoveProjectionRule"}, 2},
+		{"identity_reuse", original, []string{"SelectMergeRule"}, 1},
+		{"renamed_unmerged", "SELECT id, d2_value AS doubled FROM (SELECT id, doubled AS d2_value FROM (SELECT id, val * 2 AS doubled FROM t_nd8) AS d2) AS d1 ORDER BY id", []string{"SelectMergeRule"}, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			g, md := newLoggingGenerator(t, "CREATE TABLE t_nd8 (id BIGINT, val BIGINT, PRIMARY KEY (id))", &captureLogger{})
 			g.c.SetOptions(api.NewOptionsBuilder().Set(api.OptDisabledPlannerRules, tc.disabled).Build())
 			q := parseQuery(t, tc.sql)
-			p, err := g.planSelectCascades(context.Background(), q, md, true)
+			p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 			if err != nil {
 				t.Fatalf("plan: %v", err)
 			}
@@ -331,7 +399,7 @@ func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.
 			// composition disabled, the inheritance boundary must survive.
 			projectionCount := 0
 			plans.Walk(cp.physicalPlan, func(plan plans.RecordQueryPlan) bool {
-				if _, ok := plan.(*plans.RecordQueryProjectionPlan); ok {
+				if _, ok := plan.(*plans.RecordQueryMapPlan); ok {
 					projectionCount++
 				}
 				return true
@@ -339,7 +407,7 @@ func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.
 			if projectionCount < tc.minProjections {
 				t.Fatalf("physical plan has %d projection node(s), want at least %d", projectionCount, tc.minProjections)
 			}
-			cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+			cols := resultColumns(cp.physicalPlan)
 			doubledIdx := -1
 			for i := range cols {
 				if strings.EqualFold(cols[i].Label, "DOUBLED") || strings.EqualFold(cols[i].Name, "DOUBLED") {
@@ -370,7 +438,7 @@ func TestJoinDerivedAggregate_LegOrdinalNeverIndexesFlattenedColumns(t *testing.
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		&captureLogger{})
 	q := parseQuery(t, "SELECT a.s, d.total FROM a_md AS a, (SELECT SUM(v) AS total FROM b_md) AS d")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("join-with-derived-aggregate must plan (it does today; a regression here is a planner bug, not a skip): %v", err)
 	}
@@ -378,7 +446,7 @@ func TestJoinDerivedAggregate_LegOrdinalNeverIndexesFlattenedColumns(t *testing.
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	cols := resultColumns(cp.physicalPlan)
 	for _, c := range cols {
 		if strings.EqualFold(c.Label, "TOTAL") || strings.EqualFold(c.Name, "TOTAL") {
 			// EXACT type, not merely "not the other leg's": permitting
@@ -393,18 +461,16 @@ func TestJoinDerivedAggregate_LegOrdinalNeverIndexesFlattenedColumns(t *testing.
 	t.Fatalf("no TOTAL column in derived metadata: %+v", cols)
 }
 
-// TestJoinDerivedCTE_QOVColumnsTypeThroughQualifiedKeys pins the
-// qualified-key fallback for QOV-addressed derived columns over a join:
-// deriveColumnsFromJoin keys per-leg columns QUALIFIED ("D.FOO"), so a
-// bare-name lookup finds nothing and both derived columns reported
-// UNKNOWN.
+// TestJoinDerivedCTE_QOVColumnsTypeThroughQualifiedKeys pins the types of
+// QOV-addressed derived columns over a join, which a name-keyed derivation
+// once reported UNKNOWN.
 func TestJoinDerivedCTE_QOVColumnsTypeThroughQualifiedKeys(t *testing.T) {
 	t.Parallel()
 	g, md := newLoggingGenerator(t,
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, y BIGINT, PRIMARY KEY (id))",
 		&captureLogger{})
 	q := parseQuery(t, "WITH d AS (SELECT v * 2 AS foo, y * 2 AS bar FROM b_md) SELECT a.s, d.foo, d.bar FROM a_md AS a, d")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -412,7 +478,7 @@ func TestJoinDerivedCTE_QOVColumnsTypeThroughQualifiedKeys(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	cols := resultColumns(cp.physicalPlan)
 	want := map[string]string{"FOO": "BIGINT", "BAR": "BIGINT"}
 	for _, c := range cols {
 		for col, typ := range want {
@@ -441,7 +507,7 @@ func TestJoinDerivedDupName_SlotIdentitySurvivesCollision(t *testing.T) {
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, y STRING, PRIMARY KEY (id))",
 		&captureLogger{})
 	q := parseQuery(t, "WITH d AS (SELECT v * 2 AS foo, y AS foo FROM b_md) SELECT a.id, d.foo FROM a_md AS a, d")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		// Duplicate output names may legitimately be rejected at planning —
 		// then there is no metadata to mis-type and the collision cannot
@@ -452,7 +518,7 @@ func TestJoinDerivedDupName_SlotIdentitySurvivesCollision(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	cols := resultColumns(cp.physicalPlan)
 	for _, c := range cols {
 		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
 			if c.TypeName != "BIGINT" {
@@ -479,7 +545,7 @@ func TestLeftJoinDerived_InheritanceNeverUnNullExtends(t *testing.T) {
 	// derivation — the exact shape whose NoNulls must not survive the
 	// LEFT JOIN's null extension.
 	q := parseQuery(t, "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS c WHERE c.id = b_md.id) AS foo FROM b_md) SELECT a.id, d.foo FROM a_md AS a LEFT JOIN d ON a.id = d.bid")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -487,7 +553,7 @@ func TestLeftJoinDerived_InheritanceNeverUnNullExtends(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+	cols := resultColumns(cp.physicalPlan)
 	for _, c := range cols {
 		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
 			if c.Nullable != api.ColumnNullable {
@@ -499,18 +565,18 @@ func TestLeftJoinDerived_InheritanceNeverUnNullExtends(t *testing.T) {
 	t.Fatalf("no FOO column in derived metadata: %+v", cols)
 }
 
-// TestCrossJoinDerivedExists_KeepsNoNulls pins exact nullability through
-// leg-direct inheritance: a synthesized NOT NULL inner (projected EXISTS)
-// read through a QOV over a CROSS join must stay NoNulls — the earlier
-// upgrade-only rule blanket-discarded the only NoNulls source even where
-// no null extension exists.
-func TestCrossJoinDerivedExists_KeepsNoNulls(t *testing.T) {
+// TestCrossJoinDerivedNotNull_KeepsNoNulls pins exact nullability through
+// leg-direct inheritance: a synthesized NOT NULL inner (a projected COALESCE
+// with a NOT NULL argument) read through a QOV over a CROSS join must stay
+// NoNulls — the earlier upgrade-only rule blanket-discarded the only NoNulls
+// source even where no null extension exists.
+func TestCrossJoinDerivedNotNull_KeepsNoNulls(t *testing.T) {
 	t.Parallel()
 	g, md := newLoggingGenerator(t,
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		&captureLogger{})
-	q := parseQuery(t, "WITH d AS (SELECT EXISTS (SELECT 1 FROM b_md AS c WHERE c.id = b_md.id) AS foo FROM b_md) SELECT d.foo FROM a_md AS a, d")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	q := parseQuery(t, "WITH d AS (SELECT COALESCE(b_md.v, 0) AS foo FROM b_md) SELECT d.foo FROM a_md AS a, d")
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -518,10 +584,10 @@ func TestCrossJoinDerivedExists_KeepsNoNulls(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	for _, c := range deriveColumnsFromPlan(cp.physicalPlan, cp.md) {
+	for _, c := range resultColumns(cp.physicalPlan) {
 		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
 			if c.Nullable != api.ColumnNoNulls {
-				t.Fatalf("EXISTS flag over a CROSS join must stay NoNulls (no null extension exists); got %v", c.Nullable)
+				t.Fatalf("NOT NULL COALESCE over a CROSS join must stay NoNulls (no null extension exists); got %v", c.Nullable)
 			}
 			return
 		}
@@ -540,7 +606,7 @@ func TestJoinDerivedDottedName_OrdinalUnshifted(t *testing.T) {
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, y STRING, PRIMARY KEY (id))",
 		&captureLogger{})
 	q := parseQuery(t, "WITH d AS (SELECT y AS \"X.Y\", v * 2 AS foo, y AS bar FROM b_md) SELECT d.foo FROM a_md AS a, d")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -548,7 +614,7 @@ func TestJoinDerivedDottedName_OrdinalUnshifted(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	for _, c := range deriveColumnsFromPlan(cp.physicalPlan, cp.md) {
+	for _, c := range resultColumns(cp.physicalPlan) {
 		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
 			if c.TypeName != "BIGINT" {
 				t.Fatalf("d.foo typed %q, want BIGINT — a dotted quoted identifier shifted the leg ordinal", c.TypeName)
@@ -571,7 +637,7 @@ func TestNestedFullOuter_AncestorNullExtensionReachesLeg(t *testing.T) {
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE c_md (id BIGINT, PRIMARY KEY (id))",
 		&captureLogger{})
 	q := parseQuery(t, "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS x WHERE x.id = b_md.id) AS foo FROM b_md) SELECT d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id = c.id")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
+	p, err := g.planSelectCascades(context.Background(), q, md, true, statementOptions{})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
@@ -579,7 +645,7 @@ func TestNestedFullOuter_AncestorNullExtensionReachesLeg(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	for _, c := range deriveColumnsFromPlan(cp.physicalPlan, cp.md) {
+	for _, c := range resultColumns(cp.physicalPlan) {
 		if strings.EqualFold(c.Label, "FOO") || strings.EqualFold(parseColRef(c.Name).bare(), "FOO") {
 			if c.Nullable != api.ColumnNullable {
 				t.Fatalf("d.foo under an enclosing FULL OUTER must report NULLABLE (ancestor null extension); got %v", c.Nullable)
@@ -590,108 +656,10 @@ func TestNestedFullOuter_AncestorNullExtensionReachesLeg(t *testing.T) {
 	t.Fatal("no FOO column in derived metadata")
 }
 
-// TestLegWalk_DuplicateAliasDeclines pins unique-match-or-decline: the
-// plan-level leg walk is not query-scope-aware (a folded query block has
-// no projection node to stop at), so an interior block reusing a
-// top-block alias must make the walk DECLINE — attaching the interior
-// branch's null extension to the outer alias would transfer metadata
-// across scopes. Constructed directly: two join levels both binding
-// alias "X".
-func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
-	t.Parallel()
-	scan := func() plans.RecordQueryPlan {
-		plan, err := plans.NewRecordQueryScanPlan([]string{"T"}, &cascadesvalues.RecordType{Fields: []cascadesvalues.Field{
-			{Name: "K", Ordinal: 0, FieldType: cascadesvalues.NotNullLong},
-		}}, false)
-		if err != nil {
-			t.Fatalf("scan fixture: %v", err)
-		}
-		return plan
-	}
-	join := func(left, right plans.RecordQueryPlan, kind plans.JoinType, leftAlias, rightAlias string) plans.RecordQueryPlan {
-		// The leg-walk proof only needs the plan's alias topology, but the
-		// fallible RFC-232 constructor also requires an exact retained result.
-		// Project both synthetic legs away into one exact fixture field rather
-		// than passing the formerly tolerated nil result Value.
-		result := cascadesvalues.NewRawRecordConstructorValue(
-			cascadesvalues.RecordConstructorField{
-				Name:  "K",
-				Value: &cascadesvalues.ConstantValue{Value: int64(0), Typ: cascadesvalues.NotNullLong},
-			},
-		)
-		plan, err := plans.NewRecordQueryNestedLoopJoinPlan(
-			left, right, nil, kind, cascadesvalues.NamedCorrelationIdentifier(leftAlias), cascadesvalues.NamedCorrelationIdentifier(rightAlias), result)
-		if err != nil {
-			t.Fatalf("join fixture: %v", err)
-		}
-		return plan
-	}
-	innerJoin := join(
-		scan(), scan(), plans.JoinFullOuter, "X", "Y")
-	top := join(innerJoin, scan(), plans.JoinInner, "A", "X")
-
-	if _, _, found := legPlanFor(top, "X"); found {
-		t.Fatal("a duplicated alias across join levels must DECLINE (scope-ambiguous), not first-match")
-	}
-	// Unique aliases still resolve.
-	if _, _, found := legPlanFor(top, "A"); !found {
-		t.Fatal("a unique alias must resolve")
-	}
-	// An interior duplicate INSIDE a matched leg also declines: folds can
-	// break the plan-nesting/SQL-scoping mirror, so shallow-wins shadowing
-	// is not trusted either.
-	nested := join(scan(), scan(), plans.JoinInner, "Z", "W")
-	shadowTop := join(nested, scan(), plans.JoinInner, "Z", "Q")
-	if _, _, found := legPlanFor(shadowTop, "Z"); found {
-		t.Fatal("an alias duplicated between a leg and its own subtree must DECLINE")
-	}
-	if leg, ns, found := legPlanFor(top, "Y"); !found || leg == nil || !ns {
-		t.Fatalf("Y is unique and inside a FULL join's inner — found=%v ns=%v", found, ns)
-	}
-}
-
-// TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped pins the third
-// failure the swallow arm covers, with the query that produces it and the
-// blast radius it leaves behind. It costs descriptor identity, not data, and
-// that cost is user-visible: TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues
-// shows a computed STRUCT coming back as a raw map through this shape and as an
-// api.Struct once the repeated name is removed — removed through a derived-table
-// rename, because the dialect cannot rename a base column in place, with a third
-// read there that keeps the wrapper AND the repeat to show the wrapper inert.
-//
-// The invariant this test carries for that one is narrower than the whole
-// test, and saying which half matters: the census asserted here is a statement
-// about the query that produced the plan, so it is the ID-half's precondition
-// and worth nothing if the two texts drift. They cannot: both read the same
-// queryfixtures.DuplicateNameJoinQuery, so the compiler holds them together
-// where this comment used to ask the next editor to. The struct assertions run
-// their own texts —
-// one reading a computed and a stored struct out of the same poisoned row,
-// one the control with the repeat removed through a derived-table rename, and
-// one keeping that wrapper with the repeat to show it inert — and carry their
-// own witnesses, so this census says nothing about them.
-//
-// A FULL OUTER JOIN over legs that both carry `ID` builds its ordinal row with
-// NewRawRecordConstructorValue, which keeps field names VERBATIM by design —
-// positional access makes the duplicate unambiguous, and the ordinal-identity
-// pins are unconstructible without it. The synthesised descriptor for that row
-// cannot validate (`descriptor "…​.ID" already declared`). The damage reaches
-// past that row: the repository keeps the bad message, so every type asked for
-// after it fails the same way, while one resolved BEFORE it keeps its
-// descriptor — on this query three of the four constructors end up with no
-// descriptor and the fourth is stamped.
-//
-// What that costs is descriptor IDENTITY, not data: the plan paths emit dense
-// positional rows and the result set reads them by ordinal, so
-// `SELECT a.id, c.id, d.foo` over this shape still returns both `ID` values
-// (measured). This pin is therefore about the repository, not about a wrong
-// answer — there is no wrong answer here to pin.
-//
-// Turning the failure loud refuses this working query, so it stays swallowed
-// and pinned here; TODO.md's "A join row that names one field twice leaves its
-// plan's rows unstamped" carries the closure. When that lands, the rows get
-// their descriptors and this test reddens: assert that they are stamped then.
-func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
+// TestFinalizePlanContainsDuplicateNameRegistrationFailure keeps the invalid
+// ordinal join row raw without letting its rejected descriptor poison other
+// constructors. The shared SQL text also pins exact outer-join rows under FDB.
+func TestFinalizePlanContainsDuplicateNameRegistrationFailure(t *testing.T) {
 	t.Parallel()
 	_, md := newLoggingGenerator(t,
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) "+
@@ -707,7 +675,7 @@ func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
 	// FinalizePlan — so without this every constructor is trivially unstamped
 	// and the assertions below would hold for any plan at all. The survivor
 	// asserted at the end is what proves the bake actually ran.
-	if bakeErr := cascades.FinalizePlan(plan); bakeErr != nil {
+	if bakeErr := plans.FinalizePlan(plan); bakeErr != nil {
 		t.Fatalf("FinalizePlan over the FULL OUTER JOIN: %v", bakeErr)
 	}
 
@@ -718,7 +686,7 @@ func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
 	// smaller population that still reads like a measurement. That is how the
 	// exact-shape guard at the end of this function would fail OPEN.
 	var constructors, duplicates, unstamped int
-	cascades.ForEachPlanRecordConstructor(plan, func(rc *cascadesvalues.RecordConstructorValue) {
+	plans.ForEachPlanRecordConstructor(plan, func(rc *cascadesvalues.RecordConstructorValue) {
 		row, isRow := rc.Type().(*cascadesvalues.RecordType)
 		if !isRow {
 			return
@@ -739,48 +707,71 @@ func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
 		}
 	})
 
-	if duplicates == 0 {
-		t.Fatal("no row in this plan names a field twice any more — the ordinal join row is " +
-			"disambiguated now, so TODO.md's booking has closed: assert both ID values survive instead")
+	t.Logf("descriptor census: %d constructors, %d duplicate-name rows, %d unstamped", constructors, duplicates, unstamped)
+	if duplicates == 0 || constructors <= duplicates {
+		t.Fatalf("missing invalid/valid registration witnesses: constructors=%d duplicates=%d", constructors, duplicates)
 	}
-	// The blast radius is the whole repository, not the repeating row: the bad
-	// message stays in the file, so every type asked for AFTER it fails too,
-	// while one resolved BEFORE keeps its descriptor. Asserting only "duplicate
-	// rows are unstamped" would be a tautology — such a row can never be
-	// stamped — so what is asserted is the COLLATERAL (a row that repeats no
-	// name and lost its descriptor anyway) and the survivor beside it, which is
-	// also what proves the bake ran at all.
-	if constructors < 4 {
-		t.Fatalf("%d record constructors in this plan, want at least 4 — the specimen has moved "+
-			"and this test no longer measures the shape it names", constructors)
+	if unstamped != duplicates {
+		t.Fatalf("%d unstamped of %d constructors, %d duplicate-name rows: failed registration must not poison valid roots", unstamped, constructors, duplicates)
 	}
-	if unstamped <= duplicates {
-		t.Fatalf("%d unstamped of %d constructors, %d of which repeat a name: no COLLATERAL row "+
-			"lost its descriptor, so the failure is contained to the repeating row now and "+
-			"TODO.md's blast radius has narrowed — say so there", unstamped, constructors, duplicates)
-	}
-	if stamped := constructors - unstamped; stamped == 0 {
-		t.Fatal("no constructor in this plan is stamped, so the assertions above are vacuous: " +
-			"either FinalizePlan is not baking, or the damage is no longer order-dependent")
-	}
-	// The assertions above are floors, deliberately: they state the INVARIANT and
-	// survive a planner change that moves the specimen. "Three of the four" is a
-	// different kind of claim — a MEASUREMENT, quoted in SIX files as a fact
-	// about this plan, one of them this one — and a floor cannot keep a
-	// measurement true. A fifth constructor, or a fourth unstamped one, leaves
-	// every check above green while all six sentences go stale, which is exactly
-	// how a number with no expiry condition rots. This is that expiry condition,
-	// and the fatal below names the six so the count and the list cannot drift
-	// apart the way this comment's own count once did.
-	if constructors != 4 || unstamped != 3 {
-		t.Fatalf("this plan has %d record constructors, %d of them unstamped — the measurement "+
-			"written as `three of four` no longer describes this specimen. Six files state it: "+
-			"this one, queryfixtures.go, plan_finalize.go, values.go (RecordConstructorValue's "+
-			"Evaluate doc), TODO.md's booking and RFC-242. Re-measure and restate it in all six; "+
-			"do not relax this guard, or the number goes on being quoted at a plan nobody has "+
-			"looked at. The six are the files quoting the NUMBER; others describe the walk-order"+
-			" half without one and cannot go stale with it, so they are deliberately not counted "+
-			"here — a second population tracked in a message about the first is how the last two "+
-			"of these counts went wrong.", constructors, unstamped)
+}
+
+// TestFinalizePlanPromotesAnonymousRecordArray exercises the SQL producer of
+// an unrepresentable record name below a representable common element type.
+func TestFinalizePlanPromotesAnonymousRecordArray(t *testing.T) {
+	t.Parallel()
+	for _, elements := range []string{`(1 AS "$lead"), (2 AS A)`, `(1 AS A), (2 AS "$lead")`, `(1 AS "$lead"), (2 AS "$tail")`, `(1 AS "1x"), (2 AS A)`} {
+		t.Run(elements, func(t *testing.T) {
+			t.Parallel()
+			_, md := newLoggingGenerator(t, "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))", &captureLogger{})
+			plan, _, err := PlanRecordQueryWithSubqueries(`SELECT ([`+elements+`] AS CH) FROM t`, md, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := plans.FinalizePlan(plan); err != nil {
+				t.Fatal(err)
+			}
+			var found int
+			plans.ForEachPlanRecordConstructor(plan, func(rc *cascadesvalues.RecordConstructorValue) {
+				if len(rc.Fields) != 1 || rc.Fields[0].Name != "CH" {
+					return
+				}
+				found++
+				result, err := rc.Evaluate(nil)
+				if err != nil {
+					t.Fatalf("finalized record array: %v", err)
+				}
+				message, ok := result.(proto.Message)
+				if !ok {
+					t.Fatalf("record array = %T, want protobuf message", result)
+				}
+				fd := rc.MessageDescriptor().Fields().Get(0)
+				array := rc.Fields[0].Value.(*cascadesvalues.ArrayConstructorValue)
+				for i, child := range array.Elements {
+					value, err := child.Evaluate(nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					element, ok := value.(proto.Message)
+					if !ok || element.ProtoReflect().Descriptor() != fd.Message() {
+						t.Fatalf("element %d = %T: promotion must bind to parent's descriptor", i, value)
+					}
+				}
+				items := message.ProtoReflect().Get(fd).List()
+				if items.Len() != 2 {
+					t.Fatalf("items = %d, want 2", items.Len())
+				}
+				for i, want := range []int64{1, 2} {
+					element := items.Get(i).Message()
+					field := element.Descriptor().Fields().Get(0)
+					if field.Name() != "_0" || element.Get(field).Int() != want {
+						t.Fatalf("element %d = %v, want anonymous field _0=%d", i, element, want)
+					}
+				}
+			})
+			if found == 0 {
+				t.Fatal("no CH record constructor reached")
+			}
+		})
 	}
 }

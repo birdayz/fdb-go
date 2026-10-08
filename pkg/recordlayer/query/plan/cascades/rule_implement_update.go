@@ -52,7 +52,7 @@ func (r *ImplementUpdateRule) OnMatch(call *ExpressionRuleCall) {
 	for _, candidate := range storedRecordDMLCandidates(innerRef) {
 		// The UPDATE plan is its own cascades expression (RFC-184 W2) — it
 		// carries the live child edge directly, no physicalUpdateWrapper.
-		innerQ, err := dmlDedupedInnerQuantifier(call, candidate, false)
+		innerQ, err := dmlDedupedInnerQuantifier(call, candidate, upd.GetInner(), false)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -63,7 +63,7 @@ func (r *ImplementUpdateRule) OnMatch(call *ExpressionRuleCall) {
 			call.Fail(err)
 			return
 		}
-		call.Yield(updPlan)
+		call.Yield(updPlan.WithTargetAlias(upd.GetTargetAlias()))
 	}
 }
 

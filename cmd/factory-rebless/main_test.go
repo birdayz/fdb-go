@@ -135,8 +135,8 @@ func TestReblessLeavesTheTreeUntouchedWhenALaterFileDrifts(t *testing.T) {
 	editFile(t, late, "# generator: ", "# generator: not-this-build/")
 
 	census := filepath.Join(t.TempDir(), "census_baseline.json")
-	if got := run(dir, census, false); got != exitDrift {
-		t.Fatalf("run() = %d, want exitDrift (%d): a generator drift must abort", got, exitDrift)
+	if got := runWith(dir, census, options{}, nil); got != exitDrift {
+		t.Fatalf("runWith() = %d, want exitDrift (%d): a generator drift must abort", got, exitDrift)
 	}
 	if string(mustRead(t, early)) != string(before) {
 		t.Errorf("the early file was rewritten before the run aborted: the tree is now half re-blessed\n  %s", early)
@@ -157,8 +157,8 @@ func TestReblessWritesEveryQueuedFileOnceTheRunClears(t *testing.T) {
 		makePlanShapeStale(t, p)
 	}
 	census := filepath.Join(t.TempDir(), "census_baseline.json")
-	if got := run(dir, census, false); got != exitOK {
-		t.Fatalf("run() = %d, want exitOK (%d)", got, exitOK)
+	if got := runWith(dir, census, options{}, nil); got != exitOK {
+		t.Fatalf("runWith() = %d, want exitOK (%d)", got, exitOK)
 	}
 	for _, p := range []string{early, late} {
 		if strings.Contains(string(mustRead(t, p)), staleDigest) {
@@ -171,7 +171,7 @@ func TestReblessWritesEveryQueuedFileOnceTheRunClears(t *testing.T) {
 }
 
 // TestReblessAbortsAndWritesNothingWhenTheWriterMangledARow proves the
-// row-integrity check is WIRED — that run() consults it and treats its verdict
+// row-integrity check is WIRED — that runWith() consults it and treats its verdict
 // as a drift, leaving the tree untouched.
 //
 // The mangling is injected rather than committed because with today's writer no
@@ -196,7 +196,7 @@ func TestReblessAbortsAndWritesNothingWhenTheWriterMangledARow(t *testing.T) {
 		return []byte(out)
 	}
 	census := filepath.Join(t.TempDir(), "census_baseline.json")
-	if got := runWith(dir, census, false, mangle); got != exitDrift {
+	if got := runWith(dir, census, options{}, mangle); got != exitDrift {
 		t.Fatalf("runWith(mangled) = %d, want exitDrift (%d): a re-emission that restates a frozen cell must abort", got, exitDrift)
 	}
 	if after := mustRead(t, path); string(after) != string(before) {
@@ -391,8 +391,8 @@ func TestReblessCarriesAFalsifiedRowThroughUntouched(t *testing.T) {
 	makePlanShapeStale(t, path)
 
 	census := filepath.Join(t.TempDir(), "census_baseline.json")
-	if got := run(dir, census, false); got != exitOK {
-		t.Fatalf("run() = %d, want exitOK (%d).\n\n"+
+	if got := runWith(dir, census, options{}, nil); got != exitOK {
+		t.Fatalf("runWith() = %d, want exitOK (%d).\n\n"+
 			"A falsified row is expected to pass this tool — round-trip fidelity "+
 			"cannot see a cell that was edited on both sides. If this now aborts, "+
 			"the tool gained falsification detection and the doc comment's "+
@@ -412,5 +412,32 @@ func TestReblessCarriesAFalsifiedRowThroughUntouched(t *testing.T) {
 	if strings.Contains(after, "D: 4.0,") {
 		t.Error("the original cell reappeared: the tool restored a value from " +
 			"somewhere other than the file it was handed")
+	}
+}
+
+// TestReblessRederivesADriftedSetupOnlyWhenAsked drives -rederive-setup both
+// ways. A setup that no longer equals the recipe's InsertSQL aborts the default
+// run and leaves the file alone; under the flag it is re-derived, and since the
+// only drift was the setup, the file returns to its committed bytes.
+func TestReblessRederivesADriftedSetupOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
+	dir := fixtureCorpus(t, earlyFile)
+	early := filepath.Join(dir, earlyFile)
+	committed := mustRead(t, early)
+	editAllFile(t, early, "INSERT INTO T_RD VALUES (", "INSERT INTO T_RD VALUES  (")
+	drifted := mustRead(t, early)
+
+	census := filepath.Join(t.TempDir(), "census_baseline.json")
+	if got := runWith(dir, census, options{}, nil); got != exitDrift {
+		t.Fatalf("runWith(default) = %d, want exitDrift (%d): a drifted setup must abort unless re-derivation is asked for", got, exitDrift)
+	}
+	if string(mustRead(t, early)) != string(drifted) {
+		t.Fatalf("the default run rewrote a drifted setup it must refuse")
+	}
+	if got := runWith(dir, census, options{rederiveSetup: true}, nil); got != exitOK {
+		t.Fatalf("runWith(-rederive-setup) = %d, want exitOK (%d)", got, exitOK)
+	}
+	if string(mustRead(t, early)) != string(committed) {
+		t.Errorf("-rederive-setup did not restore the recipe's setup: the file differs from its committed bytes")
 	}
 }

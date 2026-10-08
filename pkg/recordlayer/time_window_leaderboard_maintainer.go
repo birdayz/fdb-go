@@ -30,12 +30,18 @@ func newTimeWindowLeaderboardIndexMaintainer(
 	indexSubspace, secondarySubspace subspace.Subspace,
 	tx fdb.WritableTransaction,
 	store indexStoreContext,
-) *timeWindowLeaderboardIndexMaintainer {
+) (*timeWindowLeaderboardIndexMaintainer, error) {
+	// Java's maintainer constructor reads the config the same way
+	// (TimeWindowLeaderboardIndexMaintainer.java:100).
+	config, err := parseRankedSetConfig(index)
+	if err != nil {
+		return nil, err
+	}
 	return &timeWindowLeaderboardIndexMaintainer{
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		secondarySubspace:       secondarySubspace,
-		rankedSetConfig:         parseRankedSetConfig(index),
-	}
+		rankedSetConfig:         config.withEnv(store.Env()),
+	}, nil
 }
 
 // Update handles insert/delete/update for the TIME_WINDOW_LEADERBOARD index.
@@ -50,14 +56,14 @@ func (m *timeWindowLeaderboardIndexMaintainer) Update(oldRecord, newRecord *FDBS
 	var oldEntries, newEntries []indexEntry
 
 	if oldRecord != nil {
-		entries, err := m.evaluateIndex(oldRecord)
+		entries, err := m.filteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for old record: %w", m.index.Name, err)
 		}
 		oldEntries = entries
 	}
 	if newRecord != nil {
-		entries, err := m.evaluateIndex(newRecord)
+		entries, err := m.filteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for new record: %w", m.index.Name, err)
 		}
@@ -325,22 +331,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) UpdateWhileWriteOnly(oldRecord, n
 	if !m.rankedSetConfig.CountDuplicates {
 		return m.Update(oldRecord, newRecord)
 	}
-	var checkRecord *FDBStoredRecord[proto.Message]
-	if oldRecord != nil {
-		checkRecord = oldRecord
-	} else {
-		checkRecord = newRecord
-	}
-	if checkRecord != nil && m.store != nil {
-		inRange, err := m.store.isKeyInIndexBuildRange(m.index, checkRecord.PrimaryKey)
-		if err != nil {
-			return err
-		}
-		if !inRange {
-			return nil
-		}
-	}
-	return m.Update(oldRecord, newRecord)
+	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, m.index.Type, m.Update)
 }
 
 // DeleteWhere clears both B-tree and RankedSet entries for all leaderboards
@@ -610,7 +601,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) rankRangeToScoreRange(
 		}
 	}
 
-	rankedSet.PreloadForLookup(m.tx)
+	rankedSet.PreloadForLookup(m.tx.Snapshot())
 
 	lowRankVal := int64(0)
 	if !startFromBeginning {
@@ -937,7 +928,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) timeWindowRankAndEntry(
 	}
 	rankSubspace := m.secondarySubspace.Sub(leaderboardGroupKey...)
 	rankedSet := newRankedSet(rankSubspace, config)
-	rankedSet.PreloadForLookup(m.tx)
+	rankedSet.PreloadForLookup(m.tx.Snapshot())
 
 	// Rank lookup uses the negated scoreKey (as stored in the ranked set).
 	scoreBytes := bestScore.scoreKey.Pack()
@@ -1084,7 +1075,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
 	}
 	rankSubspace := m.secondarySubspace.Sub(leaderboardGroupKey...)
 	rankedSet := newRankedSet(rankSubspace, config)
-	rankedSet.PreloadForLookup(m.tx)
+	rankedSet.PreloadForLookup(m.tx.Snapshot())
 
 	switch fn.Name {
 	case FunctionNameTimeWindowCount:

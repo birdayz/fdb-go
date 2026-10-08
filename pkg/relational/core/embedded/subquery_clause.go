@@ -37,7 +37,6 @@ func walkSubqueryPredicate(resolver *expr.Resolver, owner *existsSubqueryPlanner
 	if err != nil {
 		return nil, err
 	}
-	pred = predicates.SimplifyPredicateValues(pred)
 	if err := clause.admitPredicate(pred); err != nil {
 		return nil, err
 	}
@@ -68,37 +67,45 @@ func (c *subqueryClause) validateUse(alias values.CorrelationIdentifier, use log
 }
 
 func (c *subqueryClause) admitPredicate(pred predicates.QueryPredicate) error {
-	if existsUnderDisjunction(pred) {
-		return api.NewError(api.ErrCodeUnsupportedOperation, "EXISTS within an OR (disjunction) is not supported")
-	}
-	var check func(predicates.QueryPredicate) error
-	check = func(p predicates.QueryPredicate) error {
+	var check func(predicates.QueryPredicate, bool) error
+	check = func(p predicates.QueryPredicate, compound bool) error {
 		if p == nil {
 			return nil
 		}
 		if alias, ok := predicates.IsExistentialPredicate(p); ok {
-			return c.validateUse(alias, logical.ExistsPositivePredicate)
+			use := logical.ExistsPositivePredicate
+			if compound {
+				use = logical.ExistsBooleanPredicate
+			}
+			return c.validateUse(alias, use)
 		}
 		if alias, ok := predicates.IsNotExistentialPredicate(p); ok {
-			return c.validateUse(alias, logical.ExistsNegativePredicate)
+			use := logical.ExistsNegativePredicate
+			if compound {
+				use = logical.ExistsBooleanPredicate
+			}
+			return c.validateUse(alias, use)
 		}
-		if and, ok := p.(*predicates.AndPredicate); ok {
-			for _, child := range and.SubPredicates {
-				if err := check(child); err != nil {
-					return err
+		switch p.(type) {
+		case *predicates.OrPredicate, *predicates.NotPredicate:
+			compound = true
+		case *predicates.AndPredicate:
+		default:
+			for _, edge := range c.subqueries {
+				if _, used := predicates.GetCorrelatedToOfPredicate(p)[edge.Alias]; used {
+					return api.NewError(api.ErrCodeUnsupportedOperation, "EXISTS in this query shape is not yet supported: unclassified predicate consumption")
 				}
 			}
 			return nil
 		}
-		refs := predicates.GetCorrelatedToOfPredicate(p)
-		for _, edge := range c.subqueries {
-			if _, used := refs[edge.Alias]; used {
-				return api.NewError(api.ErrCodeUnsupportedOperation, "EXISTS in this query shape is not yet supported: unclassified predicate consumption")
+		for _, child := range p.Children() {
+			if err := check(child, compound); err != nil {
+				return err
 			}
 		}
 		return nil
 	}
-	if err := check(pred); err != nil {
+	if err := check(pred, false); err != nil {
 		return err
 	}
 	return c.publish()

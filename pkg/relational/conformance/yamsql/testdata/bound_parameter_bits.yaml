@@ -1,0 +1,64 @@
+# bound_parameter_bits.yaml — a bound value is its own exact constant
+# (RFC-257 WS-E, ws-e-design.md section 4.2).
+#
+# The same statement text bound to two values must run as two constants,
+# even where the values print alike: two NaN payloads, +0.0 and -0.0, an
+# empty STRING and NULL, TRUE and FALSE. These rows pin the values end to end
+# through the driver; they do NOT pin the plan-cache key, because this runner
+# shares one pool across parallel scenarios whose DDL clears each
+# connection's cache, so a warm hit is rare here. The key is pinned by
+# embedded/param_cache_key_test.go (red with the old key, verified).
+name: bound_parameter_bits
+schema_template: |
+  CREATE TABLE t (id BIGINT, d DOUBLE, f FLOAT, s STRING, b BYTES, PRIMARY KEY (id))
+tests:
+  # NaN payloads: Java's Double.NaN, the negative quiet NaN of 0.0/0.0, and
+  # one with a payload. A DOUBLE column stores each bound NaN's own bits.
+  - query: INSERT INTO t (id, d) VALUES (?, ?)
+    args: [{kind: int64, value: "1"}, {kind: float64, value: "7ff8000000000000"}]
+  - query: INSERT INTO t (id, d) VALUES (?, ?)
+    args: [{kind: int64, value: "2"}, {kind: float64, value: "fff8000000000000"}]
+  - query: INSERT INTO t (id, d) VALUES (?, ?)
+    args: [{kind: int64, value: "3"}, {kind: float64, value: "7ff800000000abcd"}]
+  # Signed zeros.
+  - query: INSERT INTO t (id, d) VALUES (?, ?)
+    args: [{kind: int64, value: "4"}, {kind: float64, value: "0000000000000000"}]
+  - query: INSERT INTO t (id, d) VALUES (?, ?)
+    args: [{kind: int64, value: "5"}, {kind: float64, value: "8000000000000000"}]
+  - query: SELECT id, d FROM t WHERE id <= 5 ORDER BY id
+    exact_rows:
+      - [{kind: int64, value: "1"}, {kind: float64, value: "7ff8000000000000"}]
+      - [{kind: int64, value: "2"}, {kind: float64, value: "fff8000000000000"}]
+      - [{kind: int64, value: "3"}, {kind: float64, value: "7ff800000000abcd"}]
+      - [{kind: int64, value: "4"}, {kind: float64, value: "0000000000000000"}]
+      - [{kind: int64, value: "5"}, {kind: float64, value: "8000000000000000"}]
+  # A projected bound value is the constant itself, warm or cold.
+  - query: SELECT ? FROM t WHERE id = 1
+    args: [{kind: float64, value: "7ff8000000000000"}]
+    exact_rows:
+      - [{kind: float64, value: "7ff8000000000000"}]
+  - query: SELECT ? FROM t WHERE id = 1
+    args: [{kind: float64, value: "fff8000000000000"}]
+    exact_rows:
+      - [{kind: float64, value: "fff8000000000000"}]
+  - query: SELECT ? FROM t WHERE id = 1
+    args: [{kind: float64, value: "8000000000000000"}]
+    exact_rows:
+      - [{kind: float64, value: "8000000000000000"}]
+  # TRUE then FALSE: the second must not reuse the plan bound to TRUE.
+  - query: SELECT id FROM t WHERE id = 1 AND ?
+    args: [{kind: bool, value: "true"}]
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE id = 1 AND ?
+    args: [{kind: bool, value: "false"}]
+    rows: []
+  # An empty STRING, NULL and an empty BYTES are three different constants.
+  - query: INSERT INTO t (id, s, b) VALUES (?, ?, ?)
+    args: [{kind: int64, value: "10"}, {kind: string, value: ""}, {kind: bytes, value: ""}]
+  - query: INSERT INTO t (id, s, b) VALUES (?, ?, ?)
+    args: [{kind: int64, value: "11"}, {kind: "null"}, {kind: "null"}]
+  - query: SELECT id, s, b FROM t WHERE id >= 10 ORDER BY id
+    exact_rows:
+      - [{kind: int64, value: "10"}, {kind: string, value: ""}, {kind: bytes, value: ""}]
+      - [{kind: int64, value: "11"}, {kind: "null"}, {kind: "null"}]

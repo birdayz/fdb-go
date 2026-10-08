@@ -45,7 +45,7 @@ tests:
         SELECT c.id FROM tree c, all_nodes a WHERE c.parent_id = a.id
       )
       SELECT id FROM all_nodes ORDER BY id
-    plan_contains: "InMemorySort([_current.ID#0 ASC], RecursiveDfsJoin(PREORDER,"
+    plan_contains: "InMemorySort([_current.ID#0 ASC], Map(RecursiveDfsJoin(PREORDER, Map(PredicatesFilter(Scan(TREE), [1 preds]), {ID: _current.ID#0}), FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(ALL_NODESforScan), [1 preds]))), {ID: _current.ID#0}))"
     plan_not_contains: "RecursiveLevelUnion"
     rows:
       - [1]

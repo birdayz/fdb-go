@@ -61,7 +61,7 @@ func (v *FirstOrDefaultStreamingValue) Evaluate(evalCtx any) (any, error) {
 		stream = sv.EvaluateAsStream(evalCtx)
 	} else if rv, ok := v.ChildValue.(*RangeValue); ok {
 		for _, val := range rv.EvaluateAsStream(evalCtx) {
-			stream = append(stream, val)
+			stream = append(stream, map[string]any{"ID": val})
 		}
 	} else {
 		return nil, nil

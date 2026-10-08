@@ -30,9 +30,14 @@ type PushFilterThroughFetchRule struct {
 
 func NewPushFilterThroughFetchRule() *PushFilterThroughFetchRule {
 	return &PushFilterThroughFetchRule{
-		matcher: NewExpressionMatcher[*plans.RecordQueryPredicatesFilterPlan]("phys_filter_over_fetch"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryPredicatesFilterPlan]("phys_filter_over_fetch").WithInputPredicate(
+			func(plan *plans.RecordQueryPredicatesFilterPlan) bool {
+				return referenceHasMemberOfType[*plans.RecordQueryFetchFromPartialRecordPlan](plan.GetInnerQuantifier().GetRangesOver())
+			}),
 	}
 }
+
+func (r *PushFilterThroughFetchRule) ConstraintDependencies() []any { return nil }
 
 func (r *PushFilterThroughFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
 
@@ -44,19 +49,17 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Find the fetch in the filter's inner.
-	var fetchW *plans.RecordQueryFetchFromPartialRecordPlan
-	for _, m := range innerRef.AllMembers() {
-		if fw, ok := m.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
-			fetchW = fw
-			break
+	for _, member := range innerRef.AllMembers() {
+		if fetch, ok := member.(*plans.RecordQueryFetchFromPartialRecordPlan); ok {
+			pushFilterThroughFetch(call, filterW, fetch)
+			if call.Err() != nil {
+				return
+			}
 		}
 	}
-	if fetchW == nil {
-		return
-	}
+}
 
-	fetchPlan := fetchW
+func pushFilterThroughFetch(call *ImplementationRuleCall, filterW *plans.RecordQueryPredicatesFilterPlan, fetchPlan *plans.RecordQueryFetchFromPartialRecordPlan) {
 	queryPredicates := filterW.GetPredicates()
 
 	filterEdge, err := filterW.GetInnerQuantifier().RequireFlowedObjectValue()
@@ -64,7 +67,7 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		call.Fail(fmt.Errorf("PushFilterThroughFetch filter edge: %w", err))
 		return
 	}
-	fetchOutputLayout, err := fetchPlan.ProvidedOutputLayout()
+	fetchOutputLayout, err := filterW.ProvidedOutputLayout()
 	if err != nil {
 		call.Fail(fmt.Errorf("PushFilterThroughFetch fetch output layout: %w", err))
 		return
@@ -113,38 +116,28 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	// Get the fetch's inner (covering index scan).
-	fetchInnerRef := fetchW.GetInnerQuantifier().GetRangesOver()
+	fetchInnerRef := fetchPlan.GetInnerQuantifier().GetRangesOver()
 	if fetchInnerRef == nil {
 		return
 	}
-	fetchInnerExpr := findPhysicalExpr(fetchInnerRef)
-	if fetchInnerExpr == nil {
-		return
+	for _, member := range fetchInnerRef.AllMembers() {
+		if inner := bakedInnerPlan(member); inner != nil {
+			yieldPushedFilterThroughFetch(call, fetchPlan, inner, newInnerAlias, oldInnerAlias, pushed, residual)
+			if call.Err() != nil {
+				return
+			}
+		}
 	}
-	// Bake the child plan bottom-up: every plan this rule constructs below
-	// carries its real child, so nothing downstream has to relink a hole.
-	fetchInnerPlan := bakedInnerPlan(fetchInnerExpr)
-	if fetchInnerPlan == nil {
-		return
-	}
+}
 
-	// Build: Filter(pushed, fetchInner) as its own cascades expression carrying a
-	// DISENTANGLED FINAL edge over the BAKED concrete fetchInnerPlan — the exact
-	// snapshot structure the wrapper interned (RFC-184 W2). Freezing the baked plan
-	// (not the live fetchInnerExpr memo edge, whose children may still be holes)
-	// keeps this pushed member's structure byte-stable, so a parent that captures
-	// it stays reachable as the memo re-explores. innerQ's alias is reused so
-	// GetResultValue matches the wrapper.
-	innerQ := expressions.ForEachQuantifier(
-		call.MemoizeFinalExpressionsFromOther(fetchInnerRef, []expressions.RelationalExpression{fetchInnerExpr}),
-	)
-	pushedInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
+func yieldPushedFilterThroughFetch(call *ImplementationRuleCall, fetchPlan *plans.RecordQueryFetchFromPartialRecordPlan,
+	fetchInnerPlan plans.RecordQueryPlan, newInnerAlias, oldInnerAlias values.CorrelationIdentifier,
+	pushed, residual []predicates.QueryPredicate,
+) {
+	// Java binds the translated predicate to the new quantifier's own alias.
+	// Keep the baked child so the finalized layout cannot move underneath it.
+	pushedInnerQ := expressions.NamedPhysicalQuantifier(newInnerAlias,
 		call.MemoizeFinalExpression(fetchInnerPlan))
-	// PushValue translated the predicate program into newInnerAlias's exact
-	// partial-row domain. The memo edge below deliberately keeps innerQ's alias
-	// so its flowed result identity remains stable; preserve the translated
-	// program's distinct binding root explicitly instead of leaving it unbound
-	// at execution.
 	pushedFilterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 		pushedInnerQ, pushed, newInnerAlias)
 	if err != nil {
@@ -157,7 +150,7 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 
 	// Build: Fetch(Filter(pushed, fetchInner)) as its own cascades expression
 	// carrying the live pushedFilterRef edge (RFC-184 W2).
-	newFetchQ := expressions.ForEachQuantifier(pushedFilterRef)
+	newFetchQ := expressions.NewPhysicalQuantifier(pushedFilterRef)
 	newFetchPlan, err := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 		newFetchQ,
 		fetchPlan.GetTranslateValueFunction(),
@@ -175,7 +168,7 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	} else {
 		// Case 3: some residual.
 		fetchRef := call.MemoizeFinalExpression(newFetchPlan)
-		newQOverFetch := expressions.ForEachQuantifier(fetchRef)
+		newQOverFetch := expressions.NewPhysicalQuantifier(fetchRef)
 
 		// Rebase residual predicates to use the new fetch quantifier alias.
 		rebasedResidual, err := rebasePredicates(residual, oldInnerAlias, newQOverFetch.GetAlias())
@@ -244,7 +237,7 @@ func tryPushPredicate(
 		if !ok {
 			return nil, false
 		}
-		return predicates.NewNot(child), true
+		return predicates.WithAtomicity(predicates.NewNot(child), predicates.IsAtomic(p)), true
 	default:
 		// Unknown predicate type — keep as residual (don't push). Safe
 		// default prevents future predicate types with correlation-bearing
@@ -448,7 +441,7 @@ func tryPushAndPredicate(
 		}
 		translated = append(translated, t)
 	}
-	return predicates.NewAnd(translated...), true
+	return predicates.WithAtomicity(predicates.NewAnd(translated...), predicates.IsAtomic(p)), true
 }
 
 func tryPushOrPredicate(
@@ -464,7 +457,7 @@ func tryPushOrPredicate(
 		}
 		translated = append(translated, t)
 	}
-	return predicates.NewOr(translated...), true
+	return predicates.WithAtomicity(predicates.NewOr(translated...), predicates.IsAtomic(p)), true
 }
 
 var _ ImplementationRule = (*PushFilterThroughFetchRule)(nil)

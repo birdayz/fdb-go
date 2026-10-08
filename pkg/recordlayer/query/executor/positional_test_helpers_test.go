@@ -21,6 +21,20 @@ func mustExecutorConstruct[T any](value T, err error) T {
 	return value
 }
 
+// newProjectionMapForTest is a query block's physical result: a Map over inner
+// publishing projected (aliases optional).
+func newProjectionMapForTest(projected []values.Value, aliases []string, inner plans.RecordQueryPlan) (*plans.RecordQueryMapPlan, error) {
+	result, err := values.ProjectionResultValue(projected, aliases)
+	if err != nil {
+		return nil, err
+	}
+	return plans.NewRecordQueryMapPlan(inner, result)
+}
+
+func newProjectionMapOverForTest(projected []values.Value, inner plans.RecordQueryPlan) (*plans.RecordQueryMapPlan, error) {
+	return newProjectionMapForTest(projected, nil, inner)
+}
+
 func mustTestQOV(t testing.TB, correlation values.CorrelationIdentifier, flowed values.Type) values.QuantifiedObjectValue {
 	t.Helper()
 	qov, err := values.NewQuantifiedObjectValue(correlation, flowed)

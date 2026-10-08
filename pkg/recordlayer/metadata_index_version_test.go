@@ -168,8 +168,7 @@ var _ = Describe("Index version vs metadata version", func() {
 
 		var mdErr *MetaDataError
 		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(ContainSubstring("since version 7"))
-		Expect(mdErr.Message).To(ContainSubstring("meta-data version 3"))
+		Expect(mdErr.Message).To(Equal("Record type Order has since version of 7 which is greater than the meta-data version 3"))
 	})
 
 	It("keeps an already-built index readable across a valid version bump", func() {

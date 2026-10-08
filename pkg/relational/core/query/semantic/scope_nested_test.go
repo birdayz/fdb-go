@@ -98,18 +98,19 @@ func TestScope_NestedDescent_MissIsNotAnError(t *testing.T) {
 	}
 }
 
-// A direct match and a nested match that answer the SAME reference are an
-// AMBIGUITY, not a preference. Java appends both into one list and errors when
-// it holds more than one (SemanticAnalyzer.java:433-437, "Ambiguous reference
-// %s", ErrorCode.AMBIGUOUS_COLUMN). Resolving the collision by which candidate
-// was computed first would make order of attempt into a semantics — and a
-// nested descent evaluated only as a FALLBACK after direct resolution failed
-// is exactly that, which is why this test exists and not a fallback.
-func TestScope_NestedDescent_CollidesWithSourceAliasAsAmbiguity(t *testing.T) {
+// A source-qualified column and a descent into a same-named struct column that
+// answer the SAME reference are not an ambiguity: Java's
+// SemanticAnalyzer.resolveIdentifierMaybe runs the qualified lookup first
+// (lookup(…, matchQualifiedOnly=true)) and the struct-relative one only when
+// that finds nothing, and its qualified lookup cannot reach a struct column's
+// field without the operator's name. Measured against the target: `SELECT h.f
+// FROM y, h`, where y has a struct column h holding f, is table h's f
+// (conformance/ws_f_table_qualifier_conformance_test.go).
+func TestScope_NestedDescent_YieldsToSourceQualifiedColumn(t *testing.T) {
 	t.Parallel()
 	// A second source ALIASED `home_address` that also carries a CITY column:
-	// now `home_address.city` is answerable both as a source-qualified column
-	// and as a descent into the struct column of the same name.
+	// `home_address.city` is answerable both as a source-qualified column and
+	// as a descent into the struct column of the same name.
 	addrTable := &StaticTable{
 		TableName: ParseQualifiedName("addresses", false),
 		TableColumns: []Column{
@@ -118,13 +119,12 @@ func TestScope_NestedDescent_CollidesWithSourceAliasAsAmbiguity(t *testing.T) {
 	}
 	s := structScope(t, ScopeSource{Table: addrTable, Alias: NewUnquoted("home_address"), CorrelationName: "home_address"})
 
-	_, _, _, err := s.ResolveQualifiedColumnNested(NewUnquoted("home_address"), NewUnquoted("city"))
-	var ambig *AmbiguousColumnError
-	if !errors.As(err, &ambig) {
-		t.Fatalf("home_address.city with both a struct column and a same-named source: got %v (%T), want AmbiguousColumnError", err, err)
+	col, src, accessors, err := s.ResolveQualifiedColumnNested(NewUnquoted("home_address"), NewUnquoted("city"))
+	if err != nil {
+		t.Fatalf("home_address.city with both a struct column and a same-named source: %v", err)
 	}
-	if got := ambig.Reference(); got != "HOME_ADDRESS.CITY" {
-		t.Errorf("ambiguous reference rendered %q, want HOME_ADDRESS.CITY", got)
+	if src.CorrelationName != "HOME_ADDRESS" || col.Id.Name() != "CITY" || len(accessors) != 0 {
+		t.Fatalf("home_address.city = col=%+v src=%s accessors=%v, want the source-qualified CITY of HOME_ADDRESS", col, src.CorrelationName, accessors)
 	}
 }
 

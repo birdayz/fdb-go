@@ -24,11 +24,15 @@ go_library(
 
 go_test(
     name = "hunt_test",
-    srcs = ["hunt_test.go"],
+    srcs = [
+        "exhaustion_test.go",
+        "hunt_test.go",
+    ],
     embed = [":hunt"],
     deps = [
         "//gen",
         "//pkg/dst",
+        "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",

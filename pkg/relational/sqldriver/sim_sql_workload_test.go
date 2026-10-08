@@ -18,17 +18,17 @@ func TestSQL_SimFDB_WorkloadDriver(t *testing.T) {
 	key := injectSimFDB(t, 7)
 	ctx := context.Background()
 
-	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///wl?cluster_file=%s", key))
+	setup, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/WL?cluster_file=%s", key))
 	if err != nil {
 		t.Fatalf("open setup: %v", err)
 	}
 	defer setup.Close()
-	mustExecSQL(t, setup, ctx, "CREATE DATABASE /wl")
+	mustExecSQL(t, setup, ctx, "CREATE DATABASE /FRL/wl")
 	mustExecSQL(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE wt CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))")
-	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /wl/s WITH TEMPLATE wt")
+	mustExecSQL(t, setup, ctx, "CREATE SCHEMA /FRL/wl/s WITH TEMPLATE wt")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///wl?cluster_file=%s&schema=s", key))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/WL?cluster_file=%s&schema=S", key))
 	if err != nil {
 		t.Fatalf("open query conn: %v", err)
 	}

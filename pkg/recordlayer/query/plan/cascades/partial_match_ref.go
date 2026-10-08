@@ -53,6 +53,22 @@ func GetPartialMatchesForCandidate(
 	return result
 }
 
+// Java's completeMatch matcher requires candidate-root reference identity.
+func completeMatchesForCandidate(ref *expressions.Reference, candidate MatchCandidate) []PartialMatch {
+	traversal := candidate.GetTraversal()
+	if traversal == nil {
+		return nil
+	}
+	var matches []PartialMatch
+	forEachPartialMatchForCandidate(ref, candidate, func(match PartialMatch) bool {
+		if match.GetCandidateRef() == traversal.GetRootReference() {
+			matches = append(matches, match)
+		}
+		return true
+	})
+	return matches
+}
+
 // forEachPartialMatchForCandidate visits stored matches in deterministic
 // insertion order without allocating a typed copy of the entire slice. It is
 // used by budgeted matcher searches, where even inspecting a candidate match

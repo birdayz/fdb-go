@@ -214,7 +214,7 @@ func TestTranslatePlannerError_DefaultsToInternal(t *testing.T) {
 	// A structural extraction failure, verbatim in shape from
 	// plan_extraction.go's rebuild arms — a bare fmt.Errorf with no sentinel and
 	// no type, exactly what the default arm has to catch.
-	cause := fmt.Errorf("LogicalProjectionExpression: expected 1 child, got %d", 3)
+	cause := fmt.Errorf("SelectExpression: expected 1 child, got %d", 3)
 	got := translatePlannerError(cause, plannerUnableToPlanMessage)
 
 	var apiErr *api.Error
@@ -299,7 +299,7 @@ func TestTranslatePlannerError_FamilyIsTriageable(t *testing.T) {
 			"quantifier 1 ranges over no reference"),
 	}
 	rebuild := &cascades.PlanRebuildError{
-		Cause: errors.New("LogicalProjectionExpression: expected 1 child, got 3"),
+		Cause: errors.New("SelectExpression: expected 1 child, got 3"),
 	}
 
 	cases := []struct {
@@ -407,13 +407,13 @@ func TestPlannerCapHit_ProductionSelectPathSQLSTATE(t *testing.T) {
 	t.Parallel()
 
 	g, md := newLoggingGenerator(t, ordersSchema, nil)
-	// Six-way self-join: join enumeration exceeds the configured cap well before the
-	// memo converges. Four legs plan fine, so this is the cap tripping and not
-	// an unplannable shape.
-	q := parseQuery(t, "SELECT a.id FROM orders a, orders b, orders c, orders d, orders e, orders f "+
-		"WHERE a.id = b.id AND b.id = c.id AND c.id = d.id AND d.id = e.id AND e.id = f.id")
+	// Seven-way self-join: join enumeration exceeds the configured cap before the
+	// memo converges. Six legs plan, so this is the cap tripping and not an
+	// unplannable shape.
+	q := parseQuery(t, "SELECT a.id FROM orders a, orders b, orders c, orders d, orders e, orders f, orders g "+
+		"WHERE a.id = b.id AND b.id = c.id AND c.id = d.id AND d.id = e.id AND e.id = f.id AND f.id = g.id")
 
-	plan, err := g.planSelectCascades(context.Background(), q, md, false)
+	plan, err := g.planSelectCascades(context.Background(), q, md, false, statementOptions{})
 	if err == nil {
 		t.Fatalf("planning converged within the task cap; the query no longer exercises the cap "+
 			"(plan = %v) — widen the join rather than deleting this test", plan)

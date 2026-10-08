@@ -1,0 +1,257 @@
+# temporal_promotion.yaml — Go extension: DATE and TIMESTAMP values
+# (RFC-257 WS-E, ws-e-design.md section 4.3). Java has no temporal type.
+#
+# DATE and TIMESTAMP are types of VALUES (CAST, CURRENT_DATE/TIMESTAMP, a
+# bound time.Time), never of a stored column: a DATE- or TIMESTAMP-spelled
+# column is STRING. Every value holds canonical UTC text, whose order within
+# 0000-9999 is the instant order. Where a DATE meets a TIMESTAMP — a
+# comparison, an IN list, CASE, COALESCE, IFNULL, GREATEST, LEAST — the DATE
+# is promoted to the TIMESTAMP text of its midnight, so a day equals its own
+# midnight and sorts before any later instant of that day. A value against a
+# STRING column compares text.
+name: temporal_promotion
+schema_template: |
+  CREATE TABLE t (id BIGINT, s STRING, n BIGINT, d DATE, ts TIMESTAMP, PRIMARY KEY (id))
+  CREATE INDEX t_d ON t (d)
+setup:
+  - INSERT INTO t VALUES (1, '2024-01-01', 0, '2024-01-01', '2024-01-01 10:00:00')
+  - INSERT INTO t VALUES (2, '2024-01-01 10:00:00', 0, NULL, NULL)
+  - INSERT INTO t VALUES (3, '2024-01-02', 0, NULL, NULL)
+  - INSERT INTO t VALUES (4, NULL, 0, NULL, NULL)
+tests:
+  # --- DATE against TIMESTAMP: the DATE is its midnight ---
+  - query: SELECT id FROM t WHERE id = 1 AND CAST('2024-01-01' AS DATE) = CAST('2024-01-01 00:00:00' AS TIMESTAMP)
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE id = 1 AND CAST('2024-01-01' AS DATE) < CAST('2024-01-01 00:00:00' AS TIMESTAMP)
+    rows: []
+  - query: SELECT id FROM t WHERE id = 1 AND CAST('2024-01-01' AS DATE) <= CAST('2024-01-01 00:00:00' AS TIMESTAMP)
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE id = 1 AND CAST('2024-01-01' AS DATE) <> CAST('2024-01-01 00:00:00' AS TIMESTAMP)
+    rows: []
+  - query: SELECT id FROM t WHERE id = 1 AND CAST('2024-01-01' AS DATE) < CAST('2024-01-01 10:00:00' AS TIMESTAMP)
+    rows:
+      - [1]
+  # Commuted: the promotion follows the DATE operand to either side.
+  - query: SELECT id FROM t WHERE id = 1 AND CAST('2024-01-01 00:00:00' AS TIMESTAMP) = CAST('2024-01-01' AS DATE)
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE id = 1 AND CAST('2024-01-01 10:00:00' AS TIMESTAMP) > CAST('2024-01-01' AS DATE)
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE id = 1 AND NOT (CAST('2024-01-01 00:00:00' AS TIMESTAMP) > CAST('2024-01-01' AS DATE))
+    rows:
+      - [1]
+  # A NULL operand is UNKNOWN, and so is its negation.
+  - query: SELECT id FROM t WHERE id = 1 AND CAST(NULL AS DATE) = CAST('2024-01-01 00:00:00' AS TIMESTAMP)
+    rows: []
+  - query: SELECT id FROM t WHERE id = 1 AND NOT (CAST(NULL AS DATE) = CAST('2024-01-01 00:00:00' AS TIMESTAMP))
+    rows: []
+  # Per row: a DATE value of each row against a TIMESTAMP, and the reverse.
+  - query: SELECT id FROM t WHERE CAST(s AS DATE) = CAST('2024-01-01 00:00:00' AS TIMESTAMP)
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+  - query: SELECT id FROM t WHERE CAST(s AS DATE) < CAST('2024-01-01 10:00:00' AS TIMESTAMP)
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+  - query: SELECT id FROM t WHERE CAST(s AS TIMESTAMP) = CAST('2024-01-01' AS DATE)
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE CAST(s AS TIMESTAMP) >= CAST('2024-01-01' AS DATE)
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: SELECT id FROM t WHERE CAST(s AS TIMESTAMP) BETWEEN CAST('2024-01-01' AS DATE) AND CAST('2024-01-01 10:00:00' AS TIMESTAMP)
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+
+  # --- IN: the list's items, and the probe, meet at TIMESTAMP ---
+  - query: SELECT id FROM t WHERE CAST(s AS DATE) IN (CAST('2024-01-01 00:00:00' AS TIMESTAMP), CAST('2024-01-03 00:00:00' AS TIMESTAMP))
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+  - query: SELECT id FROM t WHERE CAST(s AS TIMESTAMP) IN (CAST('2024-01-01' AS DATE), CAST('2024-01-02' AS DATE))
+    unordered: true
+    rows:
+      - [1]
+      - [3]
+  - query: SELECT id FROM t WHERE CAST(s AS TIMESTAMP) IN (CAST('2024-01-02' AS DATE), CAST('2024-01-01 10:00:00' AS TIMESTAMP))
+    unordered: true
+    rows:
+      - [2]
+      - [3]
+  - query: SELECT id FROM t WHERE CAST(s AS TIMESTAMP) NOT IN (CAST('2024-01-01' AS DATE))
+    unordered: true
+    rows:
+      - [2]
+      - [3]
+  # A runtime list (an item reads the row) takes the same promotion: rows
+  # whose instant is their own day's midnight. Its items may not be NULL
+  # (0A000, as every ARRAY element), hence the COALESCE.
+  - query: SELECT id FROM t WHERE CAST(s AS TIMESTAMP) IN (CAST(COALESCE(s, '1999-01-01') AS DATE), CAST('2099-01-01' AS DATE))
+    unordered: true
+    rows:
+      - [1]
+      - [3]
+  - query: SELECT id FROM t WHERE CAST(s AS TIMESTAMP) IN (CAST(s AS DATE), CAST('2099-01-01' AS DATE))
+    error_code: "0A000"
+
+  # --- Type-merging operators: a DATE branch under a TIMESTAMP result ---
+  - query: SELECT CASE WHEN id = 1 THEN CAST('2024-01-01' AS DATE) ELSE CAST('2024-01-01 10:00:00' AS TIMESTAMP) END FROM t WHERE id <= 2
+    column_types: [TIMESTAMP]
+    unordered: true
+    rows:
+      - ['2024-01-01 00:00:00']
+      - ['2024-01-01 10:00:00']
+  - query: SELECT id FROM t WHERE CASE WHEN id = 1 THEN CAST('2024-01-01' AS DATE) ELSE CAST('2024-01-01 10:00:00' AS TIMESTAMP) END = CAST('2024-01-01 00:00:00' AS TIMESTAMP)
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE id <= 2 AND CASE WHEN id = 1 THEN CAST('2024-01-01' AS DATE) ELSE CAST('2024-01-01 10:00:00' AS TIMESTAMP) END < CAST('2024-01-01 00:00:00' AS TIMESTAMP)
+    rows: []
+  - query: SELECT CASE id WHEN 1 THEN CAST('2024-01-01' AS DATE) ELSE CAST('2024-01-01 10:00:00' AS TIMESTAMP) END FROM t WHERE id = 1
+    column_types: [TIMESTAMP]
+    rows:
+      - ['2024-01-01 00:00:00']
+  - query: SELECT id, COALESCE(CAST(s AS DATE), CAST('1999-01-01 12:00:00' AS TIMESTAMP)) FROM t
+    column_types: [BIGINT, TIMESTAMP]
+    unordered: true
+    rows:
+      - [1, '2024-01-01 00:00:00']
+      - [2, '2024-01-01 00:00:00']
+      - [3, '2024-01-02 00:00:00']
+      - [4, '1999-01-01 12:00:00']
+  - query: SELECT id FROM t WHERE COALESCE(CAST(s AS DATE), CAST('1999-01-01 12:00:00' AS TIMESTAMP)) = CAST('2024-01-02 00:00:00' AS TIMESTAMP)
+    rows:
+      - [3]
+  - query: SELECT id, IFNULL(CAST(s AS DATE), CAST('1999-01-01 12:00:00' AS TIMESTAMP)) FROM t WHERE id IN (1, 4)
+    column_types: [BIGINT, TIMESTAMP]
+    unordered: true
+    rows:
+      - [1, '2024-01-01 00:00:00']
+      - [4, '1999-01-01 12:00:00']
+  - query: SELECT GREATEST(CAST('2024-01-01' AS DATE), CAST('2024-01-01 10:00:00' AS TIMESTAMP)), LEAST(CAST('2024-01-01' AS DATE), CAST('2024-01-01 10:00:00' AS TIMESTAMP)) FROM t WHERE id = 1
+    column_types: [TIMESTAMP, TIMESTAMP]
+    rows:
+      - ['2024-01-01 10:00:00', '2024-01-01 00:00:00']
+  - query: SELECT LEAST(CAST('2024-01-02' AS DATE), CAST('2024-01-01 23:59:59' AS TIMESTAMP)) FROM t WHERE id = 1
+    rows:
+      - ['2024-01-01 23:59:59']
+  - query: SELECT GREATEST(CAST(s AS DATE), CAST('2024-01-01 10:00:00' AS TIMESTAMP)) FROM t WHERE id = 4
+    rows:
+      - [null]
+  # Over the DATE- and TIMESTAMP-spelled columns, which are STRING, the
+  # comparison is textual.
+  - query: SELECT GREATEST(d, ts), LEAST(d, ts) FROM t WHERE id = 1
+    column_types: [STRING, STRING]
+    rows:
+      - ['2024-01-01 10:00:00', '2024-01-01']
+
+  # --- Columns spelled DATE and TIMESTAMP are STRING ---
+  - query: SELECT d, ts FROM t WHERE id = 1
+    column_types: [STRING, STRING]
+    rows:
+      - ['2024-01-01', '2024-01-01 10:00:00']
+  # A TIMESTAMP value against such a column compares text, through the index
+  # on D and as a residual over the unindexed S alike (row 1 holds
+  # '2024-01-01' in both).
+  - query: SELECT id FROM t WHERE d = CAST('2024-01-01 00:00:00' AS TIMESTAMP)
+    plan_contains: "IndexScan(T_D"
+    rows: []
+  - query: SELECT id FROM t WHERE d = ?
+    args: [{kind: time, value: "2024-01-01T00:00:00Z"}]
+    plan_contains: "IndexScan(T_D"
+    rows: []
+  - query: SELECT id FROM t WHERE d >= ?
+    args: [{kind: time, value: "2024-01-01T00:00:00Z"}]
+    plan_contains: "IndexScan(T_D"
+    rows: []
+  - query: SELECT id FROM t WHERE d < ?
+    args: [{kind: time, value: "2024-01-01T10:00:00Z"}]
+    plan_contains: "IndexScan(T_D"
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE d = CAST(? AS DATE)
+    args: [{kind: time, value: "2024-01-01T10:00:00Z"}]
+    plan_contains: "IndexScan(T_D"
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE s < ?
+    args: [{kind: time, value: "2024-01-01T10:00:00Z"}]
+    plan_contains: "PredicatesFilter"
+    rows:
+      - [1]
+
+  # --- A bound time.Time is the TIMESTAMP value of its instant ---
+  - query: SELECT ? FROM t WHERE id = 1
+    args: [{kind: time, value: "2024-01-01T00:00:00+02:00"}]
+    column_types: [TIMESTAMP]
+    rows:
+      - ['2023-12-31 22:00:00']
+  - query: SELECT ? FROM t WHERE id = 1
+    args: [{kind: time, value: "2024-07-04T15:30:45.999Z"}]
+    rows:
+      - ['2024-07-04 15:30:45']
+  - query: SELECT id FROM t WHERE CAST(s AS DATE) = ?
+    args: [{kind: time, value: "2024-01-01T00:00:00Z"}]
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+  # Against a STRING column, its text: midnight is not the date text.
+  - query: SELECT id FROM t WHERE s = ?
+    args: [{kind: time, value: "2024-01-01T00:00:00Z"}]
+    plan_contains: "PredicatesFilter"
+    rows: []
+  - query: SELECT id FROM t WHERE s = ?
+    args: [{kind: time, value: "2024-01-01T05:00:00-05:00"}]
+    rows:
+      - [2]
+  # CAST(? AS DATE) is the instant's UTC day.
+  - query: SELECT id FROM t WHERE s = CAST(? AS DATE)
+    args: [{kind: time, value: "2024-01-01T10:00:00Z"}]
+    plan_contains: "PredicatesFilter"
+    rows:
+      - [1]
+  - query: SELECT id FROM t WHERE s = CAST(? AS DATE)
+    args: [{kind: time, value: "2024-01-02T00:00:00+02:00"}]
+    rows:
+      - [1]
+  # Outside 0000-9999 in UTC: 22008.
+  - query: SELECT ? FROM t WHERE id = 1
+    args: [{kind: time, value: "9999-12-31T23:00:00-05:00"}]
+    error_code: "22008"
+  - query: SELECT ? FROM t WHERE id = 1
+    args: [{kind: time, value: "0000-01-01T00:30:00+01:00"}]
+    error_code: "22008"
+
+  # --- Assignment: a temporal value into a STRING column stores its text ---
+  - query: INSERT INTO t (id, s) VALUES (10, ?)
+    args: [{kind: time, value: "2024-07-04T15:30:45+02:00"}]
+  - query: INSERT INTO t (id, s) VALUES (11, CAST('2024-07-04 15:30:45' AS DATE))
+  - query: INSERT INTO t (id, d) VALUES (12, ?)
+    args: [{kind: time, value: "2024-07-04T00:00:00Z"}]
+  - query: INSERT INTO t (id, d) VALUES (13, CAST(? AS DATE))
+    args: [{kind: time, value: "2024-07-04T00:00:00Z"}]
+  - query: SELECT id, s, d FROM t WHERE id >= 10
+    unordered: true
+    rows:
+      - [10, '2024-07-04 13:30:45', null]
+      - [11, '2024-07-04', null]
+      - [12, null, '2024-07-04 00:00:00']
+      - [13, null, '2024-07-04']
+  # ... and into any other column it is 22000.
+  - query: INSERT INTO t (id, n) VALUES (20, ?)
+    args: [{kind: time, value: "2024-07-04T15:30:45Z"}]
+    error_code: "22000"
+  - query: INSERT INTO t (id, n) VALUES (21, CAST('2024-07-04' AS DATE))
+    error_code: "22000"

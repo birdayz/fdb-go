@@ -36,9 +36,11 @@ go_test(
     name = "foundationdb_test",
     timeout = "long",
     srcs = [
+        "availability_test.go",
         "cluster_test.go",
         "database_test.go",
         "examples_test.go",
+        "exec_deadline_test.go",
         "file_allocation_test.go",
         "foundationdb_test.go",
         "integration_test.go",

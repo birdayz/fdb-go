@@ -64,13 +64,15 @@ func TestCheckBuriedExistentialPredicate_RefusesADanglingExistential(t *testing.
 		t.Fatalf("control: an EXISTS whose quantifier the Select owns must pass, got %v", err)
 	}
 
-	// A buried existential takes precedence over a dangling one, so the
-	// older message keeps its meaning for the shapes it names.
-	buried := build([]expressions.Quantifier{outerQ}, []predicates.QueryPredicate{
+	for _, predicate := range []predicates.QueryPredicate{
 		predicates.NewOr(existsPred, predicates.NewConstantPredicate(predicates.TriTrue)),
-	})
-	var buriedErr *BuriedExistentialPredicateError
-	if err := CheckBuriedExistentialPredicate(buried); !errors.As(err, &buriedErr) {
-		t.Fatalf("EXISTS under OR: got %v, want BuriedExistentialPredicateError", err)
+		predicates.NewNot(predicates.NewNot(existsPred)),
+	} {
+		if err := CheckBuriedExistentialPredicate(build([]expressions.Quantifier{outerQ}, []predicates.QueryPredicate{predicate})); !errors.As(err, &want) {
+			t.Fatalf("boolean consumer without its producer: got %v, want DanglingExistentialPredicateError", err)
+		}
+		if err := CheckBuriedExistentialPredicate(build([]expressions.Quantifier{outerQ, existQ}, []predicates.QueryPredicate{predicate})); err != nil {
+			t.Fatalf("owned boolean consumer: %v", err)
+		}
 	}
 }

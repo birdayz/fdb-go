@@ -11,6 +11,8 @@ go_library(
         "index_build_vtproto.pb.go",
         "keyspace.pb.go",
         "keyspace_vtproto.pb.go",
+        "pending_writes_queue.pb.go",
+        "pending_writes_queue_vtproto.pb.go",
         "planner_events.pb.go",
         "planner_events_vtproto.pb.go",
         "record_cursor.pb.go",

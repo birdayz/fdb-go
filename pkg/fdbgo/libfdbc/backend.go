@@ -101,6 +101,17 @@ func Open(clusterFile string) (fdb.BackendDatabase, error) {
 	return &database{db: s.db, clusterFile: clusterFile}, nil
 }
 
+// SetKnob sets a libfdb_c client knob, "name=value" (the knob network option,
+// 40, which Java's FDBDatabaseFactoryImpl sets through NetworkOptions.setKnob).
+// It selects API version 730 first, as Open does, since network options need a
+// selected version.
+func SetKnob(knob string) error {
+	if err := cgofdb.APIVersion(apiVersion); err != nil {
+		return convErr(err)
+	}
+	return convErr(cgofdb.Options().SetKnob(knob))
+}
+
 // database adapts cgofdb.Database to fdb.BackendDatabase. It also implements
 // fdb.CtxTransactor / fdb.CtxReadTransactor so the record layer's runTransactCtx honors a
 // caller context on this backend (not just the pure-Go one). We drive the retry loop

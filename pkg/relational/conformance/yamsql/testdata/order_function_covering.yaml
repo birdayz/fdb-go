@@ -1,0 +1,80 @@
+# order_function_covering.yaml
+#
+# An index column under an order function (DESC / NULLS FIRST|LAST) stores the
+# TupleOrdering encoding of its field. The candidate reads the field back through
+# FromOrderedBytes (CompensateToOrderedBytesValueRule), so a projection of it is
+# served from the entry with no fetch, as Java serves it, in every direction and
+# with NULLs placed where the direction puts them.
+name: order_function_covering
+schema_template: |
+  CREATE TYPE AS STRUCT SC (x BIGINT, y STRING)
+  CREATE TABLE T (id BIGINT, a BIGINT, b STRING, s SC, PRIMARY KEY (id))
+  CREATE INDEX a_desc ON T (a DESC)
+  CREATE INDEX b_nulls_first AS SELECT b FROM T ORDER BY b ASC NULLS FIRST
+  CREATE INDEX b_desc_nulls_last AS SELECT b FROM T ORDER BY b DESC NULLS LAST
+  CREATE INDEX a_asc_nulls_last_b_desc AS SELECT a, b FROM T ORDER BY a ASC NULLS LAST, b DESC
+  CREATE INDEX sx_desc AS SELECT s.x FROM T ORDER BY s.x DESC
+setup:
+  - INSERT INTO T VALUES (1, 5, 'p', (10, 'u')), (2, -3, 'q', (20, 'v')), (3, NULL, 'r', NULL), (4, 7, NULL, (30, 'w')), (5, 5, 'o', (NULL, 'z'))
+tests:
+  - query: SELECT a, id FROM T ORDER BY a DESC
+    plan_contains: "IndexScan(A_DESC, [*] COVERING)"
+    plan_not_contains: Fetch
+    rows:
+      - [7, 4]
+      - [5, 1]
+      - [5, 5]
+      - [-3, 2]
+      - [null, 3]
+  - query: SELECT a, id FROM T WHERE a = 5 ORDER BY a DESC
+    plan_contains: COVERING
+    plan_not_contains: Fetch
+    unordered: true
+    rows:
+      - [5, 1]
+      - [5, 5]
+  - query: SELECT b, id FROM T ORDER BY b ASC NULLS FIRST
+    plan_contains: "IndexScan(B_NULLS_FIRST, [*] COVERING)"
+    plan_not_contains: Fetch
+    rows:
+      - [null, 4]
+      - [o, 5]
+      - [p, 1]
+      - [q, 2]
+      - [r, 3]
+  - query: SELECT b FROM T ORDER BY b DESC NULLS LAST
+    plan_contains: "IndexScan(B_DESC_NULLS_LAST, [*] COVERING)"
+    plan_not_contains: Fetch
+    rows:
+      - [r]
+      - [q]
+      - [p]
+      - [o]
+      - [null]
+  - query: SELECT a, b, id FROM T ORDER BY a ASC NULLS LAST, b DESC
+    plan_contains: "IndexScan(A_ASC_NULLS_LAST_B_DESC, [*, *] COVERING)"
+    plan_not_contains: Fetch
+    rows:
+      - [-3, q, 2]
+      - [5, p, 1]
+      - [5, o, 5]
+      - [7, null, 4]
+      - [null, r, 3]
+  - query: SELECT s.x, id FROM T ORDER BY s.x DESC
+    plan_contains: "IndexScan(SX_DESC, [*] COVERING)"
+    plan_not_contains: Fetch
+    rows:
+      - [30, 4]
+      - [20, 2]
+      - [10, 1]
+      - [null, 3]
+      - [null, 5]
+  # A field the index does not hold keeps the fetch.
+  - query: SELECT a, b FROM T ORDER BY a DESC
+    plan_not_contains: COVERING
+    rows:
+      - [7, null]
+      - [5, p]
+      - [5, o]
+      - [-3, q]
+      - [null, r]

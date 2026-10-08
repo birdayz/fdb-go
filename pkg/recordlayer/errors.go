@@ -2,8 +2,13 @@ package recordlayer
 
 import (
 	"fmt"
+	"reflect"
 
+	"github.com/google/uuid"
+
+	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/protoname"
 )
 
 // Phase 1: Store existence errors (replace sentinels from store.go)
@@ -16,6 +21,8 @@ func (e *RecordStoreAlreadyExistsError) Error() string {
 	return "record store already exists"
 }
 
+func (*RecordStoreAlreadyExistsError) JavaRecordCoreException() {}
+
 // RecordStoreDoesNotExistError is returned when attempting to open a store that does not exist.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.RecordStoreDoesNotExistException.
 type RecordStoreDoesNotExistError struct{}
@@ -23,6 +30,8 @@ type RecordStoreDoesNotExistError struct{}
 func (e *RecordStoreDoesNotExistError) Error() string {
 	return "record store does not exist"
 }
+
+func (*RecordStoreDoesNotExistError) JavaRecordCoreException() {}
 
 // RecordStoreNoInfoButNotEmptyError is returned when a store subspace has data
 // but no valid store header (StoreInfoKey).
@@ -38,6 +47,8 @@ func (e *RecordStoreNoInfoButNotEmptyError) Error() string {
 	return "record store has no info but is not empty"
 }
 
+func (*RecordStoreNoInfoButNotEmptyError) JavaRecordCoreException() {}
+
 // RecordStoreStateNotLoadedError is returned when store operations are called
 // before the store state has been loaded via Create/Open/CreateOrOpen.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.UninitializedRecordStoreException.
@@ -46,6 +57,8 @@ type RecordStoreStateNotLoadedError struct{}
 func (e *RecordStoreStateNotLoadedError) Error() string {
 	return "record store state not loaded"
 }
+
+func (*RecordStoreStateNotLoadedError) JavaRecordCoreException() {}
 
 // Phase 1: Index errors (replace sentinels from index_state.go)
 
@@ -60,6 +73,8 @@ func (e *IndexNotReadableError) Error() string {
 	return fmt.Sprintf("index is not readable: %s is %s", e.IndexName, e.CurrentState)
 }
 
+func (*IndexNotReadableError) JavaRecordCoreException() {}
+
 // IndexNotFoundError is returned when an index name is not found in the metadata.
 // Matches Java's MetaDataException for missing indexes.
 type IndexNotFoundError struct {
@@ -70,13 +85,19 @@ func (e *IndexNotFoundError) Error() string {
 	return fmt.Sprintf("index not found in metadata: %s", e.IndexName)
 }
 
+func (*IndexNotFoundError) JavaRecordCoreException() {}
+
 // IndexNotBuiltError is returned when trying to mark an index as readable but it has
-// unbuilt ranges remaining in its range set.
+// unbuilt ranges or pending index writes remain.
 type IndexNotBuiltError struct {
-	IndexName string
+	IndexName     string
+	PendingWrites bool
 }
 
 func (e *IndexNotBuiltError) Error() string {
+	if e.PendingWrites {
+		return fmt.Sprintf("index is not built: %q has pending writes", e.IndexName)
+	}
 	return fmt.Sprintf("index is not built: %q has unbuilt ranges", e.IndexName)
 }
 
@@ -86,10 +107,129 @@ func (e *IndexNotBuiltError) Error() string {
 // Matches Java's com.apple.foundationdb.record.metadata.MetaDataException.
 type MetaDataError struct {
 	Message string
+	// Cause is Java's exception cause, when the MetaDataException was built with
+	// one (MetaDataException(message, cause)); Error is the message alone, as
+	// Java's getMessage is.
+	Cause error
 }
 
 func (e *MetaDataError) Error() string {
 	return e.Message
+}
+
+func (*MetaDataError) JavaRecordCoreException() {}
+
+// Unwrap reports this as the RecordCoreError Java's MetaDataException is (it
+// extends RecordCoreException), so a caller matching RecordCoreError catches it
+// as `catch (RecordCoreException)` does, and returns the cause, so errors.As
+// reaches it as Java's getCause does.
+func (e *MetaDataError) Unwrap() []error {
+	parent := &RecordCoreError{Message: e.Message}
+	if e.Cause == nil {
+		return []error{parent}
+	}
+	return []error{parent, e.Cause}
+}
+
+// RecordCoreException is implemented by every error type porting a Java
+// RecordCoreException subclass. The relational layer gives one that none of
+// its specific arms claims ErrorCode.UNKNOWN, as ExceptionUtil does.
+type RecordCoreException interface {
+	error
+	JavaRecordCoreException()
+}
+
+// metaDataException marks the Go types whose Java class is MetaDataException
+// or a subclass of it (IsMetaDataException).
+type metaDataException interface{ javaMetaDataException() }
+
+func (*MetaDataError) javaMetaDataException()                     {}
+func (*MetaDataProtoDeserializationError) javaMetaDataException() {}
+func (*UnknownIndexTypeError) javaMetaDataException()             {}
+func (*IndexVersionTooNewError) javaMetaDataException()           {}
+func (*IndexNotFoundError) javaMetaDataException()                {}
+func (*MetaDataVersionMustIncreaseError) javaMetaDataException()  {}
+func (*RecordTypeKeyTypeError) javaMetaDataException()            {}
+
+// IsMetaDataException reports whether err's outermost Java exception is a
+// MetaDataException, as Java's `re instanceof MetaDataException` tests the
+// exception thrown and not its causes (ExceptionUtil.recordCoreToRelationalException).
+// The outermost Java exception is the first error of this package met walking
+// err's wrappers (fmt's %w, and the first of several), each of which is a Java
+// exception class; a MetaDataError that is only the cause of another is not.
+func IsMetaDataException(err error) bool {
+	switch OutermostJavaError(err).(type) {
+	case metaDataException:
+		return true
+	case *protoname.InvalidNameError:
+		// Java's ProtoUtils.InvalidNameException extends MetaDataException
+		// (ProtoUtils.java:153); its Go type lives in protoname, which this
+		// package aliases as InvalidNameError.
+		return true
+	}
+	return false
+}
+
+// OutermostJavaError is the first error of this package (or of protoname,
+// which it aliases) on err's chain of wrappers, following the first of
+// several; nil when there is none.
+func OutermostJavaError(err error) error {
+	for e := err; e != nil; {
+		if t := reflect.TypeOf(e); t.Kind() == reflect.Pointer && javaErrorPkgPaths[t.Elem().PkgPath()] {
+			return e
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() error }:
+			e = u.Unwrap()
+		case interface{ Unwrap() []error }:
+			if errs := u.Unwrap(); len(errs) > 0 {
+				e = errs[0]
+			} else {
+				e = nil
+			}
+		default:
+			e = nil
+		}
+	}
+	return nil
+}
+
+// javaErrorPkgPaths are the packages whose error types are Java exception
+// classes: this one, and protoname, whose InvalidNameError this package
+// aliases.
+var javaErrorPkgPaths = map[string]bool{
+	reflect.TypeOf(MetaDataError{}).PkgPath():              true,
+	reflect.TypeOf(protoname.InvalidNameError{}).PkgPath(): true,
+}
+
+// RecordCoreMessages is the message of every RecordCoreError in err's tree, in
+// errors.As order (depth first, each error before what it wraps), each once:
+// the Java RecordCoreExceptions an error is, and wraps, as their messages. A
+// test asserts with it which exceptions a refusal carries, where errors.As
+// finds only the first.
+func RecordCoreMessages(err error) []string {
+	var out []string
+	seen := map[string]bool{}
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		if core, ok := e.(*RecordCoreError); ok && !seen[core.Message] {
+			seen[core.Message] = true
+			out = append(out, core.Message)
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() error }:
+			walk(u.Unwrap())
+		case interface{ Unwrap() []error }:
+			for _, c := range u.Unwrap() {
+				walk(c)
+			}
+		}
+	}
+	walk(err)
+	return out
 }
 
 // UnknownIndexTypeError is raised when no index maintainer implements an index's
@@ -121,6 +261,8 @@ type UnknownIndexTypeError struct {
 func (e *UnknownIndexTypeError) Error() string {
 	return fmt.Sprintf("Unknown index type %q for index %q", e.IndexType, e.IndexName)
 }
+
+func (*UnknownIndexTypeError) JavaRecordCoreException() {}
 
 // Unwrap reports this as a metadata failure. Java's exception IS a
 // MetaDataException; in Go the identity fields need their own struct, so the
@@ -164,9 +306,12 @@ func (e *IndexVersionTooNewError) Error() string {
 	if e.Kind == IndexVersionLastModified {
 		offending = e.LastModifiedVersion
 	}
-	return fmt.Sprintf("index %q has %s version %d which is greater than the meta-data version %d",
+	// Java's text (MetaDataValidator.java:124-133): the index name unquoted.
+	return fmt.Sprintf("Index %s has %s version %d which is greater than the meta-data version %d",
 		e.IndexName, e.Kind, offending, e.MetaDataVersion)
 }
+
+func (*IndexVersionTooNewError) JavaRecordCoreException() {}
 
 // Unwrap reports this as a metadata validation failure so that callers matching
 // on *MetaDataError keep working, mirroring Java where this is a MetaDataException.
@@ -185,6 +330,8 @@ type UnsupportedFormatVersionError struct {
 func (e *UnsupportedFormatVersionError) Error() string {
 	return fmt.Sprintf("unsupported format version %d (max supported: %d)", e.Version, e.MaxVersion)
 }
+
+func (*UnsupportedFormatVersionError) JavaRecordCoreException() {}
 
 // UnsupportedFeatureForFormatVersionError is returned when a version-gated store
 // feature is used on a store whose header format version predates it.
@@ -208,17 +355,78 @@ func (e *UnsupportedFeatureForFormatVersionError) Error() string {
 		e.Feature, e.Version, e.RequiredVersion)
 }
 
-// RecordSerializationError is returned when a record fails to serialize (marshal) to protobuf.
-// Matches Java's com.apple.foundationdb.record.provider.foundationdb.RecordSerializationException.
+func (*UnsupportedFeatureForFormatVersionError) JavaRecordCoreException() {}
+
+// RecordSerializationError is Java's
+// com.apple.foundationdb.record.provider.common.RecordSerializationException:
+// a record's bytes could not be produced, or a transformation's could not be
+// read back (a compression, encryption or prefix failure on either path).
+// Message is the exception's message; one with only a cause (a protobuf
+// marshal failure, Java's RecordSerializationException(Throwable)) renders as
+// "failed to serialize record".
 type RecordSerializationError struct {
-	Cause error
+	Message string
+	Cause   error
+	// RetryCount and RetryResult are the log keys Java's
+	// decryptAndDecompressWithRetries adds to a read's failure: the configured
+	// reattempt count and "failure" when every attempt failed, or the attempt
+	// that succeeded and "success" when failOnDeserializeReattempt refuses a
+	// reattempt's success. RetryResult is "" on every other error.
+	RetryCount  int
+	RetryResult string
+	// MetaDataVersion is the reading store's metadata version on a refused
+	// reattempt (Java's META_DATA_VERSION log key), when a store read it.
+	MetaDataVersion int
+	// generalSecurity marks the wrapping of a cipher failure, Java's
+	// GeneralSecurityException, which the write-time encryption validation
+	// catches and a key manager's own RecordSerializationException it does not.
+	generalSecurity bool
 }
 
 func (e *RecordSerializationError) Error() string {
+	switch {
+	case e.Message != "" && e.Cause != nil:
+		return e.Message + ": " + e.Cause.Error()
+	case e.Message != "":
+		return e.Message
+	}
 	return fmt.Sprintf("failed to serialize record: %v", e.Cause)
 }
 
+func (*RecordSerializationError) JavaRecordCoreException() {}
+
 func (e *RecordSerializationError) Unwrap() error {
+	return e.Cause
+}
+
+// RecordSerializationValidationError is Java's
+// com.apple.foundationdb.record.provider.common.RecordSerializationValidationException:
+// a sampled write-time validation found a record's stored bytes would not read
+// back as the record ("cannot deserialize record", "record serialization
+// mismatch") or its encryption would not decrypt to its input ("encryption
+// validation error: ..."). Like Java's, it is a RecordCoreException and not a
+// RecordSerializationException. RecordType and PrimaryKey are its log keys.
+type RecordSerializationValidationError struct {
+	Message    string
+	RecordType string
+	PrimaryKey tuple.Tuple
+	Cause      error
+}
+
+func (e *RecordSerializationValidationError) Error() string {
+	msg := e.Message
+	if e.RecordType != "" {
+		msg += fmt.Sprintf(" (record type %s, primary key %v)", e.RecordType, e.PrimaryKey)
+	}
+	if e.Cause != nil {
+		msg += ": " + e.Cause.Error()
+	}
+	return msg
+}
+
+func (*RecordSerializationValidationError) JavaRecordCoreException() {}
+
+func (e *RecordSerializationValidationError) Unwrap() error {
 	return e.Cause
 }
 
@@ -235,6 +443,8 @@ func (e *RecordDeserializationError) Error() string {
 	}
 	return fmt.Sprintf("failed to deserialize record: %v", e.Cause)
 }
+
+func (*RecordDeserializationError) JavaRecordCoreException() {}
 
 func (e *RecordDeserializationError) Unwrap() error {
 	return e.Cause
@@ -266,6 +476,8 @@ func (e *ContinuationParseError) Error() string {
 	return fmt.Sprintf("%s (raw_bytes=%x): %v", msg, e.RawBytes, e.Cause)
 }
 
+func (*ContinuationParseError) JavaRecordCoreException() {}
+
 func (e *ContinuationParseError) Unwrap() error {
 	return e.Cause
 }
@@ -282,6 +494,21 @@ func (e *ContinuationEncodeError) Error() string {
 	return e.Message
 }
 
+func (*ContinuationEncodeError) JavaRecordCoreException() {}
+
+// QueryInvalidExpressionError is Java's
+// com.apple.foundationdb.record.query.expressions.Query.InvalidExpressionException,
+// an IllegalStateException (Query.java:273), not a RecordCoreException and not
+// KeyExpression's: key validation raises it for a message field read as a
+// scalar.
+type QueryInvalidExpressionError struct {
+	Message string
+}
+
+func (e *QueryInvalidExpressionError) Error() string {
+	return e.Message
+}
+
 // KeyExpressionError is returned when a key expression evaluation fails.
 // Matches Java's com.apple.foundationdb.record.metadata.expressions.KeyExpression.InvalidExpressionException.
 type KeyExpressionError struct {
@@ -291,6 +518,82 @@ type KeyExpressionError struct {
 func (e *KeyExpressionError) Error() string {
 	return e.Message
 }
+
+// unknownRecordTypeError is Java's RecordMetaData.unknownTypeException
+// (RecordMetaData.java:825-827), which getRecordType, getIndexableRecordType and
+// getRecordTypeForDescriptor throw for a name the meta-data does not hold.
+func unknownRecordTypeError(name string) *MetaDataError {
+	return &MetaDataError{Message: "Unknown record type " + name}
+}
+
+// KeyExpressionDeserializationError is Java's
+// KeyExpression.DeserializationException (a RecordCoreException): a
+// serialized key expression that cannot be read back, as one with no root or
+// with several (KeyExpression.java:404-405), a field without its name or fan
+// type (FieldKeyExpression.java:122-128), a nesting without its parent
+// (NestingKeyExpression.java:69) or a then of fewer than two children
+// (ThenKeyExpression.java:84).
+type KeyExpressionDeserializationError struct {
+	Message string
+}
+
+func (e *KeyExpressionDeserializationError) Error() string {
+	return e.Message
+}
+
+func (*KeyExpressionDeserializationError) JavaRecordCoreException() {}
+
+// Unwrap reports it as the RecordCoreError Java's exception is, so a caller
+// matching RecordCoreError catches it as `catch (RecordCoreException)` does.
+func (e *KeyExpressionDeserializationError) Unwrap() error {
+	return &RecordCoreError{Message: e.Message}
+}
+
+// MetaDataProtoDeserializationError is Java's
+// RecordMetaDataBuilder.MetaDataProtoDeserializationException, a
+// MetaDataException "Error converting from protobuf" whose cause is the
+// failure: a key expression of the meta-data proto that cannot be read (an
+// index's root, a record type's primary key, the record-count key; a
+// KeyExpressionDeserializationError), or the subspace-key counter settings
+// disagreeing (RecordMetaDataBuilder.java:187-292).
+type MetaDataProtoDeserializationError struct {
+	Cause error
+}
+
+func (e *MetaDataProtoDeserializationError) Error() string { return "Error converting from protobuf" }
+
+// Unwrap reports it as the MetaDataError Java's exception is, and its cause.
+func (e *MetaDataProtoDeserializationError) Unwrap() []error {
+	return []error{&MetaDataError{Message: e.Error(), Cause: e.Cause}, e.Cause}
+}
+
+func (*MetaDataProtoDeserializationError) JavaRecordCoreException() {}
+
+// UnsupportedOperationError corresponds to Java's UnsupportedOperationException.
+type UnsupportedOperationError struct{ Message string }
+
+func (e *UnsupportedOperationError) Error() string { return e.Message }
+
+// RecordCoreError carries Java's base RecordCoreException diagnostics and cause.
+type RecordCoreError struct {
+	IndexOption string
+	Message     string
+	IndexName   string
+	Cause       error
+}
+
+func (e *RecordCoreError) Error() string { return e.Message }
+func (e *RecordCoreError) Unwrap() error { return e.Cause }
+
+// RecordCoreInternalError reports an internal invariant violation, matching
+// Java's RecordCoreInternalException.
+type RecordCoreInternalError struct {
+	Message string
+}
+
+func (*RecordCoreError) JavaRecordCoreException() {}
+
+func (e *RecordCoreInternalError) Error() string { return e.Message }
 
 // RecordCoreStorageError signals storage-level corruption detected while
 // resolving an index entry to its base record. Matches Java's
@@ -306,15 +609,56 @@ func (e *KeyExpressionError) Error() string {
 // rebuild (scanIndexRecords defaults to ERROR) use this loud path. Silently
 // skipping would convert detectable corruption into quietly-fewer rows.
 type RecordCoreStorageError struct {
-	Message    string      // Java's RecordCoreStorageException message
-	IndexName  string      // LogMessageKeys.INDEX_NAME
-	PrimaryKey tuple.Tuple // LogMessageKeys.PRIMARY_KEY (nil if the entry yielded no PK)
-	IndexKey   tuple.Tuple // LogMessageKeys.INDEX_KEY
+	Message       string      // Java's RecordCoreStorageException message
+	IndexName     string      // LogMessageKeys.INDEX_NAME
+	PrimaryKey    tuple.Tuple // LogMessageKeys.PRIMARY_KEY (nil if the entry yielded no PK)
+	IndexKey      tuple.Tuple // LogMessageKeys.INDEX_KEY
+	KeyTuple      tuple.Tuple // LogMessageKeys.KEY_TUPLE
+	Version       *int32      // LogMessageKeys.VERSION (reader version)
+	StoredVersion *int32      // LogMessageKeys.STORED_VERSION
+	ExpectedType  string      // Bound protobuf full name, the language-independent message identity
+	ActualType    string      // LogMessageKeys.ACTUAL_TYPE (stored Any type URL)
 }
 
+func (*RecordCoreInternalError) JavaRecordCoreException() {}
+
 func (e *RecordCoreStorageError) Error() string {
+	if e.KeyTuple != nil {
+		message := fmt.Sprintf("%s (key_tuple=%v", e.Message, e.KeyTuple)
+		if e.Version != nil && e.StoredVersion != nil {
+			message += fmt.Sprintf(", version=%d, stored_version=%d", *e.Version, *e.StoredVersion)
+		}
+		if e.ExpectedType != "" {
+			message += fmt.Sprintf(", expected_type=%s, actual_type=%s", e.ExpectedType, e.ActualType)
+		}
+		return message + ")"
+	}
 	return fmt.Sprintf("%s (index_name=%s, primary_key=%v, index_key=%v)",
 		e.Message, e.IndexName, e.PrimaryKey, e.IndexKey)
+}
+
+func (*RecordCoreStorageError) JavaRecordCoreException() {}
+
+// RecordContextNotActiveError is Java's RecordContextNotActiveException, a
+// RecordCoreStorageException: the context's transaction is no longer active.
+// A context is deactivated by its commit whatever the outcome, and a context a
+// transaction route (FDBDatabase.Run and its variants, the runner) hands its
+// body is the route's to commit, so a commit there is refused before anything
+// commits. errors.As finds it as itself and as a *RecordCoreStorageError.
+type RecordContextNotActiveError struct{ Message string }
+
+func (e *RecordContextNotActiveError) Error() string { return e.Message }
+
+func (*RecordContextNotActiveError) JavaRecordCoreException() {}
+
+// Unwrap exposes the RecordCoreStorageException superclass.
+func (e *RecordContextNotActiveError) Unwrap() error {
+	return &RecordCoreStorageError{Message: e.Message}
+}
+
+// errTransactionNotActive is FDBRecordContext.ensureActive's refusal.
+func errTransactionNotActive() error {
+	return &RecordContextNotActiveError{Message: "Transaction is no longer active."}
 }
 
 // FoundSplitOutOfOrderError is raised when a split record's segments are present
@@ -341,6 +685,8 @@ func (e *FoundSplitOutOfOrderError) Error() string {
 	return fmt.Sprintf("Split record segments out of order (split_expected=%d, split_found=%d, key_tuple=%v)",
 		e.Expected, e.Found, e.KeyTuple)
 }
+
+func (*FoundSplitOutOfOrderError) JavaRecordCoreException() {}
 
 // Unwrap reports this as storage corruption. Java's exception IS a
 // RecordCoreStorageException; Go spells that relationship out so a caller
@@ -379,6 +725,8 @@ func (e *FoundSplitWithoutStartError) Error() string {
 		e.NextIndex, e.Reverse, e.KeyTuple)
 }
 
+func (*FoundSplitWithoutStartError) JavaRecordCoreException() {}
+
 // PartlyBuiltError is returned when an OnlineIndexer encounters an index that was
 // partly built by another method or is blocked from continuing.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexingBase.PartlyBuiltException.
@@ -387,11 +735,37 @@ type PartlyBuiltError struct {
 	SavedStamp    string // string representation of the saved stamp
 	ExpectedStamp string // string representation of the expected stamp
 	Message       string
+	// Saved and Expected are the stamps themselves (Java getSavedStamp and
+	// getExpectedStamp). The build catcher resumes the saved stamp's method.
+	Saved    *gen.IndexBuildIndexingStamp
+	Expected *gen.IndexBuildIndexingStamp
+	// IndexerID is the refusing indexer's identity, Java's INDEXER_ID log key
+	// (IndexingBase.java:604, :1011-1012).
+	IndexerID uuid.UUID
+	// IndexVersion is the index's last-modified version, Java's INDEX_VERSION
+	// log key (IndexingBase.java:1291).
+	IndexVersion int
 }
 
 func (e *PartlyBuiltError) Error() string {
 	return fmt.Sprintf("index %q: %s (saved=%s, expected=%s)",
 		e.IndexName, e.Message, e.SavedStamp, e.ExpectedStamp)
+}
+
+func (*PartlyBuiltError) JavaRecordCoreException() {}
+
+// DuplicateIndexOptionError is returned when stored index metadata lists one
+// option key twice. The Java counterpart is the IllegalArgumentException Guava's
+// ImmutableMap.Builder.build throws from Index.buildOptions (Index.java:253-266);
+// Error reproduces its message, which names the later entry first.
+type DuplicateIndexOptionError struct {
+	Key string
+	// First and Second are the values in stored order.
+	First, Second string
+}
+
+func (e *DuplicateIndexOptionError) Error() string {
+	return fmt.Sprintf("Multiple entries with same key: %s=%s and %s=%s", e.Key, e.Second, e.Key, e.First)
 }
 
 // IncompleteVersionstampError is returned when a tuple carrying an INCOMPLETE

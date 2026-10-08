@@ -189,6 +189,37 @@ func TestExplode_WithOrdinalityDistinct(t *testing.T) {
 	}
 }
 
+// A zero-based Explode (Java's three-argument ExplodeExpression) is a different
+// expression from the one-based one, keeps its base through WithCollection, and
+// needs ordinality.
+func TestExplode_ZeroBasedOrdinality(t *testing.T) {
+	t.Parallel()
+	arr := values.NewArrayConstructorValue(values.NotNullLong, []values.Value{
+		values.LiteralValue(int64(1)),
+	})
+	if _, err := NewExplodeExpressionWithOrdinalityBase(arr, false, true); err == nil {
+		t.Fatal("zero-based ordinals without ordinality were admitted")
+	}
+	oneBased := mustExpression(NewExplodeExpressionWithOrdinality(arr, true))
+	zeroBased := mustExpression(NewExplodeExpressionWithOrdinalityBase(arr, true, true))
+	if !zeroBased.GetZeroBasedOrdinality() || oneBased.GetZeroBasedOrdinality() {
+		t.Fatal("GetZeroBasedOrdinality flag mismatch")
+	}
+	if oneBased.EqualsWithoutChildren(zeroBased, nil) || zeroBased.EqualsWithoutChildren(oneBased, nil) {
+		t.Fatal("zero-based and one-based Explodes must not be equal")
+	}
+	if oneBased.HashCodeWithoutChildren() == zeroBased.HashCodeWithoutChildren() {
+		t.Fatal("zero-based and one-based Explodes must hash differently")
+	}
+	if alsoOneBased := mustExpression(NewExplodeExpressionWithOrdinalityBase(arr, true, false)); alsoOneBased.HashCodeWithoutChildren() != oneBased.HashCodeWithoutChildren() {
+		t.Fatal("a one-based Explode's hash must not change with the zero-based flag's introduction")
+	}
+	rebuilt, err := zeroBased.WithCollection(arr)
+	if err != nil || !rebuilt.GetZeroBasedOrdinality() {
+		t.Fatalf("WithCollection dropped the zero base: %v", err)
+	}
+}
+
 // TestExplode_OrdinalityResultType pins the WITH ORDINALITY result type: an
 // anonymous 2-field record (element, INT NOT NULL), keyed _0 / _1.
 func TestExplode_OrdinalityResultType(t *testing.T) {

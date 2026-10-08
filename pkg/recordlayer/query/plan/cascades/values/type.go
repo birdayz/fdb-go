@@ -65,6 +65,7 @@ const (
 	TypeCodeUuid
 	TypeCodeDate
 	TypeCodeTimestamp
+	TypeCodeVector
 )
 
 // String renders the code as the SQL-ish type name ("INT", "STRING",
@@ -108,6 +109,8 @@ func (tc TypeCode) String() string {
 		return "DATE"
 	case TypeCodeTimestamp:
 		return "TIMESTAMP"
+	case TypeCodeVector:
+		return "VECTOR"
 	}
 	return "UNKNOWN"
 }
@@ -121,7 +124,7 @@ func (tc TypeCode) IsPrimitive() bool {
 	case TypeCodeBoolean, TypeCodeInt, TypeCodeLong,
 		TypeCodeFloat, TypeCodeDouble,
 		TypeCodeString, TypeCodeBytes, TypeCodeVersion,
-		TypeCodeUuid, TypeCodeDate, TypeCodeTimestamp:
+		TypeCodeUuid, TypeCodeDate, TypeCodeTimestamp, TypeCodeVector:
 		return true
 	}
 	return false
@@ -181,7 +184,7 @@ type PrimitiveType struct {
 // not "primitive" per IsPrimitive's sense.
 func NewPrimitiveType(code TypeCode, nullable bool) *PrimitiveType {
 	switch code {
-	case TypeCodeRecord, TypeCodeArray, TypeCodeRelation, TypeCodeEnum:
+	case TypeCodeRecord, TypeCodeArray, TypeCodeRelation, TypeCodeEnum, TypeCodeVector:
 		panic("NewPrimitiveType: structured TypeCode " + code.String() +
 			" requires its dedicated constructor (NewRecordType / NewArrayType / NewEnumType / NewRelationType)")
 	}
@@ -363,6 +366,12 @@ type Field struct {
 	// slice position directly (RecordType.FieldIndexUnique) for soundness even on
 	// a raw RecordType. Anonymous fields share Name="" but have distinct Ordinals.
 	Ordinal int
+	// Index is the protobuf field number of a descriptor-derived field, 0
+	// when there is none (Java's fieldIndexOptional). Provenance only.
+	Index int32
+	// StorageName is the protobuf field name when Name does not imply it;
+	// empty means DerivedStorageName(Name) (Java's Field.of). Provenance only.
+	StorageName string
 }
 
 // Equals reports whether two Fields are structurally equal: same
@@ -391,6 +400,9 @@ type RecordType struct {
 	// anonymous — frequently the case for projection result rows
 	// that haven't been bound to a named struct.
 	RecordName string
+	// StorageName is the record's protobuf message name where it differs
+	// from RecordName (Java's Type.Record storageName).
+	StorageName string
 	// Nullable reports whether the record allows NULL — i.e. a
 	// nullable column whose type is this RecordType. Anonymous
 	// records typically default to nullable since plan-time
@@ -745,9 +757,6 @@ type RecordTypeLeg struct {
 // producer that never decided. Both are POSITIONAL parameters so that omitting
 // either is a compile error rather than a silent zero — that, and not the
 // literal index, is what the parameter list buys.
-//
-// A docscheck AST scan (TestRecordTypeLegIsConstructed) keeps the composite
-// literal from coming back in non-test production code.
 func NewRecordTypeLeg(kind LegKind, alias CorrelationIdentifier, name string, start, width int) RecordTypeLeg {
 	return RecordTypeLeg{Kind: kind, Alias: alias, Name: name, Start: start, Width: width}
 }
@@ -941,6 +950,26 @@ func (r *RecordType) LookupFieldUnique(name string) (Field, bool) {
 	return r.Fields[idx], true
 }
 
+// LookupFieldPathUnique resolves a field path from row, each step by
+// LookupFieldUnique; false for an empty path or a step that is not exactly one
+// field of a record.
+func LookupFieldPathUnique(row Type, path []string) (Field, bool) {
+	var field Field
+	for i, name := range path {
+		record, ok := row.(*RecordType)
+		if !ok {
+			return Field{}, false
+		}
+		if field, ok = record.LookupFieldUnique(name); !ok {
+			return Field{}, false
+		}
+		if i < len(path)-1 {
+			row = field.FieldType
+		}
+	}
+	return field, len(path) > 0
+}
+
 // GetField returns the field at the given ordinal plus a found flag.
 // Negative or out-of-range ordinals return (Field{}, false).
 func (r *RecordType) GetField(ordinal int) (Field, bool) {
@@ -983,6 +1012,13 @@ func IsOrdinalFieldName(name string) bool {
 // Explode: an anonymous 2-field record (element, INT NOT NULL ordinal).
 // Mirrors Java's `ExplodeExpression.explodeResultType(elementType, true)`.
 func ExplodeOrdinalityResultType(elementType Type) Type {
+	return ExplodeOrdinalityResultTypeNamed(elementType, OrdinalFieldName(0), OrdinalFieldName(1))
+}
+
+// ExplodeOrdinalityResultTypeNamed is ExplodeOrdinalityResultType with its two
+// slots named: a SQL `AS e AT o` unnest names them after its aliases, so the
+// quantifier over the Explode flows exactly the row its references read.
+func ExplodeOrdinalityResultTypeNamed(elementType Type, elementName, ordinalName string) Type {
 	if elementType == nil {
 		elementType = UnknownType
 	}
@@ -992,8 +1028,8 @@ func ExplodeOrdinalityResultType(elementType Type) Type {
 	// non-null also preserves AT's authored INT NOT NULL contract through exact
 	// FieldValue result-type derivation.
 	return NewRecordType("", false, []Field{
-		{Name: OrdinalFieldName(0), FieldType: elementType, Ordinal: 0},
-		{Name: OrdinalFieldName(1), FieldType: NotNullInt, Ordinal: 1},
+		{Name: elementName, FieldType: elementType, Ordinal: 0},
+		{Name: ordinalName, FieldType: NotNullInt, Ordinal: 1},
 	})
 }
 
@@ -1085,6 +1121,9 @@ type EnumValue struct {
 	// stable across schema evolution; renames are forbidden but
 	// repurposing a number is a hard breaking change).
 	Number int32
+	// StorageName is the protobuf spelling when Name does not imply it; empty
+	// means DerivedStorageName(Name) (Java's EnumValue.storageName).
+	StorageName string
 }
 
 // Equals reports structural equality — Name + Number.
@@ -1106,6 +1145,9 @@ type EnumType struct {
 	Nullable bool
 	// Values are the declared enum members in declared order.
 	Values []EnumValue
+	// StorageName is the protobuf spelling when it differs from EnumName;
+	// empty means EnumName (Java's Type.Enum.storageName).
+	StorageName string
 }
 
 // NewEnumType constructs an EnumType. The Values slice is
@@ -1383,25 +1425,24 @@ type promotionEdge struct {
 // Identity (T → T) is NOT in the map — IsPromotable handles that
 // trivially before consulting the map.
 var promotionMap = map[promotionEdge]struct{}{
-	{TypeCodeInt, TypeCodeLong}:     {},
-	{TypeCodeInt, TypeCodeFloat}:    {},
-	{TypeCodeInt, TypeCodeDouble}:   {},
-	{TypeCodeLong, TypeCodeFloat}:   {},
-	{TypeCodeLong, TypeCodeDouble}:  {},
-	{TypeCodeFloat, TypeCodeDouble}: {},
-	{TypeCodeNull, TypeCodeInt}:     {},
-	{TypeCodeNull, TypeCodeLong}:    {},
-	{TypeCodeNull, TypeCodeFloat}:   {},
-	{TypeCodeNull, TypeCodeDouble}:  {},
-	{TypeCodeNull, TypeCodeBoolean}: {},
-	{TypeCodeNull, TypeCodeString}:  {},
-	{TypeCodeNull, TypeCodeBytes}:   {},
-	{TypeCodeNull, TypeCodeArray}:   {},
-	{TypeCodeNull, TypeCodeRecord}:  {},
-	{TypeCodeNull, TypeCodeEnum}:    {},
-	{TypeCodeNull, TypeCodeVersion}: {},
-	// Java also has NULL→VECTOR (PromoteValue.java): Go has no VECTOR
-	// TypeCode — vectors are ARRAY-typed — so NULL→ARRAY covers it.
+	{TypeCodeInt, TypeCodeLong}:         {},
+	{TypeCodeInt, TypeCodeFloat}:        {},
+	{TypeCodeInt, TypeCodeDouble}:       {},
+	{TypeCodeLong, TypeCodeFloat}:       {},
+	{TypeCodeLong, TypeCodeDouble}:      {},
+	{TypeCodeFloat, TypeCodeDouble}:     {},
+	{TypeCodeNull, TypeCodeInt}:         {},
+	{TypeCodeNull, TypeCodeLong}:        {},
+	{TypeCodeNull, TypeCodeFloat}:       {},
+	{TypeCodeNull, TypeCodeDouble}:      {},
+	{TypeCodeNull, TypeCodeBoolean}:     {},
+	{TypeCodeNull, TypeCodeString}:      {},
+	{TypeCodeNull, TypeCodeBytes}:       {},
+	{TypeCodeNull, TypeCodeVector}:      {},
+	{TypeCodeNull, TypeCodeArray}:       {},
+	{TypeCodeNull, TypeCodeRecord}:      {},
+	{TypeCodeNull, TypeCodeEnum}:        {},
+	{TypeCodeNull, TypeCodeVersion}:     {},
 	{TypeCodeNone, TypeCodeArray}:       {},
 	{TypeCodeString, TypeCodeEnum}:      {},
 	{TypeCodeString, TypeCodeUuid}:      {},
@@ -1457,7 +1498,7 @@ var castPairs = map[promotionEdge]struct{}{
 	// form ([16]byte arm of the STRING target); ENUM→STRING renders the
 	// stored numeric carrier in decimal. STRING↔BYTES is NOT
 	// admitted in EITHER direction — no runtime arm (an admitted pair
-	// with no arm evaluates to a SILENT NULL), and Java has no row.
+	// with no arm is a runtime cast error), and Java has no row.
 	{TypeCodeUuid, TypeCodeString}: {},
 	{TypeCodeEnum, TypeCodeString}: {},
 }
@@ -1490,11 +1531,34 @@ func JavaAggregateResultCode(fn string, operandCode TypeCode) (TypeCode, bool) {
 // "No cast defined from X to Y" otherwise). Identity always casts;
 // NULL casts to anything.
 func CastPairDefined(from, to TypeCode) bool {
+	if from == TypeCodeArray && to == TypeCodeVector {
+		return true
+	}
 	if from == to || from == TypeCodeNull || from == TypeCodeNone {
 		return true
 	}
 	_, ok := castPairs[promotionEdge{from, to}]
 	return ok
+}
+
+// CastTypesDefined supplements the operator table with structural type checks.
+// VECTOR has no conversion operator: only an identical shape can flow through
+// unchanged. ARRAY casts must admit their element conversion recursively.
+func CastTypesDefined(from, to Type) bool {
+	if from == nil || to == nil {
+		return false
+	}
+	if from.Code() == TypeCodeVector && to.Code() == TypeCodeVector {
+		f, fok := from.(*VectorType)
+		t, tok := to.(*VectorType)
+		return fok && tok && f.Precision == t.Precision && f.Dimensions == t.Dimensions
+	}
+	if f, ok := from.(*ArrayType); ok {
+		if t, ok := to.(*ArrayType); ok && f.ElementType != nil && t.ElementType != nil {
+			return CastTypesDefined(f.ElementType, t.ElementType)
+		}
+	}
+	return CastPairDefined(from.Code(), to.Code())
 }
 
 // IsPromotable reports whether `from` can be implicitly promoted
@@ -1521,6 +1585,54 @@ func IsPromotable(from, to Type) bool {
 	}
 	_, ok := promotionMap[promotionEdge{from.Code(), to.Code()}]
 	return ok
+}
+
+// IsPromotionNeeded is PromoteValue.isPromotionNeeded: whether a value of
+// type from must be promoted to be used as type to. Nullability is not part
+// of it; a record needs promotion when a field's type, name or position
+// differs. ok is false where Java raises INCOMPATIBLE_TYPE (records of
+// different arity, a primitive against a structure).
+func IsPromotionNeeded(from, to Type) (needed, ok bool) {
+	if IsAny(to) {
+		return false, true
+	}
+	if IsNull(from) || IsNone(from) {
+		return true, true
+	}
+	if IsArray(from) && IsArray(to) {
+		fa, fromOK := from.(*ArrayType)
+		ta, toOK := to.(*ArrayType)
+		if !fromOK || !toOK || fa.ElementType == nil || ta.ElementType == nil {
+			return false, false
+		}
+		return IsPromotionNeeded(fa.ElementType, ta.ElementType)
+	}
+	if IsRecord(from) && IsRecord(to) {
+		fr, fromOK := from.(*RecordType)
+		tr, toOK := to.(*RecordType)
+		if !fromOK || !toOK || len(fr.Fields) != len(tr.Fields) {
+			return false, false
+		}
+		ff, tf := fr.Fields, tr.Fields
+		for i := range ff {
+			fieldNeeded, fieldOK := IsPromotionNeeded(ff[i].FieldType, tf[i].FieldType)
+			if !fieldOK {
+				return false, false
+			}
+			if fieldNeeded || ff[i].Name != tf[i].Name || ff[i].Ordinal != tf[i].Ordinal {
+				needed = true
+			}
+		}
+		return needed, true
+	}
+	if from.Code() == TypeCodeVector && to.Code() == TypeCodeVector {
+		return false, from.IsNullable() == to.IsNullable()
+	}
+	scalar := func(t Type) bool { return t.Code().IsPrimitive() || IsEnum(t) || IsUuid(t) }
+	if !scalar(from) || !scalar(to) {
+		return false, false
+	}
+	return from.Code() != to.Code(), true
 }
 
 // MaximumType returns the smallest Type both `t1` and `t2` can be
@@ -1660,7 +1772,7 @@ func MaximumType(t1, t2 Type) Type {
 			// EnumName resolution uses Java's withNullability(t1)
 			// shape — keep t1's name. Distinct nominal names with identical
 			// ordered declarations have the same planner type in Java.
-			return &EnumType{EnumName: e1.EnumName, Nullable: resultNullable, Values: e1.Values}
+			return &EnumType{EnumName: e1.EnumName, Nullable: resultNullable, Values: e1.Values, StorageName: e1.StorageName}
 		}
 		// RELATION × RELATION: recurse on the inner row type. Both
 		// erased on either side blocks the operation. RelationType is
@@ -1806,10 +1918,12 @@ func WithNullability(t Type, nullable bool) Type {
 		// leg's dotted-read windows (the null-supplying wrap is exactly
 		// where the flip happens).
 		return &RecordType{RecordName: tt.RecordName, Nullable: nullable, Fields: tt.Fields, Legs: tt.Legs}
+	case *VectorType:
+		return NewVectorType(nullable, tt.Precision, tt.Dimensions)
 	case *ArrayType:
 		return &ArrayType{Nullable: nullable, ElementType: tt.ElementType}
 	case *EnumType:
-		return &EnumType{EnumName: tt.EnumName, Nullable: nullable, Values: tt.Values}
+		return &EnumType{EnumName: tt.EnumName, Nullable: nullable, Values: tt.Values, StorageName: tt.StorageName}
 	case *RelationType:
 		// RELATION is always non-nullable per Java's contract. Asking
 		// to flip to nullable is a programming error — fail loud.

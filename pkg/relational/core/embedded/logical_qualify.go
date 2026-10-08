@@ -26,25 +26,27 @@ import (
 //   - (pred, nil) — the QUALIFY predicate (the vector K-NN DistanceRank).
 func buildQualifyPredicate(
 	md *recordlayer.RecordMetaData,
-	schemaName string,
+	templateName string,
 	sq *selectQuery,
 	cteScopes map[string]semantic.ScopeSource,
 ) (predicates.QueryPredicate, error) {
 	if sq == nil || sq.qualifyExpr == nil {
 		return nil, nil
 	}
-	resolver := buildSelectScope(sq, md, schemaName, cteScopes)
+	resolver := buildSelectScope(sq, md, templateName, cteScopes)
 	if resolver == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"QUALIFY clause could not be resolved against the query scope")
 	}
 	pred, err := resolver.WalkPredicate(sq.qualifyExpr)
 	if err != nil {
+		if mapped := mapPredicateWalkError(err); mapped != nil {
+			return nil, mapped
+		}
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"unsupported QUALIFY clause: %v", err)
 	}
 	pred = applyDistanceRankTransform(pred)
-	pred = predicates.SimplifyPredicateValues(pred)
 	// A ROW_NUMBER() that survives the transform un-lowered is an unsupported
 	// window shape (only the vector K-NN ROW_NUMBER() {<,<=} K form lowers to a
 	// DistanceRank). Java has no other window-function surface — fail loud rather
@@ -63,12 +65,12 @@ func buildQualifyPredicate(
 // no QUALIFY clause; propagates a build error for an unsupported QUALIFY.
 func combineQualifyPred(
 	md *recordlayer.RecordMetaData,
-	schemaName string,
+	templateName string,
 	sq *selectQuery,
 	cteScopes map[string]semantic.ScopeSource,
 	pred predicates.QueryPredicate,
 ) (predicates.QueryPredicate, error) {
-	qualPred, err := buildQualifyPredicate(md, schemaName, sq, cteScopes)
+	qualPred, err := buildQualifyPredicate(md, templateName, sq, cteScopes)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +90,12 @@ func retainQualifyProvenance(op logical.LogicalOperator) error {
 	for cur := op; cur != nil; {
 		if filter, ok := cur.(*logical.LogicalFilter); ok {
 			filter.HasQualify = true
+			return nil
+		}
+		// An aggregated block's QUALIFY is a HAVING conjunct over the
+		// aggregate's output; a predicate on grouping keys alone may have been
+		// pushed below it, and the WHERE filter there is not QUALIFY's.
+		if _, ok := cur.(*logical.LogicalAggregate); ok {
 			return nil
 		}
 		next, ok := unaryInput(cur)
@@ -206,15 +214,15 @@ func applyDistanceRankTransform(p predicates.QueryPredicate) predicates.QueryPre
 		for i, s := range pred.SubPredicates {
 			subs[i] = applyDistanceRankTransform(s)
 		}
-		return predicates.NewAnd(subs...)
+		return predicates.WithAtomicity(predicates.NewAnd(subs...), predicates.IsAtomic(p))
 	case *predicates.OrPredicate:
 		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
 			subs[i] = applyDistanceRankTransform(s)
 		}
-		return predicates.NewOr(subs...)
+		return predicates.WithAtomicity(predicates.NewOr(subs...), predicates.IsAtomic(p))
 	case *predicates.NotPredicate:
-		return predicates.NewNot(applyDistanceRankTransform(pred.Child))
+		return predicates.WithAtomicity(predicates.NewNot(applyDistanceRankTransform(pred.Child)), predicates.IsAtomic(p))
 	case *predicates.ComparisonPredicate:
 		// ROW_NUMBER() <op> K — the row-number value is the LHS.
 		if rn, ok := pred.Operand.(*values.RowNumberValue); ok {

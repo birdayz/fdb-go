@@ -29,7 +29,7 @@ var predicateSimplifySeedScripts = [][]byte{
 // QueryPredicate rule driver: for a randomly shaped boolean tree over four
 // nullable columns, and for every row in a battery that includes all-NULL rows,
 // the simplified predicate must evaluate to what the original evaluates to —
-// under BOTH shipped rule sets.
+// under the constant-evaluation, query-predicate, and DNF rule sets.
 //
 // The existing FuzzSimplify_PredicateTree does not ask this. It asserts
 // non-nil-ness and idempotence, which a rule that returns the WRONG predicate
@@ -56,11 +56,13 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 
 	rows := predicateSemanticsRows()
 	ruleSets := []struct {
-		name  string
-		rules []CascadesRule
+		name     string
+		rules    []CascadesRule
+		boundDNF bool
 	}{
-		{name: "default", rules: DefaultSimplifyRules()},
-		{name: "normalization", rules: NormalizationRules()},
+		{name: "constant-folding", rules: ConstantFoldingRules()},
+		{name: "query-predicate", rules: queryPredicateSimplificationRules()},
+		{name: "dnf", rules: append([]CascadesRule{newPredicateDNFRule()}, queryPredicateSimplificationRules()...), boundDNF: true},
 	}
 
 	// The assertions sit behind three escapes — an empty script, a builder
@@ -131,6 +133,10 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 		}
 
 		for _, rs := range ruleSets {
+			// Bound cross-products as in the normal-form differential, not production.
+			if rs.boundDNF && normalFormSize(pred, false, normalFormDNF) > normalFormFuzzSizeBound {
+				continue
+			}
 			simplified, err := Simplify(pred, rs.rules)
 			if err != nil {
 				t.Fatalf("%s: Simplify returned an error for %s: %v", rs.name, pred.Explain(), err)

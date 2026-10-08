@@ -31,6 +31,7 @@ class ConformanceServer {
         new MultiTypeIndexSteps(),
         new ScanSteps(),
         new ContinuationSteps(),
+        new AggregateStateSteps(),
         new CountSteps(),
         new VersionSteps(),
         new CustomerSteps(),
@@ -69,10 +70,13 @@ class ConformanceServer {
         new TimeWindowLeaderboardSteps(),
         new MultidimensionalIndexSteps(),
         new VectorIndexSteps(),
+        new GuardiannProbeSteps(),
         new SlidingWindowIndexSteps(),
         new BenchmarkSteps(),
         new MetaDataStoreSteps(),
         new SqlPlanSteps(),
+        new WsfRecordLayerSteps(),
+        new TransformedSerializerSteps(),
     };
 
     private static class StepEntry {

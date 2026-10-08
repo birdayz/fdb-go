@@ -140,11 +140,10 @@ The gap and non-leading-key declines are unchanged (the guard sees the gap
 after flattening). The corpus holds no such shape either.
 
 Permuted MIN/MAX indexes interpose the aggregate value before the permuted
-grouping suffix, so `groupCols[fixedLen:]` would misread their key; they never
-become an aggregate plan (`tryAggregateIndexCandidate` declines
-`permutedSize > 0`, and the candidate caps bindings at
-`physicalGroupingPrefixCount`), and `groupingOrderSplit` states that
-precondition at the site.
+grouping suffix. The migration's `aggregateOrderingColumns` maps physical
+coordinates to logical output ordinals; scan bindings remain capped at
+`physicalGroupingPrefixCount`. Nullable MIN repairs cannot advertise order
+beyond that prefix, since replacing a stored NULL changes the aggregate coordinate.
 
 ## Verification
 
@@ -291,7 +290,7 @@ predicate while the prefix length was column-aware, so an untyped operand on a
 DOUBLE grouping column bound FIXED — and it is folded above, in both rich
 forms, with the pins named in Verification. Also folded: the shared
 `splitKeyOrder` (three copies were two too many), the permutation
-precondition stated at `groupingOrderSplit`, distinctness taken from the inner
+physical-coordinate mapping stated at `aggregateOrderingColumns`, distinctness taken from the inner
 scan's `isStrictlySorted()` as Java does, the `ORDER BY b DESC, a` and
 reverse-scan arms, the no-sort assertion in the rows twin, the corrected
 header claim in `plans/ordering.go` (the aggregate rich form is LIVE, and the

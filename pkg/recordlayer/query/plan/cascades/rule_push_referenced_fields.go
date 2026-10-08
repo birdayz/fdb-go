@@ -4,6 +4,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // PushReferencedFieldsThroughFilterRule pushes referenced-field
@@ -24,6 +25,11 @@ func NewPushReferencedFieldsThroughFilterRule() *PushReferencedFieldsThroughFilt
 }
 
 func (r *PushReferencedFieldsThroughFilterRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+// ConstraintDependencies is Java's ImmutableSet.of(REFERENCED_FIELDS).
+func (r *PushReferencedFieldsThroughFilterRule) ConstraintDependencies() []any {
+	return []any{ReferencedFieldsConstraintKey}
+}
 
 func (r *PushReferencedFieldsThroughFilterRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
@@ -59,6 +65,11 @@ func NewPushReferencedFieldsThroughSelectRule() *PushReferencedFieldsThroughSele
 }
 
 func (r *PushReferencedFieldsThroughSelectRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+// ConstraintDependencies is Java's ImmutableSet.of(REFERENCED_FIELDS).
+func (r *PushReferencedFieldsThroughSelectRule) ConstraintDependencies() []any {
+	return []any{ReferencedFieldsConstraintKey}
+}
 
 func (r *PushReferencedFieldsThroughSelectRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
@@ -97,12 +108,24 @@ func (r *PushReferencedFieldsThroughDistinctRule) Matcher() matching.BindingMatc
 	return r.matcher
 }
 
+func (r *PushReferencedFieldsThroughDistinctRule) hasConstraintEffect(cm *ConstraintMap, ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	return passThroughConstraintHasEffect(cm, ref, expr, ReferencedFieldsConstraintKey)
+}
+
+// ConstraintDependencies is Java's ImmutableSet.of(REFERENCED_FIELDS).
+func (r *PushReferencedFieldsThroughDistinctRule) ConstraintDependencies() []any {
+	return []any{ReferencedFieldsConstraintKey}
+}
+
 func (r *PushReferencedFieldsThroughDistinctRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return
 	}
 	d := call.Bindings.Get(r.matcher).(*expressions.LogicalDistinctExpression)
-	existing, _ := Get(call.Constraints, call.Reference, ReferencedFieldsConstraintKey)
+	existing, ok := Get(call.Constraints, call.Reference, ReferencedFieldsConstraintKey)
+	if !ok {
+		return
+	}
 
 	qs := d.GetQuantifiers()
 	if len(qs) > 0 {
@@ -129,12 +152,24 @@ func NewPushReferencedFieldsThroughUniqueRule() *PushReferencedFieldsThroughUniq
 
 func (r *PushReferencedFieldsThroughUniqueRule) Matcher() matching.BindingMatcher { return r.matcher }
 
+func (r *PushReferencedFieldsThroughUniqueRule) hasConstraintEffect(cm *ConstraintMap, ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	return passThroughConstraintHasEffect(cm, ref, expr, ReferencedFieldsConstraintKey)
+}
+
+// ConstraintDependencies is Java's ImmutableSet.of(REFERENCED_FIELDS).
+func (r *PushReferencedFieldsThroughUniqueRule) ConstraintDependencies() []any {
+	return []any{ReferencedFieldsConstraintKey}
+}
+
 func (r *PushReferencedFieldsThroughUniqueRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return
 	}
 	u := call.Bindings.Get(r.matcher).(*expressions.LogicalUniqueExpression)
-	existing, _ := Get(call.Constraints, call.Reference, ReferencedFieldsConstraintKey)
+	existing, ok := Get(call.Constraints, call.Reference, ReferencedFieldsConstraintKey)
+	if !ok {
+		return
+	}
 
 	qs := u.GetQuantifiers()
 	if len(qs) > 0 {
@@ -154,27 +189,13 @@ func extractFieldsFromPredicates(e expressions.RelationalExpressionWithPredicate
 	return NewReferencedFields(fields)
 }
 
-func collectPredicateFieldValues(p any, out map[string]struct{}) {
-	if p == nil {
-		return
-	}
-	switch pred := p.(type) {
-	case *predicates.ComparisonPredicate:
-		collectFieldNamesFromValue(pred.Operand, out)
-		collectFieldNamesFromValue(pred.Comparison.Operand, out)
-	case *predicates.ValuePredicate:
-		collectFieldNamesFromValue(pred.Value, out)
-	case *predicates.AndPredicate:
-		for _, sub := range pred.SubPredicates {
-			collectPredicateFieldValues(sub, out)
+func collectPredicateFieldValues(p predicates.QueryPredicate, out map[string]struct{}) {
+	predicates.ReplaceValues(p, func(v values.Value) values.Value {
+		if _, ok := values.AsFieldValue(v); ok {
+			collectFieldNamesFromValue(v, out)
 		}
-	case *predicates.OrPredicate:
-		for _, sub := range pred.SubPredicates {
-			collectPredicateFieldValues(sub, out)
-		}
-	case *predicates.NotPredicate:
-		collectPredicateFieldValues(pred.Child, out)
-	}
+		return v
+	})
 }
 
 var (

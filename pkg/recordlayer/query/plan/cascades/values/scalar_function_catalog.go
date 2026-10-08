@@ -41,11 +41,6 @@ const (
 	scalarFunctionPosition
 	scalarFunctionLeft
 	scalarFunctionRight
-	scalarFunctionBitAnd
-	scalarFunctionBitOr
-	scalarFunctionBitXor
-	scalarFunctionBitmapBucketOffset
-	scalarFunctionBitmapBitPosition
 	scalarFunctionDatePart
 	scalarFunctionStatementDate
 	scalarFunctionStatementTimestamp
@@ -92,14 +87,28 @@ type scalarFunctionDefinition struct {
 }
 
 // comparisonPhysicalOperatorTypes is Java's PhysicalOperator enum for
-// GREATEST/LEAST, which registers exactly these six result type codes
+// GREATEST/LEAST, which registers exactly six result type codes
 // (VariadicFunctionValue.java, GREATEST_INT/LONG/BOOLEAN/STRING/FLOAT/DOUBLE
-// and the LEAST mirror). Notably absent: RECORD, ARRAY, BYTES, UUID and the
-// temporal codes — `least(struct_col, struct_col)` has no operator and is a
-// 22F00, not a runtime type error.
+// and the LEAST mirror), plus the Go-only DATE and TIMESTAMP values, whose
+// canonical texts compare in instant order once a DATE argument under a
+// TIMESTAMP result is promoted to its midnight. Absent: RECORD, ARRAY, BYTES
+// and UUID — `least(struct_col, struct_col)` has no operator and is a 22F00,
+// not a runtime type error.
 var comparisonPhysicalOperatorTypes = []TypeCode{
 	TypeCodeInt, TypeCodeLong, TypeCodeBoolean,
 	TypeCodeString, TypeCodeFloat, TypeCodeDouble,
+	TypeCodeDate, TypeCodeTimestamp,
+}
+
+// coalescePhysicalOperatorTypes is Java's COALESCE operator map
+// (VariadicFunctionValue.java:483-490: INT, LONG, BOOLEAN, STRING, FLOAT,
+// DOUBLE, RECORD, ARRAY) plus the Go-only DATE and TIMESTAMP columns. BYTES,
+// UUID and ENUM have no operator: 22F00, as in Java.
+var coalescePhysicalOperatorTypes = []TypeCode{
+	TypeCodeInt, TypeCodeLong, TypeCodeBoolean,
+	TypeCodeString, TypeCodeFloat, TypeCodeDouble,
+	TypeCodeRecord, TypeCodeArray,
+	TypeCodeDate, TypeCodeTimestamp,
 }
 
 // withPhysicalOperatorTypes restricts a definition to the result type codes
@@ -157,6 +166,11 @@ func DiagnoseScalarFunctionArguments(name string, args []Value) ScalarFunctionAr
 	if !ok || len(definition.physicalOperatorTypes) == 0 {
 		return ScalarFunctionArgumentsOK
 	}
+	if len(args) > 0 && allNullTyped(args) {
+		// Every argument NULL: Java's maximum type is NULL, which has no
+		// operator (FUNCTION_UNDEFINED_FOR_GIVEN_ARGUMENT_TYPES).
+		return ScalarFunctionArgumentsNoOperator
+	}
 	folded, state := foldArgumentTypeCodes(args)
 	switch state {
 	case argumentFoldUnresolved:
@@ -170,6 +184,15 @@ func DiagnoseScalarFunctionArguments(name string, args []Value) ScalarFunctionAr
 		}
 	}
 	return ScalarFunctionArgumentsNoOperator
+}
+
+func allNullTyped(args []Value) bool {
+	for _, a := range args {
+		if a == nil || a.Type() == nil || a.Type().Code() != TypeCodeNull {
+			return false
+		}
+	}
+	return true
 }
 
 type argumentFoldState int
@@ -237,13 +260,17 @@ func numericPromotionRank(code TypeCode) int {
 }
 
 // maximumTypeCode is Type.maximumType reduced to type CODES: identical codes
-// fold to themselves, two numeric codes fold to the wider, and every other
-// pairing has no maximum (Java returns null, which encapsulate turns into
-// INCOMPATIBLE_TYPE). That last clause is the one that matters here — it is
-// why `greatest(bytes_col, 'a')` is an error rather than a BYTES comparison.
+// fold to themselves, two numeric codes fold to the wider, DATE and TIMESTAMP
+// (Go's temporal extension; Java has neither) fold to TIMESTAMP, and every
+// other pairing has no maximum (Java returns null, which encapsulate turns
+// into INCOMPATIBLE_TYPE). That last clause is the one that matters here — it
+// is why `greatest(bytes_col, 'a')` is an error rather than a BYTES comparison.
 func maximumTypeCode(a, b TypeCode) (TypeCode, bool) {
 	if a == b {
 		return a, true
+	}
+	if (a == TypeCodeDate && b == TypeCodeTimestamp) || (a == TypeCodeTimestamp && b == TypeCodeDate) {
+		return TypeCodeTimestamp, true
 	}
 	ra, rb := numericPromotionRank(a), numericPromotionRank(b)
 	if ra > 0 && rb > 0 {
@@ -377,7 +404,9 @@ var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 	"LOG": scalarCallFunction(scalarFunctionLog, NullableDouble),
 
 	// Null/comparison helpers.
-	"COALESCE": polymorphicScalarCall(scalarFunctionCoalesce, scalarFunctionCommonResult),
+	"COALESCE": withPhysicalOperatorTypes(
+		polymorphicScalarCall(scalarFunctionCoalesce, scalarFunctionCommonResult),
+		coalescePhysicalOperatorTypes),
 	"IFNULL": polymorphicScalarCall(
 		scalarFunctionIfNull, scalarFunctionCommonResult),
 	"GREATEST": withPhysicalOperatorTypes(commonNumericArguments(
@@ -393,21 +422,12 @@ var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 	"IIF": internalScalarCall(
 		scalarFunctionIf, scalarFunctionBranchResult),
 
-	// Bit operators lower directly from BitExpressionAtom.
-	"BITAND": routedScalarFunction(scalarFunctionBitAnd, NullableLong),
-	"BITOR":  routedScalarFunction(scalarFunctionBitOr, NullableLong),
-	"BITXOR": routedScalarFunction(scalarFunctionBitXor, NullableLong),
-
-	// Bitmap bucketing functions (Java ArithmeticValue.java:513-520): binary
-	// under the hood — the SQL surface is unary and the walker appends the
-	// default entry size 10000 (SemanticAnalyzer.java:988-990). floorDiv
-	// semantics, exactly Java's physical operators. These enter through the
-	// generic ScalarFunctionCall grammar route (keyword functionName), so
-	// scalarCall is set. bitmap_bucket_number is deliberately absent: Java's
-	// SQL catalog registers only these two plus bitmap_construct_agg
+	// The bit operators and the bitmap functions are not catalogue entries:
+	// they are ArithmeticValues, as Java's are (ArithmeticValue.java:366-378),
+	// built by expr.ResolveArithmetic with their lane resolved from the
+	// operand types. bitmap_bucket_number is not reachable from SQL: Java's
+	// SQL catalog registers only bitmap_bucket_offset and bitmap_bit_position
 	// (SqlFunctionCatalogImpl.java:126-128).
-	"BITMAP_BUCKET_OFFSET": scalarCallFunction(scalarFunctionBitmapBucketOffset, NullableLong),
-	"BITMAP_BIT_POSITION":  scalarCallFunction(scalarFunctionBitmapBitPosition, NullableLong),
 
 	// Date/time functions.
 	"YEAR":       scalarCallFunction(scalarFunctionDatePart, NullableLong),
@@ -508,11 +528,14 @@ func CommonValueType(branches []Value) Type {
 		if branch == nil {
 			continue
 		}
-		if _, isNull := branch.(*NullValue); isNull {
+		typ := branch.Type()
+		// An untyped NULL only marks the result nullable; a typed one
+		// (CAST(NULL AS T), CastValue.inject) contributes its type to the
+		// maximum, as in Java.
+		if _, isNull := branch.(*NullValue); isNull && (typ == nil || typ.Code() == TypeCodeNull || typ.Code() == TypeCodeUnknown) {
 			sawNull = true
 			continue
 		}
-		typ := branch.Type()
 		if typ == nil || typ.Code() == TypeCodeNull {
 			if typ != nil {
 				sawNull = true

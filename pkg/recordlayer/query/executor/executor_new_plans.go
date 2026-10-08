@@ -4,7 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
-	"strconv"
+	"math"
 
 	"google.golang.org/protobuf/proto"
 
@@ -50,6 +50,9 @@ func executeAggregateIndexScan(
 	physicalGroupingCount := len(groupCols)
 	isPermuted := idx.Type == recordlayer.IndexTypePermutedMin || idx.Type == recordlayer.IndexTypePermutedMax
 	scanType := recordlayer.IndexScanByValue
+	if idx.Type == recordlayer.IndexTypeBitmapValue {
+		scanType = recordlayer.IndexScanByGroup
+	}
 	if isPermuted {
 		groupingCount, actualPhysicalPrefix, layoutErr := permutedAggregateGroupingLayout(idx)
 		if layoutErr != nil {
@@ -114,14 +117,11 @@ func executeAggregateIndexScan(
 
 	scanProps := recordlayer.NewScanProperties(props).WithReverse(idxPlan.IsReverse())
 
-	canonicalName := p.CanonicalAggColumnName()
 	// The aggregate-index row's authoritative ordinal
 	// schema is the GROUP columns in scan order followed by the aggregate column
 	// — the exact order the row's slots are filled below (entry.Key then
 	// entry.Value). Row-invariant, so it is built once here and shared across
-	// rows. Named by the canonical output names (uppercase group
-	// cols, canonical agg name) — the exact schema plan-time bakes bind
-	// against.
+	// rows. Its names are the plan's: the GroupBy row the planner published.
 	posType, ok := p.GetResultType().(*values.RecordType)
 	if !ok || posType == nil || len(posType.Fields) != len(groupCols)+1 {
 		actualWidth := -1
@@ -132,17 +132,22 @@ func executeAggregateIndexScan(
 			"executor: aggregate index %q has result type %T with %d columns, want exact record width %d",
 			idxPlan.GetIndexName(), p.GetResultType(), actualWidth, len(groupCols)+1)
 	}
-	for i, name := range append(append([]string(nil), groupCols...), canonicalName) {
-		if posType.Fields[i].Name != name || posType.Fields[i].Ordinal != i {
+	for i := range posType.Fields {
+		if posType.Fields[i].Ordinal != i {
 			return nil, fmt.Errorf(
-				"executor: aggregate index %q result field %d is %q#%d, want %q#%d",
-				idxPlan.GetIndexName(), i, posType.Fields[i].Name, posType.Fields[i].Ordinal, name, i)
+				"executor: aggregate index %q result field %d is %q#%d, want ordinal %d",
+				idxPlan.GetIndexName(), i, posType.Fields[i].Name, posType.Fields[i].Ordinal, i)
 		}
 		if _, exactErr := values.SnapshotExactType(posType.Fields[i].FieldType); exactErr != nil {
 			return nil, fmt.Errorf(
 				"executor: aggregate index %q result field %d has unresolved type: %w",
 				idxPlan.GetIndexName(), i, exactErr)
 		}
+	}
+
+	readerLeaves, err := aggregateReaderLeaves(p.GetEntryReader(), posType)
+	if err != nil {
+		return nil, fmt.Errorf("executor: aggregate index %q: %w", idxPlan.GetIndexName(), err)
 	}
 
 	// PERMUTED_MIN/MAX indexes keep the current extremum per group in the
@@ -170,6 +175,7 @@ func executeAggregateIndexScan(
 					len(groupCols),
 					physicalGroupingPrefixCount,
 					posType,
+					readerLeaves,
 				)
 			},
 		)
@@ -188,6 +194,9 @@ func executeAggregateIndexScan(
 			innerContinuation []byte,
 			childProperties recordlayer.ScanProperties,
 		) (recordlayer.RecordCursor[*recordlayer.IndexEntry], error) {
+			if idx.Type == recordlayer.IndexTypeBitmapValue {
+				return store.ScanIndexByType(idx, recordlayer.IndexScanByGroup, scanRange, innerContinuation, childProperties), nil
+			}
 			// Instrumented here because this path never touches FDBRecordStore.ScanIndex:
 			// the per-range factory needs the maintainer directly, so the store method
 			// that would otherwise count the scan is bypassed entirely.
@@ -202,13 +211,8 @@ func executeAggregateIndexScan(
 	result := &aggregateIndexCursor{
 		inner:     indexCursor,
 		groupCols: groupCols,
-		// Single source for the aggregate column key: the plan's
-		// CanonicalAggColumnName names the slot the cursor writes, so the row
-		// key and the plan's stated name can't drift (RFC-081).
-		canonicalName: canonicalName,
-		posType:       posType,
-		// RFC-209 §5.3(a): the plan decides, the cursor obeys.
-		liveGroupsOnly: p.IsLiveGroupsOnly(),
+		posType:   posType,
+		reader:    readerLeaves,
 		// Stamped at mint time so the output boundary checks the row instead of
 		// copying it to attach the layout — see mintedRowLayout.
 		layout: mintedRowLayout(p),
@@ -246,6 +250,40 @@ func (e *invalidPermutedAggregateScanError) Error() string {
 	)
 }
 
+// aggregateReaderLeaves checks the plan's entry reader against the row it
+// fills: one entry leaf per field, each of the field's type. A plan without a
+// reader gets nil and its cursor decodes the layout itself.
+func aggregateReaderLeaves(reader *values.RecordConstructorValue, posType *values.RecordType) ([]*values.IndexEntryObjectValue, error) {
+	if reader == nil {
+		return nil, nil
+	}
+	if len(reader.Fields) != len(posType.Fields) {
+		return nil, fmt.Errorf("entry reader has %d fields, the result row %d", len(reader.Fields), len(posType.Fields))
+	}
+	leaves := make([]*values.IndexEntryObjectValue, len(reader.Fields))
+	for i, field := range reader.Fields {
+		leaf, ok := field.Value.(*values.IndexEntryObjectValue)
+		if !ok || !leaf.Type().Equals(posType.Fields[i].FieldType) {
+			return nil, fmt.Errorf("entry reader field %d (%s) does not read the result's %s",
+				i, values.ExplainValue(field.Value), posType.Fields[i].FieldType)
+		}
+		leaves[i] = leaf
+	}
+	return leaves, nil
+}
+
+// readAggregateEntry fills slots from the reader's leaves.
+func readAggregateEntry(slots []any, leaves []*values.IndexEntryObjectValue, entry *recordlayer.IndexEntry) error {
+	for i, leaf := range leaves {
+		value, err := leaf.ReadTuples(entry.Key, entry.Value)
+		if err != nil {
+			return fmt.Errorf("executor: aggregate entry field %d: %w", i, err)
+		}
+		slots[i] = value
+	}
+	return nil
+}
+
 func permutedAggregateGroupingLayout(idx *recordlayer.Index) (groupingCount, physicalPrefixCount int, err error) {
 	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)
 	if !ok {
@@ -255,9 +293,14 @@ func permutedAggregateGroupingLayout(idx *recordlayer.Index) (groupingCount, phy
 		)
 	}
 	groupingCount = gke.GetGroupingCount()
+	// Read as Java's query side reads it (AggregateIndexMatchCandidate.
+	// getPermutedCount: absent is 0, present is Integer.parseInt), so the
+	// scan splits the key where the maintainer, which parses the same way,
+	// wrote the entries. The range is Build's check, repeated for an index
+	// changed after Build.
 	permutedSize := 0
 	if raw, exists := idx.Options[recordlayer.IndexOptionPermutedSize]; exists {
-		parsed, parseErr := strconv.Atoi(raw)
+		parsed, parseErr := recordlayer.PermutedSizeOption(idx)
 		if parseErr != nil || parsed < 0 || parsed > groupingCount {
 			return 0, 0, fmt.Errorf(
 				"executor: permuted index %q has invalid %s=%q for grouping count %d",
@@ -290,6 +333,7 @@ func newPermutedAggregateIndexCursor(
 	groupCount int,
 	physicalGroupingPrefixCount int,
 	posType *values.RecordType,
+	reader []*values.IndexEntryObjectValue,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)
 	if !ok {
@@ -308,6 +352,7 @@ func newPermutedAggregateIndexCursor(
 		valueStart: physicalGroupingPrefixCount,
 		valueEnd:   totalSize - (gke.GetGroupingCount() - physicalGroupingPrefixCount),
 		posType:    posType,
+		reader:     reader,
 		// The MIN flavour needs the stored extremum repaired when it is NULL —
 		// see recordlayer.PermutedMinIgnoringNulls. The ordinary subspace's
 		// value span is stated in ORIGINAL column order, which is where the
@@ -331,7 +376,9 @@ type permutedAggregateIndexCursor struct {
 	valueStart int
 	valueEnd   int
 	posType    *values.RecordType
-	closed     bool
+	// reader is the plan's entry reader, when it carries one.
+	reader []*values.IndexEntryObjectValue
+	closed bool
 
 	// The MIN null repair. store/index/scanProps are what the repair reads
 	// with; ordinaryValueFrom/To bound the aggregated columns in the ORDINARY
@@ -363,6 +410,11 @@ func (c *permutedAggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.
 
 	key := result.GetValue().Key
 	slots := make([]any, len(c.posType.Fields))
+	if c.reader != nil {
+		if err := readAggregateEntry(slots, c.reader, result.GetValue()); err != nil {
+			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+		}
+	}
 
 	// Grouping key in original order: the first valueStart columns come straight
 	// from the key; the remaining grouping columns are the permuted suffix, which
@@ -382,7 +434,7 @@ func (c *permutedAggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.
 			continue
 		}
 		groupKey = append(groupKey, key[ki])
-		if i < len(slots) {
+		if c.reader == nil && i < len(slots) {
 			slots[i] = tupleElementToRowValue(key[ki])
 		}
 	}
@@ -405,8 +457,10 @@ func (c *permutedAggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.
 			if len(repaired) > 0 {
 				extremum = repaired[0]
 			}
+			slots[aggOrd] = tupleElementToRowValue(extremum)
+		} else if c.reader == nil {
+			slots[aggOrd] = tupleElementToRowValue(extremum)
 		}
-		slots[aggOrd] = tupleElementToRowValue(extremum)
 	}
 
 	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots}}
@@ -423,55 +477,38 @@ func (c *permutedAggregateIndexCursor) IsClosed() bool { return c.closed }
 var _ recordlayer.RecordCursor[QueryResult] = (*permutedAggregateIndexCursor)(nil)
 
 type aggregateIndexCursor struct {
-	inner         recordlayer.RecordCursor[*recordlayer.IndexEntry]
-	groupCols     []string
-	canonicalName string
-	posType       *values.RecordType
-	// liveGroupsOnly drops entries whose stored aggregate is zero. Set only for
-	// a grouped COUNT(*) scan, where the stored value is the group's row count
-	// and a zero can therefore only be the residue of a vacated group (the
-	// atomic ADD that emptied it left the key behind). See
-	// plans.RecordQueryAggregateIndexPlan.liveGroupsOnly — the plan carries the
-	// property, EXPLAIN renders it, and this cursor merely obeys it. Deciding
-	// existence here rather than at plan time would make the plan a lie.
-	liveGroupsOnly bool
-	closed         bool
+	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	groupCols []string
+	posType   *values.RecordType
+	// reader is the plan's entry reader, when it carries one.
+	reader []*values.IndexEntryObjectValue
+	closed bool
 	// layout is the plan's provided output layout, carried by every row this
 	// cursor mints.
 	layout values.OrdinalLayout
 }
 
 func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	// A vacated group's entry is dropped before it becomes a row, and the scan
-	// keeps advancing rather than returning a "no value" result: a dropped entry
-	// is not an end-of-stream condition, the next live group may be one key
-	// away. The loop (rather than a recursive re-entry) matters because the run
-	// of consecutive vacated groups is unbounded — a table emptied wholesale
-	// leaves one zero entry per group that ever existed. The emitted row carries
-	// the continuation of the entry it came from, so a resume never re-reads a
-	// group already returned and the zero entries in between are simply
-	// re-skipped.
-	var result recordlayer.RecordCursorResult[*recordlayer.IndexEntry]
-	var entry *recordlayer.IndexEntry
-	for {
-		var err error
-		result, err = c.inner.OnNext(ctx)
-		if err != nil {
-			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
-		}
-		if !result.HasNext() {
-			return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
-		}
-		entry = result.GetValue()
-		if !c.liveGroupsOnly || !isVacatedGroupEntry(entry) {
-			break
-		}
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
 	}
+	if !result.HasNext() {
+		return recordlayer.NewResultNoNext[QueryResult](result.GetNoNextReason(), result.GetContinuation()), nil
+	}
+	entry := result.GetValue()
 
 	// Emit the authoritative ordinal row (real slots read
 	// from the index entry). Slot order matches c.posType: group cols then the
 	// aggregate column.
 	slots := make([]any, len(c.posType.Fields))
+	if c.reader != nil {
+		if err := readAggregateEntry(slots, c.reader, entry); err != nil {
+			return recordlayer.NewResultNoNext[QueryResult](recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+		}
+		qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots, Layout: c.layout}}
+		return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
+	}
 
 	for i := range c.groupCols {
 		if i < len(entry.Key) {
@@ -496,29 +533,6 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 	// see mintedRowLayout.
 	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots, Layout: c.layout}}
 	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
-}
-
-// isVacatedGroupEntry reports whether a COUNT(*) index entry denotes a group
-// that no longer has any rows. The maintainer decrements the accumulator with
-// an atomic ADD and never removes the key, so an emptied group leaves an entry
-// holding zero. Because the stored value counts ROWS, and a live group has at
-// least one, zero is decidable: it can only be residue.
-//
-// Anything that is not an explicit integer zero keeps the row. Dropping a live
-// group is a brand-new wrong answer and strictly worse than the phantom this
-// filter removes, so an unrecognised value shape errs toward emitting.
-func isVacatedGroupEntry(entry *recordlayer.IndexEntry) bool {
-	if entry == nil || len(entry.Value) == 0 {
-		return false
-	}
-	switch v := entry.Value[0].(type) {
-	case int64:
-		return v == 0
-	case int:
-		return v == 0
-	default:
-		return false
-	}
 }
 
 func (c *aggregateIndexCursor) Close() error {
@@ -553,89 +567,34 @@ func executeMultiIntersection(
 
 	keyVals := p.GetComparisonKey()
 	compKeyFunc := multiIntersectionCompKeyFunc(keyVals)
+	if len(keyVals) == 0 {
+		// The comparison key is the grouping values, Java's
+		// ComparisonKeyFunction.OnValues. An ungrouped merge has none, and the
+		// one row each aggregate stream yields matches on the empty key, as
+		// Java's empty value list does.
+		compKeyFunc = func(QueryResult) (tuple.Tuple, error) { return tuple.Tuple{}, nil }
+	}
 	outputType, ok := p.GetResultType().(*values.RecordType)
 	if !ok || outputType == nil {
 		return nil, fmt.Errorf("multi-intersection result type is %T, want exact record", p.GetResultType())
 	}
 
-	var innerCursor recordlayer.RecordCursor[[]QueryResult]
-	if p.HasDrivingAlias() {
-		// RFC-209 §5.3(b): the group-existence merge. Its correctness rests
-		// entirely on the driving stream being the one the planner designated, so
-		// a designation that no longer resolves must fail the query rather than
-		// quietly run as an intersection — an intersection here silently drops
-		// every all-NULL group, which is one of the two defects this plan exists
-		// to fix.
-		driving := p.DrivingStreamIndex()
-		if driving < 0 {
-			return nil, fmt.Errorf("group-existence merge: driving stream %q resolves to "+
-				"no child; the plan's quantifiers were relinked without carrying the "+
-				"designation", p.GetDrivingAlias().Name())
-		}
-		if len(keyVals) == 0 {
-			return nil, fmt.Errorf("group-existence merge: no comparison key; the merge " +
-				"has no grouping key to align the streams on")
-		}
-		// Every child of this plan is an aggregate-index scan whose row is
-		// [groupCols..., aggregate], so a child spans len(keyVals)+1 slots. An
-		// absent child must occupy exactly that many, or the result value's baked
-		// ordinals address the wrong slots in every later child.
-		width := len(keyVals) + 1
-		innerCursor = recordlayer.OuterMergeMultiResume(cursors, compKeyFunc, false, resume,
-			driving, func(int) QueryResult { return absentAggregateRow(width) })
-	} else {
-		// IntersectionMulti returns, per matching comparison key, the list of
-		// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
-		// the regular intersection keeps only the first child, which would drop
-		// every aggregate but the first.
-		innerCursor = recordlayer.IntersectionMultiResume(cursors, compKeyFunc, false, resume)
-	}
+	// IntersectionMulti returns, per matching comparison key, the list of
+	// matching rows (one per child). Mirrors Java's IntersectionMultiCursor;
+	// the regular intersection keeps only the first child, which would drop
+	// every aggregate but the first.
+	innerCursor := recordlayer.IntersectionMultiResume(cursors, compKeyFunc, p.IsReverse(), resume)
 
 	merged := &multiIntersectionMergeCursor{
 		inner:       innerCursor,
 		resultValue: p.GetResultValue(),
 		outputType:  outputType,
-		// The same len(keyVals)+1 the absent-child filler is sized to, carried to
-		// the concatenation so the PRESENT children are held to it as well. The
-		// filler being right is worth nothing if a real child disagrees.
+		// Every child is an aggregate-index scan whose row is
+		// [groupCols..., aggregate]; the result value's ordinals are baked
+		// against that width.
 		childWidth: len(keyVals) + 1,
 	}
 	return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
-}
-
-// absentAggregateRow is the row a non-driving aggregate-index stream
-// contributes for a group it holds no entry for (RFC-209 §5.3(b)).
-//
-// All slots are NULL, including the grouping columns: the merged row takes its
-// grouping values from the DRIVING stream, so the absent child's copies are
-// never read. What matters is the WIDTH — the result value's field ordinals are
-// baked at plan time against the flat concatenation of the child rows, so a
-// short row would shift every later child's aggregate by however many slots
-// were missing and hand each group another group's value.
-//
-// NULL, not the aggregate's identity: the identity is the result value's job.
-// SUM's empty group is NULL and COUNT(col)'s is 0, and only the plan knows
-// which aggregate a stream carries. Keeping the cursor's filler uniform is the
-// same split Java uses for the ungrouped case, where the plan supplies NULL on
-// an empty stream and a coalesce above it turns that into 0 for COUNT.
-// The field types are UnknownType, and here that is not discarded knowledge:
-// there is no type to state. This row stands in for a group the child index
-// holds NO entry for, so no stored value exists whose type could be read, and
-// the child plan it substitutes for carries UnknownType as its own result type
-// — deriving from it would launder Unknown through one more hop rather than
-// answer. Nothing downstream reads these types either: the merged row takes its
-// grouping values from the driving stream and its aggregate through the plan's
-// result value, so only the WIDTH is load-bearing.
-func absentAggregateRow(width int) QueryResult {
-	fields := make([]values.Field, width)
-	slots := make([]any, width)
-	for i := range fields {
-		fields[i] = values.Field{Ordinal: i, FieldType: values.UnknownType}
-	}
-	return QueryResult{Positional: &PositionalRow{
-		Type:  &values.RecordType{Fields: fields},
-		Slots: slots,
-	}}
 }
 
 func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
@@ -748,8 +707,8 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	qr := QueryResult{}
 	// Emit the authoritative ordinal OUTPUT row. The resultValue is a
 	// RecordConstructorValue whose Fields ARE the output columns in output order
-	// (the same rc.Fields deriveColumnsFromMultiIntersection names the ColumnDefs
-	// from), so evaluating each field against the concatenated child positional row
+	// (the plan's result row type, which names the result-set columns), so
+	// evaluating each field against the concatenated child positional row
 	// produces a per-slot output row whose names/order match the result-set columns.
 	if rc, ok := c.resultValue.(*values.RecordConstructorValue); ok {
 		if c.outputType == nil || len(c.outputType.Fields) != len(rc.Fields) {
@@ -1284,7 +1243,7 @@ func executeMap(
 	// positional row's OUTPUT names once from the result value's record type. When
 	// the result is a RecordConstructorValue, evaluate its Fields INDIVIDUALLY into
 	// dense slots (never through the collapsing name map — a duplicate output name
-	// keeps both slots by ordinal), mirroring executeProjection.
+	// keeps both slots by ordinal).
 	var mapPosType *values.RecordType
 	mapRC, _ := resultValue.(*values.RecordConstructorValue)
 	if rt, ok := resultValue.Type().(*values.RecordType); ok {
@@ -1294,6 +1253,9 @@ func executeMap(
 	// positional row, the result value evaluates under the LEG WINDOWS —
 	// computed once, from the input plan's result value.
 	legSpans, windowsOK := downstreamLegWindows(p.GetInner())
+	// The Map mints its rows and is their one owner, so they carry the layout
+	// the output boundary holds them to instead of being copied for it.
+	mintLayout := mintedRowLayout(p)
 	var evalErr error
 	mapped := recordlayer.MapCursor(inner, func(qr QueryResult) QueryResult {
 		if evalErr != nil {
@@ -1332,7 +1294,7 @@ func executeMap(
 				}
 				slots[i] = fv
 			}
-			pos = &PositionalRow{Type: mapPosType, Slots: slots}
+			pos = &PositionalRow{Type: mapPosType, Slots: slots, Layout: mintLayout}
 		} else {
 			m, err := resultValue.Evaluate(rowCtx)
 			if err != nil {
@@ -1782,6 +1744,20 @@ func executeInJoin(
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	inValues := p.GetInValues()
+	if comparand := p.GetInComparand(); inValues == nil && comparand != nil {
+		v, err := comparand.Evaluate(evalCtx)
+		if err != nil {
+			return nil, err
+		}
+		list, err := inComparandList(v)
+		if err != nil {
+			return nil, err
+		}
+		if len(list) == 0 {
+			return recordlayer.Empty[QueryResult](), nil
+		}
+		inValues = list
+	}
 	if len(inValues) == 0 {
 		return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	}
@@ -1814,6 +1790,21 @@ func executeInJoin(
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
+// inComparandList is a runtime IN comparand's evaluated list. Java's
+// InComparandSource.getValues casts the comparand to a List unchecked
+// (InComparandSource.java:103-108) and its callers size and iterate it, so a
+// NULL or non-list comparand fails there; only an actual (possibly empty)
+// list is an IN source.
+func inComparandList(v any) ([]any, error) {
+	list, ok := v.([]any)
+	if !ok {
+		return nil, &recordlayer.RecordCoreError{
+			Message: fmt.Sprintf("IN comparand must evaluate to a list, got %T", v),
+		}
+	}
+	return list, nil
+}
+
 // inValueCheckBytes is the IN-join flatMap check value — a deterministic byte
 // form of the current in-value validating on resume that the outer list
 // element at the saved index is still the same value. Java packs
@@ -1834,6 +1825,29 @@ func inValueCheckBytes(val any) []byte {
 	return nil
 }
 
+// inUnionValuesSize is the number of child executions an IN-union makes: the
+// product of its sources' sizes, saturating at MaxInt64. known is false when
+// a source's values were unavailable at planning (the caller refuses that
+// source on its own).
+func inUnionValuesSize(sources [][]any) (size int64, known bool) {
+	size = 1
+	for _, source := range sources {
+		if source == nil {
+			return 0, false
+		}
+		n := int64(len(source))
+		switch {
+		case n == 0:
+			return 0, true
+		case size > math.MaxInt64/n:
+			size = math.MaxInt64
+		default:
+			size *= n
+		}
+	}
+	return size, true
+}
+
 func executeInUnion(
 	ctx context.Context,
 	p *plans.RecordQueryInUnionPlan,
@@ -1847,12 +1861,49 @@ func executeInUnion(
 	if len(inSources) == 0 {
 		return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	}
+	// A source planning could not evaluate is evaluated now, under the
+	// plan's evaluation context: Java's InComparandSource.getValues (the
+	// comparand is the planner's ArrayDistinctValue, so it deduplicates). A
+	// resume re-evaluates it, as Java's does.
+	if comparands := p.GetInComparands(); len(comparands) > 0 {
+		evaluated := make([][]any, len(inSources))
+		copy(evaluated, inSources)
+		for i, c := range comparands {
+			if c == nil || i >= len(evaluated) || evaluated[i] != nil {
+				continue
+			}
+			v, err := c.Evaluate(evalCtx)
+			if err != nil {
+				return nil, err
+			}
+			list, err := inComparandList(v)
+			if err != nil {
+				return nil, err
+			}
+			if list == nil {
+				list = []any{}
+			}
+			evaluated[i] = list
+		}
+		inSources = evaluated
+	}
 	if len(bindingAliases) == 0 || len(inSources) != len(bindingAliases) {
 		return nil, fmt.Errorf(
 			"executeInUnion: binding/source dimension mismatch (%d bindings, %d sources)",
 			len(bindingAliases),
 			len(inSources),
 		)
+	}
+	// Java checks the number of child executions FIRST, before any leg opens
+	// (RecordQueryInUnionPlan.java:151-153): the PRODUCT of the sources'
+	// sizes against the plan's maximum (the planner configuration's
+	// attemptFailedInJoinAsUnionMaxSize, 24 in the relational layer), a
+	// RecordCoreException "too many IN values" above it. Java's product is an
+	// int that wraps (65536 x 65536 is 0, answered as empty); Go's saturates
+	// and refuses (declared in DIVERGENCES.md).
+	if size, known := inUnionValuesSize(inSources); known && size > int64(p.GetMaxSize()) {
+		// The size is Java's log info, not part of its message.
+		return nil, &recordlayer.RecordCoreError{Message: "too many IN values"}
 	}
 	for _, source := range inSources {
 		if source != nil && len(source) == 0 {
@@ -1863,7 +1914,7 @@ func executeInUnion(
 			return recordlayer.Empty[QueryResult](), nil
 		}
 	}
-	if fanout, known := p.LiteralFanout(); known && fanout == 1 {
+	if fanout, known := inUnionValuesSize(inSources); known && fanout == 1 {
 		// Java binds the complete Cartesian context before its size==1
 		// fast path. This matters for multiple singleton dimensions: there is
 		// one child execution, but every binding must be present.
@@ -1877,57 +1928,65 @@ func executeInUnion(
 		return ExecutePlan(ctx, p.GetInner(), store, childContext, continuation, props)
 	}
 
-	// Single binding dimension: execute inner once per IN value,
-	// merge-sort if comparison keys exist, otherwise concat. Mirrors Java
-	// RecordQueryInUnionPlan.executePlan (:150-175): size==1 hands the
-	// continuation straight to the sole child; otherwise the children are
-	// CURSOR FACTORIES and the continuation is the UnionCursor's per-child
-	// UnionContinuation, decoded into each child's start state.
-	if len(bindingAliases) == 1 && len(inSources[0]) > 0 {
-		bindingID := bindingAliases[0]
-		vals := inSources[0]
-		// childFactory tags each value's execution context with its own
-		// index (withRecursionInvocationBranch): when compKeys is non-empty
-		// below, newMergeSortCursorFromFactories constructs and drives ALL
-		// len(vals) factories CONCURRENTLY (every leg pulled from in
-		// lockstep, not one after another), so if p.GetInner() is itself a
-		// recursive-union plan, its statement-scoped depth guard
-		// (recordlayer.ExecuteState.recursionLevels) would otherwise key
-		// every one of these concurrently-live invocations by the SAME
-		// plan pointer — see recursionInvocationKey's doc comment for why
-		// that under- and over-counts. The index-tagged ctx gives each
-		// value's invocation of the same inner plan a distinct, resume-
-		// stable identity.
-		childFactory := func(idx int, val any) recordlayer.CursorFactory[QueryResult] {
-			return func(cont []byte) recordlayer.RecordCursor[QueryResult] {
-				boundCtx := evalCtx.WithBinding(bindingID, val)
-				childCtx := withRecursionInvocationBranch(ctx, idx)
-				cursor, err := ExecutePlan(childCtx, p.GetInner(), store, boundCtx, cont, props.ClearSkipAndAdjustLimit())
-				if err != nil {
-					return &errResultCursor{err: err}
-				}
-				return cursor
+	// One child execution per combination of IN values. Mirrors Java
+	// RecordQueryInUnionPlan.executePlan (:150-175) over getValuesContexts
+	// (:340-353): the Cartesian product of the sources, the first source most
+	// significant; size==1 hands the continuation straight to the sole child;
+	// otherwise the children are CURSOR FACTORIES and the continuation is the
+	// UnionCursor's per-child UnionContinuation.
+	combinations := [][]any{nil}
+	for i, source := range inSources {
+		if source == nil {
+			return nil, fmt.Errorf("executeInUnion: IN source %d has no planning-time values", i)
+		}
+		next := make([][]any, 0, len(combinations)*len(source))
+		for _, parent := range combinations {
+			for _, val := range source {
+				next = append(next, append(append(make([]any, 0, len(inSources)), parent...), val))
 			}
 		}
-		factories := make([]recordlayer.CursorFactory[QueryResult], len(vals))
-		for i, val := range vals {
-			factories[i] = childFactory(i, val)
-		}
-		compKeys := p.GetComparisonKeys()
-		if len(compKeys) > 0 {
-			merged, err := newMergeSortCursorFromFactories(factories, compKeys, p.IsReverse(), true, continuation)
-			if err != nil {
-				return nil, err
-			}
-			return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
-		}
-		// No comparison keys (order-free IN union): a resumable branch-tagged
-		// concat chain (concatFactories, shared with executeUnion)
-		// instead of the pre-A5 eager concat that discarded the continuation.
-		return applySkipLimit(concatFactories(factories, continuation), props.Skip, props.ReturnedRowLimit), nil
+		combinations = next
 	}
-
-	return nil, fmt.Errorf("executeInUnion: multi-binding IN union (%d bindings) not yet implemented", len(bindingAliases))
+	// childFactory tags each combination's execution context with its own
+	// index (withRecursionInvocationBranch): when compKeys is non-empty
+	// below, newMergeSortCursorFromFactories constructs and drives ALL
+	// factories CONCURRENTLY (every leg pulled from in lockstep, not one
+	// after another), so if p.GetInner() is itself a recursive-union plan,
+	// its statement-scoped depth guard (recordlayer.ExecuteState.recursionLevels)
+	// would otherwise key every one of these concurrently-live invocations by
+	// the SAME plan pointer — see recursionInvocationKey's doc comment for why
+	// that under- and over-counts. The index-tagged ctx gives each
+	// combination's invocation of the same inner plan a distinct, resume-
+	// stable identity.
+	childFactory := func(idx int, combination []any) recordlayer.CursorFactory[QueryResult] {
+		return func(cont []byte) recordlayer.RecordCursor[QueryResult] {
+			boundCtx := evalCtx
+			for i, val := range combination {
+				boundCtx = boundCtx.WithBinding(bindingAliases[i], val)
+			}
+			childCtx := withRecursionInvocationBranch(ctx, idx)
+			cursor, err := ExecutePlan(childCtx, p.GetInner(), store, boundCtx, cont, props.ClearSkipAndAdjustLimit())
+			if err != nil {
+				return &errResultCursor{err: err}
+			}
+			return cursor
+		}
+	}
+	factories := make([]recordlayer.CursorFactory[QueryResult], len(combinations))
+	for i, combination := range combinations {
+		factories[i] = childFactory(i, combination)
+	}
+	if compKeys := p.GetComparisonKeys(); len(compKeys) > 0 {
+		merged, err := newMergeSortCursorFromFactories(factories, compKeys, p.IsReverse(), true, continuation)
+		if err != nil {
+			return nil, err
+		}
+		return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
+	}
+	// No comparison keys (order-free IN union): a resumable branch-tagged
+	// concat chain (concatFactories, shared with executeUnion)
+	// instead of the pre-A5 eager concat that discarded the continuation.
+	return applySkipLimit(concatFactories(factories, continuation), props.Skip, props.ReturnedRowLimit), nil
 }
 
 // concatFactories folds N cursor factories into a right-nested chain of binary
@@ -2161,7 +2220,7 @@ func decodeUnionContinuation(data []byte, n int) ([]unionChildResume, error) {
 		return out, nil // all children fresh (START)
 	}
 	msg := &gen.UnionContinuation{}
-	if err := msg.UnmarshalVT(data); err != nil {
+	if err := recordlayer.UnmarshalVTAsJava(msg, data); err != nil {
 		return nil, &recordlayer.ContinuationParseError{Message: "invalid continuation", RawBytes: data, Cause: err}
 	}
 	// Java UnionCursorContinuation.from(parsed, n) always reads first + second

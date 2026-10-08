@@ -345,6 +345,18 @@ func (e *EligibleSet[T]) EligibleElements() map[T]struct{} {
 	return e.eligible
 }
 
+// EligibleElementsInOrder returns the eligible elements in the set's order, as
+// Java's eligibleElements() returns them.
+func (e *EligibleSet[T]) EligibleElementsInOrder() []T {
+	result := make([]T, 0, len(e.eligible))
+	for _, elem := range e.partialOrder.set {
+		if _, ok := e.eligible[elem]; ok {
+			result = append(result, elem)
+		}
+	}
+	return result
+}
+
 // RemoveEligibleElements removes the given elements (which must be currently eligible)
 // and returns a new EligibleSet reflecting the reduced partial order.
 func (e *EligibleSet[T]) RemoveEligibleElements(toRemove map[T]struct{}) *EligibleSet[T] {

@@ -1,18 +1,604 @@
 package expressions
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// TestMemoEqual_InternsAliasVariants is the RFC-039/PR-A core property: two
-// expressions identical except for their quantifier alias (referenced in
-// node-info) are MemoEqual — because memoEqual builds the node's own quantifier
-// alias map and feeds it to the (foundation's) alias-aware EqualsWithoutChildren.
-// SemanticEquals (which passes only the empty incoming map at the top) does NOT
-// see them equal — that's the gap memoEqual closes.
+type memoObservedExpression struct {
+	RelationalExpression
+	hashVisits, correlationVisits, equalityVisits, quantifierVisits int
+}
+
+func (e *memoObservedExpression) GetQuantifiers() []Quantifier {
+	e.quantifierVisits++
+	return e.RelationalExpression.GetQuantifiers()
+}
+
+func (e *memoObservedExpression) HashCodeWithoutChildren() uint64 {
+	e.hashVisits++
+	return 42 // Deliberate collisions must not turn repeated comparisons into repeated graph walks.
+}
+
+func (e *memoObservedExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	e.correlationVisits++
+	return e.RelationalExpression.GetCorrelatedToWithoutChildren()
+}
+
+func (e *memoObservedExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
+	e.equalityVisits++
+	if observed, ok := other.(*memoObservedExpression); ok {
+		other = observed.RelationalExpression
+	}
+	return e.RelationalExpression.EqualsWithoutChildren(other, aliases)
+}
+
+func (e *memoObservedExpression) InternsAliasAware() bool { return true }
+
+func TestReferenceMembersWithHash(t *testing.T) {
+	t.Parallel()
+	first := &memoObservedExpression{RelationalExpression: mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))}
+	second := &memoObservedExpression{RelationalExpression: mustExpression(NewFullUnorderedScanExpression([]string{"U"}, testRecordType()))}
+	final := &memoObservedExpression{RelationalExpression: mustExpression(NewFullUnorderedScanExpression([]string{"V"}, testRecordType()))}
+	ref := InitialOf(first)
+	if !ref.Insert(second) || !ref.InsertFinal(final) {
+		t.Fatal("fixture did not retain distinct colliding members")
+	}
+	forwarder := InitialOf(final)
+	forwarder.forwardedTo = ref
+	for _, source := range []*Reference{nil, {}, ref, forwarder} {
+		for _, hash := range []uint64{42, 43} {
+			var want []RelationalExpression
+			if (source == ref || source == forwarder) && hash == 42 {
+				want = []RelationalExpression{first, second}
+			}
+			members := source.MembersWithHash(hash)
+			for range 2 {
+				if got := slices.Collect(members); !slices.Equal(got, want) {
+					t.Fatalf("hash %d: members=%v, want %v", hash, got, want)
+				}
+			}
+			for member := range members {
+				if len(want) == 0 || member != want[0] {
+					t.Fatalf("hash %d: first member=%v, want first of %v", hash, member, want)
+				}
+				break
+			}
+		}
+	}
+	if got := ref.Members(); !slices.Equal(got, []RelationalExpression{first, second}) {
+		t.Fatal("hash iteration changed the exploratory lane")
+	}
+	if got := ref.FinalMembers(); !slices.Equal(got, []RelationalExpression{final}) {
+		t.Fatal("hash iteration changed the final lane")
+	}
+}
+
+func TestQuantifierDependenciesUseNilForNoLocalEdges(t *testing.T) {
+	t.Parallel()
+	scan := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
+	first := ForEachQuantifier(scan)
+	independent := ForEachQuantifier(scan)
+	dependent := ForEachQuantifier(InitialOf(mustExpression(NewSelectExpression(mustQOV(first.GetAlias()), nil, nil))))
+	external := ForEachQuantifier(InitialOf(mustExpression(NewSelectExpression(mustQOV(values.UniqueCorrelationIdentifier()), nil, nil))))
+	correlations := func(ref *Reference) map[values.CorrelationIdentifier]struct{} { return ref.GetCorrelatedTo() }
+	for _, tc := range []struct {
+		name         string
+		quantifiers  []Quantifier
+		canCorrelate bool
+	}{
+		{"empty", nil, true},
+		{"uncorrelated operator", []Quantifier{first, dependent}, false},
+		{"independent children", []Quantifier{first, independent}, true},
+		{"external correlation", []Quantifier{first, external}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := quantifierDependencies(tc.quantifiers, tc.canCorrelate, correlations); got != nil {
+				t.Fatalf("empty local dependency graph=%v, want nil", got)
+			}
+		})
+	}
+	dependencies := quantifierDependencies([]Quantifier{first, dependent}, true, correlations)
+	if len(dependencies) != 2 || len(dependencies[0]) != 0 || !slices.Equal(dependencies[1], []int{0}) {
+		t.Fatalf("local dependency graph=%v, want [[], [0]]", dependencies)
+	}
+}
+
+func TestPreparedMemberDuplicate_ReusesGraphDerivations(t *testing.T) {
+	t.Parallel()
+	child := &memoObservedExpression{RelationalExpression: mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))}
+	ref := InitialOf(child)
+	member := func(k int64) *memoObservedExpression {
+		q := ForEachQuantifier(ref)
+		return &memoObservedExpression{RelationalExpression: mustExpression(NewSelectExpression(
+			mustExpression(q.RequireFlowedObjectValue()), []Quantifier{q}, []predicates.QueryPredicate{
+				predicates.NewComparisonPredicate(mustQOV(q.GetAlias()), predicates.Comparison{
+					Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: k},
+				}),
+			},
+		))}
+	}
+	first, second, incoming := member(1), member(2), member(3)
+	child.hashVisits, child.correlationVisits = 0, 0
+	if duplicate, _ := PreparedMemberDuplicate([]RelationalExpression{first, second}, incoming); duplicate {
+		t.Fatal("hash collisions collapsed different predicates")
+	}
+	for name, expression := range map[string]*memoObservedExpression{"first": first, "second": second, "incoming": incoming, "child": child} {
+		if expression.correlationVisits != 1 {
+			t.Errorf("%s correlations derived %d times, want once per preparation", name, expression.correlationVisits)
+		}
+		if expression != child && expression.hashVisits != 1 {
+			t.Errorf("%s hash derived %d times, want once per preparation", name, expression.hashVisits)
+		}
+	}
+	if ref.correlatedToCache.Load() != nil {
+		t.Fatal("read-only preparation published a shared correlation cache")
+	}
+	for _, hashes := range [][]uint64{nil, {42}, {42, 42}} {
+		for _, expression := range []*memoObservedExpression{first, second, incoming, child} {
+			expression.hashVisits, expression.correlationVisits = 0, 0
+		}
+		var preparation PreparedMemberEquality
+		for range 3 {
+			if duplicate, _ := preparation.DuplicateWithHashes([]RelationalExpression{first, second}, hashes, incoming); duplicate {
+				t.Fatal("batch equality collapsed different predicates")
+			}
+		}
+		for name, expression := range map[string]*memoObservedExpression{"first": first, "second": second, "incoming": incoming, "child": child} {
+			if expression.correlationVisits != 1 || expression.hashVisits > 1 {
+				t.Errorf("batch %s: correlation visits=%d hash visits=%d", name, expression.correlationVisits, expression.hashVisits)
+			}
+		}
+		if duplicate, aliasAware := preparation.DuplicateWithHashes([]RelationalExpression{incoming}, nil, member(3)); !duplicate || !aliasAware {
+			t.Fatal("batch equality failed to recognize an alias-renamed duplicate")
+		}
+	}
+}
+
+func TestPreparedMemberIndexPrunesDisjointSingletonInputs(t *testing.T) {
+	t.Parallel()
+	scan := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
+	parent := func(arity int) *memoObservedExpression {
+		qs := make([]Quantifier, arity)
+		for i := range qs {
+			qs[i] = ForEachQuantifier(scan)
+		}
+		child := InitialOf(mustExpression(NewLogicalUnionExpression(qs)))
+		return &memoObservedExpression{RelationalExpression: mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(child)))}
+	}
+	members := make([]RelationalExpression, 32)
+	for i := range members {
+		members[i] = parent(i + 2)
+	}
+	var equality PreparedMemberEquality
+	index := equality.NewMemberIndex(members[:4], nil)
+	if duplicate, _ := index.Duplicate(parent(34)); duplicate {
+		t.Fatal("small lane collapsed different arities")
+	}
+	for _, member := range members[:4] {
+		member.(*memoObservedExpression).equalityVisits = 0
+	}
+	for i, member := range members[4:] {
+		index.Add(member)
+		if i == 3 {
+			if duplicate, _ := index.Duplicate(parent(34)); duplicate {
+				t.Fatal("lane crossing index threshold collapsed different arities")
+			}
+		}
+	}
+	if duplicate, _ := index.Duplicate(parent(34)); duplicate {
+		t.Fatal("different child arities collapsed")
+	}
+	for i, member := range members {
+		if visits := member.(*memoObservedExpression).equalityVisits; visits != 0 {
+			t.Fatalf("member %d: disjoint child signature caused %d equality calls, want zero", i, visits)
+		}
+	}
+	if duplicate, _ := index.Duplicate(parent(33)); !duplicate {
+		t.Fatal("independently built equivalent singleton input did not deduplicate")
+	}
+}
+
+func TestPreparedMemberIndexPrunesDifferentSingletonSubtrees(t *testing.T) {
+	t.Parallel()
+	parent := func(name string, reverse bool) *memoObservedExpression {
+		left := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{name}, testRecordType())))
+		right := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"common"}, testRecordType())))
+		qs := []Quantifier{ForEachQuantifier(left), ForEachQuantifier(right)}
+		if reverse {
+			slices.Reverse(qs)
+		}
+		child := InitialOf(mustExpression(NewLogicalUnionExpression(qs)))
+		return &memoObservedExpression{RelationalExpression: mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(child)))}
+	}
+	members := make([]RelationalExpression, 32)
+	for i := range members {
+		members[i] = parent(string(rune('A'+i)), false)
+	}
+	var equality PreparedMemberEquality
+	index := equality.NewMemberIndex(members, nil)
+	if duplicate, _ := index.Duplicate(parent("new", false)); duplicate {
+		t.Fatal("different singleton subtrees collapsed")
+	}
+	for i, member := range members {
+		if visits := member.(*memoObservedExpression).equalityVisits; visits != 0 {
+			t.Fatalf("member %d: disjoint subtree caused %d equality calls, want zero", i, visits)
+		}
+	}
+	for _, member := range members {
+		member.(*memoObservedExpression).quantifierVisits = 0
+	}
+	for range 32 {
+		if duplicate, _ := index.Duplicate(parent("new", false)); duplicate {
+			t.Fatal("repeated disjoint signature collapsed")
+		}
+	}
+	for i, member := range members {
+		if visits := member.(*memoObservedExpression).quantifierVisits; visits != 0 {
+			t.Fatalf("member %d: repeated disjoint lookups revisited its input %d times, want zero", i, visits)
+		}
+	}
+	if duplicate, _ := index.Duplicate(parent("A", true)); !duplicate {
+		t.Fatal("independently built, permuted equivalent subtree did not deduplicate")
+	}
+	index.Add(parent("added", false))
+	if duplicate, _ := index.Duplicate(parent("added", true)); !duplicate {
+		t.Fatal("member added after refinement did not deduplicate")
+	}
+	extra := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"extra"}, testRecordType())))
+	extra.members = append(extra.members, mustExpression(NewFullUnorderedScanExpression([]string{"spare"}, testRecordType())))
+	common := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"common"}, testRecordType())))
+	union := InitialOf(mustExpression(NewLogicalUnionExpression([]Quantifier{ForEachQuantifier(extra), ForEachQuantifier(common)})))
+	index.Add(&memoObservedExpression{RelationalExpression: mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(union)))})
+	if duplicate, _ := index.Duplicate(parent("extra", true)); !duplicate {
+		t.Fatal("incomplete signature added after refinement lost containment fallback")
+	}
+}
+
+func TestPreparedMemberIndexNestedContainmentAndCycles(t *testing.T) {
+	t.Parallel()
+	scan := func(name string) RelationalExpression {
+		return mustExpression(NewFullUnorderedScanExpression([]string{name}, testRecordType()))
+	}
+	parent := func(ref *Reference) RelationalExpression {
+		return mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(ref)))
+	}
+	many, one := InitialOf(scan("T")), InitialOf(scan("T"))
+	many.members = append(many.members, scan("U"))
+	left, right := parent(InitialOf(parent(many))), parent(InitialOf(parent(one)))
+	for _, tc := range []struct {
+		have, incoming RelationalExpression
+		want           bool
+	}{
+		{left, right, true},
+		{right, left, false},
+	} {
+		var equality PreparedMemberEquality
+		members := slices.Repeat([]RelationalExpression{tc.have}, 8)
+		index := equality.NewMemberIndex(members, nil)
+		got, diagnostic := index.Duplicate(tc.incoming)
+		linear, linearDiagnostic := PreparedMemberDuplicate(members, tc.incoming)
+		if got != tc.want || got != linear || diagnostic != linearDiagnostic {
+			t.Fatalf("nested containment: indexed=%t/%t linear=%t/%t, want %t", got, diagnostic, linear, linearDiagnostic, tc.want)
+		}
+	}
+	cycle := InitialOf(scan("T"))
+	cyclic := parent(cycle)
+	cycle.members = []RelationalExpression{cyclic}
+	var equality PreparedMemberEquality
+	index := equality.NewMemberIndex(slices.Repeat([]RelationalExpression{cyclic}, 8), nil)
+	if duplicate, _ := index.Duplicate(cyclic); !duplicate {
+		t.Fatal("cyclic singleton input lost its exact-replica fallback")
+	}
+}
+
+func preparedIndexPadding() []RelationalExpression {
+	members := make([]RelationalExpression, 7)
+	for i := range members {
+		members[i] = mustExpression(NewFullUnorderedScanExpression([]string{"padding"}, testRecordType()))
+	}
+	return members
+}
+
+func TestPreparedMemberIndexPreservesDirectionalLanes(t *testing.T) {
+	t.Parallel()
+	scan := func(name string) RelationalExpression {
+		return mustExpression(NewFullUnorderedScanExpression([]string{name}, testRecordType()))
+	}
+	parent := func(exploratory, final int) RelationalExpression {
+		ref := InitialOf(scan("T"))
+		expression := mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(ref)))
+		ref.members, ref.finalMembers = nil, nil
+		for i, name := range []string{"T", "U"} {
+			if exploratory&(1<<i) != 0 {
+				ref.members = append(ref.members, scan(name))
+			}
+			if final&(1<<i) != 0 {
+				ref.finalMembers = append(ref.finalMembers, scan(name))
+			}
+		}
+		return expression
+	}
+	for haveExploratory := range 4 {
+		for haveFinal := range 4 {
+			members := append(preparedIndexPadding(), parent(haveExploratory, haveFinal))
+			var equality PreparedMemberEquality
+			index := equality.NewMemberIndex(members, nil)
+			for wantExploratory := range 4 {
+				for wantFinal := range 4 {
+					incoming := parent(wantExploratory, wantFinal)
+					want := wantExploratory & ^haveExploratory == 0 && wantFinal & ^haveFinal == 0
+					got, aliasAware := index.Duplicate(incoming)
+					linear, linearAliasAware := PreparedMemberDuplicate(members, incoming)
+					if got != want || got != linear || aliasAware != linearAliasAware {
+						t.Fatalf("have=%02b/%02b want=%02b/%02b: indexed=%t/%t linear=%t/%t expected=%t", haveExploratory, haveFinal, wantExploratory, wantFinal, got, aliasAware, linear, linearAliasAware, want)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPreparedMemberIndexRejectsDifferentChildKeys(t *testing.T) {
+	t.Parallel()
+	scan := func(name string) RelationalExpression {
+		return mustExpression(NewFullUnorderedScanExpression([]string{name}, values.NotNullLong))
+	}
+	leftScan, rightScan := scan("T"), scan("U")
+	if leftScan.HashCodeWithoutChildren() == rightScan.HashCodeWithoutChildren() {
+		t.Fatal("scan fixture must have different hashes")
+	}
+	selectExpression := mustExpression(NewSelectExpression(&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}, nil, nil))
+	for _, tc := range []struct {
+		name        string
+		left, right RelationalExpression
+	}{
+		{"hash", leftScan, rightScan},
+		{"correlation capability", &memoObservedExpression{RelationalExpression: leftScan}, &memoObservedExpression{RelationalExpression: selectExpression}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			left := &memoObservedExpression{RelationalExpression: mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(tc.left))))}
+			right := &memoObservedExpression{RelationalExpression: mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(tc.right))))}
+			var equality PreparedMemberEquality
+			index := equality.NewMemberIndex(append(preparedIndexPadding(), left), nil)
+			if duplicate, _ := index.Duplicate(right); duplicate {
+				t.Fatal("distinct child keys collapsed")
+			}
+			if left.equalityVisits != 0 {
+				t.Fatalf("distinct child key caused %d equality calls", left.equalityVisits)
+			}
+		})
+	}
+}
+
+func TestPreparedMemberIndexPreservesCandidateOrder(t *testing.T) {
+	t.Parallel()
+	scan := func() RelationalExpression {
+		return mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
+	}
+	alias := values.NamedCorrelationIdentifier("q")
+	filter := func(alias values.CorrelationIdentifier, ref *Reference) RelationalExpression {
+		return mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{predicates.NewComparisonPredicate(
+			mustQOV(alias), predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
+		)}, NamedForEachQuantifier(alias, ref)))
+	}
+	for _, nested := range []bool{false, true} {
+		for _, keyedFirst := range []bool{false, true} {
+			child := InitialOf(scan())
+			multi := InitialOf(scan())
+			multi.members = append(multi.members, scan())
+			if nested {
+				child = InitialOf(mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(child))))
+				multi = InitialOf(mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(multi))))
+			}
+			incoming := filter(alias, child)
+			members := append([]RelationalExpression{filter(values.UniqueCorrelationIdentifier(), multi)}, slices.Repeat([]RelationalExpression{filter(alias, child)}, 8)...)
+			if keyedFirst {
+				slices.Reverse(members)
+			}
+			var equality PreparedMemberEquality
+			index := equality.NewMemberIndex(members, nil)
+			got, aliasAware := index.Duplicate(incoming)
+			if !got || aliasAware == keyedFirst {
+				t.Fatalf("nested=%t keyedFirst=%t: duplicate=%t aliasAware=%t, want true/%t", nested, keyedFirst, got, aliasAware, !keyedFirst)
+			}
+		}
+	}
+}
+
+func TestPreparedMemberIndexCollisionsAndForwarding(t *testing.T) {
+	t.Parallel()
+	scan := func(name string) RelationalExpression {
+		return &memoObservedExpression{RelationalExpression: mustExpression(NewFullUnorderedScanExpression([]string{name}, testRecordType()))}
+	}
+	child := InitialOf(scan("T"))
+	parent := func(ref *Reference) RelationalExpression {
+		return mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(ref)))
+	}
+	forwarded, middle := InitialOf(scan("U")), InitialOf(scan("V"))
+	forwarded.forwardedTo, middle.forwardedTo = middle, child
+	members := slices.Repeat([]RelationalExpression{parent(forwarded)}, 8)
+	var equality PreparedMemberEquality
+	index := equality.NewMemberIndex(members, nil)
+	for _, name := range []string{"T", "U"} {
+		if duplicate, _ := index.Duplicate(parent(InitialOf(scan(name)))); duplicate != (name == "T") {
+			t.Fatalf("child %s: duplicate=%t, want %t", name, duplicate, name == "T")
+		}
+	}
+	if forwarded.forwardedTo != middle || middle.forwardedTo != child {
+		t.Fatal("prepared index path-compressed forwarding")
+	}
+	if child.correlatedToCache.Load() != nil {
+		t.Fatal("prepared index published a correlation cache")
+	}
+}
+
+func TestPreparedMemberDuplicateReusesPublishedCorrelations(t *testing.T) {
+	t.Parallel()
+	outer := values.NamedCorrelationIdentifier("outer")
+	child := &memoObservedExpression{RelationalExpression: mustExpression(NewSelectExpression(mustQOV(outer), nil, nil))}
+	childRef := InitialOf(child)
+	parent := InitialOf(mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(childRef))))
+	left := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(parent)))
+	right := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(parent)))
+	want := map[values.CorrelationIdentifier]struct{}{outer: {}}
+	if got := parent.GetCorrelatedTo(); !maps.Equal(got, want) {
+		t.Fatalf("warm correlations=%v, want %v", got, want)
+	}
+	parentSnapshot, childSnapshot := parent.correlatedToCache.Load(), childRef.correlatedToCache.Load()
+	child.correlationVisits = 0
+	for range 3 {
+		if duplicate, _ := PreparedMemberDuplicate([]RelationalExpression{left}, right); !duplicate {
+			t.Fatal("alias-renamed duplicate was not recognized")
+		}
+	}
+	if child.correlationVisits != 0 {
+		t.Fatalf("unchanged cached descendant correlations rederived %d times", child.correlationVisits)
+	}
+	if parent.correlatedToCache.Load() != parentSnapshot || childRef.correlatedToCache.Load() != childSnapshot {
+		t.Fatal("read-only equality replaced a published correlation snapshot")
+	}
+}
+
+func TestPreparedCorrelationsValidatePublishedDependencies(t *testing.T) {
+	t.Parallel()
+	for _, change := range []string{"cold", "unchanged", "exploratory", "final", "forwarded", "pruned"} {
+		t.Run(change, func(t *testing.T) {
+			t.Parallel()
+			outer := values.NamedCorrelationIdentifier("outer")
+			added := values.NamedCorrelationIdentifier("added")
+			member := mustExpression(NewSelectExpression(mustQOV(outer), nil, nil))
+			child := InitialOf(member)
+			parent := InitialOf(mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(child))))
+			root := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(parent)))
+			want := map[values.CorrelationIdentifier]struct{}{outer: {}}
+			extra := mustExpression(NewSelectExpression(mustQOV(added), nil, nil))
+			if change == "pruned" {
+				if !child.InsertFinal(extra) {
+					t.Fatal("prunable final correlation did not insert")
+				}
+				want[added] = struct{}{}
+			}
+			warmWant := maps.Clone(want)
+			var borrowed map[values.CorrelationIdentifier]struct{}
+			if change != "cold" {
+				borrowed = parent.GetCorrelatedTo()
+				if !maps.Equal(borrowed, want) {
+					t.Fatalf("warm correlations=%v, want %v", borrowed, want)
+				}
+			}
+			switch change {
+			case "exploratory":
+				if !child.Insert(extra) {
+					t.Fatal("new exploratory correlation did not insert")
+				}
+				want[added] = struct{}{}
+			case "final":
+				if !child.InsertFinal(extra) {
+					t.Fatal("new final correlation did not insert")
+				}
+				want[added] = struct{}{}
+			case "forwarded":
+				// Absorb forwards and bumps the correlation epoch together.
+				child.forwardedTo = InitialOf(extra)
+				bumpCorrelationEpoch()
+				want = map[values.CorrelationIdentifier]struct{}{added: {}}
+			case "pruned":
+				child.PruneWith(member)
+				delete(want, added)
+			}
+			parentSnapshot, childSnapshot := parent.correlatedToCache.Load(), child.correlatedToCache.Load()
+			for range 2 {
+				equality := newMemoEquality()
+				if got := equality.correlations.expression(root); !maps.Equal(got, want) {
+					t.Fatalf("prepared correlations=%v, want %v", got, want)
+				}
+			}
+			if parent.correlatedToCache.Load() != parentSnapshot || child.correlatedToCache.Load() != childSnapshot {
+				t.Fatal("read-only equality published refreshed correlations")
+			}
+			if borrowed != nil && !maps.Equal(borrowed, warmWant) {
+				t.Fatalf("read-only equality changed borrowed correlations: %v", borrowed)
+			}
+		})
+	}
+}
+
+func TestPreparedCorrelationsPublicationAfterGraphChanges(t *testing.T) {
+	t.Parallel()
+	for _, change := range []string{"exploratory", "final", "forwarded", "pruned"} {
+		t.Run(change, func(t *testing.T) {
+			t.Parallel()
+			outer := values.NamedCorrelationIdentifier("outer")
+			added := values.NamedCorrelationIdentifier("added")
+			member := mustExpression(NewSelectExpression(mustQOV(outer), nil, nil))
+			extra := mustExpression(NewSelectExpression(mustQOV(added), nil, nil))
+			child := InitialOf(member)
+			if change == "pruned" && !child.InsertFinal(extra) {
+				t.Fatal("prunable final correlation did not insert")
+			}
+			parent := InitialOf(mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(child))))
+			left := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(parent)))
+			right := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(parent)))
+			var preparation PreparedMemberEquality
+			if duplicate, _ := preparation.DuplicateWithHashes([]RelationalExpression{left}, nil, right); !duplicate {
+				t.Fatal("alias-renamed duplicate was not recognized")
+			}
+			if parent.correlatedToCache.Load() != nil || child.correlatedToCache.Load() != nil {
+				t.Fatal("preparation published before commit")
+			}
+			want := map[values.CorrelationIdentifier]struct{}{outer: {}, added: {}}
+			switch change {
+			case "exploratory":
+				if !child.Insert(extra) {
+					t.Fatal("new exploratory correlation did not insert")
+				}
+			case "final":
+				if !child.InsertFinal(extra) {
+					t.Fatal("new final correlation did not insert")
+				}
+			case "forwarded":
+				// Absorb forwards and bumps the correlation epoch together.
+				child.forwardedTo = InitialOf(extra)
+				bumpCorrelationEpoch()
+				delete(want, outer)
+			case "pruned":
+				child.PruneWith(member)
+				delete(want, added)
+			}
+			preparation.PublishCorrelations()
+			if parent.correlatedToCache.Load() == nil {
+				t.Fatal("unchanged parent version did not exercise stale-dependency publication")
+			}
+			if child.correlatedToCache.Load() != nil {
+				t.Fatal("changed or forwarded child received an old snapshot")
+			}
+			for range 2 {
+				if got := parent.GetCorrelatedTo(); !maps.Equal(got, want) {
+					t.Fatalf("published correlations=%v, want %v after %s", got, want, change)
+				}
+			}
+		})
+	}
+}
+
+// Root selects retain externally visible binding identities; wrapping them lets
+// prepared admission exercise alias-aware equality of their child populations.
+func preparedChildDuplicate(a, b RelationalExpression) bool {
+	left := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(InitialOf(a))))
+	right := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(InitialOf(b))))
+	var equality PreparedMemberEquality
+	index := equality.NewMemberIndex(slices.Repeat([]RelationalExpression{left}, 8), nil)
+	duplicate, _ := index.Duplicate(right)
+	return duplicate
+}
+
 func TestMemoEqual_InternsAliasVariants(t *testing.T) {
 	t.Parallel()
 	scanRef := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
@@ -107,6 +693,179 @@ func TestMemoEqual_ChildrenAsSet_PermutationBranch(t *testing.T) {
 	// Negative: a different child SET (two T's, no U) ⇒ no permutation matches.
 	if MemoEqual(union(scanT, scanT), a) {
 		t.Fatal("union over a different child set must NOT be MemoEqual")
+	}
+}
+
+func TestMemoEqualityAuditBindings(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier
+	scan := func(name string) *Reference {
+		return InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{name}, values.NotNullLong)))
+	}
+	free := func(name string) *Reference {
+		return InitialOf(mustExpression(NewSelectExpression(mustQOV(alias(name)), nil, nil)))
+	}
+	union := func(names []string, children ...*Reference) RelationalExpression {
+		qs := make([]Quantifier, len(children))
+		for i, child := range children {
+			qs[i] = NamedForEachQuantifier(alias(names[i]), child)
+		}
+		return mustExpression(NewLogicalUnionExpression(qs))
+	}
+	a, b := scan("A"), scan("B")
+	project := func(first, second string) RelationalExpression {
+		return mustExpression(NewSelectExpression(mustQOV(alias("x")), []Quantifier{
+			NamedForEachQuantifier(alias(first), a), NamedForEachQuantifier(alias(second), b),
+		}, nil))
+	}
+	sharedLeft := project("x", "y")
+	sharedRight := mustExpression(NewSelectExpression(sharedLeft.GetResultValue(), project("y", "x").GetQuantifiers(), nil))
+	for _, tc := range []struct {
+		name        string
+		left, right RelationalExpression
+	}{
+		{"different_bindings", project("x", "y"), project("y", "x")},
+		{"shared_projection", sharedLeft, sharedRight},
+		{"free_correlation", union([]string{"a", "b"}, a, free("a")), union([]string{"c", "d"}, a, free("c"))},
+		{"prefix_captures_free_alias", union([]string{"a", "b"}, free("b"), free("a")), union([]string{"c", "d"}, free("b"), free("c"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if MemoEqual(tc.left, tc.right) {
+				t.Error("MemoEqual identifies different bindings")
+			}
+			if preparedChildDuplicate(tc.left, tc.right) {
+				t.Error("prepared admission identifies different child bindings")
+			}
+			if SemanticEquals(tc.left, tc.right, EmptyAliasMap()) {
+				t.Error("SemanticEquals identifies different bindings")
+			}
+			if duplicate, _ := PreparedMemberDuplicate([]RelationalExpression{tc.left}, tc.right); duplicate {
+				t.Error("prepared admission discards an expression with different bindings")
+			}
+		})
+	}
+}
+
+func TestMemoEqual_ReferenceLanesAreDirectional(t *testing.T) {
+	t.Parallel()
+	population := func(mask int) []RelationalExpression {
+		var members []RelationalExpression
+		for i, name := range []string{"T", "U"} {
+			if mask&(1<<i) != 0 {
+				members = append(members, mustExpression(NewFullUnorderedScanExpression([]string{name}, testRecordType())))
+			}
+		}
+		return members
+	}
+	for haveExploratory := range 4 {
+		for haveFinal := range 4 {
+			for wantExploratory := range 4 {
+				for wantFinal := range 4 {
+					have := &Reference{members: population(haveExploratory), finalMembers: population(haveFinal)}
+					want := &Reference{members: population(wantExploratory), finalMembers: population(wantFinal)}
+					expected := wantExploratory & ^haveExploratory == 0 && wantFinal & ^haveFinal == 0
+					if got := newMemoEquality().references(have, want, EmptyAliasMap()); got != expected {
+						t.Fatalf("have exploratory/final=%02b/%02b want=%02b/%02b: contains=%t want %t", haveExploratory, haveFinal, wantExploratory, wantFinal, got, expected)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestMemoEqual_RespectsSuppliedAliases(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier
+	scan := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong)))
+	build := func(local, outer string) RelationalExpression {
+		q := NamedForEachQuantifier(alias(local), scan)
+		return mustExpression(NewSelectExpression(mustQOV(alias(outer)), []Quantifier{q}, nil))
+	}
+	left, right := build("a", "x"), build("b", "y")
+	for _, tc := range []struct {
+		name    string
+		aliases *AliasMap
+		want    bool
+	}{
+		{"unbound_external", EmptyAliasMap(), false},
+		{"renamed_external", AliasMapOf(alias("x"), alias("y")), true},
+		{"complete", AliasMapOf(alias("x"), alias("y"), alias("a"), alias("b")), true},
+		{"wrong_external", AliasMapOf(alias("x"), alias("z")), false},
+		{"wrong_local", AliasMapOf(alias("x"), alias("y"), alias("a"), alias("z")), false},
+		{"occupied_target", AliasMapOf(alias("x"), alias("y"), alias("z"), alias("b")), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for name, equal := range map[string]func(RelationalExpression, RelationalExpression, *AliasMap) bool{
+				"kernel": newMemoEquality().equal, "semantic": SemanticEquals,
+			} {
+				if got := equal(left, right, tc.aliases); got != tc.want {
+					t.Errorf("%s equality=%t, want %t", name, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestMemoEqual_CorrelatedChildrenDependencyOrder(t *testing.T) {
+	t.Parallel()
+	scan := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong)))
+	makeSelect := func(reverse bool) RelationalExpression {
+		base := ForEachQuantifier(scan)
+		inner := ForEachQuantifier(scan)
+		p := predicates.NewComparisonPredicate(mustExpression(inner.RequireFlowedObjectValue()), predicates.Comparison{
+			Type: predicates.ComparisonEquals, Operand: mustExpression(base.RequireFlowedObjectValue()),
+		})
+		dependent := ForEachQuantifier(InitialOf(mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{p}, inner))))
+		qs := []Quantifier{base, dependent}
+		if reverse {
+			qs[0], qs[1] = qs[1], qs[0]
+		}
+		return mustExpression(NewSelectExpression(mustExpression(base.RequireFlowedObjectValue()), qs, nil))
+	}
+	left, right := makeSelect(true), makeSelect(false)
+	if !MemoEqual(left, right) || !preparedChildDuplicate(left, right) {
+		t.Fatal("correlated children must be compared after their owning dependencies, regardless of slice order")
+	}
+}
+
+func TestMemoEqual_ChildrenAsSetChecksNodeForEachMatch(t *testing.T) {
+	t.Parallel()
+	scan := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
+	leftA, leftB := ForEachQuantifier(scan), ForEachQuantifier(scan)
+	rightA, rightB := ForEachQuantifier(scan), ForEachQuantifier(scan)
+	left := mustExpression(NewSelectExpression(mustExpression(leftA.RequireFlowedObjectValue()), []Quantifier{leftA, leftB}, nil))
+	right := mustExpression(NewSelectExpression(mustExpression(rightB.RequireFlowedObjectValue()), []Quantifier{rightA, rightB}, nil))
+	for name, equal := range map[string]func(RelationalExpression, RelationalExpression) bool{
+		"memo":     MemoEqual,
+		"prepared": preparedChildDuplicate,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if !equal(left, right) {
+				t.Fatal("first child match disagrees on projection; the swapped match must still be considered")
+			}
+		})
+	}
+}
+
+func BenchmarkMemoEqualRejectedUnionPairings(b *testing.B) {
+	leftQs, rightQs := make([]Quantifier, 9), make([]Quantifier, 9)
+	for i := range leftQs {
+		leftQs[i] = ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))))
+		rightQs[i] = ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"U"}, testRecordType()))))
+		leftQs[i].GetRangesOver().GetCorrelatedTo()
+		rightQs[i].GetRangesOver().GetCorrelatedTo()
+	}
+	left := mustExpression(NewLogicalUnionExpression(leftQs))
+	right := mustExpression(NewLogicalUnionExpression(rightQs))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if MemoEqual(left, right) {
+			b.Fatal("unions over distinct scans compared equal")
+		}
 	}
 }
 
@@ -220,5 +979,38 @@ func TestMemoEqual_QuantifierAttributeVariantsDoNotIntern(t *testing.T) {
 	}
 	if ref.Insert(selOver(NamedForEachQuantifier(alias, scanRef))) {
 		t.Fatal("attribute-identical twin must dedup against the existing member")
+	}
+}
+
+// One equality compares the same reference pair under several bindings; a
+// remembered result must not answer for different bindings of the pair's free
+// aliases, while bindings of other aliases reuse it.
+func TestMemoEqual_ReferenceResultsKeyedByFreeBindings(t *testing.T) {
+	t.Parallel()
+	alias := values.NamedCorrelationIdentifier
+	scan := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong)))
+	build := func(local, outer string) *Reference {
+		q := NamedForEachQuantifier(alias(local), scan)
+		return InitialOf(mustExpression(NewSelectExpression(mustQOV(alias(outer)), []Quantifier{q}, nil)))
+	}
+	left, right := build("a", "x"), build("b", "y")
+	e := newMemoEquality()
+	for i, tc := range []struct {
+		aliases *AliasMap
+		want    bool
+	}{
+		{AliasMapOf(alias("x"), alias("y")), true},
+		{AliasMapOf(alias("x"), alias("z")), false},
+		{EmptyAliasMap(), false},
+		{AliasMapOf(alias("x"), alias("y"), alias("q"), alias("r")), true},
+		{AliasMapOf(alias("x"), alias("z"), alias("q"), alias("r")), false},
+		{AliasMapOf(alias("x"), alias("y")), true},
+	} {
+		if got := e.references(left, right, tc.aliases); got != tc.want {
+			t.Errorf("comparison %d under %v = %t, want %t", i, tc.aliases, got, tc.want)
+		}
+	}
+	if n := len(e.matched[refPair{left, right}]); n != 3 {
+		t.Errorf("%d remembered binding sets, want 3 (x->y, x->z, none)", n)
 	}
 }

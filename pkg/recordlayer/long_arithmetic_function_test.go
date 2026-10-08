@@ -1,15 +1,22 @@
 package recordlayer
 
 import (
+	"errors"
 	"math"
 	"testing"
+
+	"google.golang.org/protobuf/types/dynamicpb"
+
+	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // evaluateArithmetic is a test helper that invokes a registered arithmetic function
 // with a single argument tuple.
 func evaluateArithmetic(t *testing.T, name string, args []any) (any, error) {
 	t.Helper()
-	fn, ok := globalFunctionRegistry[name]
+	spec, ok := globalFunctionRegistry[name]
+	fn := spec.Evaluator
 	if !ok {
 		t.Fatalf("function %q not registered", name)
 	}
@@ -435,30 +442,85 @@ func TestArithmeticNullPropagation(t *testing.T) {
 func TestArithmeticWrongType(t *testing.T) {
 	t.Parallel()
 
-	// Non-int64 input should error.
-	t.Run("string", func(t *testing.T) {
+	// Java reads every argument with Key.Evaluated.getNullableLong: a
+	// non-Number is InvalidResultException, even when the other argument is
+	// NULL, because both are read before the null check.
+	// ActualType is the Java class name Java logs (Key.java:553-561), like ExpectedType.
+	for _, tc := range []struct {
+		name   string
+		args   []any
+		idx    int
+		actual string
+	}{
+		{"string", []any{int64(1), "hello"}, 1, "java.lang.String"},
+		{"bool", []any{true, int64(2)}, 0, "java.lang.Boolean"},
+		{"bytes", []any{int64(1), []byte{1}}, 1, "[B"},
+		{"string beside null", []any{nil, "hello"}, 1, "java.lang.String"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := evaluateArithmetic(t, "add", tc.args)
+			var ire *KeyExpressionInvalidResultError
+			if !errors.As(err, &ire) {
+				t.Fatalf("add(%v) = %v, want KeyExpressionInvalidResultError", tc.args, err)
+			}
+			if ire.Index != tc.idx || ire.Function != "add" || ire.ExpectedType != "java.lang.Number" || ire.ActualType != tc.actual {
+				t.Errorf("error context = %+v, want function add, index %d, expected java.lang.Number, actual %s", ire, tc.idx, tc.actual)
+			}
+		})
+	}
+	t.Run("unary string", func(t *testing.T) {
 		t.Parallel()
-		_, err := evaluateArithmetic(t, "add", []any{int64(1), "hello"})
-		if err == nil {
-			t.Error("add(1, string) should error on non-int64")
+		_, err := evaluateArithmetic(t, "bitnot", []any{"x"})
+		var ire *KeyExpressionInvalidResultError
+		if !errors.As(err, &ire) {
+			t.Fatalf("bitnot(string) = %v, want KeyExpressionInvalidResultError", err)
 		}
 	})
+}
 
-	t.Run("float64", func(t *testing.T) {
-		t.Parallel()
-		_, err := evaluateArithmetic(t, "add", []any{float64(1.0), int64(2)})
-		if err == nil {
-			t.Error("add(float64, int64) should error on non-int64")
-		}
-	})
+// TestArithmeticNumberWidening pins Java's getNullableLong widening
+// (Key.java:579-582): any Number is accepted through Number.longValue(). An
+// INT literal argument reaches the evaluator as int32 — Java's own relational
+// DDL stores the 10000 entry size of bitmap_bucket_offset as int_value — and a
+// FLOAT or DOUBLE field arrives as float32 or float64. Go used to reject all of
+// these, so index maintenance over an int_value literal failed.
+func TestArithmeticNumberWidening(t *testing.T) {
+	t.Parallel()
 
-	t.Run("int32", func(t *testing.T) {
-		t.Parallel()
-		_, err := evaluateArithmetic(t, "add", []any{int32(1), int64(2)})
-		if err == nil {
-			t.Error("add(int32, int64) should error on non-int64")
-		}
-	})
+	for _, tc := range []struct {
+		name string
+		fn   string
+		args []any
+		want any
+	}{
+		{"int32 literal right", "bitmap_bucket_offset", []any{int64(23456), int32(10000)}, int64(20000)},
+		{"int32 literal left", "add", []any{int32(1), int64(2)}, int64(3)},
+		{"int32 negative", "bitmap_bit_position", []any{int64(-1), int32(10000)}, int64(9999)},
+		{"int", "mul", []any{int(3), int64(4)}, int64(12)},
+		{"float64 truncates toward zero", "add", []any{float64(1.9), int64(2)}, int64(3)},
+		{"float64 negative truncates toward zero", "add", []any{float64(-1.9), int64(0)}, int64(-1)},
+		{"float32", "add", []any{float32(2.5), int64(0)}, int64(2)},
+		{"NaN is zero", "add", []any{math.NaN(), int64(5)}, int64(5)},
+		{"+Inf saturates", "bitand", []any{math.Inf(1), int64(-1)}, int64(math.MaxInt64)},
+		{"-Inf saturates", "bitand", []any{math.Inf(-1), int64(-1)}, int64(math.MinInt64)},
+		{"2^63 saturates", "bitand", []any{float64(1 << 63), int64(-1)}, int64(math.MaxInt64)},
+		{"float32 +Inf saturates", "bitand", []any{float32(math.Inf(1)), int64(-1)}, int64(math.MaxInt64)},
+		{"-2^63 is exact", "bitand", []any{float64(-(1 << 63)), int64(-1)}, int64(math.MinInt64)},
+		{"unary int32", "bitnot", []any{int32(0)}, int64(-1)},
+		{"null beside int32", "add", []any{nil, int32(1)}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := evaluateArithmetic(t, tc.fn, tc.args)
+			if err != nil {
+				t.Fatalf("%s(%v): %v", tc.fn, tc.args, err)
+			}
+			if got != tc.want {
+				t.Errorf("%s(%v) = %v (%T), want %v (%T)", tc.fn, tc.args, got, got, tc.want, tc.want)
+			}
+		})
+	}
 }
 
 func TestArithmeticWrongArgCount(t *testing.T) {
@@ -534,7 +596,13 @@ func TestArithmeticProtoRoundTrip(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			original := FunctionExpr(tc.fn, Concat(Field("a"), Field("b")))
+			// bitnot takes one argument column, the others two (the target's
+			// bounds, conformance "RFC-257 key functions").
+			var args KeyExpression = Concat(Field("a"), Field("b"))
+			if tc.fn == "bitnot" {
+				args = Field("a")
+			}
+			original := FunctionExpr(tc.fn, args)
 			p := original.ToKeyExpression()
 
 			restored, err := KeyExpressionFromProto(p)
@@ -557,7 +625,7 @@ func TestArithmeticMultipleTuples(t *testing.T) {
 	t.Parallel()
 
 	// Evaluator should process multiple argument tuples (fan-out scenario).
-	fn := globalFunctionRegistry["add"]
+	fn := globalFunctionRegistry["add"].Evaluator
 	if fn == nil {
 		t.Fatal("add function not registered")
 	}
@@ -803,4 +871,40 @@ func TestOverflowCheckedOps(t *testing.T) {
 			t.Error("expected error for division by zero")
 		}
 	})
+}
+
+// TestJavaTupleValueClassName drives every arm of the ACTUAL_TYPE Java logs for a
+// non-Number argument (getClass().getName() after toTupleAppropriateValue).
+func TestJavaTupleValueClassName(t *testing.T) {
+	t.Parallel()
+	dynamic := dynamicpb.NewMessage((&gen.Index{}).ProtoReflect().Descriptor())
+	for _, tc := range []struct {
+		name string
+		v    any
+		want string
+	}{
+		{"string", "x", "java.lang.String"},
+		{"bytes", []byte{1}, "[B"},
+		{"bool", true, "java.lang.Boolean"},
+		{"uuid", tuple.UUID{}, "java.util.UUID"},
+		{"uuid bytes", [16]byte{}, "java.util.UUID"},
+		{"versionstamp", tuple.Versionstamp{}, "com.apple.foundationdb.tuple.Versionstamp"},
+		{"tuple", tuple.Tuple{int64(1)}, "com.apple.foundationdb.tuple.Tuple"},
+		{"list", []any{int64(1)}, "java.util.ArrayList"},
+		// A message read through a run-time descriptor is a DynamicMessage in Java.
+		{"dynamic message", dynamic, "com.google.protobuf.DynamicMessage"},
+		// A generated message's Java class is not knowable from the Go copy of its
+		// descriptor (see javaMessageClassName): its proto full name.
+		{"generated message", &gen.Index{}, "com.apple.foundationdb.record.Index"},
+		{"generated nested message", &gen.Index_Option{}, "com.apple.foundationdb.record.Index.Option"},
+		// A Go carrier no Java value can be keeps its Go type name.
+		{"go-only carrier", struct{}{}, "struct {}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := javaTupleValueClassName(tc.v); got != tc.want {
+				t.Fatalf("javaTupleValueClassName(%T) = %q, want %q", tc.v, got, tc.want)
+			}
+		})
+	}
 }

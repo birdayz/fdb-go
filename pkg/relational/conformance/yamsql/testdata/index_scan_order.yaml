@@ -33,7 +33,7 @@ tests:
 
   # Index order ASC
   - query: SELECT id, val FROM t ORDER BY val
-    plan_contains: "IndexScan(IDX_VAL, [*])"
+    plan_contains: "Map(IndexScan(IDX_VAL, [*] COVERING), {ID: _current.ID#0, VAL: _current.VAL#1})"
     plan_not_contains: "InMemorySort"
     rows:
       - [2, 10]
@@ -44,7 +44,7 @@ tests:
 
   # Index order DESC
   - query: SELECT id, val FROM t ORDER BY val DESC
-    plan_contains: "IndexScan(IDX_VAL, [*]) REVERSE"
+    plan_contains: "Map(IndexScan(IDX_VAL, [*] COVERING) REVERSE, {ID: _current.ID#0, VAL: _current.VAL#1})"
     plan_not_contains: "InMemorySort"
     rows:
       - [3, 50]

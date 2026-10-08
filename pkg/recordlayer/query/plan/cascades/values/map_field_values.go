@@ -63,7 +63,7 @@ func MapFieldValues(v Value, transform func(*fieldValue) Value) Value {
 	// etc.) that Children() alone doesn't carry.
 	switch cv := v.(type) {
 	case *ArithmeticValue:
-		return &ArithmeticValue{Op: cv.Op, Left: newChildren[0], Right: newChildren[1]}
+		return cv.WithOperands(newChildren[0], newChildren[1])
 	case *StrictRankLimitValue:
 		// Same rebuild-switch coverage the ArithmeticValue it replaced had: a
 		// transform on the K child must not fall to the default (which discards
@@ -72,7 +72,13 @@ func MapFieldValues(v Value, transform func(*fieldValue) Value) Value {
 	case *CastValue:
 		return &CastValue{Child: newChildren[0], Target: cv.Target}
 	case *PromoteValue:
-		return &PromoteValue{Child: newChildren[0], Target: cv.Target}
+		rebuilt, err := NewPromoteValueChecked(newChildren[0], cv.Target)
+		if err != nil {
+			return nil
+		}
+		return rebuilt
+	case *NarrowValue:
+		return NewNarrowValue(newChildren[0], cv.Target)
 	case *NotValue:
 		return &NotValue{Child: newChildren[0]}
 	case *ScalarFunctionValue:
@@ -82,7 +88,7 @@ func MapFieldValues(v Value, transform func(*fieldValue) Value) Value {
 		if len(newChildren) > 0 {
 			operand = newChildren[0]
 		}
-		return &AggregateValue{Op: cv.Op, Operand: operand}
+		return cv.WithOperand(operand)
 	case *RecordConstructorValue:
 		fields := make([]RecordConstructorField, len(cv.Fields))
 		for i, f := range cv.Fields {
@@ -397,12 +403,15 @@ func EqualsWithoutChildren(a, b Value) bool {
 	case *PromoteValue:
 		bv, ok := b.(*PromoteValue)
 		return ok && typesEqual(av.Target, bv.Target)
+	case *NarrowValue:
+		bv, ok := b.(*NarrowValue)
+		return ok && av.Target.Equals(bv.Target)
 	case *ScalarFunctionValue:
 		bv, ok := b.(*ScalarFunctionValue)
 		return ok && av.FuncName == bv.FuncName && len(av.Args) == len(bv.Args)
 	case *AggregateValue:
 		bv, ok := b.(*AggregateValue)
-		return ok && av.Op == bv.Op
+		return ok && av.Op == bv.Op && av.IgnoreNulls == bv.IgnoreNulls && av.Limit == bv.Limit
 	case *RecordConstructorValue:
 		bv, ok := b.(*RecordConstructorValue)
 		if !ok || len(av.Fields) != len(bv.Fields) {
@@ -437,8 +446,8 @@ func EqualsWithoutChildren(a, b Value) bool {
 		return ok && av.Op == bv.Op
 	case *IndexEntryObjectValue:
 		bv, ok := b.(*IndexEntryObjectValue)
-		// Source (KEY vs VALUE) is a semantic discriminator: Evaluate reads
-		// PrimaryKey() for KEY and IndexValues() for VALUE, so KEY[p] and
+		// Source (KEY vs VALUE) is a semantic discriminator: Evaluate reads the
+		// entry's KEY tuple for KEY and its VALUE tuple otherwise, so KEY[p] and
 		// VALUE[p] address different tuples and must NOT compare equal.
 		if !ok || av.Source != bv.Source || len(av.OrdinalPath) != len(bv.OrdinalPath) {
 			return false
@@ -577,12 +586,6 @@ func EqualsWithoutChildren(a, b Value) bool {
 		// DistanceRowNumberValue arm for the nil-EfSearch semantics per index
 		// type.
 		bv, ok := b.(*RowNumberValue)
-		return ok && ptrEqual(av.EfSearch, bv.EfSearch) &&
-			ptrEqual(av.IsReturningVectors, bv.IsReturningVectors)
-	case *RowNumberHighOrderValue:
-		// RFC-176 §3: same discriminators as RowNumberValue — the curried form
-		// must not unify across configs it bakes into the applied RowNumberValue.
-		bv, ok := b.(*RowNumberHighOrderValue)
 		return ok && ptrEqual(av.EfSearch, bv.EfSearch) &&
 			ptrEqual(av.IsReturningVectors, bv.IsReturningVectors)
 	case *RankValue:

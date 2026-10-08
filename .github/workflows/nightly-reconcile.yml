@@ -39,9 +39,7 @@ name: Nightly Reconcile
 # trains everyone to ignore the red. Staleness across N nights is not legitimate.
 #
 # ADDING A NET: add the window gate + heartbeat steps to the nightly, then add a
-# row below. `pkg/docscheck`'s TestNightlyWindowGatesAreReconciled fails the build
-# if a windowed job has no heartbeat, if a heartbeat has no row here, or if a row
-# here names a heartbeat nothing produces.
+# row below.
 on:
   schedule:
     # 09:11 UTC — late enough that a net which ran last night has already

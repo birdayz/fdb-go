@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"io"
 	"log/slog"
+	"math"
 	"reflect"
 	"sync"
 
@@ -72,57 +73,30 @@ func NewPlanningCostModelLessWithContext(stats properties.StatisticsProvider, ct
 	}
 }
 
-// RewritingCostModelLess is the cost model for the REWRITING phase. It ports the
-// tail of Java's RewritingCostModel.compare():
+// RewritingCostModelLess is the cost model for the REWRITING phase, Java's
+// RewritingCostModel.compare():
+//  0. Fewer outer joins (a LEFT OUTER select RewriteOuterJoinRule could have
+//     rewritten), so its canonical form survives the prune and the merge and
+//     push-down rules see it
 //  1. Fewer SelectExpressions
 //  2. Fewer TableFunctionExpressions
 //  3. Fewer normalized residual predicate conjuncts (CNF full-size)
 //  4. More predicates at deeper levels (push predicates down)
 //  5. Semantic hash tiebreak
 //
-// DELIBERATE OMISSION — Java's FIRST criterion, outerJoinCount (penalize any
-// surviving OuterJoinExpression), is NOT ported, and must not be. In Java it is a
-// CORRECTNESS GUARD, not a heuristic: Java's OuterJoinExpression is a logical-only
-// node with NO physical operator and exactly one consumer (RewriteOuterJoinRule),
-// so it MUST be rewritten before planning. Java's single-final-expression prune
-// keeps one survivor per group; without outerJoinCount the un-rewritten
-// OuterJoinExpression (0 selects) would beat the rewritten form (2 selects) on the
-// selectCount tie-break, survive the prune, and leave the planning phase with an
-// UNIMPLEMENTABLE node — the query would fail to plan. outerJoinCount forces the
-// implementable rewritten form to survive.
-//
-// Go has no such correctness problem, because Go's outer join IS directly
-// implementable: an outer-join SelectExpression is planned by
-// ImplementNestedLoopJoinRule as a MATERIALIZED RecordQueryNestedLoopJoinPlan
-// (RFC-152) — a read-side extension Java lacks (Java has only the correlated
-// FlatMap re-scan). Go deliberately keeps the un-rewritten outer-join select as the
-// REWRITING prune survivor (it wins on selectCount, 1<2) precisely so PLANNING can
-// derive BOTH the materialized NLJ (scan the inner once) AND the correlated FlatMap
-// (re-scan) and cost-choose. Porting outerJoinCount would force the rewritten form
-// to win the prune, discard the outer-join select, and thereby SUPPRESS the
-// materialized-NLJ alternative — a regression, not a fix (pinned by
-// TestFDB_ArrayUnnestOrdinality, which asserts the materialized NLJ box, and by
-// TestRewritingCostModel_KeepsUnrewrittenOuterJoin).
-// RFC-186: every tier derives through DESIGNATED child finals (the virtual
-// prune, designated_final.go) — a function of a deterministically-chosen
-// candidate tree, never of memo-population history. The pre-RFC-186 tiers
-// summed over ALL memo members (exploratory included), so two equivalent
-// candidates scored differently by how many rewrites their child groups
-// happened to accumulate — and tier 3's physical-only descent counted
-// nothing at all on the all-logical REWRITING memo. This package-level
-// function mints a fresh designation scope per call (identical semantics to
-// the planner-owned scope, merely uncached); the planner's REWRITING cost
-// model uses its own scope so OptimizeGroup winners and designations come
-// from the SAME comparator (coherence, RFC-186 instrument).
+// Every tier derives through each child group's one final, as Java's do
+// (rewriting_cost_model.go). This package-level form compares trees outside a
+// planning run, so it also reads a client-built InitialOf child (no final, one
+// member); the planner's comparator does not.
 func RewritingCostModelLess(a, b expressions.RelationalExpression) bool {
-	return newDesignationScope().compare(a, b, nil) < 0
+	return (&rewritingComparator{clientTrees: true}).compare(a, b) < 0
 }
 
 // comparePredicateCountByLevel ports Java's PredicateCountByLevelProperty.compare.
 // Java iterates the FIRST map's SortedMap entries reading getOrDefault(level, 0)
 // on the second, but Java's producer is DENSE — every level 0..highest has an
 // entry (0 for a non-predicate node) — so iterating a's entries covers all
-// levels. Go's producer (designationScope.predCountByLevel) is SPARSE, so the
+// levels. Go's producer (rewritingComparator.predCountByLevel) is SPARSE, so the
 // faithful and ANTISYMMETRIC form is a single ascending pass over the UNION of
 // levels (0..max): absent==0==getOrDefault makes the per-level counts equal
 // Java's, and the union stays antisymmetric on the sparse maps Go passes — a
@@ -265,6 +239,12 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		return cmp
 	}
 
+	if ctx != nil {
+		if cmp := compareVectorIndexEnginePreference(a, b, ctx.GetPlannerConfiguration().VectorIndexEnginePreference); cmp != 0 {
+			return cmp
+		}
+	}
+
 	if cmp := comparePrimaryScanVsIndexScan(a, b, opsA, opsB, indexScanPreferenceOf(ctx)); cmp != 0 {
 		return cmp
 	}
@@ -311,9 +291,9 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 	// different pairs of the same plans). These three depth rungs, the
 	// fetch/unmatchedFieldCount rungs, and the map/filter node-count rung
 	// below are therefore all UNGATED.
-	typeFilterDepthA := costExprDepth(a, matchTypeFilter)
-	typeFilterDepthB := costExprDepth(b, matchTypeFilter)
-	if typeFilterDepthA >= 0 && typeFilterDepthB >= 0 && typeFilterDepthA != typeFilterDepthB {
+	typeFilterDepthA := javaExpressionDepth(costExprDepth(a, matchTypeFilter))
+	typeFilterDepthB := javaExpressionDepth(costExprDepth(b, matchTypeFilter))
+	if typeFilterDepthA != typeFilterDepthB {
 		return intCompare(typeFilterDepthB, typeFilterDepthA)
 	}
 
@@ -326,9 +306,9 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 		}
 		// Depth rung — sort-invariant, ungated (see the type-filter-depth
 		// comment above); the fetch-COUNT rungs are also ungated.
-		fetchDepthA := costExprDepth(a, matchFetch)
-		fetchDepthB := costExprDepth(b, matchFetch)
-		if fetchDepthA >= 0 && fetchDepthB >= 0 && fetchDepthA != fetchDepthB {
+		fetchDepthA := javaExpressionDepth(costExprDepth(a, matchFetch))
+		fetchDepthB := javaExpressionDepth(costExprDepth(b, matchFetch))
+		if fetchDepthA != fetchDepthB {
 			return intCompare(fetchDepthA, fetchDepthB)
 		}
 		if opsA.fetchCount != opsB.fetchCount {
@@ -338,9 +318,9 @@ func planningCostModelCompareWith(a, b expressions.RelationalExpression, stats p
 
 	// Depth rung — sort-invariant, ungated (see the type-filter-depth comment
 	// above).
-	distinctDepthA := costExprDepth(a, matchDistinct)
-	distinctDepthB := costExprDepth(b, matchDistinct)
-	if distinctDepthA >= 0 && distinctDepthB >= 0 && distinctDepthA != distinctDepthB {
+	distinctDepthA := javaExpressionDepth(costExprDepth(a, matchDistinct))
+	distinctDepthB := javaExpressionDepth(costExprDepth(b, matchDistinct))
+	if distinctDepthA != distinctDepthB {
 		return intCompare(distinctDepthB, distinctDepthA)
 	}
 
@@ -920,6 +900,54 @@ func inPlanPenaltyRankOfPlan(p plans.RecordQueryPlan) int {
 	return 0
 }
 
+// compareVectorIndexEnginePreference is Java's PlanningCostModel method of the
+// same name: it abstains unless an engine is preferred and each plan makes
+// exactly one vector index access, on different engines; the one on the
+// preferred engine wins.
+func compareVectorIndexEnginePreference(a, b expressions.RelationalExpression, preferred string) int {
+	if preferred == "" {
+		return 0
+	}
+	ea, eb := singleVectorIndexEngine(a), singleVectorIndexEngine(b)
+	if ea == "" || eb == "" || ea == eb {
+		return 0
+	}
+	switch preferred {
+	case ea:
+		return -1
+	case eb:
+		return 1
+	}
+	return 0
+}
+
+// singleVectorIndexEngine is the engine of the one vector index scan in e's
+// plan tree, or "" when there is none or more than one.
+func singleVectorIndexEngine(e expressions.RelationalExpression) string {
+	ph, ok := e.(physicalPlanExpression)
+	if !ok {
+		return ""
+	}
+	engine, n := "", 0
+	var walk func(p plans.RecordQueryPlan)
+	walk = func(p plans.RecordQueryPlan) {
+		if p == nil || n > 1 {
+			return
+		}
+		if v, ok := p.(*plans.RecordQueryVectorIndexPlan); ok && v.GetIndexEngine() != "" {
+			engine, n = v.GetIndexEngine(), n+1
+		}
+		for _, c := range p.GetChildren() {
+			walk(c)
+		}
+	}
+	walk(ph.GetRecordQueryPlan())
+	if n != 1 {
+		return ""
+	}
+	return engine
+}
+
 // compareInOperator returns (penalty, applicable). applicable=false means the
 // expression is not an IN-plan. Matches Java's OptionalInt return:
 // empty → (0, false), present(0) → (0, true), present(1) → (1, true).
@@ -1398,7 +1426,6 @@ func sargComparisonEqual(a, b *predicates.Comparison) bool {
 		return a == b
 	}
 	if a.Type != b.Type ||
-		a.Escape != b.Escape ||
 		a.ParameterName != b.ParameterName ||
 		a.TextTokenizerName != b.TextTokenizerName ||
 		a.TextAnalyzerName != b.TextAnalyzerName ||
@@ -1700,6 +1727,9 @@ func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Co
 		// derivation) instead of only overwriting Cardinality — a hop cannot
 		// be credited with producing at most `cap` rows while still being
 		// charged CPU for scanning the larger, disproven row count.
+		if reassociated, ok := rightDeepFKChainCost(pl, child[0], stats, ctx); ok {
+			return reassociated
+		}
 		innerCost := child[1]
 		if cap, ok := fkChainCardinalityCap(pl, stats); ok {
 			fixedCPU, derived := fkChainInnerFixedCPU(pl.GetInner(), ctx)
@@ -1753,7 +1783,7 @@ func combineConcreteCostUnclamped(p plans.RecordQueryPlan, child []properties.Co
 			return properties.Cost{}
 		}
 		return properties.FetchCost(c0())
-	case *plans.RecordQueryMapPlan, *plans.RecordQueryProjectionPlan:
+	case *plans.RecordQueryMapPlan:
 		if len(child) == 0 {
 			return properties.Cost{}
 		}
@@ -1877,21 +1907,6 @@ func costModelDiagnosticsFrom(ctx PlanContext) *costModelDiagnostics {
 		return nil
 	}
 	return provider.costModelDiagnostics()
-}
-
-// costModelDiagnosticsOnlyContext strips metadata and configuration from ctx
-// while retaining its diagnostic sink. Nil-statistics planner/rule comparators
-// historically ran with no PlanContext; logging must not activate new winner
-// criteria as a side effect.
-func costModelDiagnosticsOnlyContext(ctx PlanContext) PlanContext {
-	diagnostics := costModelDiagnosticsFrom(ctx)
-	if diagnostics == nil {
-		return nil
-	}
-	return &costModelDiagnosticContext{
-		PlanContext: EmptyPlanContext(),
-		diagnostics: diagnostics,
-	}
 }
 
 func warnUnclassifiedPlanType(
@@ -2344,7 +2359,6 @@ func classifyConcretePlan(p plans.RecordQueryPlan) (classification concretePlanC
 		*plans.RecordQueryLimitPlan,
 		*plans.RecordQueryLoadByKeysPlan,
 		*plans.RecordQueryMergeSortUnionPlan,
-		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryRecursiveDfsJoinPlan,
 		*plans.RecordQueryRecursiveLevelUnionPlan,
 		*plans.RecordQueryScoreForRankPlan,
@@ -2436,47 +2450,6 @@ func countClassifiedConcreteNode(
 		// it as 1 ties the scan on count, then it wins on the scan-vs-covering-
 		// index criterion exactly like the single-aggregate path. Skip the child
 		// walk so the per-child scans aren't also counted.
-		//
-		// This holds for the RFC-209 group-existence merge too, and deliberately.
-		// §5.3.1 requires the companion COUNT(*) scan to be charged as a real
-		// scan child rather than folded in as a constant — but THIS criterion is
-		// a discrete structural count, not the magnitude cost. Counting the
-		// merge's two legs as two accesses was measured here: it makes criterion
-		// #3 prefer a full Scan (count 1) unconditionally, so the
-		// companion-joined plan never wins on ANY grouping key, however few
-		// groups there are. That does not price the companion, it bars it.
-		//
-		// What this criterion does NOT do is hand the decision to the magnitude
-		// cost. Measured on the fixture shape (grouped SUM + HAVING + ORDER BY,
-		// with the companion present), the merge and its base-table rival
-		// StreamingAgg(InMemorySort(Scan)) tie on every rung up to and including
-		// this one — whole-plan max cardinality unknown on both sides so the
-		// cardinality gate abstains, residuals 0/0, data access 1/1 — and then
-		// THREE independent rungs each pick the merge on their own:
-		//
-		//   1. comparePrimaryScanVsIndexScan — covering index beats primary scan
-		//   2. inMemorySortCount             — merge 0, rival 1
-		//   3. the scalar EstimateCostWith fallback, which routes through
-		//      RecordQueryMultiIntersectionOnValuesPlan.HintCost's driving-leg
-		//      branch (that branch is LIVE, not dead: it executes during this
-		//      query's planning and prices the merge below the rival)
-		//
-		// Reproducing this by DELETING that branch does not work, and the
-		// failure is silent: HintCost then falls back to IntersectionCost, whose
-		// min-of-legs cardinality understates the merge and whose CPU drops the
-		// companion leg, so rung 3 still prefers the merge — more strongly, not
-		// less. Neutralizing rung 3 means bypassing the comparison, not removing
-		// the formula.
-		//
-		// The choice is therefore over-determined and STRUCTURAL: neutralizing
-		// any one of the three changes nothing, and the winner does not move
-		// when table statistics are swept across nine orders of magnitude. Rung
-		// 3's honest per-leg charge is real but never marginal in the
-		// merge-vs-scan shape — so this comment must not be read as "the
-		// magnitude cost decides, therefore count-as-1 is safe". Count-as-1 is
-		// safe because rungs 1 and 2 already encode the same preference for
-		// reasons independent of magnitude; rung 3 agrees rather than governs.
-		// TestGroupExistenceMerge_DecisionIsStructuralNotEconomic pins that.
 		counts.coveringIndexCount++
 		counts.unboundedDataAccess = true
 		validateSkippedConcreteCountSubtrees(p.GetChildren(), ctx)
@@ -2515,14 +2488,7 @@ func countClassifiedConcreteNode(
 			return true // already accounted for the scan; do not recurse (would mark unbounded)
 		}
 	case concreteCountMap:
-		// Map only — NOT RecordQueryProjectionPlan. The map-count criterion (#14)
-		// is a structural tiebreak; a near-ubiquitous top-of-query projection is
-		// not a discriminating operator, and counting it makes #14 fire on almost
-		// every plan pair. (concretePlanCost charges a projection via mapCost for
-		// magnitude, a different purpose — the two walks need not count the same
-		// nodes.) Counting projections here re-ranks ties broadly and selected a
-		// latent-buggy CTE plan that mis-projects an aliased column to NULL —
-		// caught by TestFDB_{CTEChainedColumnAliases,CascadesCTEColumnAliases}.
+		// A Map is one of Java's simple per-tuple operations (countSimpleOps).
 		counts.mapCount++
 	case concreteCountInJoin:
 		counts.inJoinCount++
@@ -3031,26 +2997,80 @@ func unmatchedFieldsForScan(pl *plans.RecordQueryScanPlan, ctx PlanContext) int 
 	return columnSize - numComparisons
 }
 
+// concreteResidualPredicatesWithContext is Java's
+// NormalizedResidualPredicateProperty.countNormalizedConjuncts over a concrete
+// plan (PlanningCostModel.java:147): the CNF full size of the plan's residual
+// predicate, 0 when it is a tautology. The residual is built bottom-up as Java's
+// visitor builds it (NormalizedResidualPredicateProperty.java:92-121): an
+// ordered union on values (Go's MergeSortUnion) ORs its legs' residuals, every
+// other node ANDs its children's residuals with its own predicates, and
+// tautologies are dropped at every node. A plain sum of per-node sizes is the
+// AND case only, so a union whose legs share a residual counted each leg's
+// copy, and lost to a single scan carrying both conjuncts where Java keeps the
+// union.
 func concreteResidualPredicatesWithContext(p plans.RecordQueryPlan, ctx PlanContext) int {
-	total := 0
-	plans.Walk(p, func(n plans.RecordQueryPlan) bool {
-		classification, known := classifyConcretePlan(n)
-		if !known {
-			warnUnclassifiedPlanType(
-				ctx,
-				costModelDiagnosticResidual,
-				n,
-				"counted as having zero residual predicates; classify its predicate payload",
-			)
-			return true
+	residual := normalizedResidualPredicate(p, ctx)
+	if residual == nil || predicates.IsTautology(residual) {
+		return 0
+	}
+	return int(normalFormSize(residual, false, normalFormCNF))
+}
+
+// normalizedResidualPredicate is Java's NormalizedResidualPredicateVisitor
+// over a concrete plan; nil stands for TRUE.
+func normalizedResidualPredicate(p plans.RecordQueryPlan, ctx PlanContext) predicates.QueryPredicate {
+	if p == nil {
+		return nil
+	}
+	var terms []predicates.QueryPredicate
+	keep := func(pred predicates.QueryPredicate) {
+		if pred != nil && !predicates.IsTautology(pred) {
+			terms = append(terms, pred)
 		}
+	}
+	for _, child := range p.GetChildren() {
+		keep(normalizedResidualPredicate(child, ctx))
+	}
+	if _, onValues := p.(*plans.RecordQueryMergeSortUnionPlan); onValues {
+		// OrPredicate.orOrTrue: no leg residual is TRUE, one is itself.
+		switch len(terms) {
+		case 0:
+			return nil
+		case 1:
+			return terms[0]
+		}
+		return predicates.NewOr(terms...)
+	}
+	classification, known := classifyConcretePlan(p)
+	if !known {
+		warnUnclassifiedPlanType(
+			ctx,
+			costModelDiagnosticResidual,
+			p,
+			"counted as having zero residual predicates; classify its predicate payload",
+		)
+	} else if classification.residual == concreteResidualPredicateCNF {
 		// A materialized NLJ evaluates its join predicate per (outer, inner)
 		// pair. It is residual just like PredicatesFilter and legacy Filter;
-		// the shared taxonomy above keeps the logical and concrete walks aligned.
-		total += countClassifiedResidualPredicates(n, classification, ctx)
-		return true
-	})
-	return total
+		// the shared taxonomy keeps the logical and concrete walks aligned.
+		if carrier, ok := p.(expressions.RelationalExpressionWithPredicates); ok {
+			for _, pred := range carrier.GetPredicates() {
+				keep(pred)
+			}
+		} else {
+			countClassifiedResidualPredicates(p, classification, ctx) // reports the misclassification
+		}
+	} else if classification.residual != concreteResidualNeutral {
+		countClassifiedResidualPredicates(p, classification, ctx) // reports the missing policy
+	}
+	// AndPredicate.and: no conjunct is TRUE, one is itself.
+	switch len(terms) {
+	case 0:
+		return nil
+	case 1:
+		return terms[0]
+	}
+	return predicates.NewAnd(terms...)
 }
 
 // planMatchKind selects which operator a depth query targets.
@@ -3179,6 +3199,19 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 			_, _ = io.WriteString(h, col)
 			_, _ = h.Write([]byte{0})
 		}
+	case *plans.RecordQueryCoveringIndexValuePlan:
+		// Explicit for the same reason as the covering plan's arm; the reader
+		// stands where that arm folds its covered columns.
+		_, _ = io.WriteString(h, t.GetIndexName())
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte{boolByte(t.IsReverse())})
+		stableHashComparisonRanges(h, t.GetScanComparisons())
+		_, _ = io.WriteString(h, t.GetRecordTypeName())
+		_, _ = h.Write([]byte{0})
+		for _, field := range t.GetIndexEntryToRecordValue().Fields {
+			_, _ = io.WriteString(h, field.Name+"="+values.ExplainValue(field.Value))
+			_, _ = h.Write([]byte{0})
+		}
 	case *plans.RecordQueryPredicatesFilterPlan:
 		for _, pr := range t.GetPredicates() {
 			stableHashU64(h, predicates.SemanticHashCode(pr))
@@ -3203,11 +3236,6 @@ func stablePlanNodeHash(p plans.RecordQueryPlan) uint64 {
 		if rv := t.GetResultValue(); rv != nil {
 			stableHashU64(h, values.SemanticHashCode(rv))
 		}
-	case *plans.RecordQueryProjectionPlan:
-		// Deliberately type-only. Projection Values and output names belong to
-		// memo identity; the #17 cost tie-break historically treated two
-		// projections over the same child as equal work. Folding the new
-		// schema discriminator here would flip established plan shapes.
 	case *plans.RecordQueryInMemorySortPlan:
 		for _, k := range t.GetSortKeys() {
 			_, _ = io.WriteString(h, k.Field)
@@ -3287,6 +3315,17 @@ func stableHashComparison(h hash.Hash64, c *predicates.Comparison) {
 
 // costExprDepth returns the depth of a target operator, walking the concrete plan
 // tree for a physical expression and the logical memo otherwise.
+// javaExpressionDepth is a depth as Java's ExpressionDepthProperty states it:
+// a plan without the operator has it at Integer.MAX_VALUE, deeper than any
+// (ExpressionDepthProperty.java:107-113), so the depth rungs still rank a
+// plan without the operator against one with it.
+func javaExpressionDepth(depth int) int {
+	if depth < 0 {
+		return math.MaxInt
+	}
+	return depth
+}
+
 func costExprDepth(e expressions.RelationalExpression, kind planMatchKind) int {
 	if ph, ok := e.(physicalPlanExpression); ok {
 		if plan := ph.GetRecordQueryPlan(); plan != nil {

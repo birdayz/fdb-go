@@ -4,6 +4,8 @@ import (
 	"errors"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -150,6 +152,26 @@ func translatePlannerError(planErr error, unableToPlanMessage string) error {
 		errors.Is(planErr, cascades.ErrPlannerRuleMatchCapHit) {
 		return withBudgetContext(
 			api.WrapError(api.ErrCodePlanComplexityLimitReached, plannerBudgetExceededMessage, planErr), planErr)
+	}
+
+	// A SET value no promotion takes to its column's type: Java's
+	// SemanticException INCOMPATIBLE_TYPE out of computePromotionsTrie while
+	// the update plan is built, 22000 with its message.
+	var incompatible *values.IncompatibleTypeError
+	if errors.As(planErr, &incompatible) {
+		return api.WrapError(api.ErrCodeCannotConvertType,
+			"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.",
+			planErr)
+	}
+
+	// SET field paths one of which is a prefix of another: Java's
+	// SemanticException UPDATE_TRANSFORM_AMBIGUOUS out of
+	// RecordQueryUpdatePlan.checkAndPrepareOrderedFieldPaths while the update
+	// plan is built, XX000 with its message (measured).
+	var ambiguous *expressions.UpdateTransformAmbiguousError
+	if errors.As(planErr, &ambiguous) {
+		return api.WrapError(api.ErrCodeInternalError,
+			"The transformations used in an UPDATE statement are ambiguous.", planErr)
 	}
 
 	// The one genuinely user-facing planner verdict: the query asks for a

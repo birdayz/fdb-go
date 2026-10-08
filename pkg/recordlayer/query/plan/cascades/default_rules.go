@@ -24,16 +24,6 @@ package cascades
 // predicates without a TranslationMap rebase (translation_map.go)
 // first.
 //
-// **ProjectionMergeRule's soundness contract**: the merge
-// `Projection(P1) over Projection(P2) over X → Projection(P1) over X`
-// is sound only because LogicalProjectionExpression's GetResultValue()
-// passes the inner row through (projection is a pure side channel).
-// If projection ever narrows the row shape (materialized projections),
-// P1's Values may reference computed columns that only exist in P2's
-// output — at that point the rule needs a column-substitution rewrite
-// path or it must leave the default set. See ProjectionMergeRule's
-// own doc for the per-rule discussion.
-//
 // Each call returns a fresh slice — callers may mutate freely. Each
 // element is a fresh rule instance — see NewXxxRule constructors for
 // the per-call allocation contract.
@@ -47,7 +37,8 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewPushFilterThroughGroupByRule(),
 		NewPushFilterBelowJoinRule(),
 		NewDistinctMergeRule(),
-		NewDistinctOverSortElimRule(),
+		// No rule drops a sort under a distinct: Go's distinct keeps its
+		// input's order, and SELECT DISTINCT … ORDER BY relies on it.
 		NewDistinctOverUnionDedupRule(),
 		NewDistinctOverGroupByElimRule(),
 		// DistinctOnUniqueElimRule REMOVED (D-3): Java's ImplementDistinctRule
@@ -68,7 +59,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		// design first (guarding the transitive intern-to-ancestor makes the
 		// inverse-pair fixpoint non-terminate — proven, see RFC-185).
 		NewNoOpFilterRule(),
-		NewProjectionMergeRule(),
 		// PushProjectionBelowJoinRule REMOVED (Go-only, no Java equivalent).
 		// It wrapped a join's children in LogicalProjectionExpressions, which
 		// blocked SelectMergeRule from flattening the nested binary join into
@@ -92,11 +82,8 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewSortMergeRule(),
 		NewSortDedupKeysRule(),
 		NewSortConstantKeysElimRule(),
-		NewUnsortedSortElimRule(),
 		// PushOrderingThroughGroupByRule REMOVED (D-2): moved to PLANNING
 		// phase as PushRequestedOrderingThroughGroupByRule (DefaultImplementationRules).
-		// PushOrderingThroughProjectionRule REMOVED: moved to PLANNING
-		// phase as PushRequestedOrderingThroughProjectionRule (DefaultImplementationRules).
 		// PushOrderingThroughFilterRule REMOVED (D-3): moved to PLANNING
 		// phase as PushRequestedOrderingThroughFilterRule (DefaultImplementationRules).
 		// PushOrderingThroughDistinctRule REMOVED (D-2): moved to PLANNING
@@ -115,7 +102,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		// phase as PushRequestedOrderingThroughTempTableInsertRule (DefaultImplementationRules).
 		NewUnionSingletonElimRule(),
 		NewIntersectionSingletonElimRule(),
-		NewInComparisonToExplodeRule(),
 		NewLimitMergeRule(),
 		// PushLimitThroughProjectionRule REMOVED (Go-only, no Java equivalent).
 		// Java expresses a row limit as ExecuteProperties.setReturnedRowLimit()
@@ -143,21 +129,16 @@ func DefaultExpressionRules() []ExpressionRule {
 		// embedded.TestVectorPlan_ExplicitLimitEqualToRankStillFolds.
 		NewPushLimitThroughUnionRule(),
 		NewNoOpLimitElimRule(),
-		NewSelectMergeRule(),
-		NewSplitSelectExtractIndependentQuantifiersRule(),
-		NewNormalizePredicatesRule(),
-		NewPredicateToLogicalUnionRule(),
 		// Join-order enumeration (PartitionSelectRule / PartitionBinarySelectRule)
 		// is PLANNING-only — see PlanningExplorationRules, matching Java's
 		// PlanningRuleSet (the RewritingRuleSet is normalization only). REWRITING
 		// normalizes to the canonical flat N-quantifier SelectExpression
-		// (SelectMergeRule); since no partitioning runs here, every member promoted
+		// (SelectMergeRule, a REWRITING implementation rule over finals — see
+		// RewritingImplementationRules); since no partitioning runs here, every member promoted
 		// to PLANNING is flat, so PartitionSelectRule re-enumerates all join
 		// associativities in PLANNING where the stats-aware PlanningCostModel
 		// (RFC-041) picks the cheapest order. Firing them in REWRITING locked the
 		// FROM-order associativity at the phase boundary (RFC-042).
-		NewDecorrelateValuesRule(),
-		NewRemoveRangeOneRule(),
 		NewEliminateNullOnEmptyRule(),
 		// Index-candidate matching (MatchLeafRule / MatchIntermediateRule) is
 		// PLANNING-only — see PlanningExplorationRules, matching Java's
@@ -175,21 +156,17 @@ func DefaultExpressionRules() []ExpressionRule {
 // canonical seed. Mirrors Java's PlanningRuleSet.EXPLORATION_RULES.
 func PlanningExplorationRules() []ExpressionRule {
 	return []ExpressionRule{
+		NewFilterToLogicalUnionRule(),
+		// Union access paths must survive alongside the unsplit select until
+		// candidate matching and costing, as in Java PlanningRuleSet.
+		NewPredicateToLogicalUnionRule(),
 		NewNormalizePredicatesRule(),
 		NewInComparisonToExplodeRule(),
 		NewSplitSelectExtractIndependentQuantifiersRule(),
 		NewEliminateNullOnEmptyRule(),
-		// Re-fire the LEFT-OUTER canonicalizer in PLANNING so a LEFT OUTER that only
-		// surfaces here is still rewritten to the correlated null-supplying form the
-		// FlatMap path consumes. This is a Go-only rule (Java's PlanningRuleSet has no
-		// RewriteOuterJoinRule) and an INTENTIONAL divergence: unlike Java, Go keeps the
-		// un-rewritten outer-join SelectExpression as the REWRITING prune survivor (it is
-		// directly implementable as a materialized RecordQueryNestedLoopJoinPlan, RFC-152 —
-		// see RewritingCostModelLess), so PLANNING re-derives the rewritten form here to
-		// keep the correlated-FlatMap alternative available alongside the materialized NLJ.
-		// (Java can drop it because outerJoinCount forces the rewritten form to survive the
-		// prune — a guard Go must NOT adopt, or it would suppress the materialized NLJ.)
-		NewRewriteOuterJoinRule(),
+		// Go-only: the materialized outer join (RFC-152) competes with Java's
+		// correlated FlatMap, re-formed from the canonical form REWRITING leaves.
+		NewOuterJoinMaterializationRule(),
 		NewPartitionSelectRule(),
 		NewPartitionBinarySelectRule(),
 		// Match candidates (index selection) in PLANNING as well as REWRITING.
@@ -243,10 +220,7 @@ func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),
 		NewImplementValuesRule(),
-		NewImplementProjectionRule(),
 		NewImplementFilterRule(),
-		NewOrderedIndexScanRule(),
-		NewOrderedPrimaryScanRule(),
 		NewImplementTypeFilterRule(),
 		NewImplementIntersectionRule(),
 		NewImplementStreamingAggregationRule(),
@@ -298,7 +272,6 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushRequestedOrderingThroughInsertRule(),
 		NewPushRequestedOrderingThroughUpdateRule(),
 		NewPushRequestedOrderingThroughTempTableInsertRule(),
-		NewPushRequestedOrderingThroughProjectionRule(),
 		NewPushRequestedOrderingThroughGroupByRule(),
 		NewPushRequestedOrderingThroughUnionRule(),
 		NewPushRequestedOrderingThroughRecursiveUnionRule(),
@@ -318,7 +291,6 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewImplementInJoinRule(),
 		NewImplementInUnionRule(),
 		NewImplementSortRule(),
-		NewImplementProjectionFinalRule(),
 		NewImplementDistinctFinalRule(),
 		NewImplementUniqueRule(),
 		NewImplementUnorderedUnionRule(),
@@ -365,8 +337,6 @@ func DefaultImplementationRules() []ImplementationRule {
 		NewPushUnorderedUnionThroughFetchRule(),
 		NewPushMergeSortUnionThroughFetchRule(),
 		NewPushInUnionThroughFetchRule(),
-		NewRemoveProjectionRule(),
-		NewMergeProjectionAndFetchRule(),
 	}
 
 	rules = append(rules, GoExtensionImplementationRules()...)
@@ -385,9 +355,9 @@ func GoExtensionImplementationRules() []ImplementationRule {
 
 // RewritingRules returns the exploration rules for the REWRITING phase.
 // Mirrors Java's RewritingRuleSet.EXPLORATION_RULES:
-//   - QueryPredicateSimplificationRule: constant-fold predicate values
-//   - PredicatePushDownRule: push predicates into child quantifiers
-//   - DecorrelateValuesRule: inline constant value boxes
+//   - DecorrelateValuesRule, then QueryPredicateSimplificationRule when it
+//     made no progress: inline constant value boxes, constant-fold predicates
+//   - RewriteOuterJoinRule
 //
 // These rules are NOT part of DefaultExpressionRules — they target the
 // REWRITING phase, which runs before the main PLANNING phase to
@@ -395,14 +365,26 @@ func GoExtensionImplementationRules() []ImplementationRule {
 // as needed.
 func RewritingRules() []ExpressionRule {
 	return []ExpressionRule{
-		NewQueryPredicateSimplificationRule(),
-		NewPredicatePushDownRule(),
-		NewDecorrelateValuesRule(),
+		// Decorrelation first: it enables the simplification, which runs only
+		// when decorrelation made no progress.
+		newConditionalExpressionRule(NewDecorrelateValuesRule(), NewQueryPredicateSimplificationRule()),
 		// Canonicalize LEFT OUTER joins away before planning (Java's
 		// RewritingRuleSet runs RewriteOuterJoinRule): push ON-predicates below the
 		// null-extension boundary into a correlated null-supplying SUBSEL so the
 		// data-access FlatMap path can plan a correlated LEFT-OUTER join.
 		NewRewriteOuterJoinRule(),
+	}
+}
+
+// RewritingImplementationRules returns the REWRITING implementation rules,
+// Java's RewritingRuleSet.IMPLEMENTATION_RULES: SelectMergeRule, then
+// PredicatePushDownRule when the merge made no progress, over a final
+// expression with pruned inputs; FinalizeExpressionsRule turns exploratory
+// members into finals.
+func RewritingImplementationRules() []ImplementationRule {
+	return []ImplementationRule{
+		newConditionalImplementationRule(NewSelectMergeRule(), NewPredicatePushDownRule()),
+		NewFinalizeExpressionsRule(),
 	}
 }
 
@@ -415,19 +397,30 @@ func RewritingRules() []ExpressionRule {
 // Java's set is {QueryPredicateSimplificationRule, PredicatePushDownRule,
 // DecorrelateValuesRule, RewriteOuterJoinRule, SelectMergeRule}; all five
 // exist in Go under the same names, so the disabled set is name-identical.
-// SelectMergeRule is in Go's DefaultExpressionRules rather than
-// RewritingRules (Go's REWRITING phase runs the default expression rules),
-// so it is named explicitly instead of being derived from RewritingRules().
+// The conditional rules contribute their inner rules, as Java's
+// expandConditionalRules does.
 //
 // The names are the Java simple-class-name spelling, which is exactly what
 // Planner.DisabledRules is keyed by.
 func OptionalRewritingRuleNames() []string {
-	rewriting := RewritingRules()
-	names := make([]string, 0, len(rewriting)+1)
-	for _, r := range rewriting {
+	var names []string
+	for _, r := range RewritingRules() {
+		if cond, ok := r.(*conditionalExpressionRule); ok {
+			for _, inner := range cond.rules {
+				names = append(names, shortTypeName(inner))
+			}
+			continue
+		}
 		names = append(names, shortTypeName(r))
 	}
-	return append(names, shortTypeName(NewSelectMergeRule()))
+	for _, r := range RewritingImplementationRules() {
+		if cond, ok := r.(*conditionalImplementationRule); ok {
+			for _, inner := range cond.rules {
+				names = append(names, shortTypeName(inner))
+			}
+		}
+	}
+	return names
 }
 
 // MatchingRules returns the matching rules that seed the partial-match
@@ -480,7 +473,7 @@ func registerRewritingRules() {
 }
 
 func registerDefaultRules() {
-	for _, r := range DefaultExpressionRules() {
+	for _, r := range append(DefaultExpressionRules(), PlanningExplorationRules()...) {
 		// Use the concrete type name (without leading * and package
 		// prefix) as the registry key. Skip if already registered —
 		// init can be called twice in tests; idempotency keeps the

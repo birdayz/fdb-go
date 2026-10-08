@@ -48,8 +48,12 @@ type collatorPoolKey struct {
 
 func init() {
 	eval := makeCollateEvaluator()
-	RegisterFunction(CollateFuncJRE, eval)
-	RegisterFunction(CollateFuncICU, eval)
+	// CollateFunctionKeyExpression.java:151-159, :169, :183. collate_icu is the
+	// target's ICU module's (CollateFunctionKeyExpressionFactoryICU, a
+	// CollateFunctionKeyExpression), not its core registry's.
+	spec := FunctionSpec{Evaluator: eval, MinArguments: 1, MaxArguments: 3, ColumnSize: 1, NullIsNonUnique: true}
+	registerCoreFunction(CollateFuncJRE, spec)
+	registerCoreFunction(CollateFuncICU, spec)
 }
 
 // makeCollateEvaluator creates a FunctionEvaluator for collation functions.

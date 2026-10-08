@@ -43,6 +43,7 @@ go_test(
     srcs = [
         "catalog_aware_test.go",
         "column_conform_test.go",
+        "domain_registration_test.go",
         "go_runner_test.go",
         "in_list_dedup_regression_test.go",
         "join_projection_coltype_regression_test.go",
@@ -55,6 +56,7 @@ go_test(
     tags = ["resources:memory:400"],
     deps = [
         "//pkg/relational/api",
+        "//pkg/relational/core/keyspace",
         "//pkg/testcontainers/foundationdb",
     ],
 )

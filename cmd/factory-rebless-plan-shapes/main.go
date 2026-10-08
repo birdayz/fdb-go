@@ -36,6 +36,7 @@ func main() {
 	corpusDir := flag.String("corpus", "", "committed corpus directory")
 	censusPath := flag.String("census", "", "census baseline to rewrite (optional)")
 	dryRun := flag.Bool("dry-run", false, "report what would move without writing")
+	retireCollisions := flag.Bool("retire-collisions", false, "retire a moved scenario that became the same (feature vector, plan shape) point as another")
 	beforeDir := flag.String("before", "", "corpus directory as the base commit committed it (required with -ledger)")
 	ledgerPath := flag.String("ledger", "", "retirement ledger to emit for the transition")
 	baseCommit := flag.String("base-commit", "", "commit the -before corpus was taken from")
@@ -47,7 +48,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "-corpus is required")
 		os.Exit(2)
 	}
-	if err := run(*corpusDir, *censusPath, *dryRun); err != nil {
+	if err := run(*corpusDir, *censusPath, *dryRun, *retireCollisions); err != nil {
 		fmt.Fprintln(os.Stderr, "factory-rebless-plan-shapes:", err)
 		os.Exit(1)
 	}
@@ -112,7 +113,7 @@ func resolveCandidates(gs genSeed) ([]factory.Candidate, error) {
 	return candidates, nil
 }
 
-func run(corpusDir, censusPath string, dryRun bool) error {
+func run(corpusDir, censusPath string, dryRun, retireCollisions bool) error {
 	scenarios, err := factorycorpus.LoadDir(corpusDir)
 	if err != nil {
 		return err
@@ -121,6 +122,7 @@ func run(corpusDir, censusPath string, dryRun bool) error {
 
 	moved := 0
 	touchedFiles := map[string]bool{}
+	movedSet := map[*factorycorpus.Scenario]bool{}
 	for _, gs := range recipes {
 		candidates, candErr := resolveCandidates(gs)
 		if candErr != nil {
@@ -166,6 +168,7 @@ func run(corpusDir, censusPath string, dryRun bool) error {
 				continue
 			}
 			fmt.Printf("re-bless %s: shape %s -> %s, dedup key %s -> %s\n", header.Name, header.PlanShape, shape, header.DedupKey, key)
+			movedSet[s] = true
 			s.Header.PlanShape = shape
 			s.Header.DedupKey = key
 			moved++
@@ -173,15 +176,32 @@ func run(corpusDir, censusPath string, dryRun bool) error {
 		}
 	}
 	fmt.Printf("%d of %d committed scenarios moved, across %d family files\n", moved, len(scenarios), len(touchedFiles))
+	retired := map[*factorycorpus.Scenario]bool{}
+	if retireCollisions {
+		retired = collidingScenarios(scenarios, movedSet)
+		for s := range retired {
+			touchedFiles[s.Path] = true
+		}
+		fmt.Printf("%d moved scenarios retired as duplicate points\n", len(retired))
+	}
 	if moved == 0 || dryRun {
 		return nil
 	}
 
 	byFile := map[string][]*factorycorpus.Scenario{}
 	for _, s := range scenarios {
+		if retired[s] {
+			continue
+		}
 		byFile[s.Path] = append(byFile[s.Path], s)
 	}
 	for path := range touchedFiles {
+		if len(byFile[path]) == 0 {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			continue
+		}
 		data, marshalErr := factorycorpus.MarshalFamily(byFile[path])
 		if marshalErr != nil {
 			return fmt.Errorf("re-marshal %s: %w", filepath.Base(path), marshalErr)
@@ -202,6 +222,38 @@ func run(corpusDir, censusPath string, dryRun bool) error {
 		return err
 	}
 	return os.WriteFile(censusPath, rendered, 0o644)
+}
+
+// collidingScenarios picks, for every dedup key held by more than one
+// scenario, the ones to retire. The corpus keeps one scenario per (feature
+// vector, plan shape) point: an unmoved holder stays (the point was already
+// covered), otherwise the lexically first name does. Only a moved scenario is
+// ever retired.
+func collidingScenarios(scenarios []*factorycorpus.Scenario, moved map[*factorycorpus.Scenario]bool) map[*factorycorpus.Scenario]bool {
+	byKey := map[string][]*factorycorpus.Scenario{}
+	for _, s := range scenarios {
+		byKey[s.Header.DedupKey] = append(byKey[s.Header.DedupKey], s)
+	}
+	retired := map[*factorycorpus.Scenario]bool{}
+	for _, holders := range byKey {
+		if len(holders) < 2 {
+			continue
+		}
+		sort.Slice(holders, func(i, j int) bool {
+			if moved[holders[i]] != moved[holders[j]] {
+				return !moved[holders[i]]
+			}
+			return holders[i].Header.Name < holders[j].Header.Name
+		})
+		for _, s := range holders[1:] {
+			if !moved[s] {
+				continue
+			}
+			fmt.Printf("retire %s: same point as %s\n", s.Header.Name, holders[0].Header.Name)
+			retired[s] = true
+		}
+	}
+	return retired
 }
 
 // writeLedger renders the RFC-201 §8 retirement ledger for a completed

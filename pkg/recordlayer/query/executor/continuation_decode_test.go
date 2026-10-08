@@ -31,6 +31,8 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // mustContValue / mustAggGroupKey wrap the now-erroring typed encoders for
@@ -288,8 +290,8 @@ func FuzzAggregateContinuation(f *testing.F) {
 	}
 
 	f.Fuzz(func(_ *testing.T, data []byte) {
-		_, _, _, _ = decodeAggregateContinuation(data, 1)
-		_, _, _, _ = decodeAggregateContinuation(data, 3)
+		_, _, _, _ = decodeAggregateContinuation(data, nil, make([]expressions.AggregateSpec, 1), nil)
+		_, _, _, _ = decodeAggregateContinuation(data, nil, make([]expressions.AggregateSpec, 3), nil)
 	})
 }
 
@@ -343,18 +345,19 @@ func TestDecodeAggregateContinuationCorruptMinMax(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		_, _, _, decErr := decodeAggregateContinuation(data, 1)
+		key := []values.Value{&values.ConstantValue{Typ: values.NullableLong, Value: int64(1)}}
+		_, _, _, decErr := decodeAggregateContinuation(data, key, make([]expressions.AggregateSpec, 1), nil)
 		if decErr == nil {
 			t.Fatal("want error, got nil (coercing a corrupt group key to a raw string resumes under a never-matching group)")
 		}
-		if !strings.Contains(decErr.Error(), "group key") {
+		if !strings.Contains(decErr.Error(), "grouping key") {
 			t.Errorf("Error() = %q, want mention of group key", decErr)
 		}
 	})
 
 	t.Run("corrupt MIN state errors", func(t *testing.T) {
 		t.Parallel()
-		_, _, _, err := decodeAggregateContinuation(build(t, corruptVal, validTwo), 1)
+		_, _, _, err := decodeAggregateContinuation(build(t, corruptVal, validTwo), nil, make([]expressions.AggregateSpec, 1), nil)
 		if err == nil {
 			t.Fatal("want error, got nil (silently dropped MIN state is a wrong aggregate)")
 		}
@@ -365,7 +368,7 @@ func TestDecodeAggregateContinuationCorruptMinMax(t *testing.T) {
 
 	t.Run("corrupt MAX state errors", func(t *testing.T) {
 		t.Parallel()
-		_, _, _, err := decodeAggregateContinuation(build(t, validOne, corruptVal), 1)
+		_, _, _, err := decodeAggregateContinuation(build(t, validOne, corruptVal), nil, make([]expressions.AggregateSpec, 1), nil)
 		if err == nil {
 			t.Fatal("want error, got nil (silently dropped MAX state is a wrong aggregate)")
 		}
@@ -376,7 +379,7 @@ func TestDecodeAggregateContinuationCorruptMinMax(t *testing.T) {
 
 	t.Run("valid states round-trip", func(t *testing.T) {
 		t.Parallel()
-		_, gk, gs, err := decodeAggregateContinuation(build(t, validOne, validTwo), 1)
+		_, gk, gs, err := decodeAggregateContinuation(build(t, validOne, validTwo), nil, make([]expressions.AggregateSpec, 1), nil)
 		if err != nil {
 			t.Fatalf("decode: %v", err)
 		}
@@ -402,8 +405,6 @@ func TestContValue_Uint64BigIntTime_F34(t *testing.T) {
 	bigOverUint64 := new(big.Int).Lsh(big.NewInt(1), 80) // 2^80, far beyond uint64
 	bigOverUint64.Add(bigOverUint64, big.NewInt(7))
 	negBig := new(big.Int).Neg(bigOverUint64)
-	// A location-bearing, sub-second timestamp to catch any lossy encoding.
-	tm := time.Date(2026, 7, 16, 3, 4, 5, 123456789, time.FixedZone("X", 5*3600))
 
 	cases := []struct {
 		name string
@@ -415,7 +416,6 @@ func TestContValue_Uint64BigIntTime_F34(t *testing.T) {
 		{"bigint_over_uint64", bigOverUint64, func(g any) bool { v, ok := g.(*big.Int); return ok && v.Cmp(bigOverUint64) == 0 }},
 		{"bigint_negative", negBig, func(g any) bool { v, ok := g.(*big.Int); return ok && v.Cmp(negBig) == 0 }},
 		{"bigint_zero", big.NewInt(0), func(g any) bool { v, ok := g.(*big.Int); return ok && v.Sign() == 0 }},
-		{"time", tm, func(g any) bool { v, ok := g.(time.Time); return ok && v.Equal(tm) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -435,6 +435,27 @@ func TestContValue_Uint64BigIntTime_F34(t *testing.T) {
 				t.Errorf("round-trip of %#v = %#v (%T), want exact type + value", tc.in, got, got)
 			}
 		})
+	}
+}
+
+// DATE and TIMESTAMP values are text, so a time.Time is not encoded; a tag-12
+// value an earlier build wrote decodes to its instant's canonical TIMESTAMP
+// text, the value that key has now.
+func TestContValue_LegacyTimeDecodesToTimestampText(t *testing.T) {
+	t.Parallel()
+	tm := time.Date(2026, 7, 16, 3, 4, 5, 123456789, time.FixedZone("X", 5*3600))
+	if _, err := appendContValue(nil, tm); err == nil {
+		t.Fatal("a time.Time must not be encoded")
+	}
+	mb, err := tm.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := binary.AppendUvarint([]byte{contValTime}, uint64(len(mb)))
+	legacy = append(legacy, mb...)
+	got, rest, err := readContValue(legacy)
+	if err != nil || len(rest) != 0 || got != "2026-07-15 22:04:05" {
+		t.Fatalf("legacy tag 12 = %#v, %d trailing, %v; want the UTC TIMESTAMP text", got, len(rest), err)
 	}
 }
 
@@ -929,7 +950,7 @@ func TestDecodeAggregateContinuation_ProtoPlaceholderRejected_F53(t *testing.T) 
 		// The codec now ENCODES a proto message, so the crafted key assembles
 		// cleanly — the decode-side guard is the only line of defense.
 		gk := mustAggGroupKey(t, "k", []any{flower})
-		_, _, _, err := decodeAggregateContinuation(build(t, gk, validOne, validOne), 1)
+		_, _, _, err := decodeAggregateContinuation(build(t, gk, validOne, validOne), nil, make([]expressions.AggregateSpec, 1), nil)
 		if err == nil {
 			t.Fatal("want error, got nil (a proto-message group key must be rejected — group keys are scalars)")
 		}
@@ -942,7 +963,7 @@ func TestDecodeAggregateContinuation_ProtoPlaceholderRejected_F53(t *testing.T) 
 		t.Parallel()
 		// The guard must recurse: a placeholder buried inside a tag-13 list.
 		gk := mustAggGroupKey(t, "k", []any{[]any{flower}})
-		_, _, _, err := decodeAggregateContinuation(build(t, gk, validOne, validOne), 1)
+		_, _, _, err := decodeAggregateContinuation(build(t, gk, validOne, validOne), nil, make([]expressions.AggregateSpec, 1), nil)
 		if err == nil {
 			t.Fatal("want error, got nil (a placeholder inside a list group key must be rejected)")
 		}
@@ -954,7 +975,7 @@ func TestDecodeAggregateContinuation_ProtoPlaceholderRejected_F53(t *testing.T) 
 	t.Run("proto MIN state rejected", func(t *testing.T) {
 		t.Parallel()
 		gk := mustAggGroupKey(t, "k", []any{int64(1)})
-		_, _, _, err := decodeAggregateContinuation(build(t, gk, flowerVal, validOne), 1)
+		_, _, _, err := decodeAggregateContinuation(build(t, gk, flowerVal, validOne), nil, make([]expressions.AggregateSpec, 1), nil)
 		if err == nil {
 			t.Fatal("want error, got nil (a proto-message MIN partial must be rejected)")
 		}
@@ -966,7 +987,7 @@ func TestDecodeAggregateContinuation_ProtoPlaceholderRejected_F53(t *testing.T) 
 	t.Run("proto MAX state rejected", func(t *testing.T) {
 		t.Parallel()
 		gk := mustAggGroupKey(t, "k", []any{int64(1)})
-		_, _, _, err := decodeAggregateContinuation(build(t, gk, validOne, flowerVal), 1)
+		_, _, _, err := decodeAggregateContinuation(build(t, gk, validOne, flowerVal), nil, make([]expressions.AggregateSpec, 1), nil)
 		if err == nil {
 			t.Fatal("want error, got nil (a proto-message MAX partial must be rejected)")
 		}
@@ -1378,7 +1399,7 @@ func TestDecodeAggregateContinuation_NonScalarMinMaxRejected_F54(t *testing.T) {
 
 	t.Run("list MIN state rejected", func(t *testing.T) {
 		t.Parallel()
-		_, _, _, err := decodeAggregateContinuation(build(t, listVal, validOne), 1)
+		_, _, _, err := decodeAggregateContinuation(build(t, listVal, validOne), nil, make([]expressions.AggregateSpec, 1), nil)
 		if err == nil {
 			t.Fatal("want error, got nil (a []any MIN partial is crafted/corrupt — the accumulator only produces numerics)")
 		}
@@ -1389,7 +1410,7 @@ func TestDecodeAggregateContinuation_NonScalarMinMaxRejected_F54(t *testing.T) {
 
 	t.Run("list MAX state rejected", func(t *testing.T) {
 		t.Parallel()
-		_, _, _, err := decodeAggregateContinuation(build(t, validOne, listVal), 1)
+		_, _, _, err := decodeAggregateContinuation(build(t, validOne, listVal), nil, make([]expressions.AggregateSpec, 1), nil)
 		if err == nil {
 			t.Fatal("want error, got nil (a []any MAX partial is crafted/corrupt)")
 		}
@@ -1400,7 +1421,7 @@ func TestDecodeAggregateContinuation_NonScalarMinMaxRejected_F54(t *testing.T) {
 
 	t.Run("string MIN state rejected", func(t *testing.T) {
 		t.Parallel()
-		_, _, _, err := decodeAggregateContinuation(build(t, strVal, validOne), 1)
+		_, _, _, err := decodeAggregateContinuation(build(t, strVal, validOne), nil, make([]expressions.AggregateSpec, 1), nil)
 		if err == nil {
 			t.Fatal("want error, got nil (Go MIN/MAX is numeric-only — accumulateRow raises AggregateTypeMismatchError for non-numerics, so no genuine continuation carries a string extremum)")
 		}
@@ -1413,7 +1434,7 @@ func TestDecodeAggregateContinuation_NonScalarMinMaxRejected_F54(t *testing.T) {
 		t.Parallel()
 		for _, v := range []any{int64(1), int32(2), int(3), float64(4.5), float32(5.5), nil} {
 			data := build(t, mustContValue(t, v), mustContValue(t, v))
-			_, _, gs, err := decodeAggregateContinuation(data, 1)
+			_, _, gs, err := decodeAggregateContinuation(data, nil, make([]expressions.AggregateSpec, 1), nil)
 			if err != nil {
 				t.Fatalf("decode with %T extremum: %v (the gate must accept every width the accumulator can produce)", v, err)
 			}
@@ -1485,7 +1506,7 @@ func TestDecodeAggregateContinuation_ForeignShapeFailsLoud(t *testing.T) {
 			}},
 		},
 	})
-	if _, _, _, err := decodeAggregateContinuation(wrongCount, numAggs); err == nil {
+	if _, _, _, err := decodeAggregateContinuation(wrongCount, nil, make([]expressions.AggregateSpec, numAggs), nil); err == nil {
 		t.Fatal("wrong slot COUNT must fail loud (silent zero-fill = wrong aggregates on resume)")
 	}
 
@@ -1504,7 +1525,7 @@ func TestDecodeAggregateContinuation_ForeignShapeFailsLoud(t *testing.T) {
 			AccumulatorStates: []*gen.AccumulatorState{{State: states}},
 		},
 	})
-	if _, _, _, err := decodeAggregateContinuation(wrongType, numAggs); err == nil {
+	if _, _, _, err := decodeAggregateContinuation(wrongType, nil, make([]expressions.AggregateSpec, numAggs), nil); err == nil {
 		t.Fatal("wrong slot TYPE must fail loud")
 	}
 
@@ -1516,11 +1537,11 @@ func TestDecodeAggregateContinuation_ForeignShapeFailsLoud(t *testing.T) {
 		allInt: []bool{false}, mins: []any{int64(1)}, maxs: []any{int64(9)},
 	}
 	specs := make([]expressions.AggregateSpec, numAggs)
-	good, err := encodeAggregateContinuation(nil, "", nil, gs, specs)
+	good, err := encodeLegacyAggregateContinuation(nil, "", nil, gs, specs)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	if _, _, _, err := decodeAggregateContinuation(good, numAggs); err != nil {
+	if _, _, _, err := decodeAggregateContinuation(good, nil, make([]expressions.AggregateSpec, numAggs), nil); err != nil {
 		t.Fatalf("valid Go-format continuation rejected: %v", err)
 	}
 
@@ -1532,11 +1553,11 @@ func TestDecodeAggregateContinuation_ForeignShapeFailsLoud(t *testing.T) {
 		count: 1, counts: []int64{1}, sums: []float64{0}, sumsI: []int64{0},
 		allInt: []bool{false}, mins: []any{nil}, maxs: []any{nil},
 	}
-	nilExtrema, err := encodeAggregateContinuation(nil, "", nil, gsNil, specs)
+	nilExtrema, err := encodeLegacyAggregateContinuation(nil, "", nil, gsNil, specs)
 	if err != nil {
 		t.Fatalf("encode nil-extrema: %v", err)
 	}
-	_, _, decoded, err := decodeAggregateContinuation(nilExtrema, numAggs)
+	_, _, decoded, err := decodeAggregateContinuation(nilExtrema, nil, make([]expressions.AggregateSpec, numAggs), nil)
 	if err != nil {
 		t.Fatalf("nil-extrema Go continuation rejected: %v", err)
 	}
@@ -1616,5 +1637,61 @@ func TestAggGroupKey_NaNPayloadsShareOneKey(t *testing.T) {
 		t.Errorf("-0.0 and +0.0 packed to the same group key (%x); Double.equals compares "+
 			"BITS, and an aggregate index stores them as two physical entries Java reads "+
 			"the same way", negZero)
+	}
+}
+
+func TestContinuationResolverUsesFinalizedComputedDescriptors(t *testing.T) {
+	t.Parallel()
+	source := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "A", Value: &values.ConstantValue{Value: int32(7), Typ: values.NotNullInt}})
+	target := values.NewRecordType("PromotedRecord", true, []values.Field{{Name: "B", FieldType: values.NullableLong}})
+	promotion, err := values.NewPromoteValueChecked(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{}, Typ: values.NewArrayType(false, values.NotNullLong)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := newProjectionMapOverForTest([]values.Value{promotion}, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plans.FinalizePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	resolve := continuationMessageResolver(nil, plan)
+	seen := map[protoreflect.FullName]bool{}
+	plans.ForEachPlanMessageDescriptor(plan, func(desc protoreflect.MessageDescriptor) {
+		got, err := resolve(string(desc.FullName()))
+		if err != nil || got != desc {
+			t.Fatalf("descriptor %s: got %v, %v", desc.FullName(), got, err)
+		}
+		seen[desc.FullName()] = true
+	})
+	if !seen[source.MessageDescriptor().FullName()] || !seen["PromotedRecord"] {
+		t.Fatalf("must cover constructor and promotion descriptors: %v", seen)
+	}
+	if _, err := resolve("not_in_this_plan"); err == nil {
+		t.Fatal("unknown descriptor accepted")
+	}
+}
+
+func TestContinuationResolverRejectsConflictingComputedNames(t *testing.T) {
+	t.Parallel()
+	files := make([]protoreflect.FileDescriptor, 0, 2)
+	for _, typ := range []values.Type{values.NotNullInt, values.NotNullString} {
+		repo := values.NewTypeProtoRepository()
+		desc, err := repo.MessageDescriptorFor(values.NewRecordType("", false, []values.Field{{Name: "V", FieldType: typ}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, desc.ParentFile())
+	}
+	if files[0].Messages().Get(0).FullName() != files[1].Messages().Get(0).FullName() {
+		t.Fatal("fixture must collide")
+	}
+	_, err := metadataMessageResolver(nil, files...)(string(files[0].Messages().Get(0).FullName()))
+	if err == nil || !strings.Contains(err.Error(), "conflicting continuation descriptors") {
+		t.Fatalf("must reject ambiguous descriptor, got %v", err)
 	}
 }

@@ -26,7 +26,7 @@ func budgetUnionPlan(t *testing.T, kind string) plans.RecordQueryPlan {
 	case "record":
 		return scan
 	case "projection":
-		return mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(keys, scan))
+		return mustExecutorConstruct(newProjectionMapOverForTest(keys, scan))
 	case "map":
 		return mustExecutorConstruct(plans.NewRecordQueryMapPlan(scan,
 			values.NewRecordConstructorValue(values.RecordConstructorField{Name: "order_id", Value: keys[0]})))
@@ -56,7 +56,7 @@ func budgetUnionPlan(t *testing.T, kind string) plans.RecordQueryPlan {
 		if kind == "in_concat" {
 			keys = nil
 		}
-		p := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(scan, []string{"budget_binding"}, keys, false))
+		p := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(scan, []string{"budget_binding"}, keys, false, plans.UnboundedInUnionSize))
 		source := []any{int64(1), int64(2)}
 		if kind == "in_single" {
 			source = source[:1]
@@ -334,7 +334,7 @@ func TestIntegration_PermutedAggregateRepairStreamingMode(t *testing.T) {
 				props.DefaultCursorStreamingMode = tc.inherited
 				scanProps := recordlayer.NewScanProperties(props).WithStreamingMode(tc.effective)
 				cursor, err := newPermutedAggregateIndexCursor(s, idx, recordlayer.TupleRangeAll, nil, scanProps, 1, 0,
-					exactTestRowType(values.Field{Name: "price", FieldType: values.NullableLong}, values.Field{Name: "minimum", FieldType: values.NullableLong}))
+					exactTestRowType(values.Field{Name: "price", FieldType: values.NullableLong}, values.Field{Name: "minimum", FieldType: values.NullableLong}), nil)
 				if err != nil {
 					return nil, err
 				}

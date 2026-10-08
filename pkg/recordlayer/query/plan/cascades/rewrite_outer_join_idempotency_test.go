@@ -8,8 +8,8 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// RewriteOuterJoinRule is registered in TWO phases on purpose and re-explores
-// the same Reference. Every firing mints a fresh UniqueCorrelationIdentifier, so
+// RewriteOuterJoinRule re-explores the same Reference. Every firing mints a
+// fresh UniqueCorrelationIdentifier, so
 // a rewritten form its idempotency guard cannot RECOGNIZE is a structurally
 // distinct new member on every pass — unbounded memo growth for exactly the
 // shape the guard missed.

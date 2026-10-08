@@ -1,6 +1,5 @@
-// Package full runs the ENTIRE committed factory corpus as ordinary suite
-// content — it is in every `just test` and every CI run (owner ruling
-// 2026-08-01, recorded in rfcs/201-layered-test-corpus.md §7).
+// Package full runs the entire committed factory corpus in `just test-full`
+// and non-race PR CI. The fast local lane retains the loader/census gates.
 //
 // It is a separate package from the corpus's loader/census gates so that
 // those stay a pure no-FDB target; this target is the one that pays for a

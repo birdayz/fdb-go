@@ -135,6 +135,12 @@ func newRecordQueryNestedLoopJoinPlanFromQuantifiers(
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	resultValue values.Value,
 ) (*RecordQueryNestedLoopJoinPlan, error) {
+	if !outerAlias.IsZero() {
+		outerQ = outerQ.WithAlias(outerAlias)
+	}
+	if !innerAlias.IsZero() {
+		innerQ = innerQ.WithAlias(innerAlias)
+	}
 	var nullAliases []values.CorrelationIdentifier
 	switch joinType {
 	case JoinLeftOuter:
@@ -392,7 +398,14 @@ func (p *RecordQueryNestedLoopJoinPlan) reanchorInputValueToOutput(value values.
 	}
 	if p.hasRetainedChildMaterializer() &&
 		!p.retainedChildrenDeclareBuriedCorrelations(value) {
-		return value, nil
+		// No child owns these sources, but this join's own source windows may
+		// still address them (a box leg's retained source). Only an exact window
+		// may claim a root here; the pinned-frontier bridge stays closed.
+		normalized, err := values.ReanchorOwnedValueForLayout(value, layout.Carrier(), layout, nil)
+		if err != nil {
+			return nil, fmt.Errorf("RecordQueryNestedLoopJoinPlan source windows: %w", err)
+		}
+		return normalized, nil
 	}
 	normalized := value
 	for _, alias := range []values.CorrelationIdentifier{p.outerAlias, p.innerAlias} {
@@ -618,7 +631,7 @@ func (p *RecordQueryNestedLoopJoinPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryNestedLoopJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryNestedLoopJoinPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren folds the structural discriminators. Predicates
@@ -632,7 +645,7 @@ func (p *RecordQueryNestedLoopJoinPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("nljoin|")
+	hash := p.keyFor(p).Hash("nljoin|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }
@@ -665,13 +678,11 @@ var (
 // program and its physical output layout through the memo's alpha-renaming.
 func (p *RecordQueryNestedLoopJoinPlan) EqualsWithoutChildren(other expressions.RelationalExpression, aliases *expressions.AliasMap) bool {
 	o, ok := other.(*RecordQueryNestedLoopJoinPlan)
-	return ok && p.structuralKey().EqualUnderAliases(o.structuralKey(), aliases.ToValuesAliasMap())
+	return ok && p.keyFor(p).EqualUnderAliases(o.keyFor(o), aliases.ToValuesAliasMap())
 }
 
-// GetCorrelatedToWithoutChildren walks this plan's own predicates, mirroring
-// physicalNestedLoopJoinWrapper. The predicates are this node's information — a
-// correlation reached only through them would be invisible to
-// correlation-driven rules if this returned the empty default.
+// GetCorrelatedToWithoutChildren includes both predicates and the result program;
+// projecting an enclosing row still requires that row's binding.
 func (p *RecordQueryNestedLoopJoinPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
 	for _, pred := range p.GetPredicates() {
@@ -679,6 +690,10 @@ func (p *RecordQueryNestedLoopJoinPlan) GetCorrelatedToWithoutChildren() map[val
 			out[k] = struct{}{}
 		}
 	}
+	for alias := range values.GetCorrelatedToOfValue(p.resultValue) {
+		out[alias] = struct{}{}
+	}
+	delete(out, values.CurrentCorrelation())
 	return out
 }
 

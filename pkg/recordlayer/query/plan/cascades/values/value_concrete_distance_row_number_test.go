@@ -19,8 +19,8 @@ func TestCosineDistanceRowNumberValue_Name(t *testing.T) {
 func TestCosineDistanceRowNumberValue_Type(t *testing.T) {
 	t.Parallel()
 	v := NewCosineDistanceRowNumberValue(nil, nil)
-	if !v.Type().Equals(NotNullLong) {
-		t.Fatalf("Type = %v, want NotNullLong", v.Type())
+	if !v.Type().Equals(NullableLong) {
+		t.Fatalf("Type = %v, want NullableLong", v.Type())
 	}
 }
 
@@ -108,8 +108,8 @@ func TestDotProductDistanceRowNumberValue_Name(t *testing.T) {
 func TestDotProductDistanceRowNumberValue_Type(t *testing.T) {
 	t.Parallel()
 	v := NewDotProductDistanceRowNumberValue(nil, nil)
-	if !v.Type().Equals(NotNullLong) {
-		t.Fatalf("Type = %v, want NotNullLong", v.Type())
+	if !v.Type().Equals(NullableLong) {
+		t.Fatalf("Type = %v, want NullableLong", v.Type())
 	}
 }
 
@@ -182,8 +182,8 @@ func TestEuclideanDistanceRowNumberValue_Name(t *testing.T) {
 func TestEuclideanDistanceRowNumberValue_Type(t *testing.T) {
 	t.Parallel()
 	v := NewEuclideanDistanceRowNumberValue(nil, nil)
-	if !v.Type().Equals(NotNullLong) {
-		t.Fatalf("Type = %v, want NotNullLong", v.Type())
+	if !v.Type().Equals(NullableLong) {
+		t.Fatalf("Type = %v, want NullableLong", v.Type())
 	}
 }
 
@@ -257,8 +257,8 @@ func TestEuclideanSquareDistanceRowNumberValue_Name(t *testing.T) {
 func TestEuclideanSquareDistanceRowNumberValue_Type(t *testing.T) {
 	t.Parallel()
 	v := NewEuclideanSquareDistanceRowNumberValue(nil, nil)
-	if !v.Type().Equals(NotNullLong) {
-		t.Fatalf("Type = %v, want NotNullLong", v.Type())
+	if !v.Type().Equals(NullableLong) {
+		t.Fatalf("Type = %v, want NullableLong", v.Type())
 	}
 }
 

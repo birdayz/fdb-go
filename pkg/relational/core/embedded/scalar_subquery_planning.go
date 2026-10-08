@@ -52,7 +52,7 @@ func planScalarSubqueryPlans(
 		// nested scalar subqueries are not collected here, so any they contain are
 		// dropped — matching the previous behavior (TranslateToCascades discards
 		// them too).
-		subRef, _, subTranslateErr := query.TranslateToCascadesWithError(ssq.Plan, md)
+		subRef, _, subTranslateErr := query.TranslateSubqueryToCascades(ssq.Plan, md)
 		if subTranslateErr != nil {
 			// Surface the subquery's SPECIFIC translation error verbatim (e.g. the
 			// numeric-operand gate's 0A000 "type mismatch" for MIN/MAX/SUM/AVG over a
@@ -92,7 +92,7 @@ func planScalarSubqueryPlans(
 		// the outer one, so it needs its own bake — the outer FinalizePlan
 		// walk cannot reach it (it hangs off the cascadesPlan, not off the
 		// outer plan's child edges).
-		if err := cascades.FinalizePlan(subPlan); err != nil {
+		if err := plans.FinalizePlan(subPlan); err != nil {
 			return nil, api.NewError(api.ErrCodeInternalError, "scalar-subquery result descriptor: "+err.Error())
 		}
 		out = append(out, PlannedScalarSubquery{

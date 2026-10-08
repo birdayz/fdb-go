@@ -288,7 +288,7 @@ func TestPipeline_RandomTreeStress(t *testing.T) {
 			for i := range cols {
 				cols[i] = randomField(innerQ)
 			}
-			return mustPipelineStressConstruct(expressions.NewLogicalProjectionExpression(cols, innerQ))
+			return mustPipelineStressConstruct(newBlockSelectForTest(cols, innerQ))
 		case 2: // sort
 			return mustPipelineStressConstruct(expressions.NewLogicalSortExpression(
 				[]expressions.SortKey{
@@ -427,7 +427,7 @@ func buildFuzzPipelineTree(b []byte) expressions.RelationalExpression {
 						predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(next()))),
 				}, q))
 		case 1:
-			current = mustPipelineStressConstruct(expressions.NewLogicalProjectionExpression(
+			current = mustPipelineStressConstruct(newBlockSelectForTest(
 				[]values.Value{field}, q))
 		case 2:
 			current = mustPipelineStressConstruct(expressions.NewLogicalSortExpression(

@@ -286,7 +286,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 	verified := make([]spfreshCandidate, 0, m.config.Replication+2)
 	vecs := make(map[int64][]float64, m.config.Replication)
 	cells := make(map[int64]int64, m.config.Replication)
-	sawInFlight := false
+	var sealed []SPFreshSealedPosting
 	work := append([]spfreshRouted(nil), routed...)
 	seen := make(map[int64]bool, len(work))
 	// Speculative verification burst: the loop REAL-reads candidate rows as
@@ -359,7 +359,7 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		case spfreshStateActive:
 			// verified below
 		case spfreshStateSealed:
-			sawInFlight = true
+			sealed = append(sealed, SPFreshSealedPosting{CellID: cand.cellID, PostingID: cand.fineID, Epoch: row.epoch})
 			continue // a split owns it; next-nearest (or retry below)
 		case spfreshStateForward:
 			for _, childID := range []int64{row.childA, row.childB} {
@@ -408,15 +408,20 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		cells[cand.fineID] = cand.cellID
 	}
 	if len(verified) == 0 {
-		if sawInFlight {
+		if len(sealed) > 0 {
 			// Every reachable centroid is mid-lifecycle (SEALED) — the §6
 			// cold-start corner where ONE hot posting is being split and no
-			// ACTIVE sibling exists yet. The split commits within its two-tx
-			// window; surface the same retryable conflict a resolver abort
-			// would (RFC-094 §6 "whichever loses retries"), so the enclosing
-			// transaction re-runs with a fresh read version and sees the
-			// children ACTIVE.
-			return fdb.Error{Code: 1020} // not_committed
+			// ACTIVE sibling exists yet. The window is not bounded by the
+			// split's two transactions: a chunked drain keeps the parent
+			// SEALED across every chunk and publishes only in the last one,
+			// concurrent deletes can abort and stretch the split's read, and
+			// a seal whose rebalancer died holds until a lease takeover
+			// finishes the split. Surface the same retryable conflict a
+			// resolver abort would (RFC-094 §6 "whichever loses retries"), so
+			// the enclosing transaction re-runs with a fresh read version and
+			// sees the children ACTIVE. The typed error wraps not_committed;
+			// the attempt loop retries it without counting an attempt.
+			return &SPFreshSplitWindowError{Sealed: sealed}
 		}
 		// Keep this error CHEAP: it is a normal retryable outcome during
 		// split churn, raised inside the caller's save transaction. The full
@@ -618,7 +623,11 @@ func SPFreshDebugTopology(rtx *FDBRecordContext, store *FDBRecordStore, indexNam
 	if err != nil {
 		return fmt.Sprintf("gen err=%v", err)
 	}
-	return spfreshDebugTopology(rtx.Transaction(), newSPFreshStorage(store.indexSubspace(idx), gen), parseSPFreshConfig(idx).Lmax)
+	config, err := readSPFreshConfig(idx)
+	if err != nil {
+		return fmt.Sprintf("config err=%v", err)
+	}
+	return spfreshDebugTopology(rtx.Transaction(), newSPFreshStorage(store.indexSubspace(idx), gen), config.Lmax)
 }
 
 // SPFreshDebugIntegrity samples up to `sample` pks evenly from the index's

@@ -254,11 +254,7 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 	// be: any count taken from `cases` is derived from the table, so it goes on
 	// agreeing with itself when a maintainer is added and no row is. An earlier
 	// `len(cases) != 14` guard here claimed to catch exactly that and could not.
-	//
-	// The population is derived independently, from the source tree, by
-	// TestEveryIndexMaintainerHasADeleteWhereBoundRow in pkg/docscheck: it
-	// collects the types declaring a DeleteWhere method and requires each to be
-	// constructed here. Adding a maintainer without a row fails THERE.
+	// A new maintainer with a DeleteWhere override needs a row added by hand.
 }
 
 // The sliding window is a DECORATOR, so its answer is not its own: Java's

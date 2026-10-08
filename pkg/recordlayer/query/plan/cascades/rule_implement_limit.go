@@ -13,7 +13,10 @@ import (
 // produces.
 //
 // Go-only extension: Java doesn't support LIMIT in SQL; it uses
-// ExecuteProperties.setReturnedRowLimit() at the JDBC layer.
+// ExecuteProperties.setReturnedRowLimit() at the JDBC layer. With no Java
+// counterpart to follow, the rule keeps its rule-time choice of the cheapest
+// child plan per requested ordering (RFC-257 WS-F F-8, the approved Go
+// extension; DIVERGENCES.md "Implementation rules that still choose a child").
 type ImplementLimitRule struct {
 	matcher matching.BindingMatcher
 }
@@ -33,6 +36,11 @@ func IsPhysicalLimit(expr expressions.RelationalExpression) bool {
 }
 
 func (r *ImplementLimitRule) Matcher() matching.BindingMatcher { return r.matcher }
+
+// ConstraintDependencies: the rule reads the requested orderings (Go-only rule).
+func (r *ImplementLimitRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
 
 func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
 	lim := matching.Get[*expressions.LogicalLimitExpression](call.Bindings, r.matcher)
@@ -71,7 +79,7 @@ func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
 		// holds (RFC-184 W2): GetQuantifiers / OrderingSourceRef / GetInner all
 		// resolve through this one quantifier, so there is no nil-inner shell to
 		// leave stale (the class the physicalLimitWrapper's WithChildren pinned).
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
+		innerQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(winner))
 		var limitPlan *plans.RecordQueryLimitPlan
 		var err error
 		if lv := lim.GetLimitValue(); lv != nil {

@@ -42,7 +42,7 @@ tests:
   # later rungs get to see that BOTH of them lose to a plain filtered scan —
   # the IN-plans add an operator and buy nothing.
   - query: SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id
-    plan_contains: "PredicatesFilter(Scan(T)"
+    plan_contains: "FlatMap(outer=Scan(T), inner=PredicatesFilter(Explode(constant), [1 preds]))"
     rows:
       - [2, 20]
       - [4, 40]
@@ -76,7 +76,7 @@ tests:
   # it. Two full scans plus a sort lost to one reverse full scan the moment the
   # candidate started reporting its order.
   - query: SELECT id, cat FROM t WHERE cat IN (20, 40) ORDER BY id DESC
-    plan_contains: "PredicatesFilter(Scan(T) REVERSE"
+    plan_contains: "FlatMap(outer=Scan(T) REVERSE, inner=PredicatesFilter(Explode(constant), [1 preds]))"
     rows:
       - [6, 20]
       - [4, 40]
@@ -99,7 +99,7 @@ tests:
   # search argument, criterion #6 abstains for a different reason (penalty 0),
   # and the index access wins.
   - query: SELECT id FROM t WHERE val IN (200, 400) ORDER BY val
-    plan_contains: "InUnion(IndexScan(IDX_VAL"
+    plan_contains: "Map(InJoin(Map(IndexScan(IDX_VAL, [=] COVERING), {ID: _current.ID#0, _1: _current.VAL#2}), binding ASC), {ID: _current.ID#0})"
     rows:
       - [2]
       - [4]
@@ -110,7 +110,7 @@ tests:
   # scan of IDX_VAL with both INs as residuals, because the explode rule read
   # only the top-level predicate list and the WHERE arrived as one AND.
   - query: SELECT id FROM t WHERE val IN (200, 400, 600) AND cat IN (20, 40) ORDER BY val
-    plan_contains: "InUnion(PredicatesFilter(IndexScan(IDX_VAL, [=]), [1 preds])"
+    plan_contains: "Map(InUnion(FlatMap(outer=IndexScan(IDX_VAL, [=]), inner=Map(PredicatesFilter(Explode(constant), [1 preds]), {_0: 1})), bindings=1, ASC), {ID: _current.ID#0})"
     rows:
       - [2]
       - [4]

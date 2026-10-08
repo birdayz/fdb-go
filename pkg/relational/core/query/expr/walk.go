@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -163,6 +164,26 @@ func (r *Resolver) walkExpressionInner(ctx antlrgen.IExpressionContext, pos walk
 				return values.NewNotValue(childVal), nil
 			}
 		}
+		// NOT over a bare boolean VALUE is Java's NotValue (the value-context
+		// NOT of its ExpressionVisitor), so a value set reaches through it:
+		// `NOT CAST(NULL AS BOOLEAN)` collapses to NULL (CollapseNullStrict-
+		// ValueOverNullValueRule) and a COALESCE head skips it. The atom is
+		// walked once, as the predicate path would walk it; an operand that is
+		// itself a predicate keeps the predicate form.
+		if atom := bareValueAtom(c.Expression()); atom != nil {
+			v, err := r.walkAtom(atom)
+			if err != nil {
+				return nil, err
+			}
+			lifted, err := r.liftValueToPredicate(v)
+			if err != nil {
+				return nil, err
+			}
+			if _, isPredicate := v.(*predicateValue); !isPredicate {
+				return values.NewNotValue(v), nil
+			}
+			return &predicateValue{pred: r.ResolveNot(lifted)}, nil
+		}
 		child, err := r.WalkPredicate(c.Expression())
 		if err != nil {
 			return nil, err
@@ -265,6 +286,8 @@ func (r *Resolver) walkAtomInner(atom antlrgen.IExpressionAtomContext, pos walkP
 		// constructors need dedicated support (RecordConstructorValue in
 		// cascades) and aren't wired yet.
 		return r.walkRecordConstructorInner(a.RecordConstructor(), pos)
+	case *antlrgen.SubscriptExpressionContext:
+		return r.walkSubscript(a)
 	case *antlrgen.MathExpressionAtomContext:
 		// `a + b`, `a * b`, etc. Recurse on both operands and
 		// resolve via ResolveArithmetic. MOD / DIV / MODULE +
@@ -317,6 +340,9 @@ func (r *Resolver) walkPreparedParameter(pp antlrgen.IPreparedStatementParameter
 	ppc, ok := pp.(*antlrgen.PreparedStatementParameterContext)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("PreparedStatementParameter ctx %T", pp)}
+	}
+	if bound, ok := BoundParameter(ppc.GetStart()); ok {
+		return bound, nil
 	}
 	if ppc.NAMED_PARAMETER() != nil {
 		// Lexer rule: NAMED_PARAMETER: [?$][A-Za-z][A-Za-z0-9_/]*
@@ -390,6 +416,9 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("AggregateWindowedFunction ctx %T", awf)}
 	}
+	if awfc.ARRAY_AGG() != nil {
+		return r.walkArrayAgg(awfc)
+	}
 	name, ok := aggregateFunctionName(awfc)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: "AggregateWindowedFunction with unknown operator"}
@@ -408,13 +437,61 @@ func (r *Resolver) walkFunctionCall(fc antlrgen.IFunctionCallContext) (values.Va
 		if argCtx.Expression() == nil {
 			return nil, &UnsupportedExpressionShapeError{Shape: "FunctionArg without Expression (star handled separately)"}
 		}
-		v, err := r.WalkExpression(argCtx.Expression())
+		v, err := r.walkExpressionInner(argCtx.Expression(), posOperand)
 		if err != nil {
 			return nil, err
 		}
 		args = []values.Value{v}
 	}
 	return r.ResolveFunctionCall(fcat, semantic.NewUnquoted(name), isStar, args)
+}
+
+// walkSubscript is `base[index]`, Java's SubscriptValueFn: the index promotes
+// to INT (22000 if it cannot) and the base must be an array.
+func (r *Resolver) walkSubscript(ctx *antlrgen.SubscriptExpressionContext) (values.Value, error) {
+	index, err := r.walkAtom(ctx.GetIndex())
+	if err != nil {
+		return nil, err
+	}
+	base, err := r.walkAtom(ctx.GetBase())
+	if err != nil {
+		return nil, err
+	}
+	if it := index.Type(); it != nil && it.Code() != values.TypeCodeUnknown && it.Code() != values.TypeCodeNull {
+		if values.MaximumType(it, values.NotNullInt) == nil {
+			return nil, api.NewError(api.ErrCodeCannotConvertType,
+				"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
+		}
+	}
+	if !values.IsArray(base.Type()) {
+		return nil, api.NewError(api.ErrCodeInternalError, "subscript base is not an array")
+	}
+	elem := values.Type(values.UnknownType)
+	if at, ok := base.Type().(*values.ArrayType); ok && at.ElementType != nil {
+		elem = values.WithNullability(at.ElementType, true)
+	}
+	return values.NewSubscriptValue(base, index, elem), nil
+}
+
+// walkArrayAgg is ARRAY_AGG(expr ...); the call's shape was validated by the
+// statement pre-pass.
+func (r *Resolver) walkArrayAgg(awf *antlrgen.AggregateWindowedFunctionContext) (values.Value, error) {
+	argCtx, ok := awf.FunctionArg().(*antlrgen.FunctionArgContext)
+	if !ok || argCtx.Expression() == nil {
+		return nil, &UnsupportedExpressionShapeError{Shape: "ARRAY_AGG without an argument"}
+	}
+	arg, err := r.walkExpressionInner(argCtx.Expression(), posOperand)
+	if err != nil {
+		return nil, err
+	}
+	ignore, limit, err := ArrayAggOptions(awf)
+	if err != nil {
+		return nil, err
+	}
+	if t := arg.Type(); t == nil || t.Code() == values.TypeCodeUnknown || t.Code() == values.TypeCodeNull {
+		return nil, api.NewError(api.ErrCodeUnknownType, "Cannot resolve the argument type of ARRAY_AGG()")
+	}
+	return values.NewArrayAggValue(arg, ignore, limit), nil
 }
 
 // walkSpecificFunction dispatches the SpecificFunction subtypes.
@@ -647,7 +724,8 @@ func (r *Resolver) walkCaseFunctionCall(ctx *antlrgen.CaseFunctionCallContext) (
 	}
 
 	selector := values.NewConditionSelectorValue(implications)
-	return values.NewPickValue(selector, alternatives, caseResultType(alternatives)), nil
+	typ := caseResultType(alternatives)
+	return values.NewPickValue(selector, promoteTemporalBranches(alternatives, typ), typ), nil
 }
 
 // caseResultType computes a CASE expression's result type as the common
@@ -745,7 +823,8 @@ func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFuncti
 	}
 
 	selector := values.NewConditionSelectorValue(implications)
-	return values.NewPickValue(selector, alternatives, caseResultType(alternatives)), nil
+	typ := caseResultType(alternatives)
+	return values.NewPickValue(selector, promoteTemporalBranches(alternatives, typ), typ), nil
 }
 
 // walkCaseCondition resolves a CASE WHEN condition expression. The
@@ -824,6 +903,24 @@ type PredicateValueHolder interface {
 	values.Value
 	GetPredicate() predicates.QueryPredicate
 	SetPredicate(predicates.QueryPredicate)
+}
+
+// MacroBodyValue is a macro body as the Value Java builds for it: a LIKE is
+// a LikeOperatorValue (ExpressionVisitor.visitLikePredicate), which persists
+// where the predicate wrapper cannot.
+func MacroBodyValue(v values.Value) values.Value {
+	pv, ok := v.(*predicateValue)
+	if !ok {
+		return v
+	}
+	cp, ok := pv.pred.(*predicates.ComparisonPredicate)
+	if !ok || cp.Comparison.Type != predicates.ComparisonLike {
+		return v
+	}
+	if pattern, ok := cp.Comparison.Operand.(*values.PatternForLikeValue); ok {
+		return values.NewLikeOperatorValue(cp.Operand, pattern)
+	}
+	return v
 }
 
 // predicateValue wraps a QueryPredicate as a Value for use in CASE
@@ -932,15 +1029,15 @@ func predicateWithChildValues(p predicates.QueryPredicate, newCh []values.Value)
 			for i, sp := range q.SubPredicates {
 				subs[i] = rebuild(sp)
 			}
-			return predicates.NewAnd(subs...)
+			return predicates.WithAtomicity(predicates.NewAnd(subs...), predicates.IsAtomic(q))
 		case *predicates.OrPredicate:
 			subs := make([]predicates.QueryPredicate, len(q.SubPredicates))
 			for i, sp := range q.SubPredicates {
 				subs[i] = rebuild(sp)
 			}
-			return predicates.NewOr(subs...)
+			return predicates.WithAtomicity(predicates.NewOr(subs...), predicates.IsAtomic(q))
 		case *predicates.NotPredicate:
-			return predicates.NewNot(rebuild(q.Child))
+			return predicates.WithAtomicity(predicates.NewNot(rebuild(q.Child)), predicates.IsAtomic(q))
 		}
 		return p
 	}
@@ -1077,7 +1174,8 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 			if argCtx.Expression() == nil {
 				return nil, &UnsupportedExpressionShapeError{Shape: "FunctionArg without Expression"}
 			}
-			v, err := r.WalkExpression(argCtx.Expression())
+			// A function argument is a value position: a comparison folds.
+			v, err := r.walkExpressionInner(argCtx.Expression(), posOperand)
 			if err != nil {
 				// The function is the better explanation when this walker
 				// cannot shape an argument AND the planner has no catalogue
@@ -1122,17 +1220,40 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 	// argumentsCount)` (SqlFunctionCatalogImpl.java:126-127), and the only
 	// registered built-in is the binary one — so zero user arguments resolve
 	// arity 1 and two resolve arity 3, both of which fail to resolve and reject
-	// the query. Go's catalogue entry carries a FIXED result type and no arity,
-	// so without this check `BITMAP_BUCKET_OFFSET()` admitted and evaluated to
-	// NULL, and `BITMAP_BUCKET_OFFSET(id, 5)` admitted with the caller's 5
-	// silently replacing the entry size the index was built with.
+	// the query. Go once resolved these through a scalar catalogue entry with
+	// a FIXED result type and no arity (since replaced by the ArithmeticValue
+	// lanes), so without this check `BITMAP_BUCKET_OFFSET()` admitted and
+	// evaluated to NULL, and `BITMAP_BUCKET_OFFSET(id, 5)` admitted with the
+	// caller's 5 silently replacing the entry size the index was built with.
 	if name == "BITMAP_BUCKET_OFFSET" || name == "BITMAP_BIT_POSITION" {
 		if len(args) != 1 {
 			return nil, &UnsupportedExpressionShapeError{
 				Shape: fmt.Sprintf("%s requires exactly 1 argument, got %d", name, len(args)),
 			}
 		}
-		args = append(args, &values.ConstantValue{Value: int64(10000), Typ: values.NullableLong})
+		// Java appends `new LiteralValue<>(BITMAP_DEFAULT_ENTRY_SIZE)` with an
+		// int constant (SemanticAnalyzer.java:106,1115), so the entry size is
+		// INT-typed. The index key expression stores it as int_value; a LONG
+		// type here made Go store long_value, which Java cannot plan over.
+		args = append(args, &values.ConstantValue{Value: int64(10000), Typ: values.NullableInt})
+		// They are ArithmeticValues in Java (ArithmeticValue.java:375-377),
+		// encapsulated like the arithmetic operators: the lane follows the
+		// argument's type (INT over an INT, LONG over a LONG) and a type with
+		// no lane is refused.
+		op := values.OpBitmapBucketOffset
+		if name == "BITMAP_BIT_POSITION" {
+			op = values.OpBitmapBitPosition
+		}
+		return r.ResolveArithmetic(op, args[0], args[1])
+	}
+	switch name {
+	case "COALESCE", "GREATEST", "LEAST":
+		// Java's VariadicFunctionValue.encapsulate verifies two or more
+		// arguments (a VerifyException, XX000).
+		if len(args) < 2 {
+			return nil, api.NewErrorf(api.ErrCodeInternalError,
+				"function %s requires at least 2 arguments, got %d", name, len(args))
+		}
 	}
 	typ, ok := values.ScalarFunctionResultType(name, args)
 	if !ok {
@@ -1147,13 +1268,47 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 	// with a runtime carrier-mismatch message.
 	switch values.DiagnoseScalarFunctionArguments(name, args) {
 	case values.ScalarFunctionArgumentsIncompatible:
-		return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
-			"function %s has incompatible argument types", name)
+		return nil, api.NewError(api.ErrCodeCannotConvertType,
+			"A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable.")
 	case values.ScalarFunctionArgumentsNoOperator:
-		return nil, api.NewErrorf(api.ErrCodeInvalidArgumentForFunction,
-			"function %s is not defined for argument type %s", name, typ)
+		return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction,
+			"The function is not defined for the given argument types")
+	}
+	switch name {
+	case "COALESCE", "GREATEST", "LEAST":
+		args = promoteVariadicArguments(args, typ)
+	}
+	switch name {
+	case "COALESCE", "GREATEST", "LEAST", "IFNULL":
+		args = promoteTemporalBranches(args, typ)
 	}
 	return values.NewScalarFunctionValue(name, typ, args...), nil
+}
+
+// promoteVariadicArguments is VariadicFunctionValue.encapsulate's promotion of
+// each argument to the common type with its own nullability
+// (VariadicFunctionValue.java:263-268, PromoteValue.inject): an INT beside a
+// DOUBLE evaluates as a DOUBLE, and for a record or record-array common type
+// fields bind by position, so the result carries the common type's names
+// whichever argument it came from. A NULL-typed argument is left as it is:
+// Java retypes it in place (canResultInType), and it is NULL either way.
+func promoteVariadicArguments(args []values.Value, common values.Type) []values.Value {
+	out := make([]values.Value, len(args))
+	for i, arg := range args {
+		out[i] = arg
+		argType := arg.Type()
+		if argType == nil || values.IsNull(argType) || argType.Code() == values.TypeCodeUnknown {
+			continue
+		}
+		target := values.WithNullability(common, argType.IsNullable())
+		if needed, ok := values.IsPromotionNeeded(arg.Type(), target); !ok || !needed {
+			continue
+		}
+		if promoted, err := values.NewPromoteValueChecked(arg, target); err == nil {
+			out[i] = promoted
+		}
+	}
+	return out
 }
 
 // walkUserDefinedScalarFunction handles `name '(' args ')'` calls whose
@@ -1175,6 +1330,14 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 		return nil, &UnsupportedExpressionShapeError{Shape: "UserDefinedScalarFunctionCall without name"}
 	}
 	nameNode, ok := nameCtx.(*antlrgen.UserDefinedScalarFunctionNameContext)
+	if ok && nameNode.DOUBLE_QUOTE_ID() != nil && nameNode.GetText() == `"`+SQLFunctionArgument+`"` {
+		return r.walkSQLFunctionArgument(udf.NamedOrUnnamedFunctionArgs())
+	}
+	if ok && !(nameNode.ID() != nil && strings.EqualFold(nameNode.ID().GetText(), "CARDINALITY")) {
+		if v, isMacro, err := r.walkMacroCall(udf); isMacro || err != nil {
+			return v, err
+		}
+	}
 	if !ok || nameNode.ID() == nil {
 		// Quoted (DOUBLE_QUOTE_ID) or otherwise non-bare — not a built-in.
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q", nameCtx.GetText())}
@@ -1182,10 +1345,147 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 	name := strings.ToUpper(nameNode.ID().GetText())
 	switch name {
 	case "CARDINALITY":
-		return r.walkCardinality(udf.FunctionArgs())
+		return r.walkCardinality(udf.NamedOrUnnamedFunctionArgs())
 	}
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q (not a built-in)", name)}
 }
+
+// walkMacroCall is a call of a schema macro function: its body with the
+// arguments, promoted to the parameter types, substituted (Java's
+// UserDefinedMacroFunction.encapsulate). ok is false when name is no macro.
+func (r *Resolver) walkMacroCall(udf *antlrgen.UserDefinedScalarFunctionCallContext) (values.Value, bool, error) {
+	lookup, isLookup := r.analyzer.Catalog().(MacroLookup)
+	if !isLookup {
+		return nil, false, nil
+	}
+	name := functions.NormalizeIdentifier(udf.UserDefinedScalarFunctionName().GetText())
+	macro, err := lookup.LookupMacro(name)
+	if err != nil || macro == nil {
+		return nil, false, err
+	}
+	args, names, err := r.walkNamedOrUnnamedFunctionArgs(udf.NamedOrUnnamedFunctionArgs())
+	if err != nil {
+		return nil, true, err
+	}
+	// UserDefinedFunctionCatalog.lookup's validateCall: an argument naming no
+	// parameter, a missing parameter without a default, or too many arguments
+	// is no such function.
+	notFound := api.NewErrorf(api.ErrCodeUndefinedFunction, "could not find function '%s'", name)
+	byName := map[string]values.Value{}
+	if names != nil {
+		if !macro.HasNamedParameters() {
+			return nil, true, notFound
+		}
+		for i, n := range names {
+			if macro.ParamIndex(n) < 0 {
+				return nil, true, notFound
+			}
+			byName[n] = args[i]
+		}
+	} else if len(args) > len(macro.Params) {
+		return nil, true, notFound
+	}
+	bound := make([]values.Value, len(macro.Params))
+	for i, param := range macro.Params {
+		arg, given := byName[macro.ParamNames[i]]
+		if names == nil && i < len(args) {
+			arg, given = args[i], true
+		}
+		if !given {
+			if macro.Defaults[i] == nil {
+				return nil, true, notFound
+			}
+			bound[i] = macro.Defaults[i]
+			continue
+		}
+		if bound[i], err = promoteFunctionArgument(functions.FlattenRecordWithOneField(arg), param.FlowedType()); err != nil {
+			return nil, true, err
+		}
+	}
+	v, err := macro.Expand(bound)
+	return v, true, err
+}
+
+// walkNamedOrUnnamedFunctionArgs is visitNamedOrUnnamedFunctionArgs: the
+// arguments in call order, with their normalized names for a named call (nil
+// for a positional one). A name given twice is a syntax error.
+func (r *Resolver) walkNamedOrUnnamedFunctionArgs(ctx antlrgen.INamedOrUnnamedFunctionArgsContext) ([]values.Value, []string, error) {
+	if ctx == nil {
+		return []values.Value{}, nil, nil
+	}
+	named := ctx.AllNamedFunctionArg()
+	if len(named) == 0 {
+		args, err := r.walkFunctionArgList(ctx.AllFunctionArg())
+		return args, nil, err
+	}
+	args := make([]values.Value, 0, len(named))
+	names := make([]string, 0, len(named))
+	for _, na := range named {
+		v, err := r.walkExpressionInner(na.GetValue(), posOperand)
+		if err != nil {
+			return nil, nil, err
+		}
+		args = append(args, v)
+		names = append(names, semantic.FromUidContext(na.GetKey(), false).Name())
+	}
+	if err := DuplicateArgumentNamesError(names); err != nil {
+		return nil, nil, err
+	}
+	return args, names, nil
+}
+
+// positionalFunctionArgs is a built-in's argument list: a built-in validates
+// arity only and SemanticAnalyzer.resolveFunction re-wraps the values as
+// positional (withArguments), so a named call's names are dropped.
+func (r *Resolver) positionalFunctionArgs(ctx antlrgen.INamedOrUnnamedFunctionArgsContext) ([]values.Value, error) {
+	args, _, err := r.walkNamedOrUnnamedFunctionArgs(ctx)
+	return args, err
+}
+
+// SQLFunctionArgument names the call a SQL function's expansion binds each
+// argument with: `"$SQL_FUNCTION_ARGUMENT"(arg, CAST(NULL AS declared))`.
+const SQLFunctionArgument = "$SQL_FUNCTION_ARGUMENT"
+
+// SQLFunctionBody prefixes the alias a SQL function's expansion gives the
+// function's body, whose columns are named as Java's function call names
+// them (query.QuantifierColumnNames).
+const SQLFunctionBody = "$SQL_FUNCTION_BODY_"
+
+// walkSQLFunctionArgument is Java's promoteArgumentValueIfNeeded: the argument
+// promoted to its parameter's declared type, or 42883.
+func (r *Resolver) walkSQLFunctionArgument(fa antlrgen.INamedOrUnnamedFunctionArgsContext) (values.Value, error) {
+	args, err := r.positionalFunctionArgs(fa)
+	if err != nil {
+		return nil, err
+	}
+	if len(args) != 2 {
+		return nil, api.NewError(api.ErrCodeInternalError, "malformed SQL function argument")
+	}
+	return promoteFunctionArgument(args[0], args[1].Type())
+}
+
+// promoteFunctionArgument is CatalogedFunction.promoteArgumentValueIfNeeded.
+func promoteFunctionArgument(arg values.Value, target values.Type) (values.Value, error) {
+	from := arg.Type()
+	needed, ok := values.IsPromotionNeeded(from, target)
+	if !ok {
+		return nil, api.NewError(api.ErrCodeCannotConvertType, incompatibleTypeMessage)
+	}
+	if !needed {
+		return arg, nil
+	}
+	if !values.IsPromotable(from, target) {
+		return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction,
+			"The function is not defined for the given argument types argument type doesn't match with function definition")
+	}
+	if from != nil && from.Equals(target) {
+		return arg, nil
+	}
+	return values.NewPromoteValue(arg, target), nil
+}
+
+// incompatibleTypeMessage is SemanticException INCOMPATIBLE_TYPE's text.
+const incompatibleTypeMessage = "A value cannot be assigned to a variable because the type of the value does not match the type of the variable and cannot be promoted to the type of the variable."
 
 // walkCardinality builds the dedicated CardinalityValue for
 // `CARDINALITY(arr)`. Mirrors Java's CardinalityFn.encapsulateInternal:
@@ -1198,8 +1498,8 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 // CARDINALITY(1) → CANNOT_CONVERT_TYPE). The result is a dedicated
 // CardinalityValue, NOT a generic ScalarFunctionValue: CARDINALITY needs
 // its own nullable-INT typing and array validation.
-func (r *Resolver) walkCardinality(fa antlrgen.IFunctionArgsContext) (values.Value, error) {
-	args, err := r.walkFunctionArgs(fa)
+func (r *Resolver) walkCardinality(fa antlrgen.INamedOrUnnamedFunctionArgsContext) (values.Value, error) {
+	args, err := r.positionalFunctionArgs(fa)
 	if err != nil {
 		return nil, err
 	}
@@ -1222,15 +1522,20 @@ func (r *Resolver) walkCardinality(fa antlrgen.IFunctionArgsContext) (values.Val
 // argument Value list, recursing each arg through WalkExpression so
 // nested expressions compose. Shared by the by-name built-in dispatch.
 func (r *Resolver) walkFunctionArgs(fa antlrgen.IFunctionArgsContext) ([]values.Value, error) {
-	args := []values.Value{}
 	if fa == nil {
-		return args, nil
+		return []values.Value{}, nil
 	}
 	fac, ok := fa.(*antlrgen.FunctionArgsContext)
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArgs ctx %T", fa)}
 	}
-	for _, arg := range fac.AllFunctionArg() {
+	return r.walkFunctionArgList(fac.AllFunctionArg())
+}
+
+// walkFunctionArgList walks positional arguments in order.
+func (r *Resolver) walkFunctionArgList(list []antlrgen.IFunctionArgContext) ([]values.Value, error) {
+	args := []values.Value{}
+	for _, arg := range list {
 		argCtx, ok := arg.(*antlrgen.FunctionArgContext)
 		if !ok {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("FunctionArg ctx %T", arg)}
@@ -1238,7 +1543,7 @@ func (r *Resolver) walkFunctionArgs(fa antlrgen.IFunctionArgsContext) ([]values.
 		if argCtx.Expression() == nil {
 			return nil, &UnsupportedExpressionShapeError{Shape: "FunctionArg without Expression"}
 		}
-		v, err := r.WalkExpression(argCtx.Expression())
+		v, err := r.walkExpressionInner(argCtx.Expression(), posOperand)
 		if err != nil {
 			return nil, err
 		}
@@ -1314,56 +1619,107 @@ func (r *Resolver) walkNonAggregateWindowedFunction(fc *antlrgen.NonAggregateFun
 
 	// ORDER BY expressions → the row-number argument values (the distance
 	// expression for K-NN). Java requires ascending (or unspecified) sort.
-	var args []values.Value
+	var ordering []values.WindowOrderingPart
+	unsupportedSort := false
 	if obc, ok := specc.OrderByClause().(*antlrgen.OrderByClauseContext); ok && obc != nil {
 		for _, obe := range obc.AllOrderByExpression() {
 			obec, ok := obe.(*antlrgen.OrderByExpressionContext)
 			if !ok {
 				return nil, &UnsupportedExpressionShapeError{Shape: "malformed ORDER BY expression in OVER clause"}
 			}
-			if occ, ok := obec.OrderClause().(*antlrgen.OrderClauseContext); ok && occ != nil && occ.DESC() != nil {
-				return nil, &UnsupportedExpressionShapeError{
-					Shape: "window function ORDER BY must be ascending (DESC not supported)",
-				}
+			part := values.WindowOrderingPart{}
+			if occ, ok := obec.OrderClause().(*antlrgen.OrderClauseContext); ok && occ != nil && (occ.DESC() != nil || occ.LAST() != nil) {
+				unsupportedSort = true
+				part.Descending, part.NullsLast = occ.DESC() != nil, occ.LAST() != nil
 			}
 			av, err := r.WalkExpression(obec.Expression())
 			if err != nil {
 				return nil, err
 			}
-			args = append(args, av)
+			part.Value = av
+			ordering = append(ordering, part)
 		}
 	}
 
-	// OPTIONS ef_search = N (HNSW search-quality knob).
-	var efSearch *int
+	// OPTIONS: every value is parsed with the OVER clause (visitWindowOption),
+	// before the sort check; a repeat is refused as the options are collected
+	// (CallSiteArguments.Options.putRaw), and each is coerced to its declared
+	// type as row_number is encapsulated.
+	type windowOption struct {
+		name string
+		raw  any
+	}
+	var options []windowOption
 	if woc, ok := specc.WindowOptionsClause().(*antlrgen.WindowOptionsClauseContext); ok && woc != nil {
 		for _, opt := range woc.AllWindowOption() {
 			optc, ok := opt.(*antlrgen.WindowOptionContext)
 			if !ok || optc.EF_SEARCH() == nil || optc.GetEfSearch() == nil {
-				continue
+				return nil, api.NewErrorf(api.ErrCodeInternalError, "unexpected option %s", opt.GetText())
 			}
-			n, err := strconv.Atoi(optc.GetEfSearch().GetText())
+			raw, err := ParseDecimal(optc.GetEfSearch().GetText())
 			if err != nil {
-				return nil, &UnsupportedExpressionShapeError{
-					Shape: fmt.Sprintf("invalid ef_search value %q", optc.GetEfSearch().GetText()),
-				}
+				return nil, err
 			}
-			efSearch = &n
+			options = append(options, windowOption{name: "hnswEfSearch", raw: raw})
 		}
 	}
+	if unsupportedSort {
+		return nil, api.NewError(api.ErrCodeUnsupportedSort, "provided sort specification not supported with window function")
+	}
+	builder := values.NewCallSiteOptionsBuilder()
+	for _, o := range options {
+		if err := builder.PutRaw(o.name, o.raw); err != nil {
+			return nil, callSiteOptionError(err)
+		}
+	}
+	rowNumber, err := values.EncapsulateRowNumber(values.PositionalCallSite().
+		WithWindow(values.WindowSpecification{Partitioning: partitions, Ordering: ordering}).
+		WithOptions(builder.Build()))
+	if err != nil {
+		return nil, callSiteOptionError(err)
+	}
+	return rowNumber, nil
+}
 
-	return values.NewRowNumberValue(partitions, args, efSearch, nil), nil
+// callSiteOptionError renders a call-site option failure as the SQL layer
+// renders its SemanticException: the error code's text, then the detail.
+func callSiteOptionError(err error) error {
+	var option *values.CallSiteOptionError
+	if !errors.As(err, &option) {
+		return err
+	}
+	switch option.Code {
+	case values.CallSiteIncompatibleType:
+		return api.NewError(api.ErrCodeCannotConvertType, incompatibleTypeMessage+" "+option.Detail)
+	case values.CallSiteFunctionUndefined:
+		return api.NewError(api.ErrCodeInvalidArgumentForFunction,
+			"The function is not defined for the given argument types "+option.Detail)
+	}
+	return err
 }
 
 // primitiveTypeToValueType maps the PrimitiveType terminal to a
-// values.Type. BYTES / VECTOR aren't in the CAST set yet —
-// they return (_, false) so the walker declines.
+// values.Type, retaining VECTOR precision and dimensions.
 func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, bool) {
 	ptc, ok := pt.(*antlrgen.PrimitiveTypeContext)
 	if !ok {
 		return values.TypeUnknown, false
 	}
 	switch {
+	case ptc.VectorType() != nil:
+		vt := ptc.VectorType().(*antlrgen.VectorTypeContext)
+		dims, err := strconv.Atoi(vt.GetDimensions().GetText())
+		if err != nil {
+			return values.TypeUnknown, false
+		}
+		precision := 64
+		elem := vt.GetElementType().(*antlrgen.VectorElementTypeContext)
+		if elem.HALF() != nil {
+			precision = 16
+		} else if elem.FLOAT() != nil {
+			precision = 32
+		}
+		return values.NewVectorType(true, precision, dims), true
 	case ptc.INTEGER() != nil:
 		return values.NullableInt, true
 	case ptc.BIGINT() != nil:
@@ -1405,6 +1761,23 @@ func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, b
 // aggregateFunctionName reads which terminal is present on the
 // AggregateWindowedFunction context and returns the canonical
 // UPPER-case name.
+// ArrayAggOptions reads ARRAY_AGG's null treatment (default RESPECT) and
+// in-call LIMIT, a literal in [0, Integer.MAX_VALUE].
+func ArrayAggOptions(awf *antlrgen.AggregateWindowedFunctionContext) (ignoreNulls bool, limit int, err error) {
+	limit = values.ArrayAggNoLimit
+	if nt, ok := awf.NullTreatmentClause().(*antlrgen.NullTreatmentClauseContext); ok && nt != nil {
+		ignoreNulls = nt.IGNORE() != nil
+	}
+	if lc, ok := awf.AggregateLimitClause().(*antlrgen.AggregateLimitClauseContext); ok && lc != nil {
+		n, perr := strconv.ParseInt(lc.GetLimit().GetText(), 10, 64)
+		if perr != nil || n < 0 || n > math.MaxInt32 {
+			return false, 0, api.NewError(api.ErrCodeInvalidParameter, "the LIMIT of an aggregate must be a non-negative integer")
+		}
+		limit = int(n)
+	}
+	return ignoreNulls, limit, nil
+}
+
 func aggregateFunctionName(awf *antlrgen.AggregateWindowedFunctionContext) (string, bool) {
 	switch {
 	case awf.COUNT() != nil:
@@ -1497,14 +1870,19 @@ func (r *Resolver) walkBitExpression(b *antlrgen.BitExpressionAtomContext) (valu
 		return nil, &UnsupportedExpressionShapeError{Shape: "BitExpressionAtom with nil operator"}
 	}
 	opText := bo.GetText()
-	name := "BITAND"
+	// The bit operators are ArithmeticValues in Java (LogicalOperator BITAND,
+	// BITOR, BITXOR, ArithmeticValue.java:372-374), encapsulated like the
+	// arithmetic operators.
 	switch opText {
 	case "&":
-		name = "BITAND"
+		return r.ResolveArithmetic(values.OpBitAnd, left, right)
 	case "|":
-		name = "BITOR"
+		return r.ResolveArithmetic(values.OpBitOr, left, right)
 	case "^":
-		name = "BITXOR"
+		return r.ResolveArithmetic(values.OpBitXor, left, right)
+	}
+	var name string
+	switch opText {
 	case "<<":
 		name = "BITSHL"
 	case ">>":
@@ -1564,15 +1942,15 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 		if err != nil {
 			return nil, err
 		}
-		// A NULL literal walks as NullValue with the Unknown type tag;
-		// Java types it Type.nullType, which MaximumType folds as "the
-		// other side, made nullable" — use NullType for the fold so
-		// `[10, NULL, 30]` resolves to a nullable INT element type
-		// instead of dying on Unknown.
-		vt := v.Type()
-		if _, isNull := v.(*values.NullValue); isNull && (vt == nil || vt.Code() == values.TypeCodeUnknown) {
-			vt = values.NullType
+		// An ARRAY element is never NULL (Java's handleArray,
+		// ExpressionVisitor.java:1186-1203): a NULL-typed element is refused
+		// here, a nullable one when it evaluates to NULL.
+		if !r.allowNullArrayElements && v.Type() != nil && v.Type().Code() == values.TypeCodeNull {
+			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "An ARRAY value cannot have NULL elements")
 		}
+		// SQL NULL already has Type.nullType, so the common-type fold and
+		// the subsequent prepared promotion see the same declared source.
+		vt := v.Type()
 		if elemType == nil {
 			elemType = vt
 		} else if elemType = values.MaximumType(elemType, vt); elemType == nil {
@@ -1588,7 +1966,10 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 	// elementType.nullable(). PromoteValue rejects an Unknown target,
 	// so an unresolved element type skips injection (the consumer's
 	// per-element coercion still applies).
-	if elemType != nil && elemType.Code() != values.TypeCodeUnknown {
+	if elemType != nil && elemType.Code() != values.TypeCodeUnknown && elemType.Code() != values.TypeCodeNull {
+		if !r.allowNullArrayElements {
+			elemType = values.WithNullability(elemType, false)
+		}
 		nullableElem := values.WithNullability(elemType, true)
 		for i, c := range children {
 			ct := c.Type()
@@ -1602,8 +1983,7 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 
 // walkRecordConstructorInner resolves a record constructor in EXPRESSION
 // position — Java's ExpressionVisitor.visitRecordConstructor
-// (ExpressionVisitor.java:889-926), minus the two star arms (those need the
-// logical operators in scope, not just the expression resolver).
+// (ExpressionVisitor.java:889-926).
 //
 // There is exactly ONE outcome: a record. A one-element constructor is NOT
 // unwrapped, because Java does not unwrap it either — visitRecordConstructor
@@ -1641,18 +2021,23 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 	if !ok {
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("RecordConstructor ctx %T", rc)}
 	}
-	// `(t.*)` / `(*)` — the parenthesised star. It packs the whole row into one
-	// struct-typed column and is resolved against the FROM sources, which this
-	// resolver does not carry; the projection layer handles it.
+	// `(t.*)` / `(*)` pack the star's expansion into one record.
 	if rcc.STAR() != nil {
-		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor over STAR"}
+		var qualifier *semantic.Identifier
+		if rcc.Uid() != nil {
+			id := semantic.FromUidContext(rcc.Uid(), r.analyzer.CaseSensitive())
+			qualifier = &id
+		}
+		return r.expandStarRecord(qualifier)
 	}
 	exprs := rcc.AllExpressionWithOptionalName()
 	if len(exprs) == 0 {
 		return nil, &UnsupportedExpressionShapeError{Shape: "RecordConstructor with no elements"}
 	}
 	fields := make([]values.RecordConstructorField, 0, len(exprs))
-	for i, e := range exprs {
+	names := make([]string, 0, len(exprs))
+	counts := map[string]int{}
+	for _, e := range exprs {
 		ewon, isEwon := e.(*antlrgen.ExpressionWithOptionalNameContext)
 		if !isEwon {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("ExpressionWithOptionalName ctx %T", e)}
@@ -1661,42 +2046,25 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 		// position. Java has no position notion at all — a comparison is a
 		// boolean-typed value wherever it appears — so forwarding the caller's
 		// position is the closest Go analogue. It is also what keeps
-		// `(a > 3) IS NULL` resolving: the one-element unwrap used to forward
-		// the position on its way out, and with the unwrap gone the forwarding
-		// has to happen here instead.
+		// `(a > 3) IS NULL` resolving.
 		v, err := r.walkExpressionInner(ewon.Expression(), pos)
 		if err != nil {
 			return nil, err
 		}
-		// An unnamed element takes the ordinal key. Java instead takes the
-		// element's own inherent name — a column reference contributes the
-		// column, so `SELECT (val)` is `{VAL: 10}` on the live JVM where Go
-		// answers `{_0: 10}`. That difference is NOT closable here on its own,
-		// and the reason is structural rather than a matter of effort.
-		//
-		// Java can afford inherent names because a record built where a TARGET
-		// TYPE is in scope never keeps them: parseRecordFieldsUnderReorderings
-		// (ExpressionVisitor.java:1040-1083) overwrites them with the target's
-		// field names BY POSITION. Go has no target type at construction — a
-		// COALESCE operand acquires one only when the assignment coerces it —
-		// so it defers that binding to values.BuildStructMessage, which
-		// receives the record as an ORDER-LESS map[string]any and can only
-		// recover position from the ordinal names themselves. Give the fields
-		// inherent names and that recovery is gone: `(b1, b2)` assigned to a
-		// struct S arrives named B1/B2, matches none of S's fields, and the
-		// write fails.
-		//
-		// Closing it therefore means porting Java's construction-time target
-		// binding (or making the coercion order-preserving), not renaming
-		// fields here. Measured: doing only the rename turns
-		// `update B set b3 = coalesce(b3, (b1, b2), ...)` into
-		// `record constructor for "S" carries 2 fields, 0 of which the target
-		// struct declares`.
-		name := values.OrdinalFieldName(i)
-		if ewon.Uid() != nil {
-			name = functions.NormalizeIdentifier(ewon.Uid().GetText())
+		name := inherentElementName(ewon, r.analyzer.CaseSensitive())
+		if name != "" {
+			counts[name]++
 		}
-		fields = append(fields, values.RecordConstructorField{Name: name, Value: v})
+		names = append(names, name)
+		fields = append(fields, values.RecordConstructorField{Value: v})
+	}
+	// Expressions.underlyingAsColumns: an element keeps its name only when no
+	// other element has it; the rest are positional.
+	for i, name := range names {
+		if name == "" || counts[name] > 1 {
+			name = values.OrdinalFieldName(i)
+		}
+		fields[i].Name = name
 	}
 	rcv := values.NewRecordConstructorValue(fields...)
 	// `STRUCT <name> (…)` declares the record's TYPE name. Java routes this
@@ -1709,6 +2077,27 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 		rcv.SetTypeName(functions.NormalizeIdentifier(ofType.Uid().GetText()))
 	}
 	return rcv, nil
+}
+
+// inherentElementName is the name a record element carries in Java: its AS
+// alias, else a column reference's own (last) name, else none.
+func inherentElementName(ewon *antlrgen.ExpressionWithOptionalNameContext, caseSensitive bool) string {
+	if ewon.Uid() != nil {
+		return semantic.FromUidContext(ewon.Uid(), caseSensitive).Name()
+	}
+	pred, ok := ewon.Expression().(*antlrgen.PredicatedExpressionContext)
+	if !ok || pred.Predicate() != nil {
+		return ""
+	}
+	col, ok := pred.ExpressionAtom().(*antlrgen.FullColumnNameExpressionAtomContext)
+	if !ok || col.FullColumnName() == nil || col.FullColumnName().FullId() == nil {
+		return ""
+	}
+	uids := col.FullColumnName().FullId().AllUid()
+	if len(uids) == 0 {
+		return ""
+	}
+	return semantic.FromUidContext(uids[len(uids)-1], caseSensitive).Name()
 }
 
 // WalkPredicate is the dual of WalkExpression — returns a cascades
@@ -1725,6 +2114,41 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 // Other shapes (BETWEEN, IN, LIKE, IS NULL via grammar's Predicate
 // node; NOT; XOR) return UnsupportedExpressionShapeError.
 func (r *Resolver) WalkPredicate(ctx antlrgen.IExpressionContext) (predicates.QueryPredicate, error) {
+	pred, err := r.walkPredicate(ctx)
+	if err != nil || ctx == nil {
+		return pred, err
+	}
+	if _, where := ctx.GetParent().(antlrgen.IWhereExprContext); !where {
+		return pred, nil
+	}
+	// ExpressionVisitor.visitWhereExpr rejects WindowedValue in the resolved
+	// expression, before the distance-rank comparison is lowered for planning.
+	found := false
+	check := func(v values.Value) {
+		values.WalkValue(v, func(n values.Value) bool {
+			if _, ok := n.(*values.RowNumberValue); ok {
+				found = true
+			}
+			return !found
+		})
+	}
+	predicates.WalkPredicate(pred, func(node predicates.QueryPredicate) bool {
+		switch n := node.(type) {
+		case *predicates.ComparisonPredicate:
+			check(n.Operand)
+			check(n.Comparison.Operand)
+		case *predicates.ValuePredicate:
+			check(n.Value)
+		}
+		return !found
+	})
+	if found {
+		return nil, api.NewError(api.ErrCodeWindowingError, "window functions are not allowed in WHERE")
+	}
+	return pred, nil
+}
+
+func (r *Resolver) walkPredicate(ctx antlrgen.IExpressionContext) (predicates.QueryPredicate, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.WalkPredicate: nil context")
 	}
@@ -1771,6 +2195,38 @@ func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionC
 	if err != nil {
 		return nil, err
 	}
+	return r.liftValueToPredicate(v)
+}
+
+// bareValueAtom returns the atom of an expression that is a bare value -- no
+// grammar predicate, not a comparison, not a parenthesised expression -- and
+// nil for any other shape. walkPredicatedExpression walks such an atom with
+// walkAtom and lifts it (liftValueToPredicate), so a caller holding one can walk
+// it once and decide between the value and the predicate.
+func bareValueAtom(expr antlrgen.IExpressionContext) antlrgen.IExpressionAtomContext {
+	pe, ok := expr.(*antlrgen.PredicatedExpressionContext)
+	if !ok || pe.Predicate() != nil {
+		return nil
+	}
+	switch atom := pe.ExpressionAtom().(type) {
+	case *antlrgen.BinaryComparisonPredicateContext, *antlrgen.RecordConstructorExpressionAtomContext:
+		return nil
+	default:
+		return atom
+	}
+}
+
+// liftValueToPredicate is the predicate a bare value used as one is.
+func (r *Resolver) liftValueToPredicate(v values.Value) (predicates.QueryPredicate, error) {
+	// A BooleanValue converts itself (Expression.Utils.toUnderlyingPredicate);
+	// LIKE is LikeOperatorValue.toQueryPredicate.
+	if like, ok := v.(*values.LikeOperatorValue); ok {
+		if pattern, ok := like.Pattern.(*values.PatternForLikeValue); ok {
+			return predicates.NewComparisonPredicate(like.Probe, predicates.Comparison{
+				Type: predicates.ComparisonLike, Operand: pattern,
+			}), nil
+		}
+	}
 	// Lift a bare value used as a predicate, mirroring Java's
 	// Expression.Utils.toUnderlyingPredicate (Expression.java:384-399)
 	// branch order. Shared by WHERE and ON (both reach here).
@@ -1784,12 +2240,10 @@ func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionC
 		}
 		return predicates.NewConstantPredicate(predicates.TriFalse), nil
 	}
-	// 2. NULL → unknown constant (Java :384, `value instanceof NullValue`).
-	//    Detected by VALUE type, not Type().Code(): a NULL literal is built as
-	//    NewNullValue(TypeUnknown), so its type code is Unknown — only the
-	//    value-type assertion identifies it. Must be folded HERE: the
-	//    comparison-form lift below bypasses ValuePredicateConstantFoldRule
-	//    (which matches only *ValuePredicate) that `WHERE NULL` relied on.
+	// 2. NULL → constant (Java :384, `value instanceof NullValue`).
+	//    Match the Value rather than its annotation: typed NULLs can carry a
+	//    non-NULL type code too. Folded HERE, as Java's
+	//    toUnderlyingPredicate returns ConstantPredicate.NULL for it.
 	if _, isNull := v.(*values.NullValue); isNull {
 		return predicates.NewConstantPredicate(predicates.TriUnknown), nil
 	}
@@ -1897,8 +2351,8 @@ func (r *Resolver) walkLogicalExpression(le *antlrgen.LogicalExpressionContext) 
 // flattenAnd/flattenOr collapse left-deep chains built by the
 // parser. `a AND b AND c` parses as (and (and a b) c) — here we
 // return [a b c] so ResolveAnd produces a single 3-child And
-// rather than nested pairs. AndFlattenRule in cascades would fix
-// it later anyway, but seeding the flat shape avoids fixpoint work.
+// rather than nested pairs, the flat conjunction Java's AndPredicate.and
+// builds; no simplification rule flattens it later.
 func flattenAnd(preds ...predicates.QueryPredicate) []predicates.QueryPredicate {
 	var out []predicates.QueryPredicate
 	for _, p := range preds {
@@ -1970,6 +2424,44 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			if fcn := ilc.FullColumnName(); fcn != nil {
 				return r.resolveInAgainstColumnList(p, atom, fcn)
 			}
+			// `x IN ?`: the parameter is bound to an ARRAY, whose elements are
+			// the list.
+			if pp, ok := ilc.PreparedStatementParameter().(*antlrgen.PreparedStatementParameterContext); ok && pp != nil {
+				if bound, ok := BoundParameter(pp.GetStart()); ok {
+					arr, ok := bound.(*values.ConstantValue)
+					elems, isSlice := any(nil), false
+					if ok {
+						elems, isSlice = arr.Value.([]any)
+					}
+					if !isSlice {
+						return nil, api.NewError(api.ErrCodeInvalidArgumentForFunction,
+							"IN ? requires an ARRAY parameter")
+					}
+					lhsVal, err := r.walkOperand(atom)
+					if err != nil {
+						return nil, err
+					}
+					elemType := values.TypeUnknown
+					if at, ok := arr.Typ.(*values.ArrayType); ok && at.ElementType != nil {
+						elemType = values.WithNullability(at.ElementType, false)
+					}
+					list := make([]values.Value, 0, len(elems.([]any)))
+					for _, el := range elems.([]any) {
+						if el == nil {
+							return nil, errNullArrayElement()
+						}
+						list = append(list, &values.ConstantValue{Value: el, Typ: elemType})
+					}
+					inPred, err := r.ResolveIn(lhsVal, list)
+					if err != nil {
+						return nil, err
+					}
+					if p.NOT() != nil {
+						return r.ResolveNot(inPred), nil
+					}
+					return inPred, nil
+				}
+			}
 			return nil, &InColumnRefError{}
 		}
 		ec, ok := exprs.(*antlrgen.ExpressionsContext)
@@ -1982,7 +2474,9 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		}
 		list := make([]values.Value, 0, len(ec.AllExpression()))
 		for _, e := range ec.AllExpression() {
-			v, err := r.WalkExpression(e)
+			// An item is a function argument (operand position), so a
+			// comparison is a boolean value: `d IN (3 < 4)`.
+			v, err := r.walkExpressionInner(e, posOperand)
 			if err != nil {
 				return nil, err
 			}
@@ -1995,15 +2489,18 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			// died with 0AF00 "a comparison operand of complex type (record) is
 			// not supported" where Java answers the same rows as `IN (10, 20)`.
 			v = functions.FlattenRecordWithOneField(v)
-			if _, isNull := v.(*values.NullValue); isNull {
+			// A bare NULL item is Java's AstNormalizer rejection (42809); any
+			// other NULL item — parenthesised, or a bound NULL — is an ARRAY
+			// element that cannot be NULL (0A000).
+			if IsBareNullLiteral(e) {
 				return nil, &InListNullError{}
 			}
-			if cv, isCon := v.(*values.ConstantValue); isCon && cv.Value == nil {
-				return nil, &InListNullError{}
+			if isNullConstant(v) {
+				return nil, errNullArrayElement()
 			}
 			list = append(list, v)
 		}
-		inPred, err := r.ResolveIn(lhsVal, list)
+		inPred, err := r.resolveInList(lhsVal, list, inListIsLiteral(ec))
 		if err != nil {
 			return nil, err
 		}
@@ -2012,38 +2509,26 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 		}
 		return inPred, nil
 	case *antlrgen.LikePredicateContext:
-		// `x LIKE 'pattern' [ESCAPE 'c']` — both forms wire through
-		// the cascades likeMatch's escape-aware path. ESCAPE='' or
-		// missing ESCAPE produces escape == 0, which disables
-		// escape handling.
+		// Java's visitLikePredicate (ExpressionVisitor.java:695-710): the
+		// pattern is an ordinary constant, the escape its one token decoded,
+		// an absent ESCAPE a NULL escape.
 		lhsVal, err := r.walkAtom(atom)
 		if err != nil {
 			return nil, err
 		}
-		patTok := p.GetPattern()
-		if patTok == nil {
-			return nil, &UnsupportedExpressionShapeError{Shape: "LIKE without pattern token"}
-		}
-		patConst, err := r.ResolveConstant(stripStringLiteral(patTok.GetText()))
+		patVal, err := r.walkConstant(p.GetPattern())
 		if err != nil {
 			return nil, err
 		}
-		var escape rune
-		if p.ESCAPE() != nil {
-			escTok := p.GetEscape()
-			if escTok == nil {
-				return nil, &UnsupportedExpressionShapeError{Shape: "LIKE ESCAPE without escape token"}
-			}
-			escStr := stripStringLiteral(escTok.GetText())
-			runes := []rune(escStr)
-			if len(runes) != 1 {
-				return nil, &UnsupportedExpressionShapeError{
-					Shape: fmt.Sprintf("LIKE ESCAPE expects exactly one character; got %q", escStr),
-				}
-			}
-			escape = runes[0]
+		var escText any
+		if escTok := p.GetEscape(); escTok != nil {
+			escText = stripStringLiteral(escTok.GetText())
 		}
-		like, err := r.ResolveLikeWithEscape(lhsVal, patConst, escape)
+		escVal, err := r.ResolveConstant(escText)
+		if err != nil {
+			return nil, err
+		}
+		like, err := r.ResolveLike(lhsVal, patVal, escVal)
 		if err != nil {
 			return nil, err
 		}
@@ -2122,6 +2607,15 @@ func (r *Resolver) walkBinaryComparison(bc *antlrgen.BinaryComparisonPredicateCo
 	if err != nil {
 		return nil, err
 	}
+	// The approved Go nullable-array READ extension: a comparison between two
+	// array constructors of literals, one holding a NULL, builds them with
+	// nullable elements (`[1, NULL] = [1, NULL]` is TRUE) where Java refuses
+	// the NULL element. Every other NULL array element is refused.
+	if nullableArrayLiteralComparison(op, bc) {
+		saved := r.allowNullArrayElements
+		r.allowNullArrayElements = true
+		defer func() { r.allowNullArrayElements = saved }()
+	}
 	left, err := r.walkOperand(bc.GetLeft())
 	if err != nil {
 		return nil, err
@@ -2133,11 +2627,63 @@ func (r *Resolver) walkBinaryComparison(bc *antlrgen.BinaryComparisonPredicateCo
 	return r.ResolveComparison(op, left, right)
 }
 
+func nullableArrayLiteralComparison(op predicates.ComparisonType, bc *antlrgen.BinaryComparisonPredicateContext) bool {
+	switch op {
+	case predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+		predicates.ComparisonIsDistinctFrom, predicates.ComparisonNotDistinctFrom:
+	default:
+		return false
+	}
+	sawNull := false
+	for _, side := range []antlr.Tree{bc.GetLeft(), bc.GetRight()} {
+		arr, ok := singleChildDescendant[*antlrgen.ArrayConstructorContext](side)
+		if !ok {
+			return false
+		}
+		exprs := arr.Expressions()
+		if exprs == nil {
+			continue
+		}
+		for _, e := range exprs.AllExpression() {
+			if IsBareNullLiteral(e) {
+				sawNull = true
+				continue
+			}
+			if _, isConst := singleChildDescendant[*antlrgen.ConstantExpressionAtomContext](e); !isConst {
+				return false
+			}
+		}
+	}
+	return sawNull
+}
+
+// singleChildDescendant descends through single-child nodes to a T.
+func singleChildDescendant[T antlr.Tree](tree antlr.Tree) (T, bool) {
+	current := tree
+	for current != nil {
+		if t, ok := current.(T); ok {
+			return t, true
+		}
+		if current.GetChildCount() != 1 {
+			break
+		}
+		current = current.GetChild(0)
+	}
+	var zero T
+	return zero, false
+}
+
 // comparisonOpFromCtx reads the terminal tokens on a
 // ComparisonOperator context to identify the operator. Mirrors
 // the grammar:
 //
 //	= | > | < | >= | <= | <> | != | IS [NOT] DISTINCT FROM
+//
+// ComparisonOpFromCtx is the comparison a comparison operator names.
+func ComparisonOpFromCtx(op antlrgen.IComparisonOperatorContext) (predicates.ComparisonType, error) {
+	return comparisonOpFromCtx(op)
+}
+
 func comparisonOpFromCtx(op antlrgen.IComparisonOperatorContext) (predicates.ComparisonType, error) {
 	if op == nil {
 		return predicates.ComparisonEquals, fmt.Errorf("comparisonOpFromCtx: nil operator")
@@ -2226,29 +2772,18 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 		}
 		return nil, &UnsupportedExpressionShapeError{Shape: "BooleanLiteral with no TRUE/FALSE"}
 	case *antlrgen.DecimalConstantContext:
-		// DecimalLiteralContext wraps either DECIMAL_LITERAL (int)
-		// or REAL_LITERAL (float). Distinguish by which terminal is
-		// non-nil. Fall back to int parse when the literal node is
-		// missing (defensive — shouldn't happen).
-		isReal := false
-		if dl, ok := k.DecimalLiteral().(*antlrgen.DecimalLiteralContext); ok {
-			isReal = dl.REAL_LITERAL() != nil
-		}
-		return r.resolveDecimalText(k.GetText(), isReal)
+		return r.resolveDecimalText(k.GetText())
 	case *antlrgen.NegativeDecimalConstantContext:
-		// `-N` constant — same DecimalLiteral wrapper but with a
-		// leading MINUS. Dispatch on REAL vs DECIMAL again.
-		isReal := false
-		if dl, ok := k.DecimalLiteral().(*antlrgen.DecimalLiteralContext); ok {
-			isReal = dl.REAL_LITERAL() != nil
-		}
-		return r.resolveDecimalText(k.GetText(), isReal)
+		// `-N`: the text keeps the minus, as Java's does.
+		return r.resolveDecimalText(k.GetText())
 	case *antlrgen.StringConstantContext:
-		// Grammar emits the literal including surrounding quotes;
-		// strip them. Only single-quoted SQL strings for now.
-		text := k.GetText()
-		if len(text) >= 2 && text[0] == '\'' && text[len(text)-1] == '\'' {
-			text = strings.ReplaceAll(text[1:len(text)-1], "''", "'")
+		lit, ok := k.StringLiteral().(*antlrgen.StringLiteralContext)
+		if !ok {
+			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("StringLiteral ctx %T", k.StringLiteral())}
+		}
+		text, err := decodeStringLiteral(lit)
+		if err != nil {
+			return nil, err
 		}
 		return r.ResolveConstant(text)
 	case *antlrgen.BytesConstantContext:
@@ -2257,80 +2792,46 @@ func (r *Resolver) walkConstant(c antlrgen.IConstantContext) (values.Value, erro
 	return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("%T", c)}
 }
 
+// decodeStringLiteral is Java's visitStringLiteral with
+// SemanticAnalyzer.normalizeStringLiteral (ExpressionVisitor.java:848-856,
+// SemanticAnalyzer.java:197-228): a charset, national or collated literal is
+// refused, and adjacent tokens are each decoded before they are joined, so
+// `'a' 'b'` is `ab`, while a doubled quote inside one token is one quote.
+func decodeStringLiteral(lit *antlrgen.StringLiteralContext) (string, error) {
+	switch {
+	case lit.STRING_CHARSET_NAME() != nil:
+		return "", api.NewError(api.ErrCodeUnsupportedQuery, "charset not is supported")
+	case lit.START_NATIONAL_STRING_LITERAL() != nil:
+		return "", api.NewError(api.ErrCodeUnsupportedQuery, "national string literal is not supported")
+	case lit.COLLATE() != nil:
+		return "", api.NewError(api.ErrCodeUnsupportedQuery, "collation is not supported")
+	}
+	var b strings.Builder
+	for _, part := range lit.AllSTRING_LITERAL() {
+		b.WriteString(stripStringLiteral(part.GetText()))
+	}
+	return b.String(), nil
+}
+
 // stripStringLiteral removes the single-quote delimiters from a
 // STRING_LITERAL token's text and unescapes doubled quotes. Used
 // by the grammar-Predicate handlers that receive STRING_LITERAL
 // tokens directly (LikePredicate pattern) rather than going
 // through the ConstantExpressionAtom dispatch.
-// resolveDecimalText parses one decimal literal token — including Java's
-// WIDTH SUFFIXES — into a typed constant, mirroring
-// ParseHelpers.parseDecimal (ParseHelpers.java:68-104):
-//
-//   - a REAL token containing '.': f/F parses the binary32 FLOAT
-//     (Float.parseFloat of the suffix-stripped text), d/D the DOUBLE;
-//     unsuffixed stays DOUBLE. Java honours the suffix only when a '.'
-//     is present (the contains(".") gate), so an exponent-only `1e5f`
-//     fails to parse in BOTH engines rather than silently floating.
-//     (Java's h/H Half arm has no counterpart: the Go grammar's
-//     REAL_TYPE_MODIFIER is F|D only, so the token cannot lex.)
-//   - an integer token: l/L parses LONG and STAYS LONG even when the
-//     value fits int32 (Long.parseLong — no re-narrowing), i/I parses
-//     INT with Integer.parseInt's range check (out-of-int32-range is an
-//     error, not a clamp); unsuffixed keeps the fits-int32-then-INT-
-//     else-LONG rule (intLiteralType).
-//
-// The suffix width is observable: INT operands ride the int32-bounded
-// arithmetic lane (ADD_II overflow → 22003) where LONG operands return
-// the wide value, and `1I = 1L` promotes exactly as Java's
-// literal-tests.yamsql pins.
-func (r *Resolver) resolveDecimalText(text string, isReal bool) (values.Value, error) {
-	n := len(text)
-	if isReal {
-		if n > 1 && strings.Contains(text, ".") {
-			switch text[n-1] {
-			case 'f', 'F':
-				f, err := strconv.ParseFloat(text[:n-1], 32)
-				if err != nil {
-					return nil, &NumericOverflowLiteralError{Text: text}
-				}
-				return r.ResolveConstant(float32(f))
-			case 'd', 'D':
-				f, err := strconv.ParseFloat(text[:n-1], 64)
-				if err != nil {
-					return nil, &NumericOverflowLiteralError{Text: text}
-				}
-				return r.ResolveConstant(f)
-			}
-		}
-		f, err := strconv.ParseFloat(text, 64)
-		if err != nil {
-			return nil, &NumericOverflowLiteralError{Text: text}
-		}
-		return r.ResolveConstant(f)
-	}
-	if n > 1 {
-		switch text[n-1] {
-		case 'l', 'L':
-			v, err := strconv.ParseInt(text[:n-1], 10, 64)
-			if err != nil {
-				return nil, &NumericOverflowLiteralError{Text: text}
-			}
-			// The suffix PINS the width: `2L` is LONG, never re-narrowed
-			// by intLiteralType's fits-int32 rule.
-			return &values.ConstantValue{Value: v, Typ: values.NullableLong}, nil
-		case 'i', 'I':
-			v, err := strconv.ParseInt(text[:n-1], 10, 32)
-			if err != nil {
-				return nil, &NumericOverflowLiteralError{Text: text}
-			}
-			return &values.ConstantValue{Value: v, Typ: values.NullableInt}, nil
-		}
-	}
-	v, err := strconv.ParseInt(text, 10, 64)
+// resolveDecimalText types one decimal literal token as Java's
+// ParseHelpers.parseDecimal does (ParseDecimal). An L suffix PINS the width:
+// `2L` is LONG, never re-narrowed; INT operands ride the int32-bounded
+// arithmetic lane (ADD_II overflow → 22003) where LONG operands return the
+// wide value.
+func (r *Resolver) resolveDecimalText(text string) (values.Value, error) {
+	lit, err := ParseDecimal(text)
 	if err != nil {
-		return nil, fmt.Errorf("expr.walkConstant: integer parse %q: %w", text, err)
+		return nil, err
 	}
-	return r.ResolveConstant(v)
+	if v, ok := lit.(int64); ok {
+		return &values.ConstantValue{Value: v, Typ: values.NullableLong}, nil
+	}
+	return r.ResolveConstant(lit)
 }
 
 func stripStringLiteral(text string) string {
@@ -2338,6 +2839,44 @@ func stripStringLiteral(text string) string {
 		return strings.ReplaceAll(text[1:len(text)-1], "''", "'")
 	}
 	return text
+}
+
+// IsBareNullLiteral is Java's AstNormalizer.isNullLiteral: it descends through
+// single-child nodes only, so a NULL token is found through the
+// expression/predicate/atom chain above it, while `(NULL)` (a three-child
+// node) and `CAST(NULL AS BIGINT)` are not bare.
+func IsBareNullLiteral(tree antlr.Tree) bool {
+	current := tree
+	for {
+		if _, ok := current.(*antlrgen.NullLiteralContext); ok {
+			return true
+		}
+		if current == nil || current.GetChildCount() != 1 {
+			return false
+		}
+		current = current.GetChild(0)
+	}
+}
+
+// isNullConstant reports an IN item refused while the list is built: a
+// NULL-TYPED item (a parenthesised NULL) or a bound NULL. A NULL of a declared
+// type -- `CAST(NULL AS BIGINT)`, which CastValue.inject makes a typed
+// NullValue -- is a nullable element, refused only when the list is evaluated,
+// as Java's handleArray does (ExpressionVisitor.java:1186-1203), so an empty
+// table answers.
+func isNullConstant(v values.Value) bool {
+	if nv, isNull := v.(*values.NullValue); isNull {
+		return nv.Typ == nil || nv.Typ.Code() == values.TypeCodeNull || nv.Typ.Code() == values.TypeCodeUnknown
+	}
+	cv, isCon := v.(*values.ConstantValue)
+	return isCon && cv.Value == nil
+}
+
+// errNullArrayElement is Java's SemanticException for a NULL array element
+// (the IN list is an array).
+func errNullArrayElement() error {
+	return api.NewError(api.ErrCodeUnsupportedOperation,
+		"The action is currently unsupported An ARRAY value cannot have NULL elements")
 }
 
 // InListNullError signals that a NULL literal was found in an IN list.
@@ -2978,13 +3517,18 @@ func unwrapParenExpression(atom antlrgen.IExpressionAtomContext) antlrgen.IExpre
 	return ewon.Expression()
 }
 
-// NumericOverflowLiteralError signals that a numeric literal overflows
-// its target type (e.g. 1e400 overflows float64). Should be mapped
-// to SQLSTATE 22003 NUMERIC_VALUE_OUT_OF_RANGE.
-type NumericOverflowLiteralError struct {
-	Text string
-}
-
-func (e *NumericOverflowLiteralError) Error() string {
-	return fmt.Sprintf("numeric literal out of range: %s", e.Text)
+// inListIsLiteral is Java's ParseHelpers.isConstant over an IN list: every
+// item is a bare literal token (no operator, cast, parameter or comparison),
+// the list Java parses as an array literal.
+func inListIsLiteral(ec *antlrgen.ExpressionsContext) bool {
+	for _, e := range ec.AllExpression() {
+		pe, ok := e.(*antlrgen.PredicatedExpressionContext)
+		if !ok || pe.Predicate() != nil {
+			return false
+		}
+		if _, ok := pe.ExpressionAtom().(*antlrgen.ConstantExpressionAtomContext); !ok {
+			return false
+		}
+	}
+	return true
 }

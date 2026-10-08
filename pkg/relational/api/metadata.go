@@ -77,12 +77,30 @@ type Index interface {
 // Minimal today — the Java side is also mostly placeholder.
 type View interface {
 	Metadata
+	// Description is the view's stored SQL definition.
+	Description() string
+	// IsTemporary reports a view that lives only in the transaction.
+	IsTemporary() bool
 }
 
 // InvokedRoutine is a stored routine (function / procedure).
-// Mirrors Java's InvokedRoutine. Minimal today.
+// Mirrors Java's InvokedRoutine.
 type InvokedRoutine interface {
 	Metadata
+	// Description is the routine's stored SQL definition.
+	Description() string
+	// NormalizedDescription is the canonical form of a temporary routine's
+	// definition, empty for a stored one.
+	NormalizedDescription() string
+	// IsTemporary reports a routine that lives only in the transaction.
+	IsTemporary() bool
+}
+
+// StoredQuery is a stored query's SELECT text and the temporary-function
+// declarations that must precede it. Mirrors Java's StoredQuery.
+type StoredQuery struct {
+	Query         string
+	TempFunctions []string
 }
 
 // SchemaTemplate is the versioned schema shape (tables + views +
@@ -131,6 +149,8 @@ type SchemaTemplate interface {
 	// TemporaryInvokedRoutines returns transient routines added during
 	// the current transaction.
 	TemporaryInvokedRoutines() ([]InvokedRoutine, error)
+	// StoredQueries returns the stored queries by name.
+	StoredQueries() (map[string]StoredQuery, error)
 	// TransactionBoundMetadataAsString is a diagnostic string
 	// representation of the transaction-bound metadata.
 	TransactionBoundMetadataAsString() (string, error)

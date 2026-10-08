@@ -34,8 +34,8 @@ func TestComparisonRowCorrelated(t *testing.T) {
 		values.NewConstantObjectValue(constAlias, "const0", values.NotNullString),
 		values.NullableString,
 	)
-	if _, correlated := values.GetCorrelatedToOfValue(constantComposite)[constAlias]; !correlated {
-		t.Fatal("fixture: composite operand does not expose its nested constant-pool alias")
+	if corr := values.GetCorrelatedToOfValue(constantComposite); len(corr) != 0 {
+		t.Fatalf("constant-pool binding is not a row dependency: %v", corr)
 	}
 
 	cases := []struct {

@@ -3,14 +3,14 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // ImplementTempTableInsertRule converts a TempTableInsertExpression
-// to a physical TempTableInsertPlan. Requires the inner reference to
-// already contain a physical plan.
-// Mirrors Java's ImplementTempTableInsertRule.
+// to a physical TempTableInsertPlan, Java's ImplementTempTableInsertRule: one
+// plan per plan partition of the inner, ranging over a reference restricted to
+// that partition's plans (MemoizeMemberPlansFromOther). The rule pre-selects
+// nothing (RFC-257 WS-F F-8).
 type ImplementTempTableInsertRule struct {
 	matcher matching.BindingMatcher
 }
@@ -30,28 +30,26 @@ func (r *ImplementTempTableInsertRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
-	winner, _ := getWinnerForOrdering(innerRef, properties.PreserveOrdering(), call.CostModel())
-	if winner == nil {
-		return
+	computeRefPlanProperties(innerRef)
+	for _, partition := range ToPlanPartitions(innerRef) {
+		members := partition.GetPhysicalExpressions()
+		if len(members) == 0 {
+			continue
+		}
+		// Build the insert over the SAME live memo edge it reports as its
+		// child. The plan IS the cascades expression the memo holds (RFC-184 W2).
+		innerQ := expressions.NewPhysicalQuantifier(call.MemoizeMemberPlansFromOther(innerRef, members))
+		plan, err := plans.NewRecordQueryTempTableInsertPlanFromQuantifier(
+			innerQ,
+			insert.GetTempTableAlias(),
+			insert.IsOwning(),
+		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(plan)
 	}
-	if _, ok := winner.(physicalPlanExpression); !ok {
-		return
-	}
-
-	// Build the insert over the SAME live memo edge it reports as its child — no
-	// separate snapshot inner. The plan IS the cascades expression the memo holds
-	// (RFC-184 W2), no physicalTempTableInsertWrapper adapter needed.
-	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-	plan, err := plans.NewRecordQueryTempTableInsertPlanFromQuantifier(
-		innerQ,
-		insert.GetTempTableAlias(),
-		insert.IsOwning(),
-	)
-	if err != nil {
-		call.Fail(err)
-		return
-	}
-	call.Yield(plan)
 }
 
 var _ ExpressionRule = (*ImplementTempTableInsertRule)(nil)

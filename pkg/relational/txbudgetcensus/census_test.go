@@ -1,6 +1,7 @@
 package txbudgetcensus_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -339,6 +340,10 @@ var corpusDirs = []string{
 	"pkg/relational/core/embedded",
 }
 
+// corpusTree is scanned recursively: every package of the end-to-end SQL suite
+// (//pkg/relational/sqltest:corpus).
+const corpusTree = "pkg/relational/sqltest"
+
 // Floors that make a zero MEAN something. A census over an empty runfiles tree
 // reports a perfect zero, and so does a census whose BeginTx detection broke —
 // both indistinguishable from a clean suite unless the populations are checked.
@@ -404,6 +409,14 @@ func TestNoExposedTransactionsRemain(t *testing.T) {
 	dirs := make([]string, len(corpusDirs))
 	for i, d := range corpusDirs {
 		dirs[i] = filepath.Join(root, d)
+	}
+	if err := filepath.WalkDir(filepath.Join(root, corpusTree), func(p string, e fs.DirEntry, err error) error {
+		if err == nil && e.IsDir() {
+			dirs = append(dirs, p)
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("walking %s: %v", corpusTree, err)
 	}
 
 	sites, filesRead, err := txbudgetcensus.ScanDirs(dirs...)

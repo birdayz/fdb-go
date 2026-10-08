@@ -447,6 +447,13 @@ func resolveFieldAccess(child Value, requests []*fieldRequest) (Value, error) {
 		return &resultCopy, nil
 	case *RecordConstructorValue:
 		return resolveAgainstRecordConstructor(typed, requests)
+	case *PromoteValue:
+		// A promoted record literal (a struct argument bound to a macro's
+		// typed parameter): read the field through the per-field promotion.
+		if pushed, ok := promoteIntoRecordConstructor(typed.Child, typed.Target); ok {
+			return resolveAgainstRecordConstructor(pushed, requests)
+		}
+		return nil, resolutionError(FieldUnsupportedChild, "field.child", "field child is a promotion of a non-constructor")
 	default:
 		// Do not call an open Value method at this admission boundary.
 		return nil, resolutionError(FieldUnsupportedChild, "field.child", "field child is not a QOV, admitted FieldValue, or record constructor")
@@ -688,16 +695,17 @@ func exactTypeOfKnownValue(value Value) (*exactType, error) {
 		return typed.resultType, nil
 	case *RecordConstructorValue:
 		return exactRecordConstructorType(typed)
-	case *ConstantValue, *BooleanValue, *NullValue, *ConstantObjectValue,
-		*ArithmeticValue, *CastValue, *PromoteValue, *ParameterValue,
-		*ScalarFunctionValue, *ExistsValue:
+	case nil:
+		return nil, resolutionError(FieldUnsupportedChild, "field.child", "nil record-constructor child")
+	default:
+		// Any other column is a scalar computed from its inputs (a function, a
+		// CARDINALITY, a comparison); its declared type is its exact type, and
+		// a type that does not snapshot fails here.
 		handle, err := SnapshotExactType(value.Type())
 		if err != nil {
 			return nil, err
 		}
 		return handle.(*exactType), nil
-	default:
-		return nil, resolutionError(FieldUnsupportedChild, "field.child", "unsupported record-constructor child Value kind")
 	}
 }
 
@@ -751,7 +759,8 @@ func exactWithNullability(source *exactType, nullable bool) *exactType {
 		children[i] = source.fields[i].typ
 	}
 	probe := exactProbe{
-		code:       source.code,
+		code:      source.code,
+		precision: source.precision, dimensions: source.dimensions,
 		nullable:   nullable,
 		anyRecord:  source.anyRecord,
 		name:       source.name,
@@ -762,7 +771,8 @@ func exactWithNullability(source *exactType, nullable bool) *exactType {
 	}
 	return internedExactType(&probe, func() *exactType {
 		return &exactType{
-			code:       source.code,
+			code:      source.code,
+			precision: source.precision, dimensions: source.dimensions,
 			nullable:   nullable,
 			anyRecord:  source.anyRecord,
 			name:       source.name,
@@ -773,12 +783,21 @@ func exactWithNullability(source *exactType, nullable bool) *exactType {
 	})
 }
 
-// RebuildFieldValue resolves an admitted FieldValue's complete ordinal path on
-// a replacement child and refuses any type/nullability drift.
+// RebuildFieldValue retains an admitted FieldValue's resolved path on the same
+// exact root type, otherwise re-resolving it and refusing type/nullability drift.
 func RebuildFieldValue(field FieldValue, child Value) (Value, error) {
 	original, ok := field.(*fieldValue)
 	if !ok || !isAdmittedFieldValue(original) {
 		return nil, resolutionError(FieldUnsupportedChild, "field.rebuild", "foreign or malformed FieldValue")
+	}
+	// Java's withNewChild reuses the immutable FieldPath. Pointer equality also
+	// preserves nominal type metadata, which semantic type equality excludes.
+	if root, ok := child.(*quantifiedObjectValue); ok && root != nil &&
+		!root.correlation.IsZero() && root.flowed == original.rootType &&
+		original.Resolved.Domain == ordinalDomainOfExact(root.flowed) {
+		copy := *original
+		copy.Child = root
+		return &copy, nil
 	}
 	requests := make([]*fieldRequest, len(original.Resolved.Accessors))
 	for i := range original.Resolved.Accessors {
@@ -936,10 +955,7 @@ func readProtoOrdinal(message protoreflect.Message, expected *exactType, ordinal
 		return nil, resolutionError(LayoutRuntimeShape, fmt.Sprintf("field.path[%d]", depth), "protobuf descriptor is shorter than the resolved path")
 	}
 	field := fields.Get(ordinal)
-	if field.HasPresence() && !message.Has(field) {
-		if field.HasDefault() {
-			return ProtoFieldToRowValue(field, field.Default()), nil
-		}
+	if !ProtoFieldReadsValue(message, field) {
 		return nil, nil
 	}
 	return ProtoFieldToRowValue(field, message.Get(field)), nil
@@ -1058,6 +1074,10 @@ func protoScalarShapeCompatible(field protoreflect.FieldDescriptor, expected *ex
 		return false
 	}
 	if mapped == expected.code {
+		if mapped == TypeCodeVector {
+			v := vectorTypeForProtoField(field)
+			return v != nil && v.Precision == expected.precision && v.Dimensions == expected.dimensions
+		}
 		return true
 	}
 	// The two STORAGE ALIASES, kept explicitly: a SQL type whose stored carrier
@@ -1069,4 +1089,28 @@ func protoScalarShapeCompatible(field protoreflect.FieldDescriptor, expected *ex
 		return mapped == TypeCodeString
 	}
 	return false
+}
+
+// promoteIntoRecordConstructor distributes a record promotion over a record
+// constructor's fields, renaming them to the target's.
+func promoteIntoRecordConstructor(child Value, target Type) (*RecordConstructorValue, bool) {
+	rcv, ok := child.(*RecordConstructorValue)
+	rt, isRecord := target.(*RecordType)
+	if !ok || !isRecord || len(rcv.Fields) != len(rt.Fields) {
+		return nil, false
+	}
+	fields := make([]RecordConstructorField, len(rcv.Fields))
+	for i, f := range rcv.Fields {
+		want := rt.Fields[i].FieldType
+		v := f.Value
+		if !v.Type().Equals(want) {
+			if nested, ok := promoteIntoRecordConstructor(v, want); ok {
+				v = nested
+			} else {
+				v = NewPromoteValue(v, want)
+			}
+		}
+		fields[i] = RecordConstructorField{Name: rt.Fields[i].Name, Value: v}
+	}
+	return NewRawRecordConstructorValue(fields...), true
 }

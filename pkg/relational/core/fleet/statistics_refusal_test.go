@@ -110,7 +110,7 @@ func TestSyntheticRefusalSurvivesFanOut(t *testing.T) {
 	t.Parallel()
 
 	md := syntheticMetaData(t)
-	targets := []Target{{DatabaseID: "/db", SchemaName: "S"}}
+	targets := []Target{{DatabaseID: "/FRL/db", SchemaName: "S"}}
 
 	// THE PRODUCTION STEP, not a stand-in of the same shape. The defect being
 	// pinned lives in the caller's return statement — returning a non-nil error
@@ -248,7 +248,7 @@ func TestAmbiguousRefusalSurvivesFanOut(t *testing.T) {
 	step := collectStatisticsStep(nil, nil, recordlayer.StatisticsSubspace{}, StatisticsOptions{},
 		func(context.Context, Target) (*recordlayer.RecordMetaData, error) { return md, nil })
 	res, err := fanOut(context.Background(), nil,
-		[]Target{{DatabaseID: "/db", SchemaName: "S"}}, Options{}, step)
+		[]Target{{DatabaseID: "/FRL/db", SchemaName: "S"}}, Options{}, step)
 
 	if err == nil {
 		t.Error("a refused target must still surface an error, or the fan-out exits 0")
@@ -308,8 +308,7 @@ func TestDescribeSkippedNamesUserIdentifiers(t *testing.T) {
 //   - two stored names colliding on one decoded key LOSE a row outright, so a
 //     skipped type silently vanishes from the only place it is reported.
 //
-// cmd/frl's docscheck gate scans cmd/frl only and cannot see this file, so the
-// invariant is pinned here.
+// The invariant is pinned here.
 func TestDescribeSkippedLosesNoRowAndInventsNoName(t *testing.T) {
 	t.Parallel()
 

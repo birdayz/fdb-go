@@ -34,23 +34,20 @@ func (p *existsSubqueryPlanner) bindQuery(q antlrgen.IQueryContext) (*boundQuery
 	if err != nil {
 		return nil, err
 	}
-	plan, primaryUnnest, err := p.tryBuildCorrelatedPrimaryUnnest(q)
+	plan, err := visitor.VisitQuery(q)
+	if err == nil {
+		err = rejectArrayAggOrderBy(q)
+	}
 	if err != nil {
 		return nil, err
-	}
-	if !primaryUnnest {
-		plan, err = visitor.VisitQuery(q)
-		if err != nil {
-			return nil, err
-		}
 	}
 	if plan == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "bound query has no logical plan")
 	}
-	if err := demoteSchemaQualifiedUnnest(plan, p.effectiveSchemaName(), p.md); err != nil {
+	if err := demoteQualifiedTableUnnest(plan, p.effectiveTemplateName(), p.md); err != nil {
 		return nil, err
 	}
-	if err := resolveQualifiedTableNames(plan, p.effectiveSchemaName()); err != nil {
+	if err := resolveQualifiedTableNames(plan, p.effectiveTemplateName()); err != nil {
 		return nil, err
 	}
 	logical.BindCTESources(plan, p.cteProducers)
@@ -71,6 +68,7 @@ func newBoundQuery(plan logical.LogicalOperator, enclosing *semantic.Scope) (*bo
 		for _, source := range frame.Sources() {
 			source.HiddenColumns = maps.Clone(source.HiddenColumns)
 			source.AdditionalQualifiers = append([]semantic.Identifier(nil), source.AdditionalQualifiers...)
+			source.NamePath = append([]semantic.Identifier(nil), source.NamePath...)
 			parent = append(parent, source)
 		}
 	}
@@ -164,7 +162,10 @@ func boundDependencies(op logical.LogicalOperator, ctes map[*logical.CTEProducer
 	var children []logical.LogicalOperator
 	switch node := op.(type) {
 	case *logical.LogicalScan:
-		if producer := node.Source.Producer(); producer != nil {
+		// A recursive CTE's reference to itself, met while its body is still
+		// being built, has no body yet; its free bindings are that body's,
+		// which the enclosing walk already counts.
+		if producer := node.Source.Producer(); producer != nil && producer.Body() != nil {
 			if _, found := ctes[producer]; !found {
 				ctes[producer] = make(bindingSet)
 				body, err := boundDependencies(producer.Body(), ctes)
@@ -177,7 +178,11 @@ func boundDependencies(op logical.LogicalOperator, ctes map[*logical.CTEProducer
 		}
 		r.local[values.NamedCorrelationIdentifier(strings.ToUpper(sourceBindingName(node)))] = struct{}{}
 	case *logical.LogicalInlineValues:
-		addValue(node.CollectionValue())
+		if node.StreamValue() != nil {
+			addValue(node.StreamValue())
+		} else {
+			addValue(node.CollectionValue())
+		}
 		r.local[values.NamedCorrelationIdentifier(strings.ToUpper(sourceBindingName(node)))] = struct{}{}
 	case *logical.LogicalUnnest:
 		addValue(node.CorrelatedCollection)
@@ -229,7 +234,7 @@ func boundDependencies(op logical.LogicalOperator, ctes map[*logical.CTEProducer
 			addPred(pred)
 		}
 		existential = node.OnExistsSubqueries
-	case *logical.LogicalValues:
+	case *logical.LogicalSingleton:
 	default:
 		return r, api.NewErrorf(api.ErrCodeUnsupportedQuery, "no bound dependency property for %T", op)
 	}
@@ -320,24 +325,6 @@ type loweredExists struct {
 // never reparses the child or publishes to the parent planner's registrations.
 func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 	out := loweredExists{plan: bound.plan, free: maps.Clone(bound.free)}
-	// Preserve the existing multi-source/UNNEST admission boundary even when
-	// private IDs make the child independent. Dependency and admission are
-	// different properties; changing the former must not widen the latter.
-	for _, source := range bound.parent {
-		if !source.Shadowing {
-			continue
-		}
-		inner := boundSourceNames(bound.plan)
-		if len(inner) > 1 {
-			outer := parentLexicalNames(bound.parent)
-			for _, leg := range inner {
-				if _, collision := outer[leg.lexical]; collision {
-					return out, &CorrelatedExistsError{Message: "EXISTS with a multi-source inner reusing an outer UNNEST-frame source name is not supported", Unsupported: true}
-				}
-			}
-		}
-		break
-	}
 	if !bound.correlated() {
 		return out, nil
 	}
@@ -350,10 +337,10 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 			copy.Main, err = strip(node.Main)
 			return &copy, err
 		case *logical.LogicalUnion:
-			// Correlated set-operation bodies require branch-local attachment
-			// predicates. Preserve their admission restriction before lowering;
-			// a derived UNION source remains a separate, supported FROM producer.
-			return nil, &CorrelatedExistsError{Message: "correlated EXISTS: unsupported query body shape", Unsupported: true}
+			// A set-operation body keeps each branch's correlation inside
+			// the branch, read from the outer binding, as Java evaluates it:
+			// nothing is lifted to the attachment predicate.
+			return node, nil
 		case *logical.LogicalProject:
 			return strip(node.Input)
 		case *logical.LogicalSort:
@@ -376,7 +363,10 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 			return input, nil
 		case *logical.LogicalAggregate:
 			if node.HasHaving {
-				return nil, api.NewError(api.ErrCodeUnsupportedQuery, "correlated EXISTS over a GROUP BY / HAVING subquery is not supported")
+				// HAVING filters groups, so the aggregate cannot be dropped:
+				// the body is kept whole, its correlations read from the
+				// outer binding where they are, as a set-operation body is.
+				return node, nil
 			}
 			if len(node.GroupKeys) == 0 {
 				out.truth = predicates.TriTrue
@@ -403,7 +393,10 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 			filter = &logical.LogicalFilter{Input: op}
 		}
 		if filter.HasQualify {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "correlated EXISTS over a GROUP BY / HAVING subquery is not supported")
+			// QUALIFY filters the finished rows, so nothing below it can be
+			// lifted: the body is kept whole, its correlations read from the
+			// outer binding where they are, as a HAVING body is.
+			return op, nil
 		}
 		from, on, err := lowerBoundOn(filter.Input, bound.parent)
 		if err != nil {
@@ -416,10 +409,12 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 			return nil, &CorrelatedExistsError{Message: "correlated EXISTS: a correlated scalar subquery inside an EXISTS WHERE clause is not supported"}
 		}
 		out.scalars = append(out.scalars, filter.ScalarSubqueries...)
-		pred := predicates.SimplifyPredicateValues(andOfConjuncts(append(on, conjunctsOf(filter.Predicate)...)))
-		if name := boundScopeAmbiguous(pred, filter.Input, bound.parent); name != "" {
-			return nil, &CorrelatedExistsError{Message: "correlated EXISTS: inner FROM source " + name + " reuses an outer FROM name referenced by the subquery predicate (scope-ambiguous)", Unsupported: true}
-		}
+		// An inner FROM source that reuses an outer source's name has its own
+		// binding (the subquery's legs are minted, PlanVisitor.
+		// assignDerivedSourceBindings), so a reference to it reads the inner
+		// source, Java's inner shadow; nothing here is ambiguous, and the
+		// predicate reaches Cascades unfolded (RFC-257 WS-E 5.4(a)).
+		pred := andOfConjuncts(append(on, conjunctsOf(filter.Predicate)...))
 		if pred == nil {
 			return filter.Input, nil
 		}
@@ -444,14 +439,24 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 				if alias == edge.Alias && edge.KnownTruth == nil {
 					out.join = edge.JoinPredicate
 					out.constraint = edge.Constraint
+					// P(m,n,o) ranges over M×N: the WHERE N's block folded into
+					// its plan is the product's predicate. Left on N it would
+					// make N a lateral leg of M, read below M's bindings
+					// once the product is re-associated.
+					if factor, where := productFactor(edge); where != nil {
+						out.join = where
+						return &logical.LogicalJoin{Left: filter.Input, Right: factor, Kind: logical.JoinInner}, nil
+					}
 					out.retained = append(out.retained, edge)
 					return &logical.LogicalJoin{Left: filter.Input, Right: edge.Plan, Kind: logical.JoinInner}, nil
 				}
 			}
+			// The non-EXISTS conjuncts, outer-only ones included, stay in the
+			// attachment predicate, inside the existential, so every
+			// consumer (NOT EXISTS, a projected EXISTS) reads them as Java
+			// does (conformance "ExistsInnerShadowJavaProbe", the case1 and
+			// projected rows).
 			out.join = nonExists
-			if hasNonInnerConjunct(nonExists, inner) {
-				out.constraint = logical.ExistsPositivePredicateOnly
-			}
 			copy := *filter
 			copy.Predicate = stripNonExistsPredicates(pred)
 			copy.ScalarSubqueries = nil
@@ -488,4 +493,31 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 		out.free = make(bindingSet)
 	}
 	return out, nil
+}
+
+// productFactor splits an EXISTS edge whose block WHERE was folded into its
+// plan into the block's FROM and that WHERE. where is nil when the plan carries
+// no such filter, or one with subquery riders whose bindings it owns.
+func productFactor(edge logical.ExistsSubquery) (factor logical.LogicalOperator, where predicates.QueryPredicate) {
+	if edge.JoinPredicate != nil {
+		return edge.Plan, nil
+	}
+	factor = edge.Plan
+	var conjuncts []predicates.QueryPredicate
+	for {
+		filter, ok := factor.(*logical.LogicalFilter)
+		if !ok || filter.Predicate == nil || filter.HasQualify || len(filter.ExistsSubqueries) != 0 ||
+			len(filter.ScalarSubqueries) != 0 || len(filter.CorrelatedScalarSubqueries) != 0 {
+			break
+		}
+		conjuncts = append(conjuncts, filter.Predicate)
+		factor = filter.Input
+	}
+	switch len(conjuncts) {
+	case 0:
+		return edge.Plan, nil
+	case 1:
+		return factor, conjuncts[0]
+	}
+	return factor, predicates.NewAnd(conjuncts...)
 }

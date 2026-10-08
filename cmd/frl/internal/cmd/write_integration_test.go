@@ -130,6 +130,15 @@ func TestIntegration_IndexSetState_ReadableRequiresBuilt(t *testing.T) {
 	if err != nil || !strings.Contains(out, "READABLE") {
 		t.Fatalf("index not READABLE after build: %v\n%s", err, out)
 	}
+	// A second build finds the index READABLE and leaves it alone, and says
+	// so rather than reporting an empty build.
+	out, err = runCmd(t, "index", "build", "Order$price", "--yes")
+	if err != nil {
+		t.Fatalf("index build of a READABLE index: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Order$price is already readable; nothing built") || strings.Contains(out, "built Order$price") {
+		t.Errorf("build of a READABLE index must report the skip:\n%s", out)
+	}
 }
 
 func TestIntegration_MetaApply_ValidatorGate(t *testing.T) {
@@ -351,13 +360,15 @@ func writeMetaFile(t *testing.T, md *recordlayer.RecordMetaData, path string) {
 func TestIntegration_IndexBuild_InterruptedThenResumed(t *testing.T) {
 	bindConfig(t)
 
-	// Force WRITE_ONLY so the build has real work.
-	if out, err := runCmd(t, "index", "set-state", "Order$price", "write-only", "--yes"); err != nil {
+	// Force DISABLED so the build starts from nothing. WRITE_ONLY would not do: a
+	// READABLE index marked WRITE_ONLY keeps its full range coverage, so a build
+	// over it has no work, and a build over a READABLE index does nothing at all.
+	if out, err := runCmd(t, "index", "set-state", "Order$price", "disabled", "--yes"); err != nil {
 		t.Fatalf("set-state: %v\n%s", err, out)
 	}
-	// A 1ns time limit interrupts immediately — partial or zero progress.
+	// A 1ns time limit stops the build after its first one-record range.
 	if _, err := runCmd(t, "index", "build", "Order$price", "--limit", "1", "--time-limit", "1ns", "--yes"); err == nil {
-		t.Log("time-limited build completed anyway (tiny store) — resume still exercised below")
+		t.Fatal("the time-limited build completed, so the resume below would have nothing to resume")
 	}
 	// Resume with matching settings finishes and marks READABLE.
 	if out, err := runCmd(t, "index", "build", "Order$price", "--limit", "1", "--yes"); err != nil {

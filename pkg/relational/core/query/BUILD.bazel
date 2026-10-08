@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "query",
     srcs = [
+        "block_rows.go",
         "bound_unnest.go",
         "box_conjunct.go",
         "cascades_translator.go",
@@ -16,7 +17,9 @@ go_library(
         "logical_result_type.go",
         "ordinal_seed.go",
         "plan.go",
+        "quantifier_column_names.go",
         "scalar_subquery_seed.go",
+        "sibling_reads.go",
         "unnest_alias_guard.go",
         "unnest_gather.go",
         "unnest_leg_mint_census.go",
@@ -26,12 +29,14 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/recordlayer",
+        "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
         "//pkg/relational/core/functions",
         "//pkg/relational/core/query/logical",
+        "//pkg/relational/core/rowstruct",
         "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )
@@ -56,6 +61,7 @@ go_test(
         "cte_producer_test.go",
         "derived_output_columns_dedup_test.go",
         "derived_unnest_dotted_name_test.go",
+        "domain_registration_test.go",
         "duplicate_alias_binding_test.go",
         "exists_enclosure_lift_test.go",
         "exists_gathered_bare_read_test.go",
@@ -70,6 +76,7 @@ go_test(
         "gated_leg_box_test.go",
         "groupby_gate_test.go",
         "hidden_sort_column_value_recovery_test.go",
+        "hoist_interleaved_spine_links_test.go",
         "inline_values_translation_test.go",
         "is_scan_family_leg_test.go",
         "left_outer_seed_test.go",
@@ -77,18 +84,20 @@ go_test(
         "leg_identity_census_main_test.go",
         "leg_kind_discriminator_test.go",
         "leg_ref_nested_admission_test.go",
-        "name_resolves_in_columns_test.go",
+        "output_label_authorship_test.go",
         "plan_test.go",
         "projection_labels_versus_type_test.go",
         "projection_segments_test.go",
         "proto_field_lookup_test.go",
         "qualifier_recovery_wiring_test.go",
+        "quantifier_column_names_test.go",
         "raw_unnest_fixture_test.go",
         "recursive_cte_test.go",
         "rfc232_test_helpers_test.go",
         "rotation_guard_test.go",
         "scalar_subquery_seed_test.go",
         "scan_row_type_mapper_test.go",
+        "sibling_reads_test.go",
         "sort_over_projection_decline_test.go",
         "unnest_alias_guard_test.go",
         "unnest_exists_test.go",
@@ -97,6 +106,7 @@ go_test(
         "unnest_leg_mint_disposition_test.go",
         "unnest_leg_mint_partition_test.go",
         "unnest_seed_test.go",
+        "update_translation_test.go",
     ],
     embed = [":query"],
     deps = [
@@ -107,6 +117,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
+        "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
         "//pkg/relational/core/query/logical",
         "//pkg/relational/core/query/semantic",
@@ -116,9 +127,3 @@ go_test(
         "@org_golang_google_protobuf//types/descriptorpb",
     ],
 )
-
-# keep: staged into pkg/docscheck panic-boundary fuzz-net guard (RFC-134).
-exports_files([
-    "cascades_translator_test.go",
-    "BUILD.bazel",
-])

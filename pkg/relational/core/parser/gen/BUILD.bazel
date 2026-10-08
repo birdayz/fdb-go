@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "gen",
     srcs = [
+        "fresh_atn.go",
         "relational_lexer.go",
         "relational_parser.go",
         "relationalparser_base_listener.go",

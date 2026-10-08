@@ -149,6 +149,8 @@ func TestIsQuery(t *testing.T) {
 		"WITH hi AS (SELECT id FROM t) SELECT * FROM hi",
 		"(SELECT 1)",
 		"VALUES (1)",
+		"-- note\nselect 1",
+		"/* a */ /* b */\n-- c\nSELECT 1",
 	}
 	for _, q := range queries {
 		if !IsQuery(q) {
@@ -161,6 +163,7 @@ func TestIsQuery(t *testing.T) {
 		"DELETE FROM t",
 		"CREATE TABLE t (id BIGINT)",
 		"DROP DATABASE foo",
+		"-- select\nINSERT INTO t VALUES (1)",
 	}
 	for _, q := range nonQueries {
 		if IsQuery(q) {

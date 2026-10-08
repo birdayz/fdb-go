@@ -42,6 +42,9 @@ type RuleCall struct {
 	// err is the first failure reported by the rule body. A failed call never
 	// publishes any of its staged yields.
 	err error
+
+	isRoot    bool
+	reExplore bool
 }
 
 // Yield records a replacement expression. The planner reads the
@@ -51,6 +54,15 @@ func (c *RuleCall) Yield(expr any) {
 		return
 	}
 	c.yielded = append(c.yielded, expr)
+}
+
+// YieldAndReExplore requests simplification of newly constructed children.
+func (c *RuleCall) YieldAndReExplore(expr any) {
+	if c == nil || c.err != nil {
+		return
+	}
+	c.Yield(expr)
+	c.reExplore = true
 }
 
 // Fail records the first rule-body error. Later failures cannot hide the
@@ -110,7 +122,7 @@ func FireRule(rule CascadesRule, in any) ([]any, error) {
 	matches := matcher.BindMatches(matching.NewBindings(), in)
 	var all []any
 	for _, b := range matches {
-		call := &RuleCall{Bindings: b}
+		call := &RuleCall{Bindings: b, isRoot: true}
 		rule.OnMatch(call)
 		if err := call.Err(); err != nil {
 			return nil, err

@@ -32,13 +32,22 @@ func (r *PushRequestedOrderingThroughUniqueRule) Matcher() matching.BindingMatch
 	return r.matcher
 }
 
+func (r *PushRequestedOrderingThroughUniqueRule) hasConstraintEffect(cm *ConstraintMap, ref *expressions.Reference, expr expressions.RelationalExpression) bool {
+	return passThroughConstraintHasEffect(cm, ref, expr, RequestedOrderingConstraintKey)
+}
+
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *PushRequestedOrderingThroughUniqueRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *PushRequestedOrderingThroughUniqueRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return
 	}
 
-	orderings := call.GetRequestedOrderings()
-	if len(orderings) == 0 {
+	orderings, present := Get(call.Constraints, call.Reference, RequestedOrderingConstraintKey)
+	if !present {
 		return
 	}
 

@@ -41,11 +41,11 @@ func TestAggregateSumInitialState(t *testing.T) {
 					c.aggregates[0].Function = fn
 					for i := 0; i <= len(tc.vals); i++ {
 						if i == split {
-							encoded, err := encodeAggregateContinuation(nil, "", nil, c.current, c.aggregates)
+							encoded, err := encodeAggregateContinuation(nil, nil, nil, c.current, c.aggregates)
 							if err != nil {
 								t.Fatal(err)
 							}
-							_, key, state, err := decodeAggregateContinuation(encoded, len(c.aggregates))
+							_, key, state, err := decodeAggregateContinuation(encoded, nil, c.aggregates, nil)
 							if err != nil {
 								t.Fatal(err)
 							}

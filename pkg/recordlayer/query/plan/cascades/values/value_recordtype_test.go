@@ -41,10 +41,10 @@ func TestRecordTypeValue_MissingDiscriminator(t *testing.T) {
 	}
 }
 
-func TestRecordTypeValue_TypeIsNotNullLong(t *testing.T) {
+func TestRecordTypeValue_TypeIsNullableLong(t *testing.T) {
 	t.Parallel()
 	v := NewRecordTypeValue(LiteralValue(nil))
-	if !v.Type().Equals(NotNullLong) {
-		t.Fatalf("Type=%v, want NotNullLong", v.Type())
+	if !v.Type().Equals(NullableLong) {
+		t.Fatalf("Type=%v, want NullableLong", v.Type())
 	}
 }

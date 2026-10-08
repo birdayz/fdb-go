@@ -58,7 +58,7 @@ func TestPlanDeterminism_ExtractedPlanStable(t *testing.T) {
 		filterQ := expressions.ForEachQuantifier(filterRef)
 		filterRoot := determinismRoot(filterQ)
 
-		proj := mustDeterminismConstruct(expressions.NewLogicalProjectionExpression(
+		proj := mustDeterminismConstruct(newBlockSelectForTest(
 			[]values.Value{
 				determinismField(filterRoot, 0),
 				determinismField(filterRoot, 1),

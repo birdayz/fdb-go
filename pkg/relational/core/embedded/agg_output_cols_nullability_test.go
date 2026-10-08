@@ -34,8 +34,8 @@ func TestAggOutputCols_CountArmsAgreeOnNullability(t *testing.T) {
 	// md is nil on purpose: the types are not what this pins, and a nil
 	// catalog is the path that leaves every argument-derived type UNKNOWN
 	// while the COUNT rules — which ignore their argument — still apply.
-	star := aggOutputCols(countStarOnly, nil)
-	col := aggOutputCols(countColOnly, nil)
+	star := aggOutputCols(countStarOnly, nil, defaultEmbeddedTemplate)
+	col := aggOutputCols(countColOnly, nil, defaultEmbeddedTemplate)
 
 	if len(star) != 1 || len(col) != 1 {
 		t.Fatalf("expected one output column each, got %d and %d", len(star), len(col))

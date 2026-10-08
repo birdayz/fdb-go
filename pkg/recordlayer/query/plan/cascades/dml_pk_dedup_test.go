@@ -121,8 +121,8 @@ func TestImplementUpdateRule_DedupsEvenOverADistinctAccessPath(t *testing.T) {
 	}
 	resultRow, ok := physicalType.(*values.RecordType)
 	if !ok || len(resultRow.Fields) != 2 ||
-		resultRow.Fields[0].Name != "OLD" || resultRow.Fields[1].Name != "NEW" {
-		t.Fatalf("UPDATE plan result = %v, want exact two-field {OLD, NEW} row", physicalType)
+		resultRow.Fields[0].Name != "old" || resultRow.Fields[1].Name != "new" {
+		t.Fatalf("UPDATE plan result = %v, want exact two-field {old, new} row", physicalType)
 	}
 	inner := dedupInnerOf(plan.GetInner())
 	if inner == nil {
@@ -170,7 +170,7 @@ func TestImplementDeleteRule_DedupsOverANonDistinctAccessPath(t *testing.T) {
 	t.Parallel()
 	rowType := dmlDedupRowType()
 	scanPlan := dmlDedupScanPlan(t, rowType)
-	proj, err := plans.NewRecordQueryProjectionPlan(nil, scanPlan)
+	proj, err := newProjectionMapOverForTest(nil, scanPlan)
 	proj = mustConstruct(t, proj, err)
 	innerRef := expressions.FinalOfAtStage(proj, expressions.StageCanonical)
 	computeRefPlanProperties(innerRef)

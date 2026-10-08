@@ -37,25 +37,8 @@ func sargableOverFieldRef(t *testing.T) *PredicateWithValueAndRanges {
 	return NewPredicateWithValueAndRanges(values.LiteralValue(int64(1)), []*RangeConstraints{rc})
 }
 
-// TestExplainFallback_IsAllocationIndependent covers the predicate types that
-// reach StructurallyEqual's and writeSemanticHash's DEFAULT arms, which decide
-// identity by folding Explain() and describe it as "a stable structural
-// discriminator".
-//
-// PredicateWithValueAndRanges rendered its comparison operands with
-// fmt.Sprintf("%v", …). A Value is an interface over pointer structs and fmt
-// prints a NESTED pointer field as a hex address, so two independently built but
-// structurally identical sargables rendered
-//
-//	"1 IN {> &{A LONG NULL 0x3df9bb6a0450 0x3df9bb6a04b0 ...}}"
-//
-// with different addresses — and compared UNEQUAL and hashed APART under both
-// mechanisms. Two identical sargables would not share a memo bucket, and the
-// hash would differ across processes.
-//
-// The type is never originated in the Go port, so this was latent rather than
-// shipped; it is pinned because the default arm is shared, and the next type to
-// land in it inherits the same contract.
+// Structural equality still uses Explain for range predicates; semantic
+// equality and hashing use explicit range/value arms instead.
 func TestExplainFallback_IsAllocationIndependent(t *testing.T) {
 	t.Parallel()
 
@@ -74,10 +57,7 @@ func TestExplainFallback_IsAllocationIndependent(t *testing.T) {
 	}
 
 	if got := a.Explain(); heapAddress.MatchString(got) {
-		t.Errorf("Explain() contains a heap address: %q. Both StructurallyEqual and "+
-			"writeSemanticHash fold this string in their default arm, so identity is now "+
-			"allocation-dependent — use values.ExplainValue for every Value rendered here, "+
-			"never %%v.", got)
+		t.Errorf("Explain() contains a heap address: %q; structural identity must be allocation-independent", got)
 	}
 	if a.Explain() != b.Explain() {
 		t.Errorf("two structurally identical predicates render differently:\n  %q\n  %q",
@@ -91,7 +71,7 @@ func TestExplainFallback_IsAllocationIndependent(t *testing.T) {
 		t.Error("...and they hash apart under StructuralHash")
 	}
 	if SemanticHashCode(a) != SemanticHashCode(b) {
-		t.Error("...and under SemanticHashCode, which folds Explain() in its own default arm")
+		t.Error("equal range predicates hash apart under SemanticHashCode")
 	}
 
 	// Control: the fallback must still DISCRIMINATE. A rendering that collapsed
@@ -104,8 +84,7 @@ func TestExplainFallback_IsAllocationIndependent(t *testing.T) {
 		t.Error("sargables over DIFFERENT values compared equal — the Explain fallback has " +
 			"stopped discriminating and the assertions above are vacuous")
 	}
-	// And on the range side, which is the half the deleted HashCodeWithoutChildren
-	// ignored entirely.
+	// Structural identity must distinguish different ranges.
 	differentRange := NewPredicateWithValueAndRanges(values.LiteralValue(int64(1)),
 		[]*RangeConstraints{NewRangeConstraints([]Comparison{
 			{Type: ComparisonLessThan, Operand: fieldRefOperand(t)},

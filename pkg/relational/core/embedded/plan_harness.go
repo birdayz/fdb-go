@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"github.com/antlr4-go/antlr/v4"
 )
 
 // PlanQueryForTest runs the full Cascades pipeline on a SQL query against
@@ -44,9 +46,18 @@ func PlanPhysicalForTest(sql, schemaDDL string, stats properties.StatisticsProvi
 	return plan, err
 }
 
+// PlanPhysicalForTestTraced is PlanPhysicalForTest with the planner's work
+// attributed to trace, which then holds the run's per-rule cost and memo census.
+func PlanPhysicalForTestTraced(sql, schemaDDL string, stats properties.StatisticsProvider, trace *cascades.PlannerTrace) (plans.RecordQueryPlan, error) {
+	popts := plannerOptionsFrom(nil)
+	popts.trace = trace
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, nil, popts)
+	return plan, err
+}
+
 // PlanQueryForTestWithDisabledRules is PlanQueryForTest with a set of planner
 // rules excluded from selection, by the SIMPLE type name Planner.DisabledRules
-// is keyed by ("MergeProjectionAndFetchRule").
+// is keyed by ("MergeFetchIntoCoveringIndexRule").
 //
 // It exists so a causal claim about WHICH rule produces an observed plan shape
 // can be asserted rather than asserted-in-prose: the observable ("the plan has
@@ -64,6 +75,21 @@ func PlanQueryForTestWithDisabledRules(
 ) (string, error) {
 	opts := api.NewOptionsBuilder().Set(api.OptDisabledPlannerRules, disabled).Build()
 	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, nil, plannerOptionsFrom(opts))
+	if err != nil {
+		return "", err
+	}
+	return plan.Explain(), nil
+}
+
+// PlanQueryForTestObservingRules is PlanQueryForTestWithDisabledRules with the
+// planner's rule-call observer (WS-F W6 step 1) reporting every rule call.
+func PlanQueryForTestObservingRules(
+	sql, schemaDDL string, disabled []string, observe func(cascades.ObservedRuleCall),
+) (string, error) {
+	opts := api.NewOptionsBuilder().Set(api.OptDisabledPlannerRules, disabled).Build()
+	popts := plannerOptionsFrom(opts)
+	popts.ruleObserver = observe
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, nil, false, nil, popts)
 	if err != nil {
 		return "", err
 	}
@@ -90,6 +116,32 @@ func PlanPhysicalForTestWithReachability(
 	return plan, err
 }
 
+// PlanPhysicalForTestWithArgs is PlanPhysicalForTestWithReachability with the
+// statement's parameters bound as the connection binds them, so a `?` plans
+// with its driver value's type, as it executes.
+func PlanPhysicalForTestWithArgs(
+	sql, schemaDDL string,
+	args []driver.NamedValue,
+	stats properties.StatisticsProvider,
+	reach *cascades.ReachabilityCollector,
+) (plans.RecordQueryPlan, error) {
+	popts := plannerOptionsFrom(nil)
+	popts.params = args
+	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, reach, popts)
+	return plan, err
+}
+
+// bindHarnessParameters binds a harness statement's parameters on its parse
+// tree; the release removes them. No parameters bind nothing, leaving every
+// `?` an untyped placeholder.
+func bindHarnessParameters(root antlr.Tree, params []driver.NamedValue) (func(), error) {
+	if len(params) == 0 {
+		return func() {}, nil
+	}
+	_, release, err := bindStatementParameters(root, params)
+	return release, err
+}
+
 // PlanPhysicalDMLForTest is PlanPhysicalForTest for a DELETE or UPDATE
 // statement: it routes the DML through the SAME logical-build → translate →
 // Cascades-plan → extract → ValidatePlanInvariants pipeline the production DML
@@ -108,7 +160,7 @@ func PlanPhysicalForTestWithReachability(
 // sql passed here MUST be a single DELETE or UPDATE statement; anything else is
 // a caller error (ErrCodeUnsupportedQuery).
 func PlanPhysicalDMLForTest(sql, schemaDDL string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
-	return planPhysicalDMLForTest(sql, schemaDDL, stats, nil)
+	return planPhysicalDMLForTest(sql, schemaDDL, nil, stats, nil)
 }
 
 // PlanPhysicalDMLForTestWithReachability is PlanPhysicalDMLForTest with
@@ -119,7 +171,18 @@ func PlanPhysicalDMLForTestWithReachability(
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
-	return planPhysicalDMLForTest(sql, schemaDDL, stats, reach)
+	return planPhysicalDMLForTest(sql, schemaDDL, nil, stats, reach)
+}
+
+// PlanPhysicalDMLForTestWithArgs is PlanPhysicalDMLForTestWithReachability
+// with the statement's parameters bound as the connection binds them.
+func PlanPhysicalDMLForTestWithArgs(
+	sql, schemaDDL string,
+	args []driver.NamedValue,
+	stats properties.StatisticsProvider,
+	reach *cascades.ReachabilityCollector,
+) (plans.RecordQueryPlan, error) {
+	return planPhysicalDMLForTest(sql, schemaDDL, args, stats, reach)
 }
 
 // planPhysicalForTest is PlanPhysicalForTest plus the optional RFC-224
@@ -175,12 +238,37 @@ func planPhysicalForTestObserved(
 	if err != nil {
 		return nil, nil, fmt.Errorf("schema DDL: %w", err)
 	}
-	md := tmpl.Underlying()
+	return planPhysicalForMetaData(sql, tmpl.Underlying(), stats, verifyExtraction, reach, popts, observe)
+}
 
+// planPhysicalForMetaData is planPhysicalForTestObserved over meta-data the
+// caller holds, for a test whose meta-data DDL cannot write (an index option
+// under a name the DDL does not emit).
+func planPhysicalForMetaData(
+	sql string,
+	md *recordlayer.RecordMetaData,
+	stats properties.StatisticsProvider,
+	verifyExtraction bool,
+	reach *cascades.ReachabilityCollector,
+	popts plannerOptions,
+	observe func(logical.LogicalOperator, *expressions.Reference),
+) (plans.RecordQueryPlan, *cascades.ExtractionVerificationReport, error) {
 	root, err := parser.Parse(sql)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse SQL: %w", err)
 	}
+	if expanded, changed, expErr := expandSQLFunctions(sql, root, metaDataFunctions(md)); expErr != nil {
+		return nil, nil, expErr
+	} else if changed {
+		if root, err = parser.Parse(expanded); err != nil {
+			return nil, nil, err
+		}
+	}
+	release, err := bindHarnessParameters(root, popts.params)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer release()
 	stmts := root.Statements()
 	if stmts == nil || len(stmts.AllStatement()) == 0 {
 		return nil, nil, fmt.Errorf("no statements in SQL")
@@ -201,6 +289,9 @@ func planPhysicalForTestObserved(
 
 	visitor := NewPlanVisitor(md)
 	logicalOp, buildErr := visitor.VisitQuery(q)
+	if buildErr == nil {
+		buildErr = rejectArrayAggOrderBy(q)
+	}
 	if buildErr != nil {
 		return nil, nil, buildErr
 	}
@@ -210,7 +301,7 @@ func planPhysicalForTestObserved(
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
 		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
-	if err := resolveQualifiedTableNames(logicalOp, "s"); err != nil {
+	if err := resolveQualifiedTableNames(logicalOp, defaultEmbeddedTemplate); err != nil {
 		return nil, nil, err
 	}
 	if err := validateTablesAndColumns(logicalOp, md); err != nil {
@@ -300,29 +391,18 @@ func planReferenceToPhysical(
 	if verifyExtraction {
 		planner.SetVerifyExtractionUnambiguous(true)
 	}
-	// RFC-186: the REWRITING coherence check is enabled PERMANENTLY —
-	// cost-property derivation traverses each child reference's DESIGNATED
-	// final (the virtual prune; Java's getOnlyElement semantics without
-	// the physical prune Go cannot yet afford), and the winner
-	// OptimizeGroup stamps must BE that designation. A divergence is a
-	// designation-staleness or comparator-drift bug and reds the harness
-	// here, loudly, rather than surviving as silent history-dependent
-	// costing.
-	planner.SetVerifyRewritingCoherence(true)
 	// nil is the production path: the planner then pays one nil compare per
 	// yield and accumulates nothing.
 	planner.SetReachabilityCollector(reach)
+	if popts.ruleObserver != nil {
+		planner.SetRuleCallObserver(popts.ruleObserver)
+	}
 
 	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	var extractionReport *cascades.ExtractionVerificationReport
 	if verifyExtraction {
 		report := planner.ExtractionVerification()
 		extractionReport = &report
-	}
-	if rv := planner.RewritingCoherenceViolations(); len(rv) > 0 {
-		return nil, nil, fmt.Errorf(
-			"RFC-186 REWRITING coherence violated (stamped winner != designated final — designation staleness or comparator drift):\n  %s",
-			strings.Join(rv, "\n  "))
 	}
 	if planErr != nil {
 		return nil, nil, fmt.Errorf("planning failed: %w", planErr)
@@ -362,6 +442,7 @@ func planReferenceToPhysical(
 // drops the production SELECT generator's connection-bound steps.
 func planPhysicalDMLForTest(
 	sql, schemaDDL string,
+	args []driver.NamedValue,
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
@@ -369,7 +450,7 @@ func planPhysicalDMLForTest(
 	if err != nil {
 		return nil, fmt.Errorf("schema DDL: %w", err)
 	}
-	return planPhysicalDMLWithMetadata(sql, tmpl.Underlying(), stats, reach)
+	return planPhysicalDMLWithMetadata(sql, tmpl.Underlying(), args, stats, reach)
 }
 
 // PlanPhysicalDMLWithMetadata is PlanPhysicalDMLForTest against PRE-BUILT
@@ -383,12 +464,13 @@ func PlanPhysicalDMLWithMetadata(
 	md *recordlayer.RecordMetaData,
 	stats properties.StatisticsProvider,
 ) (plans.RecordQueryPlan, error) {
-	return planPhysicalDMLWithMetadata(sql, md, stats, nil)
+	return planPhysicalDMLWithMetadata(sql, md, nil, stats, nil)
 }
 
 func planPhysicalDMLWithMetadata(
 	sql string,
 	md *recordlayer.RecordMetaData,
+	args []driver.NamedValue,
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
@@ -396,6 +478,11 @@ func planPhysicalDMLWithMetadata(
 	if err != nil {
 		return nil, fmt.Errorf("parse SQL: %w", err)
 	}
+	release, err := bindHarnessParameters(root, args)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	stmts := root.Statements()
 	if stmts == nil || len(stmts.AllStatement()) == 0 {
 		return nil, fmt.Errorf("no statements in SQL")
@@ -410,13 +497,16 @@ func planPhysicalDMLWithMetadata(
 	if err := rejectWindowedAggregate(dml); err != nil {
 		return nil, err
 	}
+	if err := rejectArrayAggOrderBy(dml); err != nil {
+		return nil, err
+	}
 
 	// Route DELETE→delete-build, UPDATE→update-build against the schema catalog,
 	// exactly as planDML does. INSERT is out of scope (see PlanPhysicalDMLForTest).
 	var logicalOp logical.LogicalOperator
 	switch {
 	case dml.DeleteStatement() != nil:
-		logicalOp, err = buildLogicalPlanForDeleteWithCatalog(dml.DeleteStatement(), md, defaultEmbeddedSchema)
+		logicalOp, err = buildLogicalPlanForDeleteWithCatalog(dml.DeleteStatement(), md, defaultEmbeddedTemplate)
 	case dml.UpdateStatement() != nil:
 		// Production's two UPDATE parse-tree rejections run BEFORE the builder, so
 		// a harness that skips them builds a plan for SQL production never accepts
@@ -432,7 +522,7 @@ func planPhysicalDMLWithMetadata(
 			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 				"subqueries are not supported in UPDATE ... SET")
 		}
-		logicalOp, err = buildLogicalPlanForUpdateWithCatalog(dml.UpdateStatement(), md, defaultEmbeddedSchema)
+		logicalOp, err = buildLogicalPlanForUpdateWithCatalog(dml.UpdateStatement(), md, defaultEmbeddedTemplate)
 	default:
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML harness handles only DELETE and UPDATE")
 	}
@@ -445,7 +535,7 @@ func planPhysicalDMLWithMetadata(
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML logical plan failed")
 	}
 
-	if err := resolveQualifiedTableNames(logicalOp, defaultEmbeddedSchema); err != nil {
+	if err := resolveQualifiedTableNames(logicalOp, defaultEmbeddedTemplate); err != nil {
 		return nil, err
 	}
 	// Mirror planDML's TARGET guard and source sweep, in that order. This harness
@@ -465,8 +555,8 @@ func planPhysicalDMLWithMetadata(
 	case *logical.LogicalInsert:
 		harnessTarget = dop.Table
 	}
-	if harnessTarget != "" && md.GetRecordType(bareTableName(harnessTarget)) == nil {
-		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(bareTableName(harnessTarget)))
+	if harnessTarget != "" && md.GetRecordType(harnessTarget) == nil {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(harnessTarget))
 	}
 	if err := validateScanTables(logicalOp, md); err != nil {
 		return nil, err
@@ -476,6 +566,16 @@ func planPhysicalDMLWithMetadata(
 	// is load-bearing -- read rather than measured.
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
+	}
+	if elements := returningSelectElements(dml); elements != nil {
+		returning, err := buildReturning(logicalOp, elements, md, defaultEmbeddedTemplate)
+		if err != nil {
+			return nil, err
+		}
+		if fn := query.FindUnsupportedFunction(returning); fn != "" {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
+		}
+		logicalOp = returning
 	}
 
 	// TranslateToCascadesWithError, the same call planDML makes. The subquery
@@ -552,7 +652,7 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
 		return "", api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
-	if err := resolveQualifiedTableNames(logicalOp, "s"); err != nil {
+	if err := resolveQualifiedTableNames(logicalOp, defaultEmbeddedTemplate); err != nil {
 		return "", err
 	}
 	if err := validateTablesAndColumns(logicalOp, md); err != nil {
@@ -615,8 +715,9 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 // READABLE and remains so through execution. Otherwise a metadata-only UNIQUE
 // proof can survive even when the final plan contains no index leaf for the
 // executor to reject. Live SQL must use cascadesGenerator, which snapshots,
-// cache-keys, and revalidates authoritative store state. The session schema
-// defaults to the embedded planner's "s".
+// cache-keys, and revalidates authoritative store state. A table's qualifier
+// is defaultEmbeddedTemplate, the name the embedded planner gives a harness's
+// absent schema template.
 //
 // The query's scalar subqueries are planned but NOT returned — fine for
 // plan-only callers (Explain/shape assertions); a caller that EXECUTES a
@@ -624,7 +725,7 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 // values.UnboundScalarSubqueryError. Executing callers use
 // PlanRecordQueryWithSubqueries.
 func PlanRecordQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
-	return PlanRecordQueryWithMetadataSchema(sql, md, defaultEmbeddedSchema, stats)
+	return PlanRecordQueryWithMetadataTemplate(sql, md, defaultEmbeddedTemplate, stats)
 }
 
 // PlanRecordQueryWithSubqueries is PlanRecordQueryWithMetadata plus the
@@ -638,20 +739,19 @@ func PlanRecordQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, sta
 // rows — the bug this API closed). The same all-secondary-indexes-strictly-
 // READABLE execution precondition applies.
 func PlanRecordQueryWithSubqueries(sql string, md *recordlayer.RecordMetaData, stats properties.StatisticsProvider) (plans.RecordQueryPlan, []PlannedScalarSubquery, error) {
-	return planRecordQueryAndSubqueries(sql, md, defaultEmbeddedSchema, stats)
+	return planRecordQueryAndSubqueries(sql, md, defaultEmbeddedTemplate, stats)
 }
 
-// PlanRecordQueryWithMetadataSchema is PlanRecordQueryWithMetadata bound to a
-// specific session schema (the real CONNECT schema on the session path —
-// cascades_generator.go uses g.c.sess.Schema for the same threading). A
-// non-default schema flows through NewPlanVisitorWithSchema AND the
-// schema-qualified-table demotion/resolution, so a schema-qualified source —
-// including INSIDE a subquery (`… EXISTS (SELECT 1 FROM PA AS main, main.PB AS
-// B)` with session schema `main`) — is resolved against the ACTIVE schema, not
-// the hardcoded default. RFC-142 (P2b). It remains a metadata-only harness and
+// PlanRecordQueryWithMetadataTemplate is PlanRecordQueryWithMetadata bound to a
+// specific schema template's name, the name a table's qualifier must carry (the
+// session path uses its schema's template, cascadesGenerator.sessionTemplate).
+// It flows through NewPlanVisitorWithTemplate AND the qualified-table
+// demotion/resolution, so a qualified source — including INSIDE a subquery
+// (`… EXISTS (SELECT 1 FROM PA AS main, main.PB AS B)` with template `MAIN`)
+// — is resolved against that template, not the default. RFC-142 (P2b). It remains a metadata-only harness and
 // inherits the strictly-READABLE execution precondition above.
-func PlanRecordQueryWithMetadataSchema(sql string, md *recordlayer.RecordMetaData, schemaName string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
-	plan, _, err := planRecordQueryAndSubqueries(sql, md, schemaName, stats)
+func PlanRecordQueryWithMetadataTemplate(sql string, md *recordlayer.RecordMetaData, templateName string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, error) {
+	plan, _, err := planRecordQueryAndSubqueries(sql, md, templateName, stats)
 	return plan, err
 }
 
@@ -694,17 +794,17 @@ func PlanRecordQueryAssertingAllIndexesReadable(
 	// and pages nowhere.
 	popts.config.SingleReadVersion = true
 	plan, _, err := planRecordQueryAndSubqueriesWithOptions(
-		sql, md, defaultEmbeddedSchema, stats, popts)
+		sql, md, defaultEmbeddedTemplate, stats, popts)
 	return plan, err
 }
 
 // planRecordQueryAndSubqueries is the shared body of the record-plan harness
 // entry points: parse → logical build → translate → Cascades-plan the main
 // query AND its collected scalar subqueries.
-func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, schemaName string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, []PlannedScalarSubquery, error) {
+func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, templateName string, stats properties.StatisticsProvider) (plans.RecordQueryPlan, []PlannedScalarSubquery, error) {
 	// No connection here, so no api.Options: the Java-default planner options,
 	// which leave the index-state view UNKNOWN.
-	return planRecordQueryAndSubqueriesWithOptions(sql, md, schemaName, stats, plannerOptionsFrom(nil))
+	return planRecordQueryAndSubqueriesWithOptions(sql, md, templateName, stats, plannerOptionsFrom(nil))
 }
 
 // planRecordQueryAndSubqueriesWithOptions is the body, with the planner options
@@ -715,59 +815,15 @@ func planRecordQueryAndSubqueries(sql string, md *recordlayer.RecordMetaData, sc
 func planRecordQueryAndSubqueriesWithOptions(
 	sql string,
 	md *recordlayer.RecordMetaData,
-	schemaName string,
+	templateName string,
 	stats properties.StatisticsProvider,
 	popts plannerOptions,
 ) (plans.RecordQueryPlan, []PlannedScalarSubquery, error) {
-	if schemaName == "" {
-		schemaName = defaultEmbeddedSchema
+	if templateName == "" {
+		templateName = defaultEmbeddedTemplate
 	}
-	root, err := parser.Parse(sql)
+	logicalOp, err := harnessLogicalOp(sql, md, templateName)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse SQL: %w", err)
-	}
-	stmts := root.Statements()
-	if stmts == nil || len(stmts.AllStatement()) == 0 {
-		return nil, nil, fmt.Errorf("no statements in SQL")
-	}
-	sel := stmts.AllStatement()[0].SelectStatement()
-	if sel == nil {
-		return nil, nil, fmt.Errorf("not a SELECT statement")
-	}
-	q := sel.Query()
-	if q == nil {
-		return nil, nil, fmt.Errorf("malformed SELECT")
-	}
-
-	visitor := NewPlanVisitorWithSchema(md, schemaName)
-	logicalOp, buildErr := visitor.VisitQuery(q)
-	if buildErr != nil {
-		return nil, nil, buildErr
-	}
-	if logicalOp == nil {
-		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
-	}
-	// Java table-first order: a schema-qualified table mis-classified as a
-	// lateral unnest (`FROM PA AS s, s.PB`, alias `s` == schema name) is demoted
-	// back to a table scan before validation/translation (or AT-on-a-table is
-	// rejected with WRONG_OBJECT_TYPE). RFC-142 (P2b).
-	if err := demoteSchemaQualifiedUnnest(logicalOp, schemaName, md); err != nil {
-		return nil, nil, err
-	}
-	// Backstop for AT-on-a-table sources inside a subquery (the per-FROM-scope early
-	// pass in VisitQuery runs before subquery plans are attached). Surfaces the
-	// faithful WRONG_OBJECT_TYPE before validateTablesAndColumns can mask it with a
-	// column-validation error. RFC-142.
-	if err := rejectAtOrdinalityOnTable(logicalOp, md); err != nil {
-		return nil, nil, err
-	}
-	// Reject a lateral unnest's AS/AT alias colliding with ANY other FROM-source
-	// alias (earlier OR later) in the same scope — the later-source collision the
-	// translator's bottom-up lowering cannot see. RFC-142.
-	if err := resolveQualifiedTableNames(logicalOp, schemaName); err != nil {
-		return nil, nil, err
-	}
-	if err := validateTablesAndColumns(logicalOp, md); err != nil {
 		return nil, nil, err
 	}
 
@@ -819,40 +875,53 @@ func planRecordQueryAndSubqueriesWithOptions(
 	return physPlan, subs, nil
 }
 
-// ResultColumnLabelsForPlan returns the user-visible result-set column labels a
-// plan would advertise — the metadata-only (no-FDB) analog of the driver's
-// paginatingRows.Columns(): it runs the SAME production column derivation
-// (deriveColumnsFromPlan, the function the live Execute() path calls) and maps
-// each ColumnDef to its label exactly as Columns() does (Label, or Name when the
-// label is empty), upper-cased. This lets the planner harness assert the result
-// COLUMN SET — distinct from the per-row datum map (which carries extra
-// resolution-convenience keys) — for shapes that cannot be seeded through the SQL
-// driver (historically non-empty array columns, before SQL INSERT gained
-// array literals). RFC-142.
-func ResultColumnLabelsForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []string {
-	cols := deriveColumnsFromPlan(plan, md)
-	labels := make([]string, len(cols))
-	for i, c := range cols {
-		if c.Label != "" {
-			labels[i] = strings.ToUpper(c.Label)
-		} else {
-			labels[i] = strings.ToUpper(c.Name)
-		}
+// harnessLogicalOp builds a SELECT's logical plan through the production
+// front end, up to translation.
+func harnessLogicalOp(sql string, md *recordlayer.RecordMetaData, templateName string) (logical.LogicalOperator, error) {
+	root, err := parser.Parse(sql)
+	if err != nil {
+		return nil, fmt.Errorf("parse SQL: %w", err)
 	}
-	return labels
+	stmts := root.Statements()
+	if stmts == nil || len(stmts.AllStatement()) == 0 {
+		return nil, fmt.Errorf("no statements in SQL")
+	}
+	sel := stmts.AllStatement()[0].SelectStatement()
+	if sel == nil {
+		return nil, fmt.Errorf("not a SELECT statement")
+	}
+	q := sel.Query()
+	if q == nil {
+		return nil, fmt.Errorf("malformed SELECT")
+	}
+	logicalOp, err := NewPlanVisitorWithTemplate(md, templateName).VisitQuery(q)
+	if err != nil {
+		return nil, err
+	}
+	if logicalOp == nil {
+		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "could not build logical plan")
+	}
+	if err := runFromResolutionPostPasses(logicalOp, templateName, md, md); err != nil {
+		return nil, err
+	}
+	return logicalOp, nil
 }
 
-// ResultColumnTypesForPlan returns the SQL TYPE NAME advertised for each
-// result-set column, in order — the metadata-only (no-FDB) analog of the
-// driver's column-type metadata. It runs the SAME production column derivation
-// (deriveColumnsFromPlan → ColumnDef.TypeName) the live Execute() path uses, so
-// the harness can assert column types for shapes that cannot be seeded through
-// the SQL driver (historically a lateral unnest over a non-empty array column,
-// before SQL INSERT gained array literals). The element column of a non-ordinal unnest over a
-// STRING array must report STRING here, not the UnknownType→BIGINT fallback.
-// RFC-142.
-func ResultColumnTypesForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []string {
-	cols := deriveColumnsFromPlan(plan, md)
+// ResultColumnLabelsForQuery returns the labels the driver reports for a
+// SELECT: the names of its logical output row (Java's semantic struct type),
+// which Execute applies over the plan's columns.
+func ResultColumnLabelsForQuery(sql string, md *recordlayer.RecordMetaData) ([]string, error) {
+	op, err := harnessLogicalOp(sql, md, defaultEmbeddedTemplate)
+	if err != nil {
+		return nil, err
+	}
+	return query.ExactLogicalOutputLabels(op, md, nil)
+}
+
+// ResultColumnTypesForPlan returns the SQL type name of each result column,
+// from the plan's result row type as Execute reports it.
+func ResultColumnTypesForPlan(plan plans.RecordQueryPlan) []string {
+	cols := resultColumns(plan)
 	types := make([]string, len(cols))
 	for i, c := range cols {
 		types[i] = strings.ToUpper(c.TypeName)
@@ -860,17 +929,10 @@ func ResultColumnTypesForPlan(plan plans.RecordQueryPlan, md *recordlayer.Record
 	return types
 }
 
-// ResultColumnNullabilityForPlan returns the JDBC NULLABILITY flag advertised
-// for each result-set column, in order — the metadata-only (no-FDB) analog of
-// the driver's ResultSetMetaData.isNullable. It runs the SAME production column
-// derivation (deriveColumnsFromPlan → ColumnDef.Nullable) the live Execute()
-// path uses, so the harness can assert column nullability for shapes that cannot
-// be seeded through the SQL driver (historically a lateral unnest over a non-empty
-// array column, before SQL INSERT gained array literals). The WITH-ORDINALITY ordinal
-// column must report api.ColumnNoNulls here (Java's INT NOT NULL ordinal), even
-// though it has no backing proto descriptor field. RFC-142.
-func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []int {
-	cols := deriveColumnsFromPlan(plan, md)
+// ResultColumnNullabilityForPlan returns the JDBC nullability of each result
+// column, from the plan's result row type as Execute reports it.
+func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan) []int {
+	cols := resultColumns(plan)
 	nulls := make([]int, len(cols))
 	for i, c := range cols {
 		nulls[i] = c.Nullable
@@ -878,11 +940,8 @@ func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan, md *recordlayer.
 	return nulls
 }
 
-// ResultColumnDefsForPlan returns the FULL production ColumnDef set for a plan
-// — the same deriveColumnsFromPlan output the live Execute() path hands to
-// NewRecordLayerResultSet — so an FDB test can drive the REAL result-set read
-// path (including the positional-aligned column read) for shapes
-// not seeded through the SQL driver.
-func ResultColumnDefsForPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
-	return deriveColumnsFromPlan(plan, md)
+// ResultColumnDefsForPlan returns the columns Execute hands to
+// NewRecordLayerResultSet before applying the query's labels.
+func ResultColumnDefsForPlan(plan plans.RecordQueryPlan) []executor.ColumnDef {
+	return resultColumns(plan)
 }

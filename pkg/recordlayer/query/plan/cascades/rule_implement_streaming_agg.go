@@ -89,8 +89,20 @@ func admissibleStreamingAggInner(expr expressions.RelationalExpression) bool {
 	return plans.EvaluateContinuableWithoutDuplicates(p)
 }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *ImplementStreamingAggregationRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 	gb := matching.Get[*expressions.GroupByExpression](call.Bindings, r.matcher)
+	for _, agg := range gb.GetAggregates() {
+		if !agg.Function.HasStreamingAccumulator() {
+			// No accumulator computes it (an index-only aggregate):
+			// a streaming plan would emit a NULL for it on every group.
+			return
+		}
+	}
 
 	innerRef := gb.GetInner().GetRangesOver()
 	if innerRef == nil {
@@ -124,7 +136,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 				// Count-only, no grouping keys → no ordering precondition, so carry
 				// the LIVE shared-group edge (RFC-184 W2, no physicalStreamingAggWrapper).
 				coveringQ := expressions.NamedPhysicalQuantifier(inputAlias, call.MemoizeExpression(coveringPlan))
-				aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(coveringQ, groupingKeys, gb.GetAggregates())
+				aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanForGroupBy(coveringQ, groupingKeys, gb.GetAggregates(), gb.OutputColumnNames())
 				if err != nil {
 					call.Fail(err)
 					return
@@ -153,7 +165,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			// LIVE shared-group edge over the member (RFC-184 W2, no
 			// physicalStreamingAggWrapper). GetInner resolves the member's plan.
 			innerQ := expressions.NamedPhysicalQuantifier(inputAlias, call.MemoizeExpression(m))
-			aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, groupingKeys, gb.GetAggregates())
+			aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanForGroupBy(innerQ, groupingKeys, gb.GetAggregates(), gb.OutputColumnNames())
 			if err != nil {
 				call.Fail(err)
 				return
@@ -203,21 +215,20 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 		sortKeys[i] = plans.SortKey{Field: field, NullsFirst: true, ValueExpr: gk}
 	}
 
-	// Always yield InMemorySort(FullScan) path as a Go extension.
-	// Java refuses GROUP BY without sorted input; Go inserts an
-	// in-memory sort so GROUP BY works without a supporting index.
-	// When an ordered index also exists, both alternatives are yielded
-	// and the cost model picks the cheaper one.
-	rawExpr := findPhysicalExpr(innerRef)
-	if rawExpr != nil && admissibleStreamingAggInner(rawExpr) {
-		// The InMemorySort is now its own cascades expression (RFC-184 W2, no
-		// physicalInMemorySortWrapper): a self-contained PRODUCER that provides the
-		// grouping-key order intrinsically. Build the bare sort over the first
-		// physical member's plan (a frozen QuantifierOverPlan snapshot) and carry it
-		// as the LIVE shared-group edge under the aggregation.
+	// Java enumerates every admissible input partition. The Go in-memory-sort
+	// extension must do the same: freezing the first member hides selective
+	// scans that arrived later, instead of letting the cost model price them.
+	for _, rawExpr := range physicalMembersForParentEnumeration(innerRef) {
+		physical, ok := rawExpr.(physicalPlanExpression)
+		if !ok || !admissibleStreamingAggInner(rawExpr) {
+			continue
+		}
+		// Freeze the executable input, as for the ordered partition below.
+		// Memoizing the source expression can reopen its alias-bearing logical
+		// alternatives and rebind an UNNEST element edge to the whole join row.
 		sortInputQ := expressions.NamedPhysicalQuantifier(
 			inputAlias,
-			expressions.FinalOfAtStage(innerPlan, expressions.StageCanonical),
+			expressions.FinalOfAtStage(physical.GetRecordQueryPlan(), expressions.StageCanonical),
 		)
 		sortedPlan, err := plans.NewRecordQueryInMemorySortPlanFromQuantifier(sortInputQ, sortKeys)
 		if err != nil {
@@ -225,7 +236,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 			return
 		}
 		sortQ := expressions.NamedPhysicalQuantifier(inputAlias, call.MemoizeExpression(sortedPlan))
-		aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(sortQ, groupingKeys, gb.GetAggregates())
+		aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanForGroupBy(sortQ, groupingKeys, gb.GetAggregates(), gb.OutputColumnNames())
 		if err != nil {
 			call.Fail(err)
 			return
@@ -289,7 +300,7 @@ func (r *ImplementStreamingAggregationRule) OnMatch(call *ExpressionRuleCall) {
 				// FROZEN edge — the correct freeze for a delegating ordered inner
 				// (RFC-184 W2, no physicalStreamingAggWrapper).
 				orderedQ := expressions.NamedPhysicalQuantifier(inputAlias, expressions.FinalOf(pinned))
-				aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(orderedQ, groupingKeys, gb.GetAggregates())
+				aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanForGroupBy(orderedQ, groupingKeys, gb.GetAggregates(), gb.OutputColumnNames())
 				if err != nil {
 					call.Fail(err)
 					return

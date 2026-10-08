@@ -1,0 +1,124 @@
+# aggregate_index_roll_up.yaml
+#
+# Java's aggregate-empty-table.yamsql, the T2 blocks, with Java's plans and
+# answers. An aggregate index serves a coarser grouping than its own, as Java's
+# GroupByExpression.groupingSubsumedBy matches it:
+#   - an equality on an index grouping column matches that column, so the
+#     index rows are the query's groups (`AISCAN(T2_I6 [EQUALS ...]) | MAP |
+#     ON EMPTY NULL`);
+#   - otherwise the index is rolled up to its matched grouping prefix, a SUM over
+#     the scan (`AISCAN(T2_I6 [[GREATER_THAN ...]]) | AGG sum_l(_._1) GROUP BY ()`).
+# A predicate on the aggregated column is no grouping column and declines the
+# index (`select sum(col1) from T2 where col1 = 0` scans).
+#
+# After the rows are inserted and deleted the indexes keep their residue 0, which
+# Java reads: `select sum(col1) from T2` and the roll-ups over a range answer 0.
+# Java's file comments out the grouped reads over the emptied table (they read
+# the residue group, not the empty answer its TODOs expect); they are pinned here
+# at the index answer.
+name: aggregate_index_roll_up
+schema_template: |
+  CREATE TABLE T2 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+  CREATE INDEX t2_i1 AS SELECT COUNT(*) FROM T2
+  CREATE INDEX t2_i2 AS SELECT COUNT(*) FROM T2 GROUP BY col1
+  CREATE INDEX t2_i3 AS SELECT COUNT(col2) FROM T2
+  CREATE INDEX t2_i4 AS SELECT COUNT(col2) FROM T2 GROUP BY col1
+  CREATE INDEX t2_i5 AS SELECT SUM(col1) FROM T2
+  CREATE INDEX t2_i6 AS SELECT SUM(col1) FROM T2 GROUP BY col2
+tests:
+  # agg-empty-table-tests: a table that never had a row.
+  - query: SELECT COUNT(*) FROM T2
+    plan_contains: "DefaultOnEmpty(AggregateIndex(COUNT, T2_I1, T2))"
+    rows: [[0]]
+  - query: SELECT COUNT(*) FROM T2 HAVING COUNT(*) > 0
+    rows: []
+  - query: SELECT COUNT(*) FROM T2 WHERE col1 = 0
+    plan_contains: "DefaultOnEmpty(Map(AggregateIndex(COUNT, T2_I2, [COL1], T2)"
+    rows: [[0]]
+  - query: SELECT COUNT(*) FROM T2 WHERE col1 > 0
+    plan_contains: "StreamingAgg(keys=[], AggregateIndex(COUNT, T2_I2, [COL1], T2))"
+    rows: [[0]]
+  - query: SELECT COUNT(*) FROM T2 GROUP BY col1
+    plan_contains: "AggregateIndex(COUNT, T2_I2, [COL1], T2)"
+    rows: []
+  - query: SELECT COUNT(*) FROM T2 WHERE col1 = 0 GROUP BY col1
+    rows: []
+  - query: SELECT COUNT(*) FROM T2 WHERE col1 > 0 GROUP BY col1
+    rows: []
+  - query: SELECT COUNT(col2) FROM T2
+    plan_contains: "AggregateIndex(COUNT, T2_I3, T2)"
+    rows: [[0]]
+  - query: SELECT COUNT(col2) FROM T2 WHERE col1 = 0
+    plan_contains: "AggregateIndex(COUNT, T2_I4, [COL1], T2)"
+    rows: [[0]]
+  - query: SELECT COUNT(col2) FROM T2 WHERE col1 > 0
+    plan_contains: "StreamingAgg(keys=[], AggregateIndex(COUNT, T2_I4, [COL1], T2))"
+    rows: [[0]]
+  - query: SELECT COUNT(col2) FROM T2 GROUP BY col1
+    rows: []
+  - query: SELECT SUM(col1) FROM T2
+    plan_contains: "AggregateIndex(SUM, T2_I5, T2)"
+    rows: [[null]]
+  - query: SELECT SUM(col1) FROM T2 WHERE col1 = 0
+    plan_contains: "Scan(T2)"
+    plan_not_contains: "AggregateIndex"
+    rows: [[null]]
+  - query: SELECT SUM(col1) FROM T2 WHERE col2 = 0
+    plan_contains: "DefaultOnEmpty(Map(AggregateIndex(SUM, T2_I6, [COL2], T2)"
+    rows: [[null]]
+  - query: SELECT SUM(col1) FROM T2 WHERE col1 > 0
+    plan_not_contains: "AggregateIndex"
+    rows: [[null]]
+  - query: SELECT SUM(col1) FROM T2 WHERE col2 > 0
+    plan_contains: "StreamingAgg(keys=[], AggregateIndex(SUM, T2_I6, [COL2], T2))"
+    rows: [[null]]
+  - query: SELECT SUM(col1) FROM T2 WHERE col2 = 0 GROUP BY col2
+    rows: []
+  - query: SELECT SUM(col1) FROM T2 WHERE col2 > 0 GROUP BY col2
+    rows: []
+  # Rows in, then all deleted: agg-empty-table-tests-after-modifications.
+  - exec: INSERT INTO T2 VALUES (1, 2, 3), (2, 2, 3), (3, 2, 3)
+  - query: SELECT COUNT(*) FROM T2 WHERE col1 > 0
+    rows: [[3]]
+  - query: SELECT SUM(col1) FROM T2 WHERE col2 > 0
+    rows: [[6]]
+  - query: SELECT col1, COUNT(*) FROM T2 GROUP BY col1
+    rows: [[2, 3]]
+  - exec: DELETE FROM T2
+  - query: SELECT COUNT(*) FROM T2
+    rows: [[0]]
+  - query: SELECT COUNT(*) FROM T2 HAVING COUNT(*) > 0
+    rows: []
+  - query: SELECT COUNT(*) FROM T2 WHERE col1 = 0
+    rows: [[0]]
+  - query: SELECT COUNT(*) FROM T2 WHERE col1 > 0
+    rows: [[0]]
+  - query: SELECT COUNT(*) FROM T2 WHERE col1 = 0 GROUP BY col1
+    rows: []
+  - query: SELECT COUNT(col2) FROM T2
+    rows: [[0]]
+  - query: SELECT COUNT(col2) FROM T2 WHERE col1 = 0
+    rows: [[0]]
+  - query: SELECT COUNT(col2) FROM T2 WHERE col1 > 0
+    rows: [[0]]
+  - query: SELECT COUNT(col2) FROM T2 WHERE col1 = 0 GROUP BY col1
+    rows: []
+  - query: SELECT SUM(col1) FROM T2
+    rows: [[0]]
+  - query: SELECT SUM(col1) FROM T2 WHERE col1 = 0
+    rows: [[null]]
+  - query: SELECT SUM(col1) FROM T2 WHERE col2 = 0
+    rows: [[null]]
+  - query: SELECT SUM(col1) FROM T2 WHERE col1 > 0
+    rows: [[null]]
+  - query: SELECT SUM(col1) FROM T2 WHERE col2 > 0
+    rows: [[0]]
+  - query: SELECT SUM(col1) FROM T2 WHERE col2 = 0 GROUP BY col2
+    rows: []
+  # Commented out in Java's file: the residue group answers.
+  - query: SELECT COUNT(*) FROM T2 GROUP BY col1
+    rows: [[0]]
+  - query: SELECT COUNT(col2) FROM T2 GROUP BY col1
+    rows: [[0]]
+  - query: SELECT SUM(col1) FROM T2 WHERE col2 > 0 GROUP BY col2
+    rows: [[0]]

@@ -237,8 +237,42 @@ func TestPushFilter_StillPushesCoveredColumns(t *testing.T) {
 			case consumedByFilterBelow:
 				// Kept as a predicate, but evaluated on the index entry.
 				if !strings.Contains(strings.Join(below, " ; "), tc.want+"#") {
-					t.Errorf("want %s evaluated BELOW the fetch, got below=%v\n  plan: %s",
-						tc.want, below, plan)
+					// Disjunctive access can instead consume both OR arms in
+					// separate covering ranges before a single outer fetch.
+					fetch, ok := p.(*plans.RecordQueryFetchFromPartialRecordPlan)
+					if !ok {
+						t.Fatalf("want filter below fetch or covering union: %s", plan)
+					}
+					// The union deduplicates by primary key: a merge ordered by
+					// it (Java's COMPARE BY (_.ID)), or an unordered union under
+					// a primary-key distinct.
+					var legs []plans.RecordQueryPlan
+					switch inner := fetch.GetInner().(type) {
+					case *plans.RecordQueryMergeSortUnionPlan:
+						legs = inner.GetChildren()
+					case *plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
+						union, isUnion := inner.GetChildren()[0].(*plans.RecordQueryUnorderedUnionPlan)
+						if !isUnion {
+							t.Fatalf("want two disjunctive scans: %s", plan)
+						}
+						legs = union.GetChildren()
+					default:
+						t.Fatalf("want a primary-key distinct union: %s", plan)
+					}
+					if len(legs) != 2 {
+						t.Fatalf("want two disjunctive scans: %s", plan)
+					}
+					for _, leg := range legs {
+						covering, ok := leg.(*plans.RecordQueryCoveringIndexPlan)
+						if !ok {
+							t.Fatalf("union leg must cover before fetch: %T", leg)
+						}
+						scan := covering.GetIndexPlan()
+						ranges := scan.GetScanComparisons()
+						if len(ranges) != 2 || !ranges[0].IsEquality() || !ranges[1].IsInequality() {
+							t.Fatalf("union leg did not bind both K and V: %s", leg.Explain())
+						}
+					}
 				}
 			}
 		})

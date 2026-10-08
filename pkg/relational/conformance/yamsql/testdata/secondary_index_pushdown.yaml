@@ -21,11 +21,11 @@ schema_template: |
   CREATE TABLE t2 (
     id BIGINT,
     region STRING,
-    plan STRING,
+    plan_name STRING,
     amount BIGINT,
     PRIMARY KEY (id)
   )
-  CREATE INDEX idx_region_plan ON t2 (region, plan)
+  CREATE INDEX idx_region_plan ON t2 (region, plan_name)
 setup:
   - INSERT INTO t VALUES (1, 'active', 10), (2, 'archived', 20), (3, 'active', 30), (4, 'deleted', 40)
   - INSERT INTO t2 VALUES (10, 'us', 'pro', 100), (11, 'us', 'free', 50), (12, 'us', 'pro', 200), (13, 'eu', 'pro', 300), (14, 'eu', 'free', 75)
@@ -112,14 +112,14 @@ tests:
   # Composite secondary-index pushdown: idx_region_plan is (region,
   # plan). `WHERE region = 'us' AND plan = 'pro'` matches both
   # columns, pushdown builds a 2-element tuple range.
-  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
+  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan_name = 'pro' ORDER BY id
     rows:
       - [10, 100]
       - [12, 200]
 
   # Composite index reverse-order AND — equality collection is
   # order-insensitive.
-  - query: SELECT id FROM t2 WHERE plan = 'free' AND region = 'eu'
+  - query: SELECT id FROM t2 WHERE plan_name = 'free' AND region = 'eu'
     rows:
       - [14]
 
@@ -135,17 +135,17 @@ tests:
   # Composite index + extra non-index predicate — pushdown narrows
   # to (region='eu', plan='pro'); scan filters amount > 100. Only
   # row (13, eu, pro, 300) qualifies.
-  - query: SELECT id FROM t2 WHERE region = 'eu' AND plan = 'pro' AND amount > 100
+  - query: SELECT id FROM t2 WHERE region = 'eu' AND plan_name = 'pro' AND amount > 100
     rows:
       - [13]
 
   # No-match composite index range → empty.
-  - query: SELECT id FROM t2 WHERE region = 'asia' AND plan = 'pro'
+  - query: SELECT id FROM t2 WHERE region = 'asia' AND plan_name = 'pro'
     rows: []
 
   # Composite index on mutation path — UPDATE via pushdown.
-  - query: UPDATE t2 SET amount = 999 WHERE region = 'us' AND plan = 'pro'
-  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
+  - query: UPDATE t2 SET amount = 999 WHERE region = 'us' AND plan_name = 'pro'
+  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan_name = 'pro' ORDER BY id
     rows:
       - [10, 999]
       - [12, 999]
@@ -155,7 +155,7 @@ tests:
       - [50]
 
   # Composite index on DELETE path.
-  - query: DELETE FROM t2 WHERE region = 'eu' AND plan = 'free'
+  - query: DELETE FROM t2 WHERE region = 'eu' AND plan_name = 'free'
   - query: SELECT COUNT(*) FROM t2 WHERE region = 'eu'
     rows:
       - [1]
@@ -168,7 +168,7 @@ tests:
 
   # Composite index with a NULL literal on one side — same as above,
   # pushdown bails on NULL RHS.
-  - query: SELECT id FROM t2 WHERE region = 'us' AND plan = NULL
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan_name = NULL
     rows: []
 
   # ---------------------------------------------------------------
@@ -265,39 +265,39 @@ tests:
 
   # Leading eq + trailing half-open range: region='us' AND plan > 'a'.
   # Matches (11, 'us', 'b') and (12, 'us', 'c').
-  - query: SELECT id FROM t2 WHERE region = 'us' AND plan > 'a' ORDER BY id
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan_name > 'a' ORDER BY id
     rows:
       - [11]
       - [12]
 
   # Leading eq + trailing bounded range inclusive: plan BETWEEN
   # 'a' AND 'b' (written as two predicates). Matches us/a, us/b.
-  - query: SELECT id FROM t2 WHERE region = 'us' AND plan >= 'a' AND plan <= 'b' ORDER BY id
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan_name >= 'a' AND plan_name <= 'b' ORDER BY id
     rows:
       - [10]
       - [11]
 
   # Leading eq + trailing half-open range upper bound exclusive.
   # plan < 'c' on region='eu' matches only (13, 'eu', 'b').
-  - query: SELECT id FROM t2 WHERE region = 'eu' AND plan < 'c'
+  - query: SELECT id FROM t2 WHERE region = 'eu' AND plan_name < 'c'
     rows:
       - [13]
 
   # Leading eq + trailing range empty result.
-  - query: SELECT id FROM t2 WHERE region = 'us' AND plan > 'z'
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan_name > 'z'
     rows: []
 
   # Leading eq + trailing range + extra non-index predicate —
   # composite range narrows, evalPredicate applies amount > 60.
   # us/a (100) and us/c (200) qualify.
-  - query: SELECT id FROM t2 WHERE region = 'us' AND plan >= 'a' AND amount > 60 ORDER BY id
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan_name >= 'a' AND amount > 60 ORDER BY id
     rows:
       - [10]
       - [12]
 
   # Missing leading equality → composite range pushdown bails,
   # falls through to full scan. Still correct.
-  - query: SELECT id FROM t2 WHERE plan > 'a' ORDER BY id
+  - query: SELECT id FROM t2 WHERE plan_name > 'a' ORDER BY id
     rows:
       - [11]
       - [12]
@@ -305,8 +305,8 @@ tests:
       - [14]
 
   # Composite range on UPDATE path.
-  - query: UPDATE t2 SET amount = 777 WHERE region = 'us' AND plan >= 'b'
-  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan >= 'b' ORDER BY id
+  - query: UPDATE t2 SET amount = 777 WHERE region = 'us' AND plan_name >= 'b'
+  - query: SELECT id, amount FROM t2 WHERE region = 'us' AND plan_name >= 'b' ORDER BY id
     rows:
       - [11, 777]
       - [12, 777]
@@ -316,7 +316,7 @@ tests:
       - [100]
 
   # Composite range on DELETE path.
-  - query: DELETE FROM t2 WHERE region = 'eu' AND plan > 'a'
+  - query: DELETE FROM t2 WHERE region = 'eu' AND plan_name > 'a'
   - query: SELECT id FROM t2 WHERE region = 'eu' ORDER BY id
     rows: []
   - query: SELECT COUNT(*) FROM t2
@@ -342,7 +342,7 @@ tests:
   # Range on first index col + equality on trailing index col.
   # region <= 'us' narrows the scan; plan='pro' post-filters.
   # Matches all rows with plan='pro' up to region='us' inclusive.
-  - query: SELECT id FROM t2 WHERE region <= 'us' AND plan = 'pro' ORDER BY id
+  - query: SELECT id FROM t2 WHERE region <= 'us' AND plan_name = 'pro' ORDER BY id
     rows:
       - [10]
       - [11]
@@ -397,7 +397,7 @@ tests:
   # a leading equality.
   - query: DELETE FROM t2
   - query: INSERT INTO t2 VALUES (10, 'us', 'a', 100), (11, 'us', 'b', 50), (12, 'us', 'c', 200), (13, 'eu', 'b', 300)
-  - query: SELECT id FROM t2 WHERE region = 'us' AND plan BETWEEN 'a' AND 'b' ORDER BY id
+  - query: SELECT id FROM t2 WHERE region = 'us' AND plan_name BETWEEN 'a' AND 'b' ORDER BY id
     rows:
       - [10]
       - [11]

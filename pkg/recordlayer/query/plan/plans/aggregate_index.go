@@ -68,8 +68,13 @@ type RecordQueryAggregateIndexPlan struct {
 	recordTypeName    string
 	resultType        values.Type
 	aggregateFunction string
+	permuted          bool
 	groupCols         []string
 	aggColumn         string
+	// groupColPaths and aggColumnPath are the columns' full field paths when
+	// they read nested fields (groupCols and aggColumn are then leaf labels).
+	groupColPaths [][]string
+	aggColumnPath []string
 	// groupColLayout is the DECLARED layout the groupCols names resolve
 	// against, carried so HintOrdering can ask whether a grouping column may
 	// extend an ordering claim. Nil/UnknownType leaves the claim unconstrained,
@@ -89,6 +94,18 @@ type RecordQueryAggregateIndexPlan struct {
 	// subsumes the other.
 	physicalGroupingPrefixCount int
 	physicalGroupingPrefixKnown bool
+
+	// candidateGroupingCount is the grouping-column count of the candidate a
+	// rule built this plan from, the evidence Java's cardinality reads off the
+	// plan's match candidate; known is false for a plan built without one.
+	candidateGroupingCount int
+	candidateGroupingKnown bool
+
+	// entryReader reads an entry into the result row
+	// (AggregateIndexMatchCandidate.createIndexEntryToRecordValue). A pure
+	// function of the index and result type, so it stays out of identity,
+	// explain and execution salt; without one the cursor decodes the layout.
+	entryReader *values.RecordConstructorValue
 	// resultValue is the stable per-instance QuantifiedObjectValue standing for
 	// the rows this leaf emits — minted once at construction, returned by
 	// GetResultValue, EXCLUDED from Equals/Hash (its correlation id is unique per
@@ -98,23 +115,6 @@ type RecordQueryAggregateIndexPlan struct {
 	// (RFC-184 W2). nil for struct-literal test plans that bypass the constructor —
 	// GetResultValue falls back to PlanExprBase's fresh QOV there.
 	resultValue values.Value
-
-	// liveGroupsOnly makes the scan drop entries whose stored aggregate is zero
-	// (RFC-209 §5.3(a)). It is set ONLY for a GROUPED COUNT(*) index, where the
-	// stored value is the group's row count and a zero can therefore only be the
-	// residue of a group emptied by DELETE or by an UPDATE that moved its last
-	// row away: an atomic ADD decrements the accumulator to zero and never
-	// removes the key. A live group's COUNT(*) is never zero, so the drop is
-	// exact rather than a heuristic.
-	//
-	// It must NOT be set for SUM or COUNT(col), where zero is a legitimate
-	// answer for a live group (values cancelling, or every value NULL), nor for
-	// the ungrouped spelling, whose single group exists whether or not the table
-	// has rows and whose empty scan legitimately coalesces to 0.
-	//
-	// The flag is rendered by Explain because it changes which rows the scan
-	// emits: a plan property that alters the answer must be visible in the plan.
-	liveGroupsOnly bool
 }
 
 // NewRecordQueryAggregateIndexPlan constructs an aggregate index plan.
@@ -166,6 +166,45 @@ func (p *RecordQueryAggregateIndexPlan) WithGroupColumns(groupCols []string, agg
 	return &cp
 }
 
+// WithColumnPaths carries the full field paths of the grouping and aggregated
+// columns, so the layout is asked about a nested column by its path, never by
+// its leaf label.
+func (p *RecordQueryAggregateIndexPlan) WithColumnPaths(groupPaths [][]string, aggPath []string) *RecordQueryAggregateIndexPlan {
+	cp := *p
+	cp.groupColPaths = make([][]string, len(groupPaths))
+	for i, path := range groupPaths {
+		cp.groupColPaths[i] = append([]string(nil), path...)
+	}
+	cp.aggColumnPath = append([]string(nil), aggPath...)
+	return &cp
+}
+
+// nestedGroupColumnPath is grouping column i's path when it reads a nested
+// field, nil for a top-level column.
+func (p *RecordQueryAggregateIndexPlan) nestedGroupColumnPath(i int) []string {
+	if i < 0 || i >= len(p.groupColPaths) || len(p.groupColPaths[i]) < 2 {
+		return nil
+	}
+	return p.groupColPaths[i]
+}
+
+// aggColumnField is the aggregated column's field in the layout, by its path
+// when one was carried.
+func (p *RecordQueryAggregateIndexPlan) aggColumnField(layout values.Type) (values.Field, bool) {
+	path := p.aggColumnPath
+	if len(path) == 0 {
+		path = []string{p.aggColumn}
+	}
+	return values.LookupFieldPathUnique(layout, path)
+}
+
+// WithPermutedOrdering makes the aggregate participate in the physical key order.
+func (p *RecordQueryAggregateIndexPlan) WithPermutedOrdering(permuted bool) *RecordQueryAggregateIndexPlan {
+	cp := *p
+	cp.permuted = permuted
+	return &cp
+}
+
 // WithGroupColumnLayout carries the declared layout the grouping-column names
 // resolve against — the base record type's descriptor-shaped positional type.
 // Only HintOrdering reads it, to decide whether a grouping column may extend
@@ -180,26 +219,29 @@ func (p *RecordQueryAggregateIndexPlan) WithGroupColumnLayout(layout values.Type
 // resolve against, or nil when none was carried.
 func (p *RecordQueryAggregateIndexPlan) GetGroupColumnLayout() values.Type { return p.groupColLayout }
 
-// WithLiveGroupsOnly marks this scan as dropping zero-valued entries — see the
-// liveGroupsOnly field. Only a grouped COUNT(*) index may carry it.
-// It COPIES, like every other WithXxx on a plan. Mutating in place would be
-// mutating plan IDENTITY: liveGroupsOnly is folded into structuralKey precisely
-// because a scan that drops vacated groups is a different plan from one that does
-// not (see structuralKey below). An in-place write therefore changes the identity of
-// an object the memo may already hold, and the memo would keep serving it under its
-// former key.
-//
-// That was latent rather than live only because every caller happens to invoke a
-// COPYING builder first (WithGroupColumns), so the in-place write landed on a fresh
-// copy. Reordering one chain would have armed it.
-func (p *RecordQueryAggregateIndexPlan) WithLiveGroupsOnly(v bool) *RecordQueryAggregateIndexPlan {
+// WithCandidateGroupingCount records the grouping-column count of the
+// candidate the plan was built from.
+func (p *RecordQueryAggregateIndexPlan) WithCandidateGroupingCount(n int) *RecordQueryAggregateIndexPlan {
 	cp := *p
-	cp.liveGroupsOnly = v
+	cp.candidateGroupingCount = n
+	cp.candidateGroupingKnown = true
 	return &cp
 }
 
-// IsLiveGroupsOnly reports whether the scan drops zero-valued entries.
-func (p *RecordQueryAggregateIndexPlan) IsLiveGroupsOnly() bool { return p.liveGroupsOnly }
+// WithEntryReader attaches the reader the cursor builds each row with.
+func (p *RecordQueryAggregateIndexPlan) WithEntryReader(reader *values.RecordConstructorValue) *RecordQueryAggregateIndexPlan {
+	cp := *p
+	cp.entryReader = reader
+	return &cp
+}
+
+// GetEntryReader is the reader of an entry into the result row, or nil.
+func (p *RecordQueryAggregateIndexPlan) GetEntryReader() *values.RecordConstructorValue {
+	if p == nil {
+		return nil
+	}
+	return p.entryReader
+}
 
 // GetGroupCols returns the grouping column names.
 func (p *RecordQueryAggregateIndexPlan) GetGroupCols() []string {
@@ -227,10 +269,10 @@ func (p *RecordQueryAggregateIndexPlan) GetPhysicalGroupingPrefixCount() int {
 	return len(p.groupCols)
 }
 
-// CanonicalAggColumnName returns the canonical column name the executor's
-// aggregateIndexCursor writes the aggregate value under: "FUNC(*)" for an
-// empty aggColumn (e.g. COUNT(*)), else "FUNC(col)". Single source of that
-// name so the cursor's row key and the plan's stated row agree.
+// CanonicalAggColumnName returns the index's own name for its aggregate
+// column: "FUNC(*)" for an empty aggColumn (e.g. COUNT(*)), else "FUNC(col)".
+// It is part of the scan's execution identity; the row the plan publishes is
+// named by its result type.
 func (p *RecordQueryAggregateIndexPlan) CanonicalAggColumnName() string {
 	if p.aggColumn == "" {
 		return p.aggregateFunction + "(*)"
@@ -274,14 +316,7 @@ func (p *RecordQueryAggregateIndexPlan) GetChildren() []RecordQueryPlan { return
 // full nested index key (the hand-rolled hash folded only the index NAME),
 // strengthening it while preserving equal⟹same-hash.
 func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
-	// liveGroupsOnly is folded in because it changes which rows the scan emits
-	// (RFC-209 §5.3(a)). Two otherwise-identical scans that differ in it are
-	// different plans; leaving it out would let the memo intern the filtering
-	// scan and the unfiltered one into a single expression and serve whichever
-	// arrived first.
-	//
-	// groupCols and aggColumn are folded for the same reason, and were not.
-	// They are what the executor's aggregateIndexCursor uses to map index entries
+	// groupCols and aggColumn are folded because they are what the executor's aggregateIndexCursor uses to map index entries
 	// onto result rows, so plans differing only in them emit DIFFERENT ROWS from
 	// one identity. GetPhysicalGroupingPrefixCount() covers only their ARITY — it
 	// returns len(groupCols) when the count is not independently known — which is
@@ -301,16 +336,26 @@ func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
 	// type takes the layout branch and gets a deterministic carrier, so the
 	// hazard is branch-specific rather than universal); groupColLayout is derived
 	// from the index's record type (see its field comment — folding it would key
-	// the memo on a type token); resultType is computed by
+	// the memo on a type token); resultType's slot types are computed by
 	// aggregateIndexOutputType from groupCols, the aggregate function and the
 	// index's key component types, every one of which is already folded here.
-	return newStructuralKey().
+	// Its field NAMES are the GroupBy's the plan publishes, so they are folded:
+	// two scans of one index under different names state different rows.
+	// The column paths are the columns' identities, folded with the labels.
+	key := newStructuralKey().
+		Strs(resultFieldNames(p.resultType)).
 		Str(p.recordTypeName).
 		Str(p.aggregateFunction).
 		Str(p.aggColumn).
 		Strs(p.groupCols).
+		Strs(p.aggColumnPath).
+		Int(len(p.groupColPaths))
+	for _, path := range p.groupColPaths {
+		key.Strs(path)
+	}
+	return key.
 		Int(p.GetPhysicalGroupingPrefixCount()).
-		Bool(p.liveGroupsOnly).
+		Bool(p.permuted).
 		Sub(p.indexPlan.structuralKey())
 }
 
@@ -318,7 +363,7 @@ func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
 // result type.
 func (p *RecordQueryAggregateIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryAggregateIndexPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 // HashCodeWithoutChildren mixes index plan hash, record type, and
@@ -327,26 +372,23 @@ func (p *RecordQueryAggregateIndexPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("aggregateindexplan|")
+	hash := p.keyFor(p).Hash("aggregateindexplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }
 
-// Explain renders AggregateIndex(function, indexName, [groupCols], recordType),
-// with a trailing ", live_groups_only" when the scan drops zero-valued entries
-// (RFC-209 §5.3(a)) — a property that changes the answer, so it is not allowed
-// to be invisible in the plan.
+// Explain renders AggregateIndex(function, indexName, [groupCols], recordType).
 func (p *RecordQueryAggregateIndexPlan) Explain() string {
 	suffix := ""
-	if p.liveGroupsOnly {
-		suffix = ", live_groups_only"
+	if p.IsReverse() {
+		suffix = ", reverse"
 	}
 	if len(p.groupCols) > 0 {
 		return fmt.Sprintf("AggregateIndex(%s, %s, %v, %s%s)",
-			p.aggregateFunction, p.indexPlan.GetIndexName(), p.groupCols, p.recordTypeName, suffix)
+			p.aggregateFunction, p.indexPlan.GetIndexName(), p.groupCols, explainRecordTypeName(p.recordTypeName), suffix)
 	}
 	return fmt.Sprintf("AggregateIndex(%s, %s, %s%s)",
-		p.aggregateFunction, p.indexPlan.GetIndexName(), p.recordTypeName, suffix)
+		p.aggregateFunction, p.indexPlan.GetIndexName(), explainRecordTypeName(p.recordTypeName), suffix)
 }
 
 var (
@@ -371,3 +413,16 @@ func (p *RecordQueryAggregateIndexPlan) WithQuantifiers(qs []expressions.Quantif
 
 // GetRecordQueryPlan returns the plan itself.
 func (p *RecordQueryAggregateIndexPlan) GetRecordQueryPlan() RecordQueryPlan { return p }
+
+// resultFieldNames lists a record type's field names; nil for a non-record.
+func resultFieldNames(t values.Type) []string {
+	record, ok := t.(*values.RecordType)
+	if !ok || record == nil {
+		return nil
+	}
+	names := make([]string, len(record.Fields))
+	for i, f := range record.Fields {
+		names[i] = f.Name
+	}
+	return names
+}

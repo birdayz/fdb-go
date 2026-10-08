@@ -40,7 +40,7 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 			_, err = store.SaveRecord(flower)
 			var mdErr *MetaDataError
 			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("unknown record type"))
+			Expect(mdErr.Message).To(Equal("Unknown record type Flower"))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

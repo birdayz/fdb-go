@@ -89,8 +89,8 @@ func TestWindowedValue_DefensiveCopyOnConstruct(t *testing.T) {
 func TestRankValue_Type(t *testing.T) {
 	t.Parallel()
 	r := NewRankValue(nil)
-	if !r.Type().Equals(NotNullLong) {
-		t.Fatalf("Type = %v, want NotNullLong", r.Type())
+	if !r.Type().Equals(NullableLong) {
+		t.Fatalf("Type = %v, want NullableLong", r.Type())
 	}
 }
 

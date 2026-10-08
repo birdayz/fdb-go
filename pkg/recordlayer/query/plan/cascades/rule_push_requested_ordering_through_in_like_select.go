@@ -26,12 +26,18 @@ type PushRequestedOrderingThroughInLikeSelectRule struct {
 
 func NewPushRequestedOrderingThroughInLikeSelectRule() *PushRequestedOrderingThroughInLikeSelectRule {
 	return &PushRequestedOrderingThroughInLikeSelectRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("push_req_ord_in_like_select"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("push_req_ord_in_like_select").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool { return len(sel.GetQuantifiers()) >= 2 }),
 	}
 }
 
 func (r *PushRequestedOrderingThroughInLikeSelectRule) Matcher() matching.BindingMatcher {
 	return r.matcher
+}
+
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *PushRequestedOrderingThroughInLikeSelectRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
 }
 
 func (r *PushRequestedOrderingThroughInLikeSelectRule) OnMatch(call *ImplementationRuleCall) {

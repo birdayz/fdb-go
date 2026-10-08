@@ -390,17 +390,6 @@ func (p *RecordQueryMapPlan) HintCost(child []properties.Cost, _ properties.Stat
 	return properties.MapCost(child[0])
 }
 
-// HintCost: projection is cardinality-preserving with a per-row CPU charge.
-func (p *RecordQueryProjectionPlan) HintCost(child []properties.Cost, _ properties.StatisticsProvider) properties.Cost {
-	if len(child) == 0 {
-		return properties.Cost{}
-	}
-	return properties.Cost{
-		Cardinality: child[0].Cardinality,
-		CPU:         (child[0].CPU + child[0].Cardinality*properties.ProjectionCPU) * properties.PhysicalWrapperCostMultiplier,
-	}
-}
-
 // HintCost: DefaultOnEmpty passes its child through unchanged — literally,
 // Cardinality AND CPU. It is a per-row null-extension shim over the SAME rows
 // the child produces, not an alternative implementation competing in the
@@ -533,40 +522,6 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) HintCost(child []properties.C
 			Cardinality: groupCard,
 			CPU:         groupCard * properties.IntersectionCPU * float64(nChildren),
 		}
-	}
-	if driving := p.DrivingStreamIndex(); driving >= 0 && driving < len(child) {
-		// RFC-209 §5.3.1: the group-existence merge is NOT a cheaper spelling of
-		// the aggregate-index plan — it is a SECOND index scan, and pricing the
-		// companion at zero is the specific way this design regresses.
-		//
-		// Cardinality is the DRIVING leg's, not the min of the legs: an outer
-		// merge emits one row per driving-stream group whether or not the other
-		// legs have an entry, so IntersectionCost's min-of-legs would understate
-		// it by exactly the groups the merge exists to add back.
-		//
-		// Work is the SUM over every leg, because every leg is genuinely scanned
-		// — the companion is a real BY_GROUP scan over an index with one entry
-		// per group that ever existed, not a constant.
-		//
-		// This formula does NOT hand the decision to streaming aggregation as
-		// the grouping key approaches uniqueness; the claim that it did was
-		// struck from §5.3.1 after measurement. The merge is faster at every
-		// measured regime including the unique limit, and this rung is not what
-		// decides the comparison anyway — two structural rungs settle it first
-		// (§5.3.2, and the concreteCountMultiIntersection arm in
-		// planning_cost_model.go).
-		//
-		// Deleting this branch does NOT neutralize that third rung. It falls
-		// back to IntersectionCost, whose min-of-legs cardinality understates
-		// the merge and whose CPU stops charging the companion leg — the merge
-		// comes out CHEAPER, not unpriced. Anyone reproducing §5.3.2 by removing
-		// this code gets the wrong answer for that reason.
-		cost := properties.Cost{Cardinality: child[driving].Cardinality}
-		for _, c := range child {
-			cost.CPU += c.CPU
-		}
-		cost.CPU += cost.Cardinality * properties.IntersectionCPU * float64(len(child))
-		return cost
 	}
 	return properties.IntersectionCost(child)
 }
@@ -795,8 +750,7 @@ func valueCorrelatedTo(v values.Value, alias values.CorrelationIdentifier) bool 
 //
 // This is RFC-197 item 2's replacement for `correlatedInnerField`, which
 // returned `(string, CorrelationIdentifier)` — the identity triple wrong by one
-// element, and the shape pkg/docscheck's gate is named after: the display name
-// escaped as a bare string and the caller keyed its want/bound sets by it, at
+// element: the display name escaped as a bare string and the caller keyed its want/bound sets by it, at
 // which point no type was left to consult. The key it returns now cannot carry
 // a name (values.ColumnIdentity has no string field, pinned by reflection).
 //
@@ -987,7 +941,7 @@ func innerLeafUniqueKeyOrdinals(plan RecordQueryPlan, layout values.Type) (map[v
 		// names for a different purpose. Consult it here too: a plain leaf
 		// name off such an index is not proof of a bind on a flat top-level
 		// key column.
-		if !p.orderingKeyNamesKnown || !p.orderingKeyNamesSafe {
+		if !p.orderingKeyNamesKnown || !p.orderingKeyNamesSafe || p.HasNestedKeyColumn() {
 			return nil, false
 		}
 		cols := p.GetColumnNames()

@@ -52,10 +52,9 @@ func (v *EvaluatesToValue) Children() []Value {
 // Name returns the debug-print kind.
 func (*EvaluatesToValue) Name() string { return "evaluates_to" }
 
-// Type returns NotNullBoolean — these predicates always return a
-// definite truth value (UNKNOWN propagation is handled by the
-// IS [NOT] {NULL,TRUE,FALSE} semantics).
-func (*EvaluatesToValue) Type() Type { return NotNullBoolean }
+// Type is NullableBoolean. Java's EvaluatesToValue keeps Value's default
+// type, a nullable UNKNOWN; Go keeps the BOOLEAN code its evaluation returns.
+func (*EvaluatesToValue) Type() Type { return NullableBoolean }
 
 // Evaluate computes the predicate.
 //

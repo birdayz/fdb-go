@@ -41,7 +41,7 @@ func TestParseInlineValuesPrimaryCarriesAuthoredDefinition(t *testing.T) {
 	if from.inlineValues == nil {
 		t.Fatal("primary inline VALUES parse node was not carried")
 	}
-	if got := len(from.inlineValues.AllRecordConstructorForInlineTable()); got != 2 {
+	if got := len(from.inlineValues.(*antlrgen.InlineTableItemContext).AllRecordConstructorForInlineTable()); got != 2 {
 		t.Fatalf("literal row count = %d, want 2", got)
 	}
 	if from.tableName != "values" || from.tableAlias != "values" {
@@ -50,7 +50,7 @@ func TestParseInlineValuesPrimaryCarriesAuthoredDefinition(t *testing.T) {
 	if len(from.sourceSegments) != 1 || from.sourceSegments[0] != "values" {
 		t.Fatalf("source segments = %v, want [values]", from.sourceSegments)
 	}
-	definition := from.inlineValues.InlineTableDefinition()
+	definition := from.inlineValues.(*antlrgen.InlineTableItemContext).InlineTableDefinition()
 	if definition == nil || definition.UidListWithNestingsInParens() == nil {
 		t.Fatal("authored inline column definition was not preserved")
 	}
@@ -89,7 +89,7 @@ func TestParseInlineValuesCommaSourceCarriesDistinctJoinKind(t *testing.T) {
 	if join.tableName != "V" || join.alias != "V" {
 		t.Fatalf("comma source identity = (%q, %q), want V", join.tableName, join.alias)
 	}
-	if got := len(join.inlineValues.AllRecordConstructorForInlineTable()); got != 2 {
+	if got := len(join.inlineValues.(*antlrgen.InlineTableItemContext).AllRecordConstructorForInlineTable()); got != 2 {
 		t.Fatalf("literal row count = %d, want 2", got)
 	}
 }

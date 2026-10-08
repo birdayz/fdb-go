@@ -7,34 +7,14 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// PredicatePushDownRule pushes predicates from an outer SelectExpression
-// into its child quantifiers when the predicate only references a
-// single child's aliases. This is the generic predicate push-down rule
-// intended for the REWRITING phase — it handles arbitrary
-// SelectExpression shapes, unlike the specific Push*Through* rules
-// which target Filter/Projection/Sort/etc.
+// PredicatePushDownRule pushes the predicates of a final SelectExpression that
+// read only one of its ForEach quantifiers into that quantifier's pruned child,
+// all such quantifiers in one firing.
 //
-// Algorithm:
-//  1. Match SelectExpression.
-//  2. For each ForEach quantifier, identify predicates that can be
-//     pushed — those whose correlation set has no overlap with any
-//     OTHER quantifier's alias.
-//  3. For each pushable-predicate + quantifier pair, visit the child
-//     expression through the quantifier's Reference and create a new
-//     expression with the predicate absorbed or pushed through.
-//  4. Build a new outer SelectExpression with the remaining (non-pushed)
-//     predicates and the rewritten quantifiers.
-//
-// Existential quantifiers are handled correctly: the per-quantifier
-// loop skips non-ForEach quantifiers, so predicates are only pushed
-// into ForEach children. Existential siblings remain untouched.
-// Matches Java's behavior (no global existential guard).
-//
-// Convergence: each firing strictly reduces the set of pushable
-// predicates in the outer SelectExpression. A SelectExpression with no
-// pushable predicates causes zero yields.
-//
-// Ports Java's PredicatePushDownRule (ExplorationCascadesRule, 444 LOC).
+// Ports Java's PredicatePushDownRule: a REWRITING implementation rule over a
+// final Select whose inputs are pruned (OnPrunedInputsRule), run after
+// SelectMergeRule makes no progress. Each child is its reference's single final
+// expression; a child the visitor cannot push into keeps its finals.
 type PredicatePushDownRule struct {
 	matcher matching.BindingMatcher
 }
@@ -47,50 +27,65 @@ func NewPredicatePushDownRule() *PredicatePushDownRule {
 
 func (r *PredicatePushDownRule) Matcher() matching.BindingMatcher { return r.matcher }
 
-func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
-	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
-	quantifiers := sel.GetQuantifiers()
+// OnlyOnPrunedInputs: Java's PredicatePushDownRule implements OnPrunedInputsRule.
+func (r *PredicatePushDownRule) OnlyOnPrunedInputs() bool { return true }
 
-	// Guard: don't push predicates into SelectExpressions containing
-	allPredicates := sel.GetPredicates()
-	if len(allPredicates) == 0 {
+// pushDownMemoizer is the reference factory the push visitors build children
+// with: final references from the rule, exploratory ones from tests.
+type pushDownMemoizer interface {
+	MemoizeExpression(expressions.RelationalExpression) *expressions.Reference
+}
+
+// finalPushDownMemoizer is Java's FinalMemoizer.memoizeFinalExpression.
+type finalPushDownMemoizer struct{ call *ImplementationRuleCall }
+
+func (m finalPushDownMemoizer) MemoizeExpression(expr expressions.RelationalExpression) *expressions.Reference {
+	return m.call.MemoizeFinalExpression(expr)
+}
+
+func (r *PredicatePushDownRule) OnMatch(call *ImplementationRuleCall) {
+	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
+	if !isFinalMember(call.Reference, sel) {
 		return
 	}
-
-	// For each ForEach quantifier, try to push predicates into it.
-	// We iterate quantifiers one at a time: for each, we identify
-	// predicates that reference ONLY that quantifier (and no other
-	// sibling quantifier). Java's rule matches on a single ForEach
-	// quantifier at a time (via the matcher) and fires once per
-	// quantifier; Go's rule iterates all quantifiers in one pass.
+	// An outer join's predicates are its ON conditions; RewriteOuterJoinRule
+	// moves them below the null extension. Java's rule never sees one.
+	if !sel.ChildrenAsSet() || len(sel.GetPredicates()) == 0 {
+		return
+	}
+	if _, isRecord := sel.GetResultValue().Type().(*values.RecordType); !isRecord {
+		return
+	}
+	quantifiers := sel.GetQuantifiers()
+	residual := append([]predicates.QueryPredicate(nil), sel.GetPredicates()...)
+	newQuantifiers := make([]expressions.Quantifier, len(quantifiers))
+	pushedAny := false
+	memoizer := finalPushDownMemoizer{call: call}
 	for qIdx, pushQ := range quantifiers {
-		if pushQ.Kind() != expressions.QuantifierForEach {
-			continue
-		}
 		// Both flags are semantic barriers. NullOnEmpty must see predicates
 		// after null extension; StrictSingle must count rows before any
-		// scalar-dependent predicate can hide a second row. This rule rebuilds
-		// the pushed edge as a plain ForEach, so either flag also has to block
-		// the rewrite to prevent carrier erasure.
-		if pushQ.IsNullOnEmpty() || pushQ.IsStrictSingle() {
+		// scalar-dependent predicate can hide a second row.
+		if pushQ.Kind() != expressions.QuantifierForEach || pushQ.IsNullOnEmpty() || pushQ.IsStrictSingle() {
 			continue
 		}
-
-		// Compute the set of "other" quantifier aliases.
+		childRef := pushQ.GetRangesOver()
+		if childRef == nil {
+			continue
+		}
+		finals := childRef.FinalMembers()
+		if len(finals) != 1 {
+			continue
+		}
 		otherAliases := map[values.CorrelationIdentifier]struct{}{}
 		for j, q := range quantifiers {
-			if j == qIdx {
-				continue
+			if j != qIdx {
+				otherAliases[q.GetAlias()] = struct{}{}
 			}
-			otherAliases[q.GetAlias()] = struct{}{}
 		}
-
-		// Partition predicates: pushable vs fixed.
-		var pushable, fixed []predicates.QueryPredicate
-		for _, pred := range allPredicates {
-			correlated := predicates.GetCorrelatedToOfPredicate(pred)
+		var pushable, kept []predicates.QueryPredicate
+		for _, pred := range residual {
 			canPush := true
-			for alias := range correlated {
+			for alias := range predicates.GetCorrelatedToOfPredicate(pred) {
 				if _, isOther := otherAliases[alias]; isOther {
 					canPush = false
 					break
@@ -99,77 +94,46 @@ func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
 			if canPush {
 				pushable = append(pushable, pred)
 			} else {
-				fixed = append(fixed, pred)
+				kept = append(kept, pred)
 			}
 		}
-
 		if len(pushable) == 0 {
 			continue
 		}
-
-		// Try to push the pushable predicates into/through the child
-		// expression. Visit the child Reference's members.
-		childRef := pushQ.GetRangesOver()
-		if childRef == nil {
-			continue
-		}
-
-		var newBelowExpressions []expressions.RelationalExpression
-		for _, member := range childRef.AllMembers() {
-			pushed, err := pushPredicateToExpression(call, pushable, pushQ, member)
-			if err != nil {
-				call.Fail(err)
-				return
-			}
-			if pushed != nil {
-				newBelowExpressions = append(newBelowExpressions, pushed)
-			}
-		}
-
-		if len(newBelowExpressions) == 0 {
-			continue
-		}
-
-		// Memoize the new below expressions into a new Reference.
-		var newChildRef *expressions.Reference
-		if len(newBelowExpressions) == 1 {
-			newChildRef = call.MemoizeExpression(newBelowExpressions[0])
-		} else {
-			newChildRef = expressions.InitialOf(newBelowExpressions[0])
-			for i := 1; i < len(newBelowExpressions); i++ {
-				newChildRef.Insert(newBelowExpressions[i])
-			}
-		}
-
-		// Build new quantifier with the same alias but ranging over
-		// the new child Reference.
-		newPushQ := expressions.NamedForEachQuantifier(pushQ.GetAlias(), newChildRef)
-
-		// Build the new quantifier list, replacing the push quantifier.
-		newQuantifiers := make([]expressions.Quantifier, len(quantifiers))
-		for i, q := range quantifiers {
-			if i == qIdx {
-				newQuantifiers[i] = newPushQ
-			} else {
-				newQuantifiers[i] = q
-			}
-		}
-
-		// Build the new SelectExpression with the remaining (fixed) predicates.
-		newSel, err := expressions.NewSelectExpressionWithJoinType(
-			sel.GetResultValue(),
-			newQuantifiers,
-			fixed,
-			sel.GetSourceAliases(),
-			sel.GetJoinType(),
-		)
+		pushed, err := pushPredicateToExpression(memoizer, pushable, pushQ, finals[0])
 		if err != nil {
 			call.Fail(err)
 			return
 		}
-		call.Yield(newSel)
-		return // One quantifier per rule firing, matching Java's behavior.
+		if pushed == nil {
+			continue
+		}
+		newQuantifiers[qIdx] = expressions.NamedForEachQuantifier(pushQ.GetAlias(), call.MemoizeFinalExpression(pushed))
+		residual = kept
+		pushedAny = true
 	}
+	if !pushedAny {
+		return
+	}
+	for i, q := range quantifiers {
+		if newQuantifiers[i].GetRangesOver() != nil {
+			continue
+		}
+		ref := q.GetRangesOver()
+		newQuantifiers[i] = expressions.RebuildQuantifier(q, call.MemoizeFinalExpressionsFromOther(ref, ref.FinalMembers()))
+	}
+	newSel, err := expressions.NewSelectExpressionWithJoinType(
+		sel.GetResultValue(),
+		newQuantifiers,
+		residual,
+		sel.GetSourceAliases(),
+		sel.GetJoinType(),
+	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(newSel)
 }
 
 // pushedAliasDenotesSelectRow reports whether the row produced by a Select is
@@ -212,7 +176,7 @@ func rebasedAliasesDenoteOneRow(from, to expressions.Quantifier) bool {
 // predicates pushed in, or nil if the expression type doesn't support
 // predicate push-down.
 func pushPredicateToExpression(
-	call *ExpressionRuleCall,
+	call pushDownMemoizer,
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	belowExpression expressions.RelationalExpression,
@@ -323,12 +287,17 @@ func pushIntoSelect(
 	pushQuantifier expressions.Quantifier,
 	selectExpr *expressions.SelectExpression,
 ) (expressions.RelationalExpression, error) {
-	// An OUTER-join child (FULL/LEFT/RIGHT) is opaque to predicate
-	// absorption: see the function doc. ChildrenAsSet() is Go's existing
-	// commutative/inner-equivalent marker (select.go) — false for every
-	// outer join type, matching the opacity gate every sibling rule uses.
+	// An OUTER-join child is opaque to predicate absorption, except that a
+	// LEFT join under a predicate rejecting its null-extended row is an inner
+	// join (outer join simplification). Java dissolves every outer join in
+	// REWRITING and EliminateNullOnEmptyRule drops the null-on-empty after the
+	// push; the LEFT select Go keeps past REWRITING is one RewriteOuterJoinRule
+	// declines (a scalar subquery's strict edge), so the push decides it here.
+	joinType := selectExpr.GetJoinType()
 	if !selectExpr.ChildrenAsSet() {
-		return nil, nil
+		if joinType != expressions.JoinLeftOuter || len(selectExpr.GetQuantifiers()) != 2 {
+			return nil, nil
+		}
 	}
 
 	// A plain parent edge can still range over a Select that owns the strict
@@ -364,6 +333,7 @@ func pushIntoSelect(
 	// Combine: existing select predicates + translated original predicates.
 	newPredicates := make([]predicates.QueryPredicate, 0, len(selectExpr.GetPredicates())+len(originalPredicates))
 	newPredicates = append(newPredicates, selectExpr.GetPredicates()...)
+	rejectsNullSupplied := false
 	for _, p := range originalPredicates {
 		// A predicate that cannot be re-expressed against the child Select's
 		// result value simply does not push. Declining leaves it where it is,
@@ -374,7 +344,20 @@ func pushIntoSelect(
 		if !ok {
 			return nil, nil
 		}
+		if joinType == expressions.JoinLeftOuter && !rejectsNullSupplied {
+			rejects, err := rejectsNull(translated, selectExpr.GetQuantifiers()[1].GetAlias())
+			if err != nil {
+				return nil, err
+			}
+			rejectsNullSupplied = rejects
+		}
 		newPredicates = append(newPredicates, translated)
+	}
+	if joinType == expressions.JoinLeftOuter {
+		if !rejectsNullSupplied {
+			return nil, nil
+		}
+		joinType = expressions.JoinInner
 	}
 
 	return expressions.NewSelectExpressionWithJoinType(
@@ -382,7 +365,7 @@ func pushIntoSelect(
 		selectExpr.GetQuantifiers(),
 		newPredicates,
 		selectExpr.GetSourceAliases(),
-		selectExpr.GetJoinType(),
+		joinType,
 	)
 }
 
@@ -392,7 +375,7 @@ func pushIntoSelect(
 // ForEach quantifier ranging over the new SelectExpression.
 // Ports Java's PushToVisitor.pushOverChild.
 func pushOverChild(
-	call *ExpressionRuleCall,
+	call pushDownMemoizer,
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	child expressions.Quantifier,
@@ -449,7 +432,7 @@ func pushOverChild(
 // creating a new SelectExpression over each union leg with the pushed
 // predicates. Ports Java's PushToVisitor.visitLogicalUnionExpression.
 func pushThroughUnion(
-	call *ExpressionRuleCall,
+	call pushDownMemoizer,
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	union *expressions.LogicalUnionExpression,
@@ -478,7 +461,7 @@ func pushThroughUnion(
 // creating a new SelectExpression below the sort's single child.
 // Ports Java's PushToVisitor.visitLogicalSortExpression.
 func pushThroughSort(
-	call *ExpressionRuleCall,
+	call pushDownMemoizer,
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	sort *expressions.LogicalSortExpression,
@@ -501,7 +484,7 @@ func pushThroughSort(
 // by creating a new SelectExpression below the distinct's single child.
 // Ports Java's PushToVisitor.visitLogicalDistinctExpression.
 func pushThroughDistinct(
-	call *ExpressionRuleCall,
+	call pushDownMemoizer,
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	distinct *expressions.LogicalDistinctExpression,
@@ -524,7 +507,7 @@ func pushThroughDistinct(
 // by creating a new SelectExpression below the unique's single child.
 // Ports Java's PushToVisitor.visitLogicalUniqueExpression.
 func pushThroughUnique(
-	call *ExpressionRuleCall,
+	call pushDownMemoizer,
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	unique *expressions.LogicalUniqueExpression,
@@ -543,4 +526,4 @@ func pushThroughUnique(
 	return unique.WithQuantifiers([]expressions.Quantifier{newChild})
 }
 
-var _ ExpressionRule = (*PredicatePushDownRule)(nil)
+var _ ImplementationRule = (*PredicatePushDownRule)(nil)

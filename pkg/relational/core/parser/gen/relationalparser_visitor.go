@@ -106,6 +106,9 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#vectorIndexDefinition.
 	VisitVectorIndexDefinition(ctx *VectorIndexDefinitionContext) interface{}
 
+	// Visit a parse tree produced by RelationalParser#vectorEngine.
+	VisitVectorEngine(ctx *VectorEngineContext) interface{}
+
 	// Visit a parse tree produced by RelationalParser#indexColumnList.
 	VisitIndexColumnList(ctx *IndexColumnListContext) interface{}
 
@@ -133,6 +136,9 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#vectorIndexOption.
 	VisitVectorIndexOption(ctx *VectorIndexOptionContext) interface{}
 
+	// Visit a parse tree produced by RelationalParser#vectorIndexOptionValue.
+	VisitVectorIndexOptionValue(ctx *VectorIndexOptionValueContext) interface{}
+
 	// Visit a parse tree produced by RelationalParser#hnswMetric.
 	VisitHnswMetric(ctx *HnswMetricContext) interface{}
 
@@ -150,6 +156,15 @@ type RelationalParserVisitor interface {
 
 	// Visit a parse tree produced by RelationalParser#viewDefinition.
 	VisitViewDefinition(ctx *ViewDefinitionContext) interface{}
+
+	// Visit a parse tree produced by RelationalParser#storedQueryDefinition.
+	VisitStoredQueryDefinition(ctx *StoredQueryDefinitionContext) interface{}
+
+	// Visit a parse tree produced by RelationalParser#declareBlock.
+	VisitDeclareBlock(ctx *DeclareBlockContext) interface{}
+
+	// Visit a parse tree produced by RelationalParser#declaredFunction.
+	VisitDeclaredFunction(ctx *DeclaredFunctionContext) interface{}
 
 	// Visit a parse tree produced by RelationalParser#tempSqlInvokedFunction.
 	VisitTempSqlInvokedFunction(ctx *TempSqlInvokedFunctionContext) interface{}
@@ -211,17 +226,8 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#statementBody.
 	VisitStatementBody(ctx *StatementBodyContext) interface{}
 
-	// Visit a parse tree produced by RelationalParser#userDefinedScalarFunctionStatementBody.
-	VisitUserDefinedScalarFunctionStatementBody(ctx *UserDefinedScalarFunctionStatementBodyContext) interface{}
-
-	// Visit a parse tree produced by RelationalParser#expressionBody.
-	VisitExpressionBody(ctx *ExpressionBodyContext) interface{}
-
-	// Visit a parse tree produced by RelationalParser#sqlReturnStatement.
-	VisitSqlReturnStatement(ctx *SqlReturnStatementContext) interface{}
-
-	// Visit a parse tree produced by RelationalParser#returnValue.
-	VisitReturnValue(ctx *ReturnValueContext) interface{}
+	// Visit a parse tree produced by RelationalParser#userDefinedMacroFunctionStatementBody.
+	VisitUserDefinedMacroFunctionStatementBody(ctx *UserDefinedMacroFunctionStatementBodyContext) interface{}
 
 	// Visit a parse tree produced by RelationalParser#charSet.
 	VisitCharSet(ctx *CharSetContext) interface{}
@@ -265,8 +271,8 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#tableFunction.
 	VisitTableFunction(ctx *TableFunctionContext) interface{}
 
-	// Visit a parse tree produced by RelationalParser#tableFunctionArgs.
-	VisitTableFunctionArgs(ctx *TableFunctionArgsContext) interface{}
+	// Visit a parse tree produced by RelationalParser#namedOrUnnamedFunctionArgs.
+	VisitNamedOrUnnamedFunctionArgs(ctx *NamedOrUnnamedFunctionArgsContext) interface{}
 
 	// Visit a parse tree produced by RelationalParser#tableFunctionName.
 	VisitTableFunctionName(ctx *TableFunctionNameContext) interface{}
@@ -382,11 +388,11 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#limitClauseAtom.
 	VisitLimitClauseAtom(ctx *LimitClauseAtomContext) interface{}
 
-	// Visit a parse tree produced by RelationalParser#queryOptions.
-	VisitQueryOptions(ctx *QueryOptionsContext) interface{}
+	// Visit a parse tree produced by RelationalParser#statementOptions.
+	VisitStatementOptions(ctx *StatementOptionsContext) interface{}
 
-	// Visit a parse tree produced by RelationalParser#queryOption.
-	VisitQueryOption(ctx *QueryOptionContext) interface{}
+	// Visit a parse tree produced by RelationalParser#statementOption.
+	VisitStatementOption(ctx *StatementOptionContext) interface{}
 
 	// Visit a parse tree produced by RelationalParser#startTransaction.
 	VisitStartTransaction(ctx *StartTransactionContext) interface{}
@@ -711,6 +717,12 @@ type RelationalParserVisitor interface {
 
 	// Visit a parse tree produced by RelationalParser#aggregateWindowedFunction.
 	VisitAggregateWindowedFunction(ctx *AggregateWindowedFunctionContext) interface{}
+
+	// Visit a parse tree produced by RelationalParser#nullTreatmentClause.
+	VisitNullTreatmentClause(ctx *NullTreatmentClauseContext) interface{}
+
+	// Visit a parse tree produced by RelationalParser#aggregateLimitClause.
+	VisitAggregateLimitClause(ctx *AggregateLimitClauseContext) interface{}
 
 	// Visit a parse tree produced by RelationalParser#nonAggregateWindowedFunction.
 	VisitNonAggregateWindowedFunction(ctx *NonAggregateWindowedFunctionContext) interface{}

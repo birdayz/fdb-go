@@ -21,7 +21,7 @@ tests:
       - [40, null]
   # LEFT JOIN with filter on outer: only high-value orders
   - query: SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WHERE o.amount > 60 ORDER BY o.id
-    plan_contains: "FlatMap(outer=Scan(ORDERS), inner=DefaultOnEmpty(Scan(CUSTOMERS, [=])))"
+    plan_contains: "FlatMap(outer=PredicatesFilter(Scan(ORDERS), [1 preds]), inner=DefaultOnEmpty(Scan(CUSTOMERS, [=])))"
     plan_not_contains: "NestedLoopJoin"
     rows:
       - [10, "Alice"]

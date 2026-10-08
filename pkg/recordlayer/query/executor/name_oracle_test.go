@@ -17,7 +17,9 @@ import (
 // DESCRIPTOR's own field spelling — the same name values.FieldNameForProtoField
 // gives the corresponding slot, which is what makes this an independent oracle
 // for shadowMismatch rather than a second naming rule to keep in sync.
-// Only set fields are included; unset fields are omitted (NULL semantics). A
+// Only set fields, and unset ones that declare an explicit default (read as
+// the default, MessageHelpers.java:133), are included; other unset fields are
+// omitted (NULL semantics). A
 // REPEATED field is always included, EMPTY ONE INCLUDED, because an empty
 // repeated field is the empty array and not NULL — protoreflect's Has()
 // reports false for it, so the repeated arm has to come first, exactly as it
@@ -33,7 +35,7 @@ func protoToMap(msg proto.Message) map[string]any {
 	m := make(map[string]any, fields.Len())
 	for i := 0; i < fields.Len(); i++ {
 		fd := fields.Get(i)
-		if !fd.IsList() && !fd.IsMap() && !refl.Has(fd) {
+		if !fd.IsList() && !fd.IsMap() && !fd.HasDefault() && !refl.Has(fd) {
 			continue
 		}
 		key := string(fd.Name())

@@ -38,23 +38,10 @@ func (n *NotValue) Children() []Value {
 
 func (*NotValue) Name() string { return "not" }
 
-// Type preserves the child's nullability — NOT of a nullable boolean
-// is a nullable boolean (NOT of NULL is NULL). When the child is nil
-// or its Type isn't a boolean shape, fall back to NullableBoolean
-// (NOT is always boolean-shaped at the Value layer).
-func (n *NotValue) Type() Type {
-	if n.Child == nil {
-		return NullableBoolean
-	}
-	ct := n.Child.Type()
-	if ct == nil {
-		return NullableBoolean
-	}
-	if ct.Code() == TypeCodeBoolean {
-		return ct
-	}
-	return NullableBoolean
-}
+// Type is NullableBoolean whatever the child: Java's NotValue does not
+// override BooleanValue.getResultType, primitiveType(BOOLEAN), which is
+// nullable (BooleanValue.java:40-42).
+func (*NotValue) Type() Type { return NullableBoolean }
 
 func (n *NotValue) Evaluate(evalCtx any) (any, error) {
 	if n.Child == nil {

@@ -100,10 +100,8 @@ func newIndexLsCmd() *cobra.Command {
 						// ("configure `meta_file` … or pass --meta-file"), so
 						// those are wrapped unchanged.
 						//
-						// Leading with a sentence word rather than the flag is
-						// enforced for the whole binary by docscheck's
-						// TestCLIErrorMessagesDoNotLeadWithAFlag; fang
-						// title-cases the banner's first word.
+						// It leads with a sentence word rather than the flag
+						// because fang title-cases the banner's first word.
 						if errors.Is(err, meta.ErrMissingSource) {
 							return &offlineNeedsFileSourceError{context: target.cfgCtx.GetName()}
 						}

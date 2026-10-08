@@ -51,18 +51,17 @@ func TestMain(m *testing.M) {
 }
 
 // embeddedQualifierRecoveryFloors watches collapse at the live sites reached by
-// this corpus. Derived UNNEST and projection-scope classification are fully
-// retired and forbid all calls independently of these floors.
+// this corpus. Derived UNNEST, projection-scope classification and the
+// display-label strip are fully retired and forbid all calls independently of
+// these floors.
 var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 	Calls: [6]int{
-		values.QualRecSiteExistsSortSplit:   3,
-		values.QualRecSiteProjQualVsScan:    2,
-		values.QualRecSiteDisplayLabelStrip: 4,
+		values.QualRecSiteExistsSortSplit: 3,
+		values.QualRecSiteProjQualVsScan:  2,
 	},
 	Split: [6]int{
-		values.QualRecSiteExistsSortSplit:   3,
-		values.QualRecSiteProjQualVsScan:    2,
-		values.QualRecSiteDisplayLabelStrip: 4,
+		values.QualRecSiteExistsSortSplit: 3,
+		values.QualRecSiteProjQualVsScan:  2,
 	},
 }
 
@@ -82,8 +81,8 @@ var embeddedQualifierRecoveryRetiredSplit = func() (r [6]bool) {
 //
 // They exist because the census asserts DIVERGED at ZERO, and a zero nothing has
 // shown could be non-zero is not a measurement. Each is an asserted reach of the
-// bucket in qualifier_recovery_wiring_test.go — the pins for the two embedded
-// sites whose dotted classes no corpus populates.
+// bucket in qualifier_recovery_wiring_test.go — the pin for the embedded site
+// whose dotted classes no corpus populates.
 //
 // The residual is stated rather than smoothed: a REAL divergence spelled exactly
 // like one of these is absorbed, because witnesses dedup by spelling. That is
@@ -92,16 +91,6 @@ var embeddedQualifierRecoveryRetiredSplit = func() (r [6]bool) {
 var qualifierRecoveryNegativeControls = map[values.QualifierRecoverySite]map[string]struct{}{
 	values.QualRecSiteProjQualVsScan: {
 		`"T.COL" vs identity "<unqualified>"`: {},
-	},
-	values.QualRecSiteDisplayLabelStrip: {
-		`"A.NAME" vs identity "Z"`: {},
-		// The THREE-SEGMENT reach. It is listed separately rather than folded
-		// into the two-segment one because the arity is the thing under test:
-		// at three segments the leading segment and "everything before the last
-		// dot" are different strings, and a split that confuses them reports
-		// DIVERGED for a perfectly correct read. Only a disagreement in the
-		// LEADING segment may reach this bucket now.
-		`"Z.N.SK" vs identity "A"`: {},
 	},
 }
 
@@ -125,6 +114,7 @@ func assertEmbeddedQualifierRecoveryCensus(w io.Writer) bool {
 		RetiredCalls: [6]bool{
 			values.QualRecSiteDerivedUnnestSource: true,
 			values.QualRecSiteProjScopeClassify:   true,
+			values.QualRecSiteDisplayLabelStrip:   true,
 		},
 	}, "embedded corpus")
 }

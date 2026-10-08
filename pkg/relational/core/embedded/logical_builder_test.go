@@ -11,113 +11,8 @@ import (
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/query/semantic"
 )
-
-func TestDeriveProjectionColumnDefDoesNotDequalifyExpressionLabel(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name      string
-		field     string
-		alias     string
-		minted    bool
-		wantLabel string
-	}{
-		{
-			name:      "machinery qualified column",
-			field:     "E.SALARY",
-			alias:     "E.SALARY",
-			minted:    true,
-			wantLabel: "SALARY",
-		},
-		{
-			name:      "canonical qualified aggregate",
-			field:     "MAX(E.SALARY)",
-			alias:     "MAX(E.SALARY)",
-			minted:    true,
-			wantLabel: "MAX(E.SALARY)",
-		},
-		{
-			name:      "delimited punctuation remains a qualified column",
-			field:     "E.SAL-ARY",
-			alias:     "E.SAL-ARY",
-			minted:    true,
-			wantLabel: "SAL-ARY",
-		},
-		// The alias is spelled EXACTLY like the machinery key above, and is the
-		// user's. Only the provenance separates the two, which is the point: a
-		// delimited `AS "E.SALARY"` is one Identifier with an empty qualifier
-		// list in Java, so nothing strips its leaf.
-		{
-			name:      "user alias spelled like a machinery key stays verbatim",
-			field:     "E.SALARY",
-			alias:     "E.SALARY",
-			minted:    false,
-			wantLabel: "E.SALARY",
-		},
-		{
-			name:      "user alias whose qualifier names nothing stays verbatim",
-			field:     "E.SALARY",
-			alias:     "Q.SALARY",
-			minted:    false,
-			wantLabel: "Q.SALARY",
-		},
-		{
-			name:      "user alias whose leaf differs stays verbatim",
-			field:     "E.SALARY",
-			alias:     "E.OTHER",
-			minted:    false,
-			wantLabel: "E.OTHER",
-		},
-		// A machinery key whose leaf does NOT match the projected reference: a
-		// projection merge substitutes the inner's value under the outer's
-		// effective name, so the two can legitimately disagree. Provenance still
-		// decides, which is why the leaf comparison is gone.
-		{
-			name:      "machinery key is dequalified even when the leaf differs",
-			field:     "E.OTHER",
-			alias:     "E.SALARY",
-			minted:    true,
-			wantLabel: "SALARY",
-		},
-	}
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			// State the exact owner/path the qualified rendering came from. The
-			// pre-RFC-232 fixture put `E.SALARY` inside QOV(SOURCE), making the
-			// display-label census report a synthetic identity divergence even
-			// though the production value is QOV(E).SALARY.
-			owner, fieldName := "SOURCE", tc.field
-			ref := parseColRef(tc.field)
-			if ref.isQualified() && isPlainQualifiedColumnReference(tc.field) {
-				owner, fieldName = leadingSegment(tc.field), ref.bare()
-			}
-			typ := &values.RecordType{Fields: []values.Field{{Name: fieldName, Ordinal: 0, FieldType: values.NullableLong}}}
-			qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(owner), typ)
-			if err != nil {
-				t.Fatalf("projection QOV: %v", err)
-			}
-			v, err := values.ResolveFieldOrdinals(qov, []int{0})
-			if err != nil {
-				t.Fatalf("projection field: %v", err)
-			}
-			aliasSource := values.ProjectionAliasSource{}
-			if tc.minted {
-				aliasSource = values.NewProjectionAliasSource(values.NamedCorrelationIdentifier(owner))
-			}
-			got := deriveProjectionColumnDef(v, tc.alias, tc.minted, aliasSource, 0, nil)
-			if got.Label != tc.wantLabel {
-				t.Fatalf("label = %q, want %q", got.Label, tc.wantLabel)
-			}
-			// The datum key keeps the qualifier either way — it is what stops
-			// two same-leaf columns collapsing in the executor's row map.
-			if got.Name != strings.ToUpper(tc.alias) {
-				t.Fatalf("datum key = %q, want %q", got.Name, strings.ToUpper(tc.alias))
-			}
-		})
-	}
-}
 
 func TestMintQualifiedDatumKeyCapturesStructuredLeadingSource(t *testing.T) {
 	t.Parallel()
@@ -213,11 +108,64 @@ func TestBindPostAggregateValueRejectsInRangeSourceOrdinal(t *testing.T) {
 	}
 
 	// Source B's ordinal 1 happens to equal the aggregate call's native
-	// ordinal [key=0, call=1]. It is still not producer-native identity.
+	// ordinal [key=0, call=1]. It is still not producer-native identity: a
+	// non-grouping source reference, Java's GROUPING_ERROR (42803).
 	err = validatePostAggregateValueDraft(field(1), agg)
 	var apiErr *api.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
-		t.Fatalf("in-range unmatched source ordinal must fail typed-loud, got %v", err)
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeGroupingError {
+		t.Fatalf("in-range unmatched source ordinal must fail 42803, got %v", err)
+	}
+
+	// An enclosing block's field is constant across the aggregated rows:
+	// composable as it stands (isComposableFrom's constantCorrelations arm).
+	// Every arm of the decision: outer only, local, outer+local, and a local
+	// correlation that is also in the outer set is never offered (the set is
+	// built without it — TestAggregateOuterCorrelationsDropsAShadowedName).
+	outerSrc, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("W"), sourceType)
+	if err != nil {
+		t.Fatalf("outer QOV: %v", err)
+	}
+	outerField, err := values.ResolveFieldOrdinals(outerSrc, []int{1})
+	if err != nil {
+		t.Fatalf("outer field: %v", err)
+	}
+	if err := validatePostAggregateValueDraft(outerField, agg); err == nil {
+		t.Fatal("an outer field was composable with no OuterCorrelations recorded")
+	}
+	agg.OuterCorrelations = map[values.CorrelationIdentifier]struct{}{values.NamedCorrelationIdentifier("W"): {}}
+	if err := validatePostAggregateValueDraft(outerField, agg); err != nil {
+		t.Fatalf("an outer field must be composable as a constant, got %v", err)
+	}
+	if err := validatePostAggregateValueDraft(field(1), agg); err == nil {
+		t.Fatal("a local non-grouping field passed once OuterCorrelations was set")
+	}
+	mixed, err := values.NewArithmeticValue(values.OpAdd, outerField, field(1))
+	if err != nil {
+		t.Fatalf("mixed value: %v", err)
+	}
+	if err := validatePostAggregateValueDraft(mixed, agg); err == nil {
+		t.Fatal("a value correlated to both an outer and a local source passed")
+	}
+}
+
+func TestAggregateOuterCorrelationsDropsAShadowedName(t *testing.T) {
+	t.Parallel()
+	enclosing := semantic.NewScope(nil)
+	for _, name := range []string{"W", "H"} {
+		if err := enclosing.AddSource(semantic.ScopeSource{
+			Table:           aggkTable(name, "id", "f"),
+			Alias:           semantic.NewUnquoted(name),
+			CorrelationName: name,
+		}); err != nil {
+			t.Fatalf("add %s: %v", name, err)
+		}
+	}
+	got := aggregateOuterCorrelations(enclosing, logical.NewScan("h", ""))
+	if _, ok := got[values.NamedCorrelationIdentifier("W")]; !ok || len(got) != 1 {
+		t.Fatalf("outer correlations = %v, want exactly {W}: H is bound by the block's own FROM", got)
+	}
+	if got := aggregateOuterCorrelations(nil, logical.NewScan("h", "")); got != nil {
+		t.Fatalf("an uncorrelated block has outer correlations %v", got)
 	}
 }
 
@@ -547,38 +495,28 @@ func TestBuildLogicalPlan_ChainedJoins(t *testing.T) {
 	}
 }
 
-// SELECT without FROM is rejected at parse time. fdb-relational
-// 4.11.1.0's QueryVisitor.visitSimpleTable asserts a non-null FROM
-// clause with `Assert.notNullUnchecked(fromClause(), UNSUPPORTED_QUERY,
-// "query is not supported")`; Go's extractFromSimpleTable mirrors the
-// rejection. Per project conformance principle: doesn't work in Java
-// → doesn't work in Go. The LogicalValues builder shape stays in
-// place for future use (e.g., VALUES (...) AS t(...)) but is no
-// longer reachable from a bare SELECT.
-func TestBuildLogicalPlan_ValuesNoFromRejected(t *testing.T) {
+// FROM-less projection still uses the ordinary select shell over a singleton.
+func TestBuildLogicalPlan_SingletonNoFrom(t *testing.T) {
 	t.Parallel()
 	root, err := parser.Parse("SELECT 1 + 2")
 	if err != nil {
-		t.Fatalf("parse: %v", err)
+		t.Fatal(err)
 	}
-	stmt := root.Statements().AllStatement()[0]
-	sel := stmt.SelectStatement()
-	if sel == nil {
-		t.Fatal("expected SELECT statement")
+	sel := root.Statements().AllStatement()[0].SelectStatement()
+	sq, err := extractSelectParts(sel)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, err = extractSelectParts(sel)
-	if err == nil {
-		t.Fatal("expected error from extractSelectParts on FROM-less SELECT")
+	op := buildLogicalPlanForSelect(sq)
+	projection, ok := op.(*logical.LogicalProject)
+	if !ok {
+		t.Fatalf("plan=%T, want ordinary projection", op)
 	}
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("want *api.Error, got %T (%v)", err, err)
+	if _, ok := projection.Input.(*logical.LogicalSingleton); !ok {
+		t.Fatalf("projection input=%T, want singleton", projection.Input)
 	}
-	if apiErr.Code != api.ErrCodeUnsupportedQuery {
-		t.Fatalf("got code %s, want %s", apiErr.Code, api.ErrCodeUnsupportedQuery)
-	}
-	if apiErr.Message != "query is not supported" {
-		t.Fatalf("got message %q, want %q", apiErr.Message, "query is not supported")
+	if len(projection.Projections) != 1 {
+		t.Fatalf("projection=%#v", projection.Projections)
 	}
 }
 

@@ -114,7 +114,7 @@ func TestIntegration_LimitParentSkip(t *testing.T) {
 				}
 				var plan plans.RecordQueryPlan = mustExecutorConstruct(plans.NewRecordQueryLimitPlan(child, tc.limit, tc.offset))
 				if kind == "singleton_in" {
-					plan = mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(plan, []string{"skip_binding"}, nil, false)).
+					plan = mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(plan, []string{"skip_binding"}, nil, false, plans.UnboundedInUnionSize)).
 						WithInSources([][]any{{int64(1)}})
 				}
 				_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -165,7 +165,7 @@ func TestIntegration_LimitParentSkipResume(t *testing.T) {
 			scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 			var plan plans.RecordQueryPlan = mustExecutorConstruct(plans.NewRecordQueryLimitPlan(scan, 5, 1))
 			if tc.wrapped {
-				plan = mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(plan, []string{"skip_binding"}, nil, false)).
+				plan = mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(plan, []string{"skip_binding"}, nil, false, plans.UnboundedInUnionSize)).
 					WithInSources([][]any{{int64(1)}})
 			}
 			var continuation []byte
@@ -365,7 +365,7 @@ func TestIntegration_StrictFirstOrDefaultRequest(t *testing.T) {
 				if kind == "map" {
 					plan = mustExecutorConstruct(plans.NewRecordQueryMapPlan(plan, constant))
 				} else if kind == "projection" {
-					plan = mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{constant}, plan))
+					plan = mustExecutorConstruct(newProjectionMapOverForTest([]values.Value{constant}, plan))
 				}
 				_, err := testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					s, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(testSubspace(t)).Open()

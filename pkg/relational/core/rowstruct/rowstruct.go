@@ -15,6 +15,7 @@
 package rowstruct
 
 import (
+	"fdb.dev/pkg/recordlayer/protoname"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -70,7 +71,8 @@ func (s *MessageStruct) Attribute(oneBasedIndex int) (any, error) {
 func (s *MessageStruct) AttributeByName(name string) (any, error) {
 	fields := s.msg.Descriptor().Fields()
 	for i := 0; i < fields.Len(); i++ {
-		if equalFoldASCII(string(fields.Get(i).Name()), name) {
+		// A field's storage name escapes what the SQL name cannot hold.
+		if equalFoldASCII(protoname.ToUserIdentifier(string(fields.Get(i).Name())), name) {
 			return s.fieldValue(fields.Get(i))
 		}
 	}

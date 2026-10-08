@@ -44,6 +44,10 @@ func (r *DecorrelateValuesRule) Matcher() matching.BindingMatcher { return r.mat
 
 func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
+	// Java matches exploratory expressions only; a final is SelectMergeRule's.
+	if !isExploratoryMember(call.Reference, sel) {
+		return
+	}
 	quantifiers := sel.GetQuantifiers()
 	if len(quantifiers) == 0 {
 		return
@@ -207,15 +211,7 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 			}
 		}
 		if anyChanged {
-			// MemoizeExpression can resolve to an EXISTING (already
-			// explored) reference; the extras then need the scheduled
-			// insert — a raw Insert leaves them without any task under
-			// the epoch convergence and AdvancePlannerStage discards
-			// them (a lost decorrelated alternative).
-			newRef := call.MemoizeExpression(newMembers[0])
-			for _, extra := range newMembers[1:] {
-				call.InsertReExploring(newRef, extra)
-			}
+			newRef := call.MemoizeExpressions(newMembers)
 			rebuilt := expressions.RebuildQuantifier(q, newRef)
 			newQuantifiers = append(newQuantifiers, rebuilt)
 		} else {
@@ -519,6 +515,19 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 		return nil, true
 	}
 	switch pred := p.(type) {
+	case *predicates.PredicateWithValueAndRanges:
+		translated, err := predicates.TransformEmbeddedValuesChecked(p, func(v values.Value) (values.Value, error) {
+			result, ok := translateValueCorrelations(v, tm)
+			if !ok {
+				return nil, &values.ResolutionError{
+					ErrorCode: values.RewriteInvalidCallbackOutput,
+					Path:      "predicate.range.value",
+					Detail:    "cannot rebuild translated range value",
+				}
+			}
+			return result, nil
+		})
+		return translated, err == nil
 	case *predicates.ComparisonPredicate:
 		newOperand, operandOK := translateValueCorrelations(pred.Operand, tm)
 		newCompOperand, compOK := translateValueCorrelations(pred.Comparison.Operand, tm)
@@ -564,7 +573,7 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 		if !changed {
 			return p, true
 		}
-		return predicates.NewAnd(newSubs...), true
+		return predicates.WithAtomicity(predicates.NewAnd(newSubs...), predicates.IsAtomic(p)), true
 	case *predicates.OrPredicate:
 		changed := false
 		newSubs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
@@ -581,7 +590,7 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 		if !changed {
 			return p, true
 		}
-		return predicates.NewOr(newSubs...), true
+		return predicates.WithAtomicity(predicates.NewOr(newSubs...), predicates.IsAtomic(p)), true
 	case *predicates.NotPredicate:
 		newChild, ok := translatePredicateCorrelations(pred.Child, tm)
 		if !ok {
@@ -590,7 +599,7 @@ func translatePredicateCorrelations(p predicates.QueryPredicate, tm TranslationM
 		if newChild == pred.Child {
 			return p, true
 		}
-		return predicates.NewNot(newChild), true
+		return predicates.WithAtomicity(predicates.NewNot(newChild), predicates.IsAtomic(p)), true
 	case *predicates.ExistentialValuePredicate:
 		// RFC-141: translate the QuantifiedObjectValue operand's correlation
 		// via the shared value path (which remaps the QOV alias). The

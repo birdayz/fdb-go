@@ -45,8 +45,8 @@ import (
 // single schema to bind a connection to. It goes through the same two keyspace
 // methods, and TestIntegration_Stats_FleetCollectIsReadableByTheConnection is
 // what proves the two agree.
-func (c *EmbeddedConnection) statisticsLocation() (recordlayer.StatisticsSubspace, subspace.Subspace, error) {
-	storeSubspace, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+func (c *EmbeddedConnection) statisticsLocation(ctx context.Context) (recordlayer.StatisticsSubspace, subspace.Subspace, error) {
+	storeSubspace, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
 	if err != nil {
 		return recordlayer.StatisticsSubspace{}, nil, err
 	}
@@ -270,7 +270,7 @@ func evaluateCollectedStatistics(
 		return decideStatistics(in)
 	}
 
-	statsSubspace, storeSubspace, err := c.statisticsLocation()
+	statsSubspace, storeSubspace, err := c.statisticsLocation(ctx)
 	if err != nil {
 		in.ReadErr = err
 		return decideStatistics(in)

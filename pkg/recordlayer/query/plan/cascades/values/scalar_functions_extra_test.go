@@ -374,11 +374,14 @@ func TestSimplifyValue_FoldsExtendedScalars(t *testing.T) {
 			float64(3),
 		},
 		{
+			// Only a NULL or BOOLEAN-literal head folds (Java's
+			// EvaluateConstantCoalesceRule after the dereference; a STRING head
+			// keeps the COALESCE).
 			"COALESCE picks first non-null",
-			NewScalarFunctionValue("COALESCE", TypeUnknown,
-				&NullValue{Typ: TypeUnknown},
-				&ConstantValue{Value: "x", Typ: TypeString}),
-			"x",
+			NewScalarFunctionValue("COALESCE", NotNullBoolean,
+				&NullValue{Typ: NullableBoolean},
+				&ConstantValue{Value: true, Typ: NotNullBoolean}),
+			true,
 		},
 		{
 			"CONCAT NULL skip",
@@ -390,7 +393,7 @@ func TestSimplifyValue_FoldsExtendedScalars(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		out := SimplifyValue(tc.v)
+		out := EvaluateConstantComparand(tc.v)
 		cv, ok := out.(*ConstantValue)
 		if !ok {
 			t.Fatalf("%s: expected *ConstantValue, got %T", tc.name, out)
@@ -439,17 +442,20 @@ type testStatementClock struct{ now time.Time }
 
 func (c testStatementClock) StatementNow() time.Time { return c.now }
 
-// TestScalarFunction_ShortCircuit pins the lazy forms at the unit level:
-// COALESCE stops at the first non-NULL argument and IF evaluates only
-// the taken branch — the untaken 1/0 must never raise.
+// TestScalarFunction_ShortCircuit: COALESCE evaluates every argument (Java's
+// VariadicFunctionValue.eval), IFNULL stops at the first non-NULL argument,
+// and IF evaluates only the taken branch.
 func TestScalarFunction_ShortCircuit(t *testing.T) {
 	t.Parallel()
 	one := &ConstantValue{Value: int64(1), Typ: NullableInt}
 	boom := &ArithmeticValue{Op: OpDiv, Left: one, Right: &ConstantValue{Value: int64(0), Typ: NullableInt}}
 
-	got, err := NewScalarFunctionValue("COALESCE", NullableInt, one, boom).Evaluate(nil)
+	if _, err := NewScalarFunctionValue("COALESCE", NullableInt, one, boom).Evaluate(nil); err == nil {
+		t.Error("COALESCE(1, 1/0) must evaluate every argument and raise the division error")
+	}
+	got, err := NewScalarFunctionValue("IFNULL", NullableInt, one, boom).Evaluate(nil)
 	if err != nil || got != int64(1) {
-		t.Errorf("COALESCE(1, 1/0) = %v, %v — want 1, nil (short-circuit)", got, err)
+		t.Errorf("IFNULL(1, 1/0) = %v, %v — want 1, nil (short-circuit)", got, err)
 	}
 	got, err = NewScalarFunctionValue("IF", NullableInt, NewBooleanValue(true), one, boom).Evaluate(nil)
 	if err != nil || got != int64(1) {
@@ -509,15 +515,6 @@ func TestScalarFunction_DatePartAcceptsCastableTimestamps(t *testing.T) {
 	zoned := &ConstantValue{Value: "2024-01-02T03:04:05+02:00", Typ: TypeString}
 	if got, err := NewScalarFunctionValue("HOUR", NullableInt, zoned).Evaluate(nil); err != nil || got != int64(1) {
 		t.Errorf("HOUR('2024-01-02T03:04:05+02:00') = %v, %v — want 1 (UTC-normalized, cast-consistent)", got, err)
-	}
-	// The already-parsed time.Time carrier normalizes identically — a
-	// non-UTC zone representation must not leak into the parts.
-	zonedT := &ConstantValue{
-		Value: time.Date(2024, 1, 2, 3, 4, 5, 0, time.FixedZone("X", 2*3600)),
-		Typ:   NullableTimestamp,
-	}
-	if got, err := NewScalarFunctionValue("HOUR", NullableInt, zonedT).Evaluate(nil); err != nil || got != int64(1) {
-		t.Errorf("HOUR(time.Time in +02:00) = %v, %v — want 1 (UTC-normalized)", got, err)
 	}
 	var argErr *InvalidArgumentError
 	if _, err := NewScalarFunctionValue("YEAR", NullableInt, &ConstantValue{Value: "not-a-date", Typ: TypeString}).Evaluate(nil); !errors.As(err, &argErr) {

@@ -35,6 +35,11 @@ func (r *PushRequestedOrderingThroughInsertRule) Matcher() matching.BindingMatch
 	return r.matcher
 }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *PushRequestedOrderingThroughInsertRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *PushRequestedOrderingThroughInsertRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return

@@ -206,7 +206,7 @@ func collectDependedOnIndexNames(plan plans.RecordQueryPlan, into map[string]str
 // cannot describe two different moments.
 //
 // states MUST be complete over md — every index the metadata names, present
-// with its state (fetchIndexStateSnapshot's contract, which GetAllIndexStates
+// with its state (fetchIndexStateSnapshot's contract, which PeekIndexStates
 // satisfies by construction). IsIndexReadable requires presence and so fails
 // CLOSED on a name it does not find, which is a deliberate divergence from
 // Java's RecordStoreState, where an absent entry DEFAULTS to readable. Java can

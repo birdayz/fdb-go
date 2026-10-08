@@ -1,0 +1,39 @@
+# aggregate_index_reverse_scan.yaml
+#
+# A descending request over an aggregate index's groups is served by the reverse
+# scan, as Java's is (aggregate-index-tests.yamsql: `select col1, sum(col2) from
+# T1 group by col1 order by col1 desc` is `AISCAN(MV1 <,> BY_GROUP REVERSE ...)`).
+# The index answers alone, as Java's does: the vacated group 40 keeps its key at
+# 0 in both indexes, and the all-NULL group 30 has no SUM entry.
+name: aggregate_index_reverse_scan
+schema_template: |
+  CREATE TABLE T1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+  CREATE INDEX mv1 AS SELECT SUM(col2) FROM T1 GROUP BY col1
+  CREATE INDEX mv_cnt AS SELECT COUNT(*) FROM T1 GROUP BY col1
+  CREATE INDEX mv_cnt2 AS SELECT COUNT(col2) FROM T1 GROUP BY col1
+setup:
+  - INSERT INTO T1 VALUES (1, 10, 1), (2, 10, 2), (3, 10, 3), (4, 10, 4), (5, 10, 5), (6, 20, 6), (7, 20, 7), (8, 20, 8), (9, 20, 9), (10, 20, 10), (11, 30, NULL), (12, 40, 3)
+  - DELETE FROM T1 WHERE id = 12
+tests:
+  - query: select col1, sum(col2) from T1 group by col1 order by col1 desc
+    plan_contains: "AggregateIndex(SUM, MV1, [COL1], T1, reverse)"
+    plan_not_contains: "Sort"
+    rows:
+      - [40, 0]
+      - [20, 40]
+      - [10, 15]
+  - query: select col1, count(*) from T1 group by col1 order by col1 desc
+    plan_contains: "AggregateIndex(COUNT, MV_CNT, [COL1], T1, reverse)"
+    plan_not_contains: "Sort"
+    rows:
+      - [40, 0]
+      - [30, 1]
+      - [20, 5]
+      - [10, 5]
+  - query: select col1, count(*) from T1 group by col1 order by col1
+    plan_not_contains: "reverse"
+    rows:
+      - [10, 5]
+      - [20, 5]
+      - [30, 1]
+      - [40, 0]

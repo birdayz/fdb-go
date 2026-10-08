@@ -1,0 +1,166 @@
+package sqltest
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+	"testing"
+
+	"fdb.dev/pkg/relational/sqltest/testkit"
+)
+
+// TestFDB_MultiwayJoinIndexProbe pins a 3-way chain join on indexed FK columns.
+// It asserts TWO things, in order of importance:
+//
+//	(1) CORRECTNESS — both FROM-orders must return the right rows. Every t3
+//	    (200) joins to its single t2 and that t2 to t1=1, so the chain yields
+//	    200 rows all with t1.id = 1. This is the load-bearing assertion: a
+//	    prior version of this test checked plan SHAPE only and never executed
+//	    the query, so it stayed green while the re-enumerated big-first order
+//	    silently returned 0 rows / NULL columns — a degenerate cross-product
+//	    partition (PartitionSelectRule routed a spanning predicate into the
+//	    lower half where its upper alias is unbound, yielding a {_0} placeholder
+//	    result). PartitionSelectRule now rejects that degenerate partition (see
+//	    its "Reject degenerate partitions" guard), so both orders are correct.
+//
+//	(2) CAPABILITY — the index-nested-loop probe fires: the small→big FROM-order
+//	    plans an IndexScan(t3_by_t2) of the 200-row T3 rather than a full Scan(T3).
+//
+// Cost-optimal index-probing under the OPPOSITE (big→small) FROM-order — and
+// full byte-identical FROM-order invariance — is a stronger, separate property
+// (the re-enumerated (t2⋈t3) sub-product still prefers a cross-product NLJ over
+// the index probe on cost); tracked in RFC-042. Correctness holds for both.
+func TestFDB_MultiwayJoinIndexProbe(t *testing.T) {
+	t.Parallel()
+	if testkit.ClusterFile() == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+
+	setup := testkit.OpenDB(t, "/FRL/testdb_mwjip")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_mwjip")
+	testkit.MustExecCtx(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE mwjip_tmpl "+
+			"CREATE TABLE t1 (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX t2_by_t1 ON t2 (t1_id) "+
+			"CREATE INDEX t3_by_t2 ON t3 (t2_id)")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_mwjip/s WITH TEMPLATE mwjip_tmpl")
+
+	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_MWJIP?cluster_file=%s&schema=S", testkit.ClusterFile())
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO t1 VALUES (1)")
+	for i := 1; i <= 20; i++ {
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t2 VALUES (%d, 1)", i))
+	}
+	for i := 1; i <= 200; i++ {
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO t3 VALUES (%d, %d)", i, (i%20)+1))
+	}
+
+	planExplain := testkit.Explainer(t, db, ctx)
+
+	// (1) CORRECTNESS — both FROM-orders must return 200 rows, all t1.id = 1.
+	for _, q := range []string{
+		"SELECT t1.id FROM t3, t2, t1 WHERE t3.t2_id = t2.id AND t2.t1_id = t1.id",
+		"SELECT t1.id FROM t1, t2, t3 WHERE t3.t2_id = t2.id AND t2.t1_id = t1.id",
+	} {
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("query %q: %v", q, err)
+		}
+		var n, bad int
+		for rows.Next() {
+			var id sql.NullInt64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatalf("scan %q: %v", q, err)
+			}
+			n++
+			if !id.Valid || id.Int64 != 1 {
+				bad++
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows.Err %q: %v", q, err)
+		}
+		rows.Close()
+		if n != 200 {
+			t.Errorf("CORRECTNESS: query %q returned %d rows, want 200:\n  %s", q, n, planExplain(q))
+		}
+		if bad != 0 {
+			t.Errorf("CORRECTNESS: query %q returned %d rows with t1.id != 1 (NULL/wrong), want 0:\n  %s", q, bad, planExplain(q))
+		}
+	}
+
+	// (2) CAPABILITY — the small→big FROM-order index-probes the 200-row T3 via
+	// t3_by_t2 rather than full-scanning it.
+	plan := planExplain("SELECT t1.id FROM t1, t2, t3 WHERE t3.t2_id = t2.id AND t2.t1_id = t1.id")
+	up := strings.ToUpper(plan)
+	if !strings.Contains(up, "INDEXSCAN(T3_BY_T2") {
+		t.Errorf("plan does not index-probe T3 via t3_by_t2:\n  %s", plan)
+	}
+	if strings.Contains(up, "SCAN(T3)") {
+		t.Errorf("plan full-scans the 200-row T3 instead of index-probing:\n  %s", plan)
+	}
+}
+
+// TestFDB_MergedJoinRangeSplitKeepsRows runs the shapes whose same-value
+// comparisons the select merges into one range and partitioning splits back
+// per quantifier (TestPlanHarness_MergedJoinRangeKeepsSelectiveProbe pins the
+// plans): every part must still filter, on data where each part alone admits
+// rows the conjunction excludes.
+func TestFDB_MergedJoinRangeSplitKeepsRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_merged_range_split", "mergedsplit",
+		"CREATE TABLE orders (id BIGINT, cust_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE customers (id BIGINT, name STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, k BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX o_cust ON orders (cust_id)")
+	for _, stmt := range []string{
+		"INSERT INTO orders VALUES (1, 42), (2, 42), (3, 7), (4, 99), (5, NULL)",
+		"INSERT INTO customers VALUES (42, 'x'), (7, 'y')",
+		"INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)",
+		"INSERT INTO b VALUES (1, 10), (2, 21), (3, 30)",
+		"INSERT INTO c VALUES (1, 10), (2, 20), (3, 31)",
+	} {
+		testkit.MustExecCtx(t, db, ctx, stmt)
+	}
+	for _, tc := range []struct {
+		sql  string
+		want []string
+	}{
+		{"SELECT o.id FROM orders o JOIN customers c ON o.cust_id = c.id WHERE o.cust_id = 42", []string{"1", "2"}},
+		{"SELECT o.id FROM orders o JOIN customers c ON o.cust_id = c.id WHERE o.cust_id = 99", nil},
+		{"SELECT o.id FROM orders o JOIN customers c ON o.cust_id = c.id WHERE o.cust_id > 10", []string{"1", "2"}},
+		{"SELECT x.id FROM a AS x INNER JOIN a AS y ON x.id = y.id WHERE x.id = 2", []string{"2"}},
+		{"SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id", []string{"1"}},
+	} {
+		t.Run(tc.sql, func(t *testing.T) {
+			rows, err := db.QueryContext(ctx, tc.sql)
+			if err != nil {
+				t.Fatalf("query: %v", err)
+			}
+			defer rows.Close()
+			var got []string
+			for rows.Next() {
+				got = append(got, testkit.SiRenderRow(t, rows))
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("rows.Err: %v", err)
+			}
+			testkit.SortStrings(got)
+			if !testkit.EqualStrings(got, tc.want) {
+				t.Errorf("rows = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

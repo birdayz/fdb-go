@@ -26,6 +26,7 @@ go_test(
     srcs = [
         "aggregate_group_bench_test.go",
         "derived_table_nested_column_name_test.go",
+        "domain_registration_test.go",
         "indexhunt_test.go",
         "inlist_plan_probe_test.go",
         "nullhunt_test.go",
@@ -40,6 +41,7 @@ go_test(
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
         "//pkg/relational/api",
+        "//pkg/relational/core/keyspace",
         "//pkg/relational/sqldriver",
         "//pkg/simfdb",
         "//pkg/simfdb/hunt",

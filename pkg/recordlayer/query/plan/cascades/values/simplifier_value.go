@@ -2,51 +2,70 @@ package values
 
 import "fmt"
 
-// SimplifyValue is the standalone-Value counterpart to Simplify.
-// Folds constant sub-trees in a Value (e.g. SELECT-list expressions
-// or projection arguments that never reach a comparison and so never
-// hit ComparisonConstantSimplifyRule).
+// SimplifyValue is Java's DefaultValueSimplificationRuleSet
+// (DefaultValueSimplificationRuleSet.java:40-80), bottom-up: the null-strict
+// collapse and the field-over-constructor and field-over-field compositions.
+// Like Java's, it EVALUATES nothing: `1 + 2` stays `1 + 2` and is computed when
+// the plan runs (RFC-257 WS-E 5.4(b)); EvaluateConstantComparand is the one
+// evaluation, for a comparand that must be stored as a literal.
 //
-// Two-phase per node, post-order:
-//
-//  1. Recurse into children — fold them first so partial folds work
-//     (e.g. `name + (1+2)` becomes `name + 3` in one pass).
-//  2. If the rebuilt node is fully constant per IsConstantValue, fold
-//     to a literal Value via LiteralValue (preserves the original
-//     Type so downstream type checks stay consistent).
-//
-// Returns the input unchanged when nothing folds — pointer-equality
+// Returns the input unchanged when nothing applies — pointer-equality
 // stable so callers can cheaply check for "did anything happen?".
-//
-// Why a free function rather than a CascadesRule: the rule framework
-// targets QueryPredicate matchers; standalone Values have no
-// surrounding predicate to match against. (Java models this as its
-// ValueSimplificationRuleSet; Go's equivalent is this fold.)
-//
-// Coverage: ArithmeticValue, CastValue, PromoteValue,
-// ScalarFunctionValue, NotValue. Other composites
-// (RecordConstructorValue, AggregateValue) are not folded —
-// Aggregate inherently needs row context, RecordConstructor seldom
-// appears in a fold-able position. Adding more shapes is mechanical
-// when need arises (extend isFoldableComposite + simplifyChildren).
 func SimplifyValue(v Value) Value {
+	return simplifyValue(v, simplifyMode{})
+}
+
+// SimplifyPredicateValue is SimplifyValue for a value inside a predicate: it
+// also folds a COALESCE over constant heads, Java's EvaluateConstantCoalesceRule,
+// which only the predicate value rule set carries
+// (DereferenceConstantObjectValueRuleSet.java:50-56). A COALESCE in a result
+// value is never folded, so it evaluates every argument.
+func SimplifyPredicateValue(v Value) Value {
+	return simplifyValue(v, simplifyMode{inPredicate: true})
+}
+
+// EvaluateConstantComparand is SimplifyPredicateValue that also EVALUATES
+// every composite whose children are constant (arithmetic, CAST, PROMOTE,
+// scalar functions, CASE) into a literal of its type. It is Java's
+// `comparison.getComparand(null, null)` where a comparison is converted to a
+// stored form -- the sparse-index predicate's IndexComparison
+// (IndexComparison.java:166) -- and is NOT a simplification: no query plan
+// evaluates a constant at plan time.
+func EvaluateConstantComparand(v Value) Value {
+	return simplifyValue(v, simplifyMode{inPredicate: true, evaluate: true})
+}
+
+// simplifyMode selects the rule set a simplification runs: the predicate
+// set's COALESCE rule, and the comparand evaluation of
+// EvaluateConstantComparand.
+type simplifyMode struct {
+	inPredicate bool
+	evaluate    bool
+}
+
+func simplifyValue(v Value, mode simplifyMode) Value {
 	if v == nil {
 		return nil
 	}
-	rebuilt := simplifyChildren(v)
+	rebuilt := simplifyChildrenWith(v, mode)
+	if collapsed := collapseNullStrict(rebuilt); collapsed != nil {
+		return collapsed
+	}
 	if s := composeFieldOverConstructor(rebuilt); s != nil {
-		return SimplifyValue(s)
+		return simplifyValue(s, mode)
 	}
 	if s := composeFieldOverField(rebuilt); s != nil {
-		return SimplifyValue(s)
+		return simplifyValue(s, mode)
 	}
-	if s := simplifyCoalesce(rebuilt); s != rebuilt {
-		return s
+	if mode.inPredicate {
+		if s := simplifyCoalesce(rebuilt); s != rebuilt {
+			return s
+		}
 	}
 	if isCoalesceValue(rebuilt) {
 		return rebuilt
 	}
-	if !isFoldableComposite(rebuilt) {
+	if !mode.evaluate || !isFoldableComposite(rebuilt) {
 		return rebuilt
 	}
 	if lit, ok := EvaluateConstant(rebuilt); ok {
@@ -73,14 +92,78 @@ func SimplifyValue(v Value) Value {
 	return rebuilt
 }
 
+// collapseNullStrict is Java's CollapseNullStrictValueOverNullValueRule
+// (CollapseNullStrictValueOverNullValueRule.java:40-80), which BOTH of Java's
+// value rule sets carry (DefaultValueSimplificationRuleSet.java:50-54,
+// DereferenceConstantObjectValueRuleSet.java:50-56): a null-strict value with a
+// NullValue child is the NullValue of its type, whatever its other children
+// are -- `n + NULL` is NULL, `NOT CAST(NULL AS BOOLEAN)` is NULL. Nil when it
+// does not apply.
+func collapseNullStrict(v Value) Value {
+	if !IsNullStrictValue(v) {
+		return nil
+	}
+	for _, child := range v.Children() {
+		if isNullLiteral(child) {
+			return NewNullValue(v.Type())
+		}
+	}
+	return nil
+}
+
+// isNullLiteral reports a NULL literal: a NullValue, or Go's boolean NULL
+// literal BooleanValue{nil}, which is the same NULL Java models as a
+// NullValue.
+func isNullLiteral(v Value) bool {
+	switch x := v.(type) {
+	case *NullValue:
+		return true
+	case *BooleanValue:
+		return x.Value == nil
+	}
+	return false
+}
+
+// IsNullStrictValue reports whether v is one of the classes Java's
+// CollapseNullStrictValueOverNullValueRule.VALUE_CLASSES lists: ArithmeticValue,
+// CastValue, FieldValue, NotValue, PromoteValue and SubscriptValue. KEEP IN
+// SYNC with that list.
+func IsNullStrictValue(v Value) bool {
+	switch v.(type) {
+	case *ArithmeticValue, *CastValue, *NotValue, *PromoteValue, *SubscriptValue:
+		return true
+	}
+	_, isField := AsFieldValue(v)
+	return isField
+}
+
 // isFoldableComposite is the whitelist of Value shapes SimplifyValue
 // will attempt to collapse to a literal. Limited to composites whose
 // Evaluate produces a Go-native scalar that LiteralValue can faithfully
 // rewrap.
 func isFoldableComposite(v Value) bool {
-	switch v.(type) {
-	case *ArithmeticValue, *CastValue, *PromoteValue, *ScalarFunctionValue, *NotValue,
+	switch v := v.(type) {
+	case *PromoteValue:
+		if v.prepared == nil {
+			return false
+		}
+		// A structured promotion must survive until the plan binds its
+		// descriptor graph. Folding its standalone raw result into a constant
+		// would erase the coercion boundary under a stamped parent.
+		target := v.prepared.root.target
+		for {
+			array, ok := target.(*ArrayType)
+			if !ok {
+				break
+			}
+			target = array.ElementType
+		}
+		return !IsRecord(target)
+	case *ArithmeticValue, *CastValue, *ScalarFunctionValue,
 		*AndOrValue, *ConditionSelectorValue, *PickValue, *EvaluatesToValue:
+		// NotValue is absent: Java folds no NOT over a literal (`NOT 'false'`
+		// stays, fold_div0_or_not_false_where), only NOT over a NULL, which
+		// collapseNullStrict does.
 		return true
 	}
 	return false
@@ -89,18 +172,18 @@ func isFoldableComposite(v Value) bool {
 // simplifyChildren rebuilds v with each child recursively simplified.
 // Returns v unchanged (same pointer) when no child changed — keeps
 // the SimplifyValue caller's pointer-equality short-circuit usable.
-func simplifyChildren(v Value) Value {
+func simplifyChildrenWith(v Value, mode simplifyMode) Value {
 	switch x := v.(type) {
 	case *ArithmeticValue:
-		l := SimplifyValue(x.Left)
-		r := SimplifyValue(x.Right)
+		l := simplifyValue(x.Left, mode)
+		r := simplifyValue(x.Right, mode)
 		if l == x.Left && r == x.Right {
 			return v
 		}
-		return &ArithmeticValue{Op: x.Op, Left: l, Right: r}
+		return x.WithOperands(l, r)
 	case *CastValue:
-		c := SimplifyValue(x.Child)
-		if cv, ok := c.(*ConstantValue); ok {
+		c := simplifyValue(x.Child, mode)
+		if cv, ok := c.(*ConstantValue); ok && mode.evaluate {
 			if folded := tryCastConstant(cv, x.Target); folded != nil {
 				return folded
 			}
@@ -110,14 +193,14 @@ func simplifyChildren(v Value) Value {
 		}
 		return NewCastValue(c, x.Target)
 	case *PromoteValue:
-		c := SimplifyValue(x.Child)
-		if cv, ok := c.(*ConstantValue); ok {
+		c := simplifyValue(x.Child, mode)
+		if cv, ok := c.(*ConstantValue); ok && mode.evaluate && isFoldableComposite(x) {
 			// Apply the promotion through Evaluate before re-tagging. Numeric
 			// promotions align the carrier width (including direct LONG→FLOAT
 			// rounding), while STRING→UUID reshapes the canonical string into a
 			// neutral [16]byte. On an error, keep the Promote node so it surfaces
 			// at execution, exactly as Java's PromoteValue does.
-			if folded, err := (&PromoteValue{Child: cv, Target: x.Target}).Evaluate(nil); err == nil {
+			if folded, err := NewPromoteValue(cv, x.Target).Evaluate(nil); err == nil {
 				return &ConstantValue{Value: folded, Typ: x.Target}
 			}
 			return NewPromoteValue(cv, x.Target)
@@ -130,7 +213,7 @@ func simplifyChildren(v Value) Value {
 		anyChanged := false
 		newArgs := make([]Value, len(x.Args))
 		for i, a := range x.Args {
-			n := SimplifyValue(a)
+			n := simplifyValue(a, mode)
 			if n != a {
 				anyChanged = true
 			}
@@ -141,14 +224,14 @@ func simplifyChildren(v Value) Value {
 		}
 		return &ScalarFunctionValue{FuncName: x.FuncName, Args: newArgs, Typ: x.Typ}
 	case *NotValue:
-		c := SimplifyValue(x.Child)
+		c := simplifyValue(x.Child, mode)
 		if c == x.Child {
 			return v
 		}
 		return &NotValue{Child: c}
 	case *AndOrValue:
-		l := SimplifyValue(x.Left)
-		r := SimplifyValue(x.Right)
+		l := simplifyValue(x.Left, mode)
+		r := simplifyValue(x.Right, mode)
 		if l == x.Left && r == x.Right {
 			return v
 		}
@@ -157,7 +240,7 @@ func simplifyChildren(v Value) Value {
 		anyChanged := false
 		newImpl := make([]Value, len(x.Implications))
 		for i, impl := range x.Implications {
-			n := SimplifyValue(impl)
+			n := simplifyValue(impl, mode)
 			if n != impl {
 				anyChanged = true
 			}
@@ -168,14 +251,14 @@ func simplifyChildren(v Value) Value {
 		}
 		return NewConditionSelectorValue(newImpl)
 	case *EvaluatesToValue:
-		c := SimplifyValue(x.Child)
+		c := simplifyValue(x.Child, mode)
 		if c == x.Child {
 			return v
 		}
 		return NewEvaluatesToValue(c, x.Eval)
 	case *PickValue:
 		anyChanged := false
-		newSel := SimplifyValue(x.Selector)
+		newSel := simplifyValue(x.Selector, mode)
 		if newSel != x.Selector {
 			anyChanged = true
 		}
@@ -185,7 +268,7 @@ func simplifyChildren(v Value) Value {
 				newAlts[i] = nil
 				continue
 			}
-			n := SimplifyValue(a)
+			n := simplifyValue(a, mode)
 			if n != a {
 				anyChanged = true
 			}
@@ -331,7 +414,7 @@ func simplifyCoalesce(v Value) Value {
 			onlyNulls = false
 			removeRedundantNulls = true
 			seenOnlyConstantsSoFar = false
-		} else if _, isNull := child.(*NullValue); isNull {
+		} else if isCoalesceNullHead(child) {
 			if removeRedundantNulls {
 				yieldsNew = true
 				continue
@@ -470,21 +553,42 @@ func carrierConvertingType(t Type) bool {
 	}
 }
 
-// cannotFoldCoalesce mirrors Java's EvaluateConstantCoalesceRule.cannotFold:
-// a value CAN be folded if it's NullValue, or a non-nullable constant
-// (LiteralValue with isNotNullable). In Go terms: NullValue, ConstantValue
-// with non-nil payload, or BooleanValue with non-nil *bool.
+// cannotFoldCoalesce mirrors Java's EvaluateConstantCoalesceRule.cannotFold
+// after the PREDICATE set's DereferenceConstantObjectValueRule: a head CAN be
+// folded if it is a NULL or a NOT NULL literal, and Java's SQL literals are
+// constant objects that the dereference turns into a literal only when they
+// are BOOLEAN (a NULL one into a NullValue). So an INT, STRING or any other
+// non-BOOLEAN constant head, and every composite head, is not foldable:
+// `COALESCE(1, 1 / 0) = 1` evaluates the division, as Java's does (RFC-257
+// WS-E 5.4(d)). Go's SQL literals and bound values are constants already, so
+// the dereference is the identity for them.
 func cannotFoldCoalesce(v Value) bool {
-	if _, isNull := v.(*NullValue); isNull {
+	if isCoalesceNullHead(v) {
 		return false
 	}
-	if c, isConst := v.(*ConstantValue); isConst && c.Value != nil {
-		return false
-	}
-	if bv, isBool := v.(*BooleanValue); isBool && bv.Value != nil {
+	switch c := v.(type) {
+	case *ConstantValue:
+		_, isBoolean := c.Value.(bool)
+		return !isBoolean
+	case *BooleanValue:
 		return false
 	}
 	return true
+}
+
+// isCoalesceNullHead reports a NULL head, which the COALESCE rule skips: a
+// NullValue, or a constant whose value is NULL (Java's NULL constant object,
+// which the dereference turns into a NullValue).
+func isCoalesceNullHead(v Value) bool {
+	switch c := v.(type) {
+	case *NullValue:
+		return true
+	case *ConstantValue:
+		return c.Value == nil
+	case *BooleanValue:
+		return c.Value == nil
+	}
+	return false
 }
 
 // ValueSimplifyContext carries context for context-aware value simplification.
@@ -531,7 +635,7 @@ func simplifyChildrenWithContext(v Value, ctx ValueSimplifyContext) Value {
 		if l == x.Left && r == x.Right {
 			return v
 		}
-		return &ArithmeticValue{Op: x.Op, Left: l, Right: r}
+		return x.WithOperands(l, r)
 	case *RecordConstructorValue:
 		anyChanged := false
 		newFields := make([]RecordConstructorField, len(x.Fields))

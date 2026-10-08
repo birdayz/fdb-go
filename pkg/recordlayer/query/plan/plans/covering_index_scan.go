@@ -168,14 +168,14 @@ func (p *RecordQueryCoveringIndexPlan) structuralKey() *structuralKey {
 
 func (p *RecordQueryCoveringIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryCoveringIndexPlan)
-	return ok && p.structuralKey().Equal(o.structuralKey())
+	return ok && p.keyFor(p).Equal(o.keyFor(o))
 }
 
 func (p *RecordQueryCoveringIndexPlan) HashCodeWithoutChildren() uint64 {
 	if hash, ok := p.cachedStructuralHash(p); ok {
 		return hash
 	}
-	hash := p.structuralKey().Hash("coveringindexplan|")
+	hash := p.keyFor(p).Hash("coveringindexplan|")
 	p.storeStructuralHash(p, hash)
 	return hash
 }

@@ -134,7 +134,7 @@ func TestDSNCloneIsDeep(t *testing.T) {
 		t.Fatal("Clone shared the Options map header")
 	}
 	cp.Options["cluster_file"] = "/tmp/other.cluster"
-	cp.Path = "/other"
+	cp.Path = "/FRL/other"
 	if orig.Options["cluster_file"] != "/tmp/original.cluster" {
 		t.Errorf("Clone shared the Options map: %q", orig.Options["cluster_file"])
 	}

@@ -64,7 +64,7 @@ func TestRunCluster_ThreeReplicas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	if !strings.Contains(output, "Healthy") && !strings.Contains(output, "available") {
+	if !DatabaseAvailable(output) {
 		t.Fatalf("expected Healthy/available: %s", output)
 	}
 	t.Logf("status: %s", strings.TrimSpace(output))
@@ -90,7 +90,7 @@ func TestRunCluster_Single(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	if !strings.Contains(output, "Healthy") && !strings.Contains(output, "available") {
+	if !DatabaseAvailable(output) {
 		t.Fatalf("expected Healthy: %s", output)
 	}
 }

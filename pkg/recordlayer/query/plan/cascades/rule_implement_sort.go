@@ -49,15 +49,16 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 	// Top-down: push ordering constraint to inner reference so
 	// downstream rules (index scans) can satisfy it. The constraint crosses into
 	// the inner reference's own current-row space, exactly as the dedicated
-	// push rule does; `requestedOrdering` itself stays in the sort's space
-	// below, because the satisfaction checks compare it against orderings
-	// derived from this expression's children.
+	// push rule does. The satisfaction checks below read the same rebased
+	// request: a member's ordering describes its own output row, and Java's
+	// RemoveSortRule states the sort's ordering over Quantifier.current() for
+	// the same comparison.
 	pushedOrdering, err := requestedOrderingAtInnerCurrent(requestedOrdering, s.GetInner())
 	if err != nil {
 		call.Fail(err)
 		return
 	}
-	call.PushConstraint(innerRef, []*properties.RequestedOrdering{pushedOrdering})
+	call.PushConstraint(innerRef, []*properties.RequestedOrdering{pushedOrdering.Sortable()})
 
 	if requestedOrdering.IsPreserve() {
 		for _, m := range innerRef.AllMembers() {
@@ -69,9 +70,16 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	requestedParts := requestedOrdering.GetParts()
+	requestedParts := pushedOrdering.GetParts()
 	preserveDistinctReq := properties.NewRequestedOrdering(
 		requestedParts,
+		properties.DistinctnessPreserveDistinctness,
+		requestedOrdering.IsExhaustive(),
+	)
+	// The FlatMap recovery translates from the sort's declared input edge
+	// itself, so it takes the request as the sort spells it.
+	sortSpaceReq := properties.NewRequestedOrdering(
+		requestedOrdering.GetParts(),
 		properties.DistinctnessPreserveDistinctness,
 		requestedOrdering.IsExhaustive(),
 	)
@@ -121,7 +129,7 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 				// complete. Each candidate is verified through the same rich
 				// property before the enforcer is removed.
 				candidates, err := orderedFlatMapCandidatesAtSort(
-					call, expr, preserveDistinctReq, sortInput)
+					call, expr, sortSpaceReq, sortInput)
 				if err != nil {
 					call.Fail(err)
 					return
@@ -283,26 +291,30 @@ func orderedFlatMapCandidatesAtSort(
 	less := lessWithHashTieBreak(call.CostModel())
 
 	rawOuters, err := collectJoinLegOrderingVariants(
+		call,
 		outerRef, properties.PreserveOrdering(), outerOrderingResultValue,
-		flatMap.GetOuterAlias(), less, false, call.Context)
+		flatMap.GetOuterAlias(), localAliases, less, false, call.Context)
 	if err != nil {
 		return nil, err
 	}
 	rawInners, err := collectJoinLegOrderingVariants(
+		call,
 		innerRef, properties.PreserveOrdering(), resultValue,
-		flatMap.GetInnerAlias(), less, false, call.Context)
+		flatMap.GetInnerAlias(), localAliases, less, false, call.Context)
 	if err != nil {
 		return nil, err
 	}
 	orderedOuters, err := collectJoinLegOrderingVariants(
+		call,
 		outerRef, outerRequested, outerOrderingResultValue,
-		flatMap.GetOuterAlias(), less, true, call.Context)
+		flatMap.GetOuterAlias(), localAliases, less, true, call.Context)
 	if err != nil {
 		return nil, err
 	}
 	orderedInners, err := collectJoinLegOrderingVariants(
+		call,
 		innerRef, innerRequested, resultValue,
-		flatMap.GetInnerAlias(), less, true, call.Context)
+		flatMap.GetInnerAlias(), localAliases, less, true, call.Context)
 	if err != nil {
 		return nil, err
 	}
@@ -667,9 +679,10 @@ func makeStrictlySorted(expr expressions.RelationalExpression) (expressions.Rela
 		inner := fw.GetInner()
 		if cov, ok := inner.(*plans.RecordQueryCoveringIndexPlan); ok {
 			newCov := cov.WithIndexPlan(cov.GetIndexPlan().WithStrictlySorted())
-			newCovRef := expressions.InitialOf(newCov)
+			// A plan is memoized as a final at the planned stage (Java's memoizePlan).
+			newCovRef := expressions.FinalOfAtStage(newCov, expressions.StagePlanned)
 			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
-				expressions.ForEachQuantifier(newCovRef),
+				expressions.NewPhysicalQuantifier(newCovRef),
 				fw.GetTranslateValueFunction(),
 				fw.GetResultType(),
 				fw.GetFetchIndexRecords(),
@@ -681,8 +694,8 @@ func makeStrictlySorted(expr expressions.RelationalExpression) (expressions.Rela
 			// strictly-sorted path is only reached for a unique index (see
 			// strictlyOrderedIfUnique), so the plan's unique flag is already true.
 			newIdxPlan := idxPlan.WithStrictlySorted()
-			newIdxRef := expressions.InitialOf(newIdxPlan)
-			newFetchQ := expressions.ForEachQuantifier(newIdxRef)
+			newIdxRef := expressions.FinalOfAtStage(newIdxPlan, expressions.StagePlanned)
+			newFetchQ := expressions.NewPhysicalQuantifier(newIdxRef)
 			// The fetch is its own cascades expression carrying the live newIdxRef
 			// edge (RFC-184 W2).
 			return plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(

@@ -66,8 +66,9 @@ func (v *DistanceRowNumberValue) Name() string {
 	return v.Metric.String() + "_row_number"
 }
 
-// Type returns NotNullLong — ROW_NUMBER is always populated.
-func (*DistanceRowNumberValue) Type() Type { return NotNullLong }
+// Type is nullable LONG, as Java's four *DistanceRowNumberValue classes are
+// (primitiveType(LONG)).
+func (*DistanceRowNumberValue) Type() Type { return NullableLong }
 
 // IsIndexOnly returns true — like base RowNumberValue, K-NN
 // row-numbers are computed during HNSW index traversal and

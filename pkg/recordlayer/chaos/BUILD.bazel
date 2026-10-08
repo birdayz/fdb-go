@@ -65,7 +65,10 @@ go_test(
     ],
     args = ["-test.parallel=1"],  # Pure Go client has concurrent tx bug; chaos tests are for fault injection, not concurrency
     embed = [":chaos"],
-    tags = ["resources:memory:400"],
+    tags = [
+        "resources:memory:400",
+        "test-full",
+    ],
     deps = [
         "//gen",
         "//pkg/dst",

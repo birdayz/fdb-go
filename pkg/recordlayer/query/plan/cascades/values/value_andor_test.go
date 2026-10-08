@@ -22,10 +22,10 @@ func TestAndOrOp_String(t *testing.T) {
 
 func TestAndOrValue_TypeBothNotNull(t *testing.T) {
 	t.Parallel()
-	// Both operands are NotNull booleans → result is NotNullBoolean.
+	// Java's AndOrValue is a nullable BOOLEAN whatever its operands.
 	v := NewAndOrValue(AndOrAnd, NewBooleanValue(true), NewBooleanValue(false))
-	if !v.Type().Equals(NotNullBoolean) {
-		t.Fatalf("Type = %v, want NotNullBoolean (both NOT NULL operands)", v.Type())
+	if !v.Type().Equals(NullableBoolean) {
+		t.Fatalf("Type = %v, want NullableBoolean (Java's BooleanValue type)", v.Type())
 	}
 }
 
@@ -197,9 +197,9 @@ func TestAndOrValue_SimplifyConstantFold(t *testing.T) {
 	t.Parallel()
 	// AND(true, false) = false → should fold to a ConstantValue(false).
 	v := NewAndOrValue(AndOrAnd, NewBooleanValue(true), NewBooleanValue(false))
-	folded := SimplifyValue(v)
+	folded := EvaluateConstantComparand(v)
 	if folded == v {
-		t.Fatalf("SimplifyValue did NOT fold all-constant AndOrValue (returned same pointer)")
+		t.Fatalf("EvaluateConstantComparand did NOT fold all-constant AndOrValue (returned same pointer)")
 	}
 	got, errEv0 := folded.Evaluate(nil)
 	require.NoError(t, errEv0)
@@ -215,7 +215,7 @@ func TestAndOrValue_SimplifyChildFold(t *testing.T) {
 	// is itself all-constant so it then folds to the final result.
 	innerNot := NewNotValue(NewBooleanValue(false))
 	outer := NewAndOrValue(AndOrAnd, innerNot, NewBooleanValue(true))
-	folded := SimplifyValue(outer)
+	folded := EvaluateConstantComparand(outer)
 	got, errEv0 := folded.Evaluate(nil)
 	require.NoError(t, errEv0)
 	if got != true {

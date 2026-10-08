@@ -14,7 +14,7 @@ import (
 func TestBoundAdmissionKeepsLexicalPolicyWithPrivateParent(t *testing.T) {
 	t.Parallel()
 	for _, shadowing := range []bool{false, true} {
-		t.Run(map[bool]string{false: "private_parent_is_unambiguous", true: "unnest_frame_collision"}[shadowing], func(t *testing.T) {
+		t.Run(map[bool]string{false: "private_parent_is_unambiguous", true: "unnest_frame_same_name"}[shadowing], func(t *testing.T) {
 			t.Parallel()
 			owner, md := clauseTestOwner(t)
 			scope := semantic.NewScope(nil)
@@ -45,19 +45,10 @@ func TestBoundAdmissionKeepsLexicalPolicyWithPrivateParent(t *testing.T) {
 			if bound.correlated() == shadowing {
 				t.Fatal("dependency control did not distinguish admission from correlation")
 			}
-			_, err = lowerBoundExists(bound)
-			if !shadowing {
-				// Ordinary private parents are not scope-ambiguous merely because
-				// their lexical names repeat. Existing multi-source planning limits
-				// remain separate (the driver's minted-middle 0AF00 sentinel).
-				if err != nil {
-					t.Fatalf("private parent was treated as a lexical binding: %v", err)
-				}
-				return
-			}
-			var unsupported *CorrelatedExistsError
-			if !errors.As(err, &unsupported) || !unsupported.Unsupported {
-				t.Fatalf("private parent widened UNNEST admission: %v", err)
+			// A repeated lexical name is not ambiguous beside a private parent
+			// or an UNNEST frame: the inner legs have their own bindings.
+			if _, err = lowerBoundExists(bound); err != nil {
+				t.Fatalf("a repeated lexical name was refused: %v", err)
 			}
 		})
 	}
@@ -108,10 +99,8 @@ func TestBoundOnLaterShadowUsesOriginalParentIdentity(t *testing.T) {
 			if _, present := refs[values.NamedCorrelationIdentifier("PRIVATE_O")]; !present {
 				t.Fatalf("early ON rebound to later source: %v", refs)
 			}
-			_, err = lowerBoundExists(bound)
-			var unsupported *CorrelatedExistsError
-			if !errors.As(err, &unsupported) || !unsupported.Unsupported || unsupported.Message != "correlated EXISTS: a JOIN ON references an alias reused as a later inner join source (outer/inner alias collision) is not supported" {
-				t.Fatalf("later-shadow admission was lost: %v", err)
+			if _, err = lowerBoundExists(bound); err != nil {
+				t.Fatalf("later same-name source was refused: %v", err)
 			}
 		})
 	}
@@ -123,9 +112,9 @@ func TestBoundExistsSetOperationAdmission(t *testing.T) {
 		name, sql string
 		reject    bool
 	}{
-		{"correlated_union_all", "SELECT i.id FROM t i WHERE i.id = o.id UNION ALL SELECT j.id FROM t j WHERE j.id = o.id", true},
+		{"correlated_union_all", "SELECT i.id FROM t i WHERE i.id = o.id UNION ALL SELECT j.id FROM t j WHERE j.id = o.id", false},
 		{"correlated_union_distinct", "SELECT i.id FROM t i WHERE i.id = o.id UNION SELECT j.id FROM t j WHERE j.id = o.id", true},
-		{"correlated_union_cte_envelope", "WITH c AS (SELECT id FROM t) SELECT id FROM c WHERE id = o.id UNION ALL SELECT id FROM t WHERE id = o.id", true},
+		{"correlated_union_cte_envelope", "WITH c AS (SELECT id FROM t) SELECT id FROM c WHERE id = o.id UNION ALL SELECT id FROM t WHERE id = o.id", false},
 		{"independent_union", "SELECT id FROM t UNION ALL SELECT id FROM t", false},
 		{"correlated_derived_union", "SELECT d.id FROM (SELECT id FROM t UNION ALL SELECT id FROM t) d WHERE d.id = o.id", false},
 	} {
@@ -140,17 +129,12 @@ func TestBoundExistsSetOperationAdmission(t *testing.T) {
 			alias, typ, err := clause.BuildExists(q)
 			if test.reject {
 				// UNION DISTINCT is rejected by the shared query visitor before
-				// correlation classification, matching Java visitSetQuery.
-				if test.name == "correlated_union_distinct" {
-					var typed *api.Error
-					if !errors.As(err, &typed) || typed.Code != api.ErrCodeUnsupportedQuery || typed.Message != "only UNION ALL is supported" {
-						t.Fatalf("UNION DISTINCT syntax rejection = %v", err)
-					}
-				} else {
-					var unsupported *CorrelatedExistsError
-					if !errors.As(err, &unsupported) || !unsupported.Unsupported || unsupported.Message != "correlated EXISTS: unsupported query body shape" {
-						t.Fatalf("correlated set-operation admission = %v, want existing body-shape rejection", err)
-					}
+				// correlation classification, matching Java visitSetQuery. A
+				// correlated UNION ALL body is admitted: each branch keeps its
+				// correlation (conformance ExistsInnerShadowJavaProbe union_*).
+				var typed *api.Error
+				if !errors.As(err, &typed) || typed.Code != api.ErrCodeUnsupportedQuery || typed.Message != "only UNION ALL is supported" {
+					t.Fatalf("UNION DISTINCT syntax rejection = %v", err)
 				}
 				if len(clause.subqueries)+len(owner.subqueries)+len(owner.scalarSubqueries)+len(owner.correlatedScalarSubqueries) != 0 {
 					t.Fatal("rejected set operation published an attachment")
@@ -174,7 +158,7 @@ func TestBoundExistsSetOperationAdmission(t *testing.T) {
 func TestBoundOnFailureDoesNotPublish(t *testing.T) {
 	t.Parallel()
 	owner, _ := clauseTestOwner(t)
-	q, err := parseQueryFromSelect(t, "SELECT a.id FROM t a LEFT JOIN t b ON b.id = o.id")
+	q, err := parseQueryFromSelect(t, "SELECT a.id FROM t a JOIN t b ON EXISTS (SELECT 1 FROM t g WHERE g.id = o.id)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +166,7 @@ func TestBoundOnFailureDoesNotPublish(t *testing.T) {
 	_, _, err = clause.BuildExists(q)
 	var unsupported *CorrelatedExistsError
 	if !errors.As(err, &unsupported) || !unsupported.Unsupported {
-		t.Fatalf("correlated OUTER ON = %v", err)
+		t.Fatalf("nested EXISTS in a correlated ON = %v", err)
 	}
 	if len(owner.subqueries)+len(owner.scalarSubqueries)+len(owner.correlatedScalarSubqueries) != 0 {
 		t.Fatal("failed ON published an edge")
@@ -208,23 +192,25 @@ func TestBoundOnFailureDoesNotPublish(t *testing.T) {
 	}
 }
 
+// An inner source that reuses an outer source's name is admitted, beside an
+// ordinary outer source or an UNNEST frame: the subquery's legs have their
+// own bindings, so the inner reference reads the inner source (Java's inner
+// shadow; conformance "ExistsInnerShadowJavaProbe").
 func TestBoundAdmissionQuotedLexicalNames(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name, outer, inner, binding string
 		extraParent                 bool
-		ordinaryReject              bool
-		unnestReject                bool
 	}{
-		{"quoted_outer", `"a"`, "A", "A", false, false, false},
-		{"quoted_inner", "A", `"a"`, "A", false, false, false},
-		{"identical_quoted", `"a"`, `"a"`, "A", false, true, true},
-		{"identical_unquoted", "a", "A", "A", false, true, true},
-		{"equivalent_quoted_upper", "A", `"A"`, "A", false, true, true},
-		{"private_parent", "A", "A", "PRIVATE_A", false, false, true},
-		{"dotless_i_runtime_uppercase", `"ı"`, `"ı"`, "I", false, true, true},
-		{"kelvin_is_not_runtime_k", `"K"`, `"K"`, "K", false, false, true},
-		{"different_parent_cannot_supply_binding", "A", "A", "PRIVATE_A", true, false, true},
+		{"quoted_outer", `"a"`, "A", "A", false},
+		{"quoted_inner", "A", `"a"`, "A", false},
+		{"identical_quoted", `"a"`, `"a"`, "A", false},
+		{"identical_unquoted", "a", "A", "A", false},
+		{"equivalent_quoted_upper", "A", `"A"`, "A", false},
+		{"private_parent", "A", "A", "PRIVATE_A", false},
+		{"dotless_i_runtime_uppercase", `"ı"`, `"ı"`, "I", false},
+		{"kelvin_is_not_runtime_k", `"K"`, `"K"`, "K", false},
+		{"different_parent_cannot_supply_binding", "A", "A", "PRIVATE_A", true},
 	} {
 		for _, shadowing := range []bool{false, true} {
 			kind := "ordinary"
@@ -264,23 +250,8 @@ func TestBoundAdmissionQuotedLexicalNames(t *testing.T) {
 					t.Fatal("projection must retain the independent P correlation before EXISTS lowering")
 				}
 				_, err = lowerBoundExists(bound)
-				reject := test.ordinaryReject
-				if shadowing {
-					reject = test.unnestReject
-				}
-				if !reject {
-					if err != nil {
-						t.Fatalf("distinct lexical name or private parent was rejected: %v", err)
-					}
-					return
-				}
-				want := "correlated EXISTS: inner FROM source " + semantic.New(test.inner, false).Name() + " reuses an outer FROM name referenced by the subquery predicate (scope-ambiguous)"
-				if shadowing {
-					want = "EXISTS with a multi-source inner reusing an outer UNNEST-frame source name is not supported"
-				}
-				var unsupported *CorrelatedExistsError
-				if !errors.As(err, &unsupported) || !unsupported.Unsupported || unsupported.Message != want {
-					t.Fatalf("same-name admission changed: got %v, want %q", err, want)
+				if err != nil {
+					t.Fatalf("same-name inner source was rejected: %v", err)
 				}
 			})
 		}
@@ -291,13 +262,12 @@ func TestBoundOnQuotedLaterAlias(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name, outer, later string
-		reject             bool
 	}{
-		{"quoted_outer", `"a"`, "A", false},
-		{"quoted_later", "A", `"a"`, false},
-		{"identical_quoted", `"a"`, `"a"`, true},
-		{"identical_unquoted", "a", "A", true},
-		{"equivalent_quoted_upper", "A", `"A"`, true},
+		{"quoted_outer", `"a"`, "A"},
+		{"quoted_later", "A", `"a"`},
+		{"identical_quoted", `"a"`, `"a"`},
+		{"identical_unquoted", "a", "A"},
+		{"equivalent_quoted_upper", "A", `"A"`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -321,57 +291,14 @@ func TestBoundOnQuotedLaterAlias(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Java resolves the early ON against the bindings visible at it, so
+			// a later same-name inner source never captures the reference.
 			lowered, err := lowerBoundExists(bound)
-			if !test.reject {
-				if err != nil {
-					t.Fatalf("distinct later alias was rejected: %v", err)
-				}
-				if _, found := predicates.GetCorrelatedToOfPredicate(lowered.join)[values.NamedCorrelationIdentifier("PRIVATE_A")]; !found {
-					t.Fatal("early ON lost its actual outer binding")
-				}
-				return
+			if err != nil {
+				t.Fatalf("later alias was rejected: %v", err)
 			}
-			var unsupported *CorrelatedExistsError
-			if !errors.As(err, &unsupported) || !unsupported.Unsupported || unsupported.Message != "correlated EXISTS: a JOIN ON references an alias reused as a later inner join source (outer/inner alias collision) is not supported" {
-				t.Fatalf("later-shadow admission changed: %v", err)
-			}
-		})
-	}
-}
-
-func TestBoundSourceNamesKeepLexicalCase(t *testing.T) {
-	t.Parallel()
-	cte := logical.NewCTE("a", logical.NewScan("T", "BODY"), logical.NewScan("T", "MAIN"), false)
-	aliasedCTE := logical.NewCTE("PRIVATE_CTE", logical.NewScan("T", "BODY"), logical.NewScan("T", "MAIN"), false)
-	aliasedCTE.Alias, aliasedCTE.Binding = "a", "private_a"
-	envelope := logical.NewCTE("envelope", logical.NewScan("T", "BODY"), logical.NewScan("T", "a"), false)
-	envelope.PreserveMainSource = true
-	for _, test := range []struct {
-		name string
-		op   logical.LogicalOperator
-		want []boundSourceName
-	}{
-		{"scan", logical.NewScan("T", "a"), []boundSourceName{{"a", "A"}}},
-		{"scan_implicit_alias", logical.NewScan("a", ""), []boundSourceName{{"a", "A"}}},
-		{"scan_private_binding", &logical.LogicalScan{Table: "T", Alias: "a", Binding: "private_a"}, []boundSourceName{{"a", "PRIVATE_A"}}},
-		{"cte", cte, []boundSourceName{{"a", "A"}}},
-		{"cte_private_binding", aliasedCTE, []boundSourceName{{"a", "PRIVATE_A"}}},
-		{"cte_envelope", envelope, []boundSourceName{{"a", "A"}}},
-		{"unnest", &logical.LogicalUnnest{Alias: "a", Binding: "private_a"}, []boundSourceName{{"a", "PRIVATE_A"}}},
-		{"inline_values", &logical.LogicalInlineValues{Alias: "a", Binding: "private_a"}, []boundSourceName{{"a", "PRIVATE_A"}}},
-		{"projection", &logical.LogicalProject{Input: logical.NewScan("T", "a")}, []boundSourceName{{"a", "A"}}},
-		{"join", logical.NewJoin(logical.NewScan("T", "a"), logical.NewScan("T", "B"), logical.JoinInner, ""), []boundSourceName{{"a", "A"}, {"B", "B"}}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			got := boundSourceNames(test.op)
-			if len(got) != len(test.want) {
-				t.Fatalf("source names = %v, want %v", got, test.want)
-			}
-			for i, want := range test.want {
-				if got[i] != want {
-					t.Fatalf("source %d = %v, want %v (lexical case must not alter runtime canonicalization)", i, got[i], want)
-				}
+			if _, found := predicates.GetCorrelatedToOfPredicate(lowered.join)[values.NamedCorrelationIdentifier("PRIVATE_A")]; !found {
+				t.Fatal("early ON lost its actual outer binding")
 			}
 		})
 	}

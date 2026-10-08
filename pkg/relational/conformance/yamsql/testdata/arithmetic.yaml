@@ -63,31 +63,39 @@ tests:
   - query: SELECT -10 % 3 FROM t WHERE id = 1
     rows:
       - [-1]
-  # NULL arithmetic — any op with NULL operand returns NULL.
+  # An untyped NULL has no arithmetic lane: refused when the value is built,
+  # XX000, as Java's ArithmeticValue.encapsulate refuses it (RFC-257 WS-J
+  # section 6; measured against the JVM, WS-E rows inline_null_plus_one_*).
   - query: SELECT a + NULL FROM t WHERE id = 1
-    rows:
-      - [~]
+    error_code: "XX000"
   - query: SELECT NULL - b FROM t WHERE id = 1
+    error_code: "XX000"
+  - query: SELECT NULL * NULL FROM t WHERE id = 1
+    error_code: "XX000"
+  # A typed NULL has its type's lane, and any operand NULL makes the value NULL.
+  - query: SELECT a + CAST(NULL AS BIGINT) FROM t WHERE id = 1
     rows:
       - [~]
-  - query: SELECT NULL * NULL FROM t WHERE id = 1
+  - query: SELECT CAST(NULL AS BIGINT) - b FROM t WHERE id = 1
     rows:
       - [~]
   # NULL / n → NULL (not div-by-zero).
-  - query: SELECT NULL / 5 FROM t WHERE id = 1
+  - query: SELECT CAST(NULL AS BIGINT) / 5 FROM t WHERE id = 1
     rows:
       - [~]
   # n / NULL → NULL (NULL absorbs div-by-zero).
-  - query: SELECT 5 / NULL FROM t WHERE id = 1
+  - query: SELECT 5 / CAST(NULL AS BIGINT) FROM t WHERE id = 1
     rows:
       - [~]
   # Actual div-by-zero (non-NULL divisor) errors 22012.
   - query: SELECT a / 0 FROM t WHERE id = 1
     error_code: "22012"
   # NULL / 0 is still NULL (NULL dominates div-by-zero per SQL spec).
-  - query: SELECT NULL / 0 FROM t WHERE id = 1
+  - query: SELECT CAST(NULL AS BIGINT) / 0 FROM t WHERE id = 1
     rows:
       - [~]
+  - query: SELECT NULL / 0 FROM t WHERE id = 1
+    error_code: "XX000"
   # RFC-091: div-by-zero inside an AGGREGATE OPERAND surfaces 22012. This was an
   # uncovered eval panic in the aggregate cursor (accumulateRow had no recover →
   # generic 500); it now returns the proper SQL error. Scalar aggregate.

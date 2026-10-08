@@ -7,7 +7,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
@@ -15,7 +14,7 @@ import (
 
 func executeInlineValuesPlan(t testing.TB, plan plans.RecordQueryPlan) []executor.QueryResult {
 	t.Helper()
-	if err := cascades.FinalizePlan(plan); err != nil {
+	if err := plans.FinalizePlan(plan); err != nil {
 		t.Fatalf("FinalizePlan: %v", err)
 	}
 	cursor, err := executor.ExecutePlan(context.Background(), plan, nil,
@@ -69,7 +68,7 @@ func TestInlineValuesPhysicalLeafEmitsItsExactPublishedRow(t *testing.T) {
 	// particular this stamps the inline row constructors with the plan's
 	// synthetic protobuf descriptors; the direct harness otherwise leaves them
 	// as name-keyed maps and would miss representation-only type drift.
-	if err := cascades.FinalizePlan(plan); err != nil {
+	if err := plans.FinalizePlan(plan); err != nil {
 		t.Fatalf("FinalizePlan: %v", err)
 	}
 	cursor, err := executor.ExecutePlan(context.Background(), explode, nil,
@@ -169,12 +168,17 @@ func TestProjectionlessExplodeColumnsUseFrozenExactRecordType(t *testing.T) {
 		t.Fatalf("construct projection-less record Explode: %v", err)
 	}
 	want := []executor.ColumnDef{
-		{Name: "quotedCase", TypeName: "BIGINT", Nullable: api.ColumnNullable},
-		{Name: "ARR", TypeName: "STRING", Nullable: api.ColumnNoNulls},
-		{Name: "NEST", TypeName: "STRUCT", Nullable: api.ColumnNullable},
+		{Name: "quotedCase", TypeName: "BIGINT", Nullable: api.ColumnNullable, DataType: api.NewLongType(true)},
+		{
+			Name: "ARR", TypeName: "ARRAY", Nullable: api.ColumnNoNulls,
+			DataType: api.NewArrayType(api.NewStringType(false), false),
+		},
+		{
+			Name: "NEST", TypeName: "STRUCT", Nullable: api.ColumnNullable,
+			DataType: api.NewStructType("NESTED", []api.StructField{api.NewStructField("N", api.NewIntegerType(false), 0)}, true),
+		},
 	}
-	metadata := buildTestMetaData(t)
-	if got := deriveColumnsFromPlan(explode, metadata); !reflect.DeepEqual(got, want) {
+	if got := resultColumns(explode); !reflect.DeepEqual(got, want) {
 		t.Fatalf("projection-less Explode columns = %#v, want %#v", got, want)
 	}
 
@@ -186,7 +190,7 @@ func TestProjectionlessExplodeColumnsUseFrozenExactRecordType(t *testing.T) {
 	collection.Typ = values.NewArrayType(false, values.NewRecordType("", false, []values.Field{{
 		Name: "FOREIGN", FieldType: values.NotNullDouble,
 	}}))
-	if got := deriveColumnsFromPlan(explode, metadata); !reflect.DeepEqual(got, want) {
+	if got := resultColumns(explode); !reflect.DeepEqual(got, want) {
 		t.Fatalf("mutated collection changed frozen Explode columns = %#v, want %#v", got, want)
 	}
 
@@ -196,7 +200,7 @@ func TestProjectionlessExplodeColumnsUseFrozenExactRecordType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct scalar Explode control: %v", err)
 	}
-	if got := deriveColumnsFromPlan(scalar, metadata); got != nil {
+	if got := resultColumns(scalar); got != nil {
 		t.Fatalf("scalar Explode invented projection-less record columns: %#v", got)
 	}
 
@@ -209,8 +213,17 @@ func TestProjectionlessExplodeColumnsUseFrozenExactRecordType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct ordinal Explode control: %v", err)
 	}
-	if got := deriveColumnsFromPlan(ordinal, metadata); got != nil {
-		t.Fatalf("ordinality box was flattened as its record element: %#v", got)
+	// WITH ORDINALITY flows the (element, ordinal) box, not the element's
+	// fields.
+	wantBox := []executor.ColumnDef{
+		{
+			Name: "_0", TypeName: "STRUCT", Nullable: api.ColumnNoNulls,
+			DataType: api.NewStructType("RECORD", []api.StructField{api.NewStructField("V", api.NewLongType(false), 0)}, false),
+		},
+		{Name: "_1", TypeName: "INTEGER", Nullable: api.ColumnNoNulls, DataType: api.NewIntegerType(false)},
+	}
+	if got := resultColumns(ordinal); !reflect.DeepEqual(got, wantBox) {
+		t.Fatalf("ordinality box columns = %#v, want %#v", got, wantBox)
 	}
 }
 

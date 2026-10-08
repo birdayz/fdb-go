@@ -194,7 +194,7 @@ func TestRecordQueryUpdatePlan_TransformsCarried(t *testing.T) {
 		return NewRecordQueryScanPlan([]string{"Order"}, exactTestRecordType(), false)
 	})
 	transforms := []expressions.UpdateTransform{
-		{FieldPath: "qty", NewValue: values.LiteralValue(int64(0))},
+		{FieldNames: []string{"V"}, FieldOrdinals: []int{3}, NewValue: values.LiteralValue(int64(0))},
 	}
 	u := mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
 		return NewRecordQueryUpdatePlan(scan, "Order", transforms)

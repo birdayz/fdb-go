@@ -3,6 +3,7 @@ package cascades
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -12,6 +13,179 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+func TestReExplorationSkipsConstraintIndependentMatching(t *testing.T) {
+	t.Parallel()
+	expr := mkEnumIndexPlan("REEXPLORE_MATCHING")
+	ref := expressions.FinalOfAtStage(expr, expressions.StagePlanned)
+	candidate := &testMatchCandidate{name: "index", traversal: NewTraversal(expressions.FinalOf(expr))}
+	run := func() int {
+		p := NewPlanner(nil, testPlanContextForMatching{candidates: []MatchCandidate{candidate}})
+		p.planningExpressionRules = []ExpressionRule{NewMatchLeafRule()}
+		(&ExploreGroupTask{Phase: PhasePlanning, Ref: ref}).Run(context.Background(), p)
+		tasks := append([]Task(nil), p.stack...)
+		p.stack = nil
+		for _, task := range tasks {
+			if explore, ok := task.(*ExploreExprTask); ok {
+				explore.Run(context.Background(), p)
+			}
+		}
+		count := 0
+		for _, task := range p.stack {
+			if transform, ok := task.(*TransformExprTask); ok {
+				if _, ok := transform.Rule.(*MatchLeafRule); ok {
+					count++
+				}
+			}
+		}
+		return count
+	}
+	if got := run(); got != 1 {
+		t.Fatalf("initial matching tasks = %d, want 1", got)
+	}
+	ref.ConstraintsMap().SetExplored()
+	ref.ConstraintsMap().PushProperty("unrelated", 1, nil)
+	if got := run(); got != 0 {
+		t.Fatalf("matching tasks after unrelated constraint = %d, want 0", got)
+	}
+	// A re-arm alone re-runs only constraint-dependent rules (Java's
+	// ReExploreExpression); a member that arrived after exploration began
+	// is forced and runs every rule (Java's ExploreExpression).
+	ref.ConstraintsMap().SetExplored()
+	ref.ConstraintsMap().ReArm()
+	if got := run(); got != 0 {
+		t.Fatalf("matching tasks after a re-arm alone = %d, want 0", got)
+	}
+	ref.ConstraintsMap().SetExplored()
+	ref.MarkForcedExploration(expr)
+	ref.ConstraintsMap().ReArm()
+	if got := run(); got != 1 {
+		t.Fatalf("matching tasks for a forced member = %d, want 1", got)
+	}
+}
+
+func TestConstraintIndependentExplorationRules(t *testing.T) {
+	t.Parallel()
+	for _, rule := range []ExpressionRule{
+		NewNormalizePredicatesRule(), NewInComparisonToExplodeRule(),
+		NewPartitionSelectRule(), NewPartitionBinarySelectRule(),
+		NewEliminateNullOnEmptyRule(), NewRewriteOuterJoinRule(),
+		NewSplitSelectExtractIndependentQuantifiersRule(), NewImplementFilterRule(),
+	} {
+		t.Run(fmt.Sprintf("%T", rule), func(t *testing.T) {
+			t.Parallel()
+			child := expressions.FinalOf(mkEnumIndexPlan("INDEPENDENT_RULE"))
+			quantifiers := []expressions.Quantifier{
+				expressions.ForEachQuantifier(child), expressions.ForEachQuantifier(child),
+			}
+			if _, binary := rule.(*PartitionBinarySelectRule); !binary {
+				quantifiers = append(quantifiers, expressions.ForEachQuantifier(child))
+			}
+			var expr expressions.RelationalExpression
+			var err error
+			switch rule.(type) {
+			case *NormalizePredicatesRule:
+				expr, err = expressions.NewSelectExpression(mustOrderedScanFlowed(t, quantifiers[0]), quantifiers,
+					[]predicates.QueryPredicate{predicates.NewOr(pred("a"), predicates.NewAnd(pred("b"), pred("c")))})
+			case *InComparisonToExplodeRule:
+				in := predicates.NewComparisonPredicate(&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+					predicates.Comparison{Type: predicates.ComparisonIn, Operand: inExplodeList([]any{int64(1)}, values.NotNullLong)})
+				expr, err = expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{in}, quantifiers[0])
+			case *ImplementFilterRule:
+				expr, err = expressions.NewLogicalFilterExpression(nil, quantifiers[0])
+			case *EliminateNullOnEmptyRule:
+				quantifiers[1] = expressions.ForEachNullOnEmptyQuantifier(child)
+				expr, err = expressions.NewSelectExpression(mustOrderedScanFlowed(t, quantifiers[0]), quantifiers, nil)
+			case *RewriteOuterJoinRule:
+				expr, err = expressions.NewSelectExpressionWithJoinType(mustOrderedScanFlowed(t, quantifiers[0]), quantifiers, nil, nil, expressions.JoinLeftOuter)
+			default:
+				expr, err = expressions.NewSelectExpression(
+					mustOrderedScanFlowed(t, quantifiers[0]), quantifiers, nil,
+				)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref := expressions.InitialOf(expr)
+			task := &ExploreExprTask{Ref: ref, Expr: expr, ReExplore: true}
+			if !task.shouldPushRule(rule) {
+				t.Fatal("new expression must run the rule")
+			}
+			ref.ConstraintsMap().SetExplored()
+			ref.ConstraintsMap().PushProperty("unrelated", 1, nil)
+			if task.shouldPushRule(rule) {
+				t.Fatal("unrelated constraint restarted a constraint-independent rule")
+			}
+			ref.ConstraintsMap().ReArm()
+			if task.shouldPushRule(rule) {
+				t.Fatal("a re-arm alone restarted a constraint-independent rule")
+			}
+			forced := &ExploreExprTask{Ref: ref, Expr: expr}
+			if !forced.shouldPushRule(rule) {
+				t.Fatal("a forced exploration must run the rule")
+			}
+		})
+	}
+}
+
+func TestExploreDoesNotQueueEmptyMatchConsumption(t *testing.T) {
+	t.Parallel()
+	expr := mkEnumIndexPlan("EMPTY_MATCH_PARTITION")
+	ref := expressions.FinalOf(expr)
+	p := NewPlanner(nil, nil)
+	(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr}).Run(context.Background(), p)
+	for _, task := range p.stack {
+		if _, ok := task.(*ConsumeMatchPartitionTask); ok {
+			t.Fatal("empty partition must wait for the matching rule's growth notification")
+		}
+	}
+}
+
+func TestCompletedChildDoesNotQueueNoOpExploration(t *testing.T) {
+	t.Parallel()
+	ref := expressions.FinalOf(mkEnumIndexPlan("COMPLETED_CHILD"))
+	ref.ConstraintsMap().SetExplored()
+	p := NewPlanner(nil, nil)
+	p.scheduleExploreGroupsBeforeBatch(PhasePlanning, []*expressions.Reference{ref}, 0)
+	if len(p.stack) != 0 {
+		t.Fatal("completed child queued a no-op exploration task")
+	}
+	ref.ConstraintsMap().ReArm()
+	p.scheduleExploreGroupsBeforeBatch(PhasePlanning, []*expressions.Reference{ref}, 0)
+	if len(p.stack) != 1 {
+		t.Fatal("invalidated child must still queue exploration")
+	}
+}
+
+func TestParentWaitsForPendingChildMatchConsumption(t *testing.T) {
+	t.Parallel()
+	child := expressions.FinalOf(mkEnumIndexPlan("PENDING_MATCH_CHILD"))
+	child.ConstraintsMap().SetExplored()
+	p := NewPlanner(nil, nil)
+	p.queueDataAccessTask(child)
+	floor := len(p.stack)
+	parent := &OptimizeGroupTask{Phase: PhasePlanning, Ref: child}
+	p.push(parent)
+	p.scheduleExploreGroupsBeforeBatch(PhasePlanning, []*expressions.Reference{child}, floor)
+	if p.stack[0] != parent {
+		t.Fatal("parent may prune its child before pending match consumption")
+	}
+}
+
+func TestFreshExplorationUpgradesPendingReExploration(t *testing.T) {
+	t.Parallel()
+	expr := mkEnumIndexPlan("FRESH_EXPLORATION")
+	ref := expressions.FinalOf(expr)
+	candidate := &testMatchCandidate{name: "index", traversal: NewTraversal(expressions.FinalOf(expr))}
+	p := NewPlanner(nil, testPlanContextForMatching{candidates: []MatchCandidate{candidate}})
+	p.planningExpressionRules = []ExpressionRule{NewMatchLeafRule()}
+	pending := &ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr, ReExplore: true}
+	p.push(pending)
+	p.push(&ExploreExprTask{Phase: PhasePlanning, Ref: ref, Expr: expr})
+	if len(p.stack) != 1 || pending.ReExplore {
+		t.Fatal("coalescing lost the fresh expression's unconditional rule exploration")
+	}
+}
 
 var errRuleProbe = errors.New("rule probe failed")
 
@@ -587,5 +761,35 @@ func assertSameExpressionPointers(
 		if got[i] != want[i] {
 			t.Fatalf("%s[%d] = %p, want %p", label, i, got[i], want[i])
 		}
+	}
+}
+
+func TestTransformImplTaskDoesNotScheduleDuplicateFinals(t *testing.T) {
+	t.Parallel()
+	scan := fixtureScan("duplicate-final")
+	root := expressions.InitialOf(scan)
+	child := expressions.InitialOf(fixtureScan("constraint-child"))
+	plan, err := plans.NewRecordQueryScanPlan([]string{"duplicate-final"}, values.NotNullLong, false)
+	plan = mustConstruct(t, plan, err)
+	rule := &successfulBatchImplementationRule{matcher: NewExpressionMatcher[*expressions.FullUnorderedScanExpression]("duplicate-final"), child: child, yields: []expressions.RelationalExpression{plan}}
+	p := NewPlanner(nil, nil)
+	p.constraintMap = NewConstraintMap()
+	task := &TransformImplTask{Phase: PhasePlanning, Ref: root, Expr: scan, Rule: rule}
+	task.Run(context.Background(), p)
+	if p.capErr != nil {
+		t.Fatal(p.capErr)
+	}
+	if len(root.FinalMembers()) != 1 || len(p.stack) == 0 {
+		t.Fatal("first yield must insert and schedule the physical final")
+	}
+	for len(p.stack) > 0 {
+		p.pop()
+	}
+	task.Run(context.Background(), p)
+	if p.capErr != nil {
+		t.Fatal(p.capErr)
+	}
+	if len(p.stack) != 0 {
+		t.Fatalf("duplicate final scheduled %d tasks", len(p.stack))
 	}
 }

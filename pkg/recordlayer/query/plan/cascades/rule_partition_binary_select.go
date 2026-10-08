@@ -40,9 +40,12 @@ type PartitionBinarySelectRule struct {
 
 func NewPartitionBinarySelectRule() *PartitionBinarySelectRule {
 	return &PartitionBinarySelectRule{
-		matcher: NewExpressionMatcher[*expressions.SelectExpression]("partition_binary_select"),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("partition_binary_select").WithRootPredicate(
+			func(sel *expressions.SelectExpression) bool { return len(sel.GetQuantifiers()) == 2 }),
 	}
 }
+
+func (r *PartitionBinarySelectRule) ConstraintDependencies() []any { return nil }
 
 func (r *PartitionBinarySelectRule) Matcher() matching.BindingMatcher { return r.matcher }
 
@@ -73,14 +76,11 @@ func (r *PartitionBinarySelectRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Only partition binary joins (both ForEach). Existential quantifiers
-	// (EXISTS subqueries) have special alias semantics that break when
-	// wrapped in sub-SelectExpressions — the ExistentialValuePredicate references
-	// the existential's alias, and wrapping would change the structure
-	// downstream rules expect. Java handles this in the exploration
-	// phase where Memo-level dedup prevents interference; Go's weaker
-	// per-Reference dedup requires an explicit guard.
-	for _, q := range quantifiers {
+	for i, q := range quantifiers {
+		if q.Kind() == expressions.QuantifierExistential {
+			partitionForEachBesideExistential(call, sel, 1-i)
+			return
+		}
 		if q.Kind() != expressions.QuantifierForEach {
 			return
 		}
@@ -193,7 +193,13 @@ func (r *PartitionBinarySelectRule) tryPartition(
 	// the selective conjunct would never reach the outer leg as a separate
 	// SARGable predicate, leaving the driver a full scan (the index-nested-
 	// loop's selective driver the retired tryFlatMapPlan used to hand-roll).
-	for _, pred := range sel.GetPredicates() {
+	// The constructor also merges comparisons on one value into one range
+	// (`o.fk = c.id AND o.fk = 5`); split it back the same way, or the
+	// selective part leaves with the join part (splitRangesByLocalCorrelation).
+	localQuantifiers := map[values.CorrelationIdentifier]expressions.Quantifier{
+		leftAlias: leftQuantifier, rightAlias: rightQuantifier,
+	}
+	for _, pred := range splitRangesByLocalCorrelation(sel.GetPredicates(), localQuantifiers, nil) {
 		correlatedTo := predicates.GetCorrelatedToOfPredicate(pred)
 		if _, ok := correlatedTo[rightAlias]; ok {
 			rightPredicates = append(rightPredicates, pred)
@@ -345,3 +351,53 @@ func (r *PartitionBinarySelectRule) tryPartition(
 }
 
 var _ ExpressionRule = (*PartitionBinarySelectRule)(nil)
+
+// Go's translator hoists correlated EXISTS-body predicates to the owning
+// Select; the semi-join implementer moves them below FirstOrDefault. Unlike
+// Java's already-nested body, that carrier cannot be wrapped in a {1} Select:
+// its predicates and projected EXISTS values still need the original row.
+// Partition the ForEach-only predicates without changing the existential edge
+// or its consumers. This exposes access paths while preserving that scope.
+func partitionForEachBesideExistential(call *ExpressionRuleCall, sel *expressions.SelectExpression, outerIndex int) {
+	qs := sel.GetQuantifiers()
+	q := qs[outerIndex]
+	if q.Kind() != expressions.QuantifierForEach || q.IsNullOnEmpty() || q.IsStrictSingle() {
+		return
+	}
+	var pushed, remaining []predicates.QueryPredicate
+	for _, p := range sel.GetPredicates() {
+		local := true
+		for alias := range predicates.GetCorrelatedToOfPredicate(p) {
+			if alias != q.GetAlias() {
+				local = false
+				break
+			}
+		}
+		if local {
+			pushed = append(pushed, p)
+		} else {
+			remaining = append(remaining, p)
+		}
+	}
+	if len(pushed) == 0 {
+		return
+	}
+	rv, err := q.RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	lower, err := expressions.NewSelectExpression(rv, []expressions.Quantifier{q}, pushed)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	newQs := append([]expressions.Quantifier(nil), qs...)
+	newQs[outerIndex] = expressions.NamedForEachQuantifier(q.GetAlias(), call.MemoizeExpression(lower))
+	upper, err := expressions.NewSelectExpressionWithJoinType(sel.GetResultValue(), newQs, remaining, sel.GetSourceAliases(), sel.GetJoinType())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(upper)
+}

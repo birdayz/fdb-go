@@ -9,7 +9,14 @@
 //	    _ "fdb.dev/pkg/relational/sqldriver"
 //	)
 //
-//	db, err := sql.Open("fdbsql", "fdbsql:///mydb?cluster_file=/etc/foundationdb/fdb.cluster")
+//	sqldriver.RegisterDomainIfNotExists("FRL")
+//	db, err := sql.Open("fdbsql", "fdbsql:///FRL/MYDB?cluster_file=/etc/foundationdb/fdb.cluster")
+//
+// A database path is /DOMAIN/DATABASE, and its domain must be registered
+// first, once per process, exactly as a Java program registers it with
+// RelationalKeyspaceProvider.instance().registerDomainIfNotExists. The driver
+// registers none itself (Java's engine neither); Java's server, CLI and
+// yaml-test runner use FRL. /__SYS, the system catalog, needs no domain.
 //
 // DSN shape mirrors Java's JDBC URI (minus the jdbc: prefix):
 //
@@ -32,6 +39,7 @@ import (
 	"database/sql/driver"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/internal/fdbclient"
@@ -73,7 +81,7 @@ const defaultClusterFilePath = "/etc/foundationdb/fdb.cluster"
 var fdbDBCache sync.Map // clusterFile string -> *recordlayer.FDBDatabase
 
 // RegisterBackend associates an already-built FDBDatabase with a cluster_file key, so a DSN of
-// the form "fdbsql:///db?cluster_file=<key>" drives the full SQL engine (parser → Cascades →
+// the form "fdbsql:///FRL/DB?cluster_file=<key>" drives the full SQL engine (parser → Cascades →
 // executor → record layer) over that backend instead of opening a real cluster. It returns a
 // func that unregisters the key.
 //
@@ -117,7 +125,7 @@ func applyStoreTimer(clusterFile string, db *recordlayer.FDBDatabase) {
 //
 //	timer := sqldriver.EnableStoreTimer("/etc/foundationdb/fdb.cluster")
 //	http.Handle("/metrics/recordlayer", rlmetrics.Handler(timer))
-//	db, _ := sql.Open("fdbsql", "fdbsql:///t/1?cluster_file=/etc/foundationdb/fdb.cluster")
+//	db, _ := sql.Open("fdbsql", "fdbsql:///T/1?cluster_file=/etc/foundationdb/fdb.cluster")
 //
 // SCOPE — and this is the part that decides what the numbers mean. One timer per
 // cluster-file key means one timer per process, aggregating EVERY tenant, connection and
@@ -207,7 +215,26 @@ type Connector struct {
 	cat     *catalog.RecordLayerStoreCatalog
 	ks      *keyspace.RelationalKeyspace
 	factory *ddl.RecordLayerMetadataOperationsFactory
+	// planCache is the engine-wide plan cache every connection of this
+	// connector shares (Java's RelationalPlanCache, one per engine), sized
+	// by the DSN's PLAN_CACHE_* options.
+	planCache *embedded.RelationalPlanCache
+	// warmUp is the stored-query warm-up's outcome (Java's
+	// OFFLINE_STORED_QUERIES_* counts). Atomic because StoredQueryWarmUp is a
+	// public accessor a caller may poll while another goroutine's first
+	// Connect is still inside once.Do; nil until initialize stores it.
+	warmUp  atomic.Pointer[embedded.StoredQueryWarmUpCounts]
 	initErr error
+}
+
+// StoredQueryWarmUp returns what the connector's start planned into its plan
+// cache: Java's OFFLINE_STORED_QUERIES_* counts. Zero before the first
+// connection.
+func (c *Connector) StoredQueryWarmUp() embedded.StoredQueryWarmUpCounts {
+	if w := c.warmUp.Load(); w != nil {
+		return *w
+	}
+	return embedded.StoredQueryWarmUpCounts{}
 }
 
 // Connect opens a connection. Honors ctx.Done() for cancellation.
@@ -226,6 +253,7 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	}
 	conn := embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks)
 	conn.SetOptions(c.connOpts)
+	conn.SetPlanCache(c.planCache)
 	if c.dsn.Schema != "" {
 		conn.SetDefaultSchema(c.dsn.Schema)
 	}
@@ -234,7 +262,7 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 
 // initialize opens FDB and wires catalog + factory. The catalog Bootstrap
 // (Initialize) is deferred — it runs on the first DDL transaction, not here.
-func (c *Connector) initialize(_ context.Context) error {
+func (c *Connector) initialize(ctx context.Context) error {
 	clusterFile := c.dsn.Options["cluster_file"]
 	if clusterFile == "" {
 		clusterFile = os.Getenv(defaultClusterFileEnv)
@@ -296,6 +324,13 @@ func (c *Connector) initialize(_ context.Context) error {
 	}
 	c.cat = cat
 	c.factory = ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(cat, c.ks)
+	c.planCache = embedded.NewRelationalPlanCache(c.connOpts)
+	// Java's RecordLayerEngine.makeEngine: the engine's start plans every
+	// template's stored queries into the shared cache. Failures are logged,
+	// never returned.
+	warmUp := embedded.WarmStoredQueries(ctx, c.planCache,
+		embedded.StoredQueryTemplates(ctx, c.fdbDB, c.cat))
+	c.warmUp.Store(&warmUp)
 	return nil
 }
 
@@ -320,4 +355,13 @@ var (
 
 func init() {
 	sql.Register(DriverName, &Driver{})
+}
+
+// RegisterDomainIfNotExists makes /name/DATABASE a valid database path for
+// every connection of the process: Java's
+// RelationalKeyspaceProvider.instance().registerDomainIfNotExists. Idempotent
+// and additive; a path under an unregistered domain is INVALID_PATH where Java
+// resolves it (CREATE DATABASE, a schema's store, connecting to a schema).
+func RegisterDomainIfNotExists(name string) {
+	keyspace.RegisterDomainIfNotExists(name)
 }

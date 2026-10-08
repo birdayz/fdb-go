@@ -618,7 +618,7 @@ func TestEvalScalarFunction_RIGHT(t *testing.T) {
 func TestSimplifyValue_PI_DoesNotFold(t *testing.T) {
 	t.Parallel()
 	v := NewScalarFunctionValue("PI", NullableDouble)
-	out := SimplifyValue(v)
+	out := EvaluateConstantComparand(v)
 	if _, ok := out.(*ScalarFunctionValue); !ok {
 		t.Fatalf("expected ScalarFunctionValue (no fold for zero-arg fns), got %T — if a purity registry was added, update this test to assert *ConstantValue with math.Pi", out)
 	}
@@ -687,7 +687,7 @@ func TestSimplifyValue_FoldsSecondBatchScalars(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			out := SimplifyValue(tc.v)
+			out := EvaluateConstantComparand(tc.v)
 			cv, ok := out.(*ConstantValue)
 			if !ok {
 				t.Fatalf("expected *ConstantValue, got %T", out)

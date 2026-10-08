@@ -15,11 +15,13 @@ package values
 // QueryPlanConstraints for match-candidate compensation; this is the
 // constraint-free bool primitive the expression/memo layer needs.
 func SemanticEqualsUnderAliasMap(a, b Value, aliases AliasMap) bool {
-	if a == b {
-		return true
-	}
 	if a == nil || b == nil {
-		return false
+		return a == nil && b == nil
+	}
+	// Unlike Java's identity shortcut, shared Go values can be compared under
+	// different binding environments; their aliases must still be checked.
+	if a == b && aliasMapEmpty(aliases) {
+		return true
 	}
 	// Correlation-bearing leaves: compare the alias THROUGH the map.
 	switch av := a.(type) {
@@ -56,8 +58,8 @@ func SemanticEqualsUnderAliasMap(a, b Value, aliases AliasMap) bool {
 		// the alias, so it falls through to the structural path below (Source +
 		// OrdinalPath compare, no children) — consistent with its alias-excluded,
 		// Source + OrdinalPath SemanticHashCode. Source (KEY vs VALUE) is a semantic
-		// discriminator: Evaluate reads PrimaryKey() for KEY and IndexValues() for
-		// VALUE, so KEY[p] and VALUE[p] must NOT compare equal. An alias-only
+		// discriminator: Evaluate reads the entry's KEY tuple for KEY and its VALUE
+		// tuple otherwise, so KEY[p] and VALUE[p] must NOT compare equal. An alias-only
 		// intercept would drop both and violate the equal⟹same-hash invariant.
 	}
 	// Structural: node-info equality + alias-aware recursion into children.

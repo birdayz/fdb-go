@@ -42,9 +42,10 @@ tests:
   # 42804 — BETWEEN type mismatch.
   - query: SELECT id FROM t WHERE n BETWEEN 1 AND 'text'
     error_code: "42804"
-  # 42804 — IN-list type mismatch.
+  # 22000 — IN-list type mismatch (the IN promotes its probe; Java
+  # INCOMPATIBLE_TYPE, InComparandSourceJavaProbe).
   - query: SELECT id FROM t WHERE n IN ('text', 'other')
-    error_code: "42804"
+    error_code: "22000"
   # 0A000 — scalar NOT NULL is unexpressible (Java parity: NOT NULL is
   # only allowed for ARRAY column type, rejected at CREATE), so the 23502
   # scalar surface is gone; the regression pin moved to the DDL rejection.

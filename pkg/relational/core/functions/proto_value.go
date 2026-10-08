@@ -5,12 +5,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
-	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
+	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 )
@@ -39,11 +39,12 @@ func isUUIDMessageField(fd protoreflect.FieldDescriptor) bool {
 // a dynamicpb message matching the tuple_fields.UUID descriptor.
 // Returns the Go uuid.UUID value too, for callers that want both.
 func uuidStringToProtoMessage(fd protoreflect.FieldDescriptor, s string) (protoreflect.Value, error) {
-	u, err := uuid.Parse(s)
-	if err != nil {
-		return protoreflect.Value{}, api.NewErrorf(api.ErrCodeInvalidCast,
-			"cannot CAST %q to UUID: %v", s, err)
+	b, ok := values.ParseJavaUUID(s)
+	if !ok {
+		invalid := &values.InvalidUUIDValueError{Value: s}
+		return protoreflect.Value{}, api.WrapError(api.ErrCodeInternalError, invalid.Error(), invalid)
 	}
+	u := uuid.UUID(b)
 	msgDesc := fd.Message()
 	dynMsg := dynamicpb.NewMessage(msgDesc)
 	mostFD := msgDesc.Fields().ByName("most_significant_bits")
@@ -107,8 +108,11 @@ func ProtoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) d
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
 		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
 		return v.Int()
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// Read as protobuf-java's signed Integer, as the row reader and the key
+		// evaluator read it (values.ProtoScalarKindToRowValue).
+		return int64(int32(uint32(v.Uint()))) //nolint:gosec
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		return int64(v.Uint()) //nolint:gosec
 	case protoreflect.FloatKind:
 		return float64(v.Float())
@@ -118,6 +122,16 @@ func ProtoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) d
 		return v.String()
 	case protoreflect.BytesKind:
 		return []byte(v.Bytes())
+	case protoreflect.EnumKind:
+		// An enum reads as its value's name, the user identifier of the value
+		// descriptor's (MessageTuple.sanitizeField, MessageTuple.java:84-86),
+		// wherever the field sits: a struct's attribute, an array's element.
+		// A closed enum's undeclared number parses as unset, so ByNumber
+		// misses only on a message built in memory; that keeps its number.
+		if ev := fd.Enum().Values().ByNumber(v.Enum()); ev != nil {
+			return protoname.ToUserIdentifier(string(ev.Name()))
+		}
+		return int64(v.Enum())
 	case protoreflect.MessageKind:
 		// UUID columns return the canonical 36-char string form for
 		// SQL consumption — matches Java's getString(uuidColumn) and
@@ -191,17 +205,22 @@ func ConvertToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect
 	return convertScalarProtoValue(fd, val)
 }
 
+// ConvertElementToProtoValue converts one non-repeated value against fd, an
+// array's element field included: the scalar lanes ConvertToProtoValue applies
+// to every element of an array (UUID, enum by name, a STRUCT as its field map),
+// without its array arm, which reads fd as the array itself.
+func ConvertElementToProtoValue(fd protoreflect.FieldDescriptor, val any) (protoreflect.Value, error) {
+	return convertScalarProtoValue(fd, val)
+}
+
 // appendArrayElements converts each evaluated array-literal element through
 // the scalar lanes against the (effective) repeated field descriptor.
 func appendArrayElements(list protoreflect.List, elemFD protoreflect.FieldDescriptor, elems []any) error {
 	for _, e := range elems {
 		if e == nil {
-			// Java forbids NULL elements in collections
-			// (MessageHelpers.coerceArray, SemanticException
-			// UNSUPPORTED — surfaces as an internal error;
-			// tracked upstream as fdb-record-layer#3646).
-			return api.NewErrorf(api.ErrCodeInternalError,
-				"NULL as elements of a collection are currently not supported")
+			// A write backstop: admission refuses NULL elements first, with the
+			// same 0A000.
+			return api.NewError(api.ErrCodeUnsupportedOperation, (&values.NullArrayElementError{}).Error())
 		}
 		pv, err := convertScalarProtoValue(elemFD, e)
 		if err != nil {
@@ -242,46 +261,39 @@ func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoref
 		// promotion lattice, so it falls through to the verbatim 22000
 		// SemanticException below, matching Java's plan-time PromoteValue
 		// rejection. (The former whole-valued-float→int64 coercion silently
-		// accepted DOUBLE→BIGINT, a divergence; aggregate INSERT…SELECT now
-		// rejects at plan time — see checkInsertSelectPromotable.)
+		// accepted DOUBLE→BIGINT, a divergence; every INSERT and UPDATE now
+		// rejects it while planning — see values.CheckPromotionsTrie.)
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// The column is INT (Type.java:909-914) and its value a signed Integer in
+		// the target, whose setField stores the Integer's 32 bits: the INT range is
+		// accepted, a negative value stored as its two's-complement bits, so a value
+		// read back (signed) writes back to the same bytes.
 		if v, ok := val.(int64); ok {
-			if v < 0 || v > math.MaxUint32 {
+			if v < math.MinInt32 || v > math.MaxInt32 {
 				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"value %d out of range for %s column %q", v, fd.Kind(), fd.Name())
 			}
-			return protoreflect.ValueOfUint32(uint32(v)), nil
+			return protoreflect.ValueOfUint32(uint32(int32(v))), nil
 		}
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		// A signed Long in the target: every int64 is stored as its 64 bits.
 		if v, ok := val.(int64); ok {
-			if v < 0 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
-					"negative value %d cannot be stored in unsigned %s column %q", v, fd.Kind(), fd.Name())
-			}
 			return protoreflect.ValueOfUint64(uint64(v)), nil
 		}
 	case protoreflect.FloatKind:
 		switch v := val.(type) {
 		case float64:
-			// The range check rejects what the NARROWING would CHANGE: a finite
-			// double beyond ±MaxFloat32 becomes Infinity in float32, which is
-			// silent value corruption. NaN and ±Infinity narrow exactly, so
-			// they are not this check's business — NaN passes it (every
-			// comparison against NaN is false) and ±Infinity fails it, which is
-			// the same verdict the executor's converter reaches for the same
-			// reason. Both must agree: UPDATE and INSERT … SELECT go through
-			// that converter and INSERT … VALUES through this one, and a column
-			// that accepts a value through one syntax and not another is a
-			// defect no matter which answer is the good one.
-			//
-			// The split is Java's own, not our reasoning imposed on it.
-			// CastValue.DOUBLE_TO_FLOAT asks the two questions SEPARATELY: NaN
-			// and Infinite at CastValue.java:168-170, and magnitude at
-			// :171-173 (`value > Float.MAX_VALUE || value < -Float.MAX_VALUE`
-			// → INVALID_CAST, 22F3H). Keeping the magnitude check while
-			// dropping the finiteness one lands exactly on Java's second
-			// condition.
-			if v > math.MaxFloat32 || v < -math.MaxFloat32 {
+			// A FLOAT column is written only with a FLOAT: a DOUBLE is refused
+			// while planning (PromoteValue has no DOUBLE_TO_FLOAT), so the
+			// carrier here holds a float32 value widened, and narrowing it back
+			// is exact, NaN and ±Infinity included (a FLOAT column stores
+			// both, as Java's does). The one value narrowing would CHANGE is a
+			// finite double beyond ±MaxFloat32, which becomes Infinity; no
+			// FLOAT-typed value is one, so it can only arrive through a value
+			// whose type was never resolved, and it is refused rather than
+			// silently corrupted. The executor's converter answers the same, so
+			// the verdict does not depend on the syntax that wrote the value.
+			if !math.IsInf(v, 0) && (v > math.MaxFloat32 || v < -math.MaxFloat32) {
 				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"value %v out of range for FLOAT column %q", v, fd.Name())
 			}
@@ -314,15 +326,24 @@ func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoref
 		if v, ok := val.(string); ok {
 			return protoreflect.ValueOfString(v), nil
 		}
-		if v, ok := val.(time.Time); ok {
-			return protoreflect.ValueOfString(FormatTimestamp(v)), nil
-		}
 	case protoreflect.BytesKind:
 		if v, ok := val.([]byte); ok {
 			return protoreflect.ValueOfBytes(v), nil
 		}
 		if v, ok := val.(string); ok {
 			return protoreflect.ValueOfBytes([]byte(v)), nil
+		}
+	case protoreflect.EnumKind:
+		// A string is promoted to the column's enum as Java's STRING_TO_ENUM
+		// does; nothing else is (an integer has no promotion to an enum, and
+		// NULL never reaches here).
+		if s, ok := val.(string); ok {
+			n, err := values.StringToEnumNumber(fd.Enum(), s)
+			if err != nil {
+				// INVALID_ENUM_VALUE, which ExceptionUtil leaves INTERNAL_ERROR.
+				return protoreflect.Value{}, api.NewError(api.ErrCodeInternalError, err.Error())
+			}
+			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
 		}
 	case protoreflect.MessageKind:
 		// UUID columns are stored as the tuple_fields.UUID message

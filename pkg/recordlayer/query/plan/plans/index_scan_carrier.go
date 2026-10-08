@@ -47,6 +47,7 @@ type IndexScanCarrier interface {
 var (
 	_ IndexScanCarrier = (*RecordQueryIndexPlan)(nil)
 	_ IndexScanCarrier = (*RecordQueryCoveringIndexPlan)(nil)
+	_ IndexScanCarrier = (*RecordQueryCoveringIndexValuePlan)(nil)
 )
 
 // GetIndexPlan returns the receiver: a bare index scan IS the index scan it
@@ -58,6 +59,8 @@ func (p *RecordQueryIndexPlan) GetIndexPlan() *RecordQueryIndexPlan { return p }
 func (p *RecordQueryIndexPlan) indexScanCarrier() {}
 
 func (p *RecordQueryCoveringIndexPlan) indexScanCarrier() {}
+
+func (p *RecordQueryCoveringIndexValuePlan) indexScanCarrier() {}
 
 // IndexPlanOf returns the index scan node reads entries from, seeing through a
 // covering wrapper, and reports whether node is an index scan at all.

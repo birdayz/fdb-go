@@ -1,0 +1,129 @@
+# null_safe_equality_scan.yaml — IS NOT DISTINCT FROM binds an index scan
+#
+# Java 4.14 (#4598) admits NOT_DISTINCT_FROM into a scan prefix as one exact
+# key: the value's, or the null key for NULL (ScanComparisons.java:152-156).
+# IS DISTINCT FROM is never a scan bound and stays a residual. A sparse index
+# (WHERE col2 IS NOT NULL) serves the null-safe equality only over a non-NULL
+# literal. The rows and plan shapes are the WS-F oracle's measured Java
+# outcomes (w9_*); the plans are Go's spelling of the same access paths, where
+# `≡` is a null-safe equality bound.
+name: null_safe_equality_scan
+schema_template: |
+  CREATE TABLE T1 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+  CREATE INDEX I1 AS SELECT col1 FROM T1 ORDER BY col1
+  CREATE INDEX I2 AS SELECT col2 FROM T1 ORDER BY col2
+  CREATE TABLE T2 (id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY (id))
+  CREATE INDEX I3 AS SELECT col1, col2 FROM T2 ORDER BY col1, col2
+  CREATE TABLE T3 (id BIGINT, col2 BIGINT, PRIMARY KEY (id))
+  CREATE INDEX I4 AS SELECT col2, id FROM T3 WHERE col2 IS NOT NULL ORDER BY col2, id
+  CREATE TYPE AS STRUCT scope (scope_id BIGINT, deleted BOOLEAN)
+  CREATE TABLE scoped_item (id STRING, scope scope, ts BIGINT, payload STRING, PRIMARY KEY (id))
+  CREATE INDEX scoped_item_scope_ts_idx AS SELECT scope.scope_id, ts, id FROM scoped_item ORDER BY scope.scope_id, ts, id
+setup:
+  - INSERT INTO T1 VALUES (1, 10, 1), (2, 10, NULL), (3, 20, 3), (4, NULL, NULL)
+  - INSERT INTO T2 VALUES (1, 10, 1), (2, 10, NULL), (3, 20, 3), (4, NULL, NULL)
+  - INSERT INTO T3 VALUES (1, 1), (2, NULL), (3, 3), (4, NULL)
+  - INSERT INTO scoped_item VALUES ('item_1', (NULL, false), 100, 'a'), ('item_2', (NULL, false), 100, 'b'), ('item_3', (NULL, false), 200, 'c'), ('item_4', (1, false), 300, 'd'), ('item_5', (NULL, false), 300, 'e')
+tests:
+  # w9_not_distinct_null: ISCAN(I2 [NOT_DISTINCT_FROM NULL]).
+  - query: SELECT id FROM T1 WHERE col2 IS NOT DISTINCT FROM NULL ORDER BY id
+    plan_contains: "IndexScan(I2, [≡]"
+    rows:
+      - [2]
+      - [4]
+  # w9_not_distinct_literal: ISCAN(I1 [NOT_DISTINCT_FROM 20]).
+  - query: SELECT id FROM T1 WHERE col1 IS NOT DISTINCT FROM 20 ORDER BY id
+    plan_contains: "IndexScan(I1, [≡]"
+    rows:
+      - [3]
+  # The literal on the left is the same null-safe equality.
+  - query: SELECT id FROM T1 WHERE 20 IS NOT DISTINCT FROM col1 ORDER BY id
+    plan_contains: "IndexScan(I1, [≡]"
+    rows:
+      - [3]
+  # w9_not_distinct_range: the index bound by NOT_DISTINCT_FROM, `> 5` residual.
+  - query: SELECT id FROM T1 WHERE col1 IS NOT DISTINCT FROM 10 AND col1 > 5 ORDER BY id
+    plan_contains: "IndexScan(I1, [≡] COVERING)"
+    rows:
+      - [1]
+      - [2]
+  # w9_distinct: IS DISTINCT FROM is no scan bound (its access path is F-7c's).
+  - query: SELECT id FROM T1 WHERE col1 IS DISTINCT FROM 10 ORDER BY id
+    rows:
+      - [3]
+      - [4]
+  # A bound value is the literal it is bound to.
+  - query: SELECT id FROM T1 WHERE col2 IS NOT DISTINCT FROM ? ORDER BY id
+    args: [{kind: int64, value: "3"}]
+    plan_contains: "IndexScan(I2, [≡]"
+    rows:
+      - [3]
+  - query: SELECT id FROM T1 WHERE col2 IS NOT DISTINCT FROM ? ORDER BY id
+    args: [{kind: "null"}]
+    rows:
+      - [2]
+      - [4]
+
+  # w9_multi_not_distinct: ISCAN(I3 [EQUALS 10, NOT_DISTINCT_FROM NULL]).
+  - query: SELECT id FROM T2 WHERE col1 = 10 AND col2 IS NOT DISTINCT FROM NULL ORDER BY id
+    plan_contains: "IndexScan(I3, [=, ≡]"
+    rows:
+      - [2]
+  # w9_multi_distinct: only col1 binds; IS DISTINCT FROM stays residual.
+  - query: SELECT id FROM T2 WHERE col1 = 10 AND col2 IS DISTINCT FROM 1 ORDER BY id
+    plan_contains: "IndexScan(I3, [=, *] COVERING)"
+    rows:
+      - [2]
+
+  # w9_sparse_not_distinct_null: NULL does not imply the sparse predicate.
+  - query: SELECT id FROM T3 WHERE col2 IS NOT DISTINCT FROM NULL ORDER BY id
+    plan_not_contains: "I4"
+    rows:
+      - [2]
+      - [4]
+  # w9_sparse_not_distinct_value: a non-NULL literal does.
+  - query: SELECT id FROM T3 WHERE col2 IS NOT DISTINCT FROM 3 ORDER BY id
+    plan_contains: "IndexScan(I4, [≡, *]"
+    rows:
+      - [3]
+  # w9_sparse_not_distinct_cast_*: a literal through CAST, NULL or not.
+  - query: SELECT id FROM T3 WHERE col2 IS NOT DISTINCT FROM CAST(NULL AS BIGINT) ORDER BY id
+    plan_not_contains: "I4"
+    rows:
+      - [2]
+      - [4]
+  - query: SELECT id FROM T3 WHERE col2 IS NOT DISTINCT FROM CAST(3 AS BIGINT) ORDER BY id
+    plan_contains: "IndexScan(I4, [≡, *]"
+    rows:
+      - [3]
+  # w9_sparse_not_distinct_value_param / _null_param: bound 3 and NULL.
+  - query: SELECT id FROM T3 WHERE col2 IS NOT DISTINCT FROM ? ORDER BY id
+    args: [{kind: int64, value: "3"}]
+    plan_contains: "IndexScan(I4, [≡, *]"
+    rows:
+      - [3]
+  - query: SELECT id FROM T3 WHERE col2 IS NOT DISTINCT FROM ? ORDER BY id
+    args: [{kind: "null"}]
+    plan_not_contains: "I4"
+    rows:
+      - [2]
+      - [4]
+
+  # Java's scoped-keyset-pagination.yamsql (#4598): a null-safe equality on the
+  # index's leading key under a keyset OR-range on its trailing keys, bound to
+  # a value and to NULL. Each OR leg is a reverse index scan with the null-safe
+  # bound, merged in the requested order. (The target reaches the predicate
+  # through a table function whose `scope_wide IS TRUE OR` disjunct it folds
+  # away; Go plans that form after WS-E's simplification regime.)
+  - query: SELECT id, ts FROM scoped_item WHERE scope.scope_id IS NOT DISTINCT FROM ? AND ((ts = ? AND id > ?) OR (ts > ?)) ORDER BY ts DESC, id DESC
+    args: [{kind: int64, value: "1"}, {kind: int64, value: "100"}, {kind: string, value: "item_1"}, {kind: int64, value: "100"}]
+    plan_contains: "IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, =, <>] COVERING) REVERSE"
+    rows:
+      - ["item_4", 300]
+  - query: SELECT id, ts FROM scoped_item WHERE scope.scope_id IS NOT DISTINCT FROM ? AND ((ts = ? AND id > ?) OR (ts > ?)) ORDER BY ts DESC, id DESC
+    args: [{kind: "null"}, {kind: int64, value: "100"}, {kind: string, value: "item_1"}, {kind: int64, value: "100"}]
+    plan_contains: "IndexScan(SCOPED_ITEM_SCOPE_TS_IDX, [≡, =, <>] COVERING) REVERSE"
+    rows:
+      - ["item_5", 300]
+      - ["item_3", 200]
+      - ["item_2", 100]

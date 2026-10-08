@@ -240,17 +240,17 @@ tests:
       - [4]
       - [5]
 
-  # Longer prefix: only the matching status.
+  # Longer prefix: only the matching status. The LIKE stays residual over the
+  # covering index read whole, Java's `COVERING(IDX_STATUS <,>) | FILTER
+  # _.STATUS LIKE` (F-7c).
   - query: SELECT id FROM t2 WHERE status LIKE 'awa%'
-    plan_contains: "PredicatesFilter(Scan(T2)"
-    plan_not_contains: "IndexScan"
+    plan_contains: "PredicatesFilter(IndexScan(IDX_STATUS, [*] COVERING), [1 preds])"
     rows:
       - [3]
 
   # No matching rows → empty.
   - query: SELECT id FROM t2 WHERE status LIKE 'zzz%'
-    plan_contains: "PredicatesFilter(Scan(T2)"
-    plan_not_contains: "IndexScan"
+    plan_contains: "PredicatesFilter(IndexScan(IDX_STATUS, [*] COVERING), [1 preds])"
     rows: []
 
   # -------------------------------------------------------------------

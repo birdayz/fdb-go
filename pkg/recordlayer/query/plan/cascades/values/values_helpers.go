@@ -64,19 +64,3 @@ func DeconstructRecord(v Value) ([]Value, error) {
 	}
 	return nil, nil
 }
-
-// SimplifyAll batch-applies SimplifyValue to a list of Values.
-// Mirrors Java's `Values.simplify(Iterable<Value>, ...)`.
-//
-// Returns a fresh slice of the same length as the input. The
-// pointer-equality short-circuit IS preserved: if no Value
-// changed, the returned slice contains the original pointers.
-// Callers can detect "no fold happened" via deep slice-pointer
-// equality.
-func SimplifyAll(in []Value) []Value {
-	out := make([]Value, len(in))
-	for i, v := range in {
-		out[i] = SimplifyValue(v)
-	}
-	return out
-}

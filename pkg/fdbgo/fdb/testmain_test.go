@@ -45,18 +45,10 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "parse cluster string: %v\n", err)
 		os.Exit(1)
 	}
-	for i := 0; i < 30; i++ {
-		time.Sleep(1 * time.Second)
-		code, reader, execErr := container.Exec(ctx, []string{"fdbcli", "--exec", "status minimal"})
-		if execErr != nil || reader == nil {
-			continue
-		}
-		if code == 0 {
-			out, _ := io.ReadAll(reader)
-			if strings.Contains(string(out), "Healthy") {
-				break
-			}
-		}
+	if err := container.WaitAvailable(ctx); err != nil {
+		container.Terminate(ctx)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
 	}
 
 	_, internalReader, err := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})

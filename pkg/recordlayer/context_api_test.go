@@ -95,6 +95,20 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 	})
 
 	Describe("VersionMutations", func() {
+		It("returns replaced values and distinguishes empty from absent mutations", func() {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				key := []byte("replacement-value")
+				Expect(rtx.AddVersionMutation(MutationTypeSetVersionstampedKey, key, nil)).To(BeNil())
+				previous := rtx.AddVersionMutation(MutationTypeSetVersionstampedKey, key, []byte("second"))
+				Expect(previous).NotTo(BeNil())
+				Expect(previous).To(BeEmpty())
+				Expect(rtx.AddVersionMutation(MutationTypeSetVersionstampedKey, key, []byte("third"))).To(Equal([]byte("second")))
+				rtx.RemoveVersionMutation(key)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("initially has no version mutations", func() {
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				Expect(rtx.HasVersionMutations()).To(BeFalse())

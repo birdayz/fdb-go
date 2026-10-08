@@ -40,9 +40,9 @@ func (v *RecordTypeValue) Children() []Value {
 // Name returns the debug-print kind.
 func (*RecordTypeValue) Name() string { return "recordtype" }
 
-// Type returns NotNullLong — the record-type discriminator is
-// always present on a valid record.
-func (*RecordTypeValue) Type() Type { return NotNullLong }
+// Type is nullable LONG, Java's primitiveType(LONG): Evaluate returns NULL
+// for a record without a type key.
+func (*RecordTypeValue) Type() Type { return NullableLong }
 
 // Evaluate extracts the record-type discriminator. Looks up the
 // "_recordType" key in the row map; returns nil if not present.

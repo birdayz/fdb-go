@@ -373,3 +373,51 @@ func countTypeNameShapes(fd *descriptorpb.FileDescriptorProto) (relative, absolu
 	}
 	return relative, absolute
 }
+
+// Java's reading of a closed enum's undeclared number (proto_closed_enums.go)
+// is taken on a clone: a proto built in memory holding one (here a field's
+// null interpretation 9, which Java reads as absent, NOT_UNIQUE) loads with
+// that reading and is itself left holding the number.
+func TestRecordMetaDataFromProtoReadsAnUndeclaredEnumFromAClone(t *testing.T) {
+	t.Parallel()
+	b := NewRecordMetaDataBuilder()
+	b.SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	built, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := built.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := Field("price").ToKeyExpression()
+	root.Field.NullInterpretation = gen.Field_NullInterpretation(9).Enum()
+	input.Indexes = append(input.Indexes, &gen.Index{
+		Name: proto.String("BY_PRICE"), RecordType: []string{"Order"}, RootExpression: root,
+		Type: proto.String("value"), AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(1),
+	})
+	input.Version = proto.Int32(1)
+	before := proto.Clone(input).(*gen.MetaData)
+
+	md, err := RecordMetaDataFromProto(input)
+	if err != nil {
+		t.Fatalf("RecordMetaDataFromProto: %v", err)
+	}
+	if !proto.Equal(before, input) || input.Indexes[len(input.Indexes)-1].RootExpression.Field.GetNullInterpretation() != 9 {
+		t.Fatal("RecordMetaDataFromProto changed the proto it was given")
+	}
+	out, err := md.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, idx := range out.GetIndexes() {
+		if idx.GetName() == "BY_PRICE" && idx.GetRootExpression().GetField().NullInterpretation != nil &&
+			idx.GetRootExpression().GetField().GetNullInterpretation() != gen.Field_NOT_UNIQUE {
+			t.Errorf("the loaded index's null interpretation is %v, want Java's reading (absent, NOT_UNIQUE)",
+				idx.GetRootExpression().GetField().GetNullInterpretation())
+		}
+	}
+}

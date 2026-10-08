@@ -24,6 +24,7 @@ go_test(
     name = "fleet_test",
     srcs = [
         "build_test.go",
+        "domain_registration_test.go",
         "guard_test.go",
         "statistics_refusal_test.go",
         "synthetic_error_identity_test.go",

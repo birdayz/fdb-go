@@ -16,9 +16,8 @@ import "sync/atomic"
 // # Why the memo lives behind a POINTER instead of on the plan
 //
 // A plan is copied by value all over this package — `cp := *p; cp.field = x; return
-// &cp` is the prescribed rebuild form, enforced by pkg/docscheck's
-// copy_method_rebuild gate, which fails a field-by-field literal instead because the
-// literal silently drops fields added later. Two shipped bugs came from that shape.
+// &cp` is the prescribed rebuild form, because a field-by-field literal silently
+// drops fields added later. Two shipped bugs came from that shape.
 //
 // That rules out putting an atomic on the plan: every atomic type carries noCopy, so
 // `go vet`'s copylocks would reject all ~57 of those copies. It also rules out a plain
@@ -50,6 +49,35 @@ type hashMemoCell struct {
 	// sequential task loop, and raced in tests that share an object across parallel
 	// subtests.
 	state atomic.Pointer[hashMemoState]
+	// key holds the owner's structural key under the same owner discipline:
+	// equality compares keys at every step of a memo match, and a key never
+	// changes once built, so the one write is claiming an empty slot.
+	key atomic.Pointer[keyMemoState]
+}
+
+type keyMemoState struct {
+	owner any
+	key   *structuralKey
+}
+
+type structuralKeyer interface{ structuralKey() *structuralKey }
+
+// keyFor returns owner's structural key, built once per plan as its hash is.
+// owner must be the plan embedding b; a copy that finds the slot claimed by
+// another plan builds its own and does not memoize.
+func (b *PlanExprBase) keyFor(owner structuralKeyer) *structuralKey {
+	if b.hashMemo == nil {
+		return owner.structuralKey()
+	}
+	if state := b.hashMemo.key.Load(); state != nil {
+		if state.owner == any(owner) {
+			return state.key
+		}
+		return owner.structuralKey()
+	}
+	key := owner.structuralKey()
+	b.hashMemo.key.CompareAndSwap(nil, &keyMemoState{owner: owner, key: key})
+	return key
 }
 
 // hashMemoState pairs a hash with the plan it was computed for. Immutable once
@@ -141,9 +169,8 @@ func (b *PlanExprBase) storeStructuralHash(owner any, hash uint64) bool {
 //
 // It bounds calls through THIS method only. `state` is an unexported atomic on an
 // unexported type, so the blast radius is package plans, but a direct
-// `c.state.Store(...)` added here would bypass the check entirely — and being a call
-// rather than an assignment, no gate in pkg/docscheck would see it either. Route
-// writes through commit.
+// `c.state.Store(...)` added here would bypass the check entirely. Route writes
+// through commit.
 func (c *hashMemoCell) commit(prev *hashMemoState, owner any, hash uint64) bool {
 	if prev != nil && prev.owner != owner {
 		return false
@@ -173,18 +200,17 @@ func (c *hashMemoCell) commit(prev *hashMemoState, owner any, hash uint64) bool 
 //
 // The cell starts EMPTY. It must never be populated during construction: several plans
 // finish initialising themselves after their constructor returns — the
-// WithQuantifiers rebuild paths write drivingAlias / outputNameOverrides /
+// WithQuantifiers rebuild paths write reverse / outputNameOverrides /
 // distinctProofIndexName onto a freshly built plan, and those fields are in the key —
 // so a hash computed inside the constructor would describe a plan that does not exist
 // yet. Laziness is a correctness requirement here, not an optimisation.
 //
-// Those writes go through a fresh LOCAL rather than through a receiver, which is why
-// pkg/docscheck's receiver-write ratchet does not report them and must not: finishing
-// construction is what those methods are for. Laziness and that ratchet are two guards
-// on ONE failure mode — a structural-key field changing while the plan's pointer stays
-// the same, which the owner check compares identity and so cannot detect. The ratchet
-// forbids it on a plan that may already be SHARED; laziness is what makes it safe on a
-// plan that is not yet PUBLISHED. Remove either and the other stops being sufficient.
+// Those writes go through a fresh LOCAL rather than through a receiver: finishing
+// construction is what those methods are for. The failure mode is a structural-key
+// field changing while the plan's pointer stays the same, which the owner check
+// compares identity and so cannot detect. Writing through a receiver is forbidden on
+// a plan that may already be SHARED; laziness is what makes it safe on a plan that is
+// not yet PUBLISHED.
 func newHashMemoCell() *hashMemoCell {
 	return &hashMemoCell{}
 }

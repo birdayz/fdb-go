@@ -110,6 +110,15 @@ type simTxn struct {
 	// (client/ryw.go:55-60).
 	bypassUnreadable bool
 
+	// retryLimit / hasRetryLimit / retryCount are the retry_limit option (FDB_TR_OPTION_RETRY_LIMIT)
+	// and the count of retries OnError has granted: OnError returns the input error once
+	// retryCount >= retryLimit, as the client does (client/transaction.go:2504, C++
+	// Transaction::onError). The limit is a PERSISTENT option: it survives an OnError retry and
+	// reverts to the database default (unlimited) on a user Reset, which also zeroes the count.
+	retryLimit    int
+	hasRetryLimit bool
+	retryCount    int
+
 	committed        bool
 	committedVersion int64
 	cancelled        atomic.Bool
@@ -1377,6 +1386,14 @@ func (tx *simTxn) Cancel() { tx.cancelled.Store(true) }
 // Reset returns the transaction to a fresh state for reuse (matching FDB Transaction.reset):
 // clears the buffer, conflict ranges, and read version; keeps the db handle.
 func (tx *simTxn) Reset() {
+	tx.resetState()
+	tx.hasRetryLimit = false
+	tx.retryLimit = 0
+	tx.retryCount = 0
+}
+
+// resetState clears everything an OnError retry clears, keeping the persistent options.
+func (tx *simTxn) resetState() {
 	tx.readVersion = 0
 	tx.rvSet = false
 	tx.rvInstant = time.Time{}
@@ -1420,11 +1437,15 @@ func maybeCommitted(code int) bool {
 // has an empty read-conflict set and overwrites the concurrent write — a lost update SimFDB
 // would certify and a real client would not.
 func (tx *simTxn) OnError(e fdb.Error) fdb.FutureNil {
+	if tx.hasRetryLimit && tx.retryCount >= tx.retryLimit {
+		return newReadyNil(e)
+	}
 	if !fdb.IsOnErrorRetryable(e.Code) {
 		return newReadyNil(e)
 	}
+	tx.retryCount++
 	if !maybeCommitted(e.Code) {
-		tx.Reset()
+		tx.resetState()
 		return newReadyNil(nil)
 	}
 	selfConflicts := make([]keyRange, len(tx.writeConflicts))
@@ -1434,7 +1455,7 @@ func (tx *simTxn) OnError(e fdb.Error) fdb.FutureNil {
 			end:   append([]byte(nil), wr.end...),
 		}
 	}
-	tx.Reset()
+	tx.resetState()
 	tx.readConflicts = append(tx.readConflicts, selfConflicts...)
 	return newReadyNil(nil)
 }

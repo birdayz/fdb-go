@@ -21,3 +21,22 @@ const PseudoFieldRowVersion = "__ROW_VERSION"
 func IsRowVersionPseudoField(name string, t Type) bool {
 	return name == PseudoFieldRowVersion && t != nil && t.Code() == TypeCodeVersion
 }
+
+// WithoutPseudoFields is a planner-facing record layout without the trailing
+// pseudo-fields Go's layouts carry: the table's own type, Java's
+// RecordLayerTable.getType(), which addPseudoFields never extends. It is the
+// type an INSERT's rows are admitted against (RecordQueryInsertPlan.insertPlan
+// computes its promotions over the table type). A record with no trailing
+// pseudo-field is returned as it is.
+func WithoutPseudoFields(rt *RecordType) *RecordType {
+	if rt == nil || len(rt.Fields) == 0 {
+		return rt
+	}
+	last := rt.Fields[len(rt.Fields)-1]
+	if !IsRowVersionPseudoField(last.Name, last.FieldType) {
+		return rt
+	}
+	out := *rt
+	out.Fields = append([]Field(nil), rt.Fields[:len(rt.Fields)-1]...)
+	return &out
+}

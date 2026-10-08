@@ -98,6 +98,10 @@ func (s *stubSchemaTemplate) TemporaryInvokedRoutines() ([]InvokedRoutine, error
 	return nil, nil
 }
 
+func (s *stubSchemaTemplate) StoredQueries() (map[string]StoredQuery, error) {
+	return nil, nil
+}
+
 func (s *stubSchemaTemplate) TransactionBoundMetadataAsString() (string, error) {
 	return "", nil
 }

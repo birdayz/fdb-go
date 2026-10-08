@@ -1,0 +1,47 @@
+# aggregate_index_sum_null_residue.yaml
+#
+# A live group whose last non-NULL value is deleted (or NULLed) keeps its SUM
+# index entry at the atomic-add residue 0. The SUM index answers alone, as
+# Java's does, so it reads 0 where SQL's SUM over the remaining NULLs is NULL
+# (Java 4.12.11.0 measured `[[10 0] [11 0] [13 7]]` for the same shape,
+# conformance/probe_zerokey_allnull_java_test.go; Java's own corpus marks it as
+# an open bug, aggregate-empty-table.yamsql).
+name: aggregate_index_sum_null_residue
+schema_template: |
+  CREATE TABLE T (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE INDEX t_sum_v AS SELECT SUM(v) FROM T GROUP BY g
+  CREATE TABLE T2 (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE INDEX t2_sum_v AS SELECT SUM(v) FROM T2 GROUP BY g
+  CREATE INDEX t2_cnt_v AS SELECT COUNT(v) FROM T2 GROUP BY g
+setup:
+  - INSERT INTO T VALUES (1, 3, 5), (2, 3, NULL), (3, 4, 7), (4, 5, 2), (5, 5, -2)
+  - DELETE FROM T WHERE id = 1
+  - INSERT INTO T2 VALUES (1, 3, 5), (2, 3, NULL), (3, 4, 7), (4, 5, 2), (5, 5, -2), (6, 6, 9)
+  - DELETE FROM T2 WHERE id = 1
+  - UPDATE T2 SET v = NULL WHERE id = 6
+tests:
+  - query: SELECT g, SUM(v) FROM T GROUP BY g
+    plan_contains: "AggregateIndex(SUM, T_SUM_V"
+    unordered: true
+    rows:
+      - [3, 0]
+      - [4, 7]
+      - [5, 0]
+  - query: SELECT g, SUM(v) FROM T2 GROUP BY g
+    plan_contains: "AggregateIndex(SUM, T2_SUM_V"
+    plan_not_contains: "T2_CNT_V"
+    rows:
+      - [3, 0]
+      - [4, 7]
+      - [5, 0]
+      - [6, 0]
+  - query: SELECT g, SUM(v), COUNT(v) FROM T2 GROUP BY g
+    plan_contains: "MultiIntersection(AggregateIndex(SUM, T2_SUM_V"
+    rows:
+      - [3, 0, 0]
+      - [4, 7, 1]
+      - [5, 0, 2]
+      - [6, 0, 0]
+  - query: SELECT g FROM T2 GROUP BY g HAVING SUM(v) IS NULL
+    plan_contains: "AggregateIndex(SUM, T2_SUM_V"
+    rows: []

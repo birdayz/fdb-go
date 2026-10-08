@@ -150,8 +150,8 @@ const positionalTypeCacheCap = 4096
 // message, one slot per descriptor field in declaration order (the field's
 // ordinal), with an UPPER-cased field name and the column type the descriptor
 // declares (values.FieldTypeForProtoField, the single authority; shapes with no
-// faithful column type stay UnknownType). An
-// unset field is a nil slot (SQL NULL). This is the row FieldValue resolution
+// faithful column type stay UnknownType). A
+// field values.ProtoFieldReadsValue does not read is a nil slot (SQL NULL). This is the row FieldValue resolution
 // reads by ordinal; the test-only protoToMap oracle cross-checks it
 // field-for-field (the shadow test in name_oracle_test.go).
 //
@@ -177,7 +177,7 @@ func protoToPositional(msg proto.Message) *PositionalRow {
 	slots := make([]any, n)
 	for i := 0; i < n; i++ {
 		fd := fields.Get(i)
-		if fd.IsList() || fd.IsMap() || refl.Has(fd) {
+		if values.ProtoFieldReadsValue(refl, fd) {
 			slots[i] = protoFieldToGo(fd, refl.Get(fd))
 		}
 	}

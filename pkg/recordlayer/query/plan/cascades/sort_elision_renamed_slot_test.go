@@ -27,7 +27,7 @@ func TestSortElisionCrossesARenamingProjection(t *testing.T) {
 	sorted := referenceWinnerSortedMemberOn(t, "STATUS")
 	sortedRef := expressions.InitialOf(sorted)
 	projectionQ := expressions.ForEachQuantifier(sortedRef)
-	renaming := mustReferenceWinnerConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+	renaming := mustReferenceWinnerConstruct(newProjectionMapFromQuantifierForTest(
 		[]values.Value{referenceWinnerQuantifiedField(t, projectionQ, 0)},
 		[]string{"H"},
 		projectionQ,
@@ -63,7 +63,7 @@ func TestSortElisionCrossesARenamingProjection(t *testing.T) {
 	if _, isSort := plan.(*expressions.LogicalSortExpression); isSort || plan == nil {
 		t.Fatalf("the sort must be ELIDED over the renaming projection; got %T", plan)
 	}
-	if _, ok := plan.(*plans.RecordQueryProjectionPlan); !ok {
+	if _, ok := plan.(*plans.RecordQueryMapPlan); !ok {
 		t.Fatalf("expected the elided root to be the projection, got %T", plan)
 	}
 }
@@ -78,7 +78,7 @@ func TestSortElisionDeclinesAComputedSlot(t *testing.T) {
 	sortedRef := expressions.InitialOf(sorted)
 	projectionQ := expressions.ForEachQuantifier(sortedRef)
 	status := referenceWinnerQuantifiedField(t, projectionQ, 0)
-	computed := mustReferenceWinnerConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+	computed := mustReferenceWinnerConstruct(newProjectionMapFromQuantifierForTest(
 		[]values.Value{&values.ArithmeticValue{Op: values.OpAdd, Left: status, Right: status}},
 		[]string{"H"},
 		projectionQ,

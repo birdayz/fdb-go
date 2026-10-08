@@ -70,9 +70,10 @@ func (v *ExistsValue) Children() []Value { return []Value{v.Value} }
 // Name returns the debug-print kind.
 func (*ExistsValue) Name() string { return "exists" }
 
-// Type returns NotNullBoolean — EXISTS always has a definite
-// truth value.
-func (*ExistsValue) Type() Type { return NotNullBoolean }
+// Type is NullableBoolean: Java's ExistsValue does not override
+// BooleanValue.getResultType, primitiveType(BOOLEAN), which is nullable
+// (BooleanValue.java:40-42).
+func (*ExistsValue) Type() Type { return NullableBoolean }
 
 // Evaluate returns whether the child quantifier's object is non-null —
 // i.e. the subplan yielded at least one row. Java:

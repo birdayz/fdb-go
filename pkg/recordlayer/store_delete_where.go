@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"slices"
 
+	"fdb.dev/gen"
+	"google.golang.org/protobuf/types/known/anypb"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -32,6 +35,8 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	// wrapping RecordsWhereDeleter.run().
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
+	store.indexStateView.maintenance.RLock()
+	defer store.indexStateView.maintenance.RUnlock()
 
 	tx := store.context.Transaction()
 
@@ -50,7 +55,11 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	var actions []indexAction
 
 	for _, idx := range store.metaData.GetAllIndexes() {
-		if store.getIndexStateLocked(idx.Name).IsDisabled() {
+		state, err := store.readIndexState(idx.Name)
+		if err != nil {
+			return err
+		}
+		if state.IsDisabled() {
 			continue
 		}
 
@@ -96,8 +105,8 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 				// the clear to a single type. Matches Java's
 				// canDeleteWhereForIndexOnStoredTypes which throws
 				// "Index X applies to more record types than just Y".
-				return fmt.Errorf("deleteRecordsWhere: index %q applies to more record types than just the target; "+
-					"add RecordTypeKey() prefix to enable scoped delete", idx.Name)
+				return &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: index %q applies to more record types than just the target; "+
+					"add RecordTypeKey() prefix to enable scoped delete", idx.Name)}
 			}
 
 			if len(indexTypeNames) > 1 {
@@ -107,7 +116,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 				// canDeleteWhereForIndexOnStoredTypes.
 				idxPrefix, ok = computeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
 				if !ok {
-					return fmt.Errorf("deleteRecordsWhere: multi-type index %q cannot be cleared with prefix %v", idx.Name, prefix)
+					return &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: multi-type index %q cannot be cleared with prefix %v", idx.Name, prefix)}
 				}
 			} else {
 				// Single-type index. Clearing ALL of it is correct ONLY when the
@@ -127,9 +136,9 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 				// from every query served by that index.
 				idxPrefix, pkOffset, ok = computeSingleTypeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
 				if !ok {
-					return fmt.Errorf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
+					return &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
 						"the prefix does not match the index's leading key expression columns, so the "+
-						"clear cannot be scoped to the deleted records", idx.Name, prefix)
+						"clear cannot be scoped to the deleted records", idx.Name, prefix)}
 				}
 			}
 		} else {
@@ -137,8 +146,8 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 			// expression columns so we can do a range clear.
 			idxPrefix, ok = computeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
 			if !ok {
-				return fmt.Errorf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
-					"leading index expression does not match PK prefix", idx.Name, prefix)
+				return &QueryInvalidExpressionError{Message: fmt.Sprintf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
+					"leading index expression does not match PK prefix", idx.Name, prefix)}
 			}
 		}
 
@@ -263,6 +272,20 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		maintainer, mErr := store.getIndexMaintainer(action.index)
 		if mErr != nil {
 			return mErr
+		}
+		state, err := store.readIndexState(action.index.Name)
+		if err != nil {
+			return err
+		}
+		if state.IsWriteOnlyWithQueue() {
+			data, err := anypb.New(&gen.DeleteWhere{Prefix: action.prefix.Pack()})
+			if err != nil {
+				return err
+			}
+			if err := store.enqueuePendingIndexWrite(action.index, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_DELETE_WHERE.Enum(), Data: data}); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := maintainer.DeleteWhere(action.prefix); err != nil {
 			return err

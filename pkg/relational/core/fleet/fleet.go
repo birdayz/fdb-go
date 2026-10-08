@@ -26,7 +26,6 @@
 package fleet
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -64,7 +63,8 @@ const (
 	OutcomeSkipped Outcome = "skipped"
 	// OutcomeBuilt means at least one index was driven to READABLE.
 	OutcomeBuilt Outcome = "built"
-	// OutcomeNoWork means the store had no DISABLED/WRITE_ONLY index.
+	// OutcomeNoWork means the store had no DISABLED/WRITE_ONLY index, or every
+	// such index was published by another builder before its session ran.
 	OutcomeNoWork Outcome = "no-work"
 	// OutcomeFailed means this target errored. Other targets still ran.
 	OutcomeFailed Outcome = "failed"
@@ -99,6 +99,12 @@ type Options struct {
 	// Progress, when non-nil, receives one Event per target. Calls are
 	// serialised, so the callback does not need to be goroutine-safe.
 	Progress func(Event)
+	// Serializer is the serializer the targets' user stores are opened with,
+	// as the SQL driver opens them (embedded's serializerFromOptions; an
+	// encrypting tenant's carries its key manager). Nil opens them without
+	// one: every clear or compressed record still reads, and an encrypted one
+	// fails the target ("this serializer cannot decrypt") with nothing written.
+	Serializer *recordlayer.TransformedRecordSerializer
 }
 
 // DefaultConcurrency is deliberately small: fan-out is background maintenance
@@ -197,36 +203,15 @@ func (e *CatalogTargetError) Error() string {
 // catalog it is initialising, so an unfiltered ListSchemas hands the catalog
 // back as an ordinary fan-out target.
 //
-// The NAME check is the one that fires. The subspace check cannot catch this
-// case under the default keyspace — CatalogSubspace is the 3-tuple
-// ("__SYS","__SYS","CATALOG") while a schema store is the 2-tuple
-// (dbPath, schemaName), so ("/__SYS","CATALOG") shares no byte prefix with it.
-// The subspace check is kept as defence in depth for keyspace layouts where a
-// user schema COULD be placed over the catalog's prefix.
-func GuardNotCatalog(ks *keyspace.RelationalKeyspace, t Target) error {
+// Only the system database can overlap the catalog: the catalog store is
+// (NULL, NULL, 0) and every user schema store is three longs (domain,
+// database, schema), so no user schema shares a prefix with it.
+func GuardNotCatalog(_ *keyspace.RelationalKeyspace, t Target) error {
 	if strings.EqualFold(t.DatabaseID, catalog.SysDatabaseID) {
 		return &CatalogTargetError{
 			DatabaseID: t.DatabaseID,
 			SchemaName: t.SchemaName,
 			Reason:     "database is the system database " + catalog.SysDatabaseID,
-		}
-	}
-	if ks == nil {
-		return nil
-	}
-	ss, err := ks.SchemaSubspace(t.DatabaseID, t.SchemaName)
-	if err != nil {
-		// An unaddressable target is not a catalog target; the caller's
-		// own resolution will report the real problem.
-		return nil //nolint:nilerr // resolution errors are reported by the caller
-	}
-	catalogBytes := ks.CatalogSubspace().Bytes()
-	target := ss.Bytes()
-	if bytes.HasPrefix(target, catalogBytes) || bytes.HasPrefix(catalogBytes, target) {
-		return &CatalogTargetError{
-			DatabaseID: t.DatabaseID,
-			SchemaName: t.SchemaName,
-			Reason:     "target keyspace overlaps the catalog subspace",
 		}
 	}
 	return nil

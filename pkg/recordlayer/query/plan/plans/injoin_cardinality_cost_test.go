@@ -154,7 +154,7 @@ func TestInJoinInUnion_AgreeOnCardinalityForSameNonUniqueChild(t *testing.T) {
 	inJoinCost := inJoin.HintCost([]properties.Cost{childCost}, stats)
 
 	inUnion := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
-		return NewRecordQueryInUnionPlan(newInner(), []string{"x"}, nil, false)
+		return NewRecordQueryInUnionPlan(newInner(), []string{"x"}, nil, false, UnboundedInUnionSize)
 	})
 	inUnion = inUnion.WithInSources([][]any{{int64(1), int64(2), int64(3)}})
 	inUnionCost := inUnion.HintCost([]properties.Cost{childCost}, stats)

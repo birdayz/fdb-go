@@ -3,7 +3,6 @@ package chaos
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
@@ -160,11 +159,14 @@ func verifyPermutedSecondary(ctx context.Context, store *recordlayer.FDBRecordSt
 	groupingCount := gke.GetGroupingCount()
 	totalSize := groupingCount + gke.GetGroupedCount()
 
-	permutedSize := 0
-	if v, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			permutedSize = n
-		}
+	permutedSize, err := recordlayer.PermutedSizeOption(idx)
+	if err != nil {
+		violations = append(violations, Violation{
+			Invariant: "permuted_secondary_size",
+			Expected:  fmt.Sprintf("index %q has a permuted size the maintainer reads", idx.Name),
+			Actual:    err.Error(),
+		})
+		return violations
 	}
 	permutePosition := groupingCount - permutedSize
 

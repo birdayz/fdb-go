@@ -58,17 +58,18 @@ var _ = Describe("FDBDatabaseRunner", func() {
 			Expect(attempts).To(Equal(1))
 		})
 
-		It("succeeds on first attempt even with pre-cancelled context", func() {
+		It("returns the context's error without an attempt when the context has already ended", func() {
 			cancelCtx, cancel := context.WithCancel(ctx)
-			cancel() // Cancel immediately — but first attempt still runs
+			cancel()
 
 			runner := NewFDBDatabaseRunner(sharedDB)
+			attempts := 0
 			_, err := runner.RunWithRetry(cancelCtx, func(rtx *FDBRecordContext) (any, error) {
+				attempts++
 				return nil, nil
 			})
-			// Cancellation is only checked before retry delays, not before the first attempt.
-			// If the function succeeds on the first try, no retry (and no cancel check) needed.
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).To(MatchError(context.Canceled))
+			Expect(attempts).To(Equal(0))
 		})
 
 		It("applies context config", func() {
@@ -104,12 +105,13 @@ var _ = Describe("FDBDatabaseRunner", func() {
 		})
 	})
 
-	// Codes match fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE, code) from fdb_c.cpp.
-	Describe("isRetryableError", func() {
+	// The runner's rule (isRetriableAnyCause) over fdb_error_predicate's
+	// RETRYABLE set from fdb_c.cpp (fdb.IsRetryable).
+	Describe("isRetriableAnyCause", func() {
 		DescribeTable("recognizes all retryable FDB error codes",
 			func(code int, desc string) {
 				err := fdb.Error{Code: code}
-				Expect(isRetryableError(err)).To(BeTrue(), "code %d (%s) should be retryable", code, desc)
+				Expect(isRetriableAnyCause(err)).To(BeTrue(), "code %d (%s) should be retryable", code, desc)
 			},
 			// MAYBE_COMMITTED
 			Entry("commit_unknown_result", 1021, "commit_unknown_result"),
@@ -125,24 +127,26 @@ var _ = Describe("FDBDatabaseRunner", func() {
 			Entry("grv_proxy_memory_limit_exceeded", 1078, "grv_proxy_memory_limit_exceeded"),
 			Entry("tag_throttled", 1213, "tag_throttled"),
 			Entry("proxy_tag_throttled", 1223, "proxy_tag_throttled"),
-			Entry("transaction_throttled_hot_shard", 1235, "transaction_throttled_hot_shard"),
-			Entry("transaction_rejected_range_locked", 1242, "transaction_rejected_range_locked"),
 		)
 
 		It("rejects non-retryable FDB errors", func() {
-			Expect(isRetryableError(fdb.Error{Code: 2000})).To(BeFalse())
-			Expect(isRetryableError(fdb.Error{Code: 1025})).To(BeFalse()) // transaction_cancelled
-			Expect(isRetryableError(fdb.Error{Code: 1031})).To(BeFalse()) // transaction_timed_out
-			Expect(isRetryableError(fdb.Error{Code: 1034})).To(BeFalse()) // future_released
+			Expect(isRetriableAnyCause(fdb.Error{Code: 2000})).To(BeFalse())
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1025})).To(BeFalse()) // transaction_cancelled
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1031})).To(BeFalse()) // transaction_timed_out
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1034})).To(BeFalse()) // future_released
+			// Outside fdb_error_predicate's RETRYABLE set (7.4+ codes the client's
+			// OnError retries): the target's runner does not retry them.
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1235})).To(BeFalse())
+			Expect(isRetriableAnyCause(fdb.Error{Code: 1242})).To(BeFalse())
 		})
 
 		It("rejects non-FDB errors", func() {
-			Expect(isRetryableError(errors.New("not an FDB error"))).To(BeFalse())
+			Expect(isRetriableAnyCause(errors.New("not an FDB error"))).To(BeFalse())
 		})
 
-		It("detects wrapped FDB errors via errors.As", func() {
+		It("detects wrapped FDB errors", func() {
 			wrapped := fmt.Errorf("context: %w", fdb.Error{Code: 1020})
-			Expect(isRetryableError(wrapped)).To(BeTrue())
+			Expect(isRetriableAnyCause(wrapped)).To(BeTrue())
 		})
 	})
 
@@ -177,7 +181,6 @@ var _ = Describe("FDBDatabaseRunner", func() {
 				SetMaxDelay(1 * time.Second)
 
 			attempts := 0
-			start := time.Now()
 			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
 				attempts++
 				if attempts < 3 {
@@ -185,13 +188,11 @@ var _ = Describe("FDBDatabaseRunner", func() {
 				}
 				return "done", nil
 			})
-			elapsed := time.Since(start)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(attempts).To(Equal(3))
-			// Two delay periods: 10ms (attempt 2) + 20ms (attempt 3) = ~30ms nominal.
-			// Jitter multiplier is 0.5x-1.5x, so minimum is ~15ms. Use 10ms as safe lower
-			// bound to avoid flakiness under load (jitter + scheduling jitter).
-			Expect(elapsed).To(BeNumerically(">", 10*time.Millisecond))
+			// No elapsed-time bound: Java's ExponentialDelay draws each delay
+			// uniformly from [0, current), so two delays may total ~0 ms. The
+			// delays themselves are pinned by TestAttemptLoop_RecordsRetryDelay.
 		})
 
 		It("gives up after max attempts", func() {

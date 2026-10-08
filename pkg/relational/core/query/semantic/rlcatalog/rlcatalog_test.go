@@ -430,7 +430,7 @@ func TestWrap_EnumDeclarationAndNumberAliases(t *testing.T) {
 				{Name: proto.String("ES"), Number: proto.Int32(3), Label: descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_ENUM.Enum(), TypeName: proto.String(".enumcatalog.Plain")},
 				{Name: proto.String("AE"), Number: proto.Int32(4), Label: opt, Type: descriptorpb.FieldDescriptorProto_TYPE_ENUM.Enum(), TypeName: proto.String(".enumcatalog.Aliased")},
 			}},
-			{Name: proto.String("UnionDescriptor"), Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
 				{Name: proto.String("_T"), Number: proto.Int32(1), Label: opt, Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".enumcatalog.T")},
 			}},
 		},

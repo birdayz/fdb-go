@@ -8,7 +8,6 @@ import "testing"
 //
 //	DistanceRowNumberValue:  Metric, EfSearch, IsReturningVectors
 //	RowNumberValue:          EfSearch, IsReturningVectors
-//	RowNumberHighOrderValue: EfSearch, IsReturningVectors
 //
 // Pointer fields: nil==nil, nil≠&v, otherwise pointee equality.
 //
@@ -126,31 +125,6 @@ func TestRFC176_RowNumber_PerField(t *testing.T) {
 	assertIdentityDiffers(t, "differ by IsReturningVectors nil vs &true", base(), differ)
 }
 
-func TestRFC176_RowNumberHighOrder_PerField(t *testing.T) {
-	t.Parallel()
-	base := func() *RowNumberHighOrderValue { return NewRowNumberHighOrderValue(intPtr(200), boolPtr(true)) }
-
-	assertIdentitySame(t, "identical config", base(), base())
-	assertIdentitySame(t, "both nil config",
-		NewRowNumberHighOrderValue(nil, nil), NewRowNumberHighOrderValue(nil, nil))
-
-	differ := base()
-	differ.EfSearch = intPtr(100)
-	assertIdentityDiffers(t, "differ by EfSearch pointee", base(), differ)
-
-	differ = base()
-	differ.EfSearch = nil
-	assertIdentityDiffers(t, "differ by EfSearch nil vs &200", base(), differ)
-
-	differ = base()
-	differ.IsReturningVectors = boolPtr(false)
-	assertIdentityDiffers(t, "differ by IsReturningVectors pointee", base(), differ)
-
-	differ = base()
-	differ.IsReturningVectors = nil
-	assertIdentityDiffers(t, "differ by IsReturningVectors nil vs &true", base(), differ)
-}
-
 // TestRFC176_TypeOnlyArms_StayTypeOnly pins the Java-consistent arms: RankValue
 // and the four metric specialisations carry no non-child attributes (RFC-176
 // §2 — WindowedValue class+name identity), so same-type instances are equal
@@ -209,7 +183,6 @@ func TestRFC176_EqualImpliesSameHash_Family(t *testing.T) {
 	for _, ef := range efs {
 		for _, rv := range rvs {
 			family = append(family, mkRowNum(ef, rv))
-			family = append(family, NewRowNumberHighOrderValue(ef, rv))
 		}
 	}
 	family = append(family,

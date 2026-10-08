@@ -218,9 +218,9 @@ const (
 )
 
 // scanRangeComparisonType classifies a comparison type for range merging —
-// Java's ScanComparisons.getComparisonType, with the two documented Go
-// differences kept (see isScanRangeEqualityType): NOT_DISTINCT_FROM is an
-// exact key, DISTANCE_RANK_EQUALS is an ordered bound. Everything Java's
+// Java's ScanComparisons.getComparisonType, with the one documented Go
+// difference kept (see isScanRangeEqualityType): DISTANCE_RANK_EQUALS is an
+// ordered bound. Everything Java's
 // switch sends to `default: NONE` is none here too, so it never enters a
 // range and always comes back as a residual.
 func scanRangeComparisonType(t ComparisonType) scanRangeComparisonKind {
@@ -263,10 +263,11 @@ func scanRangeComparisonType(t ComparisonType) scanRangeComparisonKind {
 // pkg/recordlayer/query/executor is what catches this; its skip list mirrors the
 // set below, so the two must be changed together or not at all.
 //
-// NOT_DISTINCT_FROM is added here and is NOT a Java case — Java's switch has no
-// arm for it, so it falls to `default: NONE`. Sound because a null-safe equality
-// seeks one exact key: the value's, or the null key when the operand is null.
-// See Merge's IS NULL comment.
+// Java's EQUALITY arm is {EQUALS, IS_NULL, NOT_DISTINCT_FROM,
+// DISTANCE_RANK_EQUALS} (ScanComparisons.java:152-156, NOT_DISTINCT_FROM since
+// #4598); this one differs only by omitting DISTANCE_RANK_EQUALS, for the reason
+// above. A null-safe equality seeks one exact key: the value's, or the null key
+// when the operand is null. See Merge's IS NULL comment.
 func isScanRangeEqualityType(comparisonType ComparisonType) bool {
 	switch comparisonType {
 	case ComparisonEquals, ComparisonIsNull, ComparisonNotDistinctFrom:

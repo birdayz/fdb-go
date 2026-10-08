@@ -12,6 +12,7 @@ schema_template: |
   )
   CREATE INDEX count_by_status AS SELECT COUNT(*) FROM tasks GROUP BY status
   CREATE INDEX sum_effort_by_status AS SELECT SUM(effort) FROM tasks GROUP BY status
+  CREATE INDEX cnt_effort_by_status AS SELECT COUNT(effort) FROM tasks GROUP BY status
 setup:
   - INSERT INTO tasks VALUES (1, 'todo', 10)
   - INSERT INTO tasks VALUES (2, 'todo', 20)

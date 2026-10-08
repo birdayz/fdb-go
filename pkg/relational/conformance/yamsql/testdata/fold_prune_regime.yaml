@@ -1,0 +1,86 @@
+# fold_prune_regime.yaml — who decides a fold beside an access path (WS-E 5.4(c)/(j))
+#
+# RFC-257 WS-E design 5.4(j), the folds the physical prune decides, over the
+# WS-E oracle's round-8 schema (T with the non-unique index T_N on n). Each
+# row is the oracle's measured Java 4.14.2.0 answer (wsE8Pins); Java's XXXXX
+# ArithmeticException is Go's 22012 (the declared unmapped-exception class).
+#
+# A comparison of two literals is not an effective constant in Java's
+# predicate set, so `1 = 2` does not annul its conjunction: the erroring
+# conjunct stays and raises (`[2 preds]` in Go's plan, Java's
+# `FILTER ... AND @c17 EQUALS @c9`). IS NULL over a NOT NULL COALESCE is an
+# effective-constant FALSE and annuls it; IS NULL over a null-strict collapse
+# is TRUE and reduces it to the access path alone. Go's EXPLAIN shows a
+# filter's predicate count, not its predicates; the kept member's
+# predicates are pinned by TestFoldTiePins_DecidingRung (embedded). An error
+# row cannot carry a plan assertion here; its EXPLAIN is pinned by the WS-E
+# oracle's wsE8GoPins (`[2 preds]` over the scan, index range and probe).
+name: fold_prune_regime
+schema_template: |
+  CREATE TABLE T (id BIGINT, s STRING, n BIGINT, PRIMARY KEY (id))
+  CREATE INDEX T_N AS SELECT n FROM T ORDER BY n
+setup:
+  - INSERT INTO T VALUES (1, 'abc', NULL), (2, 'a%b', 5), (5, 'xyz', 2)
+tests:
+  # pk_annulling_fold_where: `1 = 2` is not folded, the division raises.
+  - query: SELECT id FROM T WHERE id = 5 AND 1 / 0 = 1 AND 1 = 2
+    error_code: "22012"
+  # pk_in_annulling_fold_where: Java's VerifyException beside an IN list is a
+  # target defect (5.4(h), declared in wseGoDivergences); Go raises the division.
+  - query: SELECT id FROM T WHERE id IN (1, 2) AND 1 / 0 = 1 AND 1 = 2
+    error_code: "22012"
+  # index_range_annulling_fold_where, index_eq_annulling_fold_where.
+  - query: SELECT id FROM T WHERE n > 0 AND 1 / 0 = 1 AND 1 = 2
+    error_code: "22012"
+  - query: SELECT id FROM T WHERE n = 5 AND 1 / 0 = 1 AND 1 = 2
+    error_code: "22012"
+  # or_annulling_fold_where.
+  - query: SELECT id FROM T WHERE (1 / 0 = 1 OR 1 = 2) AND 1 = 2
+    error_code: "22012"
+  # pk_reducing_fold_where: the OR keeps its erroring disjunct unevaluated
+  # behind the TRUE one.
+  - query: SELECT id FROM T WHERE id = 5 AND (1 = 1 OR 1 / 0 = 1)
+    plan_contains: "PredicatesFilter(Scan(T, [=]), [1 preds])"
+    rows: [[5]]
+  # Tie folds (a NOT over a comparison, a duplicated OR), alone and beside a
+  # primary-key and an indexed conjunct: same answer from either member.
+  - query: SELECT id FROM T WHERE NOT (n > 3) ORDER BY id
+    rows: [[5]]
+  - query: SELECT id FROM T WHERE n = 5 OR n = 5
+    rows: [[2]]
+  - query: SELECT id FROM T WHERE id = 5 AND NOT (n > 3)
+    rows: [[5]]
+  - query: SELECT id FROM T WHERE n = 5 AND NOT (id > 3)
+    rows: [[2]]
+  # Type annulments: IS NULL over a NOT NULL COALESCE is FALSE beside every
+  # access path, so no row and no division. Both engines read T_N whole under
+  # the FALSE filter: Java's `COVERING(T_N <,>) | FILTER false`.
+  - query: SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL
+    plan_contains: "PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds])"
+    rows: []
+  - query: SELECT id FROM T WHERE id IN (1, 2) AND COALESCE(1 / 0, 5) IS NULL
+    rows: []
+  - query: SELECT id FROM T WHERE n > 0 AND COALESCE(1 / 0, 5) IS NULL
+    rows: []
+  - query: SELECT id FROM T WHERE n = 5 AND COALESCE(1 / 0, 5) IS NULL
+    rows: []
+  # Deduplicated variants of X = `COALESCE(1 / 0, 5) IS NULL`: Java collapses
+  # duplicate conjuncts when it builds the select, so each is its `WHERE X`
+  # beside the probe (measured: no rows). Go keeps the duplicates and the fold
+  # [FALSE] wins on the conjunct count.
+  - query: SELECT id FROM T WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL AND COALESCE(1 / 0, 5) IS NULL
+    plan_contains: "PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds])"
+    rows: []
+  - query: SELECT id FROM T WHERE id = 5 AND TRUE AND COALESCE(1 / 0, 5) IS NULL
+    plan_contains: "PredicatesFilter(IndexScan(T_N, [*] COVERING), [1 preds])"
+    rows: []
+  - query: SELECT id FROM T WHERE COALESCE(1 / 0, 5) IS NULL AND COALESCE(1 / 0, 5) IS NULL
+    rows: []
+  # Type reductions: the null-strict IS NULL is TRUE and drops, leaving the
+  # bare probe.
+  - query: SELECT id FROM T WHERE id = 5 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL
+    plan_contains: "Map(Scan(T, [=]), {ID: _current.ID#0})"
+    rows: [[5]]
+  - query: SELECT id FROM T WHERE n = 5 AND (1 / 0) + CAST(NULL AS INTEGER) IS NULL
+    plan_contains: "Map(IndexScan(T_N, [=] COVERING), {ID: _current.ID#0})"
+    rows: [[2]]

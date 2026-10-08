@@ -5,13 +5,14 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/vectorcodec"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
-	"fdb.dev/pkg/rabitq"
 )
 
 // IndexOptionVectorNumDimensions specifies the number of vector dimensions.
@@ -110,145 +111,58 @@ type vectorIndexMaintainer struct {
 	standardIndexMaintainer
 	hnswSubspace subspace.Subspace
 	hnswConfig   HNSWConfig
-	storageCache map[string]*hnswStorage // subspace bytes → cached storage
+
+	// A GUARDIANN index keeps its own configuration, and its deferred-task
+	// counts and merge lock in the index's secondary subspace.
+	engine            VectorEngineKind
+	guardiannConfig   guardiannConfig
+	secondarySubspace subspace.Subspace
+	taskCounts        vectorTaskCounts
 }
 
 func newVectorIndexMaintainer(
 	index *Index,
-	indexSubspace, hnswSubspace subspace.Subspace,
+	indexSubspace, hnswSubspace, secondarySubspace subspace.Subspace,
 	tx fdb.WritableTransaction,
 	store indexStoreContext,
 ) (*vectorIndexMaintainer, error) {
-	config := parseHNSWConfig(index)
-	// Validate the config (ranges + cross-field invariants), matching Java's Config
-	// constructor which throws on an invalid config. Without this Go would silently build
-	// a graph from a config Java rejects — e.g. m > mMax (new node selects more than the
-	// pruning cap → churn) or efRepair < m.
-	if err := ValidateHNSWConfig(config); err != nil {
+	// The configuration as Java's parseConfig reads it, Config's checks
+	// included: a configuration Java refuses is refused here rather than built
+	// with Go's own reading (for example m > mMax, a new node selecting more
+	// neighbours than the pruning cap, or efRepair < m).
+	engine, err := VectorEngineOf(index)
+	if err != nil {
+		return nil, err
+	}
+	if engine == VectorEngineGuardiann {
+		gc, err := parseGuardiannConfig(index)
+		if err != nil {
+			return nil, fmt.Errorf("vector index %q: %w", index.Name, err)
+		}
+		return &vectorIndexMaintainer{
+			standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
+			hnswSubspace:            hnswSubspace,
+			engine:                  engine,
+			guardiannConfig:         gc,
+			secondarySubspace:       secondarySubspace,
+			taskCounts:              newVectorTaskCounts(secondarySubspace),
+		}, nil
+	}
+	config, err := parseHNSWConfig(index)
+	if err != nil {
 		return nil, fmt.Errorf("vector index %q: %w", index.Name, err)
 	}
 	return &vectorIndexMaintainer{
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		hnswSubspace:            hnswSubspace,
 		hnswConfig:              config,
-		storageCache:            make(map[string]*hnswStorage),
 	}, nil
 }
 
-// parseHNSWConfig reads HNSW configuration from index options.
-func parseHNSWConfig(index *Index) HNSWConfig {
-	numDims := 128 // default
-	if v, ok := index.Options[IndexOptionVectorNumDimensions]; ok {
-		if n, _ := fmt.Sscanf(v, "%d", &numDims); n != 1 {
-			numDims = 128
-		}
-	}
-	config := DefaultHNSWConfig(numDims)
-	if v, ok := index.Options[IndexOptionVectorMetric]; ok {
-		switch v {
-		case "COSINE_METRIC", "cosine":
-			config.Metric = VectorMetricCosine
-		case "DOT_PRODUCT_METRIC", "inner_product":
-			config.Metric = VectorMetricInnerProduct
-		case "EUCLIDEAN_SQUARE_METRIC":
-			// Squared L2 (no sqrt), not a true metric — matches Java's
-			// EUCLIDEAN_SQUARE_METRIC (MetricDefinition.EuclideanSquareMetric).
-			config.Metric = VectorMetricEuclideanSquare
-		default:
-			// EUCLIDEAN_METRIC (true L2, sqrt) and any other value default to Euclidean.
-			config.Metric = VectorMetricEuclidean
-		}
-	}
-	if v, ok := index.Options[IndexOptionVectorExtendCandidates]; ok {
-		config.ExtendCandidates = v == "true"
-	}
-	if v, ok := index.Options[IndexOptionVectorKeepPrunedConnections]; ok {
-		config.KeepPrunedConnections = v == "true"
-	}
-	if v, ok := index.Options["hnswEfRepair"]; ok {
-		var efRepair int
-		if n, _ := fmt.Sscanf(v, "%d", &efRepair); n == 1 && efRepair >= 0 {
-			config.EfRepair = efRepair
-		}
-	}
-	if v, ok := index.Options["hnswUseInlining"]; ok {
-		config.UseInlining = v == "true"
-	}
-	if v, ok := index.Options[IndexOptionHNSWSampleVectorStatsProbability]; ok {
-		var p float64
-		if n, _ := fmt.Sscanf(v, "%g", &p); n == 1 && p > 0 && p <= 1 {
-			config.SampleVectorStatsProbability = p
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWMaintainStatsProbability]; ok {
-		var p float64
-		if n, _ := fmt.Sscanf(v, "%g", &p); n == 1 && p > 0 && p <= 1 {
-			config.MaintainStatsProbability = p
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWStatsThreshold]; ok {
-		var t int
-		if n, _ := fmt.Sscanf(v, "%d", &t); n == 1 && t > 0 {
-			config.StatsThreshold = t
-		}
-	}
-	if v, ok := index.Options["hnswUseRaBitQ"]; ok && v == "true" {
-		numExBits := 4
-		if v, ok := index.Options["hnswRaBitQNumExBits"]; ok {
-			var n int
-			if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n >= 1 && n <= 8 {
-				numExBits = n
-			}
-		}
-		config.Quantizer = rabitq.NewQuantizer(rabitq.Metric(config.Metric), numExBits)
-	}
-	if v, ok := index.Options[IndexOptionHNSWM]; ok {
-		var m int
-		if n, _ := fmt.Sscanf(v, "%d", &m); n == 1 && m >= 2 && m <= 128 {
-			config.M = m
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWMMax]; ok {
-		var mMax int
-		if n, _ := fmt.Sscanf(v, "%d", &mMax); n == 1 && mMax >= 2 && mMax <= 256 {
-			config.MMax = mMax
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWMMax0]; ok {
-		var mMax0 int
-		if n, _ := fmt.Sscanf(v, "%d", &mMax0); n == 1 && mMax0 >= 2 && mMax0 <= 512 {
-			config.MMax0 = mMax0
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWEfConstruction]; ok {
-		var efConstruction int
-		if n, _ := fmt.Sscanf(v, "%d", &efConstruction); n == 1 && efConstruction >= 1 && efConstruction <= 2000 {
-			config.EfConstruction = efConstruction
-		}
-	}
-	// Concurrency limits — stored for Java round-trip compatibility.
-	// Go's synchronous FDB model doesn't use these for concurrency control.
-	// Matches Java's IndexOptions.HNSW_MAX_NUM_CONCURRENT_NODE_FETCHES etc.
-	if v, ok := index.Options[IndexOptionHNSWMaxNumConcurrentNodeFetches]; ok {
-		var n int
-		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 && n <= 64 {
-			config.MaxNumConcurrentNodeFetches = n
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches]; ok {
-		var n int
-		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 && n <= 20 {
-			config.MaxNumConcurrentNeighborhoodFetches = n
-		}
-	}
-	if v, ok := index.Options[IndexOptionHNSWMaxNumConcurrentDeleteFromLayer]; ok {
-		var n int
-		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 && n <= 10 {
-			config.MaxNumConcurrentDeleteFromLayer = n
-		}
-	}
-	return config
-}
+// HNSWConfigOf is the HNSW configuration a VECTOR index's options declare, as
+// the maintainer reads it (parseHNSWConfig): Java's
+// HnswVectorIndexEngine.parseConfig, with Go's forms for a plain VECTOR index.
+func HNSWConfigOf(index *Index) (HNSWConfig, error) { return parseHNSWConfig(index) }
 
 // getSubspaceForPrefix returns the HNSW subspace scoped to the given prefix.
 // If the prefix is empty (no grouping), returns the base hnswSubspace.
@@ -265,17 +179,25 @@ func (m *vectorIndexMaintainer) getSubspaceForPrefix(prefix tuple.Tuple) subspac
 	return m.hnswSubspace.Sub(args...)
 }
 
-// getStorageForPrefix returns a cached hnswStorage for the given prefix subspace.
-// Reuses existing storage (and its parsed node cache) within the same maintainer lifetime.
-func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswStorage {
-	ss := m.getSubspaceForPrefix(prefix)
-	key := string(ss.Bytes())
-	if cached, ok := m.storageCache[key]; ok {
-		return cached
+// numDimensions is the index's vector width under either engine.
+func (m *vectorIndexMaintainer) numDimensions() int {
+	if m.engine == VectorEngineGuardiann {
+		return m.guardiannConfig.numDimensions
 	}
-	storage := newHNSWStorage(ss, m.hnswConfig)
+	return m.hnswConfig.NumDimensions
+}
+
+// getStorageForPrefix returns a fresh hnswStorage for the given prefix
+// subspace: its parsed-node cache lives for ONE engine operation, as Java's
+// HNSW node caches are created per insert / delete / search. A cache shared
+// across operations would let a node a SNAPSHOT search fetched (no read
+// conflict) serve a later serializable insert in the same transaction, which
+// then commits without the conflict that read owes (RFC-257 WS-D section 1).
+// FDB's read-your-writes cache still serves repeated reads in a transaction.
+func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswStorage {
+	storage := newHNSWStorage(m.getSubspaceForPrefix(prefix), m.hnswConfig)
 	storage.env = m.store.Env()
-	m.storageCache[key] = storage
+	storage.timer = m.timer()
 	return storage
 }
 
@@ -304,6 +226,21 @@ func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix t
 	return nil, vec, verr
 }
 
+// vectorTypeOfEntry is the VectorType ordinal of an entry's serialized vector;
+// a vector spelled as numeric tuple elements is DOUBLE.
+func vectorTypeOfEntry(entry indexEntry) byte {
+	t := entry.key
+	if len(entry.value) > 0 {
+		t = entry.value
+	}
+	if len(t) == 1 {
+		if b, ok := t[0].([]byte); ok && len(b) > 0 && b[0] <= vectorcodec.TypeDouble {
+			return b[0]
+		}
+	}
+	return vectorcodec.TypeDouble
+}
+
 // Update handles insert/delete/update for the VECTOR index.
 // When the index has a prefix (via KeyWithValueExpression), each unique prefix
 // value gets its own independent HNSW graph stored at a separate subspace.
@@ -311,67 +248,49 @@ func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix t
 // Primary keys are trimmed via Index.TrimPrimaryKey() before storing in the HNSW
 // graph, matching Java's VectorIndexMaintainer.updateIndexKeys() which calls
 // state.index.trimPrimaryKey(primaryKeyParts) at line 343.
+//
+// An entry the old and the new record both have (key and value equal, Java's
+// IndexEntry.equals) is not applied: Java's VectorIndexMaintainer inherits
+// StandardIndexMaintainer.update, which removes those common entries before
+// updating (StandardIndexMaintainer.java:215-228, skipUpdateForUnchangedKeys),
+// so a save that leaves the vector unchanged makes no graph call. Deleting and
+// re-inserting such a node rewired its edges, could move the entry point and
+// re-sampled the statistics, where Java's graph is untouched. That holds for a
+// save this method applies with both records; two paths still delete and
+// re-insert an unchanged node, in both engines: a save queued for a
+// WRITE_ONLY_WITH_QUEUE index (SerializePendingWriteQueue sends both entries,
+// and the replay deletes then inserts) and a windowed index's delegate, which
+// the sliding window calls once with the old record and once with the new.
 func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	// Each entry mutates exactly one per-prefix HNSW graph; serialize only that
-	// graph, matching Java, which takes doWithWriteLock(LockIdentifier(rtSubspace))
-	// where rtSubspace = indexSubspace.subspace(prefixKey) — a PER-PREFIX lock, not
-	// a whole-index one. (The lock lives on the per-transaction context, so it only
-	// orders mutations within a transaction; distinct prefix graphs never contend,
-	// and neither do distinct transactions.) Locking the whole index here was a
-	// Go-only over-serialization that blocked concurrent per-prefix builds.
-	if oldRecord != nil {
-		entries, err := m.evaluateIndex(oldRecord)
-		if err != nil {
-			return fmt.Errorf("evaluate vector index %q for old record: %w", m.index.Name, err)
+	var entries [2][]indexEntry
+	for i, record := range []*FDBStoredRecord[proto.Message]{oldRecord, newRecord} {
+		if record == nil {
+			continue
 		}
-		for _, entry := range entries {
-			// Java's remove branch never decodes the vector — it removes by primary key
-			// (graph.Delete keys on the PK) and only skips a null vectorBytes. So on
-			// delete: skip a truly absent/null vector, but for a PRESENT vector —
-			// decodable OR not — proceed to remove by PK. Decode-and-error belongs to
-			// the insert path alone; erroring here would make a record saved-unindexed
-			// by an older binary un-deletable, a Go-only divergence.
-			prefix, vector, verr := m.splitPrefixAndVector(entry)
-			if verr == nil && vector == nil {
-				continue // absent/null vector — nothing was indexed, nothing to remove
+		evaluated, err := m.filteredIndexEntries(record)
+		if err != nil {
+			which := "old"
+			if i == 1 {
+				which = "new"
 			}
-			trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
-			if err != nil {
-				return fmt.Errorf("trim primary key for vector index %q delete: %w", m.index.Name, err)
-			}
-			if err := m.withPrefixWriteLock(prefix, func(graph *hnswGraph) error {
-				return graph.Delete(m.tx, trimmedPK)
-			}); err != nil {
+			return fmt.Errorf("evaluate vector index %q for %s record: %w", m.index.Name, which, err)
+		}
+		entries[i] = evaluated
+	}
+	if oldRecord != nil && newRecord != nil {
+		oldEntries, newEntries, err := removeCommonEntries(m.index, entries[0], entries[1])
+		if err != nil {
+			return err
+		}
+		entries[0], entries[1] = oldEntries, newEntries
+	}
+	for i, list := range entries {
+		for _, entry := range list {
+			if err := m.applyIndexEntry(entry, i == 0); err != nil {
 				return err
 			}
 		}
 	}
-
-	if newRecord != nil {
-		entries, err := m.evaluateIndex(newRecord)
-		if err != nil {
-			return fmt.Errorf("evaluate vector index %q for new record: %w", m.index.Name, err)
-		}
-		for _, entry := range entries {
-			prefix, vector, verr := m.splitPrefixAndVector(entry)
-			if verr != nil {
-				return fmt.Errorf("vector index %q: decode vector for new record: %w", m.index.Name, verr)
-			}
-			if vector == nil {
-				continue
-			}
-			trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
-			if err != nil {
-				return fmt.Errorf("trim primary key for vector index %q insert: %w", m.index.Name, err)
-			}
-			if err := m.withPrefixWriteLock(prefix, func(graph *hnswGraph) error {
-				return graph.Insert(m.tx, trimmedPK, vector)
-			}); err != nil {
-				return err
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -443,8 +362,10 @@ func tupleToVector(t tuple.Tuple) ([]float64, error) {
 	return vec, nil
 }
 
-// UpdateWhileWriteOnly handles updates during WRITE_ONLY state.
-// VECTOR insert is idempotent (same PK replaces).
+// UpdateWhileWriteOnly handles updates during WRITE_ONLY state as Update does:
+// Java's vector index is idempotent (StandardIndexMaintainer.isIdempotent), so
+// a write-only save updates the graph directly, and a build that later meets
+// the indexed record finds its node present and leaves it (hnswGraph.Insert).
 func (m *vectorIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return m.Update(oldRecord, newRecord)
 }
@@ -525,15 +446,10 @@ func (m *vectorIndexMaintainer) ScanByDistance(
 		}
 	}
 
-	if efSearch <= 0 {
-		// Auto-compute efSearch from k, matching Java's heuristic.
-		efSearch = min(max(4*k, 64), max(k, 400))
-	}
-
 	// Multi-partition fan-out (partial prefix) is dispatched inside
 	// scanByDistanceWithParams — the shared chokepoint for both this entry point
 	// and ScanVectorIndexWithPrefix — so it is not branched here.
-	return m.scanByDistanceWithParams(prefix, queryVector, k, efSearch, continuation, scanProperties)
+	return m.scanByDistanceWithParams(prefix, queryVector, k, VectorIndexScanOptions{EfSearch: positiveEfSearch(efSearch)}, continuation, scanProperties)
 }
 
 // partitionSize returns the number of leading partition (key) columns of the
@@ -559,7 +475,8 @@ func (m *vectorIndexMaintainer) partitionSize() int {
 func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 	prefix tuple.Tuple,
 	queryVector []float64,
-	k, efSearch int,
+	k int,
+	opts VectorIndexScanOptions,
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
@@ -571,12 +488,18 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 	// points — ScanByDistance (executor) and ScanVectorIndexWithPrefix (direct
 	// API) — fan out on a partial prefix instead of scanning one wrong subspace.
 	if pSize := m.partitionSize(); pSize > 0 && len(prefix) < pSize {
-		return m.newVectorMultiPartitionCursor(prefix, queryVector, k, efSearch, pSize, continuation, scanProperties)
+		return m.newVectorMultiPartitionCursor(prefix, queryVector, k, opts, pSize, continuation, scanProperties)
 	}
 
-	entries, err := m.searchOnePartition(m.readTx(scanProperties), prefix, queryVector, k, efSearch)
-	if err != nil {
-		return &errorCursor[*IndexEntry]{err: err}
+	// A continuation carries the whole materialized page: Java's
+	// scanSinglePartition replays it with no search and no lock, so a resumed
+	// scan reads nothing of the graph.
+	var entries []*IndexEntry
+	if len(continuation) == 0 {
+		var err error
+		if entries, err = m.searchOnePartition(m.readTx(scanProperties), prefix, queryVector, k, opts); err != nil {
+			return &errorCursor[*IndexEntry]{err: err}
+		}
 	}
 	cursor, err := m.newVectorSearchCursor(entries, continuation, prefix)
 	if err != nil {
@@ -588,11 +511,34 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 // searchOnePartition runs one HNSW kNN search for the single partition
 // identified by the FULL partition prefix (nil/empty for an unpartitioned
 // index) and returns the top-k entries in Java's toIndexEntry layout
-// (Key = prefix...+trimmedPK, Value = nil). It is both the body of the
+// (Key = prefix...+trimmedPK, Value = vector bytes or nil). It is both the body of the
 // single-partition scan and the per-partition inner of the multi-partition
 // fan-out (RFC-046). Mirrors Java's VectorIndexMaintainer.kNearestNeighborSearch
 // + toIndexEntry.
-func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]*IndexEntry, error) {
+func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, prefix tuple.Tuple, queryVector []float64, k int, opts VectorIndexScanOptions) ([]*IndexEntry, error) {
+	// Java's scan read-locks LockIdentifier(partitionSubspace), the key a
+	// write to this partition write-locks (withPrefixWriteLock). The lock
+	// covers the search that materializes the page, not the cursor's life
+	// (RFC-257 WS-D section 1, declared in DIVERGENCES).
+	lockKey := string(m.getSubspaceForPrefix(prefix).Bytes())
+	m.store.AcquireReadLock(lockKey)
+	defer m.store.ReleaseReadLock(lockKey)
+	if m.engine == VectorEngineGuardiann {
+		results, err := m.searchGuardiann(readTx, prefix, queryVector, k, opts)
+		if err != nil {
+			return nil, err
+		}
+		entries := make([]*IndexEntry, len(results))
+		for i, r := range results {
+			key := append(append(tuple.Tuple{}, prefix...), r.primaryKey...)
+			value := tuple.Tuple{nil}
+			if opts.ReturnVectors != nil && *opts.ReturnVectors || opts.ReturnVectors == nil && !m.guardiannConfig.useRaBitQ {
+				value[0] = r.vector.encode()
+			}
+			entries[i] = &IndexEntry{Index: m.index, Key: key, Value: value, primaryKey: m.entryFullPK(key, prefix)}
+		}
+		return entries, nil
+	}
 	if len(queryVector) != m.hnswConfig.NumDimensions {
 		return nil, fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
 			m.index.Name, m.hnswConfig.NumDimensions, len(queryVector))
@@ -600,7 +546,11 @@ func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, p
 	storage := m.getStorageForPrefix(prefix)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
-	results, err := graph.Search(readTx, queryVector, k, efSearch)
+	includeVectors := m.hnswConfig.Quantizer == nil
+	if opts.ReturnVectors != nil {
+		includeVectors = *opts.ReturnVectors
+	}
+	results, err := graph.searchWithVectors(readTx, queryVector, k, HNSWEfSearch(opts.EfSearch, k), includeVectors)
 	if err != nil {
 		return nil, err
 	}
@@ -614,10 +564,10 @@ func (m *vectorIndexMaintainer) searchOnePartition(readTx fdb.ReadTransaction, p
 		key = append(key, prefix...)
 		key = append(key, r.PrimaryKey...)
 
-		// Value: Java puts vector raw bytes here (or null if returnVectors=false/RaBitQ).
-		// Our hnswSearchResult doesn't carry vector bytes through search, so always nil.
-		// This matches Java's behavior when RaBitQ is enabled or returnVectors=false.
 		value := tuple.Tuple{nil}
+		if includeVectors {
+			value[0] = r.Vector
+		}
 
 		entries[i] = &IndexEntry{
 			Index:      m.index,
@@ -762,7 +712,7 @@ func encodeVectorScanContinuation(entries []*IndexEntry, innerPos int) []byte {
 // would fetch the wrong record / skip the remaining nearest rows).
 func (m *vectorIndexMaintainer) parseVectorScanContinuation(data []byte, prefix tuple.Tuple) ([]*IndexEntry, int, error) {
 	var contProto gen.VectorIndexScanContinuation
-	if err := contProto.UnmarshalVT(data); err != nil {
+	if err := UnmarshalVTAsJava(&contProto, data); err != nil {
 		return nil, 0, &ContinuationParseError{RawBytes: data, Cause: err}
 	}
 
@@ -827,7 +777,7 @@ type vectorMultiPartitionCursor struct {
 	scanProps     ScanProperties
 	queryVector   []float64
 	k             int
-	efSearch      int
+	opts          VectorIndexScanOptions
 	partialPrefix tuple.Tuple // the bound equality prefix (may be empty)
 	partitionSize int
 
@@ -858,7 +808,9 @@ type vectorMultiPartitionCursor struct {
 func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 	partialPrefix tuple.Tuple,
 	queryVector []float64,
-	k, efSearch, partitionSize int,
+	k int,
+	opts VectorIndexScanOptions,
+	partitionSize int,
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
@@ -869,9 +821,9 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 	// dimension error, unlike the full-prefix/unpartitioned paths which validate
 	// before touching graph contents. Validate once here for
 	// consistent input validation regardless of how many partitions match.
-	if len(queryVector) != m.hnswConfig.NumDimensions {
+	if dims := m.numDimensions(); len(queryVector) != dims {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
-			m.index.Name, m.hnswConfig.NumDimensions, len(queryVector))}
+			m.index.Name, dims, len(queryVector))}
 	}
 
 	// Enumeration subspace: partitions under partialPrefix (whole index if empty).
@@ -886,7 +838,7 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 		scanProps:          scanProperties,
 		queryVector:        queryVector,
 		k:                  k,
-		efSearch:           efSearch,
+		opts:               opts,
 		partialPrefix:      partialPrefix,
 		partitionSize:      partitionSize,
 		nextPartitionStart: fdb.Key(base.Bytes()),
@@ -907,7 +859,7 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 	// a silent restart would re-emit rows the caller already consumed.
 	if len(continuation) > 0 {
 		var fm gen.FlatMapContinuation
-		if uerr := fm.UnmarshalVT(continuation); uerr != nil {
+		if uerr := UnmarshalVTAsJava(&fm, continuation); uerr != nil {
 			return &errorCursor[*IndexEntry]{err: &ContinuationParseError{RawBytes: continuation, Cause: uerr}}
 		}
 		// OuterContinuation absent is a well-formed shape (Java flatMapPipelined:
@@ -990,7 +942,7 @@ func (c *vectorMultiPartitionCursor) OnNext(ctx context.Context) (RecordCursorRe
 			inner = c.pendingInner
 			c.pendingInner = nil
 		} else {
-			entries, err = c.m.searchOnePartition(c.m.readTx(c.scanProps), fullPrefix, c.queryVector, c.k, c.efSearch)
+			entries, err = c.m.searchOnePartition(c.m.readTx(c.scanProps), fullPrefix, c.queryVector, c.k, c.opts)
 			if err != nil {
 				return RecordCursorResult[*IndexEntry]{}, err
 			}
@@ -1176,12 +1128,24 @@ func VectorDistanceScanRangeOrdered(queryVector []float64, k, efSearch, cRerank 
 // reconstructs full primary keys using getEntryPrimaryKey so callers can use
 // them directly with LoadRecord.
 func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]VectorSearchResult, error) {
-	// Acquire read lock on HNSW subspace — prevent graph mutations during search.
-	// Matches Java's VectorIndexMaintainer.scan() which acquires a read lock.
-	lockKey := string(m.hnswSubspace.Bytes())
+	// Read-lock the partition a write to it write-locks, as Java's
+	// VectorIndexMaintainer.scan does (LockIdentifier(partitionSubspace)).
+	lockKey := string(m.getSubspaceForPrefix(prefix).Bytes())
 	m.store.AcquireReadLock(lockKey)
 	defer m.store.ReleaseReadLock(lockKey)
 
+	if m.engine == VectorEngineGuardiann {
+		results, err := m.searchGuardiann(m.tx.Snapshot(), prefix, queryVector, k, VectorIndexScanOptions{EfSearch: positiveEfSearch(efSearch)})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]VectorSearchResult, len(results))
+		for i, r := range results {
+			key := append(append(tuple.Tuple{}, prefix...), r.primaryKey...)
+			out[i] = VectorSearchResult{PrimaryKey: m.entryFullPK(key, prefix), Distance: r.distance}
+		}
+		return out, nil
+	}
 	// Guard: query vector dimension must match the index's configured dimensions.
 	if len(queryVector) != m.hnswConfig.NumDimensions {
 		return nil, fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
@@ -1199,7 +1163,7 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 	storage := m.getStorageForPrefix(prefix)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
-	results, err := graph.Search(m.tx.Snapshot(), queryVector, k, efSearch)
+	results, err := graph.Search(m.tx.Snapshot(), queryVector, k, HNSWEfSearch(positiveEfSearch(efSearch), k))
 	if err != nil {
 		return nil, err
 	}
@@ -1271,7 +1235,8 @@ func (m *vectorIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 			"vector index %q: deleteWhere prefix has %d columns but the index has %d key column(s); "+
 				"a longer prefix names a graph that does not exist, so the clear would silently "+
 				"leave the deleted records' HNSW nodes in place",
-			m.index.Name, len(prefix), keyColumns)
+			m.index.Name, len(prefix), keyColumns,
+		)
 	}
 	return nil
 }
@@ -1288,11 +1253,16 @@ func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 		return fmt.Errorf("vector index %q: DeleteWhere PrefixRange(%x): %w", m.index.Name, sub.Bytes(), err)
 	}
 	m.tx.ClearRange(pr)
-	// Every cached graph under the cleared range is now stale. The cache is
-	// per-maintainer (so per-transaction), and dropping all of it is both
-	// correct and cheap; keeping an entry whose bytes were just cleared would
-	// let a post-clear read resurrect deleted nodes from memory.
-	m.storageCache = make(map[string]*hnswStorage)
+	if m.engine == VectorEngineGuardiann {
+		if err := m.taskCounts.clearPrefix(m.tx, prefix); err != nil {
+			return err
+		}
+		if err := addVectorDeleteWhereConflicts(m.tx, m.secondarySubspace, prefix); err != nil {
+			return err
+		}
+	}
+	// No graph cache outlives an operation (getStorageForPrefix), so nothing
+	// cached can resurrect the cleared nodes.
 	return nil
 }
 
@@ -1335,9 +1305,86 @@ func (store *FDBRecordStore) ScanVectorIndexWithPrefix(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
-	if !store.IsIndexScannable(index.Name) {
+	return store.ScanVectorIndexWithOptions(index, prefix, queryVector, k, VectorIndexScanOptions{EfSearch: positiveEfSearch(efSearch)}, continuation, scanProperties)
+}
+
+// HNSWEfSearch is HnswVectorIndexEngine.efSearch: the scan's option as given
+// (even below k, or 0), else derived from the scan limit.
+func HNSWEfSearch(option *int, k int) int {
+	if option != nil {
+		return *option
+	}
+	return min(max(4*k, 64), max(k, 400))
+}
+
+// positiveEfSearch adapts the int-valued Go entry points, where 0 means "not
+// set", to the typed option.
+func positiveEfSearch(efSearch int) *int {
+	if efSearch <= 0 {
+		return nil
+	}
+	return &efSearch
+}
+
+// VectorIndexScanOptions is Java's VectorIndexScanOptions: per-scan search
+// knobs. A nil GuardiANN field keeps the SearchConfig default; each applies
+// only to an index of its engine.
+type VectorIndexScanOptions struct {
+	// wirePresence retains explicit NULL options read from Java.
+	// The map is immutable after decoding; struct copies may safely share it.
+	wirePresence                            map[string]bool
+	ReturnVectors                           *bool // nil defaults to !useRaBitQ
+	EfSearch                                *int  // HNSW; nil derives it from k
+	GuardiannCandidatePoolFactor            *float64
+	GuardiannSearchMaxClusters              *int
+	GuardiannSearchMinClustersBeforePruning *int
+	GuardiannSearchDistanceRatioCutoff      *float64
+	GuardiannCentroidEfRingSearch           *int
+	GuardiannCentroidEfOutwardSearch        *int
+	GuardiannSearchConcurrency              *int
+}
+
+// guardiannSearchConfig is GuardiannVectorIndexEngine.searchConfig.
+func (o VectorIndexScanOptions) guardiannSearchConfig() (guardiannSearchConfig, error) {
+	c := defaultGuardiannSearchConfig()
+	setF := func(dst *float64, v *float64) {
+		if v != nil {
+			*dst = *v
+		}
+	}
+	setI := func(dst *int, v *int) {
+		if v != nil {
+			*dst = *v
+		}
+	}
+	setF(&c.candidatePoolFactor, o.GuardiannCandidatePoolFactor)
+	setI(&c.searchMaxClusters, o.GuardiannSearchMaxClusters)
+	setI(&c.searchMinClustersBeforePruning, o.GuardiannSearchMinClustersBeforePruning)
+	setF(&c.searchDistanceRatioCutoff, o.GuardiannSearchDistanceRatioCutoff)
+	setI(&c.centroidEfRingSearch, o.GuardiannCentroidEfRingSearch)
+	setI(&c.centroidEfOutwardSearch, o.GuardiannCentroidEfOutwardSearch)
+	setI(&c.searchConcurrency, o.GuardiannSearchConcurrency)
+	return c, c.validate()
+}
+
+// ScanVectorIndexWithOptions is ScanVectorIndexWithPrefix with the full set of
+// per-scan options.
+func (store *FDBRecordStore) ScanVectorIndexWithOptions(
+	index *Index,
+	prefix tuple.Tuple,
+	queryVector []float64,
+	k int,
+	opts VectorIndexScanOptions,
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
+	state, err := store.readIndexState(index.Name)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
+	if !state.IsScannable() {
 		return &errorCursor[*IndexEntry]{
-			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
+			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: state},
 		}
 	}
 	maintainer, err := store.getIndexMaintainer(index)
@@ -1353,7 +1400,7 @@ func (store *FDBRecordStore) ScanVectorIndexWithPrefix(
 			err: fmt.Errorf("index %q (type %s) is not a VECTOR index", index.Name, index.Type),
 		}
 	}
-	return vm.scanByDistanceWithParams(prefix, queryVector, k, efSearch, continuation, scanProperties)
+	return vm.scanByDistanceWithParams(prefix, queryVector, k, opts, continuation, scanProperties)
 }
 
 // SearchVectorIndex performs a k-nearest-neighbor search on a VECTOR index.
@@ -1378,8 +1425,12 @@ func (store *FDBRecordStore) SearchVectorIndexWithPrefix(
 	k int,
 	efSearch int,
 ) ([]VectorSearchResult, error) {
-	if !store.IsIndexScannable(index.Name) {
-		return nil, &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)}
+	state, err := store.readIndexState(index.Name)
+	if err != nil {
+		return nil, err
+	}
+	if !state.IsScannable() {
+		return nil, &IndexNotReadableError{IndexName: index.Name, CurrentState: state}
 	}
 	maintainer, err := store.getIndexMaintainer(index)
 	if err != nil {

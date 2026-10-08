@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/relational/conformance/javayamsql"
+	"fdb.dev/pkg/relational/core/embedded"
 )
 
 // blockOptions is TestBlock.TestBlockOptions after the defaults < preset <
@@ -79,7 +80,11 @@ func resolveOptions(b *javayamsql.TestBlock) blockOptions {
 type executable struct {
 	test *javayamsql.Test
 	// rep is the 0-based repetition index, carried for failure messages.
-	rep int64
+	rep      int64
+	prepared bool
+	// checkCache marks the check_cache pass's run: the query must be served
+	// from the plan cache (QueryExecutor.executeStatementAndCheckCacheIfNeeded).
+	checkCache bool
 }
 
 func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *javayamsql.Block) error {
@@ -92,24 +97,6 @@ func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *jav
 	}
 
 	o := resolveOptions(b)
-	switch o.StatementType {
-	case "prepared":
-		// Running the simple arm here would be a different test, not a
-		// partial one: the block exists to exercise the prepared path.
-		r.skip(SkipPrepared, where, "statement_type: prepared")
-		return nil
-	case "both":
-		// Java runs both arms and requires the mix to contain each at least
-		// once. Only the simple arm runs here, so the prepared half is a
-		// counted omission rather than a silent one.
-		r.skip(SkipPrepared, where, "statement_type defaults to BOTH; only the simple arm runs")
-	}
-	if o.CheckCache {
-		// The extra pass is cheap; the assertion attached to it is not. Java
-		// compares PLAN_CACHE_TERTIARY_HIT before and after and requires
-		// exactly +1, which needs a per-connection metric collector.
-		r.skip(SkipCheckCache, where, "check_cache pass needs a per-connection plan-cache metric collector")
-	}
 
 	target, err := r.resolveConnect(resource, b.Connect)
 	if err != nil {
@@ -119,18 +106,34 @@ func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *jav
 	if err != nil {
 		return err
 	}
+	opts, err := r.connectionOptions(b.Options.ConnectionOptions)
+	if err != nil {
+		return fmt.Errorf("%s: %w", where, err)
+	}
 
 	// Java builds `repetition` executables per test and then shuffles the
 	// flattened list, so the copies of one test do not stay adjacent.
-	var execs []executable
+	//
+	// With check_cache, each test runs once more after all of them, and that
+	// run must be served from the plan cache (TestBlock.java:394-406: its
+	// prepared choice is getRunAsPreparedMix's right side, and the checks are
+	// shuffled after the tests, with the same Random).
+	var execs, checks []executable
+	random := newJavaRandom(blockSeed(o, where))
 	for _, t := range b.Tests {
+		mix, checkPrepared := preparedMixAndCacheCheck(o.StatementType, o.Repetition, random)
 		for i := int64(0); i < o.Repetition; i++ {
-			execs = append(execs, executable{test: t, rep: i})
+			execs = append(execs, executable{test: t, rep: i, prepared: mix[i]})
+		}
+		if o.CheckCache {
+			checks = append(checks, executable{test: t, rep: o.Repetition, prepared: checkPrepared, checkCache: true})
 		}
 	}
 	if o.Mode != "ordered" {
-		shuffle(execs, blockSeed(o, where))
+		shuffle(execs, random)
+		shuffle(checks, random)
 	}
+	execs = append(execs, checks...)
 
 	// connection_lifecycle: BLOCK holds one connection for every executable,
 	// TEST takes a fresh one per executable. Mode `parallelized` shares the
@@ -139,7 +142,7 @@ func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *jav
 	// t.Parallel over corpus files, which is the same dimension without
 	// multiplying live FDB connections by the block size.
 	if o.ConnectionLifecycle == "block" {
-		conn, err := db.Conn(ctx)
+		conn, err := pin(ctx, db, opts)
 		if err != nil {
 			return fmt.Errorf("%s: conn: %w", where, err)
 		}
@@ -152,7 +155,7 @@ func (r *runner) executeTestBlock(ctx context.Context, resource string, blk *jav
 		return nil
 	}
 	for _, e := range execs {
-		conn, err := db.Conn(ctx)
+		conn, err := pin(ctx, db, opts)
 		if err != nil {
 			return fmt.Errorf("%s: conn: %w", where, err)
 		}
@@ -189,8 +192,7 @@ func blockSeed(o blockOptions, where string) int64 {
 
 // shuffle is java.util.Collections.shuffle: Fisher-Yates walking down from the
 // end, drawing nextInt(i) at each step.
-func shuffle(list []executable, seed int64) {
-	rnd := newJavaRandom(seed)
+func shuffle(list []executable, rnd *javaRandom) {
 	for i := len(list); i > 1; i-- {
 		j := rnd.nextInt(int32(i))
 		list[i-1], list[j] = list[j], list[i-1]
@@ -204,11 +206,20 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 	at := fmt.Sprintf("%s line %d", where, cmd.Line)
 
 	if cmd.Kind != javayamsql.CommandQuery {
-		r.skip(SkipSchemaCommand, at, string(cmd.Kind))
+		if err := r.runSchemaCommand(ctx, conn, cmd); err != nil {
+			return fmt.Errorf("%s: %s: %w", at, cmd.Kind, err)
+		}
 		return nil
 	}
 
-	query, ok := r.adaptQuery(cmd, at)
+	var query string
+	var args []any
+	var ok bool
+	if e.prepared {
+		query, args, ok = r.adaptPreparedQuery(cmd, at)
+	} else {
+		query, ok = r.adaptQuery(cmd, at)
+	}
 	if !ok {
 		return nil
 	}
@@ -223,7 +234,11 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 	// exactly that file upstream ("# TODO: add data", one config-less query).
 	if cmd.ImplicitNoChecks() {
 		r.skip(SkipNoChecks, at, "query declares no configs")
-		if _, err := execAny(ctx, conn, query); err != nil {
+		var run execer = conn
+		if e.prepared {
+			run = preparedExecer{base: conn, args: args}
+		}
+		if _, err := execAny(ctx, run, query); err != nil {
 			return fmt.Errorf("%s: %q: %w", at, truncate(query), err)
 		}
 		return nil
@@ -257,11 +272,98 @@ func (r *runner) runTest(ctx context.Context, conn *sql.Conn, where string, e ex
 	}
 
 	cfg := plan.Consuming[0]
-	if err := r.runConfig(ctx, conn, at, query, cfg, plan.Metadata); err != nil {
+	// The cache check (executeStatementAndCheckCacheIfNeeded) counts the
+	// plan-cache hits of the statement's execution. An expected error has no
+	// execution to check: Java's check follows a statement that ran.
+	checkCache := e.checkCache && cfg.Kind != javayamsql.ConfigError
+	var hitsBefore int64
+	if checkCache {
+		var supported bool
+		if hitsBefore, supported = planCacheHits(conn); !supported {
+			// Java: a connection without a metric collector skips the run.
+			r.skip(SkipCheckCache, at, "the connection has no shared plan cache")
+			return nil
+		}
+	}
+	if err := r.runConfigWithSetups(ctx, conn, at, query, cfg, plan, e.prepared, args); err != nil {
 		return err
+	}
+	if checkCache {
+		if hits, _ := planCacheHits(conn); hits != hitsBefore+1 {
+			return fmt.Errorf("%s: %q: Expected to retrieve the plan from the cache (plan-cache hits %d -> %d)",
+				at, truncate(query), hitsBefore, hits)
+		}
 	}
 	r.result.QueriesRun++
 	return nil
+}
+
+// planCacheHits is the connection's plan-cache PLAN_CACHE_TERTIARY_HIT count,
+// and whether the connection has a plan cache to read it from.
+func planCacheHits(conn *sql.Conn) (int64, bool) {
+	var hits int64
+	supported := false
+	_ = conn.Raw(func(dc any) error {
+		if ec, ok := dc.(*embedded.EmbeddedConnection); ok {
+			if cache := ec.SharedPlanCache(); cache != nil {
+				hits, supported = cache.Counts().TertiaryHit, true
+			}
+		}
+		return nil
+	})
+	return hits, supported
+}
+
+// runConfigWithSetups is executeWithSetup: the setups and the query share one
+// transaction, which commits after the query (setAutoCommit(true)).
+func (r *runner) runConfigWithSetups(ctx context.Context, conn *sql.Conn, at, query string, cfg *javayamsql.Config, plan configPlan, prepared bool, args []any) error {
+	if len(plan.Setups) == 0 {
+		var run execer = conn
+		if prepared {
+			run = preparedExecer{base: conn, args: args}
+		}
+		return r.runConfig(ctx, run, at, query, cfg, plan.Metadata)
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("%s: begin: %w", at, err)
+	}
+	var run execer = tx
+	if prepared {
+		run = preparedExecer{base: tx, args: args}
+	}
+	for _, setup := range plan.Setups {
+		// QueryCommand.java:273 admits only this statement as a setup.
+		const allowed = "CREATE TEMPORARY FUNCTION"
+		if len(setup) < len(allowed) || !strings.EqualFold(setup[:len(allowed)], allowed) {
+			_ = tx.Rollback()
+			return fmt.Errorf("%s: Only \"CREATE TEMPORARY FUNCTION\" is allowed for transaction setups", at)
+		}
+		if _, err := execAny(ctx, tx, setup); err != nil {
+			run = failingExecer{err}
+			break
+		}
+	}
+	if err := r.runConfig(ctx, run, at, query, cfg, plan.Metadata); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%s: commit: %w", at, err)
+	}
+	return nil
+}
+
+// failingExecer answers every statement with a setup's error, which Java
+// raises from the same executeTransactionally call as the query's own.
+type failingExecer struct{ err error }
+
+func (f failingExecer) ExecContext(context.Context, string, ...any) (sql.Result, error) {
+	return nil, f.err
+}
+
+func (f failingExecer) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	return nil, f.err
 }
 
 // pendingSkip is a counted skip whose location the caller supplies.
@@ -281,6 +383,9 @@ type configPlan struct {
 	Metadata *javayamsql.Config
 	// Skips are per-directive counted skips that do not claim the query.
 	Skips []pendingSkip
+	// Setups run before the query, in its transaction (setup: and
+	// setupReference:, QueryExecutor.executeWithSetup).
+	Setups []string
 }
 
 // classifyConfigs is QueryCommand.executeInternal's walk over the config list,
@@ -332,7 +437,7 @@ func classifyConfigs(cmd *javayamsql.Command) configPlan {
 		case javayamsql.ConfigResultMetadata:
 			pendingMetadata = cfg
 		case javayamsql.ConfigSetup, javayamsql.ConfigSetupReference:
-			plan.SkipQuery = SkipTemporaryFunction
+			plan.Setups = append(plan.Setups, cfg.Text)
 		case javayamsql.ConfigDebugger:
 			plan.Skips = append(plan.Skips, pendingSkip{SkipDebugger, cfg.Text})
 		case javayamsql.ConfigResult, javayamsql.ConfigUnorderedResult,
@@ -396,7 +501,7 @@ func (r *runner) adaptQuery(cmd *javayamsql.Command, at string) (string, bool) {
 // runConfig executes the query once and checks the single result-consuming
 // config against it, plus the sticky `resultMetadata:` directive armed before
 // it, if any.
-func (r *runner) runConfig(ctx context.Context, conn *sql.Conn, at, query string, cfg, meta *javayamsql.Config) error {
+func (r *runner) runConfig(ctx context.Context, conn execer, at, query string, cfg, meta *javayamsql.Config) error {
 	// Java hands the sticky directive to every consumer and lets
 	// checkInlineMetadataIfPresent decide; the guard is hoisted here so the
 	// three no-result-set shapes take one documented path instead of three.
@@ -442,7 +547,7 @@ func (r *runner) runConfig(ctx context.Context, conn *sql.Conn, at, query string
 	// captures the column identity at the same point, so the descriptors here
 	// are the same pre-iteration read.
 	if meta != nil {
-		if descends, why := metadataDescends(meta.Raw); descends {
+		if descends, why := metadataDescends(meta.Raw); descends && rs.Meta == nil {
 			r.skip(SkipResultMetadataNested, at, why)
 		} else if err := matchMetadata(meta.Raw, extractDescriptors(rs)); err != nil {
 			return fmt.Errorf("%s: %q: %w", at, truncate(query), err)
@@ -461,7 +566,7 @@ func derefCount(cfg *javayamsql.Config) any {
 	return *cfg.Number
 }
 
-func (r *runner) checkError(ctx context.Context, conn *sql.Conn, at, query string, cfg *javayamsql.Config) error {
+func (r *runner) checkError(ctx context.Context, conn execer, at, query string, cfg *javayamsql.Config) error {
 	var err error
 	if isRowReturning(query) {
 		// A SELECT's error may surface only while rows are drawn — a division

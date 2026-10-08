@@ -13,7 +13,7 @@ setup:
   - INSERT INTO t VALUES (1, 10), (2, null), (3, 5), (4, null), (5, 20)
 tests:
   - query: SELECT v FROM t ORDER BY v ASC
-    plan_contains: "IndexScan(IDX_V, [*])"
+    plan_contains: "Map(IndexScan(IDX_V, [*] COVERING), {V: _current.V#1})"
     plan_not_contains: "InMemorySort"
     rows:
       - [~]
@@ -22,7 +22,7 @@ tests:
       - [10]
       - [20]
   - query: SELECT v FROM t ORDER BY v DESC
-    plan_contains: "IndexScan(IDX_V, [*]) REVERSE"
+    plan_contains: "Map(IndexScan(IDX_V, [*] COVERING) REVERSE, {V: _current.V#1})"
     plan_not_contains: "InMemorySort"
     rows:
       - [20]
@@ -31,10 +31,10 @@ tests:
       - [~]
       - [~]
   # Explicit NULLS LAST on ASC — Go extension: in-memory sort handles
-  # NULL placement that index scans can't provide.
+  # NULL placement that index scans can't provide. The covering index is
+  # read whole, unordered, under PREFER_INDEX (F-7c).
   - query: SELECT v FROM t ORDER BY v ASC NULLS LAST
-    plan_contains: "InMemorySort([_current.V#1 ASC]"
-    plan_not_contains: "IndexScan"
+    plan_contains: "InMemorySort([_current.V#0 ASC], Map(IndexScan(IDX_V, [*] COVERING), {V: _current.V#1}))"
     rows:
       - [5]
       - [10]
@@ -43,8 +43,7 @@ tests:
       - [~]
   # Explicit NULLS FIRST on DESC — Go extension: in-memory sort.
   - query: SELECT v FROM t ORDER BY v DESC NULLS FIRST
-    plan_contains: "InMemorySort([_current.V#1 DESC]"
-    plan_not_contains: "IndexScan"
+    plan_contains: "InMemorySort([_current.V#0 DESC], Map(IndexScan(IDX_V, [*] COVERING), {V: _current.V#1}))"
     rows:
       - [~]
       - [~]

@@ -191,6 +191,47 @@ func TestExplodePlan_Explain_Nil(t *testing.T) {
 	}
 }
 
+// A zero-based ordinality explode (Java's three-argument constructor) is a
+// distinct plan from the one-based one; zero-based ordinals without ordinality
+// are refused, and the explain is unchanged.
+func TestExplodePlan_ZeroBasedOrdinality(t *testing.T) {
+	t.Parallel()
+	arr := values.NewArrayConstructorValue(values.NotNullLong, []values.Value{
+		values.LiteralValue(int64(1)),
+	})
+	if _, err := NewRecordQueryExplodePlanWithOrdinalityBase(arr, false, true); err == nil ||
+		!strings.Contains(err.Error(), "cannot base ordinals that are not produced") {
+		t.Fatalf("zero-based without ordinality: err = %v, want the refusal", err)
+	}
+	oneBased := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlanWithOrdinality(arr, true)
+	})
+	alsoOneBased := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlanWithOrdinalityBase(arr, true, false)
+	})
+	zeroBased := mustChecked(t, func() (*RecordQueryExplodePlan, error) {
+		return NewRecordQueryExplodePlanWithOrdinalityBase(arr, true, true)
+	})
+	if !zeroBased.IsZeroBasedOrdinality() || oneBased.IsZeroBasedOrdinality() ||
+		zeroBased.FirstOrdinal() != 0 || oneBased.FirstOrdinal() != 1 {
+		t.Fatal("zero-based flag or first ordinal mismatch")
+	}
+	if !oneBased.EqualsPlanWithoutChildren(alsoOneBased) ||
+		oneBased.HashCodeWithoutChildren() != alsoOneBased.HashCodeWithoutChildren() {
+		t.Fatal("the two one-based constructions must be the same plan")
+	}
+	if oneBased.EqualsPlanWithoutChildren(zeroBased) || oneBased.HashCodeWithoutChildren() == zeroBased.HashCodeWithoutChildren() {
+		t.Fatal("zero-based and one-based Explode plans must differ in equality and hash")
+	}
+	if zeroBased.Explain() != oneBased.Explain() {
+		t.Fatalf("zero-based Explain = %q, want the one-based %q", zeroBased.Explain(), oneBased.Explain())
+	}
+	rebuilt, err := zeroBased.WithCollection(arr)
+	if err != nil || !rebuilt.IsZeroBasedOrdinality() {
+		t.Fatalf("WithCollection dropped the zero base: %v", err)
+	}
+}
+
 // TestExplodePlan_WithOrdinality pins the physical plan's RFC-142 ordinality
 // threading: a WITH ORDINALITY plan is distinct (equals/hash) from a bare one
 // over the same array, its result type is the 2-field record, and its Explain

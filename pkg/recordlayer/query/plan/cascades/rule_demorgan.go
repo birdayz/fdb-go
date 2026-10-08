@@ -17,11 +17,8 @@ import (
 // AndConstantSimplifyRule passes can collapse the negated tree
 // further (`NOT TRUE` → FALSE, `OR(FALSE, FALSE)` → FALSE, etc.).
 //
-// **Not part of DefaultSimplifyRules.** Java applies De Morgan as a
-// separate normalisation pass (`BooleanNormalizer`); the
-// DefaultSimplifyRules set runs only constant-fold + identity-drop +
-// absorbing-element + leaf-NOT-rewrite. Use NormalizationRules() (or
-// build a custom rule list) when De Morgan is desired.
+// Java's default query-predicate rules include this rewrite. The separate
+// constant-evaluation set adds it through NormalizationRules.
 type DeMorganRule struct {
 	matcher matching.BindingMatcher
 }
@@ -42,36 +39,16 @@ func (r *DeMorganRule) OnMatch(call *RuleCall) {
 		for i, sp := range child.SubPredicates {
 			negated[i] = &predicates.NotPredicate{Child: sp}
 		}
-		call.Yield(&predicates.OrPredicate{SubPredicates: negated})
+		call.YieldAndReExplore(&predicates.OrPredicate{SubPredicates: negated})
 	case *predicates.OrPredicate:
 		// NOT(OR(...)) → AND(NOT ..., NOT ..., ...).
 		negated := make([]predicates.QueryPredicate, len(child.SubPredicates))
 		for i, sp := range child.SubPredicates {
 			negated[i] = &predicates.NotPredicate{Child: sp}
 		}
-		call.Yield(&predicates.AndPredicate{SubPredicates: negated})
+		call.YieldAndReExplore(&predicates.AndPredicate{SubPredicates: negated})
 	default:
-		// NOT over a non-And/Or child — out of scope; let
-		// NotConstantSimplifyRule / NotComparisonRewriteRule handle
-		// leaves and double-negation.
+		// NOT over a non-And/Or child — out of scope; NotComparisonRewriteRule
+		// handles a comparison leaf.
 	}
-}
-
-// NormalizationRules is the rule set to use when De Morgan
-// distribution + nested-NOT push-down are desired in addition to the
-// default simplification pass. Java's BooleanNormalizer applies
-// these as a separate pre-CNF normalisation; callers wanting the
-// same effect compose `Simplify(pred, NormalizationRules())` with the
-// existing Simplify driver.
-//
-// Order matters:
-//   - DeMorganRule comes BEFORE the default rules so the AND/OR
-//     boundaries surface for the constant-fold / identity-drop
-//     follow-on passes.
-//   - DefaultSimplifyRules then collapses the resulting AND/OR/NOT
-//     leaves further (NotComparisonRewriteRule turns NOT(=) into
-//     <>, NotConstantSimplifyRule double-negates, etc.).
-func NormalizationRules() []CascadesRule {
-	out := []CascadesRule{NewDeMorganRule()}
-	return append(out, DefaultSimplifyRules()...)
 }

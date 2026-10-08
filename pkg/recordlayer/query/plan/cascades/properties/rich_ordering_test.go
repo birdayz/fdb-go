@@ -1002,7 +1002,7 @@ func TestRichOrdering_PullUpThroughValue_PropagatesValueError(t *testing.T) {
 		NotDistinct(),
 	)
 
-	pulled, err := ordering.PullUpThroughValue(key, values.CorrelationIdentifier{})
+	pulled, err := ordering.PullUpThroughValue(key, values.CorrelationIdentifier{}, nil)
 	if err == nil {
 		t.Fatal("PullUpThroughValue with a zero output alias returned nil error")
 	}

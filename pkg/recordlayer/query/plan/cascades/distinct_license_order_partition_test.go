@@ -119,7 +119,7 @@ func TestDistinctFinal_PropertyLicenseOnPartitionPathYieldsUnstampedPlan(t *test
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	scanRow, err := scanQ.RequireFlowedObjectValue()
 	scanRow = mustConstruct(t, scanRow, err)
-	proj, err := expressions.NewLogicalProjectionExpression(
+	proj, err := newBlockSelectForTest(
 		[]values.Value{distinctLicenseField(t, scanRow, 1)}, scanQ)
 	proj = mustConstruct(t, proj, err)
 	projRef := expressions.InitialOf(proj)

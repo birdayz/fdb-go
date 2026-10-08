@@ -3,6 +3,9 @@ package values
 import (
 	"testing"
 
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/tupleordering"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,8 +43,8 @@ func TestOrderedBytesDirection_IsAscending(t *testing.T) {
 func TestToOrderedBytesValue_Type(t *testing.T) {
 	t.Parallel()
 	v := NewToOrderedBytesValue(LiteralValue(int64(7)), OrderedBytesAscNullsFirst)
-	if !v.Type().Equals(NotNullBytes) {
-		t.Fatalf("Type = %v, want NotNullBytes", v.Type())
+	if !v.Type().Equals(NullableBytes) {
+		t.Fatalf("Type = %v, want NullableBytes", v.Type())
 	}
 }
 
@@ -71,13 +74,58 @@ func TestToOrderedBytesValue_NilChildEmptyChildren(t *testing.T) {
 	}
 }
 
-func TestToOrderedBytesValue_EvaluateIsPlaceholder(t *testing.T) {
+// TestToOrderedBytesValue_EvaluatePacksTheScalar pins Java's eval:
+// TupleOrdering.pack(Key.Evaluated.scalar(child).toTuple(), direction), the
+// bytes an order-function index key holds.
+func TestToOrderedBytesValue_EvaluatePacksTheScalar(t *testing.T) {
 	t.Parallel()
-	v := NewToOrderedBytesValue(LiteralValue(int64(7)), OrderedBytesAscNullsFirst)
-	got, errEv0 := v.Evaluate(nil)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("Evaluate = %v, want nil (placeholder)", got)
+	uuid := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	for _, tc := range []struct {
+		name  string
+		child Value
+		want  tuple.Tuple
+	}{
+		{"long", LiteralValue(int64(7)), tuple.Tuple{int64(7)}},
+		{"string", LiteralValue("abc"), tuple.Tuple{"abc"}},
+		{"null", NewNullValue(NullableLong), tuple.Tuple{nil}},
+		{"float_narrowed", &ConstantValue{Value: float64(1.5), Typ: NotNullFloat}, tuple.Tuple{float32(1.5)}},
+		{"double", &ConstantValue{Value: float64(1.5), Typ: NotNullDouble}, tuple.Tuple{float64(1.5)}},
+		{"uuid", &ConstantValue{Value: uuid, Typ: NotNullUuid}, tuple.Tuple{tuple.UUID(uuid)}},
+	} {
+		for _, dir := range []OrderedBytesDirection{OrderedBytesAscNullsFirst, OrderedBytesAscNullsLast, OrderedBytesDescNullsFirst, OrderedBytesDescNullsLast} {
+			got, err := NewToOrderedBytesValue(tc.child, dir).Evaluate(nil)
+			require.NoError(t, err, "%s %s", tc.name, dir)
+			require.Equal(t, tupleordering.Pack(tc.want, dir.tupleDirection()), got, "%s %s", tc.name, dir)
+		}
+	}
+}
+
+// TestOrderedBytesValues_RoundTrip: FromOrderedBytes inverts ToOrderedBytes
+// in every direction, answering in the row domain (a FLOAT reads back as
+// float64, a UUID as [16]byte).
+func TestOrderedBytesValues_RoundTrip(t *testing.T) {
+	t.Parallel()
+	uuid := [16]byte{9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6}
+	for _, tc := range []struct {
+		name  string
+		child Value
+		typ   Type
+		want  any
+	}{
+		{"long", LiteralValue(int64(-42)), NotNullLong, int64(-42)},
+		{"string", LiteralValue("zz"), NotNullString, "zz"},
+		{"bytes", LiteralValue([]byte{0, 1, 0xff}), NotNullBytes, []byte{0, 1, 0xff}},
+		{"bool", LiteralValue(true), NotNullBoolean, true},
+		{"null", NewNullValue(NullableString), NullableString, nil},
+		{"float", &ConstantValue{Value: float64(2.25), Typ: NotNullFloat}, NotNullFloat, float64(2.25)},
+		{"uuid", &ConstantValue{Value: uuid, Typ: NotNullUuid}, NotNullUuid, uuid},
+	} {
+		for _, dir := range []OrderedBytesDirection{OrderedBytesAscNullsFirst, OrderedBytesAscNullsLast, OrderedBytesDescNullsFirst, OrderedBytesDescNullsLast} {
+			to := NewToOrderedBytesValue(tc.child, dir)
+			got, err := to.CreateInverse(to, tc.typ).Evaluate(nil)
+			require.NoError(t, err, "%s %s", tc.name, dir)
+			require.Equal(t, tc.want, got, "%s %s", tc.name, dir)
+		}
 	}
 }
 
@@ -129,13 +177,19 @@ func TestFromOrderedBytesValue_NilTargetTypeFallsBackToUnknown(t *testing.T) {
 	}
 }
 
-func TestFromOrderedBytesValue_EvaluateIsPlaceholder(t *testing.T) {
+// TestFromOrderedBytesValue_EvaluateRefuses: Java requires non-null bytes
+// (requireNonNull) holding at least one element (.get(0)); each failure is an
+// error here, never a NULL that would read as data.
+func TestFromOrderedBytesValue_EvaluateRefuses(t *testing.T) {
 	t.Parallel()
-	v := NewFromOrderedBytesValue(LiteralValue([]byte{}), OrderedBytesAscNullsFirst, NotNullLong)
-	got, errEv0 := v.Evaluate(nil)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("Evaluate = %v, want nil (placeholder)", got)
+	for name, child := range map[string]Value{
+		"null_child":  NewNullValue(NullableBytes),
+		"not_bytes":   LiteralValue(int64(3)),
+		"empty":       LiteralValue([]byte{}),
+		"not_ordered": LiteralValue([]byte{0x99}),
+	} {
+		_, err := NewFromOrderedBytesValue(child, OrderedBytesAscNullsFirst, NotNullLong).Evaluate(nil)
+		require.Error(t, err, name)
 	}
 }
 

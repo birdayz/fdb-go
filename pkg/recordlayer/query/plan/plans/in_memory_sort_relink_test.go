@@ -299,14 +299,12 @@ func TestInMemorySortPlan_ProducerBoundaryReanchorsLegFieldsBeforeWindowsDisappe
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlan([]values.Value{logicalCID}, sortPlan)
-	})
+	projections := reanchoredOverPlan(t, sortPlan, logicalCID)
 	sortLayout := requireProvidedLayout(t, sortPlan)
-	field, ok := values.AsFieldValue(projection.GetProjections()[0])
+	field, ok := values.AsFieldValue(projections[0])
 	if !ok || field.ChildValue() != sortLayout.Carrier() {
 		t.Fatalf("owned C.CID root = %T/%v, want exact sort carrier %p",
-			projection.GetProjections()[0], field, sortLayout.Carrier())
+			projections[0], field, sortLayout.Carrier())
 	}
 	if gotPath := field.Path().Ordinals(); len(gotPath) != 1 || gotPath[0] != 0 {
 		t.Fatalf("owned C.CID path = %v, want [0]", gotPath)
@@ -404,14 +402,12 @@ func TestInMemorySortPlan_ProducerBoundaryReanchorsNestedNominalJoinSource(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlan([]values.Value{nestedSK}, sortPlan)
-	})
-	projected, ok := values.AsFieldValue(projection.GetProjections()[0])
+	projections := reanchoredOverPlan(t, sortPlan, nestedSK)
+	projected, ok := values.AsFieldValue(projections[0])
 	sortLayout := requireProvidedLayout(t, sortPlan)
 	if !ok || projected.ChildValue() != sortLayout.Carrier() {
 		t.Fatalf("nested projection root = %T/%v, want exact sort carrier %p",
-			projection.GetProjections()[0], projected, sortLayout.Carrier())
+			projections[0], projected, sortLayout.Carrier())
 	}
 	if path := projected.Path().Ordinals(); len(path) != 2 || path[0] != 2 || path[1] != 0 {
 		t.Fatalf("nested projection path = %v, want [2 0]", path)
@@ -530,16 +526,14 @@ func TestInMemorySortPlan_ProducerBoundaryTraversesNestedFlatMaps(t *testing.T) 
 		return name
 	}
 	requested := []values.Value{nameOf(d), nameOf(c), nameOf(a), nameOf(b)}
-	projection := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlan(requested, sortPlan)
-	})
+	projections := reanchoredOverPlan(t, sortPlan, requested...)
 	sortLayout := requireProvidedLayout(t, sortPlan)
 	wantPaths := [][]int{{0, 1}, {1, 1}, {2, 1}, {3, 1}}
 	for i, want := range wantPaths {
-		field, ok := values.AsFieldValue(projection.GetProjections()[i])
+		field, ok := values.AsFieldValue(projections[i])
 		if !ok || field.ChildValue() != sortLayout.Carrier() {
 			t.Fatalf("projection %d root = %T/%v, want exact sort carrier %p",
-				i, projection.GetProjections()[i], field, sortLayout.Carrier())
+				i, projections[i], field, sortLayout.Carrier())
 		}
 		got := field.Path().Ordinals()
 		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
@@ -724,14 +718,12 @@ func TestInMemorySortPlan_IdentityFlatMapTraversesOuterJoinProducer(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlan([]values.Value{logicalID}, sortPlan)
-	})
+	projections := reanchoredOverPlan(t, sortPlan, logicalID)
 	sortLayout := requireProvidedLayout(t, sortPlan)
-	projected, ok := values.AsFieldValue(projection.GetProjections()[0])
+	projected, ok := values.AsFieldValue(projections[0])
 	if !ok || projected.ChildValue() != sortLayout.Carrier() {
 		t.Fatalf("projected O.ID root = %T/%v, want exact sort carrier %p",
-			projection.GetProjections()[0], projected, sortLayout.Carrier())
+			projections[0], projected, sortLayout.Carrier())
 	}
 	if path := projected.Path().Ordinals(); len(path) != 1 || path[0] != 0 {
 		t.Fatalf("projected O.ID path = %v, want [0]", path)
@@ -783,10 +775,8 @@ func TestInMemorySortPlan_FlatMapRoutesDirectOwnersBeforeUniqueProducerFallback(
 	if err != nil {
 		t.Fatal(err)
 	}
-	empProjection := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlanFromQuantifier(
-			[]values.Value{empName, empDeptID}, []string{"ENAME", "DEPT_ID"}, empQ)
-	})
+	empProjection := projectionMapForTest(t, empQ,
+		[]values.Value{empName, empDeptID}, []string{"ENAME", "DEPT_ID"})
 	outerAlias := values.NamedCorrelationIdentifier("DEPT_EMP")
 	outerQ := expressions.NamedPhysicalQuantifier(
 		outerAlias, expressions.FinalOfAtStage(empProjection, expressions.StageCanonical))
@@ -834,15 +824,13 @@ func TestInMemorySortPlan_FlatMapRoutesDirectOwnersBeforeUniqueProducerFallback(
 	sortPlan := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
 		return NewRecordQueryInMemorySortPlan(flatMap, nil)
 	})
-	projection := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlan([]values.Value{innerName, outerEName}, sortPlan)
-	})
+	projections := reanchoredOverPlan(t, sortPlan, innerName, outerEName)
 	sortLayout := requireProvidedLayout(t, sortPlan)
 	for i, want := range []int{1, 2} {
-		field, ok := values.AsFieldValue(projection.GetProjections()[i])
+		field, ok := values.AsFieldValue(projections[i])
 		if !ok || field.ChildValue() != sortLayout.Carrier() {
 			t.Fatalf("projection %d root = %T/%v, want exact sort carrier %p",
-				i, projection.GetProjections()[i], field, sortLayout.Carrier())
+				i, projections[i], field, sortLayout.Carrier())
 		}
 		path := field.Path().Ordinals()
 		if len(path) != 1 || path[0] != want {
@@ -949,4 +937,31 @@ func TestInMemorySortPlan_RelinkRejectsChildTypeDrift(t *testing.T) {
 	if _, err := sortPlan.WithQuantifiers([]expressions.Quantifier{newQ}); err == nil {
 		t.Fatal("WithQuantifiers accepted a child with a different exact type")
 	}
+}
+
+// reanchoredOverPlan is the producer-boundary normalization a consumer applies
+// to its programs over inner (sort keys, filter predicates, aggregate keys).
+func reanchoredOverPlan(t testing.TB, inner RecordQueryPlan, vs ...values.Value) []values.Value {
+	t.Helper()
+	innerQ := QuantifierOverPlan(inner)
+	out := make([]values.Value, len(vs))
+	for i, v := range vs {
+		var err error
+		if out[i], err = reanchorCurrentValueForInput(v, innerQ); err != nil {
+			t.Fatalf("reanchoring %d over %T: %v", i, inner, err)
+		}
+	}
+	return out
+}
+
+// projectionMapForTest is a block's Map over innerQ projecting vs under aliases.
+func projectionMapForTest(t testing.TB, innerQ expressions.Quantifier, vs []values.Value, aliases []string) *RecordQueryMapPlan {
+	t.Helper()
+	rv, err := values.ProjectionResultValue(vs, aliases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mustChecked(t, func() (*RecordQueryMapPlan, error) {
+		return NewRecordQueryMapPlanFromQuantifier(innerQ, rv)
+	})
 }

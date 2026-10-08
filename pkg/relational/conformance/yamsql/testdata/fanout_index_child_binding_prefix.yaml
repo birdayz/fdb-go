@@ -1,0 +1,38 @@
+# fanout_index_child_binding_prefix.yaml
+#
+# A fan-out index whose exploded element follows a scalar column: the element's
+# placeholder lives in the candidate's inner Select, the scalar's in the outer
+# one. The inner match binds the element and the outer match the scalar; whether
+# a binding is part of the scan prefix is decided once, against the bindings of
+# the whole match, when the complete match is compensated (Java's
+# PredicateWithValueAndRanges compensation reads the root boundParameterPrefixMap).
+# Deciding it at the inner Select, which cannot see the outer binding, lost the
+# element equality: Java scans T4_COL2_COL4 [EQUALS, EQUALS].
+name: fanout_index_child_binding_prefix
+schema_template: |
+  CREATE TABLE t4 (id BIGINT, col1 STRING, col2 BIGINT, col4 BIGINT ARRAY, PRIMARY KEY (id))
+  CREATE INDEX t4_col2_col4 AS SELECT t.col2, "e" FROM t4 AS t, t.col4 AS "e" ORDER BY t.col2, "e"
+setup:
+  - INSERT INTO t4 VALUES (1, 'a', 5, [1, 2]), (2, 'a', 5, [3]), (3, 'b', 6, [2]), (4, 'b', 5, [2, 7]), (5, 'b', 5, [])
+tests:
+  - query: SELECT id FROM t4 WHERE col2 = 5 AND EXISTS (SELECT 1 FROM t4.col4 x WHERE x = 2)
+    plan_contains: "IndexScan(T4_COL2_COL4, [=, =]"
+    plan_not_contains: "Explode"
+    unordered: true
+    rows:
+      - [1]
+      - [4]
+  # The element binding is outside the prefix when the scalar is unbound: the
+  # equality is re-applied, never dropped.
+  - query: SELECT id FROM t4 WHERE EXISTS (SELECT 1 FROM t4.col4 x WHERE x = 2)
+    unordered: true
+    rows:
+      - [1]
+      - [3]
+      - [4]
+  - query: SELECT id FROM t4 WHERE col2 = 5 AND EXISTS (SELECT 1 FROM t4.col4 x WHERE x > 1)
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+      - [4]

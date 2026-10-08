@@ -67,13 +67,13 @@ Anything later found to mint a key joins it rather than being argued out of it.
 | `clustered_outer_scalar.go:632` | `leg.binding + "." + leg.typ.Fields[i].Name` | GONE |
 | `clustered_outer_scalar.go:658` | `ToUpper(innerAlias) + "." + scalarCol` | GONE |
 | `qualifyAndMergeColumns` (two sites) | `alias + "." + ToUpper(c.Name)` | GONE |
-| `cascades_translator.go:3609` (unnest leg mint) | `leg + "." + ToUpper(rootName)` | GONE |
+| `rebaseUnnestOuterLegPredicate` (unnest leg mint) | `leg + "." + ToUpper(rootName)` | GONE |
 
 The `clustered_outer_scalar` and `scalar_subquery_seed` sites already disagree
 among THEMSELVES on the case question — `:509` keeps the leg's own slot name
 verbatim while `:143` and `:537` fold the alias.
 
-`cascades_translator.go:3609` is not bookkeeping and the previous draft filed it
+`rebaseUnnestOuterLegPredicate` is not bookkeeping and the previous draft filed it
 that way: it mints `LEG.COL`, resolves it through `mergedType.FieldIndexUnique`,
 and BAKES the resulting ordinal into a predicate, across five merged and chained
 UNNEST paths. It is a producer and a consumer in one place, so leaving it out
@@ -95,8 +95,8 @@ migrated by this PR:
 | Former `classifyDerivedUnnestArray` in derived_unnest.go | LAST dot | **RETIRED by RFC-256** — carried collection binding |
 | Former derived_unnest.go `projectionOutputNames` | LAST dot | **RETIRED by RFC-256** — carried SQL names |
 | `splitQualifier` (EXISTS sort keys) | LAST dot | yes, nonzero corpus floor |
-| `rowSlotForLegColumn` (`ordinal_join.go:1168`) | **FIRST** dot | **no — retired, revival alarm at 0** |
-| `isDottedQualifiedName` (`ordinal_join.go:1238`) | any dot, `{`/`[` prefix guard | yes, and it picks a JOIN ARM |
+| `rowSlotForLegColumn` (`ordinal_join.go:1157`) | **FIRST** dot | **no — retired, revival alarm at 0** |
+| `isDottedQualifiedName` (`ordinal_join.go:1242`) | any dot, `{`/`[` prefix guard | yes, and it picks a JOIN ARM |
 
 **`rowSlotForLegColumn` IS RETIRED, and that matters more than its being a parser.**
 `rowSlotForLegColumn`'s only driver was `adaptLegPositional`'s
@@ -311,7 +311,7 @@ than at the end.
 1. Add the structured qualifier alongside the rendered name. No behaviour
    change; golden byte-identical.
 2. Move label derivation off the split, onto the structured qualifier.
-3. Collapse ALL EIGHT renderers, not the first two — including `qualifyAndMergeColumns` (two sites) and the UNNEST leg mint at `cascades_translator.go:3609`, which the table marks GONE and an earlier step list silently left standing: `legColumns`' join arm defers
+3. Collapse ALL EIGHT renderers, not the first two — including `qualifyAndMergeColumns` (two sites) and the UNNEST leg mint at `rebaseUnnestOuterLegPredicate`, which the table marks GONE and an earlier step list silently left standing: `legColumns`' join arm defers
    to `logicalLegFields`, and `scalarSubqueryOrdinalSeed`,
    `clustered_outer_scalar.go:632` and `:658` defer to the same boundary, where
    the descriptor-name decision also moves. Collapsing a subset leaves live
@@ -760,7 +760,7 @@ why (8) has two halves. The stack, captured by mutating the probe's Go COLL arm
 and reading what actually reddened:
 
 ```
-values.NewRecordType                      type.go:768   panics
+values.NewRecordType                      type.go:769   panics
 executor.PositionalTypeForRecordLayout    query_result.go:277
 embedded.buildMatchCandidates             cascades_generator.go (historical panic frame)
 embedded.GetMatchCandidates               metadataPlanContext.GetMatchCandidates
@@ -879,13 +879,13 @@ Translating only the scan leaf would ship a TWO-NAMESPACE PLAN TREE —
 below applies to the DML targets verbatim, because all three DML expressions compare
 that string in `EqualsWithoutChildren` -- it IS the structural key:
 `cascades/expressions/delete.go:84`, `cascades/expressions/insert.go:107`,
-`cascades/expressions/update.go:146`. All three carry their directory because
+`cascades/expressions/update.go:203`. All three carry their directory because
 `plans/` holds a `delete.go`, an `insert.go` and an `update.go` of its own -- a
 bare basename names two files here, not one. THE UPDATE TARGET IS NOT JUST A NAME -- IT IS A CORRELATION IDENTIFIER, and
 that constrains how it may be translated. `executeUpdate` builds the target
 quantified-object value as
 `NewQuantifiedObjectValue(NamedCorrelationIdentifier(p.GetTargetRecordType()),
-...)` (`executor.go:4121-4123`), and the SET right-hand sides are correlated to
+...)` (`executor.go:4347-4350`), and the SET right-hand sides are correlated to
 it. Re-spelling `upd.Target` alone would leave `SET name = name` bound to a
 correlation nobody publishes.
 
@@ -896,8 +896,8 @@ construction, and `UpdateExpression.java:100-105` correlates the transforms to
 the SOURCE quantifier only. Go's coupling is its own, originating at
 `buildLogicalPlanForQueryWithCTECatalog` where `buildSelectScope` takes the bare table name
 as the alias. "Rebase the transforms onto the new identifier" would preserve
-that divergence while working around it. INSERT has no such coupling: `executor.go:3973`
-resolves ITS target through the tolerant `GetRecordType` -- an INSERT-only
+that divergence while working around it. INSERT has no such coupling: `executeInsert`
+(`executor.go`) resolves ITS target through the tolerant `GetRecordType` -- an INSERT-only
 path, not the general tolerance an earlier draft read it as.
 
 Go's type filter needs nothing: the translator never builds one. It arrives from
@@ -921,17 +921,18 @@ which is exactly what makes the raw `recordTypes.equals` at
 objections described Java's shipped behaviour rather than a cost.**
 
   - It said storage names in the plan would make EXPLAIN print
-    `Scan(MY__1TABLE)`. Java's EXPLAIN prints exactly that:
+    `Scan(MY__1TABLE)`. Java 4.12 printed exactly that:
     `SCAN([IS foo__2table__1nested, ...])` and
-    `SCAN([IS my__1adjacency__1list, ...])`, at
-    `valid-identifiers.yamsql:237` and `:422`. The RECORD-TYPE name is mangled;
-    :237 goes on to project `level2$field.1` in the same line, so the columns
-    beside it are NOT. Index names are mangled nowhere -- the covering scan at
-    `:222` prints `foo.table$nested.repeated.idx.field.1.3` verbatim, and
-    `:227`/`:232` print sibling index names the same way. Table names mangled,
-    column and index names not. So Go printing
-    `Scan(MY$TABLE)` is itself a divergence on the shared surface, not a
-    feature to protect.
+    `SCAN([IS my__1adjacency__1list, ...])`, at 4.12.11.0's
+    `valid-identifiers.yamsql:237` and `:422`. Java 4.14 (#4437, 545efe8f0)
+    keeps the storage name IN THE PLAN and decodes it only at the render:
+    `RecordTypeComparison.explain`, the type filter and the three DML plans
+    and expressions print `ProtoUtils.toUserIdentifier(...)`, so 4.14.2.0's
+    `valid-identifiers.yamsql:171` reads `SCAN([IS foo.table$nested, ...])`.
+    Go ports that render (`explainRecordTypeName`, `plans/scan.go`, used by
+    the scan, type-filter, INSERT, UPDATE and DELETE explains). Either way the
+    objection fails: what EXPLAIN prints is a render choice, and the memo
+    identity is the storage name in both versions.
   - It said the render boundary would then have to decode through a
     non-injective map. Java DOES decode -- `Record.fromDescriptorPreservingName`
     is `new Record(ProtoUtils.toUserIdentifier(descriptor.getName()),
@@ -1029,8 +1030,8 @@ correct response.
 
 
 **THE CANDIDATE SIDE MUST NOT MOVE.** `rt.Name` reaches candidates at four
-places (`metadataPlanContext.buildMatchCandidates`, `:3471`, `:3695`, `:3770`) and those are
-cross-compared in `rule_aggregate_data_access.go:84,299`; converting one
+places (`metadataPlanContext.buildMatchCandidates`, `:3605`, `:3844`, `:3917`) and those are
+cross-compared in `rule_aggregate_data_access.go:87,331`; converting one
 silently disables aggregate matching. `queriedRecordTypes` flows into physical
 plans (`primary_scan_match_candidate.go:393,432`). Translating on the QUERY side
 leaves every one of them untouched, which is the other reason it is the right
@@ -1039,8 +1040,9 @@ place.
 **AND THE FIX SWITCHES MATCHING ON, which is the point but should be said out
 loud rather than discovered.** FIVE gates compare the SCAN's record types against
 a CANDIDATE's and therefore decline today for the same reason the primary
-candidate does: `rule_aggregate_data_access.go:84` and `:831`,
-`rule_ordered_index_scan.go:74`, `rule_implement_nested_loop_join.go:4480`, and
+candidate does: `rule_aggregate_data_access.go:87` and `:1256`,
+`rule_ordered_index_scan.go:74`, `ImplementNestedLoopJoinRule.tryExistsFlatMap` in
+`rule_implement_nested_loop_join.go`, and
 `rule_streaming_agg_from_index.go:100`, which is live in
 `BatchAExpressionRules`. Landing this turns aggregate matching, ordered-index
 matching, FK-probe matching and streaming aggregation ON for those tables in one
@@ -1064,7 +1066,7 @@ cost is a different shape. Both are asserted at the values they HAVE, so the
 fix has to come to that file.
 
 Two NEAR MEMBERS are not members, and both were on an earlier version of this
-list. `rule_aggregate_data_access.go:299` is candidate-vs-candidate. And
+list. `rule_aggregate_data_access.go:331` is candidate-vs-candidate. And
 `rule_type_filter_redundant.go:51` is query-vs-QUERY —
 `typesAreSubset(scan.GetRecordTypes(), tf.GetRecordTypes())`, both operands from
 the same subtree, so re-spelling moves them together and the outcome cannot
@@ -1076,11 +1078,11 @@ change.
 
 **THE CONTINUATION SALT DOES MOVE, and saying it does not was wrong.**
 `PrimaryScanRule.OnMatch` builds the physical plan from the LOGICAL leaf's
-names (`rule_primary_scan.go:46`), and `executor.go:316` feeds that plan to
+names (`rule_primary_scan.go:46`), and `executor.go:318` feeds that plan to
 `primaryScanRangeFingerprintSalt` — so for an escaped table the salt input goes
 from `MY$TABLE` to `MY__1TABLE`. That is harmless, but only for a reason with an
 expiry condition, which is why it has to be written down rather than waved
-through: the salt is computed ONLY when `len(comps) > 0` (`executor.go:315`),
+through: the salt is computed ONLY when `len(comps) > 0` (`executor.go:317`),
 and an escaped table has no pushed-down comparisons today, so no continuation
 can exist through that path to be invalidated. The fix creates the pushdown and
 the salt in the same stroke. Anything that changes that ordering — a partial
@@ -1093,6 +1095,20 @@ puts on query-engine work. What IS here is the measurement, the pinned
 divergence in two scenarios, and the four boundary fixes — which stay correct
 independently of the fifth, because they make a caller holding either spelling
 correct, the contract `GetRecordType` already offers.
+
+**IMPLEMENTED (owner ACK 2026-10-05, Java 4.14.2.0 migration).**
+`cascadesTranslator.storageName` resolves the table to its record type's stored
+name at the scan leaf and the INSERT, UPDATE and DELETE targets. UPDATE carries
+its correlation separately (`WithTargetAlias`, read by `executeUpdate`), as
+above. `AddGeneratedIndex` matches the table by storage name, Java's
+`findTableByStorageName`. EXPLAIN renders the user identifier (§7c's first
+rebuttal). The sentinels moved as predicted: the escaped table plans
+`TypeFilter([MY$TABLE], Scan(MY$TABLE, [<>]))`, `IndexScan(IDX_NAME, [=]
+COVERING)` and `StreamingAgg(keys=[_current.G#1], IndexScan(AGG_G, [*]
+COVERING))`, the three golden stanzas re-blessed with them, and the WS-F
+`w13_display_scan_explain` probe reached SAME-PATH
+(`Scan(foo.table$nested, [=])` against Java's `SCAN([IS foo.table$nested,
+EQUALS ...])`).
 
 ### 7d. Half a line-cite gate is worth building, and the other half is discipline
 

@@ -161,7 +161,7 @@ func (ec *EvaluationContext) RowContextPositional(pos values.OrdinalRow) *values
 // fallback) when no param / scalar-subquery / outer correlation binding
 // is in play, else a RowContextPositional so an outer correlation resolves via
 // the binder BEFORE the frontier quantifier falls to the positional row. Shared
-// by executeProjection / executeFilter / executePredicatesFilter / executeMap so
+// by executeFilter / executePredicatesFilter / executeMap so
 // the frontier dispatch is identical across them. hasBindingCtx is
 // params||scalarSubqueries||bindings for the caller's evalCtx.
 func frontierRowContext(

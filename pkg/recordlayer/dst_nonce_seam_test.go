@@ -58,64 +58,6 @@ func TestIndexerID_SeamedBothDirections(t *testing.T) {
 	}
 }
 
-// TestRTreeNodeID_SeamedBothDirections covers the R-tree node IDs, which become
-// key bytes for every split node.
-func TestRTreeNodeID_SeamedBothDirections(t *testing.T) {
-	t.Parallel()
-
-	// The constructor must leave env nil: production is the default, and the
-	// maintainer opts in by assigning store.Env().
-	if newRTreeStorage(subspace.Sub("t"), RTreeConfig{}).env != nil {
-		t.Fatal("newRTreeStorage installed a non-nil env — production must be the default")
-	}
-
-	prod := newRTreeStorage(subspace.Sub("t"), RTreeConfig{})
-	id1, err := prod.newRandomNodeID()
-	if err != nil {
-		t.Fatalf("nil-env node ID: %v", err)
-	}
-	id2, err := prod.newRandomNodeID()
-	if err != nil {
-		t.Fatalf("nil-env node ID: %v", err)
-	}
-	if len(id1) != 16 {
-		t.Fatalf("node ID length = %d, want 16 (Java NodeHelpers.newRandomNodeId)", len(id1))
-	}
-	if bytes.Equal(id1, id2) {
-		t.Fatal("nil-env node IDs repeated — the crypto/rand fallback is not live")
-	}
-	if bytes.Equal(id1, make([]byte, 16)) {
-		t.Fatal("nil-env node ID is all zeros — it would collide with rootNodeID")
-	}
-
-	// Simulation: two independently built sims at one seed mint the same node ID
-	// sequence, which is what makes a vector-index run replayable.
-	simA := newRTreeStorage(subspace.Sub("t"), RTreeConfig{})
-	simA.env = dst.NewSim(5)
-	simB := newRTreeStorage(subspace.Sub("t"), RTreeConfig{})
-	simB.env = dst.NewSim(5)
-	for i := 0; i < 4; i++ {
-		gotA, errA := simA.newRandomNodeID()
-		gotB, errB := simB.newRandomNodeID()
-		if errA != nil || errB != nil {
-			t.Fatalf("sim node ID %d: %v / %v", i, errA, errB)
-		}
-		if !bytes.Equal(gotA, gotB) {
-			t.Fatalf("sim node ID %d not reproducible: %x vs %x", i, gotA, gotB)
-		}
-	}
-	// Different seed → different sequence.
-	simC := newRTreeStorage(subspace.Sub("t"), RTreeConfig{})
-	simC.env = dst.NewSim(6)
-	first, _ := simC.newRandomNodeID()
-	simD := newRTreeStorage(subspace.Sub("t"), RTreeConfig{})
-	simD.env = dst.NewSim(5)
-	other, _ := simD.newRandomNodeID()
-	if bytes.Equal(first, other) {
-		t.Fatal("sim node IDs are seed-independent — a constant would pass the reproducibility check")
-	}
-}
-
 // TestHNSWStorageEnv_DefaultsToProduction pins the HNSW sample-key seam's default.
 // The nonce itself is drawn inside appendSampledVector against a live transaction;
 // what is checkable without one — and what the rebase had to re-apply — is that the

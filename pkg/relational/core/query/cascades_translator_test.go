@@ -348,6 +348,7 @@ func TestTranslateScan(t *testing.T) {
 	t.Parallel()
 	scan := logical.NewScan("Order", "")
 	ref, _ := TranslateToCascadesWithSubqueries(scan, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -379,6 +380,7 @@ func TestTranslateLimit(t *testing.T) {
 	scan := logical.NewScan("Order", "")
 	limit := logical.NewLimit(scan, 10, 5)
 	ref, _ := TranslateToCascadesWithSubqueries(limit, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -405,6 +407,7 @@ func TestTranslateUnion(t *testing.T) {
 	scanB := logical.NewScan("Order", "B")
 	union := logical.NewUnion([]logical.LogicalOperator{scanA, scanB}, false)
 	ref, _ := TranslateToCascadesWithSubqueries(union, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -544,11 +547,12 @@ func TestTranslateProject(t *testing.T) {
 	proj := logical.NewProject(scan, []string{"ORDER_ID", "PRICE"}, []string{"", "cost"})
 	proj.InputOrdinals = []int{0, 2}
 	ref, _ := TranslateToCascadesWithSubqueries(proj, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
-	if _, ok := ref.Members()[0].(*expressions.LogicalProjectionExpression); !ok {
-		t.Fatalf("expected LogicalProjectionExpression, got %T", ref.Members()[0])
+	if _, ok := ref.Members()[0].(*expressions.SelectExpression); !ok {
+		t.Fatalf("expected the block SelectExpression, got %T", ref.Members()[0])
 	}
 }
 
@@ -603,15 +607,13 @@ func TestExactProjectionForLogicalProjectDoesNotLeakActiveCTEQualifier(t *testin
 		"S": logical.NewScan("T", ""),
 	})}
 	expr := translator.exactProjectionForLogicalProject([]values.Value{id}, project, inner)
-	proj, ok := expr.(*expressions.LogicalProjectionExpression)
+	block, ok := expr.(*expressions.SelectExpression)
 	if !ok {
-		t.Fatalf("projection = %T, want LogicalProjectionExpression", expr)
+		t.Fatalf("projection = %T, want the block SelectExpression", expr)
 	}
-	if got := proj.GetOutputNames(); len(got) != 1 || got[0] != "ID" {
-		t.Fatalf("SQL-boundary output names = %v, want [ID]", got)
-	}
-	if got := proj.GetAliases(); len(got) != 0 {
-		t.Fatalf("projection aliases = %v, want none", got)
+	output, ok := block.GetResultValue().Type().(*values.RecordType)
+	if !ok || len(output.Fields) != 1 || output.Fields[0].Name != "ID" {
+		t.Fatalf("SQL-boundary output row = %v, want [ID]", block.GetResultValue().Type())
 	}
 	// cteScope controls resolution of the child source, not the result label.
 	// Re-introducing a source-qualified output override here leaks the internal
@@ -630,6 +632,7 @@ func TestTranslateJoin(t *testing.T) {
 	right := logical.NewScan("Customer", "")
 	join := logical.NewJoin(left, right, logical.JoinInner, "")
 	ref, _ := TranslateToCascadesWithSubqueries(join, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference")
 	}
@@ -656,6 +659,7 @@ func TestTranslateJoin(t *testing.T) {
 	// nested binaries are never seeded).
 	three := logical.NewJoin(join, logical.NewScan("TypedRecord", ""), logical.JoinInner, "")
 	ref3, _ := TranslateToCascadesWithSubqueries(three, demoMetaData(t))
+	ref3 = queryBody(t, ref3)
 	if ref3 == nil {
 		t.Fatal("expected non-nil reference for the 3-way")
 	}
@@ -748,6 +752,7 @@ func TestTranslateAggregate(t *testing.T) {
 	}, []string{"total", "cnt"}, false)
 	agg.AggregateOperands = []values.Value{exactTestField(t, row, 2), nil}
 	ref, _ := TranslateToCascadesWithSubqueries(agg, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for aggregate")
 	}
@@ -774,6 +779,7 @@ func TestTranslateAggregateNoGroup(t *testing.T) {
 	scan := logical.NewScan("Order", "")
 	agg := logical.NewAggregate(scan, nil, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"cnt"}, false)
 	ref, _ := TranslateToCascadesWithSubqueries(agg, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for scalar aggregate")
 	}
@@ -854,6 +860,7 @@ func TestTranslateDistinct(t *testing.T) {
 	scan := logical.NewScan("Order", "")
 	dist := logical.NewDistinct(scan)
 	ref, _ := TranslateToCascadesWithSubqueries(dist, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for DISTINCT")
 	}
@@ -881,6 +888,7 @@ func TestTranslateCTEInlines(t *testing.T) {
 	cte := logical.NewCTE("expensive", body, main, false)
 
 	ref, _ := TranslateToCascadesWithSubqueries(cte, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for non-recursive CTE")
 	}
@@ -918,6 +926,7 @@ func TestTranslateCTEChained(t *testing.T) {
 	cteB := logical.NewCTE("B", bodyB, cteA, false)
 
 	ref, _ := TranslateToCascadesWithSubqueries(cteB, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for chained CTEs")
 	}
@@ -955,19 +964,20 @@ func TestTranslateCTEShadowsTableName(t *testing.T) {
 	cte := logical.NewCTE("Order", body, main, false)
 
 	ref, _ := TranslateToCascadesWithSubqueries(cte, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference when CTE name shadows table name")
 	}
-	proj, ok := ref.Members()[0].(*expressions.LogicalProjectionExpression)
+	block, ok := ref.Members()[0].(*expressions.SelectExpression)
 	if !ok {
-		t.Fatalf("expected LogicalProjectionExpression, got %T", ref.Members()[0])
+		t.Fatalf("expected the main block SelectExpression, got %T", ref.Members()[0])
 	}
-	innerRef := proj.GetQuantifiers()[0].GetRangesOver()
-	innerProj, ok := innerRef.Members()[0].(*expressions.LogicalProjectionExpression)
+	innerRef := block.GetQuantifiers()[0].GetRangesOver()
+	innerBlock, ok := innerRef.Members()[0].(*expressions.SelectExpression)
 	if !ok {
-		t.Fatalf("expected inlined projection from CTE body, got %T", innerRef.Members()[0])
+		t.Fatalf("expected the inlined CTE body block, got %T", innerRef.Members()[0])
 	}
-	innerScan := innerProj.GetQuantifiers()[0].GetRangesOver().Members()[0]
+	innerScan := innerBlock.GetQuantifiers()[0].GetRangesOver().Members()[0]
 	if _, ok := innerScan.(*expressions.FullUnorderedScanExpression); !ok {
 		t.Fatalf("expected FullUnorderedScanExpression at leaf, got %T", innerScan)
 	}
@@ -987,6 +997,7 @@ func TestTranslateCTEMultipleReferences(t *testing.T) {
 	cte := logical.NewCTE("p", body, join, false)
 
 	ref, _ := TranslateToCascadesWithSubqueries(cte, demoMetaData(t))
+	ref = queryBody(t, ref)
 	if ref == nil {
 		t.Fatal("expected non-nil reference for CTE with double reference")
 	}
@@ -1138,6 +1149,19 @@ func TestBindPostAggregateValueRejectsForeignExactField(t *testing.T) {
 
 	if _, err := bindPostAggregateValue(foreign, agg, output); err == nil {
 		t.Fatal("foreign exact field bypassed the aggregate output contract")
+	}
+	// An enclosing block's field pulls up unchanged (Expressions.pullUp's
+	// constantAliases); without the recorded outer correlation it is foreign.
+	outer := exactTestField(t, exactTestQOV(t, "OUTER", sourceType), 1)
+	if _, err := bindPostAggregateValue(outer, agg, output); err == nil {
+		t.Fatal("an outer field bound with no OuterCorrelations recorded")
+	}
+	agg.OuterCorrelations = map[values.CorrelationIdentifier]struct{}{values.NamedCorrelationIdentifier("OUTER"): {}}
+	if bound, err := bindPostAggregateValue(outer, agg, output); err != nil || bound != outer {
+		t.Fatalf("an outer field must pull up unchanged, got %v, %v", bound, err)
+	}
+	if _, err := bindPostAggregateValue(foreign, agg, output); err == nil {
+		t.Fatal("a local non-grouping field bound once OuterCorrelations was set")
 	}
 	wrongOutput := exactTestQOV(t, "AGG_OUT_BAD", &values.RecordType{Fields: []values.Field{
 		{Name: "ID", Ordinal: 0, FieldType: values.NullableString},
@@ -1698,4 +1722,65 @@ func TestAggregateOutputColumns_DupNameConflictingTypes(t *testing.T) {
 	if fields[0].FieldType == nil || fields[0].FieldType.Code() != values.TypeCodeUnknown {
 		t.Errorf("unknown-then-typed dup-name key typed %v, want Unknown", fields[0].FieldType)
 	}
+}
+
+// The translated graph is also consumed by index DDL and aggregate/vector
+// candidate expansion. Those consumers require the shape-preserving filter;
+// union exploration must adapt it without minting a second memo population.
+func TestTranslateWherePreservesFilterForGraphConsumers(t *testing.T) {
+	t.Parallel()
+	scan := logical.NewScan("Order", "O")
+	pred := predicates.NewComparisonPredicate(exactTestNamedField(t, "O", "price", values.NullableInt), predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: &values.ConstantValue{Value: int32(10)}})
+	filter := logical.NewFilterWithPredicate(scan, pred, "")
+	ref, _ := TranslateToCascadesWithSubqueries(filter, demoMetaData(t))
+	ref = queryBody(t, ref)
+	if ref == nil {
+		t.Fatal("typed WHERE did not translate")
+	}
+	sel, ok := ref.Get().(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("WHERE starts as %T, want the filter consumed by index DDL and candidate expansion", ref.Get())
+	}
+	if len(sel.GetPredicates()) != 1 || len(sel.GetQuantifiers()) != 1 {
+		t.Fatalf("lost WHERE shape: %v", sel)
+	}
+	if _, ok := sel.GetResultValue().(values.QuantifiedObjectValue); !ok {
+		t.Fatalf("WHERE must preserve its input row, got %T", sel.GetResultValue())
+	}
+}
+
+// queryBody is the query below the unsorted sort a top level without ORDER BY
+// carries (Java's generateSelect), or below a LIMIT the sort under it.
+func queryBody(t *testing.T, ref *expressions.Reference) *expressions.Reference {
+	t.Helper()
+	if ref == nil {
+		return nil
+	}
+	if limit, ok := ref.Get().(*expressions.LogicalLimitExpression); ok {
+		inner := queryBody(t, limit.GetInner().GetRangesOver())
+		rebuilt, err := limit.WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(inner)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return expressions.InitialOf(rebuilt)
+	}
+	sort, ok := ref.Get().(*expressions.LogicalSortExpression)
+	if !ok || !sort.IsUnsorted() {
+		t.Fatalf("query top = %T, want the top level's unsorted sort", ref.Get())
+	}
+	body := sort.GetInner().GetRangesOver()
+	// A bare table read is stated as Java's block Select returning its row
+	// (topLevelSort); the body is the read under it.
+	if sel, isSelect := body.Get().(*expressions.SelectExpression); isSelect && len(sel.GetQuantifiers()) == 1 &&
+		len(sel.GetPredicates()) == 0 {
+		inner := sel.GetQuantifiers()[0]
+		switch inner.GetRangesOver().Get().(type) {
+		case *expressions.FullUnorderedScanExpression, *expressions.LogicalTypeFilterExpression:
+			if row, err := inner.RequireFlowedObjectValue(); err == nil &&
+				values.SemanticEqualsUnderAliasMap(sel.GetResultValue(), row, values.EmptyAliasMap()) {
+				return inner.GetRangesOver()
+			}
+		}
+	}
+	return body
 }

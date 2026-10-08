@@ -749,7 +749,7 @@ func TestRecursiveUnionCursor_ConcurrentInvocations_NoFalsePositive(t *testing.T
 	// across all 3 legs — ties happen often enough (every leg passes through
 	// every counter value) that the merge always finds an order to run in.
 	compKey := mustNamedTestField(t, values.OrdinalFieldName(0), values.NullableLong)
-	p := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(inner, []string{"in_concurrent"}, []values.Value{compKey}, false))
+	p := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(inner, []string{"in_concurrent"}, []values.Value{compKey}, false, plans.UnboundedInUnionSize))
 	p = p.WithInSources([][]any{{int64(1), int64(2), int64(3)}})
 
 	cur, err := ExecutePlan(ctx, p, nil, EmptyEvaluationContext(), nil, props)

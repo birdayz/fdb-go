@@ -190,6 +190,16 @@ func TestWalkExpression_NullLiteral(t *testing.T) {
 	if _, ok := v.(*values.NullValue); !ok {
 		t.Fatalf("expected *NullValue, got %T", v)
 	}
+	if !v.Type().Equals(values.NullType) {
+		t.Fatalf("NULL literal type = %s, want NULL, not unresolved UNKNOWN", v.Type())
+	}
+	promoted, err := values.NewPromoteValueChecked(v, values.NullableDouble)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := promoted.Evaluate(nil); err != nil || got != nil {
+		t.Fatalf("NULL promotion = %v, %v", got, err)
+	}
 }
 
 // Escaped single-quote within a string literal.
@@ -504,10 +514,11 @@ func TestWalkPredicate_AndChainFlattens(t *testing.T) {
 	}
 }
 
-// End-to-end: full expression walks through Simplify. `id = 1 AND
-// TRUE` → `id = 1` after the AndConstantSimplify rule drops TRUE.
-// Tests that the walker output is a first-class citizen of the
-// simplifier.
+// End-to-end: full expression walks through Simplify. `5 = 5` compares two
+// literals, which are not effective constants under Java's
+// ConstantFoldingRuleSet, so it stays beside `id = 1` (Java keeps
+// `@c EQUALS @c` in the filter). Tests that the walker output is a
+// first-class citizen of the simplifier.
 func TestWalkPredicate_FeedsSimplifier(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
@@ -518,11 +529,11 @@ func TestWalkPredicate_FeedsSimplifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	simplified, err := cascades.Simplify(pred, cascades.ConstantFoldingRules())
 	if err != nil {
 		t.Fatalf("simplify: %v", err)
 	}
-	if got, want := simplified.Explain(), "U.ID#0 = 1"; got != want {
+	if got, want := simplified.Explain(), "(U.ID#0 = 1 AND 5 = 5)"; got != want {
 		t.Fatalf("simplified: got %q, want %q", got, want)
 	}
 }
@@ -573,7 +584,7 @@ func TestWalkPredicate_NotParenComparison(t *testing.T) {
 	}
 	// Through the simplifier: NOT(id = 1) → id <> 1 via
 	// NotComparisonRewriteRule.
-	simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	simplified, err := cascades.Simplify(pred, cascades.ConstantFoldingRules())
 	if err != nil {
 		t.Fatalf("simplify: %v", err)
 	}
@@ -787,9 +798,15 @@ func TestWalkPredicate_Like(t *testing.T) {
 	if cp.Comparison.Type != predicates.ComparisonLike {
 		t.Fatalf("Type: got %v, want Like", cp.Comparison.Type)
 	}
-	patLit, ok := values.EvaluateConstant(cp.Comparison.Operand)
-	if !ok || patLit != "hel%" {
-		t.Fatalf("pattern: got %v", cp.Comparison.Operand)
+	pfl, ok := cp.Comparison.Operand.(*values.PatternForLikeValue)
+	if !ok {
+		t.Fatalf("operand %T, want a PatternForLikeValue", cp.Comparison.Operand)
+	}
+	if patLit, ok := values.EvaluateConstant(pfl.PatternChild); !ok || patLit != "hel%" {
+		t.Fatalf("pattern: got %v", pfl.PatternChild)
+	}
+	if esc, ok := values.EvaluateConstant(pfl.EscapeChild); !ok || esc != nil {
+		t.Fatalf("absent ESCAPE: got %v, want NULL", esc)
 	}
 }
 
@@ -808,8 +825,8 @@ func TestWalkPredicate_NotLike(t *testing.T) {
 	}
 }
 
-// LIKE with ESCAPE is now supported — verify the escape rune
-// reaches the ComparisonPredicate and the matcher honours it.
+// LIKE with ESCAPE: the escape reaches the pattern operand and the
+// matcher honours it.
 // `'a\%b' ESCAPE '\'` matches the literal 3-char string `a%b`.
 func TestWalkPredicate_LikeEscape(t *testing.T) {
 	t.Parallel()
@@ -830,8 +847,12 @@ func TestWalkPredicate_LikeEscape(t *testing.T) {
 	if cp.Comparison.Type != predicates.ComparisonLike {
 		t.Fatalf("Type: got %v, want Like", cp.Comparison.Type)
 	}
-	if cp.Comparison.Escape != '\\' {
-		t.Fatalf("Escape: got %q, want %q", cp.Comparison.Escape, '\\')
+	pfl, ok := cp.Comparison.Operand.(*values.PatternForLikeValue)
+	if !ok {
+		t.Fatalf("operand %T, want a PatternForLikeValue", cp.Comparison.Operand)
+	}
+	if esc, ok := values.EvaluateConstant(pfl.EscapeChild); !ok || esc != `\` {
+		t.Fatalf("escape: got %v, want %q", esc, `\`)
 	}
 
 	// Eval truth table — `\%` is a literal `%`, so the pattern
@@ -877,8 +898,10 @@ func TestWalkPredicate_NotLikeEscape(t *testing.T) {
 	if cp.Comparison.Type != predicates.ComparisonLike {
 		t.Fatalf("inner Type: got %v, want Like", cp.Comparison.Type)
 	}
-	if cp.Comparison.Escape != '\\' {
-		t.Fatalf("inner Escape: got %q, want %q", cp.Comparison.Escape, '\\')
+	if pfl, ok := cp.Comparison.Operand.(*values.PatternForLikeValue); !ok {
+		t.Fatalf("inner operand %T, want a PatternForLikeValue", cp.Comparison.Operand)
+	} else if esc, ok := values.EvaluateConstant(pfl.EscapeChild); !ok || esc != `\` {
+		t.Fatalf("inner escape: got %v, want %q", esc, `\`)
 	}
 	// NOT LIKE Eval: the literal `a%b` matches the pattern (so LIKE=TRUE)
 	// → NOT LIKE = FALSE; `axb` doesn't match (LIKE=FALSE) → NOT LIKE = TRUE.
@@ -899,15 +922,21 @@ func TestWalkPredicate_NotLikeEscape(t *testing.T) {
 	}
 }
 
-// Multi-character escape is invalid. The walker must reject
-// rather than silently consuming only the first char.
+// A multi-character escape plans (Java validates it only when a row
+// evaluates the pattern) and raises 22019 per row, never consuming only the
+// first character.
 func TestWalkPredicate_LikeEscape_MultiChar_Rejected(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
 	r := expr.New(a, s)
 	ctx := parseFirstWhereExpr(t, `SELECT * FROM users WHERE name LIKE 'a%' ESCAPE 'XY'`)
-	if _, err := r.WalkPredicate(ctx); err == nil {
-		t.Fatal("expected error for multi-char ESCAPE")
+	pred, err := r.WalkPredicate(ctx)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	var le *values.LikeError
+	if _, err := pred.Eval(usersRow(map[string]any{"NAME": "abc"})); !errors.As(err, &le) || le.Kind != values.LikeEscapeNotSingleChar {
+		t.Fatalf("want LikeEscapeNotSingleChar, got %v", err)
 	}
 }
 
@@ -1180,22 +1209,22 @@ func TestWalker_E2E_SimplifyRichTree(t *testing.T) {
 	r := expr.New(a, s)
 
 	// `WHERE (5 = 5 OR name IS NULL) AND id > 0 AND TRUE`
-	// Simplifier should:
-	//   - Fold `5 = 5` → TRUE → OR(TRUE, ...) → TRUE → drop from AND.
+	// Under Java's ConstantFoldingRuleSet:
+	//   - `5 = 5` is not folded (two literals are not effective constants).
 	//   - Keep `id > 0` (opaque).
-	//   - Fold `TRUE` → drop from AND.
-	// Final: `id > 0`.
+	//   - `TRUE` is the AND identity and drops.
+	// Final: `(5 = 5 OR name IS NULL) AND id > 0`.
 	ctx := parseFirstWhereExpr(t,
 		"SELECT * FROM users WHERE (5 = 5 OR name IS NULL) AND id > 0 AND TRUE")
 	pred, err := r.WalkPredicate(ctx)
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	simplified, err := cascades.Simplify(pred, cascades.ConstantFoldingRules())
 	if err != nil {
 		t.Fatalf("simplify: %v", err)
 	}
-	if got, want := simplified.Explain(), "U.ID#0 > 0"; got != want {
+	if got, want := simplified.Explain(), "((5 = 5 OR U.NAME#1 IS NULL) AND U.ID#0 > 0)"; got != want {
 		t.Fatalf("simplified: got %q, want %q", got, want)
 	}
 }
@@ -1254,7 +1283,7 @@ func TestWalkExpression_NilContext(t *testing.T) {
 }
 
 // Float literal → ConstantValue{Typ: NullableDouble}. Walker handles
-// `3.14`, `0.5`, scientific notation, and negative forms via
+// `3.14`, `0.5`, scientific notation with a '.', and negative forms via
 // DecimalConstant + NegativeDecimalConstant dispatch on
 // REAL_LITERAL terminal.
 func TestWalkExpression_FloatLiteral(t *testing.T) {
@@ -1265,7 +1294,7 @@ func TestWalkExpression_FloatLiteral(t *testing.T) {
 		"3.14":    3.14,
 		"0.5":     0.5,
 		"-2.5":    -2.5,
-		"1e2":     100,
+		"1.0e2":   100,
 		"-1.5e10": -1.5e10,
 	}
 	for sql, want := range cases {

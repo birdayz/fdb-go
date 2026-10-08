@@ -73,7 +73,7 @@ func (f *storeAddressFlags) validate() error {
 // resolve validates the flags and loads the config context. A missing
 // context is tolerated when the invocation is self-contained — a
 // relational address or an explicit --meta-file — so `frl record scan
-// --database /x --schema y` works with zero config (cluster from the
+// --database /FRL/x --schema y` works with zero config (cluster from the
 // default cluster-file discovery).
 func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 	if err := f.validate(); err != nil {
@@ -101,10 +101,14 @@ func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 	target := &storeTarget{
 		cfgCtx:   cfgCtx,
 		metaFile: f.metaFile,
-		database: f.database,
+		// The database path and the schema are SQL identifiers, as DDL reads
+		// them: unquoted names fold to upper case, a path whole (CREATE
+		// DATABASE /FRL/db creates /FRL/DB), so `--database /FRL/db --schema main` finds
+		// what `create schema /FRL/db/main` created (/FRL/DB, MAIN).
+		database: functions.NormalizeIdentifier(f.database),
 		// The schema is an SQL identifier: unquoted names fold to upper
 		// case (the same rule CREATE SCHEMA applies), so `--schema main`
-		// finds the schema `create schema /db/main` created (MAIN).
+		// finds the schema `create schema /FRL/db/main` created (MAIN).
 		schema:          functions.NormalizeIdentifier(f.schema),
 		clusterFileFlag: f.clusterFile,
 	}
@@ -127,8 +131,10 @@ func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 			if target.metaFile != "" {
 				return nil, fmt.Errorf("conflicting metadata sources: --meta-file cannot be combined with relational context %q (the catalog is the metadata source for relational stores)", cfgCtx.GetName())
 			}
-			target.database = cfgCtx.GetDatabase()
-			target.schema = cfgCtx.GetSchema()
+			// Folded like the --database/--schema flags, so a context and the
+			// flags name the same store for the same text.
+			target.database = functions.NormalizeIdentifier(cfgCtx.GetDatabase())
+			target.schema = functions.NormalizeIdentifier(cfgCtx.GetSchema())
 		} else if cfgCtx.GetKeyspaceTuple() != nil {
 			t, err := tupleFromListValue(cfgCtx.GetKeyspaceTuple())
 			if err != nil {
@@ -210,7 +216,11 @@ func (t *storeTarget) describe() string {
 // subspace resolves the store's FDB subspace per the addressing mode.
 func (t *storeTarget) subspace() (subspace.Subspace, error) {
 	if t.relational() {
-		return relationalStoreSubspace(t.database, t.schema)
+		db, err := openDatabase(t.clusterFile())
+		if err != nil {
+			return nil, err
+		}
+		return relationalStoreSubspace(context.Background(), recordlayer.NewFDBDatabase(db), t.database, t.schema)
 	}
 	if t.keyspaceTuple != nil {
 		return subspaceFromTuple(t.keyspaceTuple), nil

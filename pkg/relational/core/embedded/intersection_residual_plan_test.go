@@ -208,3 +208,27 @@ func TestIntersectionResidual_BareShapePreserved(t *testing.T) {
 		t.Errorf("disjoint per-leg residuals set-intersect to nothing — no filter expected, got: %s", plan)
 	}
 }
+
+// TestIntersection_LegsComeFromOneQueryExpression pins that a pk-intersection
+// combines only matches of one query expression, as Java's MatchPartition does.
+// A single-element IN rewrites to an equality as a second member of the same
+// group, so its IDX_B and IDX_C matches coexist with the IN member's; pooling
+// them intersected two different residual sets and dropped `a` entirely.
+func TestIntersection_LegsComeFromOneQueryExpression(t *testing.T) {
+	t.Parallel()
+	const schema = `CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, c BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_b ON t (b)
+CREATE INDEX idx_c ON t (c)`
+	for _, sql := range []string{
+		"SELECT id FROM t WHERE b = 7 AND c = 5 AND a IN (404)",
+		"SELECT * FROM t WHERE b = 7 AND c = 5 AND a IN (404)",
+	} {
+		plan, err := PlanQueryForTest(sql, schema, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+		if !strings.Contains(plan, "Intersection(") || !strings.Contains(plan, "PredicatesFilter(") {
+			t.Errorf("%s: plan %s lost the residual on a over the intersection", sql, plan)
+		}
+	}
+}

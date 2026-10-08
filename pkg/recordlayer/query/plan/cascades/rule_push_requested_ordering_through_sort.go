@@ -35,18 +35,23 @@ func (r *PushRequestedOrderingThroughSortRule) Matcher() matching.BindingMatcher
 	return r.matcher
 }
 
+// ConstraintDependencies is Java's ImmutableSet.of(REQUESTED_ORDERING).
+func (r *PushRequestedOrderingThroughSortRule) ConstraintDependencies() []any {
+	return []any{RequestedOrderingConstraintKey}
+}
+
 func (r *PushRequestedOrderingThroughSortRule) OnMatch(call *ImplementationRuleCall) {
 	if !call.IsConstraintOnly() {
 		return
 	}
 
 	s := call.Bindings.Get(r.matcher).(*expressions.LogicalSortExpression)
-	if s.IsUnsorted() {
-		return
-	}
-
 	innerRef := s.GetInner().GetRangesOver()
 	if innerRef == nil {
+		return
+	}
+	if s.IsUnsorted() {
+		call.PushConstraint(innerRef, []*properties.RequestedOrdering{properties.PreserveOrdering()})
 		return
 	}
 
@@ -56,7 +61,9 @@ func (r *PushRequestedOrderingThroughSortRule) OnMatch(call *ImplementationRuleC
 		call.Fail(err)
 		return
 	}
-	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering})
+	// Go's in-memory sort consumes any child order, so the request is marked
+	// sortable: the data-access skip keeps matches that do not provide it.
+	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering.Sortable()})
 }
 
 // requestedOrderingAtInnerCurrent moves a sort's ordering values from the inner
@@ -133,7 +140,7 @@ func requestedOrderingAtInnerCurrent(
 	// whether partitions are retained. All of those decide WHICH alternatives get
 	// generated, so losing the flag costs enumeration and never correctness.
 	return properties.NewRequestedOrdering(
-		rebased, requested.GetDistinctness(), requested.IsExhaustive()), nil
+		rebased, requested.GetDistinctness(), requested.IsExhaustive()).CarrySortable(requested), nil
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughSortRule)(nil)

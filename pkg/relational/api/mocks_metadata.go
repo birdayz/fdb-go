@@ -495,6 +495,34 @@ func (mr *MockViewMockRecorder) Accept(v any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Accept", reflect.TypeOf((*MockView)(nil).Accept), v)
 }
 
+// Description mocks base method.
+func (m *MockView) Description() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Description")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// Description indicates an expected call of Description.
+func (mr *MockViewMockRecorder) Description() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Description", reflect.TypeOf((*MockView)(nil).Description))
+}
+
+// IsTemporary mocks base method.
+func (m *MockView) IsTemporary() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsTemporary")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// IsTemporary indicates an expected call of IsTemporary.
+func (mr *MockViewMockRecorder) IsTemporary() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsTemporary", reflect.TypeOf((*MockView)(nil).IsTemporary))
+}
+
 // MetadataName mocks base method.
 func (m *MockView) MetadataName() string {
 	m.ctrl.T.Helper()
@@ -545,6 +573,34 @@ func (mr *MockInvokedRoutineMockRecorder) Accept(v any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Accept", reflect.TypeOf((*MockInvokedRoutine)(nil).Accept), v)
 }
 
+// Description mocks base method.
+func (m *MockInvokedRoutine) Description() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Description")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// Description indicates an expected call of Description.
+func (mr *MockInvokedRoutineMockRecorder) Description() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Description", reflect.TypeOf((*MockInvokedRoutine)(nil).Description))
+}
+
+// IsTemporary mocks base method.
+func (m *MockInvokedRoutine) IsTemporary() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsTemporary")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// IsTemporary indicates an expected call of IsTemporary.
+func (mr *MockInvokedRoutineMockRecorder) IsTemporary() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsTemporary", reflect.TypeOf((*MockInvokedRoutine)(nil).IsTemporary))
+}
+
 // MetadataName mocks base method.
 func (m *MockInvokedRoutine) MetadataName() string {
 	m.ctrl.T.Helper()
@@ -557,6 +613,20 @@ func (m *MockInvokedRoutine) MetadataName() string {
 func (mr *MockInvokedRoutineMockRecorder) MetadataName() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MetadataName", reflect.TypeOf((*MockInvokedRoutine)(nil).MetadataName))
+}
+
+// NormalizedDescription mocks base method.
+func (m *MockInvokedRoutine) NormalizedDescription() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "NormalizedDescription")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// NormalizedDescription indicates an expected call of NormalizedDescription.
+func (mr *MockInvokedRoutineMockRecorder) NormalizedDescription() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NormalizedDescription", reflect.TypeOf((*MockInvokedRoutine)(nil).NormalizedDescription))
 }
 
 // MockSchemaTemplate is a mock of SchemaTemplate interface.
@@ -738,6 +808,21 @@ func (m *MockSchemaTemplate) StoreRowVersions() bool {
 func (mr *MockSchemaTemplateMockRecorder) StoreRowVersions() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StoreRowVersions", reflect.TypeOf((*MockSchemaTemplate)(nil).StoreRowVersions))
+}
+
+// StoredQueries mocks base method.
+func (m *MockSchemaTemplate) StoredQueries() (map[string]StoredQuery, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "StoredQueries")
+	ret0, _ := ret[0].(map[string]StoredQuery)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// StoredQueries indicates an expected call of StoredQueries.
+func (mr *MockSchemaTemplateMockRecorder) StoredQueries() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StoredQueries", reflect.TypeOf((*MockSchemaTemplate)(nil).StoredQueries))
 }
 
 // TableIndexMapping mocks base method.

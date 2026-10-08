@@ -166,15 +166,7 @@ func TestEstimateCost_SortIsExpensive(t *testing.T) {
 
 func TestEstimateCost_DistinctOverSortBeatsSortOverDistinct(t *testing.T) {
 	t.Parallel()
-	// Distinct(Sort(scan)) vs Sort(Distinct(scan)). DistinctOverSortElim
-	// rewrites the former to Distinct(scan) (no sort) — that's
-	// cheaper. Without the rewrite, Distinct over Sort costs more
-	// than Sort over Distinct because Sort processes the unfiltered
-	// row set in the former.
-	//
-	// Actually under the current heuristic both shapes touch every
-	// row at least once with similar selectivity; the test pins that
-	// the SHAPE Distinct-no-sort (single Distinct) beats both shapes.
+	// A Distinct with no sort under it costs less than one over a sort.
 	scanRef := scan(t, "T")
 
 	// d := Distinct(scan)  — no sort
@@ -190,7 +182,7 @@ func TestEstimateCost_DistinctOverSortBeatsSortOverDistinct(t *testing.T) {
 	cds := EstimateCost(ds)
 
 	if !cd.Less(cds) {
-		t.Fatalf("Distinct(scan)=%+v should beat Distinct(Sort(scan))=%+v — DistinctOverSortElim's calibration target", cd, cds)
+		t.Fatalf("Distinct(scan)=%+v should beat Distinct(Sort(scan))=%+v", cd, cds)
 	}
 }
 

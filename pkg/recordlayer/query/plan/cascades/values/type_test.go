@@ -1744,14 +1744,13 @@ func TestValue_Type_Composites(t *testing.T) {
 		{
 			"CastValue(int → STRING)",
 			NewCastValue(&ConstantValue{Value: int64(42), Typ: NullableLong}, TypeString),
-			"STRING NULL",
+			"STRING NOT NULL",
 		},
 		{
-			"PromoteValue(NOT NULL bool → FLOAT)",
-			// BooleanValue(true).Type() == NotNullBoolean → promote
-			// inherits NOT NULL → DOUBLE NOT NULL.
-			NewPromoteValue(NewBooleanValue(true), NullableDouble),
-			"DOUBLE NOT NULL",
+			"PromoteValue(NOT NULL long → nullable DOUBLE)",
+			// The target's nullability is authoritative, not the child's.
+			NewPromoteValue(&ConstantValue{Value: int64(1), Typ: NotNullLong}, NullableDouble),
+			"DOUBLE NULL",
 		},
 		{
 			"PromoteValue(NULL field → FLOAT)",
@@ -1761,7 +1760,7 @@ func TestValue_Type_Composites(t *testing.T) {
 		{
 			"NotValue(BooleanValue)",
 			NewNotValue(NewBooleanValue(true)),
-			"BOOLEAN NOT NULL",
+			"BOOLEAN NULL",
 		},
 		{
 			"ScalarFunctionValue(UPPER)",

@@ -1,0 +1,100 @@
+# nan_index_equality.yaml — a NaN equality over an index (RFC-257 WS-E,
+# ws-e-design.md 5.3). Every NaN is one logical value, but each sign and
+# payload is its own tuple key, in two blocks at the ends of a float
+# coordinate. A NaN probe of a value index or a primary key reads both
+# blocks, so it answers every stored NaN, as the per-row `=` does (Java's
+# index answers the NaNs of its probe's bits; declared in DIVERGENCES.md).
+# The rows hold three NaN bit patterns: Java's canonical one (the CAST),
+# the negative quiet NaN of 0.0/0.0, and a bound payload.
+name: nan_index_equality
+schema_template: |
+  CREATE TABLE f (id BIGINT, d DOUBLE, g BIGINT, PRIMARY KEY (id))
+  CREATE INDEX f_d ON f (d)
+  CREATE INDEX f_dg ON f (d, g)
+  CREATE TABLE p (d DOUBLE, id BIGINT, PRIMARY KEY (d, id))
+setup:
+  - INSERT INTO f VALUES (1, CAST('NaN' AS DOUBLE), 3), (2, 0.0 / 0.0, 1), (3, 1.5, 1), (4, CAST('Infinity' AS DOUBLE), 1), (5, CAST('-Infinity' AS DOUBLE), 1)
+  - INSERT INTO p VALUES (CAST('NaN' AS DOUBLE), 1), (0.0 / 0.0, 2), (CAST('Infinity' AS DOUBLE), 3), (1.5, 4)
+tests:
+  - query: INSERT INTO f VALUES (6, ?, 2)
+    args: [{kind: float64, value: "7ff800000000abcd"}]
+  - query: INSERT INTO p VALUES (?, 5)
+    args: [{kind: float64, value: "7ff800000000abcd"}]
+  # The value index answers every NaN, whichever NaN probes it.
+  - query: SELECT id FROM f WHERE d = CAST('NaN' AS DOUBLE)
+    plan_contains: "IndexScan(F_D"
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+      - [6]
+  - query: SELECT id FROM f WHERE d = ?
+    args: [{kind: float64, value: "fff8000000000000"}]
+    plan_contains: "IndexScan(F_D"
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+      - [6]
+  # ... and no infinity (the blocks' boundaries are exclusive of ±Inf).
+  - query: SELECT id FROM f WHERE d = CAST('Infinity' AS DOUBLE)
+    rows:
+      - [4]
+  # A repeated NaN item answers each row once.
+  - query: SELECT id FROM f WHERE d IN (CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE))
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+      - [6]
+  # The two blocks are each ordered by g, but not together: the order is
+  # sorted, not claimed from the index.
+  - query: SELECT id, g FROM f WHERE d = CAST('NaN' AS DOUBLE) ORDER BY g
+    rows:
+      - [2, 1]
+      - [6, 2]
+      - [1, 3]
+  - query: SELECT id, g FROM f WHERE d = CAST('NaN' AS DOUBLE) ORDER BY g DESC
+    rows:
+      - [1, 3]
+      - [6, 2]
+      - [2, 1]
+  # The primary-key coordinate: every NaN, and +Inf's record excluded.
+  - query: SELECT id FROM p WHERE d = CAST('NaN' AS DOUBLE)
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+      - [5]
+  - query: SELECT id FROM p WHERE d = ?
+    args: [{kind: float64, value: "7ff8000000000000"}]
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+      - [5]
+  # A NaN arriving at run time (an IN item) followed by a bound component:
+  # the scan reads both NaN blocks and filters each entry's later component
+  # (it failed: "exact indexed NaN equivalence is unsupported").
+  - query: SELECT id FROM f WHERE d IN (CAST('NaN' AS DOUBLE)) AND g IN (1, 2)
+    unordered: true
+    rows:
+      - [2]
+      - [6]
+  - query: SELECT id FROM f WHERE d IN (CAST('NaN' AS DOUBLE), 1.5) AND g = 1
+    unordered: true
+    rows:
+      - [2]
+      - [3]
+  - query: SELECT id FROM f WHERE d IN (CAST('NaN' AS DOUBLE)) AND g > 1
+    unordered: true
+    rows:
+      - [1]
+      - [6]
+  # The per-row comparison agrees with the index.
+  - query: SELECT id FROM f WHERE d + 0.0 = CAST('NaN' AS DOUBLE)
+    unordered: true
+    rows:
+      - [1]
+      - [2]
+      - [6]
