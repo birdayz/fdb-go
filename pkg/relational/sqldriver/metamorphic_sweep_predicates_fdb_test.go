@@ -315,9 +315,11 @@ func TestFDB_MetamorphicIndexDifferential(t *testing.T) {
 		}
 
 		// TLP: P / NOT P / P IS NULL must partition the table.
-		var union []int64
+		// The P leg is q itself, already read on idx above as gi; only the
+		// NOT P and P IS NULL legs need a query.
+		union := append([]int64(nil), gi...)
 		ok := true
-		for _, variant := range []string{p, "NOT (" + p + ")", "(" + p + ") IS NULL"} {
+		for _, variant := range []string{"NOT (" + p + ")", "(" + p + ") IS NULL"} {
 			ids, err := mhScanIDs(ctx, idx.db, "SELECT id FROM t WHERE "+variant+" ORDER BY id")
 			if err != nil {
 				ok = false
