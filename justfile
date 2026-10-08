@@ -105,10 +105,13 @@ build:
     bazelisk build //...
 
 # Concurrent test targets for the local lanes: a third of the cores, at least
-# the 4 .bazelrc sets for CI's 4-vCPU runners (which call bazelisk directly).
+# the 4 .bazelrc sets for CI's 4-vCPU runners (which call bazelisk directly),
+# at most 8.
 # Measured on 24 cores, the whole sqltest suite uncached: 261 s at 4, 145 s at
 # 8, 154 s at 12 (CPU-bound beyond that).
-test_jobs := `n=$(( $(nproc) / 3 )); [ "$n" -lt 4 ] && n=4; echo $n`
+# Capped at 8: each concurrent FDB-backed target starts its own container, and
+# too many at once hang Docker (see .bazelrc).
+test_jobs := `c=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4); n=$(( c / 3 )); [ "$n" -lt 4 ] && n=4; [ "$n" -gt 8 ] && n=8; echo $n`
 
 # Standard edit/commit loop: unit tests and bounded integration tests, with nogo.
 # Heavy suites are tagged test-full (or conformance_java/stress/manual).

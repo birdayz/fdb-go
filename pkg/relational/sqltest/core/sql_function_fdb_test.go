@@ -399,3 +399,40 @@ func TestFDB_NestedSQLFunctionPlansThroughItsIndex(t *testing.T) {
 		t.Errorf("%s = %v, want [2 3]", q, got)
 	}
 }
+
+// An array of structs whose field is a quoted name with a dot ("a.b", stored
+// a__2b) inserts and reads back: the array's element type names the field by
+// its user identifier while each element literal is built from the stored
+// descriptor, and the two must still agree.
+func TestFDB_StructArrayInsertWithEscapedField(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	setup := testkit.OpenDB(t, "/FRL/testdb_escarr")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_escarr")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE escarr_tpl "+
+		`CREATE TYPE AS STRUCT st("a.b" BIGINT, c BIGINT) `+
+		"CREATE TABLE t (id BIGINT, ps st ARRAY, PRIMARY KEY (id))")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_escarr/s WITH TEMPLATE escarr_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_ESCARR?cluster_file=%s&schema=S", testkit.ClusterFile()))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, [(1, 2), (3, 4)])")
+	var got []string
+	rows, err := db.QueryContext(ctx, `SELECT e."a.b", e.c FROM t, t.ps AS e ORDER BY e."a.b"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var a, c int64
+		if err := rows.Scan(&a, &c); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%d/%d", a, c))
+	}
+	rows.Close()
+	if fmt.Sprint(got) != "[1/2 3/4]" {
+		t.Errorf("elements = %v, want [1/2 3/4]", got)
+	}
+}
