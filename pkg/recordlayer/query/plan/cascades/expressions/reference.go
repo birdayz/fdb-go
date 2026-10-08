@@ -976,7 +976,8 @@ type unchangedCorrelations struct {
 }
 
 // PrepareCorrelations records whether adding members to ref provably leaves
-// ref's correlations unchanged. It reads, but never publishes, snapshots.
+// ref's correlations unchanged. It reads only snapshots already current, so it
+// never walks a stale subgraph, and it publishes nothing.
 func (p *PreparedMemberEquality) PrepareCorrelations(ref *Reference, members []RelationalExpression) {
 	p.unchanged = nil
 	ref = canonicalReferenceReadOnly(ref)
@@ -984,11 +985,11 @@ func (p *PreparedMemberEquality) PrepareCorrelations(ref *Reference, members []R
 		return
 	}
 	reader := &p.equality.correlations
-	epoch := reader.currentEpoch()
-	if epoch != correlationEpoch.Load() {
+	epoch := correlationEpoch.Load()
+	if reader.epoch != 0 && reader.epoch != epoch {
 		return
 	}
-	old := reader.reference(ref)
+	old := reader.current(ref, epoch)
 	if old == nil || old.version != ref.memberVersion {
 		return
 	}
@@ -998,7 +999,23 @@ func (p *PreparedMemberEquality) PrepareCorrelations(ref *Reference, members []R
 		seen[dependency.reference] = struct{}{}
 	}
 	for _, member := range members {
-		snapshot := reader.expressionSnapshot(member)
+		snapshot, ok := reader.expressions[member]
+		if !ok {
+			stale := false
+			snapshot = &correlationMemo{content: newCorrelationContent()}
+			snapshot.correlations = expressionCorrelations(member, func(child *Reference) map[values.CorrelationIdentifier]struct{} {
+				current := reader.current(child, epoch)
+				if current == nil {
+					stale = stale || canonicalReferenceReadOnly(child) != nil
+					return nil
+				}
+				snapshot.dependencies = append(snapshot.dependencies, correlationDependency{child, current})
+				return current.correlations
+			})
+			if stale {
+				return
+			}
+		}
 		for alias := range snapshot.correlations {
 			if _, ok := old.correlations[alias]; !ok {
 				return

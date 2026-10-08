@@ -186,6 +186,22 @@ func (reader *referenceCorrelationReader) publishMembers(ref *Reference) {
 	ref.memberCorrelations.Store(&current)
 }
 
+// current is ref's snapshot when this reader or ref's cache already holds one
+// valid at epoch, else nil; it never revalidates.
+func (reader *referenceCorrelationReader) current(ref *Reference, epoch uint64) *correlationMemo {
+	ref = canonicalReferenceReadOnly(ref)
+	if ref == nil {
+		return nil
+	}
+	if snapshot, ok := reader.memo[ref]; ok && reader.epoch == epoch {
+		return snapshot
+	}
+	if cached := ref.correlatedToCache.Load(); cached != nil && cached.version == ref.memberVersion && cached.validatedAt(epoch) {
+		return cached
+	}
+	return nil
+}
+
 func (reader *referenceCorrelationReader) correlatedTo(ref *Reference) map[values.CorrelationIdentifier]struct{} {
 	if snapshot := reader.reference(ref); snapshot != nil {
 		return snapshot.correlations
