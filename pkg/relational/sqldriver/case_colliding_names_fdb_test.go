@@ -48,6 +48,10 @@ func TestFDB_CaseCollidingNames(t *testing.T) {
 		{`select * from "TaBlE1"`, [][]any{{int64(1), "foo"}}},
 		{`select "col2" from "Table1" order by "col2"`, [][]any{{int64(1)}}},
 		{`select "Table1"."id", "TaBlE1"."y" from "Table1", "TaBlE1"`, [][]any{{int64(1), "foo"}}},
+		{`select a."column", b."COLUMN", a."cOLumN" from t2 a, t2 b where a.id = b.id and a.id = 1`, [][]any{{"a_lo", "a_UP", "a_Mx"}}},
+		{`select a."COLUMN", b."column" from t2 a left join t2 b on a.id = b.id where a.id = 1`, [][]any{{"a_UP", "a_lo"}}},
+		{`select x."column" from (select "cOLumN", "column", "COLUMN" from t2 where id = 1) x`, [][]any{{"a_lo"}}},
+		{`select "column", count(*) from t2 group by "column" order by "column"`, [][]any{{"a_lo", int64(1)}, {"only_lo", int64(1)}}},
 	} {
 		rows, err := db.QueryContext(ctx, tc.query)
 		if err != nil {
