@@ -171,13 +171,19 @@ func (s *directAccessStatement) ExecuteInsert(ctx context.Context, tableName str
 }
 
 // ExecuteGet returns the record whose complete primary key is key, or no row
-// (executeGet, :135-157).
+// (executeGet, :135-157). With INDEX_HINT, key is the named index's complete
+// key and the row is the record of its first entry
+// (BackingRecordStore.getFromIndex, :107-131).
 func (s *directAccessStatement) ExecuteGet(ctx context.Context, tableName string, key *api.KeySet, opts *api.Options) (api.ResultSet, error) {
 	rows, err := s.run(ctx, tableName, opts, func(t directTable, o *api.Options) (any, error) {
-		if hint, ok := o.Get(api.OptIndexHint).(string); ok && hint != "" {
-			return nil, directIndexHintUnsupported(hint)
+		index, err := directSourceIndex(t, o)
+		if err != nil {
+			return nil, err
 		}
-		pk, err := buildDirectKey(t.rt, keySetMap(key), true)
+		if index != nil {
+			return getDirectFromIndex(ctx, t, index, keySetMap(key))
+		}
+		pk, err := buildDirectKey(t.rt, t.rt.PrimaryKey, "primary key of <"+t.name+">", keySetMap(key), true)
 		if err != nil {
 			return nil, err
 		}
@@ -194,10 +200,13 @@ func (s *directAccessStatement) ExecuteGet(ctx context.Context, tableName string
 }
 
 // directRows is a read's records, the descriptor they are read with, and the
-// continuation past the last of them.
+// continuation past the last of them; or, for an index scan, its entries as
+// tuples described by st.
 type directRows struct {
 	desc    protoreflect.MessageDescriptor
 	records []proto.Message
+	st      *api.StructType
+	tuples  []tuple.Tuple
 	after   *directContinuation
 }
 
@@ -211,14 +220,18 @@ type directRows struct {
 // transaction instead; the rows and continuations are the same.
 func (s *directAccessStatement) ExecuteScan(ctx context.Context, tableName string, keyPrefix *api.KeySet, opts *api.Options) (api.ResultSet, error) {
 	rows, err := s.run(ctx, tableName, opts, func(t directTable, o *api.Options) (any, error) {
-		if hint, ok := o.Get(api.OptIndexHint).(string); ok && hint != "" {
-			return nil, directIndexHintUnsupported(hint)
-		}
-		prefix, err := buildDirectKey(t.rt, keySetMap(keyPrefix), false)
+		index, err := directSourceIndex(t, o)
 		if err != nil {
 			return nil, err
 		}
 		cont, _ := o.Get(api.OptContinuation).(api.Continuation)
+		if index != nil {
+			return scanDirectIndexPage(ctx, t, index, keySetMap(keyPrefix), cont, directRowLimit(o))
+		}
+		prefix, err := buildDirectKey(t.rt, t.rt.PrimaryKey, "primary key of <"+t.name+">", keySetMap(keyPrefix), false)
+		if err != nil {
+			return nil, err
+		}
 		records, after, err := scanDirectPage(ctx, t, prefix, cont, directRowLimit(o))
 		return directRows{desc: t.rt.Descriptor, records: records, after: after}, err
 	})
@@ -246,7 +259,7 @@ func directRowLimit(o *api.Options) int {
 // returns how many it deleted (executeDelete, :189-217).
 func (s *directAccessStatement) ExecuteDelete(ctx context.Context, tableName string, key *api.KeySet, opts *api.Options) (int64, error) {
 	n, err := s.run(ctx, tableName, opts, func(t directTable, _ *api.Options) (any, error) {
-		pk, err := buildDirectKey(t.rt, keySetMap(key), true)
+		pk, err := buildDirectKey(t.rt, t.rt.PrimaryKey, "primary key of <"+t.name+">", keySetMap(key), true)
 		if err != nil {
 			return nil, err
 		}
@@ -270,7 +283,7 @@ func (s *directAccessStatement) ExecuteDelete(ctx context.Context, tableName str
 func (s *directAccessStatement) ExecuteDeleteRange(ctx context.Context, tableName string, keyPrefix *api.KeySet, opts *api.Options) (int64, error) {
 	n, err := s.run(ctx, tableName, opts, func(t directTable, _ *api.Options) (any, error) {
 		columns := keySetMap(keyPrefix)
-		prefix, err := buildDirectKey(t.rt, columns, false)
+		prefix, err := buildDirectKey(t.rt, t.rt.PrimaryKey, "primary key of <"+t.name+">", columns, false)
 		if err != nil {
 			return nil, err
 		}
@@ -318,8 +331,159 @@ func (s *directAccessStatement) ExecuteDeleteRange(ctx context.Context, tableNam
 	return n.(int64), nil
 }
 
-func directIndexHintUnsupported(hint string) error {
-	return api.NewErrorf(api.ErrCodeUnsupportedOperation, "direct access through index %q is not supported", hint)
+// directSourceIndex is getSourceScannable (:299-316): with no INDEX_HINT the
+// table is the source; otherwise the hint names one of the table's own
+// indexes (RecordTypeTable.getAvailableIndexes: the record type's
+// single-type indexes), and a name that is none of them is UNDEFINED_INDEX.
+func directSourceIndex(t directTable, o *api.Options) (*recordlayer.Index, error) {
+	hint, ok := o.Get(api.OptIndexHint).(string)
+	if !ok {
+		return nil, nil
+	}
+	for _, index := range t.rt.GetIndexes() {
+		if index.Name == hint {
+			return index, nil
+		}
+	}
+	return nil, api.NewErrorf(api.ErrCodeUndefinedIndex, "Unknown index: <%s> on type <%s>", hint, t.name)
+}
+
+// directIndexKeyName is the index's name in KeyBuilder's messages
+// (RecordStoreIndex.getKeyBuilder).
+func directIndexKeyName(index *recordlayer.Index) string {
+	return "index: <" + index.Name + ">"
+}
+
+// getDirectFromIndex is RecordStoreIndex.get over
+// BackingRecordStore.getFromIndex (:107-131): the complete index key, the
+// first entry under it, and that entry's record, an orphan entry an error
+// (IndexOrphanBehavior.ERROR). The row is the table's.
+func getDirectFromIndex(ctx context.Context, t directTable, index *recordlayer.Index, columns map[string]any) (directRows, error) {
+	key, err := buildDirectKey(t.rt, index.RootExpression, directIndexKeyName(index), columns, true)
+	if err != nil {
+		return directRows{}, err
+	}
+	props := recordlayer.NewScanProperties(recordlayer.DefaultExecuteProperties().WithReturnedRowLimit(1))
+	cursor := t.store.ScanIndexRecords(index.Name, recordlayer.TupleRangeAllOf(key), nil, props)
+	defer cursor.Close()
+	res, err := cursor.OnNext(ctx)
+	if err != nil {
+		return directRows{}, err
+	}
+	if !res.HasNext() || res.GetValue().Record == nil {
+		return directRows{desc: t.rt.Descriptor, after: directBeginContinuation()}, nil
+	}
+	return directRows{
+		desc: t.rt.Descriptor, records: []proto.Message{res.GetValue().Record.Record},
+		after: directEndContinuation(),
+	}, nil
+}
+
+// scanDirectIndexPage is RecordStoreIndex.openScan over
+// BackingRecordStore.scanIndex (:203-213): one BY_VALUE page of the index
+// entries whose key begins with the prefix, resumed from cont and limited to
+// limit entries. Each row is the entry's key then its value
+// (ImmutableKeyValue), described by the index's fields
+// (RecordStoreIndex.getMetaData).
+func scanDirectIndexPage(ctx context.Context, t directTable, index *recordlayer.Index, columns map[string]any, cont api.Continuation, limit int) (directRows, error) {
+	prefix, err := buildDirectKey(t.rt, index.RootExpression, directIndexKeyName(index), columns, false)
+	if err != nil {
+		return directRows{}, err
+	}
+	st, err := directIndexStructType(t, index)
+	if err != nil {
+		return directRows{}, err
+	}
+	rows := directRows{st: st}
+	var state []byte
+	if cont != nil {
+		state = cont.ExecutionState()
+		if state != nil && len(state) == 0 {
+			rows.after = directEndContinuation()
+			return rows, nil
+		}
+	}
+	var whole tuple.Tuple
+	if len(prefix) > 0 {
+		whole = prefix
+	}
+	props := recordlayer.NewScanProperties(recordlayer.DefaultExecuteProperties().WithReturnedRowLimit(limit))
+	cursor := t.store.ScanIndex(index, recordlayer.TupleRangeAllOf(whole), state, props)
+	defer cursor.Close()
+	for {
+		res, err := cursor.OnNext(ctx)
+		if err != nil {
+			return directRows{}, err
+		}
+		if !res.HasNext() {
+			rows.after, err = directContinuationAfter(res.GetNoNextReason(), res.GetContinuation())
+			return rows, err
+		}
+		entry := res.GetValue()
+		row := make(tuple.Tuple, 0, len(entry.Key)+len(entry.Value))
+		row = append(append(row, entry.Key...), entry.Value...)
+		rows.tuples = append(rows.tuples, row)
+	}
+}
+
+// directIndexStructType is RecordStoreIndex.getMetaData: the fields the
+// index's root expression reads from the record, in order, as a struct
+// (KeyExpression.validate, ProtobufDdlUtil.recordFromFieldDescriptors).
+func directIndexStructType(t directTable, index *recordlayer.Index) (*api.StructType, error) {
+	record, err := metadata.StructTypeFromDescriptor(t.rt.Descriptor, false)
+	if err != nil {
+		return nil, err
+	}
+	names, err := directIndexFieldNames(index.RootExpression)
+	if err != nil {
+		return nil, err
+	}
+	fields := make([]api.StructField, 0, len(names))
+	for _, name := range names {
+		fd := t.rt.Descriptor.Fields().ByName(protoreflect.Name(name))
+		if fd == nil {
+			return nil, api.NewErrorf(api.ErrCodeInternalError, "index <%s> reads no field %s of <%s>", index.Name, name, t.name)
+		}
+		f := record.Field(fd.Index())
+		fields = append(fields, api.NewStructField(f.Name(), f.Type(), len(fields)))
+	}
+	return api.NewStructType(index.Name, fields, false), nil
+}
+
+// directIndexFieldNames are the top-level fields an index's root expression
+// reads, in order: KeyExpression.validate's descriptors for the field,
+// concatenation, key-with-value and grouping expressions a direct access
+// keys by; the record-type key reads none.
+func directIndexFieldNames(key recordlayer.KeyExpression) ([]string, error) {
+	switch k := key.(type) {
+	case *recordlayer.RecordTypeKeyExpression:
+		return nil, nil
+	case *recordlayer.FieldKeyExpression:
+		return []string{k.FieldName()}, nil
+	case *recordlayer.CompositeKeyExpression:
+		var out []string
+		for _, child := range k.SubKeyExpressions() {
+			sub, err := directIndexFieldNames(child)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, sub...)
+		}
+		return out, nil
+	case *recordlayer.KeyWithValueExpression:
+		return directIndexFieldNames(k.InnerKey())
+	case *recordlayer.GroupingKeyExpression:
+		var out []string
+		for _, child := range recordlayer.NormalizeKeyForPositions(k) {
+			sub, err := directIndexFieldNames(child)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, sub...)
+		}
+		return out, nil
+	}
+	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "direct access over key %T", key)
 }
 
 func keySetMap(k *api.KeySet) map[string]any {
@@ -436,13 +600,14 @@ func directRecordKey(t directTable, msg proto.Message) (tuple.Tuple, error) {
 }
 
 // buildDirectKey is Java's KeyBuilder.buildKey(Map, failOnIncompleteKey)
-// (KeyBuilder.java:61-98): the primary key's components in order, the record
+// (KeyBuilder.java:61-98): the key's (a primary key's or an index's; scannable
+// names it in messages) components in order, the record
 // type's key for a record-type component and the named column's value
 // otherwise. With failOnIncompleteKey every component must be given; without
 // it the given components must be a prefix. A name the key does not use is
 // refused.
-func buildDirectKey(rt *recordlayer.RecordType, columns map[string]any, failOnIncompleteKey bool) (tuple.Tuple, error) {
-	components, err := directKeyComponents(rt.PrimaryKey)
+func buildDirectKey(rt *recordlayer.RecordType, keyExpr recordlayer.KeyExpression, scannable string, columns map[string]any, failOnIncompleteKey bool) (tuple.Tuple, error) {
+	components, err := directKeyComponents(keyExpr)
 	if err != nil {
 		return nil, err
 	}
@@ -473,8 +638,8 @@ func buildDirectKey(rt *recordlayer.RecordType, columns map[string]any, failOnIn
 		for name := range notPicked {
 			names = append(names, name)
 		}
-		return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "Unknown keys for primary key of <%s>, unknown keys: <%s>",
-			rt.Name, strings.Join(names, ","))
+		return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "Unknown keys for %s, unknown keys: <%s>",
+			scannable, strings.Join(names, ","))
 	}
 	for len(fields) > 0 && fields[len(fields)-1] == nil {
 		fields = fields[:len(fields)-1]
@@ -491,10 +656,11 @@ func buildDirectKey(rt *recordlayer.RecordType, columns map[string]any, failOnIn
 	return key, nil
 }
 
-// directKeyComponents flattens a primary key into its components, the empty
-// string standing for the record-type key (KeyBuilder.flattenKeys). A
-// relational table's key is a record-type key and fields; a nested, grouped or
-// key-with-value key is refused.
+// directKeyComponents flattens a key into its components, the empty string
+// standing for the record-type key (KeyBuilder.flattenKeys): a key-with-value
+// key contributes the components before its split point, a grouping key all
+// of its components. A nested key is refused: Java's flattenKeys re-pushes a
+// NestingKeyExpression's normalization, itself, and never terminates.
 func directKeyComponents(key recordlayer.KeyExpression) ([]string, error) {
 	switch k := key.(type) {
 	case *recordlayer.RecordTypeKeyExpression:
@@ -511,8 +677,24 @@ func directKeyComponents(key recordlayer.KeyExpression) ([]string, error) {
 			out = append(out, sub...)
 		}
 		return out, nil
+	case *recordlayer.KeyWithValueExpression:
+		return directNormalizedComponents(recordlayer.NormalizeKeyForPositions(k.InnerKey())[:k.SplitPoint()])
+	case *recordlayer.GroupingKeyExpression:
+		return directNormalizedComponents(recordlayer.NormalizeKeyForPositions(k))
 	}
-	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "direct access over primary key %T", key)
+	return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "direct access over key %T", key)
+}
+
+func directNormalizedComponents(keys []recordlayer.KeyExpression) ([]string, error) {
+	var out []string
+	for _, child := range keys {
+		sub, err := directKeyComponents(child)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sub...)
+	}
+	return out, nil
 }
 
 // directKeyValue is a key column's value as a tuple element.
@@ -665,7 +847,7 @@ func directElementValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Va
 // positionally over its descriptor (RecordTypeTable's MessageTuple rows).
 type directResultSet struct {
 	md      *directResultSetMetaData
-	rows    []*rowstruct.MessageStruct
+	rows    []directRow
 	after   *directContinuation
 	pos     int
 	wasNull bool
@@ -673,9 +855,12 @@ type directResultSet struct {
 }
 
 func newDirectResultSet(rows directRows) (api.ResultSet, error) {
-	st, err := metadata.StructTypeFromDescriptor(rows.desc, false)
-	if err != nil {
-		return nil, err
+	st := rows.st
+	if st == nil {
+		var err error
+		if st, err = metadata.StructTypeFromDescriptor(rows.desc, false); err != nil {
+			return nil, err
+		}
 	}
 	rs := &directResultSet{md: &directResultSetMetaData{st: st}, after: rows.after}
 	for _, rec := range rows.records {
@@ -685,7 +870,34 @@ func newDirectResultSet(rows directRows) (api.ResultSet, error) {
 		}
 		rs.rows = append(rs.rows, row)
 	}
+	for _, tup := range rows.tuples {
+		rs.rows = append(rs.rows, directTupleRow(tup))
+	}
 	return rs, nil
+}
+
+// directRow is one row of a direct access: a record, or an index entry.
+type directRow interface {
+	Attribute(oneBasedIndex int) (any, error)
+}
+
+// directTupleRow is an index entry's row, its key then its value, read
+// positionally (FDBTuple over ImmutableKeyValue). A UUID reads as a record's
+// UUID column does, as its string.
+type directTupleRow tuple.Tuple
+
+func (r directTupleRow) Attribute(oneBasedIndex int) (any, error) {
+	if oneBasedIndex < 1 || oneBasedIndex > len(r) {
+		return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference, "column index %d out of range", oneBasedIndex)
+	}
+	switch v := r[oneBasedIndex-1].(type) {
+	case tuple.UUID:
+		return uuid.UUID(v).String(), nil
+	case int:
+		return int64(v), nil
+	default:
+		return v, nil
+	}
 }
 
 func (r *directResultSet) Next() bool {

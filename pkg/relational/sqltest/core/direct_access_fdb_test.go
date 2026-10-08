@@ -283,3 +283,118 @@ func TestFDB_DirectAccessScanPaging(t *testing.T) {
 		t.Errorf("last continuation = %v, want the end", cont)
 	}
 }
+
+// TestFDB_DirectAccessIndexHint pins Java's INDEX_HINT on the direct-access
+// reads (EmbeddedRelationalStatement.getSourceScannable): executeGet keys by
+// the named index and returns the table's row (RecordStoreIndex.get), executeScan
+// reads the index's entries, key then value, described by the index's fields
+// (RecordStoreIndex.openScan / getMetaData) and paged like a table scan, and a
+// name that is not one of the table's indexes is UNDEFINED_INDEX.
+func TestFDB_DirectAccessIndexHint(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := "/FRL/testdb_direct_index_hint"
+	setup := testkit.OpenDB(t, dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE direct_index_hint "+
+		"CREATE TABLE TI(ti_p bigint, ti_a bigint, ti_b string, primary key(ti_p)) "+
+		"CREATE INDEX ia AS SELECT ti_a FROM ti ORDER BY ti_a")
+	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE direct_index_hint")
+	db, err := sql.Open("fdbsql",
+		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	var rows []api.Struct
+	for p, a := range map[int64]int64{1: 30, 2: 10, 3: 20} {
+		rows = append(rows, rowstruct.NewStructBuilder().AddLong("TI_P", p).AddLong("TI_A", a).AddString("TI_B", fmt.Sprint("b", p)).Build())
+	}
+	if err := directAccess(t, db, func(s api.DirectAccessStatement) error {
+		_, err := s.ExecuteInsert(ctx, "TI", rows, nil)
+		return err
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	hint := func(name string) *api.OptionsBuilder { return api.NewOptionsBuilder().Set(api.OptIndexHint, name) }
+	key := func(col string, v int64) *api.KeySet {
+		ks := api.NewKeySet()
+		_, _ = ks.SetKeyColumn(col, v)
+		return ks
+	}
+
+	if err := directAccess(t, db, func(s api.DirectAccessStatement) error {
+		rs, err := s.ExecuteGet(ctx, "TI", key("TI_A", 20), hint("IA").Build())
+		if err != nil {
+			return err
+		}
+		if !rs.Next() {
+			t.Fatal("get through IA found no row")
+		}
+		if b, _ := rs.StringByName("TI_B"); b != "b3" {
+			t.Errorf("get through IA: TI_B = %q, want b3", b)
+		}
+		if rs.Next() {
+			t.Error("get through IA returned a second row")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("get through IA: %v", err)
+	}
+
+	var entries [][2]int64
+	var cont api.Continuation
+	for i := 0; i < 4; i++ {
+		b := hint("IA").Set(api.OptMaxRows, 2)
+		if cont != nil {
+			b = b.Set(api.OptContinuation, cont)
+		}
+		if err := directAccess(t, db, func(s api.DirectAccessStatement) error {
+			rs, err := s.ExecuteScan(ctx, "TI", api.NewKeySet(), b.Build())
+			if err != nil {
+				return err
+			}
+			if n := rs.MetaData().ColumnCount(); n != 1 {
+				t.Errorf("IA scan has %d columns, want 1 (TI_A)", n)
+			}
+			for rs.Next() {
+				a, _ := rs.LongByName("TI_A")
+				// The entry's key is TI_A then the primary key, whose first
+				// component is TI's record-type key.
+				p, perr := rs.Long(3)
+				if perr != nil {
+					t.Errorf("column 3: %v", perr)
+				}
+				entries = append(entries, [2]int64{a, p})
+			}
+			cont, err = rs.Continuation()
+			return err
+		}); err != nil {
+			t.Fatalf("scan through IA: %v", err)
+		}
+		if api.AtEnd(cont) {
+			break
+		}
+	}
+	if got := fmt.Sprint(entries); got != "[[10 2] [20 3] [30 1]]" {
+		t.Errorf("IA entries = %s, want [[10 2] [20 3] [30 1]]", got)
+	}
+
+	for _, read := range []func(api.DirectAccessStatement) error{
+		func(s api.DirectAccessStatement) error {
+			_, err := s.ExecuteGet(ctx, "TI", key("TI_A", 20), hint("NOPE").Build())
+			return err
+		},
+		func(s api.DirectAccessStatement) error {
+			_, err := s.ExecuteScan(ctx, "TI", api.NewKeySet(), hint("NOPE").Build())
+			return err
+		},
+	} {
+		err := directAccess(t, db, read)
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUndefinedIndex {
+			t.Errorf("unknown index: err = %v, want SQLSTATE %s", err, api.ErrCodeUndefinedIndex)
+		}
+	}
+}
