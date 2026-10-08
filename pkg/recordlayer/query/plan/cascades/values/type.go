@@ -1115,6 +1115,9 @@ type EnumValue struct {
 	// stable across schema evolution; renames are forbidden but
 	// repurposing a number is a hard breaking change).
 	Number int32
+	// StorageName is the protobuf spelling when Name does not imply it; empty
+	// means DerivedStorageName(Name) (Java's EnumValue.storageName).
+	StorageName string
 }
 
 // Equals reports structural equality — Name + Number.
@@ -1136,6 +1139,9 @@ type EnumType struct {
 	Nullable bool
 	// Values are the declared enum members in declared order.
 	Values []EnumValue
+	// StorageName is the protobuf spelling when it differs from EnumName;
+	// empty means EnumName (Java's Type.Enum.storageName).
+	StorageName string
 }
 
 // NewEnumType constructs an EnumType. The Values slice is
@@ -1760,7 +1766,7 @@ func MaximumType(t1, t2 Type) Type {
 			// EnumName resolution uses Java's withNullability(t1)
 			// shape — keep t1's name. Distinct nominal names with identical
 			// ordered declarations have the same planner type in Java.
-			return &EnumType{EnumName: e1.EnumName, Nullable: resultNullable, Values: e1.Values}
+			return &EnumType{EnumName: e1.EnumName, Nullable: resultNullable, Values: e1.Values, StorageName: e1.StorageName}
 		}
 		// RELATION × RELATION: recurse on the inner row type. Both
 		// erased on either side blocks the operation. RelationType is
@@ -1911,7 +1917,7 @@ func WithNullability(t Type, nullable bool) Type {
 	case *ArrayType:
 		return &ArrayType{Nullable: nullable, ElementType: tt.ElementType}
 	case *EnumType:
-		return &EnumType{EnumName: tt.EnumName, Nullable: nullable, Values: tt.Values}
+		return &EnumType{EnumName: tt.EnumName, Nullable: nullable, Values: tt.Values, StorageName: tt.StorageName}
 	case *RelationType:
 		// RELATION is always non-nullable per Java's contract. Asking
 		// to flip to nullable is a programming error — fail loud.

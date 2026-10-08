@@ -83,6 +83,8 @@ type exactProbe struct {
 	children   []*exactType
 	element    *exactType
 	enumValues []EnumValue
+	// enumStorageName is EnumType.StorageName, provenance like name.
+	enumStorageName string
 }
 
 func (p *exactProbe) internHash() uint64 {
@@ -125,7 +127,7 @@ func (p *exactProbe) internHash() uint64 {
 
 func (p *exactProbe) matches(existing *exactType) bool {
 	if existing.code != p.code || existing.nullable != p.nullable ||
-		existing.anyRecord != p.anyRecord || existing.name != p.name ||
+		existing.anyRecord != p.anyRecord || existing.name != p.name || existing.enumStorageName != p.enumStorageName ||
 		existing.element != p.element || existing.precision != p.precision || existing.dimensions != p.dimensions ||
 		len(existing.fields) != len(p.srcFields) ||
 		len(existing.enumValues) != len(p.enumValues) {

@@ -56,8 +56,10 @@ type exactType struct {
 	fields     []exactField
 	element    *exactType
 	enumValues []EnumValue
-	canonical  []byte
-	hash       uint64
+	// enumStorageName is EnumType.StorageName; provenance, not identity.
+	enumStorageName string
+	canonical       []byte
+	hash            uint64
 	// internHashValue buckets this node in the intern table. It is NOT the
 	// canonical hash above: the intern probe has to be computable BEFORE the
 	// node exists, so it folds the source shape plus the children's intern
@@ -213,9 +215,10 @@ func (e *exactType) thaw() Type {
 		return &ArrayType{Nullable: e.nullable, ElementType: e.element.thaw()}
 	case TypeCodeEnum:
 		return &EnumType{
-			EnumName: e.name,
-			Nullable: e.nullable,
-			Values:   append([]EnumValue(nil), e.enumValues...),
+			EnumName:    e.name,
+			Nullable:    e.nullable,
+			Values:      append([]EnumValue(nil), e.enumValues...),
+			StorageName: e.enumStorageName,
 		}
 	case TypeCodeRelation:
 		return &RelationType{InnerType: e.element.thaw()}
@@ -529,17 +532,19 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 			seenNumbers[value.Number] = struct{}{}
 		}
 		probe := exactProbe{
-			code:       TypeCodeEnum,
-			nullable:   typed.Nullable,
-			name:       typed.EnumName,
-			enumValues: typed.Values,
+			code:            TypeCodeEnum,
+			nullable:        typed.Nullable,
+			name:            typed.EnumName,
+			enumValues:      typed.Values,
+			enumStorageName: typed.StorageName,
 		}
 		return internedExactType(&probe, func() *exactType {
 			return &exactType{
-				code:       TypeCodeEnum,
-				nullable:   typed.Nullable,
-				name:       typed.EnumName,
-				enumValues: append([]EnumValue(nil), typed.Values...),
+				code:            TypeCodeEnum,
+				nullable:        typed.Nullable,
+				name:            typed.EnumName,
+				enumValues:      append([]EnumValue(nil), typed.Values...),
+				enumStorageName: typed.StorageName,
 			}
 		}), nil
 	case *RelationType:
@@ -668,7 +673,7 @@ func exactRowShapesAgree(left, right *exactType) bool {
 		}
 	}
 	for i := range left.enumValues {
-		if left.enumValues[i] != right.enumValues[i] {
+		if !left.enumValues[i].Equals(right.enumValues[i]) {
 			return false
 		}
 	}

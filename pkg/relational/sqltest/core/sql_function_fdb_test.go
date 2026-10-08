@@ -207,6 +207,45 @@ func TestFDB_BooleanMacroFunctions(t *testing.T) {
 	}
 }
 
+// A macro over a struct with an enum field persists the enum type
+// (Type.Enum.toProto) and runs from the stored metadata.
+func TestFDB_EnumStructMacroFunctions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	setup := testkit.OpenDB(t, "/FRL/testdb_enummacro")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_enummacro")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE enummacro_tpl "+
+		"CREATE TYPE AS ENUM mood ('HAPPY', 'SAD') "+
+		"CREATE TYPE AS STRUCT st(m mood, n BIGINT) "+
+		"CREATE TABLE t (id BIGINT, p st, PRIMARY KEY (id)) "+
+		"CREATE FUNCTION st_n(IN x TYPE st) RETURNS BIGINT AS x.n "+
+		"CREATE FUNCTION st_m(IN x TYPE st) AS x.m")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_enummacro/s WITH TEMPLATE enummacro_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_ENUMMACRO?cluster_file=%s&schema=S", testkit.ClusterFile()))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, ('HAPPY', 10)), (2, ('SAD', 20))")
+	rows, err := db.QueryContext(ctx, "SELECT st_n(p), st_m(p) FROM t ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for rows.Next() {
+		var n int64
+		var m string
+		if err := rows.Scan(&n, &m); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%d %s", n, m))
+	}
+	rows.Close()
+	if want := "[10 HAPPY 20 SAD]"; fmt.Sprint(got) != want {
+		t.Errorf("enum struct macros = %v, want %s", got, want)
+	}
+}
+
 // CREATE TEMPORARY FUNCTION binds a function to the transaction, which drops
 // it when it ends (CreateTemporaryFunctionConstantAction).
 func TestFDB_TemporaryFunctions(t *testing.T) {

@@ -6,8 +6,30 @@ import (
 	"strings"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/protoname"
 	"google.golang.org/protobuf/proto"
 )
+
+// DerivedStorageName is the protobuf spelling Java gives a name that states
+// none (Field.of, EnumValue.from: ProtoUtils.toProtoBufCompliantName).
+func DerivedStorageName(name string) string {
+	if name == "" {
+		return ""
+	}
+	s, err := protoname.ToProtoBufCompliantName(name)
+	if err != nil {
+		return name
+	}
+	return s
+}
+
+// explicitStorageName is storage when name does not already imply it.
+func explicitStorageName(name, storage string) string {
+	if storage == DerivedStorageName(name) {
+		return ""
+	}
+	return storage
+}
 
 // SerializationContext is Java's PlanSerializationContext for types: a record
 // type is written in full once and by reference id afterwards, record types
@@ -61,6 +83,28 @@ func (c *SerializationContext) TypeToProto(t Type) (*gen.PType, error) {
 			rt.Fields = append(rt.Fields, pf)
 		}
 		return &gen.PType{SpecificType: &gen.PType_RecordType{RecordType: rt}}, nil
+	case *EnumType:
+		// Type.Enum.toProto: the members, then the name and a differing
+		// storage name.
+		et := &gen.PType_PEnumType{IsNullable: proto.Bool(tt.Nullable)}
+		for _, v := range tt.Values {
+			pv := &gen.PType_PEnumType_PEnumValue{Name: proto.String(v.Name), Number: proto.Int32(v.Number)}
+			storage := v.StorageName
+			if storage == "" {
+				storage = DerivedStorageName(v.Name)
+			}
+			if storage != v.Name {
+				pv.StorageName = proto.String(storage)
+			}
+			et.EnumValues = append(et.EnumValues, pv)
+		}
+		if tt.EnumName != "" {
+			et.Name = proto.String(tt.EnumName)
+		}
+		if tt.StorageName != "" && tt.StorageName != tt.EnumName {
+			et.StorageName = proto.String(tt.StorageName)
+		}
+		return &gen.PType{SpecificType: &gen.PType_EnumType{EnumType: et}}, nil
 	case *ArrayType:
 		elem, err := c.TypeToProto(tt.ElementType)
 		if err != nil {
@@ -116,6 +160,13 @@ func recordIdentityKey(t Type) string {
 				walk(f.FieldType)
 			}
 			b.WriteByte(')')
+		case *EnumType:
+			// Type.Enum.equals: nullability and the members.
+			fmt.Fprintf(&b, "E(%t", tt.Nullable)
+			for _, v := range tt.Values {
+				fmt.Fprintf(&b, ",%q=%d", v.Name, v.Number)
+			}
+			b.WriteByte(')')
 		case *ArrayType:
 			fmt.Fprintf(&b, "A(%t,", tt.Nullable)
 			walk(tt.ElementType)
@@ -165,6 +216,25 @@ func (c *SerializationContext) TypeFromProto(p *gen.PType) (Type, error) {
 			return nil, err
 		}
 		return NewArrayType(p.GetArrayType().GetIsNullable(), elem), nil
+	case p.GetEnumType() != nil:
+		et := p.GetEnumType()
+		if et.IsNullable == nil || len(et.GetEnumValues()) == 0 {
+			return nil, fmt.Errorf("deserialize enum type: missing isNullable or members")
+		}
+		t := &EnumType{EnumName: et.GetName(), Nullable: et.GetIsNullable()}
+		if et.StorageName != nil && et.GetStorageName() != et.GetName() {
+			t.StorageName = et.GetStorageName()
+		}
+		for _, pv := range et.GetEnumValues() {
+			v := EnumValue{Name: pv.GetName(), Number: pv.GetNumber()}
+			if pv.StorageName != nil {
+				v.StorageName = explicitStorageName(v.Name, pv.GetStorageName())
+			} else if DerivedStorageName(v.Name) != v.Name {
+				v.StorageName = v.Name
+			}
+			t.Values = append(t.Values, v)
+		}
+		return t, nil
 	case p.GetNullType() != nil:
 		return NullType, nil
 	case p.GetUuidType() != nil:

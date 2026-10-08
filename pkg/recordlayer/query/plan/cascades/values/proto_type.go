@@ -154,7 +154,7 @@ func withNullability(t Type, nullable bool) Type {
 	case *ArrayType:
 		return &ArrayType{Nullable: nullable, ElementType: v.ElementType}
 	case *EnumType:
-		return &EnumType{EnumName: v.EnumName, Nullable: nullable, Values: v.Values}
+		return &EnumType{EnumName: v.EnumName, Nullable: nullable, Values: v.Values, StorageName: v.StorageName}
 	default:
 		// RelationType and any future impl: nullability is not expressible,
 		// so the type is already canonical.

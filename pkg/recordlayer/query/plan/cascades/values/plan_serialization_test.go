@@ -227,3 +227,106 @@ func TestBooleanAndLikeMacroBodiesSerialize(t *testing.T) {
 		}
 	}
 }
+
+// A macro over an enum, as Java writes it (Type.Enum.toProto): the members
+// with their storage names, the name and a differing storage name all read
+// back and rewrite unchanged; a struct with an enum field serializes too.
+func TestEnumMacroTypesRoundTrip(t *testing.T) {
+	t.Parallel()
+	var java gen.PUserDefinedFunction
+	if err := prototext.Unmarshal([]byte(`user_defined_macro_function: {
+		function_name: "M"
+		arguments: { quantified_object_value: { alias: "e" result_type: { enum_type: {
+			is_nullable: true
+			enum_values: { name: "HAPPY" number: 0 }
+			enum_values: { name: "a.b" number: 1 storage_name: "a__1b" }
+			name: "MOOD" storage_name: "MOOD__"
+		} } } }
+		argumentNames: "E"
+		defaultArgumentValues: { isProvided: false }
+		body: { quantified_object_value: { alias: "e" result_type: { enum_type: {
+			is_nullable: true
+			enum_values: { name: "HAPPY" number: 0 }
+			enum_values: { name: "a.b" number: 1 storage_name: "a__1b" }
+			name: "MOOD" storage_name: "MOOD__"
+		} } } }
+	}`), &java); err != nil {
+		t.Fatal(err)
+	}
+	m, err := MacroFunctionFromProto(java.GetUserDefinedMacroFunction())
+	if err != nil {
+		t.Fatal(err)
+	}
+	enum, ok := m.ParamTypes[0].(*EnumType)
+	if !ok || enum.StorageName != "MOOD__" || enum.Values[1].StorageName != "a__1b" {
+		t.Fatalf("parameter type = %#v", m.ParamTypes[0])
+	}
+	again, err := m.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(&java, again) {
+		t.Errorf("Java enum macro changed on rewrite:\n%s\n%s", prototext.Format(&java), prototext.Format(again))
+	}
+
+	// A member that states no storage name has the derived one (EnumValue.from).
+	derived, err := NewSerializationContext().TypeToProto(NewEnumType("E", true, []EnumValue{{Name: "CASH$", Number: 40}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := derived.GetEnumType().GetEnumValues()[0].GetStorageName(); got != "CASH__1" {
+		t.Errorf("CASH$ storage name = %q, want CASH__1", got)
+	}
+
+	st := NewRecordType("ST", true, []Field{{Name: "M", FieldType: enum}, {Name: "N", FieldType: NullableLong, Ordinal: 1}})
+	param, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("x"), st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := ResolveFieldOrdinals(param, []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goMacro := &MacroFunction{
+		Name: "GM", Params: []QuantifiedObjectValue{param}, ParamTypes: []Type{st},
+		ParamNames: []string{"X"}, Defaults: []Value{nil}, Body: body,
+	}
+	p, err := goMacro.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := MacroFunctionFromProto(p.GetUserDefinedMacroFunction())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !back.Body.Type().Equals(enum) {
+		t.Errorf("body type = %v, want %v", back.Body.Type(), enum)
+	}
+	if again, err := back.ToProto(); err != nil || !proto.Equal(p, again) {
+		t.Errorf("round trip changed the macro (%v):\n%s\n%s", err, prototext.Format(p), prototext.Format(again))
+	}
+}
+
+// Record types differing only in an enum field's members are different types
+// (Type.Enum.equals), so the second is written in full, not by reference.
+func TestEnumFieldsDistinguishRecordReferences(t *testing.T) {
+	t.Parallel()
+	c := NewSerializationContext()
+	rec := func(members ...string) *RecordType {
+		vals := make([]EnumValue, len(members))
+		for i, m := range members {
+			vals[i] = EnumValue{Name: m, Number: int32(i)}
+		}
+		return NewRecordType("ST", true, []Field{{Name: "M", FieldType: NewEnumType("MOOD", true, vals)}})
+	}
+	if _, err := c.TypeToProto(rec("HAPPY")); err != nil {
+		t.Fatal(err)
+	}
+	p, err := c.TypeToProto(rec("HAPPY", "SAD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.GetRecordType().GetFields()) != 1 {
+		t.Fatalf("a different enum was written as a reference: %v", p)
+	}
+}
