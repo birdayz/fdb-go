@@ -50,6 +50,8 @@ coverage --instrumentation_filter="^//pkg/fdbgo/client[/:],^//pkg/fdbgo/fdb[/:],
 # 9 test targets all create FDB testcontainers (socat + FDB + network each).
 # Docker socket can't handle 9× parallel container creation → timeouts/hangs.
 # 4 concurrent test targets works well on machines with 12+ cores.
+# Any non-zero value also makes Bazel IGNORE tags = ["resources:memory:N"] on
+# tests (measured, Bazel 9.0.1), which is why heavy suites need "exclusive".
 test --local_test_jobs=4
 # `bazelrunfiles`: runfiles-only suites (conformance, bindingtester) — excluded from
 #   a plain `go test ./...` so it doesn't panic looking for Bazel runfiles.

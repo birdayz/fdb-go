@@ -72,15 +72,9 @@ func TestFDB_MultiwayJoinOrder_Nway(t *testing.T) {
 
 	// chain: t1=1 row; each t2 -> t1; each t3 -> t2; each t4 -> t3.
 	mwjoMustExec(t, db, ctx, "INSERT INTO t1 VALUES (1)")
-	for i := 1; i <= 20; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t2 VALUES (%d, 1, 'x%d')", i, i))
-	}
-	for i := 1; i <= 200; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t3 VALUES (%d, %d)", i, (i%20)+1))
-	}
-	for i := 1; i <= 2000; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO t4 VALUES (%d, %d)", i, (i%200)+1))
-	}
+	mwjoInsertRange(t, db, ctx, "t2", 1, 20, func(i int) string { return fmt.Sprintf("(%d, 1, 'x%d')", i, i) })
+	mwjoInsertRange(t, db, ctx, "t3", 1, 200, func(i int) string { return fmt.Sprintf("(%d, %d)", i, (i%20)+1) })
+	mwjoInsertRange(t, db, ctx, "t4", 1, 2000, func(i int) string { return fmt.Sprintf("(%d, %d)", i, (i%200)+1) })
 	// star
 	mwjoMustExec(t, db, ctx, "INSERT INTO w VALUES (5)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO xx VALUES (6)")

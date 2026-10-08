@@ -43,12 +43,8 @@ func TestFDB_JoinSelPred_Repro(t *testing.T) {
 	defer db.Close()
 
 	const nCust, nOrd = 100, 2000
-	for i := 1; i <= nCust; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO customers VALUES (%d, 'cust%d')", i, i))
-	}
-	for i := 1; i <= nOrd; i++ {
-		mwjoMustExec(t, db, ctx, fmt.Sprintf("INSERT INTO orders VALUES (%d, %d)", i, (i%nCust)+1))
-	}
+	mwjoInsertRange(t, db, ctx, "customers", 1, nCust, func(i int) string { return fmt.Sprintf("(%d, 'cust%d')", i, i) })
+	mwjoInsertRange(t, db, ctx, "orders", 1, nOrd, func(i int) string { return fmt.Sprintf("(%d, %d)", i, (i%nCust)+1) })
 
 	plan := mwjoExplainer(t, db, ctx)(
 		"SELECT o.id, c.name FROM orders o, customers c WHERE o.customer_id = c.id AND o.id < 10 ORDER BY o.id")

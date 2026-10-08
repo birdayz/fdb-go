@@ -137,10 +137,11 @@ jobs:
         #
         # --local_resources=memory does NOT prevent that, which is the trap: it
         # bounds Bazel's memory ACCOUNTING and leaves the job COUNT alone.
-        # Measured on Bazel 9.0.1 with a six-test fixture at --local_test_jobs=4:
-        # no tag and `--local_resources=memory=4500` still ran 4 concurrently,
-        # while `tags=["resources:memory:2000"]` against the same budget ran 2.
-        # The flag alone was never the cap it reads as.
+        # Measured on Bazel 9.0.1: the budget gates only targets that declare
+        # `tags=["resources:memory:N"]`, and only when --local_test_jobs is 0 —
+        # four memory:2000 tests against a 4500 budget ran 2-wide without the
+        # flag and 4-wide under --local_test_jobs=4. The flag alone was never the
+        # cap it reads as.
         run: |
           bazelisk shutdown
           bazelisk --output_base=$HOME/.cache/bazel/_race_output_base \

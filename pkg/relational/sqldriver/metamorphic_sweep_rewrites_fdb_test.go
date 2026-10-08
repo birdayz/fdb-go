@@ -160,13 +160,14 @@ func TestFDB_MetamorphicRewriteEquivalenceSweep(t *testing.T) {
 		equiv("nested-filter-vs-conjunction",
 			fmt.Sprintf("SELECT id FROM (SELECT id, a, b FROM t WHERE %s) AS x WHERE x.a > 0 ORDER BY id", p),
 			ids(fmt.Sprintf("(%s) AND a > 0", p)))
-		equiv("distinct-vs-group-by",
-			"SELECT DISTINCT a FROM t ORDER BY a",
-			"SELECT a FROM t GROUP BY a ORDER BY a")
-		equiv("having-vs-derived-filter",
-			"SELECT a, COUNT(*) FROM t GROUP BY a HAVING COUNT(*) > 1 ORDER BY a",
-			"SELECT * FROM (SELECT a, COUNT(*) AS n FROM t GROUP BY a) AS x WHERE x.n > 1 ORDER BY x.a")
 	}
+	// No generated operand: the same pair every iteration, so it runs once.
+	equiv("distinct-vs-group-by",
+		"SELECT DISTINCT a FROM t ORDER BY a",
+		"SELECT a FROM t GROUP BY a ORDER BY a")
+	equiv("having-vs-derived-filter",
+		"SELECT a, COUNT(*) FROM t GROUP BY a HAVING COUNT(*) > 1 ORDER BY a",
+		"SELECT * FROM (SELECT a, COUNT(*) AS n FROM t GROUP BY a) AS x WHERE x.n > 1 ORDER BY x.a")
 
 	rules := []string{
 		"paren-where", "paren-double", "paren-case", "case-vs-where",

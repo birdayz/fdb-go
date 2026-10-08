@@ -33,7 +33,7 @@ package stress_test
 // and ON plan the SAME thing and must time the same.
 //
 // Sized so the wrong order is expensive rather than merely different: the big
-// table drives 200k point lookups where the right order does 50 range scans.
+// table drives 1M point lookups where the right order does 50 range scans.
 
 import (
 	"context"
@@ -55,6 +55,11 @@ const (
 	// plan's cost, and the minimum is the sample least polluted by whatever
 	// else the machine was doing. A mean over a noisy box measures the box.
 	statsJoinRepeats = 3
+	// statsJoinRepeatBelow stops the repeats once a sample is this slow. The
+	// minimum filters millisecond-scale scheduler noise; on a multi-second join
+	// that noise is far inside the 2x bands asserted below, and repeating the
+	// slow plans (1.5-2 min each at 1M rows) cost ~10 minutes per run.
+	statsJoinRepeatBelow = 5 * time.Second
 )
 
 // statsJoinArrangement is one loaded database plus the two connections that
@@ -114,6 +119,9 @@ func TestFDB_Stress_StatisticsJoinOrder(t *testing.T) {
 				rows = n
 				if best == 0 || d < best {
 					best = d
+				}
+				if d >= statsJoinRepeatBelow {
+					break
 				}
 			}
 			results[arr.name][useStats] = cell{best: best, rows: rows}

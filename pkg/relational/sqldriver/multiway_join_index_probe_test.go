@@ -21,6 +21,24 @@ func mwjoMustExec(t *testing.T, db execer, ctx context.Context, query string) {
 	}
 }
 
+// mwjoInsertRange inserts row(i) for i in [lo, hi] as multi-row INSERTs of 100.
+// For fixtures whose test reads only the loaded rows: one autocommit statement
+// per row cost these probes most of their runtime. 500-row statements hit the
+// 5s transaction limit (1007) on an overloaded box; 100 matches the other
+// batched fixtures here.
+func mwjoInsertRange(t *testing.T, db execer, ctx context.Context, table string, lo, hi int, row func(i int) string) {
+	t.Helper()
+	const chunk = 100
+	vals := make([]string, 0, chunk)
+	for i := lo; i <= hi; i++ {
+		vals = append(vals, row(i))
+		if len(vals) == chunk || i == hi {
+			mwjoMustExec(t, db, ctx, "INSERT INTO "+table+" VALUES "+strings.Join(vals, ", "))
+			vals = vals[:0]
+		}
+	}
+}
+
 func mwjoExplainer(t *testing.T, db *sql.DB, ctx context.Context) func(string) string {
 	return func(query string) string {
 		t.Helper()

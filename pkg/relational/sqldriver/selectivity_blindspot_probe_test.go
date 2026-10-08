@@ -62,10 +62,9 @@ func TestFDB_SelectivityBlindSpotWithCollectedStatistics(t *testing.T) {
 
 	base := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	db := openDSN(t, base+"&planner_statistics=true")
-	for i := 0; i < rows; i++ {
-		mwjoMustExec(t, db, ctx,
-			fmt.Sprintf("INSERT INTO t VALUES (%d, %d, %d)", i, i, i%loDistinct))
-	}
+	mwjoInsertRange(t, db, ctx, "t", 0, rows-1, func(i int) string {
+		return fmt.Sprintf("(%d, %d, %d)", i, i, i%loDistinct)
+	})
 
 	// Collect, and verify the count — otherwise the plan below is a decision
 	// made on statistics whose correctness was never established.

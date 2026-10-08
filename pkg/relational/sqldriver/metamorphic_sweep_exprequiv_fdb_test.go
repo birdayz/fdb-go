@@ -88,27 +88,53 @@ func TestFDB_MetamorphicExpressionEquivalenceSweep(t *testing.T) {
 		}
 	}
 
+	// These pairs read no generated operand, so each runs once; inside the loop
+	// they re-ran the same SQL against the same rows every iteration.
+
+	// NULL-substituting sugar against its CASE longhand.
+	equiv("coalesce-vs-case",
+		"SELECT id, COALESCE(a, -777) FROM t ORDER BY id",
+		"SELECT id, CASE WHEN a IS NULL THEN -777 ELSE a END FROM t ORDER BY id")
+	// NULLIF is not supported (0AF00) and `-(-a)` does not parse (42601), so
+	// neither can be swept; both are pinned as rejections below, where a
+	// change in either shows up as a test telling you to move the rule back
+	// into this sweep.
+
+	// Arithmetic identities. NULL propagates through both sides alike.
+	equiv("plus-zero", "SELECT id, a FROM t ORDER BY id", "SELECT id, a + 0 FROM t ORDER BY id")
+	equiv("times-one", "SELECT id, a FROM t ORDER BY id", "SELECT id, a * 1 FROM t ORDER BY id")
+	// Double negation, spelled through subtraction because `-(-a)` is a parse
+	// error here. Same identity, syntax the dialect accepts.
+	equiv("double-negate", "SELECT id, a FROM t ORDER BY id",
+		"SELECT id, 0 - (0 - a) FROM t ORDER BY id")
+	equiv("minus-zero", "SELECT id, a FROM t ORDER BY id", "SELECT id, a - 0 FROM t ORDER BY id")
+
+	equiv("is-not-null-vs-not-is-null",
+		"SELECT id FROM t WHERE a IS NOT NULL ORDER BY id",
+		"SELECT id FROM t WHERE NOT (a IS NULL) ORDER BY id")
+
+	// Aggregate spellings. MIN over the non-NULL values is the first row of
+	// the ascending order, which is a completely different execution path to
+	// the same answer.
+	equiv("min-vs-order-limit",
+		"SELECT MIN(a) FROM t",
+		"SELECT a FROM t WHERE a IS NOT NULL ORDER BY a LIMIT 1")
+	equiv("max-vs-order-limit",
+		"SELECT MAX(a) FROM t",
+		"SELECT a FROM t WHERE a IS NOT NULL ORDER BY a DESC LIMIT 1")
+	equiv("count-col-vs-count-star-filtered",
+		"SELECT COUNT(a) FROM t",
+		"SELECT COUNT(*) FROM t WHERE a IS NOT NULL")
+	equiv("sum-ignores-nulls",
+		"SELECT SUM(a) FROM t",
+		"SELECT SUM(a) FROM t WHERE a IS NOT NULL")
+	equiv("grouped-min-vs-ordered-first",
+		"SELECT MIN(a) FROM t WHERE b = 1",
+		"SELECT a FROM t WHERE b = 1 AND a IS NOT NULL ORDER BY a LIMIT 1")
+
 	for i := 0; i < iters; i++ {
 		p := g.pred(1)
 		lit := mhIntLits[r.Intn(len(mhIntLits))]
-
-		// NULL-substituting sugar against its CASE longhand.
-		equiv("coalesce-vs-case",
-			"SELECT id, COALESCE(a, -777) FROM t ORDER BY id",
-			"SELECT id, CASE WHEN a IS NULL THEN -777 ELSE a END FROM t ORDER BY id")
-		// NULLIF is not supported (0AF00) and `-(-a)` does not parse (42601), so
-		// neither can be swept; both are pinned as rejections below, where a
-		// change in either shows up as a test telling you to move the rule back
-		// into this loop.
-
-		// Arithmetic identities. NULL propagates through both sides alike.
-		equiv("plus-zero", "SELECT id, a FROM t ORDER BY id", "SELECT id, a + 0 FROM t ORDER BY id")
-		equiv("times-one", "SELECT id, a FROM t ORDER BY id", "SELECT id, a * 1 FROM t ORDER BY id")
-		// Double negation, spelled through subtraction because `-(-a)` is a parse
-		// error here. Same identity, syntax the dialect accepts.
-		equiv("double-negate", "SELECT id, a FROM t ORDER BY id",
-			"SELECT id, 0 - (0 - a) FROM t ORDER BY id")
-		equiv("minus-zero", "SELECT id, a FROM t ORDER BY id", "SELECT id, a - 0 FROM t ORDER BY id")
 
 		// Comparison spellings.
 		equiv("not-equals-vs-ne",
@@ -117,31 +143,9 @@ func TestFDB_MetamorphicExpressionEquivalenceSweep(t *testing.T) {
 		equiv("flipped-comparison",
 			fmt.Sprintf("SELECT id FROM t WHERE a < %s ORDER BY id", lit),
 			fmt.Sprintf("SELECT id FROM t WHERE %s > a ORDER BY id", lit))
-		equiv("is-not-null-vs-not-is-null",
-			"SELECT id FROM t WHERE a IS NOT NULL ORDER BY id",
-			"SELECT id FROM t WHERE NOT (a IS NULL) ORDER BY id")
 		equiv("in-one-vs-equals",
 			fmt.Sprintf("SELECT id FROM t WHERE a IN (%s) ORDER BY id", lit),
 			fmt.Sprintf("SELECT id FROM t WHERE a = %s ORDER BY id", lit))
-
-		// Aggregate spellings. MIN over the non-NULL values is the first row of
-		// the ascending order, which is a completely different execution path to
-		// the same answer.
-		equiv("min-vs-order-limit",
-			"SELECT MIN(a) FROM t",
-			"SELECT a FROM t WHERE a IS NOT NULL ORDER BY a LIMIT 1")
-		equiv("max-vs-order-limit",
-			"SELECT MAX(a) FROM t",
-			"SELECT a FROM t WHERE a IS NOT NULL ORDER BY a DESC LIMIT 1")
-		equiv("count-col-vs-count-star-filtered",
-			"SELECT COUNT(a) FROM t",
-			"SELECT COUNT(*) FROM t WHERE a IS NOT NULL")
-		equiv("sum-ignores-nulls",
-			"SELECT SUM(a) FROM t",
-			"SELECT SUM(a) FROM t WHERE a IS NOT NULL")
-		equiv("grouped-min-vs-ordered-first",
-			"SELECT MIN(a) FROM t WHERE b = 1",
-			"SELECT a FROM t WHERE b = 1 AND a IS NOT NULL ORDER BY a LIMIT 1")
 
 		// The predicate under test, expressed as a projected CASE and as a
 		// filter — the pairing that caught the parenthesized-condition defect,

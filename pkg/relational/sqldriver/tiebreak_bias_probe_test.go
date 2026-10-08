@@ -135,12 +135,8 @@ func joinOrderArrangement(t *testing.T, ctx context.Context, i, pkRows, fkRows i
 
 	base := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), clusterFilePath)
 	plain := openDSN(t, base)
-	for r := 0; r < pkRows; r++ {
-		mwjoMustExec(t, plain, ctx, fmt.Sprintf("INSERT INTO pkside VALUES (%d, %d)", r, r))
-	}
-	for r := 0; r < fkRows; r++ {
-		mwjoMustExec(t, plain, ctx, fmt.Sprintf("INSERT INTO fkside VALUES (%d, %d)", r, r%pkRows))
-	}
+	mwjoInsertRange(t, plain, ctx, "pkside", 0, pkRows-1, func(r int) string { return fmt.Sprintf("(%d, %d)", r, r) })
+	mwjoInsertRange(t, plain, ctx, "fkside", 0, fkRows-1, func(r int) string { return fmt.Sprintf("(%d, %d)", r, r%pkRows) })
 
 	const q = "EXPLAIN SELECT pkside.v, fkside.id FROM pkside, fkside WHERE fkside.fk = pkside.id"
 	off = explainJoin(t, ctx, plain, q)
