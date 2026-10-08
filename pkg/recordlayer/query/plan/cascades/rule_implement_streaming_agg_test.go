@@ -110,62 +110,6 @@ func TestImplementStreamingAgg_UnorderedInput_Fires(t *testing.T) {
 	}
 }
 
-func TestImplementStreamingAgg_IndexOrderedInput(t *testing.T) {
-	t.Parallel()
-
-	// Sort(customer_id) over Scan, with an index on (customer_id).
-	// OrderedIndexScanRule produces an index scan ordered by customer_id.
-	// GroupBy(customer_id) should then get a streaming aggregation.
-	a1 := values.UniqueCorrelationIdentifier()
-	cand := newKnownDistinctValueIndexCandidate(
-		"idx_orders_cid",
-		[]string{"Orders"},
-		[]string{"customer_id"},
-		[]values.CorrelationIdentifier{a1},
-		streamingAggRowType("Orders"),
-		false,
-		nil,
-	)
-	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
-
-	scan := streamingAggLogicalScan("Orders")
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-
-	sortExpr := mustStreamingAggConstruct(expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{
-			{Value: streamingAggQuantifierField(scanQ, "customer_id")},
-		}, scanQ))
-	sortRef := expressions.InitialOf(sortExpr)
-	sortQ := expressions.ForEachQuantifier(sortRef)
-
-	gb := mustStreamingAggConstruct(expressions.NewGroupByExpression(
-		[]values.Value{streamingAggQuantifierField(sortQ, "customer_id")},
-		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: streamingAggQuantifierField(sortQ, "id")},
-		},
-		sortQ,
-	))
-	gbRef := expressions.InitialOf(gb)
-
-	// OrderedIndexScanRule replaces Sort(Scan) with an index scan.
-	mustFireExpressionRuleWithMemo(t, newOrderedIndexScanRule(), sortRef, ctx, nil)
-
-	// Now fire streaming agg — the inner (sortRef) has an index scan
-	// member with ordering on customer_id.
-	results := mustFireExpressionRule(t, NewImplementStreamingAggregationRule(), gbRef)
-	if len(results) == 0 {
-		t.Fatal("ImplementStreamingAggregationRule didn't fire with index-ordered input")
-	}
-
-	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryStreamingAggregationPlan.
-	agg := results[0].(*plans.RecordQueryStreamingAggregationPlan)
-	explain := agg.Explain()
-	if explain == "" {
-		t.Fatal("empty explain string")
-	}
-}
-
 func TestImplementStreamingAgg_EmptyGroupingKeys(t *testing.T) {
 	t.Parallel()
 

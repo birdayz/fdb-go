@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -288,110 +287,6 @@ func TestRFC190FlatMapOrderingCrossesNominalJoinResult(t *testing.T) {
 	); !got.IsPreserve() {
 		t.Fatalf("leaf-type drift pushed into T as %#v", got.GetParts())
 	}
-}
-
-type rfc190PrimaryKeyPlanContext struct {
-	indexTestPlanContext
-	primaryKeyColumns []string
-}
-
-func (c *rfc190PrimaryKeyPlanContext) GetPrimaryKeyColumns(string) []string {
-	return c.primaryKeyColumns
-}
-
-func TestRFC190OrderedFullScanAlternativesFinalPrimaryScanSafety(t *testing.T) {
-	t.Parallel()
-
-	ctx := &rfc190PrimaryKeyPlanContext{
-		primaryKeyColumns: []string{"ID"},
-	}
-	// A REAL flowed type. Sort elision now depends on the physical type of each
-	// primary-key coordinate, because a raw FLOAT/DOUBLE key is not in logical
-	// order; a stubbed UnknownType would exercise that fail-closed path rather
-	// than the reverse-scan recovery this test is named for.
-	rowType := values.NewRecordType("T", false, []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
-	})
-	requestedID := rfc190RecoveryField(
-		values.NamedCorrelationIdentifier("rfc190_recovery_request"), rowType, 0)
-	requested := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{{
-			Value:     requestedID,
-			SortOrder: properties.RequestedSortOrderDescending,
-		}},
-		properties.DistinctnessNotDistinct,
-		false,
-	)
-
-	t.Run("unbounded_forward_recovers_reverse", func(t *testing.T) {
-		t.Parallel()
-
-		forwardBase := mustRFC190RecoveryConstruct(plans.NewRecordQueryScanPlan(
-			[]string{"T"}, rowType, false))
-		forward := forwardBase.WithPrimaryKey([]values.Value{
-			rfc190RecoveryFieldOf(forwardBase.GetResultValue(), 0),
-		}).WithKeyComponentTypes([]values.Type{values.NotNullLong})
-		ref := expressions.FinalOf(forward)
-
-		alternatives, err := orderedFullScanAlternatives(ref, requested, ctx)
-		if err != nil {
-			t.Fatalf("ordered full-scan alternatives: %v", err)
-		}
-		if len(alternatives) != 1 {
-			t.Fatalf("ordered alternatives = %d, want one reverse primary scan",
-				len(alternatives))
-		}
-		reverse, ok := alternatives[0].(*plans.RecordQueryScanPlan)
-		if !ok {
-			t.Fatalf("ordered alternative = %T, want RecordQueryScanPlan",
-				alternatives[0])
-		}
-		if !reverse.IsReverse() {
-			t.Fatal("recovered primary scan is not reverse")
-		}
-		if len(reverse.GetScanComparisons()) != 0 {
-			t.Fatal("recovered full scan unexpectedly acquired bounds")
-		}
-		if len(ref.Members()) != 0 ||
-			len(ref.FinalMembers()) != 1 ||
-			ref.FinalMembers()[0] != forward {
-			t.Fatal("ordered full-scan recovery mutated the finals-only source group")
-		}
-	})
-
-	t.Run("bounded_scan_declines", func(t *testing.T) {
-		t.Parallel()
-
-		comparison := predicates.NewLiteralComparison(
-			predicates.ComparisonEquals, int64(7))
-		merged := predicates.EmptyComparisonRange().Merge(&comparison)
-		if !merged.Complete() {
-			t.Fatal("failed to construct bounded-scan comparison")
-		}
-		boundedBase := mustRFC190RecoveryConstruct(plans.NewRecordQueryScanPlan(
-			[]string{"T"}, rowType, false))
-		bounded := boundedBase.WithPrimaryKey([]values.Value{
-			rfc190RecoveryFieldOf(boundedBase.GetResultValue(), 0),
-		}).WithScanComparisons([]*predicates.ComparisonRange{merged.Range}).
-			WithKeyComponentTypes([]values.Type{values.NotNullLong})
-		ref := expressions.FinalOf(bounded)
-
-		alternatives, err := orderedFullScanAlternatives(
-			ref, requested, ctx,
-		)
-		if err != nil {
-			t.Fatalf("ordered full-scan alternatives: %v", err)
-		}
-		if len(alternatives) != 0 {
-			t.Fatalf("bounded scan produced %d ordered full-scan alternatives",
-				len(alternatives))
-		}
-		if len(ref.Members()) != 0 ||
-			len(ref.FinalMembers()) != 1 ||
-			ref.FinalMembers()[0] != bounded {
-			t.Fatal("bounded-scan decline mutated the finals-only source group")
-		}
-	})
 }
 
 // A projected EXISTS reaches ImplementSort with its request rooted at the

@@ -830,12 +830,7 @@ func collectJoinLegOrderingVariants(
 	members = append(members, ref.Members()...)
 	if pinOrdering && requestedInChildSpace != nil &&
 		!requestedInChildSpace.IsPreserve() && ctx != nil {
-		orderedAlternatives, err := orderedFullScanAlternatives(
-			ref, requestedInChildSpace, ctx)
-		if err != nil {
-			return nil, err
-		}
-		members = append(members, orderedAlternatives...)
+
 		// A requested-order data-access alternative can be discovered after
 		// this join leg's ordinary winner has already been pruned. The
 		// Reference retains its PartialMatches, though, so realize the same

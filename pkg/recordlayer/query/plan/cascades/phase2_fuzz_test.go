@@ -178,57 +178,6 @@ func FuzzInExplode_NoPanic(f *testing.F) {
 	})
 }
 
-// FuzzOrderedIndexScan_NoPanic exercises the OrderedIndexScanRule with
-// random sort key / index column combinations to ensure no panics.
-func FuzzOrderedIndexScan_NoPanic(f *testing.F) {
-	f.Add(byte(1), byte(2), byte(0))
-	f.Add(byte(3), byte(1), byte(42))
-	f.Add(byte(0), byte(5), byte(255))
-
-	colPool := []string{"A", "B", "C", "D", "STATUS", "DATE", "AMOUNT"}
-
-	f.Fuzz(func(t *testing.T, numSortKeys, numCols, seed byte) {
-		nSort := int(numSortKeys%4) + 1
-		nCols := int(numCols%5) + 1
-
-		candCols := make([]string, nCols)
-		aliases := make([]values.CorrelationIdentifier, nCols)
-		for i := range candCols {
-			candCols[i] = colPool[(int(seed)+i)%len(colPool)]
-			aliases[i] = values.UniqueCorrelationIdentifier()
-		}
-		cand := newKnownDistinctValueIndexCandidate(
-			"fuzz_ordered_idx",
-			[]string{"T"},
-			candCols,
-			aliases,
-			phase2FuzzRowType(),
-			false,
-			nil,
-		)
-		ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
-
-		scan := phase2FuzzScan(t)
-		scanRef := expressions.InitialOf(scan)
-		q := expressions.ForEachQuantifier(scanRef)
-
-		sortKeys := make([]expressions.SortKey, nSort)
-		for i := range sortKeys {
-			col := colPool[(int(seed)+i*2)%len(colPool)]
-			sortKeys[i] = expressions.SortKey{
-				Value: phase2FuzzField(t, q, col),
-			}
-		}
-
-		sortValue, sortErr := expressions.NewLogicalSortExpression(sortKeys, q)
-		sort := mustConstruct(t, sortValue, sortErr)
-		sortRef := expressions.InitialOf(sort)
-
-		rule := newOrderedIndexScanRule()
-		mustFireExpressionRuleWithMemo(t, rule, sortRef, ctx, nil)
-	})
-}
-
 // FuzzComparisonRange_MergeChain exercises the ComparisonRange merge
 // logic with random comparison sequences to ensure no panics and that
 // merge failure (Ok=false) never leaves the range in an inconsistent state.
