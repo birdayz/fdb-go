@@ -94,6 +94,9 @@ type Reference struct {
 	// Admission and memo lookup use this map in the planner's sequential task
 	// loop; unlike flowedType, expression constructors do not access it.
 	memberHash map[RelationalExpression]uint64
+	// signature caches the members' shapes for memo-equality pruning, keyed
+	// by memberVersion like flowedType.
+	signature atomic.Pointer[memberSignature]
 
 	// flowedType memoizes GetFlowedObjectType's SUCCESSFUL answer, keyed by
 	// memberVersion.

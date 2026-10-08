@@ -127,6 +127,9 @@ func (e *memoEquality) references(a, b *Reference, aliases *AliasMap) bool {
 	if a == b && aliases.DefinesOnlyIdentities() {
 		return true
 	}
+	if !a.memberSignature().covers(b.memberSignature()) {
+		return false
+	}
 	pair := refPair{a, b}
 	if _, cycle := e.active[pair]; cycle {
 		e.cycles++
@@ -234,4 +237,62 @@ func expressionCorrelations(e RelationalExpression, childCorrelations func(*Refe
 		}
 	}
 	return result
+}
+
+// memberSignature is the set of member shapes a group's lanes hold: the
+// (hash, arity, correlatability) every memo-equal pair agrees on.
+type memberSignature struct {
+	version            uint64
+	exploratory, final []uint64
+}
+
+// memberSignature returns r's signature for its current members. r must be
+// canonical.
+func (r *Reference) memberSignature() *memberSignature {
+	if signature := r.signature.Load(); signature != nil && signature.version == r.memberVersion {
+		return signature
+	}
+	signature := &memberSignature{
+		version:     r.memberVersion,
+		exploratory: r.memberShapes(r.members),
+		final:       r.memberShapes(r.finalMembers),
+	}
+	r.signature.Store(signature)
+	return signature
+}
+
+func (r *Reference) memberShapes(members []RelationalExpression) []uint64 {
+	shapes := make([]uint64, 0, len(members))
+	for _, member := range members {
+		hash, ok := r.memberHash[member]
+		if !ok {
+			hash = member.HashCodeWithoutChildren()
+		}
+		shape := (hash*31+uint64(len(member.GetQuantifiers())))*2 + 1
+		if member.CanCorrelate() {
+			shape++
+		}
+		shapes = append(shapes, shape)
+	}
+	slices.Sort(shapes)
+	return slices.Compact(shapes)
+}
+
+// covers reports whether every shape of other occurs in s, lane by lane: a
+// group can contain another only if each of its members has a candidate.
+func (s *memberSignature) covers(other *memberSignature) bool {
+	return shapesCover(s.exploratory, other.exploratory) && shapesCover(s.final, other.final)
+}
+
+func shapesCover(have, want []uint64) bool {
+	i := 0
+	for _, shape := range want {
+		for i < len(have) && have[i] < shape {
+			i++
+		}
+		if i == len(have) || have[i] != shape {
+			return false
+		}
+	}
+	return true
 }
