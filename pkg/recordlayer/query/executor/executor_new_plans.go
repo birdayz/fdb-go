@@ -1749,7 +1749,10 @@ func executeInJoin(
 		if err != nil {
 			return nil, err
 		}
-		list, _ := v.([]any)
+		list, err := inComparandList(v)
+		if err != nil {
+			return nil, err
+		}
 		if len(list) == 0 {
 			return recordlayer.Empty[QueryResult](), nil
 		}
@@ -1785,6 +1788,21 @@ func executeInJoin(
 	}
 	cursor := recordlayer.FlatMapPipelinedWithCheck(outerFactory, innerFactory, inValueCheckBytes, continuation, 1)
 	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+}
+
+// inComparandList is a runtime IN comparand's evaluated list. Java's
+// InComparandSource.getValues casts the comparand to a List unchecked
+// (InComparandSource.java:103-108) and its callers size and iterate it, so a
+// NULL or non-list comparand fails there; only an actual (possibly empty)
+// list is an IN source.
+func inComparandList(v any) ([]any, error) {
+	list, ok := v.([]any)
+	if !ok {
+		return nil, &recordlayer.RecordCoreError{
+			Message: fmt.Sprintf("IN comparand must evaluate to a list, got %T", v),
+		}
+	}
+	return list, nil
 }
 
 // inValueCheckBytes is the IN-join flatMap check value — a deterministic byte
@@ -1858,7 +1876,10 @@ func executeInUnion(
 			if err != nil {
 				return nil, err
 			}
-			list, _ := v.([]any)
+			list, err := inComparandList(v)
+			if err != nil {
+				return nil, err
+			}
 			if list == nil {
 				list = []any{}
 			}
