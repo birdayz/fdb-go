@@ -189,6 +189,14 @@ var valueNullabilityCensus = map[string]nullabilityCensusEntry{
 		censusSame, "its child's type",
 		"IndexOnlyAggregateValue: child.getResultType()", nil,
 	},
+	"BinaryRelOpValue": {
+		censusSame, "nullable BOOLEAN", "RelOpValue is a BooleanValue",
+		func() Value { return &BinaryRelOpValue{} },
+	},
+	"UnaryRelOpValue": {
+		censusSame, "nullable BOOLEAN", "RelOpValue is a BooleanValue",
+		func() Value { return &UnaryRelOpValue{} },
+	},
 	"InOpValue": {
 		censusSame, "nullable BOOLEAN", "InOpValue is a BooleanValue",
 		func() Value { return &InOpValue{} },
