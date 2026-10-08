@@ -41,6 +41,7 @@ go_library(
         "metamorphic_twin.go",
         "multiway_join_index_probe.go",
         "ordering_limit_oracle_fdb.go",
+        "packages.go",
         "plan_logging_fdb.go",
         "plan_shape_conformance.go",
         "planner_cap_hit_fdb.go",

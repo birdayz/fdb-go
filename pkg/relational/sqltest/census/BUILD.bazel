@@ -1,0 +1,69 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# gazelle:ignore
+# The whole-corpus census: every package of the end-to-end suite compiled into
+# ONE binary (all are `package sqltest`, without their per-package TestMain), so
+# the census floors in testkit — claims about the whole corpus' traffic — are
+# asserted here and only here. deps is the union of the packages' deps; a missing
+# one fails this build.
+#
+# Manual: it reruns the entire corpus on almost any change, so PR CI leaves it to
+# the per-package targets and nightly-coverage / `just test-full` run it.
+go_test(
+    name = "census_test",
+    size = "large",
+    timeout = "eternal",
+    srcs = [
+        "census_main_test.go",
+        "//pkg/relational/sqltest:corpus",
+    ],
+    data = ["//pkg/relational/sqltest/agg/distinctelision:testdata"],
+    tags = [
+        "manual",
+        "resources:memory:700",
+        "test-full",
+    ],
+    deps = [
+        "//gen",
+        "//pkg/dst",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/fdbgo/wire",
+        "//pkg/internal/fdbclient",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/protoname",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/recordlayer/query/plan/cascades/properties",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/query/plan/plans",
+        "//pkg/recordlayer/rlmetrics",
+        "//pkg/recordlayer/vectorcodec",
+        "//pkg/relational/api",
+        "//pkg/relational/api/ddl",
+        "//pkg/relational/conformance/coveringleaf",
+        "//pkg/relational/conformance/rowdiff",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/ddl",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/fleet",
+        "//pkg/relational/core/keyspace",
+        "//pkg/relational/core/metadata",
+        "//pkg/relational/core/rowstruct",
+        "//pkg/relational/internal/queryfixtures",
+        "//pkg/relational/sqldriver",
+        "//pkg/relational/sqltest/testkit",
+        "//pkg/simfdb",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_onsi_gomega//:gomega",
+        "@com_github_stretchr_testify//require",
+        "@org_golang_google_protobuf//encoding/prototext",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)

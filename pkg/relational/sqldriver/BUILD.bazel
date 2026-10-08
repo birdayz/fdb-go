@@ -115,5 +115,8 @@ go_test(
 filegroup(
     name = "tx_budget_census_corpus",
     srcs = glob(["*_test.go"]),
-    visibility = ["//pkg/relational/txbudgetcensus:__pkg__"],
+    visibility = [
+        "//pkg/relational/sqltest/guard:__pkg__",
+        "//pkg/relational/txbudgetcensus:__pkg__",
+    ],
 )

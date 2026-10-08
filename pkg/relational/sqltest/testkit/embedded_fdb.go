@@ -39,6 +39,7 @@ var clusterFilePath string
 // pkg/recordlayer/query/plan/cascades/values/w1_unresolved_reference_test.go.
 
 func Main(m *testing.M) {
+	checkRegistered()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 

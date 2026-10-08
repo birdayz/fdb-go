@@ -48,3 +48,9 @@ filegroup(
     ),
     visibility = ["//pkg/relational:__subpackages__"],
 )
+
+filegroup(
+    name = "testdata",
+    srcs = glob(["testdata/**"]),
+    visibility = ["//pkg/relational/sqltest/census:__pkg__"],
+)
