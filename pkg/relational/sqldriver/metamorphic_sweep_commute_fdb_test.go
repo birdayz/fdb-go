@@ -114,6 +114,14 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 		{"string", func() string { return g.pick(g.strs()) }, func() string { return g.pick(mhStrLits) }},
 	}
 
+	// The value space is small (a handful of columns, literals and operators),
+	// so over half the draws repeat an earlier triple exactly. A repeat runs
+	// the same two SQL strings against the same read-only fixture, so its
+	// outcome is already known: it is counted as before, without re-running.
+	// The draw sequence is unchanged, so the distinct triples are too.
+	type outcome struct{ errored, nonEmpty bool }
+	seen := map[string]outcome{}
+
 	for _, o := range operands {
 		t.Run(o.name, func(t *testing.T) {
 			w := w.Sub(t)
@@ -126,6 +134,17 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 				}
 				asWritten := fmt.Sprintf("SELECT id FROM t WHERE %s %s %s ORDER BY id", col, op, lit)
 				commuted := fmt.Sprintf("SELECT id FROM t WHERE %s %s %s ORDER BY id", lit, flipped, col)
+				if prev, dup := seen[asWritten]; dup {
+					if prev.errored {
+						skipped++
+						continue
+					}
+					compared++
+					if prev.nonEmpty {
+						nonEmpty++
+					}
+					continue
+				}
 
 				want, err := mmRows(t, ctx, w.plain, asWritten)
 				if err != nil {
@@ -138,9 +157,11 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 							"  as written: %s\n  err: %v\n  commuted  : %s\n  err: %v",
 							asWritten, err, commuted, cerr)
 					}
+					seen[asWritten] = outcome{errored: true}
 					skipped++
 					continue
 				}
+				seen[asWritten] = outcome{nonEmpty: len(want) > 0}
 				compared++
 				if len(want) > 0 {
 					nonEmpty++
@@ -212,6 +233,6 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 			"result matches an empty result whichever way the operands were written, so below "+
 			"this floor the sweep is comparing absences", nonEmpty, compared)
 	}
-	t.Logf("commutation sweep: %d pairs compared (%d with non-empty rows), %d skipped",
-		compared, nonEmpty, skipped)
+	t.Logf("commutation sweep: %d pairs compared (%d with non-empty rows), %d skipped, %d distinct",
+		compared, nonEmpty, skipped, len(seen))
 }
