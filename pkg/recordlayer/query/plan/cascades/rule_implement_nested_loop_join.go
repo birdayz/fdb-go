@@ -34,7 +34,8 @@ type ImplementNestedLoopJoinRule struct {
 func NewImplementNestedLoopJoinRule() *ImplementNestedLoopJoinRule {
 	return &ImplementNestedLoopJoinRule{
 		matcher: NewExpressionMatcher[*expressions.SelectExpression]("select_for_nlj").WithRootPredicate(
-			func(sel *expressions.SelectExpression) bool { return len(sel.GetQuantifiers()) == 2 }),
+			func(sel *expressions.SelectExpression) bool { return len(sel.GetQuantifiers()) == 2 },
+		),
 	}
 }
 
@@ -221,7 +222,8 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		rightQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(rightExpr))
 		joinPredicates, joinResultValue, err := normalizeMaterializedJoinPrograms(
 			sel.GetPredicates(), sel.GetResultValue(),
-			leftPlan, leftCorr, rightPlan, rightCorr)
+			leftPlan, leftCorr, rightPlan, rightCorr,
+		)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -415,7 +417,8 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		rightQ := expressions.NewPhysicalQuantifier(call.MemoizeExpression(rightExpr))
 		joinPredicates, joinResultValue, err := normalizeMaterializedJoinPrograms(
 			sel.GetPredicates(), sel.GetResultValue(),
-			leftPlan, leftCorr, rightPlan, rightCorr)
+			leftPlan, leftCorr, rightPlan, rightCorr,
+		)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -644,7 +647,8 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 		return rebuilt, nil
 	}
 	r.yieldBinaryJoinWithSourceOrderingVariants(
-		call, flatMapPlan, outerSourceRef, innerSourceRef, rebuild)
+		call, flatMapPlan, outerSourceRef, innerSourceRef, rebuild,
+	)
 }
 
 // joinLegOrderingVariant is one concrete physical child candidate together
@@ -738,7 +742,8 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 		outerAlias = flatMap.GetOuterAlias()
 		innerAlias = flatMap.GetInnerAlias()
 		outerOrderingResultValue = flatMapOrderingResultForChild(
-			flatMap, outerAlias, true)
+			flatMap, outerAlias, true,
+		)
 	}
 	localAliases := map[values.CorrelationIdentifier]struct{}{
 		outerAlias: {},
@@ -753,9 +758,11 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 
 		outerRequested := pushRequestedOrderingToSelectChild(
 			requested, outerOrderingResultValue,
-			outerAlias, localAliases)
+			outerAlias, localAliases,
+		)
 		innerRequested := pushRequestedOrderingToSelectChild(
-			requested, resultValue, innerAlias, localAliases)
+			requested, resultValue, innerAlias, localAliases,
+		)
 
 		// The raw sets supply the leg whose ordering is irrelevant in a case.
 		// The ordered sets pin each unary delegation spine against the
@@ -763,7 +770,8 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 		rawOuters, err := collectJoinLegOrderingVariants(
 			call,
 			outerRef, properties.PreserveOrdering(), outerOrderingResultValue,
-			outerAlias, localAliases, less, false, call.Context)
+			outerAlias, localAliases, less, false, call.Context,
+		)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -771,7 +779,8 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 		rawInners, err := collectJoinLegOrderingVariants(
 			call,
 			innerRef, properties.PreserveOrdering(), resultValue,
-			innerAlias, localAliases, less, false, call.Context)
+			innerAlias, localAliases, less, false, call.Context,
+		)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -779,7 +788,8 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 		orderedOuters, err := collectJoinLegOrderingVariants(
 			call,
 			outerRef, outerRequested, outerOrderingResultValue,
-			outerAlias, localAliases, less, true, call.Context)
+			outerAlias, localAliases, less, true, call.Context,
+		)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -787,7 +797,8 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 		orderedInners, err := collectJoinLegOrderingVariants(
 			call,
 			innerRef, innerRequested, resultValue,
-			innerAlias, localAliases, less, true, call.Context)
+			innerAlias, localAliases, less, true, call.Context,
+		)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -797,7 +808,8 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 			requested, less,
 		) {
 			r.yieldVerifiedOrderedJoin(
-				call, base, pair.outer, pair.inner, requested, rebuild)
+				call, base, pair.outer, pair.inner, requested, rebuild,
+			)
 			if call.Err() != nil {
 				return
 			}
@@ -875,7 +887,8 @@ func collectJoinLegOrderingVariants(
 			pinRequest := requestedInChildSpace
 			if pinRequest == nil || pinRequest.IsPreserve() {
 				pinRequest = requestedOrderingForProvided(
-					computeWrapperRichOrdering(ph))
+					computeWrapperRichOrdering(ph),
+				)
 			}
 			if pinRequest != nil && !pinRequest.IsPreserve() {
 				selected = pinOrderedSpine(member, pinRequest, less)
@@ -891,7 +904,8 @@ func collectJoinLegOrderingVariants(
 			continue
 		}
 		pulled, err := pullChildOrderingThroughResult(
-			provided, ph, resultValue, resultAlias, localAliases)
+			provided, ph, resultValue, resultAlias, localAliases,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -932,7 +946,8 @@ func requestedOrderingForProvided(
 		return properties.PreserveOrdering()
 	}
 	return properties.NewRequestedOrdering(
-		parts, properties.DistinctnessPreserveDistinctness, false)
+		parts, properties.DistinctnessPreserveDistinctness, false,
+	)
 }
 
 func bestJoinLegVariant(
@@ -1025,7 +1040,8 @@ func orderedJoinLegPairs(
 		requested.IsDistinct(),
 		less,
 	)
-	caseTwoAInner := bestJoinLegVariant(rawInners,
+	caseTwoAInner := bestJoinLegVariant(
+		rawInners,
 		func(v joinLegOrderingVariant) bool {
 			// ConcatOrderings takes distinctness from the right ordering. Java
 			// enumerates the rolled-up inner partition here; selecting a
@@ -1192,7 +1208,8 @@ func orderingBindingStructurallyEqual(
 	case values.Value:
 		typedRight, ok := rightComparison.(values.Value)
 		return ok && values.SemanticEqualsUnderAliasMap(
-			typedLeft, typedRight, nil)
+			typedLeft, typedRight, nil,
+		)
 	default:
 		return reflect.DeepEqual(leftComparison, rightComparison)
 	}
@@ -1221,9 +1238,11 @@ func rebuildJoinWithExactLegs(
 	}
 	exactQuantifiers := []expressions.Quantifier{
 		expressions.RebuildQuantifier(
-			quantifiers[0], call.MemoizeFinalExpression(outer)),
+			quantifiers[0], call.MemoizeFinalExpression(outer),
+		),
 		expressions.RebuildQuantifier(
-			quantifiers[1], call.MemoizeFinalExpression(inner)),
+			quantifiers[1], call.MemoizeFinalExpression(inner),
+		),
 	}
 	switch plan := base.(type) {
 	case *plans.RecordQueryFlatMapPlan:
@@ -1337,7 +1356,8 @@ func selectedExistentialOuterLayoutAuthority(
 			return outer, false, nil
 		}
 		winner, _ := getWinnerForOrdering(
-			ref, properties.PreserveOrdering(), call.CostModel())
+			ref, properties.PreserveOrdering(), call.CostModel(),
+		)
 		if winner == nil {
 			return outer, false, nil
 		}
@@ -1357,14 +1377,16 @@ func selectedExistentialOuterLayoutAuthority(
 		winners[i] = winner
 	}
 	rebuilt, err := rebuildJoinWithExactLegs(
-		call, flatMap, winners[0], winners[1])
+		call, flatMap, winners[0], winners[1],
+	)
 	if err != nil {
 		return nil, false, err
 	}
 	rebuiltPhysical, ok := rebuilt.(physicalPlanExpression)
 	if !ok || rebuiltPhysical.GetRecordQueryPlan() == nil {
 		return nil, false, fmt.Errorf(
-			"existential selected outer FlatMap rebuild produced %T", rebuilt)
+			"existential selected outer FlatMap rebuild produced %T", rebuilt,
+		)
 	}
 	rebuiltPlan := rebuiltPhysical.GetRecordQueryPlan()
 	originalLayout, err := outer.ProvidedOutputLayout()
@@ -1546,7 +1568,8 @@ func translatePredicateLogicalSource(
 		if conflicting != nil {
 			return nil, fmt.Errorf(
 				"predicate logical source %s has conflicting exact types %s and %s",
-				alias.Name(), declaration.FlowedType(), conflicting.FlowedType())
+				alias.Name(), declaration.FlowedType(), conflicting.FlowedType(),
+			)
 		}
 	}
 	if declaration == nil {
@@ -1611,17 +1634,21 @@ func normalizeMaterializedJoinPrograms(
 	} {
 		if leg.plan == nil || leg.alias.IsZero() {
 			return nil, nil, fmt.Errorf(
-				"materialized join %s result leg is missing its selected plan or alias", leg.label)
+				"materialized join %s result leg is missing its selected plan or alias", leg.label,
+			)
 		}
 		layout, layoutErr := leg.plan.ProvidedOutputLayout()
 		if layoutErr != nil {
 			return nil, nil, fmt.Errorf(
-				"materialized join %s result selected layout: %w", leg.label, layoutErr)
+				"materialized join %s result selected layout: %w", leg.label, layoutErr,
+			)
 		}
 		if _, targetErr := values.NewQuantifiedObjectValue(
-			leg.alias, values.PhysicalCarrierType(layout)); targetErr != nil {
+			leg.alias, values.PhysicalCarrierType(layout),
+		); targetErr != nil {
 			return nil, nil, fmt.Errorf(
-				"materialized join %s exact binding: %w", leg.label, targetErr)
+				"materialized join %s exact binding: %w", leg.label, targetErr,
+			)
 		}
 	}
 	// The materialized join evaluates these predicates against each row pair,
@@ -1659,16 +1686,20 @@ func normalizeCorrelatedExplodeCollectionPlan(
 	case *plans.RecordQueryExplodePlan:
 		collection := typed.GetCollectionValue()
 		normalized, err := values.TranslateLogicalSourceNameNormalization(
-			collection, sourceAlias, target)
+			collection, sourceAlias, target,
+		)
 		if err != nil {
 			return nil, false, fmt.Errorf(
-				"correlated Explode source %s: %w", sourceAlias.Name(), err)
+				"correlated Explode source %s: %w", sourceAlias.Name(), err,
+			)
 		}
 		normalized, err = values.TranslateProjectionInputNameNormalizationToCorrelation(
-			normalized, sourceAlias, target.FlowedType())
+			normalized, sourceAlias, target.FlowedType(),
+		)
 		if err != nil {
 			return nil, false, fmt.Errorf(
-				"correlated Explode projection input %s: %w", sourceAlias.Name(), err)
+				"correlated Explode projection input %s: %w", sourceAlias.Name(), err,
+			)
 		}
 		if normalized == collection {
 			return plan, false, nil
@@ -1681,12 +1712,14 @@ func normalizeCorrelatedExplodeCollectionPlan(
 
 	case *plans.RecordQueryPredicatesFilterPlan:
 		inner, changed, err := normalizeCorrelatedExplodeCollectionPlan(
-			typed.GetInner(), sourceAlias, target)
+			typed.GetInner(), sourceAlias, target,
+		)
 		if err != nil || !changed {
 			return plan, changed, err
 		}
 		rebuilt, err := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
-			inner, typed.GetPredicates(), typed.GetInnerAlias())
+			inner, typed.GetPredicates(), typed.GetInnerAlias(),
+		)
 		if err != nil {
 			return nil, false, err
 		}
@@ -1716,7 +1749,8 @@ func normalizeCorrelatedScanComparisonPlan(
 			return nil, err
 		}
 		return values.TranslateProjectionInputNameNormalizationToCorrelation(
-			normalized, sourceAlias, target.FlowedType())
+			normalized, sourceAlias, target.FlowedType(),
+		)
 	}
 	return translateCorrelatedAccessPrograms(plan, comparisonTransform, programTransform)
 }
@@ -1747,6 +1781,10 @@ func translateCorrelatedAccessPrograms(
 		stage := expressions.StageCanonical
 		if ref := quantifiers[i].GetRangesOver(); ref != nil {
 			stage = ref.Stage()
+		}
+		if !changed {
+			// GetQuantifiers may return the plan's own storage.
+			quantifiers = slices.Clone(quantifiers)
 		}
 		quantifiers[i] = expressions.RebuildQuantifier(quantifiers[i], expressions.FinalOfAtStage(translated, stage))
 		changed = true
@@ -1810,7 +1848,8 @@ func translateCorrelatedAccessPrograms(
 		}
 		if moved {
 			rebuilt, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
-				typed.GetQuantifiers()[0], translated, typed.GetInnerAlias())
+				typed.GetQuantifiers()[0], translated, typed.GetInnerAlias(),
+			)
 			return rebuilt, true, err
 		}
 	case *plans.RecordQueryFilterPlan:
@@ -1865,7 +1904,8 @@ func normalizeCorrelatedScanComparisonPlanForOuterLayout(
 		return plan, false, nil
 	}
 	normalized, changed, err := normalizeCorrelatedScanComparisonPlan(
-		plan, bindingAlias, bindingTarget)
+		plan, bindingAlias, bindingTarget,
+	)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1875,11 +1915,13 @@ func normalizeCorrelatedScanComparisonPlanForOuterLayout(
 		}
 		var sourceChanged bool
 		normalized, sourceChanged, err = normalizeCorrelatedScanComparisonPlan(
-			normalized, source.Correlation(), source)
+			normalized, source.Correlation(), source,
+		)
 		if err != nil {
 			return nil, false, fmt.Errorf(
 				"correlated retained source %s comparison: %w",
-				source.Correlation().Name(), err)
+				source.Correlation().Name(), err,
+			)
 		}
 		changed = changed || sourceChanged
 	}
@@ -1911,11 +1953,14 @@ func normalizeCorrelatedPredicatesForOuterLayout(
 			predicate,
 			func(value values.Value) (values.Value, error) {
 				return values.TranslateLogicalSourceNameNormalization(
-					value, bindingAlias, bindingTarget)
-			})
+					value, bindingAlias, bindingTarget,
+				)
+			},
+		)
 		if err != nil {
 			return nil, false, fmt.Errorf(
-				"correlated predicate %d whole-row normalization: %w", i, err)
+				"correlated predicate %d whole-row normalization: %w", i, err,
+			)
 		}
 		for _, source := range outerLayout.WindowSources() {
 			if source == nil || source.Correlation().IsZero() {
@@ -1925,12 +1970,15 @@ func normalizeCorrelatedPredicatesForOuterLayout(
 				rebuilt,
 				func(value values.Value) (values.Value, error) {
 					return values.TranslateLogicalSourceNameNormalization(
-						value, source.Correlation(), source)
-				})
+						value, source.Correlation(), source,
+					)
+				},
+			)
 			if err != nil {
 				return nil, false, fmt.Errorf(
 					"correlated predicate %d retained source %s normalization: %w",
-					i, source.Correlation().Name(), err)
+					i, source.Correlation().Name(), err,
+				)
 			}
 		}
 		if rebuilt != predicate {
@@ -1957,7 +2005,8 @@ func normalizeCorrelatedValueForOuterLayout(
 		return value, nil
 	}
 	normalized, err := values.TranslateLogicalSourceNameNormalization(
-		value, bindingAlias, bindingTarget)
+		value, bindingAlias, bindingTarget,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("existential result whole-row normalization: %w", err)
 	}
@@ -1966,11 +2015,13 @@ func normalizeCorrelatedValueForOuterLayout(
 			continue
 		}
 		normalized, err = values.TranslateLogicalSourceNameNormalization(
-			normalized, source.Correlation(), source)
+			normalized, source.Correlation(), source,
+		)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"existential result retained source %s normalization: %w",
-				source.Correlation().Name(), err)
+				source.Correlation().Name(), err,
+			)
 		}
 	}
 	return normalized, nil
@@ -2042,17 +2093,20 @@ func admitCorrelatedFastPathOuterValue(
 			continue
 		}
 		normalized, err := values.TranslateLogicalSourceNameNormalization(
-			outerValue, root.Correlation(), candidate.root)
+			outerValue, root.Correlation(), candidate.root,
+		)
 		if err != nil {
 			return nil, values.CorrelationIdentifier{}, false, false, err
 		}
 		normalizedField, isField := values.AsFieldValue(normalized)
 		if !isField {
 			return nil, values.CorrelationIdentifier{}, false, false, fmt.Errorf(
-				"correlated fast-path normalization produced %T", normalized)
+				"correlated fast-path normalization produced %T", normalized,
+			)
 		}
 		normalizedRoot, hasRoot := values.AsQuantifiedObjectValue(
-			normalizedField.ChildValue())
+			normalizedField.ChildValue(),
+		)
 		claimed := normalized != outerValue
 		if !claimed && values.FlowedTypesEqual(root, candidate.root) {
 			claimed = true
@@ -2110,7 +2164,8 @@ func translateCorrelatedComparisonRanges(
 			merged := rebuilt.Merge(normalizedComparison)
 			if !merged.Complete() {
 				return nil, false, fmt.Errorf(
-					"comparison %d could not be rebuilt after translation", i)
+					"comparison %d could not be rebuilt after translation", i,
+				)
 			}
 			rebuilt = merged.Range
 		}
@@ -2214,7 +2269,8 @@ func buildCorrelatedFlatMapPlan(
 		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 	}
 	normalizedInner, innerChanged, err := normalizeCorrelatedExplodeCollectionPlan(
-		innerPlan, outerCorr, physicalOuter)
+		innerPlan, outerCorr, physicalOuter,
+	)
 	if err != nil {
 		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 	}
@@ -2223,7 +2279,8 @@ func buildCorrelatedFlatMapPlan(
 		innerExprForMemo = &scanPlanExpression{plan: innerPlan}
 	}
 	normalizedInner, innerChanged, err = normalizeCorrelatedScanComparisonPlanForOuterLayout(
-		innerPlan, outerCorr, physicalOuter, outerLayout)
+		innerPlan, outerCorr, physicalOuter, outerLayout,
+	)
 	if err != nil {
 		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 	}
@@ -2544,9 +2601,11 @@ func buildExistsCompensationChain(
 	belowFOD := inner
 	if len(belowFODPredicates) > 0 {
 		filterInnerQ := expressions.NamedPhysicalQuantifier(
-			innerQ.GetAlias(), call.MemoizeFinalExpression(inner))
+			innerQ.GetAlias(), call.MemoizeFinalExpression(inner),
+		)
 		filter, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
-			filterInnerQ, belowFODPredicates, innerCorrelation)
+			filterInnerQ, belowFODPredicates, innerCorrelation,
+		)
 		if err != nil {
 			return expressions.Quantifier{}, err
 		}
@@ -2558,13 +2617,15 @@ func buildExistsCompensationChain(
 	// child quantifier keeps the current bookkeeping alias, while advance()
 	// applies the caller's fresh-vs-preserved policy above the wrapper.
 	fodInnerQ := expressions.NamedPhysicalQuantifier(
-		innerQ.GetAlias(), call.MemoizeFinalExpression(belowFOD))
+		innerQ.GetAlias(), call.MemoizeFinalExpression(belowFOD),
+	)
 	flowedType, err := fodInnerQ.GetFlowedObjectType()
 	if err != nil {
 		return expressions.Quantifier{}, err
 	}
 	fod, err := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(
-		fodInnerQ, values.NewNullValue(flowedType))
+		fodInnerQ, values.NewNullValue(flowedType),
+	)
 	if err != nil {
 		return expressions.Quantifier{}, err
 	}
@@ -2576,7 +2637,8 @@ func buildExistsCompensationChain(
 			comparisonType = predicates.ComparisonIsNull
 		}
 		filterInnerQ := expressions.NamedPhysicalQuantifier(
-			innerQ.GetAlias(), call.MemoizeFinalExpression(fod))
+			innerQ.GetAlias(), call.MemoizeFinalExpression(fod),
+		)
 		// The existential residual tests the complete FirstOrDefault row, not a
 		// retained source window inside that row. Reusing innerCorrelation here
 		// is ambiguous when a multi-table inner already publishes a buried source
@@ -2595,7 +2657,8 @@ func buildExistsCompensationChain(
 			predicates.Comparison{Type: comparisonType},
 		)
 		filter, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
-			filterInnerQ, []predicates.QueryPredicate{residual}, innerCorrelation)
+			filterInnerQ, []predicates.QueryPredicate{residual}, innerCorrelation,
+		)
 		if err != nil {
 			return expressions.Quantifier{}, err
 		}
@@ -2831,7 +2894,8 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelectFrom(
 	// is actually referenced do we execute the exact clone through a private
 	// edge; unrelated outer alternatives stay live.
 	outerLayoutPlan, exactOuterAuthority, err := selectedExistentialOuterLayoutAuthority(
-		call, outerPlan, regularPreds, innerPlan, resultValue)
+		call, outerPlan, regularPreds, innerPlan, resultValue,
+	)
 	if err != nil {
 		call.Fail(err)
 		return
@@ -2860,7 +2924,8 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelectFrom(
 	// output layout proves this same-correlation/different-exact-type collision.
 	originalOuterCorr := outerCorr
 	outerCorr, err = collisionFreeExistentialOuterCorrelation(
-		call, outerLayoutPlan, outerCorr)
+		call, outerLayoutPlan, outerCorr,
+	)
 	if err != nil {
 		call.Fail(err)
 		return
@@ -2868,19 +2933,22 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelectFrom(
 	var originalOuterRoot, reboundOuterRoot values.QuantifiedObjectValue
 	if outerCorr != originalOuterCorr {
 		originalOuterRoot, reboundOuterRoot, err = existentialOuterWholeRowRoots(
-			outerLayoutPlan, originalOuterCorr, outerCorr)
+			outerLayoutPlan, originalOuterCorr, outerCorr,
+		)
 		if err != nil {
 			call.Fail(err)
 			return
 		}
 		regularPreds, err = translateExistentialWholeRowPredicates(
-			regularPreds, originalOuterRoot, reboundOuterRoot)
+			regularPreds, originalOuterRoot, reboundOuterRoot,
+		)
 		if err != nil {
 			call.Fail(err)
 			return
 		}
 		innerPlan, err = translateExistentialWholeRowPlanPredicates(
-			innerPlan, originalOuterRoot, reboundOuterRoot)
+			innerPlan, originalOuterRoot, reboundOuterRoot,
+		)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -2903,19 +2971,22 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelectFrom(
 		return
 	}
 	physicalOuter, err := values.NewQuantifiedObjectValue(
-		outerCorr, values.PhysicalCarrierType(outerLayout))
+		outerCorr, values.PhysicalCarrierType(outerLayout),
+	)
 	if err != nil {
 		call.Fail(err)
 		return
 	}
 	regularPreds, _, err = normalizeCorrelatedPredicatesForOuterLayout(
-		regularPreds, outerCorr, physicalOuter, outerLayout)
+		regularPreds, outerCorr, physicalOuter, outerLayout,
+	)
 	if err != nil {
 		call.Fail(err)
 		return
 	}
 	normalizedInner, innerChanged, err := normalizeCorrelatedScanComparisonPlanForOuterLayout(
-		innerPlan, outerCorr, physicalOuter, outerLayout)
+		innerPlan, outerCorr, physicalOuter, outerLayout,
+	)
 	if err != nil {
 		call.Fail(err)
 		return
@@ -2932,20 +3003,23 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelectFrom(
 	// the exact window below.
 	if reboundOuterRoot != nil {
 		resultValue, err = translateExistentialWholeRowValue(
-			resultValue, originalOuterRoot, reboundOuterRoot)
+			resultValue, originalOuterRoot, reboundOuterRoot,
+		)
 		if err != nil {
 			call.Fail(err)
 			return
 		}
 	}
 	resultValue, err = normalizeCorrelatedValueForOuterLayout(
-		resultValue, outerCorr, physicalOuter, outerLayout)
+		resultValue, outerCorr, physicalOuter, outerLayout,
+	)
 	if err != nil {
 		call.Fail(err)
 		return
 	}
 	outerLayoutDependent := existentialProgramsRequireRetainedOuterLayout(
-		regularPreds, innerPlan, outerLayout, resultValue)
+		regularPreds, innerPlan, outerLayout, resultValue,
+	)
 
 	// HOIST the below-FOD window rebase ABOVE the fast path.
 	// A fully-baked (AS+AT) seed's outer-leg refs must rebase to baked ofOrdinals
@@ -3069,7 +3143,8 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelectFrom(
 			originalOuterCorr, outerCorr, innerCorr,
 			physicalOuter, outerLayout,
 			exactOuterAuthority, outerLayoutDependent,
-			outerExpr, innerExpr, hasExistsFilter, negated, regularPreds) {
+			outerExpr, innerExpr, hasExistsFilter, negated, regularPreds,
+		) {
 			return
 		}
 	}
@@ -3184,7 +3259,8 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelectFrom(
 	// outerCorr/innerCorr; fresh wrapper aliases prevent alias-aware memo
 	// interning from collapsing the below-FOD and existential residual filters.
 	innerQ := expressions.NamedPhysicalQuantifier(
-		quants[1].GetAlias(), call.MemoizeExpression(innerExpr))
+		quants[1].GetAlias(), call.MemoizeExpression(innerExpr),
+	)
 	if innerIsExistential {
 		innerQ, err = buildExistsCompensationChain(
 			call, innerQ, innerPlan, innerCorr, joinPreds,
@@ -3226,7 +3302,8 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelectFrom(
 		outerExpressionRef = call.MemoizeFinalExpression(outerExpr)
 	}
 	outerQ := expressions.NamedPhysicalQuantifier(
-		quants[0].GetAlias(), outerExpressionRef)
+		quants[0].GetAlias(), outerExpressionRef,
+	)
 
 	if len(outerOnlyPreds) > 0 {
 		ofInnerQ := expressions.NamedPhysicalQuantifier(outerQ.GetAlias(),
@@ -3237,7 +3314,8 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelectFrom(
 			return
 		}
 		outerQ = expressions.NewPhysicalQuantifier(
-			call.MemoizeFinalExpression(outerFilter))
+			call.MemoizeFinalExpression(outerFilter),
+		)
 	}
 
 	// The pure-map existential FlatMap is its own cascades expression carrying
@@ -3324,7 +3402,8 @@ func collisionFreeExistentialOuterCorrelation(
 	carrier := layout.Carrier()
 	if carrier == nil {
 		return values.CorrelationIdentifier{}, fmt.Errorf(
-			"existential outer layout has no exact carrier")
+			"existential outer layout has no exact carrier",
+		)
 	}
 	for _, source := range layout.WindowSources() {
 		if source == nil || source.Correlation() != candidate ||
@@ -3375,7 +3454,8 @@ func predicateCorrelationProvidedByOuterLayout(
 				return true
 			})
 			return value, nil
-		})
+		},
+	)
 	return err == nil && seen && provided
 }
 
@@ -3718,16 +3798,19 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 				continue
 			}
 			outerVal := r.matchJoinPKPredicate(
-				cp, outerCorrelation, innerCorrelation, pkIdent, innerFrontier)
+				cp, outerCorrelation, innerCorrelation, pkIdent, innerFrontier,
+			)
 			if outerVal == nil && outerSourceCorrelation != outerCorrelation {
 				outerVal = r.matchJoinPKPredicate(
-					cp, outerSourceCorrelation, innerCorrelation, pkIdent, innerFrontier)
+					cp, outerSourceCorrelation, innerCorrelation, pkIdent, innerFrontier,
+				)
 			}
 			if outerVal == nil {
 				continue
 			}
 			normalizedOuter, operandCorrelation, retainedWindow, admitted, admitErr := admitCorrelatedFastPathOuterValue(
-				outerVal, wholeOuterBinding, outerLayout)
+				outerVal, wholeOuterBinding, outerLayout,
+			)
 			if admitErr != nil {
 				call.Fail(admitErr)
 				return true
@@ -3736,12 +3819,14 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 				continue
 			}
 			comparisonRange, ok := correlatedExistsComparisonRange(
-				normalizedOuter, operandCorrelation)
+				normalizedOuter, operandCorrelation,
+			)
 			if !ok {
 				return false
 			}
 			correlatedScan := innerScan.WithScanComparisons(
-				[]*predicates.ComparisonRange{comparisonRange})
+				[]*predicates.ComparisonRange{comparisonRange},
+			)
 			requiresExactOuter := exactOuterAuthority || outerLayoutDependent || retainedWindow ||
 				outerCorrelation != outerSourceCorrelation
 			r.yieldExistsFlatMap(
@@ -3793,16 +3878,19 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 				continue
 			}
 			outerVal := r.matchJoinPKPredicate(
-				cp, outerCorrelation, innerCorrelation, idxIdent, innerFrontier)
+				cp, outerCorrelation, innerCorrelation, idxIdent, innerFrontier,
+			)
 			if outerVal == nil && outerSourceCorrelation != outerCorrelation {
 				outerVal = r.matchJoinPKPredicate(
-					cp, outerSourceCorrelation, innerCorrelation, idxIdent, innerFrontier)
+					cp, outerSourceCorrelation, innerCorrelation, idxIdent, innerFrontier,
+				)
 			}
 			if outerVal == nil {
 				continue
 			}
 			normalizedOuter, operandCorrelation, retainedWindow, admitted, admitErr := admitCorrelatedFastPathOuterValue(
-				outerVal, wholeOuterBinding, outerLayout)
+				outerVal, wholeOuterBinding, outerLayout,
+			)
 			if admitErr != nil {
 				call.Fail(admitErr)
 				return true
@@ -3812,7 +3900,8 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			}
 			// Build correlated index scan.
 			comparisonRange, ok := correlatedExistsComparisonRange(
-				normalizedOuter, operandCorrelation)
+				normalizedOuter, operandCorrelation,
+			)
 			if !ok {
 				continue
 			}
