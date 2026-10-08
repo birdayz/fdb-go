@@ -355,11 +355,18 @@ jobs:
         # starving.
         #
         # The corpora are CONTENT gates, not concurrency probes: they drive the same
-        # driver → planner → executor stack sqldriver_test already drives from 1292
-        # concurrent tests, over per-scenario state that is shared with nothing. The
+        # driver → planner → executor stack the end-to-end SQL suite already drives
+        # from ~1600 concurrent tests, over per-scenario state that is shared with nothing. The
         # race-coverage delta is ~0 and the cost is the merge queue. They keep
         # running non-instrumented in "Build, Lint & Test" on every PR, and under
         # the detector in nightly-coverage's race step.
+        #
+        # The end-to-end SQL suite (//pkg/relational/sqltest/...) is excluded for
+        # the same reason: it is content coverage of that stack, not a concurrency
+        # probe, and under -race on this runner it alone exceeded the 1h budget.
+        # It runs non-instrumented in "Build, Lint & Test". The SQL layer's raced
+        # target is //pkg/relational/sqldriver: the driver's own tests (connection,
+        # transactions, rows, options) and the simfdb fault suites.
         #
         # CASCADES is the third scope. Note precisely what it adds: the relational
         # scope already LINKS AND DRIVES the Cascades planner, so planner code was
@@ -374,7 +381,7 @@ jobs:
           echo "RACE_JOB_START=$(date -u +%FT%TZ)" >> "$GITHUB_ENV"
           bazelisk shutdown
           RACE_BASE="$HOME/.cache/bazel/_race_output_base"
-          REL_SCOPE="//pkg/relational/... -//pkg/relational/conformance/..."
+          REL_SCOPE="//pkg/relational/... -//pkg/relational/conformance/... -//pkg/relational/sqltest/..."
           CLIENT_SCOPE="//pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/..."
           CASCADES_SCOPE="//pkg/recordlayer/query/plan/cascades/..."
           # No-op guard PER SCOPE (codex): count each gate independently. Counting the

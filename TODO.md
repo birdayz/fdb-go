@@ -1483,7 +1483,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   targets (manual ones included): 109 pass, 2 failed and were fixed in
   `c116de63b` (a typed NULL CASE branch lost its type in result metadata;
   stale CQ-74 oracle pins), both re-run green.
-- [ ] Split `sqldriver_test` (1748 tests, ~7.5 min, 77% of its time in ~40
+- [x] Split `sqldriver_test` — done on split/sqltest: the end-to-end suite is
+  `pkg/relational/sqltest/<area>` packages + the manual whole-corpus census target;
+  `sqldriver_test` keeps the driver's own tests and is the race lane's SQL target.
+  Original item: Split `sqldriver_test` (1748 tests, ~7.5 min, 77% of its time in ~40
   sweep/probe tests) so its cheap regression pins return to the fast lane.
   A fast-lane `sqldriver_fast_test` (same binary, 45 heavy tests skipped) was
   tried and reverted (2026-10-07): ~170 s on every commit hook is too slow for

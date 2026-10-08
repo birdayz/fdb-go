@@ -109,6 +109,16 @@ build:
 test *args:
     bazelisk test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress {{args}}
 
+# The end-to-end SQL suite: the driver's own tests plus every sqltest package
+# (cached; an edited test reruns only its own package).
+sqltest *args:
+    bazelisk test //pkg/relational/sqldriver:all //pkg/relational/sqltest/... {{args}}
+
+# The whole sqltest corpus as one binary: the only run that asserts the census
+# floors. Manual target; nightly-coverage and `just test-full` run it too.
+census *args:
+    bazelisk test //pkg/relational/sqltest/census:census_test {{args}}
+
 # Thorough lane: all Bazel test targets, including manual stress/oracle targets.
 # Query explicitly: //... alone silently omits manual targets. Cache stays enabled.
 test-full *args:

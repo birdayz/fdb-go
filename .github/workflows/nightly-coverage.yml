@@ -118,7 +118,7 @@ jobs:
       - name: Run tests with coverage
         if: steps.window.outputs.ok == 'true'
         id: coverage
-        run: bazelisk coverage //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --combined_report=lcov --test_summary=detailed
+        run: bazelisk coverage //... //cmd/fdb-stacktester/bindingtester:bindingtester_test //pkg/relational/sqltest/census:census_test --combined_report=lcov --test_summary=detailed
 
       - name: Race detector (FDB client + record layer)
         # `!cancelled()`, not the implicit success(): the step immediately above
