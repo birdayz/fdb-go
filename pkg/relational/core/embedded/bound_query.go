@@ -393,7 +393,10 @@ func lowerBoundExists(bound *boundQuery) (loweredExists, error) {
 			filter = &logical.LogicalFilter{Input: op}
 		}
 		if filter.HasQualify {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery, "correlated EXISTS over a GROUP BY / HAVING subquery is not supported")
+			// QUALIFY filters the finished rows, so nothing below it can be
+			// lifted: the body is kept whole, its correlations read from the
+			// outer binding where they are, as a HAVING body is.
+			return op, nil
 		}
 		from, on, err := lowerBoundOn(filter.Input, bound.parent)
 		if err != nil {

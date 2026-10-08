@@ -184,7 +184,11 @@ Never mark a whole workstream complete because one of its subitems passed.
       references written by name (`StarScopeJavaProbe`
       exists_outer_star_group*); `select-a-star.yamsql` passes (150 files,
       9344 queries). A correlated HAVING inside EXISTS keeps its grouped
-      body whole (`CorrelatedHavingExistsJavaProbe`, 6 rows).
+      body whole (`CorrelatedHavingExistsJavaProbe`, 6 rows). QUALIFY in an
+      aggregated block is a HAVING conjunct over the aggregate's output, as
+      Java conjoins it, and a correlated QUALIFY inside EXISTS keeps its body
+      whole (same probe, 17 rows; an aggregate in QUALIFY fails in Java and
+      is recorded in DIVERGENCES.md).
       IN-list typing follows Java's order (literal array identical types,
       then __internal_array promotion, then the IN's probe promotion,
       22000); a comparison is an IN item. `InComparandSourceJavaProbe` has

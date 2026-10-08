@@ -255,30 +255,29 @@ func TestBoundExistsTruthAfterPagination(t *testing.T) {
 			name: "having_can_remove_the_global_group",
 			sql:  "SELECT COUNT(*) FROM t i WHERE i.id = o.id HAVING COUNT(*) > 0",
 		},
+		// QUALIFY keeps the body whole: an aggregated block's QUALIFY is a
+		// HAVING conjunct over the aggregate's output, a plain block's filters
+		// the finished rows; either way existence is evaluated, never folded
+		// (CorrelatedHavingExistsJavaProbe qualify_*).
 		{
-			name:    "qualify_can_remove_the_global_group",
-			wantErr: true,
-			sql:     "SELECT COUNT(*) FROM t i WHERE i.id = o.id QUALIFY 1 = 1",
+			name: "qualify_can_remove_the_global_group",
+			sql:  "SELECT COUNT(*) FROM t i WHERE i.id = o.id QUALIFY 1 = 1",
 		},
 		{
-			name:    "false_qualify_cannot_be_folded_into_global_group_truth",
-			sql:     "SELECT COUNT(*) FROM t i WHERE i.id = o.id QUALIFY 1 = 0",
-			wantErr: true,
+			name: "false_qualify_cannot_be_folded_into_global_group_truth",
+			sql:  "SELECT COUNT(*) FROM t i WHERE i.id = o.id QUALIFY 1 = 0",
 		},
 		{
-			name:    "plain_correlated_qualify_retains_admission_boundary",
-			sql:     "SELECT id FROM t i WHERE i.id = o.id QUALIFY id > 0",
-			wantErr: true,
+			name: "plain_correlated_qualify_retains_admission_boundary",
+			sql:  "SELECT id FROM t i WHERE i.id = o.id QUALIFY id > 0",
 		},
 		{
-			name:    "qualify_without_where_retains_admission_boundary",
-			sql:     "SELECT o.id FROM t i QUALIFY id > 0",
-			wantErr: true,
+			name: "qualify_without_where_retains_admission_boundary",
+			sql:  "SELECT o.id FROM t i QUALIFY id > 0",
 		},
 		{
-			name:    "cte_envelope_retains_qualify_boundary",
-			sql:     "WITH c AS (SELECT id FROM t) SELECT COUNT(*) FROM c WHERE id = o.id QUALIFY 1 = 0",
-			wantErr: true,
+			name: "cte_envelope_retains_qualify_boundary",
+			sql:  "WITH c AS (SELECT id FROM t) SELECT COUNT(*) FROM c WHERE id = o.id QUALIFY 1 = 0",
 		},
 		{
 			name: "derived_qualify_does_not_change_owning_block_admission",

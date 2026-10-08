@@ -4843,6 +4843,12 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 		resolver.SetSubqueryPlanner(clause)
 	}
 	pred, err := resolver.WalkPredicate(sq.havingExpr)
+	if err == nil && sq.qualifyAfterAggregate != nil {
+		var qualify predicates.QueryPredicate
+		if qualify, err = resolver.WalkPredicate(sq.qualifyAfterAggregate); err == nil {
+			pred = predicates.NewAnd(pred, qualify)
+		}
+	}
 	if err != nil {
 		// SEMANTIC errors surface with Java's codes: a bare HAVING re-read
 		// of an ambiguous grouped column is 42702 (Java AMBIGUOUS_COLUMN),

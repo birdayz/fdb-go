@@ -341,12 +341,15 @@ func TestRetainQualifyProvenanceOwnership(t *testing.T) {
 			t.Parallel()
 			filter := logical.NewFilterWithPredicate(logical.NewScan("T", "I"), predicates.NewConstantPredicate(predicates.TriTrue), "")
 			var root logical.LogicalOperator
-			wantErr := false
+			wantErr, wantMarked := false, true
 			switch name {
 			case "filter":
 				root = filter
 			case "aggregate":
+				// An aggregated block's QUALIFY is a HAVING conjunct; the WHERE
+				// filter below the aggregate is not its owner.
 				root = logical.NewProject(logical.NewAggregate(filter, nil, nil, nil, false), []string{"COUNT(*)"}, nil)
+				wantMarked = false
 			case "derived_boundary":
 				root = derivedSourceCarrier("D", "PRIVATE_D", filter)
 				wantErr = true
@@ -365,8 +368,8 @@ func TestRetainQualifyProvenanceOwnership(t *testing.T) {
 				if filter.HasQualify {
 					t.Fatal("QUALIFY provenance crossed the derived source boundary")
 				}
-			} else if err != nil || !filter.HasQualify {
-				t.Fatalf("owning filter not marked: hasQualify=%v, err=%v", filter.HasQualify, err)
+			} else if err != nil || filter.HasQualify != wantMarked {
+				t.Fatalf("hasQualify=%v, want %v, err=%v", filter.HasQualify, wantMarked, err)
 			}
 		})
 	}

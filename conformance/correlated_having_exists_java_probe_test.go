@@ -2,9 +2,10 @@
 
 package conformance_test
 
-// An EXISTS over a grouped body whose HAVING reads the enclosing row
-// (`EXISTS (SELECT … GROUP BY … HAVING … outer.c …)`), compared with Java's
-// rows.
+// An EXISTS over a grouped body whose HAVING or QUALIFY reads the enclosing
+// row (`EXISTS (SELECT … GROUP BY … HAVING … outer.c …)`), and QUALIFY over
+// an aggregated block, which filters the aggregate's output as HAVING does,
+// compared with Java's rows.
 
 import (
 	"context"
@@ -69,11 +70,31 @@ var _ = Describe("CorrelatedHavingExistsJavaProbe", func() {
 			{"having_count_vs_outer", "SELECT B1 FROM B WHERE EXISTS (SELECT A2 FROM A GROUP BY A2 HAVING COUNT(*) > B.B1)"},
 			{"having_and_where_correlated", "SELECT B1 FROM B WHERE EXISTS (SELECT A2 FROM A WHERE A.A1 >= B.B1 GROUP BY A2 HAVING MAX(A1) > B.B2 / 10)"},
 			{"having_uncorrelated_where_correlated", "SELECT B1 FROM B WHERE EXISTS (SELECT A2 FROM A WHERE A.A2 = B.B2 GROUP BY A2 HAVING COUNT(*) > 1)"},
+			{"qualify_false_count", "SELECT B1 FROM B WHERE EXISTS (SELECT COUNT(*) FROM A WHERE A.A2 = B.B2 QUALIFY 1 = 0)"},
+			{"qualify_true_count", "SELECT B1 FROM B WHERE EXISTS (SELECT COUNT(*) FROM A WHERE A.A2 = B.B2 QUALIFY 1 = 1)"},
+			{"qualify_plain", "SELECT B1 FROM B WHERE EXISTS (SELECT A1 FROM A WHERE A.A2 = B.B2 QUALIFY A1 > 3)"},
+			{"standalone_qualify_false_count", "SELECT COUNT(*) FROM A WHERE A2 = 10 QUALIFY 1 = 0"},
+			{"standalone_qualify_count_cmp", "SELECT COUNT(*) AS C FROM A QUALIFY C > 100"},
+			{"standalone_qualify_group", "SELECT A2, COUNT(*) AS C FROM A GROUP BY A2 QUALIFY C > 1"},
+			{"standalone_qualify_plain", "SELECT A1 FROM A QUALIFY A1 > 3"},
+			{"standalone_qualify_group_key", "SELECT A2, COUNT(*) FROM A GROUP BY A2 QUALIFY A2 > 10"},
+			{"standalone_qualify_and_having", "SELECT A2, COUNT(*) FROM A GROUP BY A2 HAVING COUNT(*) > 1 QUALIFY A2 < 30"},
+			{"standalone_qualify_aggregate", "SELECT A2, COUNT(*) FROM A GROUP BY A2 QUALIFY COUNT(*) > 1"},
+			{"standalone_qualify_where_group", "SELECT A2, MAX(A1) FROM A WHERE A1 > 1 GROUP BY A2 QUALIFY A2 = 20"},
 			{"having_ungrouped", "SELECT B1 FROM B WHERE EXISTS (SELECT COUNT(*) FROM A WHERE A.A2 = B.B2 HAVING COUNT(*) > 1)"},
 		} {
 			j := render(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
 			g := render(goRunner.RunWithSetup(ctx, schema, setup, c.sql))
 			GinkgoWriter.Printf("CORRHAVING %s\n  java %s\n  go   %s\n", c.name, j, g)
+			// An aggregate call in QUALIFY fails inside Java (XXXXX); Go
+			// evaluates it as a HAVING conjunct (DIVERGENCES.md "An aggregate
+			// in QUALIFY"). The row reddens when either side changes.
+			if c.name == "standalone_qualify_aggregate" {
+				if j != "ERR XXXXX" || g != "[10 2] [20 3]" {
+					mismatches = append(mismatches, fmt.Sprintf("%s: java %s, go %s", c.name, j, g))
+				}
+				continue
+			}
 			if j != g {
 				mismatches = append(mismatches, fmt.Sprintf("%s: java %s, go %s", c.name, j, g))
 			}

@@ -24,9 +24,9 @@ tests:
     rows:
       - ["Alice"]
 
-  # QUALIFY is a separate admission boundary even when its resolved predicate
-  # folds to a constant. Dropping its provenance during bound-query construction
-  # must not turn COUNT's one-row result into a constant-true EXISTS.
+  # An aggregated block's QUALIFY filters the aggregate's output, as HAVING
+  # does (Java conjoins them), even when it folds to a constant: COUNT's
+  # one-row result must not become a constant-true EXISTS.
   - query: >
       SELECT c.name FROM customers c
       WHERE EXISTS (
@@ -34,7 +34,7 @@ tests:
         WHERE o.customer_id = c.id
         QUALIFY 1 = 0
       )
-    error_code: "0AF00"
+    rows: []
 
   - query: >
       SELECT c.name FROM customers c
@@ -43,7 +43,11 @@ tests:
         WHERE o.customer_id = c.id
         QUALIFY 1 = 0
       )
-    error_code: "0AF00"
+      ORDER BY c.name
+    rows:
+      - ["Alice"]
+      - ["Bob"]
+      - ["Charlie"]
 
   # OVER must be rejected before an aggregate can acquire an exactly-one-row
   # proof. A windowed aggregate preserves input cardinality instead.

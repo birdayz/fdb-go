@@ -92,6 +92,12 @@ func retainQualifyProvenance(op logical.LogicalOperator) error {
 			filter.HasQualify = true
 			return nil
 		}
+		// An aggregated block's QUALIFY is a HAVING conjunct over the
+		// aggregate's output; a predicate on grouping keys alone may have been
+		// pushed below it, and the WHERE filter there is not QUALIFY's.
+		if _, ok := cur.(*logical.LogicalAggregate); ok {
+			return nil
+		}
 		next, ok := unaryInput(cur)
 		if !ok {
 			break

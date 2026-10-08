@@ -934,6 +934,14 @@ ON, or in an inner ON before a later RIGHT join, is answered as Java does: it st
 ON. Pinned by `ExistsInnerShadowJavaProbe` (`on_nested_exists` asserts the refusal and
 Java's [2]) and `TestFDB_CorrelatedExistsNestedSubqueryInOnDeclines`.
 
+### An aggregate in QUALIFY (Java fails, Go answers)
+
+`SELECT a2, COUNT(*) FROM a GROUP BY a2 QUALIFY COUNT(*) > 1`: Java fails with an internal error
+(XXXXX); Go evaluates the QUALIFY as a HAVING conjunct over the aggregate's output, which is
+where Java places QUALIFY in an aggregated block (QueryVisitor.visitSimpleTable), and answers.
+QUALIFY over grouping keys, with or without HAVING, answers as Java
+(`CorrelatedHavingExistsJavaProbe`).
+
 ### A LEFT JOIN over a lateral unnest (Go refuses)
 
 `SELECT … FROM t1, t1.arr AS r LEFT JOIN t2 ON r = t2.id`: Java answers; Go fails with 0AF00

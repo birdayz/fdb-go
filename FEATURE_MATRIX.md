@@ -23,13 +23,13 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**404 scenarios · 3427 query/assertion cases** across 18 feature areas — 3008 supported, 105 unsupported-feature pins, 314 error-path pins.
+**404 scenarios · 3427 query/assertion cases** across 18 feature areas — 3010 supported, 103 unsupported-feature pins, 314 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 63 | 431 | 395 | 19 | 17 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
-| Subqueries (EXISTS / IN / scalar) | 47 | 323 | 268 | 32 | 23 |
+| Subqueries (EXISTS / IN / scalar) | 47 | 323 | 270 | 30 | 23 |
 | CTEs | 15 | 202 | 161 | 4 | 37 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 14 | 78 | 67 | 5 | 6 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 241 | 201 | 3 | 37 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 47 | 481 | 417 | 9 | 55 |
-| **Total** | **404** | **3427** | **3008** | **105** | **314** |
+| **Total** | **404** | **3427** | **3010** | **103** | **314** |
 
 ## Aggregates & GROUP BY
 
@@ -206,7 +206,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `exists_multi_table_inner` | 2 | 2 | 0 | 0 | EXISTS with multi-table inner query |
 | `exists_multivalued_version_index` | 1 | 1 | 0 | 0 | An EXISTS over a repeated field matches a multi-valued index whose key follows |
 | `exists_subquery_java` | 8 | 8 | 0 | 0 | EXISTS and NOT EXISTS subquery patterns. |
-| `exists_with_aggregate` | 12 | 9 | 3 | 0 | EXISTS subquery with aggregate |
+| `exists_with_aggregate` | 12 | 11 | 1 | 0 | EXISTS subquery with aggregate |
 | `exists_with_or` | 3 | 3 | 0 | 0 | EXISTS subqueries combined with OR predicates. |
 | `having_not_exists` | 1 | 1 | 0 | 0 | HAVING with NOT EXISTS subquery |
 | `in_list_advanced` | 10 | 8 | 0 | 2 | Advanced IN-list scenarios from Java's in-predicate.yamsql: |

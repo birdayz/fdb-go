@@ -971,6 +971,11 @@ type selectClassification struct {
 	// the vector K-NN ROW_NUMBER() OVER (... ORDER BY <distance>) <= K
 	// predicate, which lowers to a DistanceRank comparison.
 	qualifyExpr antlrgen.IExpressionContext
+	// qualifyAfterAggregate is the QUALIFY of an aggregated block that also
+	// has a HAVING: Java conjoins QUALIFY with HAVING over the aggregate's
+	// output (QueryVisitor.visitSimpleTable), so it is walked with havingExpr.
+	// Without a HAVING it is havingExpr itself.
+	qualifyAfterAggregate antlrgen.IExpressionContext
 	// postAggExprs is populated by the visitor's visitSelectGroupBy when
 	// post-aggregation computed projections are emitted.
 	postAggExprs []antlrgen.IExpressionContext
@@ -1939,6 +1944,17 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 	havingCtx := simpleTable.HavingClause()
 	if havingCtx != nil {
 		cls.havingExpr = havingCtx.GetHavingExpr()
+	}
+	// QUALIFY joins WHERE in a plain block but HAVING in an aggregated one,
+	// filtering the aggregate's output rows (Java QueryVisitor.visitSimpleTable
+	// conjoins it with whichever filter the select carries).
+	if cls.qualifyExpr != nil && (cls.countStar || len(cls.aggCols) > 0 || len(cls.groupBy) > 0) {
+		if cls.havingExpr == nil {
+			cls.havingExpr = cls.qualifyExpr
+		} else {
+			cls.qualifyAfterAggregate = cls.qualifyExpr
+		}
+		cls.qualifyExpr = nil
 	}
 
 	// Redirect aggCols groupCol entries that came from a SELECT-list
