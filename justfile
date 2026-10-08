@@ -104,10 +104,16 @@ generate-parser:
 build:
     bazelisk build //...
 
+# Concurrent test targets for the local lanes: a third of the cores, at least
+# the 4 .bazelrc sets for CI's 4-vCPU runners (which call bazelisk directly).
+# Measured on 24 cores, the whole sqltest suite uncached: 261 s at 4, 145 s at
+# 8, 154 s at 12 (CPU-bound beyond that).
+test_jobs := `n=$(( $(nproc) / 3 )); [ "$n" -lt 4 ] && n=4; echo $n`
+
 # Standard edit/commit loop: unit tests and bounded integration tests, with nogo.
 # Heavy suites are tagged test-full (or conformance_java/stress/manual).
 test *args:
-    bazelisk test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress {{args}}
+    bazelisk test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress --local_test_jobs={{test_jobs}} {{args}}
 
 # The end-to-end SQL suite: the driver's own tests plus every sqltest package
 # (cached; an edited test reruns only its own package).
@@ -126,7 +132,7 @@ test-full *args:
     set -euo pipefail
     targets=$(bazelisk query 'kind(".*_test", //...)' --output=label)
     test -n "$targets" || { echo 'No test targets found' >&2; exit 1; }
-    bazelisk test $targets {{args}}
+    bazelisk test $targets --local_test_jobs={{test_jobs}} {{args}}
 
 # Convenience: run ONLY the full committed RFC-201 factory corpus, uncached.
 # It is part of `just test-full` too; this recipe exists for a forced standalone
