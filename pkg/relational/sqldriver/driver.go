@@ -39,6 +39,7 @@ import (
 	"database/sql/driver"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/internal/fdbclient"
@@ -219,15 +220,22 @@ type Connector struct {
 	// by the DSN's PLAN_CACHE_* options.
 	planCache *embedded.RelationalPlanCache
 	// warmUp is the stored-query warm-up's outcome (Java's
-	// OFFLINE_STORED_QUERIES_* counts).
-	warmUp  embedded.StoredQueryWarmUpCounts
+	// OFFLINE_STORED_QUERIES_* counts). Atomic because StoredQueryWarmUp is a
+	// public accessor a caller may poll while another goroutine's first
+	// Connect is still inside once.Do; nil until initialize stores it.
+	warmUp  atomic.Pointer[embedded.StoredQueryWarmUpCounts]
 	initErr error
 }
 
 // StoredQueryWarmUp returns what the connector's start planned into its plan
 // cache: Java's OFFLINE_STORED_QUERIES_* counts. Zero before the first
 // connection.
-func (c *Connector) StoredQueryWarmUp() embedded.StoredQueryWarmUpCounts { return c.warmUp }
+func (c *Connector) StoredQueryWarmUp() embedded.StoredQueryWarmUpCounts {
+	if w := c.warmUp.Load(); w != nil {
+		return *w
+	}
+	return embedded.StoredQueryWarmUpCounts{}
+}
 
 // Connect opens a connection. Honors ctx.Done() for cancellation.
 // On first call, initialises the FDB database and catalog (idempotent).
@@ -320,8 +328,9 @@ func (c *Connector) initialize(ctx context.Context) error {
 	// Java's RecordLayerEngine.makeEngine: the engine's start plans every
 	// template's stored queries into the shared cache. Failures are logged,
 	// never returned.
-	c.warmUp = embedded.WarmStoredQueries(ctx, c.planCache,
+	warmUp := embedded.WarmStoredQueries(ctx, c.planCache,
 		embedded.StoredQueryTemplates(ctx, c.fdbDB, c.cat))
+	c.warmUp.Store(&warmUp)
 	return nil
 }
 

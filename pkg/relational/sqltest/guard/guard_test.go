@@ -49,6 +49,7 @@ var driverTestFiles = []string{
 	"sim_tx_budget_midpage_test.go",
 	"sql_integration_test.go",
 	"statement_options_fdb_test.go",
+	"stored_query_warmup_race_fdb_test.go",
 	"strict_leg_livelock_backstop_test.go",
 	"time_budget_ceiling_fdb_test.go",
 	"transaction_probe_test.go",
