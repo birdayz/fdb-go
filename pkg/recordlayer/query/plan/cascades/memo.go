@@ -497,6 +497,7 @@ func (m *Memo) AddExpression(ref *expressions.Reference, expr expressions.Relati
 func (m *Memo) memoizeLeaf(expr expressions.RelationalExpression) *expressions.Reference {
 	h := expr.HashCodeWithoutChildren()
 	requiredCorrelations := expressions.GetCorrelatedToOfExpression(expr)
+	var comparison expressions.MemoComparison
 	for _, ref := range m.leafRefs {
 		if ref.Stage() != m.targetStage() {
 			continue
@@ -505,7 +506,7 @@ func (m *Memo) memoizeLeaf(expr expressions.RelationalExpression) *expressions.R
 			if !m.isEligibleForReuse(ref, requiredCorrelations) {
 				break
 			}
-			if expressions.MemoEqualWithHashes(member, expr, h, h) {
+			if comparison.MemberEqual(ref, member, expr, h) {
 				return ref
 			}
 		}
@@ -536,13 +537,14 @@ func (m *Memo) memoizeNonLeaf(expr expressions.RelationalExpression, qs []expres
 		}
 		return false
 	})
+	var comparison expressions.MemoComparison
 	for ref := range candidates {
 		for member := range ref.MembersWithHash(h) {
 			// A hash miss cannot reuse this member; do not walk its whole group DAG.
 			if !m.isEligibleForReuse(ref, requiredCorrelations) {
 				break
 			}
-			if expressions.MemoEqualWithHashes(member, expr, h, h) {
+			if comparison.MemberEqual(ref, member, expr, h) {
 				return ref
 			}
 		}

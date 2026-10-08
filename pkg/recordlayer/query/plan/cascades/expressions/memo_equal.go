@@ -24,6 +24,26 @@ func MemoEqualWithHashes(a, b RelationalExpression, aHash, bHash uint64) bool {
 	return equality.equal(a, b, EmptyAliasMap())
 }
 
+// MemoComparison runs several MemoEqual tests against one unchanged graph,
+// sharing what they derive. Discard it before the graph changes.
+type MemoComparison struct {
+	equality memoEquality
+}
+
+// MemberEqual is MemoEqualWithHashes for a member of ref, with the hash both
+// sides share.
+func (c *MemoComparison) MemberEqual(ref *Reference, member, expression RelationalExpression, hash uint64) bool {
+	if member == nil || expression == nil {
+		return member == nil && expression == nil
+	}
+	if c.equality.hashes == nil {
+		c.equality.hashes = make(map[RelationalExpression]uint64)
+	}
+	c.equality.hashes[member] = hash
+	c.equality.hashes[expression] = hash
+	return c.equality.equalIn(canonicalReferenceReadOnly(ref), member, nil, expression, EmptyAliasMap())
+}
+
 type refPair struct{ a, b *Reference }
 
 type memoEquality struct {
