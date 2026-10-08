@@ -88,6 +88,11 @@ var _ = Describe("CorrelatedHavingExistsJavaProbe", func() {
 			{"having_exists_correlated", "SELECT B1 FROM B GROUP BY B1 HAVING EXISTS (SELECT A1 FROM A WHERE A.A1 = B.B1)"},
 			{"having_exists_and_agg", "SELECT B1 FROM B GROUP BY B1 HAVING COUNT(*) > 0 AND EXISTS (SELECT A1 FROM A)"},
 			{"qualify_exists_grouped", "SELECT B1 FROM B GROUP BY B1 QUALIFY EXISTS (SELECT A1 FROM A)"},
+			{"qualify_nongrouped_with_having", "SELECT A2, COUNT(*) FROM A GROUP BY A2 HAVING COUNT(*) > 0 QUALIFY A1 > 3"},
+			{"qualify_nongrouped_alone", "SELECT A2, COUNT(*) FROM A GROUP BY A2 QUALIFY A1 > 3"},
+			{"qualify_nongrouped_ungrouped", "SELECT COUNT(*) FROM A QUALIFY A1 > 3"},
+			{"qualify_aggregate_with_having", "SELECT A2, COUNT(*) FROM A GROUP BY A2 HAVING COUNT(*) > 0 QUALIFY MAX(A1) > 3"},
+			{"having_nongrouped", "SELECT A2, COUNT(*) FROM A GROUP BY A2 HAVING A1 > 3"},
 			{"having_ungrouped", "SELECT B1 FROM B WHERE EXISTS (SELECT COUNT(*) FROM A WHERE A.A2 = B.B2 HAVING COUNT(*) > 1)"},
 		} {
 			j := render(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))

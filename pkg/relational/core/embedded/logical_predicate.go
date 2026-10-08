@@ -56,6 +56,7 @@ import (
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
 	"fdb.dev/pkg/relational/core/query/semantic/rlcatalog"
+	"github.com/antlr4-go/antlr/v4"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -2777,6 +2778,9 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 		}
 	}
 
+	if err := validateQualifyOverAggregate(sq, resolver); err != nil {
+		return nil, err
+	}
 	if len(sq.groupBy) > 0 && !sq.countStar {
 		if err := validateGroupByProjection(sq, md, resolver); err != nil {
 			return nil, err
@@ -5411,6 +5415,63 @@ func findProjection(op logical.LogicalOperator) *logical.LogicalProject {
 			return nil
 		}
 		cur = ch[0]
+	}
+	return nil
+}
+
+// validateQualifyOverAggregate: an aggregated block's QUALIFY is resolved, in
+// Java, against the GroupBy's output (QueryVisitor.visitSimpleTable resolves it
+// after setOperator(groupBy)), where only the grouping keys are columns. Any
+// other column it names, an aggregate's operand included, is 42703 "Attempting
+// to query non existing column X". References to an enclosing query are left
+// to it.
+func validateQualifyOverAggregate(sq *selectQuery, resolver *expr.Resolver) error {
+	qualify := sq.qualifyAfterAggregate
+	if sq.havingIsQualify {
+		qualify = sq.havingExpr
+	}
+	if qualify == nil {
+		return nil
+	}
+	keys := make(map[string]bool)
+	for _, gb := range sq.groupBy {
+		if gb.expr != nil {
+			continue
+		}
+		keys[parseColRef(strings.ToUpper(gb.display)).bare()] = true
+		if gb.qualified {
+			keys[strings.ToUpper(gb.bare)] = true
+		}
+	}
+	isOuter := outerColumnRefFilter(sq, resolver)
+	var bad string
+	var visit func(n antlr.Tree)
+	visit = func(n antlr.Tree) {
+		if n == nil || bad != "" {
+			return
+		}
+		switch n.(type) {
+		case *antlrgen.QueryContext, antlrgen.IQueryExpressionBodyContext:
+			return
+		}
+		if c, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
+			if isOuter != nil && isOuter(c.FullColumnName().FullId()) {
+				return
+			}
+			uids := c.FullColumnName().FullId().AllUid()
+			bare := functions.NormalizeIdentifier(uids[len(uids)-1].GetText())
+			if !keys[strings.ToUpper(bare)] {
+				bad = bare
+			}
+			return
+		}
+		for i := 0; i < n.GetChildCount(); i++ {
+			visit(n.GetChild(i))
+		}
+	}
+	visit(qualify)
+	if bad != "" {
+		return api.NewErrorf(api.ErrCodeUndefinedColumn, "Attempting to query non existing column %s", bad)
 	}
 	return nil
 }

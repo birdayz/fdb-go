@@ -1048,7 +1048,11 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 		}
 	}
 
-	// (6) Validate GROUP BY projection constraints (42803).
+	// (6) Validate GROUP BY projection constraints (42803), the QUALIFY of
+	// an aggregated block first (42703).
+	if err := validateQualifyOverAggregate(sq, resolver); err != nil {
+		return nil, err
+	}
 	if len(sq.groupBy) > 0 && !sq.countStar {
 		if err := validateGroupByProjection(sq, v.md, resolver); err != nil {
 			return nil, err
