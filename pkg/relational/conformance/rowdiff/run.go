@@ -319,7 +319,7 @@ func planTypedConcurrently(c *Case, ddl string) []*typedPlan {
 			out = append(out, &typedPlan{done: make(chan struct{})})
 		}
 	}
-	sem := make(chan struct{}, min(runtime.GOMAXPROCS(0), 4))
+	sem := make(chan struct{}, Concurrency())
 	go func() {
 		for i, sqlText := range sqls {
 			sem <- struct{}{}
@@ -333,8 +333,15 @@ func planTypedConcurrently(c *Case, ddl string) []*typedPlan {
 	return out
 }
 
+// Concurrency is how many things a sweep does at once at each level: cases
+// (seeds), one case's statements (on that many connections) and its typed
+// plans. A sixth of the cores, at most 4, at least 1: on a 24-core box that is
+// 4, while a 4-vCPU CI runner stays serial, where 4 seeds' fixture INSERTs
+// outran FDB's 5 s transaction limit (40001, reported INFRA).
+func Concurrency() int { return max(1, min(4, runtime.GOMAXPROCS(0)/6)) }
+
 // execWorkers is how many of a seed's statements run on the engine at once.
-const execWorkers = 4
+var execWorkers = Concurrency()
 
 // engineResult is one statement's engine rows, filled by a worker.
 type engineResult struct {

@@ -13,7 +13,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"runtime"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -262,13 +261,13 @@ func TestFDB_RowDiff_Smoke(t *testing.T) {
 }
 
 // rowdiffWorkers is the sweep's seed concurrency, ROWDIFF_WORKERS to override
-// (1 is the serial walk). The default is small on purpose: per-seed cost is
-// planner CPU, and with both lanes at GOMAXPROCS (48 seeds on 24 cores) the
-// seeds' own fixture INSERTs outran the 5 s transaction limit and came back
-// INFRA. Four per lane already leaves the sweep bound by its slowest seed.
+// (1 is the serial walk). The default is rowdiff.Concurrency(): per-seed cost
+// is planner CPU, and with both lanes at GOMAXPROCS (48 seeds on 24 cores), or
+// 4 seeds on a 4-vCPU CI runner, the seeds' own fixture INSERTs outran the 5 s
+// transaction limit and came back INFRA.
 func rowdiffWorkers(t *testing.T, seedCount uint64) int {
 	t.Helper()
-	n := min(runtime.GOMAXPROCS(0), 4)
+	n := rowdiff.Concurrency()
 	if v := os.Getenv("ROWDIFF_WORKERS"); v != "" {
 		w, err := strconv.Atoi(v)
 		if err != nil || w <= 0 {
