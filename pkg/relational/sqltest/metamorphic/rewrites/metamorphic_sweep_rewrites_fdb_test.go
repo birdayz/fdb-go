@@ -30,7 +30,9 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
@@ -74,16 +76,33 @@ func TestFDB_MetamorphicRewriteEquivalenceSweep(t *testing.T) {
 
 	okByRule := map[string]int{}
 	errByRule := map[string]int{}
-	// equiv runs two spellings on BOTH schemas and requires all four answers to
-	// agree. Comparing the two schemas as well as the two spellings costs
+
+	// The sweep runs in three phases. The generator loop below only RECORDS
+	// each rule's pair (so the random draw sequence is the serial one), every
+	// distinct statement is then run once per schema on a worker pool, and
+	// the pairs are checked in recorded order against those answers. The
+	// fixture is read-only by then, so a statement repeated within or across
+	// iterations (ids(p) alone appears in five rules) has one answer; checking
+	// in order keeps counts, samples and failure output identical.
+	type pair struct{ rule, qa, qb string }
+	var pairs []pair
+	equiv := func(rule, qa, qb string) { pairs = append(pairs, pair{rule, qa, qb}) }
+
+	type answer struct {
+		rows []string
+		err  error
+	}
+	var idxAns, plainAns map[string]answer
+	// check requires all four answers of a pair — two spellings on BOTH schemas
+	// — to agree. Comparing the two schemas as well as the two spellings costs
 	// nothing and localizes a failure: same-schema disagreement is a rewrite or
 	// translator defect, cross-schema disagreement is an access-path one.
-	equiv := func(rule, qa, qb string) {
+	check := func(rule, qa, qb string) {
 		t.Helper()
-		ia, ea := testkit.QueryRowStrings(t, ctx, w.Idx, qa)
-		ib, eb := testkit.QueryRowStrings(t, ctx, w.Idx, qb)
-		na, ena := testkit.QueryRowStrings(t, ctx, w.Plain, qa)
-		nb, enb := testkit.QueryRowStrings(t, ctx, w.Plain, qb)
+		ia, ea := idxAns[qa].rows, idxAns[qa].err
+		ib, eb := idxAns[qb].rows, idxAns[qb].err
+		na, ena := plainAns[qa].rows, plainAns[qa].err
+		nb, enb := plainAns[qb].rows, plainAns[qb].err
 		if ea != nil || eb != nil || ena != nil || enb != nil {
 			errByRule[rule]++
 			if errByRule[rule] <= 1 {
@@ -170,6 +189,41 @@ func TestFDB_MetamorphicRewriteEquivalenceSweep(t *testing.T) {
 	equiv("having-vs-derived-filter",
 		"SELECT a, COUNT(*) FROM t GROUP BY a HAVING COUNT(*) > 1 ORDER BY a",
 		"SELECT * FROM (SELECT a, COUNT(*) AS n FROM t GROUP BY a) AS x WHERE x.n > 1 ORDER BY x.a")
+
+	var distinct []string
+	seen := map[string]bool{}
+	for _, p := range pairs {
+		for _, q := range []string{p.qa, p.qb} {
+			if !seen[q] {
+				seen[q] = true
+				distinct = append(distinct, q)
+			}
+		}
+	}
+	idxAns, plainAns = make(map[string]answer, len(distinct)), make(map[string]answer, len(distinct))
+	var mu sync.Mutex
+	work := make(chan string)
+	var wg sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), 8) {
+		wg.Go(func() {
+			for q := range work {
+				ri, ei := testkit.QueryRowStrings(t, ctx, w.Idx, q)
+				rn, en := testkit.QueryRowStrings(t, ctx, w.Plain, q)
+				mu.Lock()
+				idxAns[q], plainAns[q] = answer{ri, ei}, answer{rn, en}
+				mu.Unlock()
+			}
+		})
+	}
+	for _, q := range distinct {
+		work <- q
+	}
+	close(work)
+	wg.Wait()
+	t.Logf("%d pairs, %d distinct statements per schema", len(pairs), len(distinct))
+	for _, p := range pairs {
+		check(p.rule, p.qa, p.qb)
+	}
 
 	rules := []string{
 		"paren-where", "paren-double", "paren-case", "case-vs-where",
