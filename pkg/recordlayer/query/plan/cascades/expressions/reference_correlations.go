@@ -24,6 +24,8 @@ type correlationMemo struct {
 	// covers: their lengths at Reference.memberLayout.
 	layout          uint64
 	members, finals int
+	// order caches an expression snapshot's quantifier dependencies.
+	order atomic.Pointer[[][]int]
 }
 
 // correlationEpoch counts the graph changes that can move a reference's
