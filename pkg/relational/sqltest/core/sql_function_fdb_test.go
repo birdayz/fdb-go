@@ -299,7 +299,15 @@ func TestFDB_ComparisonMacroFunctions(t *testing.T) {
 		"CREATE FUNCTION nb(IN x BOOLEAN) RETURNS BOOLEAN RETURN NOT x "+
 		"CREATE FUNCTION both_(IN x BOOLEAN, IN y BIGINT) RETURNS BOOLEAN RETURN x AND y >= 3 "+
 		"CREATE FUNCTION combo(IN x BIGINT, IN y STRING) RETURNS BOOLEAN RETURN x >= 2 AND NOT (y = 'q') OR y IS NULL "+
-		"CREATE FUNCTION dist(IN x BIGINT, IN y BIGINT) RETURNS BOOLEAN RETURN x IS DISTINCT FROM y")
+		"CREATE FUNCTION dist(IN x BIGINT, IN y BIGINT) RETURNS BOOLEAN RETURN x IS DISTINCT FROM y "+
+		"CREATE FUNCTION inl(IN x BIGINT) RETURNS BOOLEAN RETURN x IN (1, 3, 9) "+
+		"CREATE FUNCTION ninl(IN x BIGINT, IN y BIGINT) RETURNS BOOLEAN RETURN x NOT IN (y, 3) "+
+		"CREATE FUNCTION btw(IN x BIGINT) RETURNS BOOLEAN RETURN x BETWEEN 2 AND 7 "+
+		"CREATE FUNCTION nbtw(IN x BIGINT) RETURNS BOOLEAN RETURN x NOT BETWEEN 2 AND 7 "+
+		"CREATE FUNCTION gtf(IN x BIGINT) RETURNS BOOLEAN RETURN x > 2.5 "+
+		"CREATE FUNCTION ist(IN x BOOLEAN) RETURNS BOOLEAN RETURN x IS NOT TRUE "+
+		"CREATE FUNCTION lk(IN x STRING) RETURNS BOOLEAN RETURN x NOT LIKE 'q%' "+
+		"CREATE FUNCTION cs(IN x BIGINT, IN y BOOLEAN) RETURNS BOOLEAN RETURN CASE WHEN x > 5 THEN y WHEN x IS NULL THEN FALSE ELSE x < 2 END")
 	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_relopmacro/s WITH TEMPLATE relopmacro_tpl")
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RELOPMACRO?cluster_file=%s&schema=S", testkit.ClusterFile()))
 	if err != nil {
@@ -339,6 +347,14 @@ func TestFDB_ComparisonMacroFunctions(t *testing.T) {
 		"both_(b, a)": "b AND a >= 3",
 		"combo(a, s)": "a >= 2 AND NOT (s = 'q') OR s IS NULL",
 		"dist(a, 3)":  "a IS DISTINCT FROM 3",
+		"inl(a)":      "a IN (1, 3, 9)",
+		"ninl(a, id)": "a NOT IN (id, 3)",
+		"btw(a)":      "a BETWEEN 2 AND 7",
+		"nbtw(a)":     "a NOT BETWEEN 2 AND 7",
+		"gtf(a)":      "a > 2.5",
+		"ist(b)":      "b IS NOT TRUE",
+		"lk(s)":       "s NOT LIKE 'q%'",
+		"cs(a, b)":    "CASE WHEN a > 5 THEN b WHEN a IS NULL THEN FALSE ELSE a < 2 END",
 	} {
 		mq := "SELECT id, " + call + " FROM t ORDER BY id"
 		iq := "SELECT id, " + inline + " FROM t ORDER BY id"
