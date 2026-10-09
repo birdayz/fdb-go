@@ -1,27 +1,48 @@
-fdb-record-layer-go
-Copyright 2025 The fdb-record-layer-go Authors
+fdb-go
 
-This product is licensed under the Apache License, Version 2.0 (see the LICENSE file).
+This product is licensed under the Apache License, Version 2.0 (see LICENSE),
+except for third-party material identified in its own notices.
 
-------------------------------------------------------------------------------
-Third-party attributions
-------------------------------------------------------------------------------
+FoundationDB Record Layer
+------------------------
+This product includes Go translations and modifications of source from the
+FoundationDB Record Layer (https://github.com/FoundationDB/fdb-record-layer),
+licensed under the Apache License, Version 2.0. The current reference tag is
+4.14.2.0. Upstream copyright notices are retained in derived source files;
+their dates vary by source file.
 
-This product is a Go port of the FoundationDB Record Layer
-(https://github.com/FoundationDB/fdb-record-layer), Copyright Apple Inc. and
-the FoundationDB project authors, licensed under the Apache License, Version
-2.0. Wire-format behavior, key encoding, record/index/version layout,
-continuation tokens, and the Cascades query planner are ported to match that
-implementation (tag 4.12.11.0).
+The Protocol Buffer definitions under proto/apple/ and the acceptance-test
+corpus under third_party/apple/fdb-record-layer/ come from that project.
+Generated code derived from those definitions remains subject to their
+upstream notices. See third_party/apple/fdb-record-layer/VERSION for the
+vendored corpus revision.
 
-The Protocol Buffer definitions under proto/apple/ are copied from the
-FoundationDB Record Layer and remain under the Apache License, Version 2.0.
+The half-precision conversion in pkg/recordlayer/vectorcodec/vectorcodec.go
+is derived from the Record Layer's Half.java (HALF4J):
+Copyright 2023 Christian Heina
+Modifications Copyright 2015-2025 Apple Inc. and the FoundationDB project authors.
+Licensed under the Apache License, Version 2.0.
 
-The .yamsql acceptance-test corpus under third_party/apple/fdb-record-layer/ is
-copied verbatim from the FoundationDB Record Layer and remains under the Apache
-License, Version 2.0.
+FoundationDB
+------------
+This product includes code derived from FoundationDB
+(https://github.com/apple/foundationdb), licensed under the Apache License,
+Version 2.0. Copied tuple, subspace, and directory-layer source under
+pkg/fdbgo/fdb/ retains its upstream notices. The pure-Go client targets the
+7.3.77 protocol. The optional libfdbc backend uses the separately distributed
+FoundationDB C client and its Go bindings.
 
-This product speaks the FoundationDB wire protocol. FoundationDB
-(https://github.com/apple/foundationdb) is developed by Apple Inc. and the
-FoundationDB project authors and is licensed under the Apache License,
-Version 2.0.
+Other third-party material
+--------------------------
+THIRD_PARTY_NOTICES.txt contains license and notice texts collected from the
+Go toolchain and dependency modules used by the distributed pure-Go frl CLI.
+Dependency versions are pinned in go.mod and go.sum. Other build configurations
+and applications may include different dependencies with their own notices.
+
+The bundled SPANN research paper has a separate Creative Commons license;
+see .claude/skills/spfresh-reviewer/SOURCES.md. The SPFresh paper is linked,
+not bundled. Research-paper licenses do not change this project's code license.
+
+This is an unofficial, independent project, not affiliated with, sponsored by,
+or endorsed by Apple Inc. or the FoundationDB project. Upstream names are used
+to identify source projects and compatibility targets.

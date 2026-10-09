@@ -3,6 +3,7 @@ package infra
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -303,5 +304,113 @@ func TestFleetGoMatchesGoMod(t *testing.T) {
 			"go_version AND go_sha256 together — a version bumped without its checksum fails "+
 			"provisioning at fetch-verified.sh, which is the loud outcome; a checksum left "+
 			"matching a stale version is the quiet one.", fleet, repo)
+	}
+}
+
+func TestFRLReleaseLegalNotices(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../.github/workflows/frl-release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var build, smoke string
+	for _, step := range workflow.Jobs["release"].Steps {
+		switch step.Name {
+		case "Cross-compile static binaries":
+			build = step.Run
+		case "Smoke test (extract, run, verify checksum path)":
+			smoke = step.Run
+		}
+	}
+	loop := regexp.MustCompile(`(?s)for target in ([^;]+); do\n(.*?)\ndone`).FindStringSubmatch(build)
+	if loop == nil || smoke == "" {
+		t.Fatal("release packaging loop or smoke check is missing")
+	}
+	targets := strings.Fields(loop[1])
+	if strings.Join(targets, " ") != "linux/amd64 linux/arm64 darwin/amd64 darwin/arm64" {
+		t.Fatalf("review legal-notice coverage for release targets %v", targets)
+	}
+	// Exercise the shipped packaging shell with fixture binaries, not a compiler.
+	compile := `  go build -trimpath -ldflags='-s -w' -o "$out/frl" .`
+	if strings.Count(loop[0], compile) != 1 {
+		t.Fatal("expected one cross-compile command in the packaging loop")
+	}
+	packaging := strings.Replace(loop[0], compile, "  : # fixture binary already exists", 1)
+	for _, damage := range []string{"none", "missing", "empty", "altered"} {
+		t.Run(damage, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			cli := filepath.Join(root, "cmd", "frl")
+			dist := filepath.Join(cli, "dist")
+			notices := []string{"LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt"}
+			for _, name := range notices {
+				if err := os.WriteFile(filepath.Join(root, name), []byte("fixture "+name+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, target := range targets {
+				dir := filepath.Join(dist, strings.ReplaceAll(target, "/", "_"))
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "frl"), []byte("#!/bin/sh\necho v0.0.0\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run := func(dir, script string) ([]byte, error) {
+				cmd := exec.Command("bash", "-euo", "pipefail", "-c", script)
+				cmd.Dir = dir
+				cmd.Env = append(os.Environ(), "VERSION=v0.0.0")
+				return cmd.CombinedOutput()
+			}
+			if out, err := run(cli, packaging); err != nil {
+				t.Fatalf("package release: %v\n%s", err, out)
+			}
+			for _, target := range targets {
+				archive := "frl_v0.0.0_" + strings.ReplaceAll(target, "/", "_") + ".tar.gz"
+				for _, name := range notices {
+					out, err := run(dist, "tar -xOzf "+archive+" "+name)
+					if err != nil || string(out) != "fixture "+name+"\n" {
+						t.Fatalf("%s must carry exact %s: %v\n%s", archive, name, err, out)
+					}
+				}
+			}
+			if damage != "none" {
+				path := filepath.Join(dist, "darwin_arm64", "THIRD_PARTY_NOTICES.txt")
+				files := "frl LICENSE NOTICE THIRD_PARTY_NOTICES.txt"
+				if damage == "missing" {
+					files = "frl LICENSE NOTICE"
+				} else {
+					content := []byte{}
+					if damage == "altered" {
+						content = []byte("wrong notice\n")
+					}
+					if err := os.WriteFile(path, content, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if out, err := run(dist, "tar -C darwin_arm64 -czf frl_v0.0.0_darwin_arm64.tar.gz "+files); err != nil {
+					t.Fatalf("damage fixture: %v\n%s", err, out)
+				}
+			}
+			if out, err := run(dist, "sha256sum frl_*.tar.gz > checksums.txt"); err != nil {
+				t.Fatalf("checksum fixtures: %v\n%s", err, out)
+			}
+			out, err := run(dist, smoke)
+			if (err != nil) != (damage != "none") {
+				t.Fatalf("smoke check for %s notice: %v\n%s", damage, err, out)
+			}
+		})
 	}
 }

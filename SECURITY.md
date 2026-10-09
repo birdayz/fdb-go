@@ -5,10 +5,10 @@
 Please report security vulnerabilities **privately** — do not open a public issue
 for an unfixed vulnerability.
 
-- Use GitHub's private vulnerability reporting:
-  **Security → Report a vulnerability** on
-  https://github.com/birdayz/fdb-record-layer-go, or
-- email the maintainer (see the `git log` author / repository owner).
+Use [GitHub's private vulnerability reporting form](https://github.com/birdayz/fdb-go/security/advisories/new)
+(**Security → Report a vulnerability**). If the form is unavailable, open a public
+issue requesting a private reporting channel **without vulnerability details**.
+Do not assume a commit author's email is a security reporting address.
 
 Include: affected version/commit, a description of the issue and its impact, and a
 reproduction (a failing test, a SQL statement, or a wire-level trace is ideal).
@@ -22,7 +22,7 @@ This project is **pre-1.0 and not yet declared production-ready** (see
 `PRODUCTION_READINESS.md` and `TODO-production.md`). Of particular interest:
 
 - **Wire-format / data-integrity** issues — anything where Go and Java
-  (`fdb-record-layer` 4.12.11.0) would read/write incompatible bytes, or where
+  (`fdb-record-layer` 4.14.2.0) would read/write incompatible bytes, or where
   records/indexes/versions/continuations could be corrupted.
 - **Pure-Go FDB client** (`pkg/fdbgo`) — it reimplements the FoundationDB wire
   protocol from scratch; correctness divergences from libfdb_c (RYW, retries,
