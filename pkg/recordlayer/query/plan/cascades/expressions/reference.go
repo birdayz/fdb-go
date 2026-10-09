@@ -838,6 +838,12 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	aliasAware := InternsAliasAware(e)
 	mergeAliased := !aliasAware && bindsMergeAlias(e)
 	for _, m := range r.members {
+		// Every tier below needs equal node hashes: node equality implies them
+		// (the HashConsistency invariant, pinned in fuzz), and a hash is
+		// memoized while node equality is not.
+		if r.MemberHash(m) != eHash {
+			continue
+		}
 		// Fast path: pointer-identity on child References + local
 		// EqualsWithoutChildren. Hits when a rule yields output that
 		// reuses the input's existing Quantifiers (the pattern most
@@ -1293,21 +1299,22 @@ func (r *Reference) insertFinal(e RelationalExpression, comparison *MemoComparis
 	aliasAware := InternsAliasAware(e)
 	mergeAliased := !aliasAware && bindsMergeAlias(e)
 	for _, m := range r.finalMembers {
-		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
-			return false
+		// Every tier needs equal node hashes; see Insert.
+		if r.MemberHash(m) != eHash {
+			continue
 		}
-		if r.MemberHash(m) == eHash && m.EqualsWithoutChildren(e, EmptyAliasMap()) && comparison.MemberEqual(r, m, e, eHash) {
+		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && (sameChildReferences(m, e) || comparison.MemberEqual(r, m, e, eHash)) {
 			return false
 		}
 		// Alias-aware tier (GATED) — see Insert. finalMembers intern the same way
 		// (RFC-077 7.5); the PLANNING yield path inserts into BOTH member sets, so
 		// both must dedup alias-aware or the merge re-enumeration's physical
 		// alternatives duplicate under fresh merge-quantifier aliases.
-		if aliasAware && r.MemberHash(m) == eHash && comparison.MemberEqual(r, m, e, eHash) {
+		if aliasAware && comparison.MemberEqual(r, m, e, eHash) {
 			r.aliasAwareDedups++
 			return false
 		}
-		if mergeAliased && r.MemberHash(m) == eHash && ExactReplica(m, e) {
+		if mergeAliased && ExactReplica(m, e) {
 			return false
 		}
 	}
