@@ -150,7 +150,11 @@ func NewIsolatedJavaInvoker() (*JavaInvoker, error) {
 		isolatedCache.uses++
 		return c, nil
 	}
-	inv, err := startJavaServer()
+	var flags []string
+	if limit > 1 {
+		flags = reusedServerJVMFlags
+	}
+	inv, err := startJavaServer(flags...)
 	if err != nil || limit <= 1 {
 		return inv, err
 	}
@@ -392,7 +396,15 @@ func TestJavaHTTPClient_LeavesTheDeadlineToTheCaller(t *testing.T) {
 }
 
 // startJavaServer launches the Java HTTP server and waits for it to be ready
-func startJavaServer() (*JavaInvoker, error) {
+// reusedServerJVMFlags start a server that serves several specs. A reused G1
+// JVM grows toward its -Xmx2g ceiling across specs (measured peak RSS on
+// conformance_probes_test: 1183 MB reused, 825 MB fresh), which on CI's 7.6 GB
+// runner, beside other suites, ended in OOM kills and starved transactions;
+// the serial collector keeps it at 951 MB and runs no parallel GC threads on
+// the 4-core runner. CONFORMANCE_JVM_FLAGS adds flags to every server.
+var reusedServerJVMFlags = []string{"-XX:+UseSerialGC"}
+
+func startJavaServer(jvmFlags ...string) (*JavaInvoker, error) {
 	// Find the Bazel-built conformance server binary via runfiles
 	r, err := runfiles.New()
 	if err != nil {
@@ -412,7 +424,11 @@ func startJavaServer() (*JavaInvoker, error) {
 	// whole group with one signal. The Bazel java_binary launcher is a wrapper
 	// script that forks the real JVM as a child; without a group kill, killing
 	// only the wrapper (cmd.Process) orphans the JVM.
-	cmd := exec.Command(serverBin)
+	var args []string
+	for _, f := range append(jvmFlags, strings.Fields(os.Getenv("CONFORMANCE_JVM_FLAGS"))...) {
+		args = append(args, "--jvm_flag="+f)
+	}
+	cmd := exec.Command(serverBin, args...)
 	cmd.Env = append(os.Environ(), r.Env()...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
