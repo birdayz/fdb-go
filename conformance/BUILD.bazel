@@ -409,6 +409,7 @@ go_test(
     ],
     tags = [
         "conformance_java",
+        "resources:cpu:5",
         "resources:memory:500",
     ],
     deps = [

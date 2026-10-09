@@ -9,6 +9,7 @@ go_test(
         "metamorphic_sweep_rewrites_fdb_test.go",
     ],
     tags = [
+        "resources:cpu:4",
         "resources:memory:700",
         "test-full",
     ],

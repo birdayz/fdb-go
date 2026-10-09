@@ -37,6 +37,7 @@ go_test(
         "//pkg/relational/conformance/yamsql:testdata",
     ],
     embed = [":explaindiff"],
+    tags = ["resources:cpu:8"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/relational/conformance/yamsql",

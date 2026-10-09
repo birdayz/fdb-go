@@ -53,7 +53,10 @@ go_test(
         "struct_cell_coercion_test.go",
     ],
     embed = [":plandiff"],
-    tags = ["resources:memory:400"],
+    tags = [
+        "resources:cpu:2",
+        "resources:memory:400",
+    ],
     deps = [
         "//pkg/relational/api",
         "//pkg/relational/core/keyspace",

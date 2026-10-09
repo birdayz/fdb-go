@@ -87,6 +87,7 @@ go_test(
     # it and its three neighbours (607 s instead of ~10 s, rowdiff 766 s
     # instead of 212 s). The limit holds it at 2.5 GB for ~2 s more GC.
     env = {"GOMEMLIMIT": "2500MiB"},
+    tags = ["resources:cpu:6"],
     deps = [
         "//pkg/relational/api",
         "//pkg/relational/conformance/javacorpus",
