@@ -19,10 +19,10 @@ type ReadResult struct {
 	Err  error
 }
 
-// ReadWorkers is how many reads ReadAll runs at once: GOMAXPROCS (the cost
-// of a sweep statement is planner CPU), capped at 8 so one sweep does not
-// claim a whole shared box.
-func ReadWorkers() int { return min(runtime.GOMAXPROCS(0), 8) }
+// ReadWorkers is how many reads ReadAll runs at once: GOMAXPROCS, since the
+// cost of a sweep statement is planner CPU. Sharing the box with other tests
+// is Bazel's job (the target's resources:cpu tag), not a cap here.
+func ReadWorkers() int { return runtime.GOMAXPROCS(0) }
 
 // ReadAll runs reads concurrently on up to ReadWorkers goroutines and returns
 // the answers in the order the reads were given. A statement repeated in the

@@ -66,7 +66,7 @@ func TestFactoryDeterminism(t *testing.T) {
 	}
 
 	var checkedN atomic.Int64
-	workers := min(runtime.GOMAXPROCS(0), 4)
+	workers := runtime.GOMAXPROCS(0)
 	next := make(chan genSeed)
 	go func() {
 		defer close(next)

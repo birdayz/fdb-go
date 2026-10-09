@@ -38,7 +38,7 @@ func TestTLPRenderingsPlan(t *testing.T) {
 	var samples []string
 	var mu sync.Mutex
 
-	workers := min(runtime.GOMAXPROCS(0), 4)
+	workers := runtime.GOMAXPROCS(0)
 	seeds := make(chan uint64)
 	go func() {
 		defer close(seeds)
