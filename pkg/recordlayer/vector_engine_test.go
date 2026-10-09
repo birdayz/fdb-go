@@ -107,7 +107,7 @@ func TestGuardiannNaNOptions(t *testing.T) {
 	for _, opts := range []VectorIndexScanOptions{
 		{GuardiannCandidatePoolFactor: &nan}, {GuardiannSearchDistanceRatioCutoff: &nan},
 	} {
-		_, err := opts.guardiannSearchConfig()
+		_, err := guardiannSearchConfigOf(opts)
 		var argument *IllegalArgumentError
 		if !errors.As(err, &argument) {
 			t.Errorf("NaN scan option accepted: %v", err)
