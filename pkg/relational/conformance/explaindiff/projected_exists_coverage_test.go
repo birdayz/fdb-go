@@ -156,10 +156,7 @@ func assertFoldCoverage(t *testing.T, got, floors projectedExistsCensus) {
 func TestCorpusCoversTheProjectedExistsFold(t *testing.T) {
 	t.Parallel()
 
-	entries, st, err := explaindiff.Collect(corpusDir)
-	if err != nil {
-		t.Fatalf("collect corpus: %v", err)
-	}
+	entries, st := collectCorpus(t)
 	// Guard the population before reading the verdict: a census over an empty or
 	// truncated corpus reports clean for the wrong reason.
 	if st.Queries == 0 || len(entries) == 0 {
