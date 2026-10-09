@@ -148,9 +148,9 @@ var _ = Describe("vector indexes under core contracts", func() {
 		Expect(oi.MergeIndexes(ctx)).To(MatchError(ContainSubstring("has 4 elements, want 5")))
 	})
 
-	// recordlayer's "scan checks transaction-visible state before dispatch"
-	// and "scan propagates index-state read failures", for the vector entry
-	// points.
+	// recordlayer's "scan checks transaction-visible state before dispatch",
+	// "scan propagates index-state read failures" and "refused scan conflicts
+	// with a concurrently enabled index", for the vector entry points.
 	Describe("the store's vector entry points", func() {
 		buildMetaData := func() *recordlayer.RecordMetaData {
 			builder := baseBuilder()
@@ -198,6 +198,37 @@ var _ = Describe("vector indexes under core contracts", func() {
 				var canceled fdb.Error
 				Expect(errors.As(scan(store, md.GetIndex("original")), &canceled)).To(BeTrue())
 				Expect(canceled.Code).To(Equal(1025))
+			})
+			It(method+" refused scan conflicts with a concurrently enabled index", func() {
+				md := buildMetaData()
+				ss := specSubspace()
+				_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+					Expect(err).NotTo(HaveOccurred())
+					_, err = store.MarkIndexDisabled("original")
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+				tx, err := sharedDB.CreateTransaction()
+				Expect(err).NotTo(HaveOccurred())
+				defer tx.Cancel()
+				rtx := recordlayer.NewFDBRecordContext(tx, nil)
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+				Expect(err).NotTo(HaveOccurred())
+				var unreadable *recordlayer.IndexNotReadableError
+				Expect(errors.As(scan(store, md.GetIndex("original")), &unreadable)).To(BeTrue())
+				_, err = sharedDB.Run(ctx, func(builder *recordlayer.FDBRecordContext) (any, error) {
+					store, err := recordlayer.NewStoreBuilder().SetContext(builder).SetMetaDataProvider(md).SetSubspace(ss).Open()
+					if err != nil {
+						return nil, err
+					}
+					return nil, store.RebuildIndex(md.GetIndex("original"))
+				})
+				Expect(err).NotTo(HaveOccurred())
+				tx.Set(ss.Pack(tuple.Tuple{"refused-scan-sentinel"}), []byte("force commit conflict validation"))
+				var conflict fdb.Error
+				Expect(errors.As(rtx.Commit(), &conflict)).To(BeTrue())
+				Expect(conflict.Code).To(Equal(1020))
 			})
 		}
 	})
