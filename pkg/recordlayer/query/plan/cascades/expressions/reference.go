@@ -169,6 +169,12 @@ type Reference struct {
 	// changes; a snapshot is reused only while every child it read still has
 	// the snapshot it read, so adding one member does not recompute the rest.
 	memberCorrelations atomic.Pointer[map[RelationalExpression]*correlationMemo]
+	// correlationBase is the snapshot before the latest member appends; a read
+	// extends it with the appended members instead of revisiting every member.
+	// memberLayout counts the member changes other than appends, which
+	// invalidate it.
+	correlationBase atomic.Pointer[correlationMemo]
+	memberLayout    uint64
 
 	// aliasAwareDedups counts how many times the ALIAS-AWARE interning tier
 	// (the MemoEqual branch in Insert/InsertFinal, gated to merge
@@ -412,6 +418,7 @@ func (r *Reference) applyPreparedMemberBatch(
 	if !unchanged.install(canonical, view.version) {
 		bumpCorrelationEpoch()
 		if len(exploratory)+len(final) > 0 {
+			canonical.saveCorrelationBase()
 			canonical.correlatedToCache.Store(nil)
 		}
 	}
@@ -520,6 +527,7 @@ func (r *Reference) Absorb(loser *Reference) {
 		}
 	}
 	r.correlatedToCache.Store(nil)
+	r.memberLayout++
 	bumpCorrelationEpoch()
 	loser.forwardedTo = r
 }
@@ -541,6 +549,7 @@ func (r *Reference) AbsorbPlanningState(loser *Reference) int {
 	}
 	r.aliasAwareDedups += loser.aliasAwareDedups
 	r.correlatedToCache.Store(nil)
+	r.memberLayout++
 	bumpCorrelationEpoch()
 	loser.forwardedTo = r
 	return added
@@ -558,6 +567,7 @@ func (r *Reference) RemoveExploratoryMember(e RelationalExpression) bool {
 		r.members = append(r.members[:i:i], r.members[i+1:]...)
 		delete(r.memberHash, e)
 		r.memberVersion++
+		r.memberLayout++
 		bumpCorrelationEpoch()
 		r.correlatedToCache.Store(nil)
 		return true
@@ -889,6 +899,7 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	r.admittedResultType = nil
 	r.memberVersion++
 	bumpCorrelationEpoch()
+	r.saveCorrelationBase()
 	r.correlatedToCache.Store(nil)
 	return true
 }
@@ -1086,6 +1097,7 @@ func (u *unchangedCorrelations) install(r *Reference, version uint64) bool {
 		return false
 	}
 	u.snapshot.version = r.memberVersion
+	u.snapshot.layout, u.snapshot.members, u.snapshot.finals = r.memberLayout, len(r.members), len(r.finalMembers)
 	u.snapshot.validated.Store(u.epoch)
 	r.correlatedToCache.Store(u.snapshot)
 	return true
@@ -1261,6 +1273,7 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	r.admittedResultType = nil
 	r.memberVersion++
 	bumpCorrelationEpoch()
+	r.saveCorrelationBase()
 	r.correlatedToCache.Store(nil)
 	return true
 }
@@ -1286,6 +1299,7 @@ func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 	r.members = append(r.members[:0], r.finalMembers...)
 	r.finalMembers = r.finalMembers[:0]
 	r.memberVersion++
+	r.memberLayout++
 	bumpCorrelationEpoch()
 	r.planProperties = nil
 	r.explState = explorationNever
@@ -1324,6 +1338,7 @@ func (r *Reference) AdvanceStagePreservingMembers(newStage PlannerStage) {
 	// the transition conflict with every earlier admission view even though it
 	// deliberately preserves the member slices.
 	r.memberVersion++
+	r.memberLayout++
 	bumpCorrelationEpoch()
 	r.planProperties = nil
 	r.explState = explorationNever
@@ -1400,6 +1415,7 @@ func (r *Reference) PruneWith(expr RelationalExpression) {
 	}
 	r.winner = nil
 	r.memberVersion++
+	r.memberLayout++
 	bumpCorrelationEpoch()
 }
 
@@ -1420,6 +1436,7 @@ func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 	}
 	r.winner = nil
 	r.memberVersion++
+	r.memberLayout++
 	bumpCorrelationEpoch()
 }
 
@@ -1432,6 +1449,7 @@ func (r *Reference) ClearFinalMembers() {
 	}
 	r.winner = nil
 	r.memberVersion++
+	r.memberLayout++
 	bumpCorrelationEpoch()
 }
 
@@ -1511,12 +1529,21 @@ func (r *Reference) GetPartialMatchCandidates() []any {
 	return result
 }
 
+// saveCorrelationBase keeps r's snapshot as the base later reads extend, before
+// members are appended and the cache dropped.
+func (r *Reference) saveCorrelationBase() {
+	if cached := r.correlatedToCache.Load(); cached != nil && cached.layout == r.memberLayout {
+		r.correlationBase.Store(cached)
+	}
+}
+
 // InvalidateCorrelatedToCache drops the cached correlation set so the
 // next GetCorrelatedTo recomputes. Called by Memo.merge up the DAG after
 // a merge (RFC-037 §3 step 5). Operates on the canonical Reference.
 func (r *Reference) InvalidateCorrelatedToCache() {
 	r = r.Canonical()
 	r.correlatedToCache.Store(nil)
+	r.memberLayout++
 	bumpCorrelationEpoch()
 }
 

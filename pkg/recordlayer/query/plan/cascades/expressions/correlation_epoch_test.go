@@ -107,3 +107,79 @@ func ancestorSeesCorrelationChange(change string) error {
 	}
 	return nil
 }
+
+// TestReference_CorrelationBaseExtendsOnlyAppends: a group read after member
+// appends extends its earlier snapshot with the appended members. An append
+// and a removal, or a prune and an append, can leave a lane as long as the base
+// recorded, so the base must not survive anything but appends.
+func TestReference_CorrelationBaseExtendsOnlyAppends(t *testing.T) {
+	t.Parallel()
+	outer := values.NamedCorrelationIdentifier("outer")
+	constant := func(v int64) RelationalExpression {
+		return mustExpression(NewSelectExpression(&values.ConstantValue{Value: v, Typ: values.NotNullLong}, nil, nil))
+	}
+	dependent := func() RelationalExpression {
+		return mustExpression(NewSelectExpression(mustQOV(outer), nil, nil))
+	}
+	rootOver := func(child *Reference) *Reference {
+		middle := InitialOf(mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(child))))
+		return InitialOf(mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(middle))))
+	}
+	correlated := func(root *Reference) bool {
+		_, ok := root.GetCorrelatedTo()[outer]
+		return ok
+	}
+
+	t.Run("appends", func(t *testing.T) {
+		t.Parallel()
+		child := InitialOf(constant(1))
+		root := rootOver(child)
+		if correlated(root) {
+			t.Fatal("constant child is correlated")
+		}
+		child.Insert(dependent())
+		if !correlated(root) {
+			t.Fatal("appended correlated member not seen")
+		}
+		child.Insert(constant(2))
+		child.InsertFinal(constant(3))
+		if !correlated(root) {
+			t.Fatal("later appends lost the correlated member")
+		}
+	})
+	t.Run("remove_then_append", func(t *testing.T) {
+		t.Parallel()
+		removed := dependent()
+		child := InitialOf(removed)
+		child.Insert(constant(1))
+		root := rootOver(child)
+		if !correlated(root) {
+			t.Fatal("correlated member not seen")
+		}
+		// The append saves the snapshot covering both members as the base; the
+		// removal then restores that lane length.
+		child.Insert(constant(2))
+		if !child.RemoveExploratoryMember(removed) {
+			t.Fatal("member not removed")
+		}
+		if correlated(root) {
+			t.Fatal("a removed member's correlation survived at the base's lane length")
+		}
+	})
+	t.Run("prune_then_append", func(t *testing.T) {
+		t.Parallel()
+		child := InitialOf(constant(1))
+		kept := constant(2)
+		child.InsertFinal(dependent())
+		child.InsertFinal(kept)
+		root := rootOver(child)
+		if !correlated(root) {
+			t.Fatal("correlated final not seen")
+		}
+		child.PruneWith(kept)
+		child.InsertFinal(constant(3))
+		if correlated(root) {
+			t.Fatal("a pruned final's correlation survived an append of equal lane length")
+		}
+	})
+}
