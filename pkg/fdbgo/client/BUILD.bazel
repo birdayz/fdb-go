@@ -5,6 +5,9 @@ go_library(
     srcs = [
         "clientmetrics.go",
         "clusterfile.go",
+        "clusterfile_default_unix.go",
+        "clusterfile_default_windows.go",
+        "clusterfile_lookup.go",
         "commit_input.go",
         "commitpath.go",
         "coordinator.go",
@@ -48,7 +51,12 @@ go_library(
         "//pkg/fdbgo/wire/types",
         "@io_opentelemetry_go_otel_trace//:trace",
         "@io_opentelemetry_go_otel_trace//noop",
-    ],
+    ] + select({
+        "@rules_go//go/platform:windows": [
+            "@org_golang_x_sys//windows",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 go_test(
@@ -70,7 +78,9 @@ go_test(
         "c_binding_port_test.go",
         "client_test.go",
         "clientmetrics_test.go",
+        "clusterfile_default_unix_test.go",
         "clusterfile_e2e_test.go",
+        "clusterfile_lookup_test.go",
         "clusterfile_test.go",
         "commit_dummy_regression_test.go",
         "commit_lifetime_fdb_test.go",

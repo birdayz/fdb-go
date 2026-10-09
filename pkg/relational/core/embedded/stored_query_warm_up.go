@@ -83,6 +83,10 @@ func StoredQueryTemplates(ctx context.Context, db *recordlayer.FDBDatabase, cat 
 // their own as a client must declare them; one that fails skips its query. No
 // failure aborts the warm-up; each is logged and counted.
 func WarmStoredQueries(ctx context.Context, cache *RelationalPlanCache, templates []*metadata.RecordLayerSchemaTemplate) StoredQueryWarmUpCounts {
+	return warmStoredQueries(ctx, cache, templates, slog.Default())
+}
+
+func warmStoredQueries(ctx context.Context, cache *RelationalPlanCache, templates []*metadata.RecordLayerSchemaTemplate, logger *slog.Logger) StoredQueryWarmUpCounts {
 	var counts StoredQueryWarmUpCounts
 	start := time.Now()
 	for _, tmpl := range templates {
@@ -96,7 +100,7 @@ func WarmStoredQueries(ctx context.Context, cache *RelationalPlanCache, template
 		counts.TemplatesProcessed++
 	}
 	counts.Duration = time.Since(start)
-	slog.Default().Info("OfflineStoredQueriesProcessor finished",
+	logger.Debug("OfflineStoredQueriesProcessor finished",
 		"templatesProcessed", counts.TemplatesProcessed,
 		"storedQueriesProcessed", counts.QueriesProcessed,
 		"storedQueriesFailed", counts.QueriesFailed,

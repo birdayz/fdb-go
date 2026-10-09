@@ -1,107 +1,88 @@
+// Command example saves and loads a typed record in a disposable FoundationDB.
+// Run with FDB_CLUSTER_FILE set, as described in README.md.
 package main
 
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"os"
+	"time"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-
-	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"google.golang.org/protobuf/proto"
 )
 
 func main() {
-	// Initialize FDB - try the version the Go bindings expect
-	fdb.MustAPIVersion(720)
-	db := fdb.MustOpenDefault()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := run(ctx, os.Getenv("FDB_CLUSTER_FILE"), os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
 
-	// Create RecordLayer database wrapper
+func run(ctx context.Context, clusterFile string, out io.Writer) error {
+	if err := fdb.APIVersion(730); err != nil {
+		return err
+	}
+	db, err := fdb.OpenDatabase(clusterFile)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
 	recordDB := recordlayer.NewFDBDatabase(db)
 
-	// Get the protobuf file descriptor for our demo schema
-	// This is equivalent to Java's RecordLayerDemoProto.getDescriptor()
-	fileDesc := gen.File_record_layer_demo_proto
-
-	// Create metadata - equivalent to Java's RecordMetaData.newBuilder().setRecords(...)
-	metaDataBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fileDesc)
-
-	// Set primary keys for record types - equivalent to Java's setPrimaryKey(Key.Expressions.field("order_id"))
-	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-	metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
-	metaDataBuilder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
-
-	// Build the metadata
-	recordMetaData, err := metaDataBuilder.Build()
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	metadata, err := builder.Build()
 	if err != nil {
-		log.Fatalf("Failed to build metadata: %v", err)
+		return fmt.Errorf("build metadata: %w", err)
 	}
 
-	// Create a keyspace path (simplified for now)
+	// The demo owns this subspace and overwrites order 1001 on each run.
 	keyspace := subspace.FromBytes([]byte("record_layer_demo"))
-
-	fmt.Println("Setting up Record Store...")
-
-	// Example of the transaction pattern - equivalent to Java's db.run(context -> { ... })
-	result, err := recordDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (any, error) {
-		// Create record store - equivalent to Java's FDBRecordStore.newBuilder()...
+	result, err := recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
-			SetContext(ctx).
-			SetMetaDataProvider(recordMetaData).
+			SetContext(rtx).
+			SetMetaDataProvider(metadata).
 			SetSubspace(keyspace).
 			CreateOrOpen()
 		if err != nil {
-			return nil, fmt.Errorf("failed to open store: %w", err)
+			return nil, err
 		}
-
-		fmt.Println("Record Store opened successfully!")
-		fmt.Printf("Store subspace: %v\n", store.Subspace())
-		fmt.Printf("Metadata version: %d\n", recordMetaData.Version())
-
-		// Create and save a sample Order record
 		order := &gen.Order{
 			OrderId: proto.Int64(1001),
 			Price:   proto.Int32(25),
-			Flower: &gen.Flower{
-				Type:  proto.String("Rose"),
-				Color: gen.Color_RED.Enum(),
-			},
+			Flower:  &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()},
+		}
+		if _, err := store.SaveRecord(order); err != nil {
+			return nil, err
 		}
 
-		fmt.Printf("Saving order: %v\n", order)
-		savedRecord, err := store.SaveRecord(order)
+		typed, err := recordlayer.GetTypedRecordStore[*gen.Order](store, "Order")
 		if err != nil {
-			return nil, fmt.Errorf("failed to save record: %w", err)
+			return nil, err
 		}
-
-		fmt.Printf("Record saved successfully! Key: %v, Size: %d bytes\n", savedRecord.PrimaryKey, savedRecord.ValueSize)
-
-		// Now try to load the record back
-		primaryKey := tuple.Tuple{int64(1001)}
-		storedRecord, err := store.LoadRecord(primaryKey)
+		loaded, err := typed.LoadRecord(tuple.Tuple{int64(1001)})
 		if err != nil {
-			return nil, fmt.Errorf("failed to load record: %w", err)
+			return nil, err
 		}
-
-		if storedRecord == nil {
-			fmt.Printf("No record found with key %v\n", primaryKey)
-		} else {
-			fmt.Printf("Found record: Key=%v, Size=%d bytes\n", storedRecord.PrimaryKey, storedRecord.ValueSize)
+		if loaded == nil || !proto.Equal(loaded.Record, order) {
+			return nil, fmt.Errorf("saved order did not round-trip")
 		}
-
-		return "Read/Write cycle completed successfully", nil
+		return loaded.Record, nil
 	})
-
 	if err != nil {
-		log.Printf("Transaction failed: %v", err)
-		// This is expected since we don't have FDB running
-		fmt.Println("Note: This error is expected without a running FoundationDB cluster")
-	} else {
-		fmt.Printf("Transaction completed successfully: %v\n", result)
+		return fmt.Errorf("record transaction: %w", err)
 	}
-
-	fmt.Println("Getting Started example completed!")
+	order := result.(*gen.Order)
+	_, err = fmt.Fprintf(out, "order %d: price=%d\n", order.GetOrderId(), order.GetPrice())
+	return err
 }
