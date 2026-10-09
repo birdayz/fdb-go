@@ -97,9 +97,12 @@ jobs:
       # larger than the whole budget runs alone, which is what "exclusive" did, except
       # that an exclusive target waited for every other test and then ran with three
       # idle slots (~700 s of serial tail per run).
+      #
+      # The Java conformance targets (tag conformance_java) run in the
+      # conformance-java job on the other runner; see there.
       - name: Build, lint & test
         id: test
-        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl --local_test_jobs=0 --local_resources=memory=4500 --profile=bazel-profile.json.gz
+        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress,-conformance_java --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl --local_test_jobs=0 --local_resources=memory=4500 --profile=bazel-profile.json.gz
 
       # tools/bazelscaleset is a standalone Go module (its own go.mod) so the
       # runner supervisor's GitHub-API dependencies never enter the
@@ -179,6 +182,62 @@ jobs:
         with:
           name: bazel-timing
           path: |
+            bazel-profile.json.gz
+            .bazel-bep.jsonl
+          include-hidden-files: true
+          retention-days: 14
+
+  conformance-java:
+    name: Java conformance (Go vs Java 4.14.2.0)
+    # The conformance_java targets (each spawns Java conformance servers beside its
+    # FDB container) were ~1500 s of the main job's ~4900 s of test time, and that
+    # job is throughput-bound on its 4-vCPU runner (4 tests at once from minute 4 to
+    # the end) while the other runner finished the race job and went idle. Running
+    # them here, on the second runner, takes their quarter off the critical path.
+    # Same bazel flags as the main lane, so the build reuses this runner's disk cache.
+    runs-on: hetzner-fdb-vm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check Docker (else the conformance gate silently no-ops)
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the conformance suite would skip (exit 0) and the gate would silently pass with no coverage"; exit 1; }
+
+      - name: Java conformance tests
+        id: test
+        run: |
+          N=$(bazelisk query 'attr(tags, conformance_java, tests(//...))' 2>/dev/null | wc -l)
+          if [ "$N" -eq 0 ]; then echo "::error::no conformance_java test targets — gate would be a no-op"; exit 1; fi
+          echo "conformance_java targets: $N"
+          bazelisk test //... --build_tests_only --define gotags=fdbdocker --test_tag_filters=conformance_java,-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl --local_test_jobs=0 --local_resources=memory=4500 --profile=bazel-profile.json.gz
+
+      - name: Timeout budgets
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        run: |
+          bazelisk query 'tests(//...)' --output=xml --xml:default_values > .bazel-targets.xml
+          go run ./cmd/test-budget -lane conformance-java -bep .bazel-bep.jsonl -targets .bazel-targets.xml -warn 0.70 -threshold 0.90
+
+      - name: Generate test report
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        run: |
+          bazelisk build //cmd/test-report
+          BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
+          "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
+
+      - name: Upload test report and timing data as artifact
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-report-conformance-java
+          path: |
+            test-report.html
             bazel-profile.json.gz
             .bazel-bep.jsonl
           include-hidden-files: true
