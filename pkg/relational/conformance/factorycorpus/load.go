@@ -5,9 +5,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"fdb.dev/pkg/relational/conformance/javayamsql"
 	"fdb.dev/pkg/relational/conformance/yamsql"
@@ -384,27 +386,79 @@ func LoadDir(dir string) ([]*Scenario, error) {
 	var out []*Scenario
 	seenKey := map[string]string{}
 	seenName := map[string]string{}
-	for _, m := range matches {
-		f, err := Load(m)
-		if err != nil {
-			return nil, err
-		}
+	err = loadInOrder(matches, Load, func(m string, f *FamilyFile) error {
 		for _, sc := range f.Scenarios {
 			id := m + "#" + sc.Header.Name
 			if prev, dup := seenName[sc.Header.Name]; dup {
-				return nil, fmt.Errorf("%s and %s both commit scenario %s", prev, id, sc.Header.Name)
+				return fmt.Errorf("%s and %s both commit scenario %s", prev, id, sc.Header.Name)
 			}
 			seenName[sc.Header.Name] = id
 			if prev, dup := seenKey[sc.Header.DedupKey]; dup {
-				return nil, fmt.Errorf("%s and %s share dedup key %s: the corpus is committing the same (feature vector, plan shape) point twice, which is volume without coverage",
+				return fmt.Errorf("%s and %s share dedup key %s: the corpus is committing the same (feature vector, plan shape) point twice, which is volume without coverage",
 					prev, id, sc.Header.DedupKey)
 			}
 			seenKey[sc.Header.DedupKey] = id
 			out = append(out, sc)
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
 
 // TestdataDir is the corpus directory relative to this package.
 const TestdataDir = "testdata"
+
+// loadInOrder loads paths concurrently and hands each file to visit in path
+// order, exactly as a serial loop would: visit sees files in order, and the
+// first error in path order (a load error or a visit error) is the one
+// returned. At most a bounded window of files is loaded ahead of visit, so a
+// streaming caller still holds only a few families at once.
+func loadInOrder(paths []string, load func(string) (*FamilyFile, error), visit func(string, *FamilyFile) error) error {
+	workers := runtime.GOMAXPROCS(0)
+	type slot struct {
+		done chan struct{}
+		file *FamilyFile
+		err  error
+	}
+	queue := make(chan *slot, workers)
+	sem := make(chan struct{}, workers)
+	var stop atomic.Bool
+	go func() {
+		defer close(queue)
+		for _, p := range paths {
+			if stop.Load() {
+				return
+			}
+			s := &slot{done: make(chan struct{})}
+			sem <- struct{}{}
+			go func(p string) {
+				defer func() { <-sem }()
+				defer close(s.done)
+				s.file, s.err = load(p)
+			}(p)
+			queue <- s
+		}
+	}()
+	defer func() {
+		stop.Store(true)
+		for s := range queue {
+			<-s.done
+		}
+	}()
+	i := 0
+	for s := range queue {
+		<-s.done
+		if s.err != nil {
+			return s.err
+		}
+		if err := visit(paths[i], s.file); err != nil {
+			return err
+		}
+		s.file = nil
+		i++
+	}
+	return nil
+}
