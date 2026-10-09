@@ -41,6 +41,7 @@ go_test(
         "//pkg/recordlayer/query/plan/plans",
         "//pkg/recordlayer/rlmetrics",
         "//pkg/recordlayer/vectorcodec",
+        "//pkg/recordlayer/vectorindex",
         "//pkg/relational/api",
         "//pkg/relational/api/ddl",
         "//pkg/relational/conformance/coveringleaf",
