@@ -441,3 +441,36 @@ that automation is a follow-up — the flag itself just sets the mode.
 
 `terraform.tfstate*` is local state (gitignored). Do not commit it — it can contain the
 registration token and resource ids.
+
+## Fleet-shared Bazel cache (RFC-257)
+
+Every runner keeps its local `--disk_cache` and also uses one shared
+bazel-remote cache on gh-runner-fdb (`grpc://10.77.0.2:9092`). The cache is
+reachable only over the `ci-fleet` private network (`shared_cache.tf`), so a
+job is cache-warm on whichever box runs it.
+
+It was enabled on the live fleet on 2026-10-09, without tofu. A one-shot
+workflow, since deleted (see git history:
+`.github/workflows/fleet-shared-cache.yml`), created the network, attached
+both boxes via the Hetzner API using the HCLOUD_TOKEN secret, and ran
+`enable-shared-cache.sh server|client` on each box with sudo. The script is
+idempotent and safe to re-run as root on a box. `user_data` is
+`ignore_changes`, so the cloud-init lines only cover boxes provisioned later.
+
+The tofu state does not know these resources yet. Import them before the next
+`tofu apply`, otherwise the apply fails on the existing network name:
+
+```sh
+NET=$(hcloud network describe ci-fleet -o format='{{.ID}}')
+tofu import hcloud_network.ci "$NET"
+tofu import hcloud_network_subnet.ci "$NET-10.77.0.0/24"
+tofu import hcloud_server_network.runner "$(hcloud server describe gh-runner-fdb -o format='{{.ID}}')-$NET"
+tofu import 'hcloud_server_network.runner_pool[0]' "$(hcloud server describe gh-runner-drain-0 -o format='{{.ID}}')-$NET"
+```
+
+The script is idempotent and ends by checking that the cache answers. An
+unreachable cache only produces warnings, because Bazel falls back to
+building locally, and `--remote_timeout` bounds the wait.
+
+To roll back, delete the `# RFC-257 shared cache` block from
+`/etc/bazel.bazelrc`, and on the server also run `docker rm -f bazel-remote`.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
@@ -137,7 +139,7 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 
 		// Unpack the key relative to the records subspace.
 		// Modern layout: (pk..., suffix); legacy omit layout: (pk...) with no suffix.
-		keyTuple, err := fastSubspaceUnpack(kv.Key, len(recordsSubspace.Bytes()))
+		keyTuple, err := tuplefast.SubspaceUnpack(kv.Key, len(recordsSubspace.Bytes()))
 		if err != nil {
 			continue // skip unparseable keys
 		}
@@ -221,7 +223,7 @@ func (c *recordKeyCursor) initIterator() error {
 
 		// Initialize lastPK from continuation for split record dedup.
 		// Continuation is tuple-packed (pk..., suffix) — strip the last element.
-		if contTuple, err := fastUnpack(fdb.Key(innerCont)); err == nil && len(contTuple) >= 2 {
+		if contTuple, err := tuplefast.Unpack(fdb.Key(innerCont)); err == nil && len(contTuple) >= 2 {
 			c.lastPK = tuple.Tuple(contTuple[:len(contTuple)-1])
 		}
 	}

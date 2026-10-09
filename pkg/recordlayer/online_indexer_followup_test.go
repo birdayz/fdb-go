@@ -89,13 +89,13 @@ var _ = Describe("OnlineIndexer follow-up liveness", func() {
 		db := NewFDBDatabase(sharedDB.db).SetEnv(env)
 		builder := baseBuilder()
 		targets := []*Index{
-			NewVectorIndex("a_queue", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1),
-			NewVectorIndex("b_queue", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1),
+			newValueWithQueueIndex("a_queue", Concat(Field("quantity"), Field("price"))),
+			newValueWithQueueIndex("b_queue", Concat(Field("quantity"), Field("price"))),
 			NewIndex("c_ordinary", Field("price")),
 		}
 		if replacement {
 			targets[0].Options[IndexOptionReplacedByPrefix+"0"] = targets[1].Name
-			targets[2] = NewVectorIndex("c_queue", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+			targets[2] = newValueWithQueueIndex("c_queue", Concat(Field("quantity"), Field("price")))
 		}
 		for _, index := range targets {
 			builder.AddIndex("Order", index)
@@ -340,7 +340,7 @@ var _ = Describe("OnlineIndexer follow-up liveness", func() {
 					empty, err := store.indexingPendingWriteQueue(index, 0).IsQueueEmpty(rc)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(empty).To(BeTrue())
-					rows, err := store.SearchVectorIndexWithPrefix(index, tuple.Tuple{int64(7)}, []float64{1}, 20, 100)
+					rows, err := queuedIndexPrimaryKeys(store, index, tuple.Tuple{int64(7)})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(rows).To(HaveLen(8))
 				}

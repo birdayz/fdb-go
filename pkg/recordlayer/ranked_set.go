@@ -7,6 +7,8 @@ import (
 	"hash/crc32"
 	"math/bits"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -418,7 +420,7 @@ func (rs *rankedSet) Rank(tx fdb.ReadTransaction, key []byte, nullIfMissing bool
 
 		var lastCount int64
 		for _, kv := range kvs {
-			t, err := fastSubspaceUnpack(kv.Key, len(levelSub.Bytes()))
+			t, err := tuplefast.SubspaceUnpack(kv.Key, len(levelSub.Bytes()))
 			if err != nil {
 				return nil, err
 			}
@@ -474,7 +476,7 @@ func (rs *rankedSet) GetNth(tx fdb.ReadTransaction, rank int64) ([]byte, error) 
 
 		drillDown := false
 		for _, kv := range kvs {
-			t, err := fastSubspaceUnpack(kv.Key, len(levelSub.Bytes()))
+			t, err := tuplefast.SubspaceUnpack(kv.Key, len(levelSub.Bytes()))
 			if err != nil {
 				return nil, err
 			}
@@ -632,7 +634,7 @@ func (rs *rankedSet) getPreviousKey(tx fdb.WritableTransaction, level int, key [
 	}
 
 	// Conflict if the previous key is removed entirely.
-	prevKeyTuple, err := fastSubspaceUnpack(prevk, len(rs.subspace.Bytes()))
+	prevKeyTuple, err := tuplefast.SubspaceUnpack(prevk, len(rs.subspace.Bytes()))
 	if err != nil {
 		return nil, err
 	}

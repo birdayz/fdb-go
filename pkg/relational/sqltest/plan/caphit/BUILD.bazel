@@ -9,6 +9,7 @@ go_test(
         "planner_cap_hit_fdb_test.go",
     ],
     tags = [
+        "resources:cpu:2",
         "resources:memory:700",
         "test-full",
     ],

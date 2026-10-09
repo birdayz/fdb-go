@@ -26,6 +26,7 @@ go_test(
         "seeds_race_test.go",
     ],
     embed = [":memoinvariant"],
+    tags = ["resources:cpu:6"],
     deps = [
         "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/expressions",

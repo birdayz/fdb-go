@@ -529,7 +529,11 @@ func memberFlowedRow(alias values.CorrelationIdentifier, rv values.Value) (value
 	if rv == nil {
 		return nil, &FlowedObjectTypeUnavailableError{Alias: alias, Reason: "member has no result Value"}
 	}
-	relation, err := values.ExactRelationOf(rv.Type())
+	object, err := values.ExactTypeForValue(rv)
+	if err != nil {
+		return nil, fmt.Errorf("quantifier %s member result type: %w", alias.Name(), err)
+	}
+	relation, err := values.ExactRelationOfHandle(object)
 	if err != nil {
 		return nil, fmt.Errorf("quantifier %s member result type: %w", alias.Name(), err)
 	}
@@ -679,15 +683,36 @@ func isUnstatedType(t values.Type) bool {
 // is no reporting-only or UnknownType fallback: absence, invalidity, and member
 // disagreement are returned before a Value is published.
 func (q Quantifier) RequireFlowedObjectValue() (values.QuantifiedObjectValue, error) {
+	// The prototype of the memoized flowed row is derived once per member set.
+	widened := 0
+	if q.nullOnEmpty || q.kind == QuantifierExistential {
+		widened = 1
+	}
+	memo := q.GetRangesOver().cachedFlowedMemo()
+	if memo != nil {
+		if prototype := memo.prototypes[widened].Load(); prototype != nil {
+			qov, err := prototype.QuantifiedObjectValue(q.alias)
+			if err != nil {
+				return nil, fmt.Errorf("quantifier %s flowed QOV: %w", q.alias.Name(), err)
+			}
+			return qov, nil
+		}
+	}
 	flowedType, err := q.GetFlowedObjectType()
 	if err != nil {
 		return nil, err
 	}
-	qov, err := values.NewQuantifiedObjectValue(q.alias, flowedType)
-	if err != nil {
-		return nil, fmt.Errorf("quantifier %s flowed QOV: %w", q.alias.Name(), err)
+	prototype, err := values.NewQOVPrototype(flowedType)
+	if err == nil {
+		var qov values.QuantifiedObjectValue
+		if qov, err = prototype.QuantifiedObjectValue(q.alias); err == nil {
+			if memo != nil && memo == q.GetRangesOver().cachedFlowedMemo() {
+				memo.prototypes[widened].Store(prototype)
+			}
+			return qov, nil
+		}
 	}
-	return qov, nil
+	return nil, fmt.Errorf("quantifier %s flowed QOV: %w", q.alias.Name(), err)
 }
 
 // GetCorrelatedTo returns the set of CorrelationIdentifiers the inner

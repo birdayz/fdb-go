@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
@@ -93,7 +95,7 @@ func TestSPFreshChurnSoak(t *testing.T) {
 			}
 			for i := lo; i < hi; i++ {
 				if _, serr := store.SaveRecord(&gen.Order{
-					OrderId: proto.Int64(int64(i)), VectorData: recordlayer.SerializeVector(baseF64[i]),
+					OrderId: proto.Int64(int64(i)), VectorData: vectorindex.SerializeVector(baseF64[i]),
 				}); serr != nil {
 					return nil, serr
 				}
@@ -103,7 +105,7 @@ func TestSPFreshChurnSoak(t *testing.T) {
 			t.Fatalf("load batch %d: %v", lo, err)
 		}
 	}
-	if err := recordlayer.BuildSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_soak", 42); err != nil {
+	if err := vectorindex.BuildSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_soak", 42); err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	if _, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -166,7 +168,7 @@ func TestSPFreshChurnSoak(t *testing.T) {
 					return nil, merr
 				}
 				cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
-					Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
+					Low:  tuple.Tuple{vectorindex.SerializeVector(query)},
 					High: tuple.Tuple{int64(k)},
 				}, nil, recordlayer.ScanProperties{})
 				got = got[:0]
@@ -252,7 +254,7 @@ func TestSPFreshChurnSoak(t *testing.T) {
 				}
 				for _, id := range ids[lo:hi] {
 					if _, serr := store.SaveRecord(&gen.Order{
-						OrderId: proto.Int64(id), VectorData: recordlayer.SerializeVector(reinserts[id]),
+						OrderId: proto.Int64(id), VectorData: vectorindex.SerializeVector(reinserts[id]),
 					}); serr != nil {
 						return nil, serr
 					}
@@ -265,7 +267,7 @@ func TestSPFreshChurnSoak(t *testing.T) {
 		for id, v := range reinserts {
 			live[id] = v
 		}
-		actions, err := recordlayer.RebalanceSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_soak")
+		actions, err := vectorindex.RebalanceSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_soak")
 		if err != nil {
 			t.Fatalf("wave %d rebalance: %v", wave, err)
 		}
@@ -290,7 +292,7 @@ func TestSPFreshChurnSoak(t *testing.T) {
 			if serr != nil {
 				return nil, serr
 			}
-			rep, serr := recordlayer.SPFreshCheckIntegrity(rtx, store, "spf_soak", 20000)
+			rep, serr := vectorindex.SPFreshCheckIntegrity(rtx, store, "spf_soak", 20000)
 			if serr != nil {
 				return nil, serr
 			}

@@ -38,9 +38,7 @@ dependents and is not the check the hook and CI make.
   or `go get` for this module's just/Bazel validation. Nogo already runs during
   compilation. Standalone nested modules have their own documented CI commands.
 - The end-to-end SQL suite lives in `//pkg/relational/sqltest/<area>` packages
-  (`just sqltest`), so an edited test reruns only its package. The manual
-  `//pkg/relational/sqltest/census:census_test` (`just census`) reruns the whole
-  corpus to assert the census floors; nightly-coverage runs it.
+  (`just sqltest`), so an edited test reruns only its package.
 - Classify heavyweight targets using the `test-full` BUILD tag, not test skips
   or global build-tag changes. New ordinary targets enter the fast lane by default.
 - Report which lane ran, failures, and actual versus cached execution. A fast pass

@@ -142,7 +142,7 @@ func (p *RecordQueryDistinctPlan) GetQuantifiers() []expressions.Quantifier {
 	if p.innerQ.GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return quantifierView(&p.innerQ)
 }
 
 // EqualsWithoutChildren — distinct plans carry the Streaming mode and the R3

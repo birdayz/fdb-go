@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "tuplefast",
+    srcs = ["tuplefast.go"],
+    importpath = "fdb.dev/pkg/recordlayer/internal/tuplefast",
+    visibility = ["//pkg/recordlayer:__subpackages__"],
+    deps = ["//pkg/fdbgo/fdb/tuple"],
+)
+
+go_test(
+    name = "tuplefast_test",
+    srcs = ["tuplefast_test.go"],
+    embed = [":tuplefast"],
+    deps = ["//pkg/fdbgo/fdb/tuple"],
+)

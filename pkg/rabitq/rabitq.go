@@ -12,7 +12,7 @@ import (
 const TypeByte byte = 3
 
 // Metric identifies a distance metric for RaBitQ quantization.
-// Values match recordlayer.VectorMetric so that a simple type conversion works.
+// Values match vectorindex.VectorMetric so that a simple type conversion works.
 type Metric int
 
 const (
@@ -36,7 +36,7 @@ var tightStart = [9]float64{
 	0.00, 0.15, 0.20, 0.52, 0.59, 0.71, 0.75, 0.77, 0.81,
 }
 
-// Quantizer implements recordlayer.VectorQuantizer using RaBitQ.
+// Quantizer implements vectorindex.VectorQuantizer using RaBitQ.
 type Quantizer struct {
 	metric    Metric
 	numExBits int

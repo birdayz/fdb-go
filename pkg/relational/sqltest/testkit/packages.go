@@ -43,16 +43,12 @@ var Packages = []string{
 	"pkg/relational/sqltest/types",
 }
 
-// CensusTarget compiles every package of Packages into one binary; only there do
-// the census floors (claims about the whole corpus) hold.
-const CensusTarget = "//pkg/relational/sqltest/census:census_test"
-
 // driverTarget shares Main but is not part of the corpus.
 const driverTarget = "//pkg/relational/sqldriver:sqldriver_test"
 
 func checkRegistered() {
 	t := os.Getenv("TEST_TARGET")
-	if t == "" || t == CensusTarget || t == driverTarget {
+	if t == "" || t == driverTarget {
 		return
 	}
 	pkg := strings.TrimPrefix(strings.SplitN(t, ":", 2)[0], "//")

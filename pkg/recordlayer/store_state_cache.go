@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -319,7 +321,7 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 		}
 		indexStates = make(map[string]IndexState, len(indexKVs))
 		for _, kv := range indexKVs {
-			t, err := fastSubspaceUnpack(kv.Key, ks.indexStatePrefixLen)
+			t, err := tuplefast.SubspaceUnpack(kv.Key, ks.indexStatePrefixLen)
 			if err != nil {
 				return nil, fmt.Errorf("failed to unpack index state key: %w", err)
 			}
@@ -330,7 +332,7 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 			if !ok {
 				continue
 			}
-			valueTuple, err := fastUnpack(kv.Value)
+			valueTuple, err := tuplefast.Unpack(kv.Value)
 			if err != nil {
 				return nil, fmt.Errorf("failed to unpack index state value for %q: %w", indexName, err)
 			}

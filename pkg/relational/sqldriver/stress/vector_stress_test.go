@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -92,7 +94,7 @@ func TestFDB_VectorSearch_StreamingHeapBounded(t *testing.T) {
 		m := dynamicpb.NewMessage(desc)
 		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(desc.Fields().ByName("CATEGORY"), protoreflect.ValueOfString("other"))
-		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(recordlayer.SerializeVector(vec)))
+		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(vectorindex.SerializeVector(vec)))
 		return m
 	}
 
@@ -160,7 +162,7 @@ func TestFDB_VectorSearch_StreamingHeapBounded(t *testing.T) {
 		// many postings — the realistic substrate where the budget-bounded widening
 		// genuinely engages and binds. (The unmaintained read-capped path has its
 		// own honest-truncation pin: TestFDB_VectorSearch_ColdStartCappedHonestTruncation.)
-		if _, rerr := recordlayer.RebalanceSPFreshIndex(ctx, db, storeBuilder, "VEC_IDX"); rerr != nil {
+		if _, rerr := vectorindex.RebalanceSPFreshIndex(ctx, db, storeBuilder, "VEC_IDX"); rerr != nil {
 			t.Fatalf("rebalance (n=%d): %v", n, rerr)
 		}
 
@@ -385,7 +387,7 @@ func TestFDB_VectorSearch_ColdStartCappedHonestTruncation(t *testing.T) {
 		m := dynamicpb.NewMessage(desc)
 		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(desc.Fields().ByName("CATEGORY"), protoreflect.ValueOfString(cat))
-		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(recordlayer.SerializeVector(vec)))
+		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(vectorindex.SerializeVector(vec)))
 		return m
 	}
 
@@ -480,7 +482,7 @@ func TestFDB_VectorSearch_ColdStartCappedHonestTruncation(t *testing.T) {
 
 	// Maintenance — the first query's terminal re-filed the oversized posting's
 	// split (refileCapped); draining the queue splits it into <=Lmax pieces.
-	if _, rerr := recordlayer.RebalanceSPFreshIndex(ctx, db, storeBuilder, "VEC_IDX"); rerr != nil {
+	if _, rerr := vectorindex.RebalanceSPFreshIndex(ctx, db, storeBuilder, "VEC_IDX"); rerr != nil {
 		t.Fatalf("rebalance: %v", rerr)
 	}
 

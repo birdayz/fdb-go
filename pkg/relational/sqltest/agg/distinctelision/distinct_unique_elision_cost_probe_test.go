@@ -61,14 +61,9 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/dynamicpb"
-
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
-	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
@@ -465,37 +460,9 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	setup := testkit.OpenDB(t, "/FRL/testdb_duec")
-	testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duec")
-	// Three tables differing only in NULL density. EMAIL_PLAIN mirrors EMAIL
-	// value for value, NULL for NULL, and carries no index.
-	testkit.MustExecCtx(t, setup, ctx,
-		"CREATE SCHEMA TEMPLATE duec "+
-			"CREATE TABLE users (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
-			"CREATE UNIQUE INDEX by_email ON users (email) "+
-			"CREATE TABLE users1 (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
-			"CREATE UNIQUE INDEX by_email1 ON users1 (email) "+
-			"CREATE TABLE users50 (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
-			"CREATE UNIQUE INDEX by_email50 ON users50 (email) "+
-			// The same three densities at duecSmallRows, for the arm that has to
-			// read its whole result inside ONE read version. See duecSmallRows.
-			"CREATE TABLE users_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
-			"CREATE UNIQUE INDEX by_email_s ON users_s (email) "+
-			"CREATE TABLE users1_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
-			"CREATE UNIQUE INDEX by_email1_s ON users1_s (email) "+
-			"CREATE TABLE users50_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
-			"CREATE UNIQUE INDEX by_email50_s ON users50_s (email)")
-	testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duec/s WITH TEMPLATE duec")
-	dsn := fmt.Sprintf("fdbsql:///FRL/TESTDB_DUEC?cluster_file=%s&schema=S", testkit.ClusterFile())
-	db := duecOpenUncompressed(t, dsn)
+	duecSharedFixture(t)
+	db := duecOpenUncompressed(t, duecDSN())
 	db.SetMaxOpenConns(16)
-
-	duecLoad(t, ctx, db, "users", 0)
-	duecLoad(t, ctx, db, "users1", 100)
-	duecLoad(t, ctx, db, "users50", 2)
-	duecLoadN(t, ctx, db, "users_s", 0, duecSmallRows)
-	duecLoadN(t, ctx, db, "users1_s", 100, duecSmallRows)
-	duecLoadN(t, ctx, db, "users50_s", 2, duecSmallRows)
 
 	// ---- plan shapes ---------------------------------------------------
 	// Every measurement below is interpretable only against the plan it was
@@ -1357,19 +1324,16 @@ func (c duecUncompressedConnector) Connect(ctx context.Context) (driver.Conn, er
 	return conn, nil
 }
 
-// duecLoad fills one table with duecRows rows; every nullEvery-th row gets a
-// NULL email (and the same NULL in the unindexed mirror column). nullEvery <= 0
-// means none.
-func duecLoad(t *testing.T, ctx context.Context, db *sql.DB, table string, nullEvery int) {
-	t.Helper()
-	duecLoadN(t, ctx, db, table, nullEvery, duecRows)
-}
-
-// duecLoadN is duecLoad at an explicit row count, for the tables whose arm has
-// to fit inside a read version rather than exercise scale. See duecSmallRows.
+// duecLoadN fills one table with rows rows; every nullEvery-th row gets a NULL
+// email (and the same NULL in the unindexed mirror column). nullEvery <= 0
+// means none. The _s tables use duecSmallRows, for the arm that has to fit
+// inside a read version rather than exercise scale.
 func duecLoadN(t *testing.T, ctx context.Context, db *sql.DB, table string, nullEvery, rows int) {
 	t.Helper()
 	const batch = 250
+	// Insert streams per table. Not a machine size: the bound is the one FDB
+	// process in the package's container, whose commit rate the 6 parallel
+	// tables already share; 16 streams measured slower than 8.
 	const workers = 8
 	start := time.Now()
 	var wg sync.WaitGroup
@@ -1787,21 +1751,25 @@ func TestFDB_DistinctUniqueElisionRetention(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
-	md := duecMetaData(t)
-	desc := md.GetRecordType("USERS").Descriptor
+	// The densities are the cost probe's own 100k-row tables, read through the
+	// record layer from the store the SQL path wrote (same ids, emails, NULLs
+	// and payloads this test used to write into a private subspace), planned
+	// over metadata built from the identical template DDL.
+	duecSharedFixture(t)
+	md := duecTemplateMetaData(t)
+	ks := testkit.RelationalStoreSubspace(t, "/FRL/TESTDB_DUEC", "S")
 
 	for _, d := range []struct {
 		label     string
-		nullEvery int
+		table     string
 		outRows   int
 		wantNulls int
 	}{
-		{"0%", 0, 100000, 0},
-		{"1%", 100, 99001, 1000},
-		{"50%", 2, 50001, 50000},
+		{"0%", "USERS", 100000, 0},
+		{"1%", "USERS1", 99001, 1000},
+		{"50%", "USERS50", 50001, 50000},
 	} {
-		ks := subspace.FromBytes(tuple.Tuple{t.Name(), d.label}.Pack())
-		duecDirectLoad(t, ctx, db, md, desc, ks, d.nullEvery)
+		from := " FROM " + d.table + " WHERE ID >= 0"
 
 		// The exempt SLOTS, as the PLANNER computed them, on a shape where the
 		// answer is not 0. exemptSlotsFor resolves the index's key columns
@@ -1814,8 +1782,8 @@ func TestFDB_DistinctUniqueElisionRetention(t *testing.T) {
 			query string
 			want  []int
 		}{
-			{"SELECT DISTINCT email, payload FROM USERS WHERE ID >= 0", []int{0}},
-			{"SELECT DISTINCT payload, email FROM USERS WHERE ID >= 0", []int{1}},
+			{"SELECT DISTINCT email, payload" + from, []int{0}},
+			{"SELECT DISTINCT payload, email" + from, []int{1}},
 		} {
 			got := duecDistinctIn(duecPlan(t, s.query, md, true)).GetNarrowedExemptSlots()
 			if len(got) != len(s.want) || (len(got) == 1 && got[0] != s.want[0]) {
@@ -1832,7 +1800,7 @@ func TestFDB_DistinctUniqueElisionRetention(t *testing.T) {
 		// the admitted count is the row count. A slot stuck at 0 admits 0.
 		if d.wantNulls > 0 {
 			r3PayloadFirst := duecRetained(t, ctx, db, md, ks,
-				"SELECT DISTINCT payload, email FROM USERS WHERE ID >= 0", duecRows, true)
+				"SELECT DISTINCT payload, email"+from, duecRows, true)
 			if r3PayloadFirst.keys != d.wantNulls {
 				t.Fatalf("density %s: with EMAIL projected SECOND, R3 admitted %d rows, "+
 					"want exactly %d.\nThe exempt test is reading the wrong slot: 0 "+
@@ -1842,11 +1810,11 @@ func TestFDB_DistinctUniqueElisionRetention(t *testing.T) {
 		}
 
 		// Keys retained: what the seen-set holds and what rides the continuation.
-		fullKeys := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email FROM USERS WHERE ID >= 0", d.outRows, false)
-		r3Keys := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email FROM USERS WHERE ID >= 0", d.outRows, true)
+		fullKeys := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email"+from, d.outRows, false)
+		r3Keys := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email"+from, d.outRows, true)
 		// Rows entered: the structural claim of RFC-210 §2.1's sweep table.
-		fullRows := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email, payload FROM USERS WHERE ID >= 0", duecRows, false)
-		r3Rows := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email, payload FROM USERS WHERE ID >= 0", duecRows, true)
+		fullRows := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email, payload"+from, duecRows, false)
+		r3Rows := duecRetained(t, ctx, db, md, ks, "SELECT DISTINCT email, payload"+from, duecRows, true)
 		t.Logf("RETAINED %-4s keys full=%-6d r3=%-6d | rows-entered full=%-6d r3=%-6d",
 			d.label, fullKeys.keys, r3Keys.keys, fullRows.keys, r3Rows.keys)
 
@@ -1949,8 +1917,9 @@ func duecDistinctIn(plan plans.RecordQueryPlan) *plans.RecordQueryDistinctPlan {
 // UNKNOWN and therefore refuses to draw a secondary-UNIQUE proof at all (see
 // duecAssertVariants, which pins that refusal); the asserting entry mints the
 // affirmative all-readable view the live generator mints after fetching a
-// snapshot, which is a claim this fixture is entitled to make — the store is
-// built here, and none of its indexes is ever transitioned.
+// snapshot, which is a claim this fixture is entitled to make — the shared
+// fixture's store is created with its indexes and none of them is ever
+// transitioned.
 //
 // This used to hand-write the narrowing as WithNarrowedDedup("BY_EMAIL",
 // []int{0}), which measured the executor over a plan the planner had no part
@@ -2060,67 +2029,82 @@ func duecMetaData(t *testing.T) *recordlayer.RecordMetaData {
 	return md
 }
 
-// duecDirectLoad writes the fixture through the record layer, so the retention
-// test owns a store it can execute a hand-built plan against.
-func duecDirectLoad(
-	t *testing.T,
-	ctx context.Context,
-	db *recordlayer.FDBDatabase,
-	md *recordlayer.RecordMetaData,
-	desc protoreflect.MessageDescriptor,
-	ks subspace.Subspace,
-	nullEvery int,
-) {
+// duecTemplateDDL is the cost probe's schema template: three tables differing
+// only in NULL density (EMAIL_PLAIN mirrors EMAIL value for value, NULL for
+// NULL, and carries no index), and the same three densities at duecSmallRows
+// for the arm that has to read its whole result inside ONE read version.
+const duecTemplateDDL = "CREATE TABLE users (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) " +
+	"CREATE UNIQUE INDEX by_email ON users (email) " +
+	"CREATE TABLE users1 (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) " +
+	"CREATE UNIQUE INDEX by_email1 ON users1 (email) " +
+	"CREATE TABLE users50 (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) " +
+	"CREATE UNIQUE INDEX by_email50 ON users50 (email) " +
+	"CREATE TABLE users_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) " +
+	"CREATE UNIQUE INDEX by_email_s ON users_s (email) " +
+	"CREATE TABLE users1_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) " +
+	"CREATE UNIQUE INDEX by_email1_s ON users1_s (email) " +
+	"CREATE TABLE users50_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) " +
+	"CREATE UNIQUE INDEX by_email50_s ON users50_s (email)"
+
+func duecDSN() string {
+	return fmt.Sprintf("fdbsql:///FRL/TESTDB_DUEC?cluster_file=%s&schema=S", testkit.ClusterFile())
+}
+
+var (
+	duecFixtureOnce   sync.Once
+	duecFixtureLoaded bool
+)
+
+// duecSharedFixture creates and loads /FRL/testdb_duec once per process, for
+// both the cost probe and the retention test. Its 306k rows are the package's
+// dominant cost (one FDB container's write rate), and the retention test used
+// to write the same 300k rows a second time into a private subspace. The
+// caller that loses the race waits; if the loader failed, it fails too rather
+// than measuring a partial fixture. The fixture is never written again.
+func duecSharedFixture(t *testing.T) {
 	t.Helper()
-	const workers = 8
-	const perTx = 200
-	per := duecRows / workers
-	var wg sync.WaitGroup
-	errCh := make(chan error, workers)
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func(w int) {
-			defer wg.Done()
-			lo := w * per
-			for base := lo; base < lo+perTx*((per+perTx-1)/perTx); base += perTx {
-				if base >= lo+per {
-					break
-				}
-				_, e := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-					store, sErr := recordlayer.NewStoreBuilder().
-						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
-					if sErr != nil {
-						return nil, sErr
-					}
-					for i := 0; i < perTx; i++ {
-						id := int64(base + i)
-						m := dynamicpb.NewMessage(desc)
-						m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
-						if nullEvery <= 0 || int(id)%nullEvery != 0 {
-							v := fmt.Sprintf("user%07d@example.com", id)
-							m.Set(desc.Fields().ByName("EMAIL"), protoreflect.ValueOfString(v))
-							m.Set(desc.Fields().ByName("EMAIL_PLAIN"), protoreflect.ValueOfString(v))
-						}
-						m.Set(desc.Fields().ByName("PAYLOAD"), protoreflect.ValueOfString(
-							fmt.Sprintf("pad-%07d-xxxxxxxxxxxxxxxxxxxx", id)))
-						if _, se := store.SaveRecord(proto.Message(m)); se != nil {
-							return nil, se
-						}
-					}
-					return nil, nil
+	duecFixtureOnce.Do(func() {
+		ctx := context.Background()
+		setup := testkit.OpenDB(t, "/FRL/testdb_duec")
+		testkit.MustExecCtx(t, setup, ctx, "CREATE DATABASE /FRL/testdb_duec")
+		testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA TEMPLATE duec "+duecTemplateDDL)
+		testkit.MustExecCtx(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_duec/s WITH TEMPLATE duec")
+		db := duecOpenUncompressed(t, duecDSN())
+		// The six tables are independent, so they load concurrently; each
+		// load still asserts its own row and NULL counts.
+		duecFixtureLoaded = t.Run("load_fixture", func(t *testing.T) {
+			for _, l := range []struct {
+				table           string
+				nullEvery, rows int
+			}{
+				{"users", 0, duecRows},
+				{"users1", 100, duecRows},
+				{"users50", 2, duecRows},
+				{"users_s", 0, duecSmallRows},
+				{"users1_s", 100, duecSmallRows},
+				{"users50_s", 2, duecSmallRows},
+			} {
+				t.Run(l.table, func(t *testing.T) {
+					t.Parallel()
+					duecLoadN(t, ctx, db, l.table, l.nullEvery, l.rows)
 				})
-				if e != nil {
-					errCh <- fmt.Errorf("direct load at %d: %w", base, e)
-					return
-				}
 			}
-		}(w)
+		})
+	})
+	if !duecFixtureLoaded {
+		t.Fatal("the shared /FRL/testdb_duec fixture failed to load; see the test that loaded it")
 	}
-	wg.Wait()
-	close(errCh)
-	for e := range errCh {
-		t.Fatalf("%v", e)
+}
+
+// duecTemplateMetaData is duecTemplateDDL as record-layer metadata, for
+// opening the store the SQL path wrote.
+func duecTemplateMetaData(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	tmpl, err := embedded.BuildSchemaTemplateFromDDL(duecTemplateDDL)
+	if err != nil {
+		t.Fatalf("schema DDL: %v", err)
 	}
+	return tmpl.Underlying()
 }
 
 // duecExplainInTx runs EXPLAIN inside an explicit transaction, the regime in

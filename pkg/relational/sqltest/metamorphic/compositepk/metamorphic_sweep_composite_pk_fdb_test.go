@@ -29,10 +29,12 @@ package sqltest
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math/rand/v2"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
@@ -87,13 +89,20 @@ func mhcpkCompareRows(w *testkit.Twin, stage string, q mhcpkQuery) (compared, no
 	w.T.Helper()
 	gi, ei = testkit.QueryRowStrings(w.T, w.Ctx, w.Idx, q.sql)
 	gn, en := testkit.QueryRowStrings(w.T, w.Ctx, w.Plain, q.sql)
+	compared, nonEmpty = mhcpkJudge(w, stage, q, gi, ei, gn, en)
+	return compared, nonEmpty, gi, ei
+}
+
+// mhcpkJudge is mhcpkCompare's verdict over answers already read.
+func mhcpkJudge(w *testkit.Twin, stage string, q mhcpkQuery, gi []string, ei error, gn []string, en error) (compared, nonEmpty bool) {
+	w.T.Helper()
 	if (ei == nil) != (en == nil) {
 		w.T.Errorf("%s: ERROR ASYMMETRY\n  q: %s\n  indexed:   %v\n  unindexed: %v", stage, q.sql, ei, en)
-		return false, false, gi, ei
+		return false, false
 	}
 	if ei != nil {
 		w.T.Logf("%s: both errored: %s: %v", stage, q.sql, ei)
-		return false, false, gi, ei
+		return false, false
 	}
 	si, sn := append([]string(nil), gi...), append([]string(nil), gn...)
 	if !q.ordered {
@@ -103,9 +112,9 @@ func mhcpkCompareRows(w *testkit.Twin, stage string, q mhcpkQuery) (compared, no
 	if !testkit.EqualRows(si, sn) {
 		w.T.Errorf("%s: indexed and unindexed DISAGREE (ordered=%v)\n  q: %s\n  plan: %s\n  indexed   (%d): %v\n  unindexed (%d): %v",
 			stage, q.ordered, q.sql, w.Explain(q.sql), len(gi), gi, len(gn), gn)
-		return true, len(gi) > 0, gi, ei
+		return true, len(gi) > 0
 	}
-	return true, len(gi) > 0, gi, ei
+	return true, len(gi) > 0
 }
 
 func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
@@ -601,10 +610,21 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 		rows []string
 		err  error
 	}
+	// Both passes read concurrently over the unchanging fixture and judge in
+	// query order, so counters and output are the serial ones.
+	scan := func(ctx context.Context, db *sql.DB, q string) ([]string, error) {
+		return testkit.QueryRowStrings(t, ctx, db, q)
+	}
+	reads := make([]testkit.Read, 0, 2*len(queries))
+	for _, q := range queries {
+		reads = append(reads, testkit.Read{DB: w.Idx, SQL: q.sql}, testkit.Read{DB: w.Plain, SQL: q.sql})
+	}
+	answers := testkit.ReadAll(ctx, reads, scan)
 	idxReads := make([]idxRead, len(queries))
 	for qi, q := range queries {
-		c, ne, gi, ei := mhcpkCompareRows(w, "read", q)
-		idxReads[qi] = idxRead{gi, ei}
+		ri, rn := answers[2*qi], answers[2*qi+1]
+		c, ne := mhcpkJudge(w, "read", q, ri.Rows, ri.Err, rn.Rows, rn.Err)
+		idxReads[qi] = idxRead{ri.Rows, ri.Err}
 		if !c {
 			bothErrored++
 			continue
@@ -615,29 +635,52 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 		}
 	}
 
-	// Paging variant on the indexed side: a pinned connection with a tiny
-	// scanned-rows limit so every query pages through continuations.
-	conn, err := w.Idx.Conn(ctx)
-	if err != nil {
-		t.Fatalf("db.Conn: %v", err)
-	}
-	defer conn.Close()
-	if err := conn.Raw(func(dc any) error {
-		ec, ok := dc.(*embedded.EmbeddedConnection)
-		if !ok {
-			return fmt.Errorf("driver conn is %T", dc)
+	// Paging variant on the indexed side: pinned connections with a tiny
+	// scanned-rows limit so every query pages through continuations, one per
+	// worker.
+	conns := make([]*sql.Conn, testkit.ReadWorkers())
+	for i := range conns {
+		conn, err := w.Idx.Conn(ctx)
+		if err != nil {
+			t.Fatalf("db.Conn: %v", err)
 		}
-		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, 3).Build())
-		return nil
-	}); err != nil {
-		t.Fatalf("set scan limit: %v", err)
+		defer conn.Close()
+		if err := conn.Raw(func(dc any) error {
+			ec, ok := dc.(*embedded.EmbeddedConnection)
+			if !ok {
+				return fmt.Errorf("driver conn is %T", dc)
+			}
+			ec.SetOptions(api.NewOptionsBuilder().Set(api.OptExecutionScannedRowsLimit, 3).Build())
+			return nil
+		}); err != nil {
+			t.Fatalf("set scan limit: %v", err)
+		}
+		conns[i] = conn
 	}
+	pagedReads := make([]idxRead, len(queries))
+	work := make(chan int)
+	var wg sync.WaitGroup
+	for _, conn := range conns {
+		wg.Go(func() {
+			for qi := range work {
+				rows, err := testkit.MhcpkRowsOnConn(ctx, conn, queries[qi].sql)
+				pagedReads[qi] = idxRead{rows, err}
+			}
+		})
+	}
+	for qi := range queries {
+		if idxReads[qi].err == nil {
+			work <- qi
+		}
+	}
+	close(work)
+	wg.Wait()
 	for qi, q := range queries {
 		full, err := idxReads[qi].rows, idxReads[qi].err
 		if err != nil {
 			continue
 		}
-		paged, err := testkit.MhcpkRowsOnConn(ctx, conn, q.sql)
+		paged, err := pagedReads[qi].rows, pagedReads[qi].err
 		if err != nil {
 			if strings.Contains(err.Error(), "54F01") {
 				pagingDeclined++

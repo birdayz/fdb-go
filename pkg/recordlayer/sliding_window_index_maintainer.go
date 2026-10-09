@@ -111,7 +111,7 @@ func (t slidingWindowExtremum) isWorseOrEqual(candidate, boundary tuple.Tuple) b
 // shared indexStoreContext: it has to load the records it evicts and promotes,
 // because the delegate index is updated with RECORDS, not with entry keys.
 type slidingWindowStore interface {
-	indexStoreContext
+	IndexStoreContext
 	loadRecordForIndexMaintenance(primaryKey tuple.Tuple) (*FDBStoredRecord[proto.Message], error)
 }
 
@@ -147,7 +147,7 @@ type slidingWindowIndexMaintainer struct {
 
 // delegateMaintainer exposes the wrapped maintainer so that store-level entry
 // points which need a CONCRETE maintainer type can see through the decoration.
-// See unwrapVectorMaintainer.
+// See maintainerAs.
 func (m *slidingWindowIndexMaintainer) delegateMaintainer() IndexMaintainer { return m.delegate }
 
 // indexMaintainerDecorator is implemented by maintainers that wrap another
@@ -181,7 +181,7 @@ type indexMaintainerDecorator interface {
 // Java has no equivalent problem: its decorator extends the same abstract
 // IndexMaintainer and overrides scan(), so nothing downstream ever asks what
 // the concrete class is.
-func maintainerAs[T any](m IndexMaintainer) (T, bool) {
+func IndexMaintainerAs[T any](m IndexMaintainer) (T, bool) {
 	for {
 		if t, ok := any(m).(T); ok {
 			return t, true
@@ -193,12 +193,6 @@ func maintainerAs[T any](m IndexMaintainer) (T, bool) {
 		}
 		m = d.delegateMaintainer()
 	}
-}
-
-// unwrapVectorMaintainer peels any decorators off a maintainer and returns the
-// vector maintainer underneath, if there is one.
-func unwrapVectorMaintainer(m IndexMaintainer) (*vectorIndexMaintainer, bool) {
-	return maintainerAs[*vectorIndexMaintainer](m)
 }
 
 func newSlidingWindowIndexMaintainer(

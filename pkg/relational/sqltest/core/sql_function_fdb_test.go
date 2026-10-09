@@ -283,6 +283,98 @@ func TestFDB_MacroOverEscapedStructField(t *testing.T) {
 	}
 }
 
+// Comparison, AND/OR, NOT and IS NULL macro bodies persist as Java's
+// RelOpValue/AndOrValue/NotValue trees and, called, plan and evaluate exactly
+// as their bodies written inline.
+func TestFDB_ComparisonMacroFunctions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	setup := testkit.OpenDB(t, "/FRL/testdb_relopmacro")
+	testkit.MustExec(t, setup, ctx, "CREATE DATABASE /FRL/testdb_relopmacro")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE relopmacro_tpl "+
+		"CREATE TABLE t (id BIGINT, a BIGINT, b BOOLEAN, s STRING, PRIMARY KEY (id)) "+
+		"CREATE INDEX t_a AS SELECT a FROM t ORDER BY a "+
+		"CREATE FUNCTION gt5(IN x BIGINT) RETURNS BOOLEAN RETURN x > 5 "+
+		"CREATE FUNCTION isn(IN x BIGINT) RETURNS BOOLEAN RETURN x IS NULL "+
+		"CREATE FUNCTION nb(IN x BOOLEAN) RETURNS BOOLEAN RETURN NOT x "+
+		"CREATE FUNCTION both_(IN x BOOLEAN, IN y BIGINT) RETURNS BOOLEAN RETURN x AND y >= 3 "+
+		"CREATE FUNCTION combo(IN x BIGINT, IN y STRING) RETURNS BOOLEAN RETURN x >= 2 AND NOT (y = 'q') OR y IS NULL "+
+		"CREATE FUNCTION dist(IN x BIGINT, IN y BIGINT) RETURNS BOOLEAN RETURN x IS DISTINCT FROM y "+
+		"CREATE FUNCTION inl(IN x BIGINT) RETURNS BOOLEAN RETURN x IN (1, 3, 9) "+
+		"CREATE FUNCTION ninl(IN x BIGINT, IN y BIGINT) RETURNS BOOLEAN RETURN x NOT IN (y, 3) "+
+		"CREATE FUNCTION btw(IN x BIGINT) RETURNS BOOLEAN RETURN x BETWEEN 2 AND 7 "+
+		"CREATE FUNCTION nbtw(IN x BIGINT) RETURNS BOOLEAN RETURN x NOT BETWEEN 2 AND 7 "+
+		"CREATE FUNCTION gtf(IN x BIGINT) RETURNS BOOLEAN RETURN x > 2.5 "+
+		"CREATE FUNCTION ist(IN x BOOLEAN) RETURNS BOOLEAN RETURN x IS NOT TRUE "+
+		"CREATE FUNCTION lk(IN x STRING) RETURNS BOOLEAN RETURN x NOT LIKE 'q%' "+
+		"CREATE FUNCTION cs(IN x BIGINT, IN y BOOLEAN) RETURNS BOOLEAN RETURN CASE WHEN x > 5 THEN y WHEN x IS NULL THEN FALSE ELSE x < 2 END")
+	testkit.MustExec(t, setup, ctx, "CREATE SCHEMA /FRL/testdb_relopmacro/s WITH TEMPLATE relopmacro_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///FRL/TESTDB_RELOPMACRO?cluster_file=%s&schema=S", testkit.ClusterFile()))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	testkit.MustExec(t, db, ctx, "INSERT INTO t VALUES (1, 1, TRUE, 'q'), (2, 3, FALSE, 'r'), (3, 7, TRUE, NULL), (4, NULL, NULL, 'q'), (5, 9, TRUE, 'z')")
+
+	query := func(q string) string {
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var id int64
+			var v sql.NullBool
+			if err := rows.Scan(&id, &v); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+			out = append(out, fmt.Sprintf("%d:%v/%v", id, v.Valid, v.Bool))
+		}
+		return strings.Join(out, " ")
+	}
+	explain := func(q string) string {
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+			t.Fatalf("explain %s: %v", q, err)
+		}
+		return plan
+	}
+	for call, inline := range map[string]string{
+		"gt5(a)":      "a > 5",
+		"isn(a)":      "a IS NULL",
+		"nb(b)":       "NOT b",
+		"both_(b, a)": "b AND a >= 3",
+		"combo(a, s)": "a >= 2 AND NOT (s = 'q') OR s IS NULL",
+		"dist(a, 3)":  "a IS DISTINCT FROM 3",
+		"inl(a)":      "a IN (1, 3, 9)",
+		"ninl(a, id)": "a NOT IN (id, 3)",
+		"btw(a)":      "a BETWEEN 2 AND 7",
+		"nbtw(a)":     "a NOT BETWEEN 2 AND 7",
+		"gtf(a)":      "a > 2.5",
+		"ist(b)":      "b IS NOT TRUE",
+		"lk(s)":       "s NOT LIKE 'q%'",
+		"cs(a, b)":    "CASE WHEN a > 5 THEN b WHEN a IS NULL THEN FALSE ELSE a < 2 END",
+	} {
+		mq := "SELECT id, " + call + " FROM t ORDER BY id"
+		iq := "SELECT id, " + inline + " FROM t ORDER BY id"
+		if got, want := query(mq), query(iq); got != want {
+			t.Errorf("projected %s = %s, inline %s", call, got, want)
+		}
+		mw := "SELECT id, TRUE FROM t WHERE " + call + " ORDER BY id"
+		iw := "SELECT id, TRUE FROM t WHERE " + inline + " ORDER BY id"
+		if got, want := query(mw), query(iw); got != want {
+			t.Errorf("filtered %s = %s, inline %s", call, got, want)
+		}
+		if got, want := explain(mw), explain(iw); got != want {
+			t.Errorf("%s plans as %s, inline as %s", call, got, want)
+		}
+	}
+	if got := query("SELECT id, TRUE FROM t WHERE gt5(a) ORDER BY id"); got != "3:true/true 5:true/true" {
+		t.Errorf("gt5 rows = %s", got)
+	}
+}
+
 // CREATE TEMPORARY FUNCTION binds a function to the transaction, which drops
 // it when it ends (CreateTemporaryFunctionConstantAction).
 func TestFDB_TemporaryFunctions(t *testing.T) {

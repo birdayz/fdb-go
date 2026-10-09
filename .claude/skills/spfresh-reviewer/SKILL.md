@@ -1,6 +1,6 @@
 ---
 name: spfresh-reviewer
-description: Review the SPFresh vector index (RFC-094, pkg/recordlayer/spfresh_*.go) against the SPANN and SPFresh papers — the algorithmic spec. The papers' authors are the reviewer persona, exactly as Graefe is for Cascades and the FDB C++ dev is for the client. Use for any change to the SPFresh index (write path, search path, rebalancer lifecycles, RaBitQ usage, config defaults), for recall/latency regressions, and for periodic "are we still faithful to the paper?" audits.
+description: Review the SPFresh vector index (RFC-094, pkg/recordlayer/vectorindex/spfresh_*.go) against the SPANN and SPFresh papers — the algorithmic spec. The papers' authors are the reviewer persona, exactly as Graefe is for Cascades and the FDB C++ dev is for the client. Use for any change to the SPFresh index (write path, search path, rebalancer lifecycles, RaBitQ usage, config defaults), for recall/latency regressions, and for periodic "are we still faithful to the paper?" audits.
 ---
 
 # SPFresh Paper Review (RFC-094 vector index)
@@ -28,7 +28,7 @@ justified in RFC-094 — if the RFC doesn't justify it, it's a finding.
 
 - **RFC**: `rfcs/094-spfresh-vector-index.md` — the FDB adaptation. Read it
   FIRST; it declares which paper mechanisms map to what (and what's deferred).
-- **Code**: `pkg/recordlayer/spfresh_*.go` —
+- **Code**: `pkg/recordlayer/vectorindex/spfresh_*.go` —
   `spfresh_write.go` (insert/route/fence, first-centroid mint),
   `spfresh_query.go` / index scan via `byDistanceScanner` (query path),
   `spfresh_rebalancer.go` (task scan + lease-owned lifecycle execution),
@@ -38,7 +38,7 @@ justified in RFC-094 — if the RFC doesn't justify it, it's a finding.
   `spfresh_cache.go` (two-level routing cache + changelog refresh),
   `pkg/rabitq/` (residual quantization — our stand-in for the papers' on-disk
   full vectors + memory PQ).
-- **Numbers**: `pkg/recordlayer/VECTOR_BENCHMARK_RESULTS.md` — current
+- **Numbers**: `pkg/recordlayer/vectorindex/VECTOR_BENCHMARK_RESULTS.md` — current
   recall/latency/fill tables. Judge claims against these, not vibes.
 
 ## Review checklist (cite paper section/figure for every verdict)
@@ -85,7 +85,7 @@ justified in RFC-094 — if the RFC doesn't justify it, it's a finding.
 
 ## When to run
 
-- Any PR touching `pkg/recordlayer/spfresh_*.go` or `pkg/rabitq/`.
+- Any PR touching `pkg/recordlayer/vectorindex/spfresh_*.go` or `pkg/rabitq/`.
 - After every large-scale benchmark (new row in VECTOR_BENCHMARK_RESULTS.md):
   does the curve still track the papers?
 - Before freezing defaults (094.5) and before any "ship it" decision.
@@ -101,8 +101,8 @@ Agent(description: "SPFresh paper review", prompt: "You are the SPANN/SPFresh
 paper authors reviewing an implementation of your design. The papers are at
 .claude/skills/spfresh-reviewer/spann-paper.pdf and spfresh-paper.pdf — read
 the relevant sections with the Read tool (pages ranges). The implementation is
-RFC rfcs/094-spfresh-vector-index.md + pkg/recordlayer/spfresh_*.go +
-pkg/rabitq/ in <repo>. Current numbers: pkg/recordlayer/VECTOR_BENCHMARK_RESULTS.md.
+RFC rfcs/094-spfresh-vector-index.md + pkg/recordlayer/vectorindex/spfresh_*.go +
+pkg/rabitq/ in <repo>. Current numbers: pkg/recordlayer/vectorindex/VECTOR_BENCHMARK_RESULTS.md.
 [describe the diff / the question]. Work the checklist in
 .claude/skills/spfresh-reviewer/SKILL.md. ACK or NAK; every finding cites
 paper section + file:line.", run_in_background: true)

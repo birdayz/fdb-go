@@ -2,9 +2,6 @@ package explaindiff_test
 
 import (
 	"testing"
-
-	"fdb.dev/pkg/recordlayer/query/plan/cascades"
-	"fdb.dev/pkg/relational/conformance/explaindiff"
 )
 
 // TestCorpusPlanReachability pins RFC-183's central invariant across the whole
@@ -55,14 +52,11 @@ import (
 func TestCorpusPlanReachability(t *testing.T) {
 	t.Parallel()
 
-	reach := cascades.NewReachabilityCollector()
-
 	// Planning the corpus is what populates the tally; the baseline text
-	// itself is checked by the explain-differ gate, not here.
-	_, st, err := explaindiff.GenerateBaselineWithReachability(corpusDir, reach)
-	if err != nil {
-		t.Fatalf("generate baseline: %v", err)
-	}
+	// itself is checked by the explain-differ gate, not here. The tally is the
+	// package's shared walk's own collector, filled by that walk alone.
+	_, st := collectCorpus(t)
+	reach := corpusReach
 
 	// Sample-size guard. A zero that means "collected nothing" is
 	// indistinguishable from a zero that means "clean" unless the sample is

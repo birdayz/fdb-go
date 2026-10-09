@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/relational/conformance/explaindiff"
 )
 
@@ -26,12 +27,16 @@ var (
 	corpusEntries []explaindiff.Entry
 	corpusStats   explaindiff.Stats
 	corpusErr     error
+	// corpusReach is the shared pass's own reachability tally: the collector
+	// is scoped to that one walk, so TestCorpusPlanReachability reads exactly
+	// the number a private walk would give it.
+	corpusReach = cascades.NewReachabilityCollector()
 )
 
 func collectCorpus(t *testing.T) ([]explaindiff.Entry, explaindiff.Stats) {
 	t.Helper()
 	corpusOnce.Do(func() {
-		corpusEntries, corpusStats, corpusErr = explaindiff.Collect(corpusDir)
+		corpusEntries, corpusStats, corpusErr = explaindiff.CollectWithReachability(corpusDir, corpusReach)
 	})
 	if corpusErr != nil {
 		t.Fatalf("collect corpus: %v", corpusErr)
@@ -50,10 +55,11 @@ func collectCorpus(t *testing.T) ([]explaindiff.Entry, explaindiff.Stats) {
 func TestBaselineIsDeterministic(t *testing.T) {
 	t.Parallel()
 
-	first, st1, err := explaindiff.GenerateBaseline(corpusDir)
-	if err != nil {
-		t.Fatalf("first baseline: %v", err)
-	}
+	// The first pass is the package's shared walk; the second is a fresh,
+	// independent one. Two passes, as before, without planning the corpus a
+	// third time.
+	entries, st1 := collectCorpus(t)
+	first := explaindiff.Render(entries, st1)
 	second, st2, err := explaindiff.GenerateBaseline(corpusDir)
 	if err != nil {
 		t.Fatalf("second baseline: %v", err)

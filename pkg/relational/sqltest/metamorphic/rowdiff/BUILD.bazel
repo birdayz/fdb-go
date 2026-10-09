@@ -10,6 +10,7 @@ go_test(
         "rowdiff_tally_test.go",
     ],
     tags = [
+        "resources:cpu:4",
         "resources:memory:700",
         "test-full",
     ],

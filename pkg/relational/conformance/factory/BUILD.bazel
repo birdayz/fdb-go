@@ -93,7 +93,7 @@ go_test(
         "EQUIV_WORKERS": "",
     },
     tags = [
-        "exclusive",
+        "resources:cpu:4",
         "resources:memory:3300",
         "test-full",
     ],

@@ -3,6 +3,8 @@ package factorycorpus_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
 
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
@@ -28,13 +30,38 @@ func TestCommittedCorpusIsCleanYamsql(t *testing.T) {
 	if len(matches) == 0 {
 		t.Fatal("no committed family files: this gate would pass over nothing")
 	}
+	// Files parse concurrently; the verdicts are reported in path order.
+	type parsed struct {
+		file    *javayamsql.File
+		err     error
+		readErr error
+	}
+	results := make([]parsed, len(matches))
+	work := make(chan int)
+	var wg sync.WaitGroup
+	for range runtime.GOMAXPROCS(0) {
+		wg.Go(func() {
+			for i := range work {
+				data, err := os.ReadFile(matches[i])
+				if err != nil {
+					results[i].readErr = err
+					continue
+				}
+				results[i].file, results[i].err = javayamsql.Parse(filepath.Base(matches[i]), data)
+			}
+		})
+	}
+	for i := range matches {
+		work <- i
+	}
+	close(work)
+	wg.Wait()
 	blocks := 0
-	for _, path := range matches {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
+	for i, path := range matches {
+		if results[i].readErr != nil {
+			t.Fatal(results[i].readErr)
 		}
-		file, err := javayamsql.Parse(filepath.Base(path), data)
+		file, err := results[i].file, results[i].err
 		if err != nil {
 			t.Errorf("%s is not clean yamsql: %v", path, err)
 			continue

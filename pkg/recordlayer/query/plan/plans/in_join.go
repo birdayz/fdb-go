@@ -134,7 +134,7 @@ func (p *RecordQueryInJoinPlan) GetQuantifiers() []expressions.Quantifier {
 	if p.innerQ.GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return quantifierView(&p.innerQ)
 }
 
 // WithInner returns a copy with the inner replaced and EVERY other field

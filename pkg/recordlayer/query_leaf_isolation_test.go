@@ -59,9 +59,7 @@ type leafScan struct {
 // leafFixture carries the indexes the seeded store holds, so a leaf can pick
 // the access path it needs without every leaf sharing one index.
 type leafFixture struct {
-	valueIndex   *Index // Order$price — the ordinary value index
-	vectorIndex  *Index // Order$vec — the HNSW kNN access path
-	spfreshIndex *Index // Order$spf — the SPFresh kNN access path
+	valueIndex *Index // Order$price — the ordinary value index
 }
 
 func queryLeafScans() []leafScan {
@@ -84,59 +82,6 @@ func queryLeafScans() []leafScan {
 				return drainLeaf(t, store.ScanRecordKeys(nil, props))
 			},
 		},
-		{
-			// The VECTOR leaf. A kNN scan is a query leaf like any other — the
-			// executor forwards the statement's ScanProperties to it — and its
-			// HNSW traversal reads the graph through the transaction. Java
-			// derives that read's isolation from ScanProperties exactly as the
-			// generic leaf cursor does (VectorIndexMaintainer.java:201-202 is
-			// character-for-character KeyValueCursorBase.java:358), so a
-			// serializable kNN scan must take conflict ranges.
-			name: "vector_scan_by_distance",
-			scan: func(t *testing.T, store *FDBRecordStore, fx leafFixture, props ScanProperties) int {
-				return drainLeaf(t, store.ScanIndexByType(fx.vectorIndex, IndexScanByDistance,
-					vectorKNNRange(vectorLeafQuery, 5), nil, props))
-			},
-		},
-		{
-			// SPFresh is a SEPARATE implementation of the same BY_DISTANCE
-			// contract — its own routing, postings and re-rank reads, none of
-			// which the HNSW leaf above executes a line of. Declaring it
-			// "covered" by that leaf was a false coverage claim: a regression
-			// in SPFresh's isolation would have left the whole suite green.
-			name: "spfresh_scan_by_distance",
-			scan: func(t *testing.T, store *FDBRecordStore, fx leafFixture, props ScanProperties) int {
-				return drainLeaf(t, store.ScanIndexByType(fx.spfreshIndex, IndexScanByDistance,
-					vectorKNNRange(vectorLeafQuery, 5), nil, props))
-			},
-		},
-		{
-			// The ordered-stream path is a THIRD read path, not a variant of
-			// the one above: it widens on demand through its own frontier and
-			// was the site that discarded its ScanProperties entirely.
-			name: "spfresh_ordered_stream",
-			scan: func(t *testing.T, store *FDBRecordStore, fx leafFixture, props ScanProperties) int {
-				return drainLeaf(t, store.ScanIndexByType(fx.spfreshIndex,
-					IndexScanByDistanceOrderedStream,
-					vectorKNNRange(vectorLeafQuery, 5), nil, props))
-			},
-		},
-	}
-}
-
-// vectorLeafQuery is the kNN probe point. It sits next to the seeded rows so
-// the search returns them and the concurrent writer's move is inside the
-// neighbourhood the reader actually traversed.
-var vectorLeafQuery = []float64{3, 3}
-
-// vectorKNNRange builds the BY_DISTANCE TupleRange the vector maintainers
-// agree on: Low = (serialized query vector), High = (k).
-func vectorKNNRange(query []float64, k int64) TupleRange {
-	return TupleRange{
-		Low:          tuple.Tuple{serializeVector(query)},
-		High:         tuple.Tuple{k},
-		LowEndpoint:  EndpointTypeRangeInclusive,
-		HighEndpoint: EndpointTypeRangeInclusive,
 	}
 }
 
@@ -169,29 +114,11 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		index := NewIndex(indexName, Field("price"))
 		builder.AddIndex("Order", index)
-		// (price, quantity) as a 2-D vector: the same records carry both the
-		// value index and the kNN access path, so one seeded store serves
-		// every leaf and the concurrent write below moves a row in BOTH.
-		vecIndex := NewVectorIndex("Order$vec", Concat(Field("price"), Field("quantity")), 2)
-		builder.AddIndex("Order", vecIndex)
-		// The SPFresh index over the same 2-D coordinates. A separate index
-		// type with a separate implementation of the BY_DISTANCE contract, so
-		// it needs its own fixture — sharing the HNSW one would be the very
-		// false-coverage claim this fixture exists to remove.
-		spfIndex := &Index{
-			Name:           "Order$spf",
-			Type:           IndexTypeVectorSPFresh,
-			RootExpression: Concat(Field("price"), Field("quantity")),
-			Options: map[string]string{
-				IndexOptionSPFreshNumDimensions: "2",
-			},
-		}
-		builder.AddIndex("Order", spfIndex)
 		md, err := builder.Build()
 		if err != nil {
 			t.Fatalf("build metadata: %v", err)
 		}
-		return md, leafFixture{valueIndex: index, vectorIndex: vecIndex, spfreshIndex: spfIndex}
+		return md, leafFixture{valueIndex: index}
 	}
 
 	for _, leaf := range queryLeafScans() {

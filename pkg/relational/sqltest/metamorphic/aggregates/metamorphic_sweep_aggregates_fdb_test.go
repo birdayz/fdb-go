@@ -58,8 +58,13 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 	// SUCCEEDS is itself a finding (index maintenance rejecting a legal write).
 	exec := func(stmt string) bool {
 		t.Helper()
-		ri, ei := idb.ExecContext(ctx, stmt)
+		// The two schemas are independent stores, so the write runs on both at once.
+		var ri sql.Result
+		var ei error
+		done := make(chan struct{})
+		go func() { defer close(done); ri, ei = idb.ExecContext(ctx, stmt) }()
 		rn, en := ndb.ExecContext(ctx, stmt)
+		<-done
 		if (ei == nil) != (en == nil) {
 			t.Errorf("DML-ASYMMETRY\n  stmt: %s\n  idx err:   %v\n  noidx err: %v", stmt, ei, en)
 			return false
@@ -81,8 +86,8 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 	stateInSync := func(after string) {
 		t.Helper()
 		const q = "SELECT id, a, b, c, s, f FROM t ORDER BY id"
-		gi, ei := testkit.MhScanStrings(ctx, idb, q)
-		gn, en := testkit.MhScanStrings(ctx, ndb, q)
+		res := testkit.ReadAll(ctx, []testkit.Read{{DB: idb, SQL: q}, {DB: ndb, SQL: q}}, testkit.MhScanStrings)
+		gi, ei, gn, en := res[0].Rows, res[0].Err, res[1].Rows, res[1].Err
 		if ei != nil || en != nil {
 			t.Fatalf("state read failed after %q: %v / %v", after, ei, en)
 		}
@@ -121,10 +126,18 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 	// a tag whose every query errors on BOTH sides compares nothing.
 	okByTag := map[string]int{}
 	errByTag := map[string]int{}
-	compare := func(tag, q string) bool {
+	// An iteration's queries all read the same state (the mutation comes after
+	// them), so compare only QUEUES them; flush reads the batch on both schemas
+	// concurrently and then judges each in queue order, exactly as the serial
+	// loop did.
+	type queued struct {
+		tag, q string
+		onOK   func()
+	}
+	var pending []queued
+	compare := func(tag, q string) { pending = append(pending, queued{tag, q, nil}) }
+	judge := func(tag, q string, gi, gn []string, ei, en error) bool {
 		t.Helper()
-		gi, ei := testkit.MhScanStrings(ctx, idb, q)
-		gn, en := testkit.MhScanStrings(ctx, ndb, q)
 		switch {
 		case ei != nil && en != nil:
 			errByTag[tag]++
@@ -143,6 +156,21 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 		}
 		okByTag[tag]++
 		return true
+	}
+	flush := func() {
+		t.Helper()
+		reads := make([]testkit.Read, 0, 2*len(pending))
+		for _, p := range pending {
+			reads = append(reads, testkit.Read{DB: idb, SQL: p.q}, testkit.Read{DB: ndb, SQL: p.q})
+		}
+		res := testkit.ReadAll(ctx, reads, testkit.MhScanStrings)
+		for i, p := range pending {
+			ri, rn := res[2*i], res[2*i+1]
+			if judge(p.tag, p.q, ri.Rows, rn.Rows, ri.Err, rn.Err) && p.onOK != nil {
+				p.onOK()
+			}
+		}
+		pending = pending[:0]
 	}
 
 	orderKeys := []string{
@@ -171,9 +199,7 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 		// (1) total ORDER BY, with and without LIMIT/OFFSET.
 		ok := orderKeys[r.Intn(len(orderKeys))]
 		q := fmt.Sprintf("SELECT id, a, b, c, s FROM t WHERE %s ORDER BY %s, id", p, ok)
-		if compare("ORDER", q) {
-			compared++
-		}
+		pending = append(pending, queued{"ORDER", q, func() { compared++ }})
 		if r.Intn(2) == 0 {
 			lim := 1 + r.Intn(12)
 			off := r.Intn(8)
@@ -220,6 +246,7 @@ func TestFDB_MetamorphicOrderingAggregatesDML(t *testing.T) {
 				return []string{"true", "false"}[r.Intn(2)]
 			}
 		}
+		flush()
 		var stmt string
 		switch r.Intn(8) {
 		case 0:

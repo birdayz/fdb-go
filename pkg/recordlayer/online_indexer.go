@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/gen"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -1180,11 +1182,11 @@ func (oi *OnlineIndexer) maybePresetRecordsRange(ctx context.Context) error {
 // tuple is tried first, so an ordinary key whose pack happens to end in 0xff (e.g. int 255 =
 // 0x15 0xff) is correctly treated as that key, not as a +0xff bound.
 func unpackRangeEndBoundary(b []byte) (tuple.Tuple, EndpointType, error) {
-	if t, err := fastUnpack(b); err == nil {
+	if t, err := tuplefast.Unpack(b); err == nil {
 		return t, EndpointTypeRangeExclusive, nil
 	}
 	if n := len(b); n > 0 && b[n-1] == 0xff {
-		if t, err := fastUnpack(b[:n-1]); err == nil {
+		if t, err := tuplefast.Unpack(b[:n-1]); err == nil {
 			return t, EndpointTypeRangeInclusive, nil
 		}
 	}
@@ -2014,7 +2016,7 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 		highEp := EndpointTypeRangeExclusive
 		if bytes.Equal(missing.Begin, rangeSetFirstKey) {
 			lowEp = EndpointTypeTreeStart
-		} else if rangeStart, err = fastUnpack(missing.Begin); err != nil {
+		} else if rangeStart, err = tuplefast.Unpack(missing.Begin); err != nil {
 			return nil, fmt.Errorf("unpack range start: %w", err)
 		}
 		if bytes.Equal(missing.End, rangeSetFinalKey) {
@@ -2248,13 +2250,13 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 		// Convert byte boundaries to TupleRange for source index scanning.
 		var rangeStart, rangeEnd tuple.Tuple
 		if !bytes.Equal(missing.Begin, rangeSetFirstKey) {
-			rangeStart, err = fastUnpack(missing.Begin)
+			rangeStart, err = tuplefast.Unpack(missing.Begin)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range start: %w", err)
 			}
 		}
 		if !bytes.Equal(missing.End, rangeSetFinalKey) {
-			rangeEnd, err = fastUnpack(missing.End)
+			rangeEnd, err = tuplefast.Unpack(missing.End)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range end: %w", err)
 			}
@@ -2384,6 +2386,13 @@ func isIndexIdempotent(index *Index) bool {
 	case IndexTypeCount, IndexTypeCountNotNull, IndexTypeCountUpdates, IndexTypeSum:
 		return false
 	default:
+		// A registered factory answers for its own type (Java asks the
+		// maintainer's isIdempotent).
+		if f, err := lookupIndexMaintainerFactory(index); err == nil && f != nil {
+			if i, ok := f.(idempotentIndexMaintainerFactory); ok {
+				return i.IsIdempotent(index)
+			}
+		}
 		// A type Go does not maintain has no maintainer, and Java no
 		// isIdempotent to ask. Go's own vector_spfresh index is built as
 		// non-idempotent (its generations are reconciled by

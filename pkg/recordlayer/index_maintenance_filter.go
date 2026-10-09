@@ -71,7 +71,7 @@ var (
 
 // maintenanceFilterOf is the filter of the store a maintainer belongs to, the
 // default when it has none.
-func maintenanceFilterOf(store indexStoreContext) IndexMaintenanceFilter {
+func maintenanceFilterOf(store IndexStoreContext) IndexMaintenanceFilter {
 	if store == nil {
 		return IndexMaintenanceFilterNormal
 	}
@@ -82,7 +82,7 @@ func maintenanceFilterOf(store indexStoreContext) IndexMaintenanceFilter {
 // (IndexMaintenanceUtils.java:37-66): a record the index's predicate refuses
 // is IndexValuesNone, and otherwise the store's filter decides. A maintainer's
 // fast path, which evaluates no entry list, runs only for IndexValuesAll.
-func indexValuesFor(store indexStoreContext, index *Index, record *FDBStoredRecord[proto.Message]) IndexValues {
+func indexValuesFor(store IndexStoreContext, index *Index, record *FDBStoredRecord[proto.Message]) IndexValues {
 	if index.Predicate != nil && !index.Predicate(record.Record) {
 		return IndexValuesNone
 	}
@@ -92,12 +92,12 @@ func indexValuesFor(store indexStoreContext, index *Index, record *FDBStoredReco
 // keepMaintainedEntries is the IndexValuesSome arm of Java's
 // filteredIndexEntries (StandardIndexMaintainer.java:367-383): the entries the
 // store's filter admits, in order. Under any other value it returns entries.
-func keepMaintainedEntries(store indexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], values IndexValues, entries []indexEntry) []indexEntry {
+func keepMaintainedEntries(store IndexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], values IndexValues, entries []EvaluatedIndexEntry) []EvaluatedIndexEntry {
 	if values != IndexValuesSome {
 		return entries
 	}
 	filter := maintenanceFilterOf(store)
-	kept := make([]indexEntry, 0, len(entries))
+	kept := make([]EvaluatedIndexEntry, 0, len(entries))
 	for _, e := range entries {
 		if filter.MaintainIndexValue(index, record.Record, &IndexEntry{Index: index, Key: e.key, Value: e.value}) {
 			kept = append(kept, e)
@@ -110,7 +110,7 @@ func keepMaintainedEntries(store indexStoreContext, index *Index, record *FDBSto
 // evaluated keys (the atomic indexes: Java's IndexEntry(index, key)) and keeps
 // those the store's filter admits: nil under IndexValuesNone, every key under
 // IndexValuesAll, the admitted ones under IndexValuesSome.
-func maintainedKeyTuples(store indexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], values IndexValues) ([][]any, error) {
+func maintainedKeyTuples(store IndexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], values IndexValues) ([][]any, error) {
 	if values == IndexValuesNone {
 		return nil, nil
 	}
@@ -171,12 +171,12 @@ func (store *FDBRecordStore) sourceIndexEntryKey(source *Index, record *FDBStore
 		return nil, err
 	}
 	filtered, ok := maintainer.(interface {
-		filteredIndexEntries(*FDBStoredRecord[proto.Message]) ([]indexEntry, error)
+		FilteredIndexEntries(*FDBStoredRecord[proto.Message]) ([]EvaluatedIndexEntry, error)
 	})
 	if !ok {
 		return nil, &RecordCoreError{Message: "index cannot be used as source index", IndexName: source.Name}
 	}
-	entries, err := filtered.filteredIndexEntries(record)
+	entries, err := filtered.FilteredIndexEntries(record)
 	if err != nil {
 		return nil, err
 	}

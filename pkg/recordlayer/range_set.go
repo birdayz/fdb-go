@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -223,7 +225,7 @@ func (rs *RangeSet) InsertRange(tr fdb.WritableTransaction, begin, end []byte, r
 	for _, kv := range afterKVs {
 		if bytes.Compare(lastSeen, kv.Key) < 0 {
 			// Gap: fill from lastSeen to this entry's start.
-			unpackedKey, unpackErr := fastSubspaceUnpack(kv.Key, len(rs.subspace.Bytes()))
+			unpackedKey, unpackErr := tuplefast.SubspaceUnpack(kv.Key, len(rs.subspace.Bytes()))
 			if unpackErr != nil {
 				return false, unpackErr
 			}
@@ -327,7 +329,7 @@ func (rs *RangeSet) MissingRanges(tr fdb.WritableTransaction, begin, end []byte,
 
 	var results []RangeSetRange
 	for _, kv := range afterKVs {
-		unpackedKey, unpackErr := fastSubspaceUnpack(kv.Key, len(rs.subspace.Bytes()))
+		unpackedKey, unpackErr := tuplefast.SubspaceUnpack(kv.Key, len(rs.subspace.Bytes()))
 		if unpackErr != nil {
 			return nil, unpackErr
 		}

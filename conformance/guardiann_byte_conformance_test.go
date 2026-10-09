@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -55,7 +57,7 @@ var _ = Describe("GuardiANN persisted bytes", func() {
 			Expect(NewJavaInvoker().InvokeAs(ctx, "guardiannVectorIdHashProbe", map[string]any{
 				"packedPrimaryKeysHex": packed, "uuids": uuidStrings,
 			}, &result)).To(Succeed())
-			Expect(recordlayer.GuardiannVectorIDHashMapOrder(pks, uuids)).To(Equal(result.HashMapOrder), "n=%d", n)
+			Expect(vectorindex.GuardiannVectorIDHashMapOrder(pks, uuids)).To(Equal(result.HashMapOrder), "n=%d", n)
 		}
 	})
 
@@ -82,7 +84,7 @@ var _ = Describe("GuardiANN persisted bytes", func() {
 		}, &java)).To(Succeed())
 
 		goSS := env.Keyspace.Sub("go")
-		engine, err := recordlayer.NewGuardiannEngine(goSS, map[string]string{
+		engine, err := vectorindex.NewGuardiannEngine(goSS, map[string]string{
 			recordlayer.IndexOptionVectorEngine:                     "GUARDIANN",
 			recordlayer.IndexOptionVectorNumDimensions:              "2",
 			recordlayer.IndexOptionVectorMetric:                     "EUCLIDEAN_METRIC",
@@ -275,7 +277,7 @@ var _ = Describe("GuardiANN index persisted bytes through the record layer", fun
 					}
 					store.GetIndexDeferredMaintenanceControl().SetAutoMergeDuringCommit(autoMerge)
 					if op[0] == "save" {
-						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), VectorData: recordlayer.SerializeVector([]float64{x, y})})
+						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), VectorData: vectorindex.SerializeVector([]float64{x, y})})
 					} else {
 						_, err = store.DeleteRecord(tuple.Tuple{id})
 					}
@@ -345,7 +347,7 @@ var _ = Describe("GuardiANN merge lock across engines", func() {
 					store.GetIndexDeferredMaintenanceControl().SetAutoMergeDuringCommit(false)
 					_, err = store.SaveRecord(&gen.Order{
 						OrderId:    proto.Int64(i),
-						VectorData: recordlayer.SerializeVector([]float64{0.01 * float64(i), 0.02 * float64(i%3)}),
+						VectorData: vectorindex.SerializeVector([]float64{0.01 * float64(i), 0.02 * float64(i%3)}),
 					})
 					return nil, err
 				})
@@ -564,7 +566,7 @@ func runGuardiannByteScriptWith(primaryClusterMin int, options map[string]string
 		Expect(ok).To(BeTrue(), "unknown script option %s", k)
 		indexOptions[name] = v
 	}
-	engine, err := recordlayer.NewGuardiannEngine(goSS, indexOptions)
+	engine, err := vectorindex.NewGuardiannEngine(goSS, indexOptions)
 	Expect(err).NotTo(HaveOccurred())
 	run := func(fn func(tx fdb.WritableTransaction) error) error {
 		_, err := env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {

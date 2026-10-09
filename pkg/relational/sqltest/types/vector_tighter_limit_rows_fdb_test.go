@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"google.golang.org/protobuf/proto"
@@ -74,7 +76,7 @@ func TestFDB_VectorSearch_TighterOuterLimitRows(t *testing.T) {
 	makeRec := func(id int64, vec []float64) proto.Message {
 		m := dynamicpb.NewMessage(desc)
 		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
-		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(recordlayer.SerializeVector(vec)))
+		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(vectorindex.SerializeVector(vec)))
 		return m
 	}
 	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

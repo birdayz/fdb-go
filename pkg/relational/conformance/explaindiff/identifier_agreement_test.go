@@ -4,8 +4,10 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -159,6 +161,7 @@ func TestIdentifierAgreementOverCorpus(t *testing.T) {
 		parseFail  int
 		baseFailed int
 		disagree   []string
+		pairs      []agreementPair
 	)
 	for _, path := range matches {
 		base := filepath.Base(path)
@@ -187,17 +190,44 @@ func TestIdentifierAgreementOverCorpus(t *testing.T) {
 				noIdent++
 				continue
 			}
-			want := agreementPlanText(plan, tc.Query, s.SchemaTemplate, args)
-			if strings.HasPrefix(want, agreementErrMarker) {
-				baseFailed++
-				continue
+			pairs = append(pairs, agreementPair{
+				base: base, idx: i, plan: plan, sql: tc.Query,
+				twin: twin, schemaTemplate: s.SchemaTemplate, args: args,
+			})
+		}
+	}
+
+	// The pairs are independent, so they plan concurrently; the verdicts are
+	// folded in corpus order, so counts and the disagreement list are the
+	// serial ones.
+	work := make(chan int)
+	var wg sync.WaitGroup
+	for range runtime.GOMAXPROCS(0) {
+		wg.Go(func() {
+			for k := range work {
+				p := &pairs[k]
+				p.want = agreementPlanText(p.plan, p.sql, p.schemaTemplate, p.args)
+				if !strings.HasPrefix(p.want, agreementErrMarker) {
+					p.got = agreementPlanText(p.plan, p.twin, p.schemaTemplate, p.args)
+				}
 			}
-			perturbed++
-			if got := agreementPlanText(plan, twin, s.SchemaTemplate, args); got != want {
-				disagree = append(disagree, fmt.Sprintf(
-					"%s#%d\n    sql:      %s\n    twin:     %s\n    baseline: %s\n    twin got: %s",
-					base, i, collapseSQL(tc.Query), collapseSQL(twin), want, got))
-			}
+		})
+	}
+	for k := range pairs {
+		work <- k
+	}
+	close(work)
+	wg.Wait()
+	for _, p := range pairs {
+		if strings.HasPrefix(p.want, agreementErrMarker) {
+			baseFailed++
+			continue
+		}
+		perturbed++
+		if p.got != p.want {
+			disagree = append(disagree, fmt.Sprintf(
+				"%s#%d\n    sql:      %s\n    twin:     %s\n    baseline: %s\n    twin got: %s",
+				p.base, p.idx, collapseSQL(p.sql), collapseSQL(p.twin), p.want, p.got))
 		}
 	}
 
@@ -208,6 +238,16 @@ func TestIdentifierAgreementOverCorpus(t *testing.T) {
 	if v := identifierAgreementVerdict(perturbed, baseFailed, noIdent+parseFail, disagree); v != "" {
 		t.Fatal(v)
 	}
+}
+
+// agreementPair is one plannable statement and its quoted twin, with the two
+// renderings filled in by a worker.
+type agreementPair struct {
+	base, sql, twin, schemaTemplate string
+	idx                             int
+	plan                            agreementPlanner
+	args                            []driver.NamedValue
+	want, got                       string
 }
 
 const agreementErrMarker = "<ERR:"

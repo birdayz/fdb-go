@@ -227,7 +227,7 @@ func (p *RecordQueryInMemorySortPlan) GetQuantifiers() []expressions.Quantifier 
 	if p.innerQ.GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return quantifierView(&p.innerQ)
 }
 
 // GetResultType returns the inner plan's result type: an in-memory sort

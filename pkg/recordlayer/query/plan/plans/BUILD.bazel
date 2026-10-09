@@ -44,6 +44,7 @@ go_library(
         "plan_structural_key.go",
         "predicates_filter.go",
         "producer_owned_sources.go",
+        "quantifier_view.go",
         "recursive_dfs_join.go",
         "recursive_level_union.go",
         "scan.go",
@@ -283,6 +284,7 @@ go_test(
         "covering_index_value_scan_test.go",
         "plan_finalize.go",
         "plan_finalize_test.go",
+        "quantifier_view.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

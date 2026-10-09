@@ -25,7 +25,7 @@ func indexGroupingCount(expr KeyExpression) int {
 // maintained is indexValuesFor's verdict on the record (the index predicate
 // and the store's maintenance filter).
 // Used by COUNT, COUNT_NOT_NULL, and COUNT_UPDATES maintainers.
-func evaluateGroupingKeys(store indexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], maintained IndexValues) ([]tuple.Tuple, error) {
+func evaluateGroupingKeys(store IndexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], maintained IndexValues) ([]tuple.Tuple, error) {
 	if maintained == IndexValuesNone {
 		return nil, nil
 	}
@@ -87,7 +87,7 @@ func evaluateGroupingKeys(store indexStoreContext, index *Index, record *FDBStor
 func updateWhileWriteOnlyNonIdempotent(
 	oldRecord, newRecord *FDBStoredRecord[proto.Message],
 	index *Index,
-	store indexStoreContext,
+	store IndexStoreContext,
 	indexTypeName string,
 	updateFunc func(*FDBStoredRecord[proto.Message], *FDBStoredRecord[proto.Message]) error,
 ) error {
@@ -198,7 +198,7 @@ func updateWhileWriteOnlyNonIdempotent(
 // proto structurally: a structural walk cannot see fan-out (a repeated field
 // with no elements yields zero tuples, not a null one) and cannot tell a
 // grouping column from a grouped one.
-func evaluateGroupingKeysNotNull(store indexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], maintained IndexValues) ([]tuple.Tuple, error) {
+func evaluateGroupingKeysNotNull(store IndexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], maintained IndexValues) ([]tuple.Tuple, error) {
 	tuples, err := maintainedKeyTuples(store, index, record, maintained)
 	if err != nil {
 		return nil, err

@@ -57,6 +57,9 @@ type ReferencePlanProperties interface {
 // Methods that MUST NOT canonicalize: Canonical, ID, IsForwarded, and the
 // merge primitive absorb — they operate on the receiver's own identity.
 type Reference struct {
+	// The member lanes only grow by append; every other change installs a new
+	// slice. A lane read once is therefore immutable, which lets an admission
+	// view hold it without a copy.
 	members      []RelationalExpression
 	finalMembers []RelationalExpression
 	// forced holds the members that arrived after the group's exploration
@@ -169,6 +172,12 @@ type Reference struct {
 	// changes; a snapshot is reused only while every child it read still has
 	// the snapshot it read, so adding one member does not recompute the rest.
 	memberCorrelations atomic.Pointer[map[RelationalExpression]*correlationMemo]
+	// correlationBase is the snapshot before the latest member appends; a read
+	// extends it with the appended members instead of revisiting every member.
+	// memberLayout counts the member changes other than appends, which
+	// invalidate it.
+	correlationBase atomic.Pointer[correlationMemo]
+	memberLayout    uint64
 
 	// aliasAwareDedups counts how many times the ALIAS-AWARE interning tier
 	// (the MemoEqual branch in Insert/InsertFinal, gated to merge
@@ -280,8 +289,8 @@ func (r *Reference) AdmissionView() *ReferenceAdmissionView {
 		reference:   r,
 		version:     r.memberVersion,
 		resultType:  r.admittedResultType,
-		exploratory: append([]RelationalExpression(nil), r.members...),
-		final:       append([]RelationalExpression(nil), r.finalMembers...),
+		exploratory: slices.Clip(r.members),
+		final:       slices.Clip(r.finalMembers),
 	}
 }
 
@@ -412,6 +421,7 @@ func (r *Reference) applyPreparedMemberBatch(
 	if !unchanged.install(canonical, view.version) {
 		bumpCorrelationEpoch()
 		if len(exploratory)+len(final) > 0 {
+			canonical.saveCorrelationBase()
 			canonical.correlatedToCache.Store(nil)
 		}
 	}
@@ -520,6 +530,7 @@ func (r *Reference) Absorb(loser *Reference) {
 		}
 	}
 	r.correlatedToCache.Store(nil)
+	r.memberLayout++
 	bumpCorrelationEpoch()
 	loser.forwardedTo = r
 }
@@ -541,6 +552,7 @@ func (r *Reference) AbsorbPlanningState(loser *Reference) int {
 	}
 	r.aliasAwareDedups += loser.aliasAwareDedups
 	r.correlatedToCache.Store(nil)
+	r.memberLayout++
 	bumpCorrelationEpoch()
 	loser.forwardedTo = r
 	return added
@@ -558,6 +570,7 @@ func (r *Reference) RemoveExploratoryMember(e RelationalExpression) bool {
 		r.members = append(r.members[:i:i], r.members[i+1:]...)
 		delete(r.memberHash, e)
 		r.memberVersion++
+		r.memberLayout++
 		bumpCorrelationEpoch()
 		r.correlatedToCache.Store(nil)
 		return true
@@ -825,6 +838,12 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	aliasAware := InternsAliasAware(e)
 	mergeAliased := !aliasAware && bindsMergeAlias(e)
 	for _, m := range r.members {
+		// Every tier below needs equal node hashes: node equality implies them
+		// (the HashConsistency invariant, pinned in fuzz), and a hash is
+		// memoized while node equality is not.
+		if r.MemberHash(m) != eHash {
+			continue
+		}
 		// Fast path: pointer-identity on child References + local
 		// EqualsWithoutChildren. Hits when a rule yields output that
 		// reuses the input's existing Quantifiers (the pattern most
@@ -889,6 +908,7 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	r.admittedResultType = nil
 	r.memberVersion++
 	bumpCorrelationEpoch()
+	r.saveCorrelationBase()
 	r.correlatedToCache.Store(nil)
 	return true
 }
@@ -899,6 +919,8 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 type flowedTypeMemo struct {
 	typ     values.Type
 	version uint64
+	// prototypes cache the QOV prototypes of typ, plain and nullable-widened.
+	prototypes [2]atomic.Pointer[values.QOVPrototype]
 }
 
 // cachedFlowedType returns the memoized GetFlowedObjectType answer when it was
@@ -913,6 +935,17 @@ func (r *Reference) cachedFlowedType() (values.Type, bool) {
 		return nil, false
 	}
 	return memo.typ, true
+}
+
+// cachedFlowedMemo is the flowed-type memo for the current member set, or nil.
+func (r *Reference) cachedFlowedMemo() *flowedTypeMemo {
+	if r == nil {
+		return nil
+	}
+	if memo := r.flowedType.Load(); memo != nil && memo.version == r.memberVersion {
+		return memo
+	}
+	return nil
 }
 
 func (r *Reference) setCachedFlowedType(typ values.Type) {
@@ -1086,6 +1119,7 @@ func (u *unchangedCorrelations) install(r *Reference, version uint64) bool {
 		return false
 	}
 	u.snapshot.version = r.memberVersion
+	u.snapshot.layout, u.snapshot.members, u.snapshot.finals = r.memberLayout, len(r.members), len(r.finalMembers)
 	u.snapshot.validated.Store(u.epoch)
 	r.correlatedToCache.Store(u.snapshot)
 	return true
@@ -1147,14 +1181,11 @@ func (p *PreparedMemberEquality) DuplicateWithHashes(
 		if mHash != eHash || len(m.GetQuantifiers()) != eArity {
 			continue
 		}
-		if known {
-			equality.hashes[m] = mHash
-		}
 		nodeEqual := m.EqualsWithoutChildren(e, EmptyAliasMap())
-		if nodeEqual && (preparedSameChildReferences(m, e) || equality.equal(m, e, EmptyAliasMap())) {
+		if nodeEqual && (preparedSameChildReferences(m, e) || equality.equalWithHashes(nil, m, mHash, nil, e, eHash, EmptyAliasMap())) {
 			return true, false
 		}
-		if aliasAware && equality.equal(m, e, EmptyAliasMap()) {
+		if aliasAware && equality.equalWithHashes(nil, m, mHash, nil, e, eHash, EmptyAliasMap()) {
 			return true, true
 		}
 		if mergeAliased && ExactReplica(m, e) {
@@ -1230,6 +1261,35 @@ func (r *Reference) FinalMembers() []RelationalExpression {
 // InsertFinal adds e to the finalMembers set only. Does NOT add to
 // exploratory members. Mirrors Java's Reference.insertFinalExpression.
 func (r *Reference) InsertFinal(e RelationalExpression) bool {
+	var comparison MemoComparison
+	return r.insertFinal(e, &comparison, false)
+}
+
+// FinalsOfAtStage is a Reference over members as finals, each admitted as
+// InsertFinal admits it, at stage; pinned makes a single member a pinned final.
+// Nothing can read the new Reference while it is built, so its insertions
+// share one comparison and move no correlation epoch.
+func FinalsOfAtStage(members []RelationalExpression, stage PlannerStage, pinned bool) *Reference {
+	if len(members) == 0 {
+		return nil
+	}
+	var r *Reference
+	if pinned && len(members) == 1 {
+		r = PinnedFinalOf(members[0])
+	} else {
+		r = FinalOfAtStage(members[0], stage)
+	}
+	var comparison MemoComparison
+	for _, m := range members[1:] {
+		r.insertFinal(m, &comparison, true)
+	}
+	return r
+}
+
+// insertFinal is InsertFinal comparing through comparison, which must not
+// outlive a graph change other than r's own appends. A fresh r, which no
+// other Reference ranges over, needs no correlation epoch bump.
+func (r *Reference) insertFinal(e RelationalExpression, comparison *MemoComparison, fresh bool) bool {
 	r = r.Canonical()
 	if e == nil {
 		panic("Reference.InsertFinal: nil expression")
@@ -1239,21 +1299,22 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	aliasAware := InternsAliasAware(e)
 	mergeAliased := !aliasAware && bindsMergeAlias(e)
 	for _, m := range r.finalMembers {
-		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
-			return false
+		// Every tier needs equal node hashes; see Insert.
+		if r.MemberHash(m) != eHash {
+			continue
 		}
-		if r.MemberHash(m) == eHash && m.EqualsWithoutChildren(e, EmptyAliasMap()) && MemoEqualWithHashes(m, e, eHash, eHash) {
+		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && (sameChildReferences(m, e) || comparison.MemberEqual(r, m, e, eHash)) {
 			return false
 		}
 		// Alias-aware tier (GATED) — see Insert. finalMembers intern the same way
 		// (RFC-077 7.5); the PLANNING yield path inserts into BOTH member sets, so
 		// both must dedup alias-aware or the merge re-enumeration's physical
 		// alternatives duplicate under fresh merge-quantifier aliases.
-		if aliasAware && r.MemberHash(m) == eHash && MemoEqualWithHashes(m, e, eHash, eHash) {
+		if aliasAware && comparison.MemberEqual(r, m, e, eHash) {
 			r.aliasAwareDedups++
 			return false
 		}
-		if mergeAliased && r.MemberHash(m) == eHash && ExactReplica(m, e) {
+		if mergeAliased && ExactReplica(m, e) {
 			return false
 		}
 	}
@@ -1263,7 +1324,10 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	r.winner = nil
 	r.admittedResultType = nil
 	r.memberVersion++
-	bumpCorrelationEpoch()
+	if !fresh {
+		bumpCorrelationEpoch()
+		r.saveCorrelationBase()
+	}
 	r.correlatedToCache.Store(nil)
 	return true
 }
@@ -1286,9 +1350,10 @@ func (r *Reference) ConstraintsMap() *ConstraintsMap {
 func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 	r = r.Canonical()
 	r.plannerStage = newStage
-	r.members = append(r.members[:0], r.finalMembers...)
-	r.finalMembers = r.finalMembers[:0]
+	r.members = slices.Clone(r.finalMembers)
+	r.finalMembers = nil
 	r.memberVersion++
+	r.memberLayout++
 	bumpCorrelationEpoch()
 	r.planProperties = nil
 	r.explState = explorationNever
@@ -1327,6 +1392,7 @@ func (r *Reference) AdvanceStagePreservingMembers(newStage PlannerStage) {
 	// the transition conflict with every earlier admission view even though it
 	// deliberately preserves the member slices.
 	r.memberVersion++
+	r.memberLayout++
 	bumpCorrelationEpoch()
 	r.planProperties = nil
 	r.explState = explorationNever
@@ -1397,12 +1463,13 @@ func (r *Reference) ContainsExactly(expr RelationalExpression) bool {
 // Mirrors Java's Reference.pruneWith.
 func (r *Reference) PruneWith(expr RelationalExpression) {
 	r = r.Canonical()
-	r.finalMembers = append(r.finalMembers[:0], expr)
+	r.finalMembers = []RelationalExpression{expr}
 	if r.planProperties != nil {
 		r.planProperties.RetainMembers(r.finalMembers)
 	}
 	r.winner = nil
 	r.memberVersion++
+	r.memberLayout++
 	bumpCorrelationEpoch()
 }
 
@@ -1411,7 +1478,7 @@ func (r *Reference) PruneWith(expr RelationalExpression) {
 // Exploratory members are untouched — same contract as PruneWith.
 func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 	r = r.Canonical()
-	kept := r.finalMembers[:0]
+	kept := make([]RelationalExpression, 0, len(r.finalMembers))
 	for _, m := range r.finalMembers {
 		if _, ok := keep[m]; ok {
 			kept = append(kept, m)
@@ -1423,18 +1490,20 @@ func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 	}
 	r.winner = nil
 	r.memberVersion++
+	r.memberLayout++
 	bumpCorrelationEpoch()
 }
 
 // ClearFinalMembers removes all final members.
 func (r *Reference) ClearFinalMembers() {
 	r = r.Canonical()
-	r.finalMembers = r.finalMembers[:0]
+	r.finalMembers = nil
 	if r.planProperties != nil {
 		r.planProperties.RetainMembers(nil)
 	}
 	r.winner = nil
 	r.memberVersion++
+	r.memberLayout++
 	bumpCorrelationEpoch()
 }
 
@@ -1514,12 +1583,21 @@ func (r *Reference) GetPartialMatchCandidates() []any {
 	return result
 }
 
+// saveCorrelationBase keeps r's snapshot as the base later reads extend, before
+// members are appended and the cache dropped.
+func (r *Reference) saveCorrelationBase() {
+	if cached := r.correlatedToCache.Load(); cached != nil && cached.layout == r.memberLayout {
+		r.correlationBase.Store(cached)
+	}
+}
+
 // InvalidateCorrelatedToCache drops the cached correlation set so the
 // next GetCorrelatedTo recomputes. Called by Memo.merge up the DAG after
 // a merge (RFC-037 §3 step 5). Operates on the canonical Reference.
 func (r *Reference) InvalidateCorrelatedToCache() {
 	r = r.Canonical()
 	r.correlatedToCache.Store(nil)
+	r.memberLayout++
 	bumpCorrelationEpoch()
 }
 

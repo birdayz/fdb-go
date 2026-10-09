@@ -8,6 +8,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 // DerivedStorageName is the protobuf spelling Java gives a name that states
@@ -396,6 +397,46 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		return &gen.PValue{SpecificValue: &gen.PValue_SubscriptValue{SubscriptValue: &gen.PSubscriptValue{
 			Index: index, Source: source,
 		}}}, nil
+	case TautologicalValue:
+		// TautologicalValue.toValueProto packs the empty PTautologicalValue.
+		return &gen.PValue{SpecificValue: &gen.PValue_AdditionalValues{AdditionalValues: &anypb.Any{TypeUrl: tautologicalValueTypeURL}}}, nil
+	case *ConditionSelectorValue:
+		cs := &gen.PConditionSelectorValue{}
+		for _, impl := range vv.Implications {
+			p, err := c.ValueToProto(impl)
+			if err != nil {
+				return nil, err
+			}
+			cs.Implications = append(cs.Implications, p)
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_ConditionSelectorValue{ConditionSelectorValue: cs}}, nil
+	case *PickValue:
+		selector, err := c.ValueToProto(vv.Selector)
+		if err != nil {
+			return nil, err
+		}
+		pick := &gen.PPickValue{SelectorValue: selector}
+		for _, alt := range vv.Alternatives {
+			p, err := c.ValueToProto(alt)
+			if err != nil {
+				return nil, err
+			}
+			pick.AlternativeValues = append(pick.AlternativeValues, p)
+		}
+		if pick.ResultType, err = c.TypeToProto(vv.Typ); err != nil {
+			return nil, err
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_PickValue{PickValue: pick}}, nil
+	case *InOpValue:
+		probe, err := c.ValueToProto(vv.Probe)
+		if err != nil {
+			return nil, err
+		}
+		list, err := c.ValueToProto(vv.List)
+		if err != nil {
+			return nil, err
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_InOpValue{InOpValue: &gen.PInOpValue{ProbeValue: probe, InArrayValue: list}}}, nil
 	case *BooleanValue:
 		// Java's boolean literal is a LiteralValue (LiteralValue.toProto).
 		obj := &gen.PComparableObject{SpecificObject: &gen.PComparableObject_PrimitiveObject{PrimitiveObject: &gen.Value{}}}
@@ -419,6 +460,46 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		return &gen.PValue{SpecificValue: &gen.PValue_LikeOperatorValue{LikeOperatorValue: &gen.PLikeOperatorValue{
 			SrcChild: src, PatternChild: pattern,
 		}}}, nil
+	case *BinaryRelOpValue:
+		// BinaryRelOpValue.toProto: the PRelOpValue super and the operator.
+		super, err := c.relOpSuperToProto(vv.FunctionName, vv.Comparison, vv.Left, vv.Right)
+		if err != nil {
+			return nil, err
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_BinaryRelOpValue{BinaryRelOpValue: &gen.PBinaryRelOpValue{
+			Super: super, Operator: vv.PhysicalOperator().Enum(),
+		}}}, nil
+	case *UnaryRelOpValue:
+		super, err := c.relOpSuperToProto(vv.FunctionName, vv.Comparison, vv.Child)
+		if err != nil {
+			return nil, err
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_UnaryRelOpValue{UnaryRelOpValue: &gen.PUnaryRelOpValue{
+			Super: super, Operator: vv.PhysicalOperator().Enum(),
+		}}}, nil
+	case *AndOrValue:
+		// AndOrValue.toProto: the function name is the operator's ("and"/"or").
+		left, err := c.ValueToProto(vv.Left)
+		if err != nil {
+			return nil, err
+		}
+		right, err := c.ValueToProto(vv.Right)
+		if err != nil {
+			return nil, err
+		}
+		op, name := gen.PAndOrValue_AND, "and"
+		if vv.Op == AndOrOr {
+			op, name = gen.PAndOrValue_OR, "or"
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_AndOrValue{AndOrValue: &gen.PAndOrValue{
+			FunctionName: proto.String(name), LeftChild: left, RightChild: right, Operator: op.Enum(),
+		}}}, nil
+	case *NotValue:
+		child, err := c.ValueToProto(vv.Child)
+		if err != nil {
+			return nil, err
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_NotValue{NotValue: &gen.PNotValue{Child: child}}}, nil
 	case *PatternForLikeValue:
 		pattern, err := c.ValueToProto(vv.PatternChild)
 		if err != nil {
@@ -458,7 +539,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		trie, err := primitivePromotionTrie(pv.Child.Type(), pv.Target)
+		trie, err := c.promotionTrie(pv.Child.Type(), pv.Target)
 		if err != nil {
 			return nil, err
 		}
@@ -474,6 +555,43 @@ var javaTypeCodeNames = map[TypeCode]string{
 	TypeCodeFloat: "FLOAT", TypeCodeDouble: "DOUBLE", TypeCodeString: "STRING", TypeCodeBytes: "BYTES",
 	TypeCodeVersion: "VERSION", TypeCodeEnum: "ENUM", TypeCodeUuid: "UUID", TypeCodeArray: "ARRAY",
 	TypeCodeRecord: "RECORD", TypeCodeVector: "VECTOR",
+}
+
+// promotionTrie is PromoteValue.computePromotionsTrie
+// (PromoteValue.java:353-405) for primitive and array types: an array node
+// carries an ArrayCoercionBiFunction and, when the elements need one, the
+// element trie under index -1.
+func (c *SerializationContext) promotionTrie(from, to Type) (*gen.PCoercionTrieNode, error) {
+	fa, fromArray := from.(*ArrayType)
+	ta, toArray := to.(*ArrayType)
+	if !fromArray || !toArray {
+		return primitivePromotionTrie(from, to)
+	}
+	elems, err := c.promotionTrie(fa.ElementType, ta.ElementType)
+	if err != nil {
+		return nil, err
+	}
+	if elems == nil && fa.Nullable == ta.Nullable {
+		return nil, nil
+	}
+	fromType, err := c.TypeToProto(fa)
+	if err != nil {
+		return nil, err
+	}
+	toType, err := c.TypeToProto(ta)
+	if err != nil {
+		return nil, err
+	}
+	node := &gen.PCoercionTrieNode{
+		ChildrenMapIsNull: proto.Bool(elems == nil),
+		Value: &gen.PCoercionBiFunction{SpecificFunction: &gen.PCoercionBiFunction_ArrayCoercionBiFunction{
+			ArrayCoercionBiFunction: &gen.PArrayCoercionBiFunction{FromArrayType: fromType, ToArrayType: toType, ElementsTrie: elems},
+		}},
+	}
+	if elems != nil {
+		node.ChildPair = []*gen.PCoercionTrieNode_IntChildPair{{Index: proto.Int32(-1), ChildCoercionTrieNode: elems}}
+	}
+	return node, nil
 }
 
 // primitivePromotionTrie is PromoteValue.computePromotionsTrie for a
@@ -545,6 +663,8 @@ func literalToProto(v any, typ Type) (*gen.PComparableObject, error) {
 	}
 	pv := &gen.Value{}
 	switch x := v.(type) {
+	case nil:
+		// LiteralKeyExpression.toProtoValue(null): an empty Value.
 	case int64:
 		pv.LongValue = proto.Int64(x)
 	case int32:
@@ -705,6 +825,48 @@ func (c *SerializationContext) ValueFromProto(p *gen.PValue) (Value, error) {
 			return nil, err
 		}
 		return NewArrayConstructorValue(t, elems), nil
+	case p.GetAdditionalValues() != nil:
+		if p.GetAdditionalValues().GetTypeUrl() == tautologicalValueTypeURL {
+			return TautologicalValue{}, nil
+		}
+		return nil, fmt.Errorf("deserialize value: unsupported %s", p.GetAdditionalValues().GetTypeUrl())
+	case p.GetConditionSelectorValue() != nil:
+		var implications []Value
+		for _, pi := range p.GetConditionSelectorValue().GetImplications() {
+			v, err := c.ValueFromProto(pi)
+			if err != nil {
+				return nil, err
+			}
+			implications = append(implications, v)
+		}
+		return NewConditionSelectorValue(implications), nil
+	case p.GetPickValue() != nil:
+		pick := p.GetPickValue()
+		selector, err := c.ValueFromProto(pick.GetSelectorValue())
+		if err != nil {
+			return nil, err
+		}
+		alternatives := make([]Value, len(pick.GetAlternativeValues()))
+		for i, pa := range pick.GetAlternativeValues() {
+			if alternatives[i], err = c.ValueFromProto(pa); err != nil {
+				return nil, err
+			}
+		}
+		t, err := c.TypeFromProto(pick.GetResultType())
+		if err != nil {
+			return nil, err
+		}
+		return NewPickValue(selector, alternatives, t), nil
+	case p.GetInOpValue() != nil:
+		probe, err := c.ValueFromProto(p.GetInOpValue().GetProbeValue())
+		if err != nil {
+			return nil, err
+		}
+		list, err := c.ValueFromProto(p.GetInOpValue().GetInArrayValue())
+		if err != nil {
+			return nil, err
+		}
+		return &InOpValue{Probe: probe, List: list}, nil
 	case p.GetLikeOperatorValue() != nil:
 		src, err := c.ValueFromProto(p.GetLikeOperatorValue().GetSrcChild())
 		if err != nil {
@@ -715,6 +877,51 @@ func (c *SerializationContext) ValueFromProto(p *gen.PValue) (Value, error) {
 			return nil, err
 		}
 		return NewLikeOperatorValue(src, pattern), nil
+	case p.GetBinaryRelOpValue() != nil:
+		b := p.GetBinaryRelOpValue()
+		name, comparison, children, err := c.relOpSuperFromProto(b.GetSuper(), 2)
+		if err != nil {
+			return nil, err
+		}
+		op, ok := binaryRelOpByProto[b.GetOperator()]
+		if !ok || binaryRelOpOperators[op].comparison != comparison {
+			return nil, fmt.Errorf("deserialize binary rel op: operator %v for %v", b.GetOperator(), comparison)
+		}
+		return &BinaryRelOpValue{FunctionName: name, Comparison: comparison, Left: children[0], Right: children[1], operator: op}, nil
+	case p.GetUnaryRelOpValue() != nil:
+		u := p.GetUnaryRelOpValue()
+		name, comparison, children, err := c.relOpSuperFromProto(u.GetSuper(), 1)
+		if err != nil {
+			return nil, err
+		}
+		op, ok := unaryRelOpByProto[u.GetOperator()]
+		if !ok || unaryRelOpOperators[op].comparison != comparison {
+			return nil, fmt.Errorf("deserialize unary rel op: operator %v for %v", u.GetOperator(), comparison)
+		}
+		return &UnaryRelOpValue{FunctionName: name, Comparison: comparison, Child: children[0], operator: op}, nil
+	case p.GetAndOrValue() != nil:
+		a := p.GetAndOrValue()
+		left, err := c.ValueFromProto(a.GetLeftChild())
+		if err != nil {
+			return nil, err
+		}
+		right, err := c.ValueFromProto(a.GetRightChild())
+		if err != nil {
+			return nil, err
+		}
+		switch a.GetOperator() {
+		case gen.PAndOrValue_AND:
+			return NewAndOrValue(AndOrAnd, left, right), nil
+		case gen.PAndOrValue_OR:
+			return NewAndOrValue(AndOrOr, left, right), nil
+		}
+		return nil, fmt.Errorf("deserialize and/or: operator %v", a.GetOperator())
+	case p.GetNotValue() != nil:
+		child, err := c.ValueFromProto(p.GetNotValue().GetChild())
+		if err != nil {
+			return nil, err
+		}
+		return NewNotValue(child), nil
 	case p.GetPatternForLikeValue() != nil:
 		pattern, err := c.ValueFromProto(p.GetPatternForLikeValue().GetPatternChild())
 		if err != nil {
@@ -737,4 +944,43 @@ func (c *SerializationContext) ValueFromProto(p *gen.PValue) (Value, error) {
 		return NewPromoteValue(in, to), nil
 	}
 	return nil, fmt.Errorf("deserialize value: unsupported %v", p)
+}
+
+// relOpSuperToProto is RelOpValue.toRelOpValueProto.
+func (c *SerializationContext) relOpSuperToProto(name string, comparison RelOpComparison, children ...Value) (*gen.PRelOpValue, error) {
+	ct, ok := relOpComparisonProto[comparison]
+	if !ok {
+		return nil, fmt.Errorf("serialize rel op: comparison %d", comparison)
+	}
+	// Comparisons.Type.toProto writes PComparisonType.
+	p := &gen.PRelOpValue{FunctionName: proto.String(name), ComparisonType: ct.Enum()}
+	for _, child := range children {
+		pc, err := c.ValueToProto(child)
+		if err != nil {
+			return nil, err
+		}
+		p.Children = append(p.Children, pc)
+	}
+	return p, nil
+}
+
+func (c *SerializationContext) relOpSuperFromProto(p *gen.PRelOpValue, arity int) (string, RelOpComparison, []Value, error) {
+	var comparison RelOpComparison
+	for k, v := range relOpComparisonProto {
+		if v == p.GetComparisonType() {
+			comparison = k
+		}
+	}
+	if comparison == 0 || len(p.GetChildren()) != arity {
+		return "", 0, nil, fmt.Errorf("deserialize rel op: %v over %d children", p.GetComparisonType(), len(p.GetChildren()))
+	}
+	children := make([]Value, arity)
+	for i, pc := range p.GetChildren() {
+		v, err := c.ValueFromProto(pc)
+		if err != nil {
+			return "", 0, nil, err
+		}
+		children[i] = v
+	}
+	return p.GetFunctionName(), comparison, children, nil
 }

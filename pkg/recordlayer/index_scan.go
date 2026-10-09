@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -242,7 +244,7 @@ func (e *IndexEntry) PrimaryKey() tuple.Tuple {
 		return tuple.Tuple{}
 	}
 	if e.primaryKey == nil {
-		e.primaryKey = e.Index.getEntryPrimaryKey(e.Key)
+		e.primaryKey = e.Index.EntryPrimaryKey(e.Key)
 	}
 	return e.primaryKey
 }
@@ -391,7 +393,7 @@ func (store *FDBRecordStore) scanIndexByType(
 	case IndexScanByDistance:
 		// HNSW and SPFresh share the BY_DISTANCE TupleRange/IndexEntry
 		// contract (RFC-094 §10) — dispatch by interface, not concrete type.
-		vm, ok := maintainerAs[byDistanceScanner](maintainer)
+		vm, ok := IndexMaintainerAs[ByDistanceScanner](maintainer)
 		if !ok {
 			return &errorCursor[*IndexEntry]{
 				err: fmt.Errorf("index %q (type %s) does not support BY_DISTANCE scan", index.Name, index.Type),
@@ -403,10 +405,10 @@ func (store *FDBRecordStore) scanIndexByType(
 		// widening + budget-bounded honest truncation). Only SPFresh implements
 		// widening; an HNSW ordered scan has no posting cells to widen, so it falls
 		// back to the fixed-horizon ScanByDistance (Phase B, unchanged).
-		if sm, ok := maintainerAs[orderedStreamScanner](maintainer); ok {
+		if sm, ok := IndexMaintainerAs[OrderedStreamScanner](maintainer); ok {
 			return sm.ScanByDistanceOrderedStream(scanRange, continuation, scanProperties)
 		}
-		vm, ok := maintainerAs[byDistanceScanner](maintainer)
+		vm, ok := IndexMaintainerAs[ByDistanceScanner](maintainer)
 		if !ok {
 			return &errorCursor[*IndexEntry]{
 				err: fmt.Errorf("index %q (type %s) does not support BY_DISTANCE scan", index.Name, index.Type),
@@ -656,14 +658,14 @@ func (c *indexCursor) unpackKeyValue(kv fdb.KeyValue) (*IndexEntry, error) {
 	if len(kv.Key) < prefixLen {
 		return nil, fmt.Errorf("index key shorter than subspace prefix")
 	}
-	keyTuple, err := fastUnpack(kv.Key[prefixLen:])
+	keyTuple, err := tuplefast.Unpack(kv.Key[prefixLen:])
 	if err != nil {
 		return nil, fmt.Errorf("unpack index key: %w", err)
 	}
 
 	var valueTuple tuple.Tuple
 	if len(kv.Value) > 0 {
-		valueTuple, err = fastUnpack(kv.Value)
+		valueTuple, err = tuplefast.Unpack(kv.Value)
 		if err != nil {
 			return nil, fmt.Errorf("unpack index value: %w", err)
 		}
@@ -899,7 +901,7 @@ func (c *indexRecordCursor) IsClosed() bool { return c.inner.IsClosed() }
 // index maintainer implements (RFC-094 §10): Low = (serialized query vector
 // [, prefix...]), High = (k [, tuning...]); entries ascend by distance.
 // Compile-time assertions catch signature drift at build time.
-type byDistanceScanner interface {
+type ByDistanceScanner interface {
 	ScanByDistance(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
 }
 
@@ -908,12 +910,6 @@ type byDistanceScanner interface {
 // IndexEntry contract as ScanByDistance; only partition indices with a widenable
 // posting structure (SPFresh) implement it — others use the ScanByDistance
 // fixed-horizon fallback.
-type orderedStreamScanner interface {
+type OrderedStreamScanner interface {
 	ScanByDistanceOrderedStream(TupleRange, []byte, ScanProperties) RecordCursor[*IndexEntry]
 }
-
-var (
-	_ byDistanceScanner    = (*vectorIndexMaintainer)(nil)
-	_ byDistanceScanner    = (*spfreshIndexMaintainer)(nil)
-	_ orderedStreamScanner = (*spfreshIndexMaintainer)(nil)
-)

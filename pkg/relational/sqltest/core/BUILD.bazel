@@ -36,6 +36,7 @@ go_test(
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/rlmetrics",
+        "//pkg/recordlayer/vectorindex",
         "//pkg/relational/api",
         "//pkg/relational/conformance/coveringleaf",
         "//pkg/relational/core/catalog",

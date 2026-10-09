@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"github.com/antlr4-go/antlr/v4"
 
 	"fdb.dev/gen"
@@ -4200,7 +4202,7 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 		// directly-constructed metadata.
 		return nil
 	}
-	parsed, err := recordlayer.VectorIndexMetric(idx)
+	parsed, err := vectorindex.VectorIndexMetric(idx)
 	if err != nil {
 		// A metric the maintainer refuses (corrupt or newer-version metadata):
 		// no candidate, so the QUALIFY distance predicate stays
@@ -4231,7 +4233,7 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	if values.IsUnresolved(baseRowType) {
 		return nil
 	}
-	engine, err := recordlayer.VectorEngineOf(idx)
+	engine, err := vectorindex.VectorEngineOf(idx)
 	if err != nil {
 		return nil
 	}
@@ -4242,14 +4244,14 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 }
 
 // vectorDistanceOperator is the distance placeholder's operator for the metric
-// the index is maintained with (recordlayer.VectorIndexMetric).
-func vectorDistanceOperator(m recordlayer.VectorMetric) values.DistanceOperator {
+// the index is maintained with (vectorindex.VectorIndexMetric).
+func vectorDistanceOperator(m vectorindex.VectorMetric) values.DistanceOperator {
 	switch m {
-	case recordlayer.VectorMetricEuclideanSquare:
+	case vectorindex.VectorMetricEuclideanSquare:
 		return values.DistanceEuclideanSquare
-	case recordlayer.VectorMetricCosine:
+	case vectorindex.VectorMetricCosine:
 		return values.DistanceCosine
-	case recordlayer.VectorMetricInnerProduct:
+	case vectorindex.VectorMetricInnerProduct:
 		return values.DistanceDotProduct
 	default:
 		return values.DistanceEuclidean

@@ -24,7 +24,6 @@ go_test(
         "//gen",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
-        "//pkg/fdbgo/fdb/tuple",
         "//pkg/fdbgo/wire",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/executor",
@@ -32,9 +31,6 @@ go_test(
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",
         "//pkg/relational/sqltest/testkit",
-        "@org_golang_google_protobuf//proto",
-        "@org_golang_google_protobuf//reflect/protoreflect",
-        "@org_golang_google_protobuf//types/dynamicpb",
     ],
 )
 
@@ -52,5 +48,4 @@ filegroup(
 filegroup(
     name = "testdata",
     srcs = glob(["testdata/**"]),
-    visibility = ["//pkg/relational/sqltest/census:__pkg__"],
 )

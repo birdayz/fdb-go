@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -1902,7 +1904,7 @@ var _ = Describe("A windowed VECTOR index's options parse as Java parses them", 
 // engine-neutral aliases (vector*), and for Boolean.parseBoolean's case. The
 // validator admitting a value is not enough: the maintainer must read the same
 // configuration from it. Java's side is HnswVectorIndexEngine.parseConfig
-// (through HnswConformanceAccess), Go's recordlayer.HNSWConfigOf.
+// (through HnswConformanceAccess), Go's vectorindex.HNSWConfigOf.
 var _ = Describe("A windowed VECTOR index's options are read as Java reads them", func() {
 	for _, c := range []struct {
 		name string
@@ -1938,11 +1940,11 @@ var _ = Describe("A windowed VECTOR index's options are read as Java reads them"
 			}, &java)).To(Succeed())
 			md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
 			Expect(err).NotTo(HaveOccurred())
-			cfg, err := recordlayer.HNSWConfigOf(md.GetIndex("w"))
+			cfg, err := vectorindex.HNSWConfigOf(md.GetIndex("w"))
 			Expect(err).NotTo(HaveOccurred())
-			metric := map[recordlayer.VectorMetric]string{
-				recordlayer.VectorMetricEuclidean: "EUCLIDEAN_METRIC", recordlayer.VectorMetricEuclideanSquare: "EUCLIDEAN_SQUARE_METRIC",
-				recordlayer.VectorMetricCosine: "COSINE_METRIC", recordlayer.VectorMetricInnerProduct: "DOT_PRODUCT_METRIC",
+			metric := map[vectorindex.VectorMetric]string{
+				vectorindex.VectorMetricEuclidean: "EUCLIDEAN_METRIC", vectorindex.VectorMetricEuclideanSquare: "EUCLIDEAN_SQUARE_METRIC",
+				vectorindex.VectorMetricCosine: "COSINE_METRIC", vectorindex.VectorMetricInnerProduct: "DOT_PRODUCT_METRIC",
 			}[cfg.Metric]
 			useRaBitQ, bits := false, float64(4)
 			if q, ok := cfg.Quantizer.(*rabitq.Quantizer); ok && q != nil {

@@ -2,6 +2,7 @@ package factorycorpus
 
 import (
 	"fmt"
+	"sync"
 	"unsafe"
 )
 
@@ -9,10 +10,13 @@ import (
 // uniqueness indexes do not retain a parsed family's source-buffer substrings.
 func StreamingIndexStringsDetachedForTest(dir string) (bool, error) {
 	var loaded []*Scenario
+	var mu sync.Mutex // files load concurrently
 	_, names, keys, err := computeCensusDir(dir, func(path string) (*FamilyFile, error) {
 		family, err := Load(path)
 		if err == nil {
+			mu.Lock()
 			loaded = append(loaded, family.Scenarios...)
+			mu.Unlock()
 		}
 		return family, err
 	})

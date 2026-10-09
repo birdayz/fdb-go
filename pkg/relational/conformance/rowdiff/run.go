@@ -23,6 +23,7 @@ import (
 type execQuerier interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 }
 
 // OutcomeKind is the RFC-182 §4 typed classification. A seed resolves to
@@ -164,7 +165,7 @@ func RunCase(ctx context.Context, setupDB *sql.DB, dbPath, clusterFile string, c
 	qdb := qdbs[0]
 
 	insertSQL := c.InsertSQL()
-	if _, err := qdb.ExecContext(ctx, insertSQL); err != nil {
+	if err := loadFixture(ctx, qdb, insertSQL); err != nil {
 		res.Kind = OutcomeInfra
 		res.InfraErr = fmt.Errorf("insert: %w", err)
 		return res
@@ -335,10 +336,48 @@ func planTypedConcurrently(c *Case, ddl string) []*typedPlan {
 
 // Concurrency is how many things a sweep does at once at each level: cases
 // (seeds), one case's statements (on that many connections) and its typed
-// plans. A sixth of the cores, at most 4, at least 1: on a 24-core box that is
-// 4, while a 4-vCPU CI runner stays serial, where 4 seeds' fixture INSERTs
-// outran FDB's 5 s transaction limit (40001, reported INFRA).
-func Concurrency() int { return max(1, min(4, runtime.GOMAXPROCS(0)/6)) }
+// plans. The levels nest, so each gets the square root of GOMAXPROCS (rounded
+// up) and together they fill the cores: 2 per level on 4 vCPUs, 5 on 24.
+//
+// This used to be capped (a sixth of the cores, at most 4, serial on 4 vCPUs)
+// because concurrent seeds' fixture INSERTs outran FDB's 5 s transaction limit
+// and came back INFRA. loadFixture now retries exactly that outcome, so the cap
+// no longer guards anything.
+func Concurrency() int {
+	n := 1
+	for n*n < runtime.GOMAXPROCS(0) {
+		n++
+	}
+	return n
+}
+
+// fixtureLoadAttempts bounds loadFixture's replays of a lost window.
+const fixtureLoadAttempts = 5
+
+// loadFixture runs a seed's fixture INSERT in an explicit transaction and
+// replays it when, and only when, the transaction outlived FDB's MVCC window
+// (api.IsTransactionTimeLimit): such a transaction committed nothing, so the
+// replay cannot duplicate a row. Any other error, including an unknown commit
+// result, is returned as is. This is the rule javacorpus's private fixtures
+// already use for the same load-under-contention failure.
+func loadFixture(ctx context.Context, db execQuerier, insertSQL string) error {
+	var err error
+	for attempt := 1; attempt <= fixtureLoadAttempts; attempt++ {
+		var tx *sql.Tx
+		if tx, err = db.BeginTx(ctx, nil); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, insertSQL); err == nil {
+			err = tx.Commit()
+		} else {
+			err = errors.Join(err, tx.Rollback())
+		}
+		if err == nil || !api.IsTransactionTimeLimit(err) {
+			return err
+		}
+	}
+	return fmt.Errorf("fixture lost its transaction window %d times: %w", fixtureLoadAttempts, err)
+}
 
 // execWorkers is how many of a seed's statements run on the engine at once.
 var execWorkers = Concurrency()

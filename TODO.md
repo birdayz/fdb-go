@@ -1466,6 +1466,20 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## Follow-ups after the 4.14.2.0 migration (not blocking)
 
+- [ ] **Decide which nightly nets to bring back (all deleted 2026-10-09).** The seven nightly
+  workflows (coverage, factory, fuzz, oracles, reconcile, rowdiff, stress), `cmd/verify-pr-checks`
+  (used only by reconcile) and the `census_test` target were removed: a late nightly could hold
+  both CI runners, and nobody could say what they still caught. The libfdb_c cross-client
+  differential moved into ci.yml as its own per-PR job. Each one is in git history
+  (`git show 8d3f8c4ad:.github/workflows/<file>`). Bring one back only with a stated catch rate.
+  What no longer runs anywhere:
+  - the `-race` runs of `//pkg/relational/conformance/...` and of the client, record-layer and
+    chaos container suites;
+  - active fuzzing;
+  - the 10K/100K/1M stress suite;
+  - coverage reporting;
+  - the self-checking oracles and the nightly rowdiff and factory batches.
+
 - [ ] Two IN lists ordered by their own columns: Java plans nested in-unions
   over both explodes; Go keeps sorted in-joins (`w8_in5x5`/`w8_in4x6`, declared
   DIFF-PATH rfc-191). Needs Go's in-join rules to accept a select with several

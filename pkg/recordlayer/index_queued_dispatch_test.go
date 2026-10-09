@@ -19,7 +19,7 @@ import (
 var _ = Describe("Queued store dispatch", func() {
 	ctx := context.Background()
 	makeMetadata := func() (*RecordMetaData, *Index) {
-		index := NewVectorIndex("queued", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		index := newValueWithQueueIndex("queued", Concat(Field("quantity"), Field("price")))
 		builder := baseBuilder()
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(Field("quantity"), Field("order_id")))
 		builder.AddIndex("Order", index)
@@ -490,11 +490,9 @@ var _ = Describe("Queued store dispatch", func() {
 			var notBuilt *IndexNotBuiltError
 			Expect(errors.As(err, &notBuilt)).To(BeTrue())
 			Expect(notBuilt.PendingWrites).To(BeTrue())
-			maintainer, err := store.GetIndexMaintainer(index)
+			queued, err := queuedIndexPrimaryKeys(store, index, tuple.Tuple{int64(8)})
 			Expect(err).NotTo(HaveOccurred())
-			graph, err := maintainer.(*vectorIndexMaintainer).SearchKNN(tuple.Tuple{int64(8)}, []float64{42}, 100, 100)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(graph).To(BeEmpty(), "user dispatch must not update the queued graph")
+			Expect(queued).To(BeEmpty(), "user dispatch must not update the queued index")
 			begin, end := store.indexSubspace(md.GetIndex("ordinary")).FDBRangeKeys()
 			rows, err := rc.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
 			Expect(err).NotTo(HaveOccurred())
@@ -519,10 +517,9 @@ var _ = Describe("Queued store dispatch", func() {
 			Expect(operations).To(Equal([]gen.PendingWritesQueueEntry_Operation{gen.PendingWritesQueueEntry_UPDATE, gen.PendingWritesQueueEntry_UPDATE, gen.PendingWritesQueueEntry_UPDATE, gen.PendingWritesQueueEntry_DELETE_WHERE}))
 			_, err := store.MarkIndexReadable(index.Name)
 			Expect(err).NotTo(HaveOccurred())
-			found, err := store.SearchVectorIndexWithPrefix(index, tuple.Tuple{int64(8)}, []float64{42}, 100, 100)
+			found, err := queuedIndexPrimaryKeys(store, index, tuple.Tuple{int64(8)})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(HaveLen(1))
-			Expect(found[0].PrimaryKey).To(Equal(tuple.Tuple{int64(8), int64(3)}))
+			Expect(found).To(Equal([]tuple.Tuple{{int64(8), int64(3)}}))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -552,14 +549,9 @@ var _ = Describe("Queued store dispatch", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
-	for _, kind := range []string{"version-columns", "spfresh"} {
+	for _, kind := range []string{"version-columns"} {
 		It("rejects queued eligibility for "+kind, func() {
-			index := NewVectorIndex("ineligible", KeyWithValue(Concat(VersionKey(), Field("price")), 1), 1)
-			if kind == "spfresh" {
-				index = NewIndex("ineligible", Field("price"))
-				index.Type = IndexTypeVectorSPFresh
-				index.Options = map[string]string{IndexOptionSPFreshNumDimensions: "1"}
-			}
+			index := newValueWithQueueIndex("ineligible", Concat(VersionKey(), Field("price")))
 			builder := baseBuilder()
 			builder.SetStoreRecordVersions(true)
 			builder.AddIndex("Order", index)
@@ -687,8 +679,8 @@ var _ = Describe("Queued store dispatch", func() {
 		_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
 			for _, ss := range []subspace.Subspace{root, sibling} {
 				for _, family := range []string{"heartbeat:", "merge:"} {
-					name := pendingWriteCommitCheckPrefix(ss) + family + index.Name
-					rc.getOrCreateCommitCheck(name, func(string) CommitCheckFunc {
+					name := PendingWriteCommitCheckPrefix(ss) + family + index.Name
+					rc.GetOrCreateCommitCheck(name, func(string) CommitCheckFunc {
 						return func() error { ran[name] = true; return nil }
 					})
 				}
@@ -703,8 +695,8 @@ var _ = Describe("Queued store dispatch", func() {
 			Expect(DeleteStore(rc, root)).To(Succeed())
 			Expect(rc.HasVersionMutations()).To(BeFalse(), "the deleted store's buffered entries are cancelled")
 			for _, family := range []string{"heartbeat:", "merge:"} {
-				Expect(rc.getCommitCheck(pendingWriteCommitCheckPrefix(root)+family+index.Name)).To(BeNil(), family)
-				Expect(rc.getCommitCheck(pendingWriteCommitCheckPrefix(sibling)+family+index.Name)).NotTo(BeNil(), family)
+				Expect(rc.getCommitCheck(PendingWriteCommitCheckPrefix(root)+family+index.Name)).To(BeNil(), family)
+				Expect(rc.getCommitCheck(PendingWriteCommitCheckPrefix(sibling)+family+index.Name)).NotTo(BeNil(), family)
 			}
 			// Recreate and queue one write in the same transaction.
 			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).SetFormatVersion(15).Create()
@@ -719,7 +711,7 @@ var _ = Describe("Queued store dispatch", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		for name := range ran {
-			Expect(name).To(HavePrefix(pendingWriteCommitCheckPrefix(sibling)), "only the sibling's checks ran")
+			Expect(name).To(HavePrefix(PendingWriteCommitCheckPrefix(sibling)), "only the sibling's checks ran")
 		}
 		Expect(ran).To(HaveLen(2))
 		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
@@ -753,7 +745,7 @@ var _ = Describe("Queued store dispatch", func() {
 			Expect(err).NotTo(HaveOccurred())
 			_, err = store.SaveRecord(order(3, 7))
 			Expect(err).NotTo(HaveOccurred())
-			name := pendingWriteCommitCheckPrefix(root) + "overflow:" + index.Name
+			name := PendingWriteCommitCheckPrefix(root) + "overflow:" + index.Name
 			Expect(rc.getCommitCheck(name)).NotTo(BeNil())
 			Expect(DeleteStore(rc, root)).To(Succeed())
 			Expect(rc.getCommitCheck(name)).To(BeNil())

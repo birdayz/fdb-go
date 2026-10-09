@@ -46,7 +46,7 @@ var _ = Describe("Index-update session sets", func() {
 	// records each index it updated in the context's set for that index's
 	// state; a DISABLED index is not updated and is in none.
 	It("records the indexes a write updated by state", func() {
-		index := NewVectorIndex("queued", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		index := newValueWithQueueIndex("queued", Concat(Field("quantity"), Field("price")))
 		builder := baseBuilder()
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(Field("quantity"), Field("order_id")))
 		builder.AddIndex("Order", index)

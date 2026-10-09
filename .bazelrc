@@ -46,14 +46,23 @@ test --test_timeout=60,300,900,3600
 # pkg/linters/) which dilutes the coverage percentage.
 coverage --instrumentation_filter="^//pkg/fdbgo/client[/:],^//pkg/fdbgo/fdb[/:],^//pkg/fdbgo/transport[/:],^//pkg/recordlayer[/:]"
 
-# Limit concurrent test targets to prevent Docker socket contention.
-# 9 test targets all create FDB testcontainers (socat + FDB + network each).
-# Docker socket can't handle 9× parallel container creation → timeouts/hangs.
-# 4 concurrent test targets is right for CI's 4-vCPU runners; `just test` and
-# `just test-full` raise it to a third of the cores on bigger machines.
-# Any non-zero value also makes Bazel IGNORE tags = ["resources:memory:N"] on
-# tests (measured, Bazel 9.0.1), which is why heavy suites need "exclusive".
-test --local_test_jobs=4
+# Test scheduling: Bazel's resource accounting, the same on every machine.
+# --local_test_jobs=0 charges each test its declared needs instead of a count
+# cap: tags = ["resources:cpu:N"] (measured CPU-seconds per wall-second,
+# default 1) against HOST_CPUS and ["resources:memory:N"] (measured peak RSS
+# in MB) against 80% of RAM. Any non-zero --local_test_jobs makes Bazel ignore
+# those tags (measured, Bazel 9.0.1). A need larger than the machine still runs
+# (Bazel grants it once enough is free), so a cpu:8 target runs on a 4-vCPU
+# box. 0.8 of RAM held 48 concurrent FDB containers with no failure on the
+# 24-core / 62 GB dev box; --config=ci lowers it for CI's small runners.
+# The old cap of 4 (and the justfile's 8) blamed Docker for hangs past ~8 FDB
+# containers; the measured cause was the kernel AIO pool (fs.aio-max-nr)
+# exhausted by another service on the dev box, which fdbserver reports as 1510
+# "Disk i/o operation failed". With the pool raised, 48 concurrent containers
+# ran cleanly.
+test --local_test_jobs=0
+test --local_resources=cpu=HOST_CPUS
+test --local_resources=memory=HOST_RAM*0.8
 # `bazelrunfiles`: runfiles-only suites (conformance, bindingtester) — excluded from
 #   a plain `go test ./...` so it doesn't panic looking for Bazel runfiles.
 # `stress`: heavy million-row stress benchmarks under //pkg/relational/sqldriver/stress.
@@ -61,3 +70,16 @@ test --local_test_jobs=4
 #   globally is inert for `bazel test //...`; it just lets that one target compile when
 #   invoked. Plain `go test ./...` doesn't set the tag, so it skips the stress package.
 build --@rules_go//go/config:tags=bazelrunfiles,stress
+
+# --- CI (every workflow bazelisk invocation passes --config=ci) ---------------
+# announce_rc puts the effective flags in every CI log, and makes `ci` a config
+# every command accepts (query and info included).
+common:ci --announce_rc
+test:ci --test_summary=detailed
+test:ci --profile=bazel-profile.json.gz
+# The 7.6 GB runners hold 0.6 of RAM for tests: 4500 MB measured safe, the
+# runner minus its idle baseline (~730 MB) and the Bazel server (~2500 MB).
+test:ci --local_resources=memory=HOST_RAM*0.6
+
+# Personal overrides (gitignored), e.g. --test_output=streamed or a disk cache.
+try-import %workspace%/user.bazelrc

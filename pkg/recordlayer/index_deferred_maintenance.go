@@ -239,13 +239,13 @@ func (store *FDBRecordStore) GetIndexDeferredMaintenanceControl() *IndexDeferred
 func (c *IndexDeferredMaintenanceControl) RegisterPreCommit(store *FDBRecordStore, index *Index) {
 	callback := c.GetPreCommitCallback()
 	if callback != nil {
-		store.context.getOrCreateCommitCheck(pendingWriteCommitCheckPrefix(store.subspace)+"merge:"+index.Name, func(string) CommitCheckFunc { return func() error { return callback(store) } })
+		store.context.GetOrCreateCommitCheck(PendingWriteCommitCheckPrefix(store.subspace)+"merge:"+index.Name, func(string) CommitCheckFunc { return func() error { return callback(store) } })
 	}
 }
 
 // MergeIndex has no deferred work for synchronous standard maintainers. HNSW
 // inherits this behavior; SPFresh retains its separate rebalance lifecycle.
-func (m *standardIndexMaintainer) MergeIndex() error       { return nil }
+func (m *StandardIndexMaintainer) MergeIndex() error       { return nil }
 func (m *atomicMutationIndexMaintainer) MergeIndex() error { return nil }
 func (m *bitmapValueIndexMaintainer) MergeIndex() error    { return nil }
 func (m *maxEverVersionIndexMaintainer) MergeIndex() error { return nil }

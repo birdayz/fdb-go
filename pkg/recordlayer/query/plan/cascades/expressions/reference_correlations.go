@@ -2,6 +2,7 @@ package expressions
 
 import (
 	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -19,6 +20,12 @@ type correlationMemo struct {
 	// validated is the correlation epoch at which every dependency was last
 	// seen unchanged; 0 is never.
 	validated atomic.Uint64
+	// layout, members and finals record the member lanes a group snapshot
+	// covers: their lengths at Reference.memberLayout.
+	layout          uint64
+	members, finals int
+	// order caches an expression snapshot's quantifier dependencies.
+	order atomic.Pointer[[][]int]
 }
 
 // correlationEpoch counts the graph changes that can move a reference's
@@ -258,9 +265,20 @@ func (reader *referenceCorrelationReader) reference(ref *Reference) *correlation
 		}
 	}
 
+	if extended := reader.extendBase(ref, epoch); extended != nil {
+		if reader.publish && !ref.correlatedToCache.CompareAndSwap(cached, extended) {
+			extended = ref.correlatedToCache.Load()
+		}
+		reader.memo[ref] = extended
+		return extended
+	}
+
 	computed := &correlationMemo{
 		version:      ref.memberVersion,
 		correlations: make(map[values.CorrelationIdentifier]struct{}),
+		layout:       ref.memberLayout,
+		members:      len(ref.members),
+		finals:       len(ref.finalMembers),
 	}
 	// Members of one group mostly range over the same children, and within one
 	// pass a reference has one snapshot, so each child is recorded once: a
@@ -303,4 +321,69 @@ func (reader *referenceCorrelationReader) reference(ref *Reference) *correlation
 	}
 	reader.memo[ref] = computed
 	return computed
+}
+
+// extendBase derives ref's snapshot from the one it had before members were
+// appended: the base revalidated, plus the appended members. Nil when ref has
+// no base for its current layout or the base no longer holds.
+func (reader *referenceCorrelationReader) extendBase(ref *Reference, epoch uint64) *correlationMemo {
+	base := ref.correlationBase.Load()
+	if base == nil || base.layout != ref.memberLayout ||
+		base.members > len(ref.members) || base.finals > len(ref.finalMembers) {
+		return nil
+	}
+	for _, dependency := range base.dependencies {
+		if !sameCorrelations(reader.reference(dependency.reference), dependency.snapshot) {
+			return nil
+		}
+	}
+	extended := &correlationMemo{
+		version:      ref.memberVersion,
+		correlations: base.correlations,
+		content:      base.content,
+		dependencies: base.dependencies,
+		layout:       ref.memberLayout,
+		members:      len(ref.members),
+		finals:       len(ref.finalMembers),
+	}
+	var seen map[*Reference]struct{}
+	grown, owned := false, false
+	for _, members := range [][]RelationalExpression{ref.members[base.members:], ref.finalMembers[base.finals:]} {
+		for _, member := range members {
+			snapshot := reader.memberSnapshot(member, nil)
+			for _, dependency := range snapshot.dependencies {
+				if seen == nil {
+					seen = make(map[*Reference]struct{}, len(extended.dependencies)+len(snapshot.dependencies))
+					for _, known := range extended.dependencies {
+						seen[known.reference] = struct{}{}
+					}
+				}
+				if _, dup := seen[dependency.reference]; dup {
+					continue
+				}
+				seen[dependency.reference] = struct{}{}
+				if !owned {
+					extended.dependencies, owned = slices.Clip(extended.dependencies), true
+				}
+				extended.dependencies = append(extended.dependencies, dependency)
+			}
+			for alias := range snapshot.correlations {
+				if _, ok := extended.correlations[alias]; ok {
+					continue
+				}
+				if !grown {
+					extended.correlations, grown = maps.Clone(base.correlations), true
+					if extended.correlations == nil {
+						extended.correlations = make(map[values.CorrelationIdentifier]struct{})
+					}
+				}
+				extended.correlations[alias] = struct{}{}
+			}
+		}
+	}
+	if grown {
+		extended.content = newCorrelationContent()
+	}
+	extended.validated.Store(epoch)
+	return extended
 }

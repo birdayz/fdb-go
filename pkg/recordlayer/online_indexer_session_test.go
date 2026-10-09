@@ -330,7 +330,7 @@ var _ = Describe("OnlineIndexer preparation heartbeat admission", func() {
 					root := specSubspace()
 					builder := baseBuilder()
 					primary := NewIndex("a_primary", Field("price"))
-					follower := NewVectorIndex("z_follower", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+					follower := newValueWithQueueIndex("z_follower", Concat(Field("quantity"), Field("price")))
 					primary.AddedVersion, primary.LastModifiedVersion = 2, 2
 					follower.AddedVersion, follower.LastModifiedVersion = 2, 2
 					builder.AddIndex("Order", primary)

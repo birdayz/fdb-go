@@ -18,7 +18,7 @@ type atomicMutation interface {
 	// entries Java's filteredIndexEntries gives AtomicMutationIndexMaintainer
 	// .updateIndexKeys: the index's predicate and the store's maintenance
 	// filter decide which are maintained (indexValuesFor, maintainedKeyTuples).
-	evaluateEntries(store indexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error)
+	evaluateEntries(store IndexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error)
 
 	// removeCommon filters out common entries between old and new.
 	removeCommon(old, new []atomicMutationEntry) ([]atomicMutationEntry, []atomicMutationEntry)
@@ -57,7 +57,7 @@ type countMutation struct {
 	index *Index
 }
 
-func (m *countMutation) evaluateEntries(store indexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
+func (m *countMutation) evaluateEntries(store IndexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
 	// Fast path: inline evaluation to skip evaluateGroupingKeys's []tuple.Tuple wrapper.
 	maintained := indexValuesFor(store, m.index, record)
 	if maintained == IndexValuesAll {
@@ -119,7 +119,7 @@ type countNotNullMutation struct {
 	index *Index
 }
 
-func (m *countNotNullMutation) evaluateEntries(store indexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
+func (m *countNotNullMutation) evaluateEntries(store IndexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
 	keys, err := evaluateGroupingKeysNotNull(store, m.index, record, indexValuesFor(store, m.index, record))
 	if err != nil {
 		return nil, err
@@ -161,7 +161,7 @@ type countUpdatesMutation struct {
 	index *Index
 }
 
-func (m *countUpdatesMutation) evaluateEntries(store indexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
+func (m *countUpdatesMutation) evaluateEntries(store IndexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
 	keys, err := evaluateGroupingKeys(store, m.index, record, indexValuesFor(store, m.index, record))
 	if err != nil {
 		return nil, err
@@ -201,7 +201,7 @@ type sumMutation struct {
 	index *Index
 }
 
-func (m *sumMutation) evaluateEntries(store indexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
+func (m *sumMutation) evaluateEntries(store IndexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
 	maintained := indexValuesFor(store, m.index, record)
 	if maintained == IndexValuesNone {
 		return nil, nil
@@ -309,7 +309,7 @@ type minMaxEverLongMutation struct {
 	isMax bool
 }
 
-func (m *minMaxEverLongMutation) evaluateEntries(store indexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
+func (m *minMaxEverLongMutation) evaluateEntries(store IndexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
 	maintained := indexValuesFor(store, m.index, record)
 	if maintained == IndexValuesNone {
 		return nil, nil
@@ -387,7 +387,7 @@ type minMaxEverTupleMutation struct {
 	isMax bool
 }
 
-func (m *minMaxEverTupleMutation) evaluateEntries(store indexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
+func (m *minMaxEverTupleMutation) evaluateEntries(store IndexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
 	maintained := indexValuesFor(store, m.index, record)
 	if maintained == IndexValuesNone {
 		return nil, nil

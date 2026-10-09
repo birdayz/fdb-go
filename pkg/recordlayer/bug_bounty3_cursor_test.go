@@ -28,7 +28,7 @@ func (c *oobStopCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], err
 	if c.pos < len(c.items) {
 		val := c.items[c.pos]
 		c.pos++
-		return NewResultWithValue(val, &BytesContinuation{bytes: listCursorContinuation(c.pos)}), nil
+		return NewResultWithValue(val, &BytesContinuation{bytes: ListCursorContinuation(c.pos)}), nil
 	}
 	return NewResultNoNext[T](c.reason, c.stopCont), nil
 }

@@ -82,6 +82,14 @@ go_test(
         "//:.bazelrc",
     ],
     embed = [":factorycorpus"],
+    # Measured needs, not a cap: ~6 cores while the gates parse the corpus,
+    # and a peak of 4.5 GB RSS on the 24-core box (3.7 GB at GOMAXPROCS=4,
+    # 6.4 GB on CI), declared with headroom. On a runner whose memory budget is
+    # smaller, Bazel runs it alone for its ~10 s.
+    tags = [
+        "resources:cpu:6",
+        "resources:memory:6500",
+    ],
     deps = [
         "//pkg/relational/api",
         "//pkg/relational/conformance/javacorpus",

@@ -258,3 +258,31 @@ func TestRecordQueryPredicatesFilterPlan_HintRichOrderingPassesBindingsThrough(t
 		t.Fatal("A's FIXED binding did not survive the filter; ORDER BY a DESC over `a = 1 AND <residual>` would keep its sort")
 	}
 }
+
+// TestRecordQueryIndexPlan_HintRichOrderingMemoFollowsTheCopy: With* copies
+// share the ordering memo box, so a memoized ordering must answer only for the
+// plan it was derived from, in either order of asking.
+func TestRecordQueryIndexPlan_HintRichOrderingMemoFollowsTheCopy(t *testing.T) {
+	t.Parallel()
+	unbound := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, indexOrderingLayout(), false)
+	}).
+		WithKeyComponentTypes(testPhysicalLongTypes(2)).
+		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes(testPhysicalLongTypes(1))
+	bound := unbound.WithScanComparisons([]*predicates.ComparisonRange{pkOrderingEq(t, int64(7))}).
+		WithKeyComponentTypes(testPhysicalLongTypes(2))
+	for round := 0; round < 2; round++ {
+		for _, plan := range []*RecordQueryIndexPlan{unbound, bound, unbound} {
+			want := plan.hintRichOrdering()
+			got := plan.HintRichOrdering()
+			if len(got.GetEqualityBoundValues()) != len(want.GetEqualityBoundValues()) ||
+				len(got.GetOrderingKeys()) != len(want.GetOrderingKeys()) {
+				t.Fatalf("round %d: memoized ordering %v disagrees with its plan's %v", round, got, want)
+			}
+		}
+	}
+	if len(bound.HintRichOrdering().GetEqualityBoundValues()) == len(unbound.HintRichOrdering().GetEqualityBoundValues()) {
+		t.Fatal("fixture does not distinguish the two plans' orderings")
+	}
+}

@@ -3,6 +3,8 @@ package recordlayer
 import (
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -24,7 +26,7 @@ type textIndexMaintainer struct {
 	indexSubspace subspace.Subspace
 	secSubspace   subspace.Subspace // secondary subspace for tokenizer version tracking
 	tx            fdb.WritableTransaction
-	store         indexStoreContext
+	store         IndexStoreContext
 
 	tokenizer                   TextTokenizer
 	tokenizerVersion            int
@@ -33,7 +35,7 @@ type textIndexMaintainer struct {
 	bunchedMap                  *BunchedMap
 }
 
-func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.WritableTransaction, store indexStoreContext, timer *StoreTimer) (*textIndexMaintainer, error) {
+func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.WritableTransaction, store IndexStoreContext, timer *StoreTimer) (*textIndexMaintainer, error) {
 	tokenizer, err := getTextTokenizer(index)
 	if err != nil {
 		return nil, fmt.Errorf("text index %q: %w", index.Name, err)
@@ -82,7 +84,7 @@ func getTextTokenizerVersion(index *Index) (int, error) {
 	if !ok {
 		return 0, nil // GLOBAL_MIN_VERSION
 	}
-	v, err := javaParseInt(versionStr)
+	v, err := JavaParseInt(versionStr)
 	if err != nil {
 		// Java's text (TextIndexMaintainer.java:185); the index and the
 		// option are its log info.
@@ -126,7 +128,7 @@ func (m *textIndexMaintainer) getRecordTokenizerVersion(primaryKey tuple.Tuple) 
 	if rawVersion == nil {
 		return 0, nil // GLOBAL_MIN_VERSION
 	}
-	t, err := fastUnpack(rawVersion)
+	t, err := tuplefast.Unpack(rawVersion)
 	if err != nil {
 		return 0, nil
 	}
@@ -207,7 +209,7 @@ func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredReco
 	// filteredIndexEntries: the index's predicate and the store's maintenance
 	// filter decide which are maintained, while the tokenizer version is
 	// written and cleared by Update whatever they decide.
-	evalEntries := func(record *FDBStoredRecord[proto.Message]) ([]indexEntry, [][]any, error) {
+	evalEntries := func(record *FDBStoredRecord[proto.Message]) ([]EvaluatedIndexEntry, [][]any, error) {
 		if record == nil {
 			return nil, nil, nil
 		}
@@ -219,13 +221,13 @@ func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredReco
 		if err != nil {
 			return nil, nil, err
 		}
-		entries := make([]indexEntry, len(tuples))
+		entries := make([]EvaluatedIndexEntry, len(tuples))
 		for i, values := range tuples {
 			key := make(tuple.Tuple, len(values))
 			for j, v := range values {
 				key[j] = v
 			}
-			entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey}
+			entries[i] = EvaluatedIndexEntry{key: key, primaryKey: record.PrimaryKey}
 		}
 		if maintained == IndexValuesSome {
 			entries = keepMaintainedEntries(m.store, m.index, record, maintained, entries)
@@ -246,7 +248,7 @@ func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredReco
 	// Use standard removeCommonEntries for correct full-key comparison (all columns).
 	if oldRecord != nil && newRecord != nil {
 		var rcErr error
-		oldIdxEntries, newIdxEntries, rcErr = removeCommonEntries(m.index, oldIdxEntries, newIdxEntries)
+		oldIdxEntries, newIdxEntries, rcErr = RemoveCommonEntries(m.index, oldIdxEntries, newIdxEntries)
 		if rcErr != nil {
 			return rcErr
 		}
@@ -273,7 +275,7 @@ func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredReco
 }
 
 // indexEntriesToRaw converts []indexEntry back to [][]any for updateIndexKeys.
-func indexEntriesToRaw(entries []indexEntry) [][]any {
+func indexEntriesToRaw(entries []EvaluatedIndexEntry) [][]any {
 	if len(entries) == 0 {
 		return nil
 	}

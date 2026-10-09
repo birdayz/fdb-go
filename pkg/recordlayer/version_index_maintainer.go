@@ -23,10 +23,10 @@ type versionIndexMaintainer struct {
 	indexSubspace subspace.Subspace
 	tx            fdb.WritableTransaction
 	recordContext *FDBRecordContext
-	store         indexStoreContext
+	store         IndexStoreContext
 }
 
-func newVersionIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction, recordContext *FDBRecordContext, store indexStoreContext) *versionIndexMaintainer {
+func newVersionIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction, recordContext *FDBRecordContext, store IndexStoreContext) *versionIndexMaintainer {
 	return &versionIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
@@ -45,11 +45,11 @@ func (m *versionIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBS
 // Note: uniqueness is validated at Build() time in metadata validation, so no
 // runtime check is needed here.
 func (m *versionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	var oldEntries []indexEntry
-	var newEntries []indexEntry
+	var oldEntries []EvaluatedIndexEntry
+	var newEntries []EvaluatedIndexEntry
 
 	if oldRecord != nil {
-		entries, err := m.filteredIndexEntries(oldRecord)
+		entries, err := m.FilteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate version index %q for old record: %w", m.index.Name, err)
 		}
@@ -57,7 +57,7 @@ func (m *versionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 	}
 
 	if newRecord != nil {
-		entries, err := m.filteredIndexEntries(newRecord)
+		entries, err := m.FilteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate version index %q for new record: %w", m.index.Name, err)
 		}
@@ -170,7 +170,7 @@ func (m *versionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 
 // filteredIndexEntries is Java's StandardIndexMaintainer.filteredIndexEntries
 // over the version index's evaluated entries (see standardIndexMaintainer's).
-func (m *versionIndexMaintainer) filteredIndexEntries(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
+func (m *versionIndexMaintainer) FilteredIndexEntries(record *FDBStoredRecord[proto.Message]) ([]EvaluatedIndexEntry, error) {
 	values := indexValuesFor(m.store, m.index, record)
 	if values == IndexValuesNone {
 		return nil, nil
@@ -182,7 +182,7 @@ func (m *versionIndexMaintainer) filteredIndexEntries(record *FDBStoredRecord[pr
 	}
 
 	kwv, isKeyWithValue := m.index.RootExpression.(*KeyWithValueExpression)
-	entries := make([]indexEntry, len(tuples))
+	entries := make([]EvaluatedIndexEntry, len(tuples))
 	for i, values := range tuples {
 		if isKeyWithValue {
 			keyPart, valuePart := kwv.SplitEvaluatedKey(values)
@@ -194,13 +194,13 @@ func (m *versionIndexMaintainer) filteredIndexEntries(record *FDBStoredRecord[pr
 			for j, v := range valuePart {
 				val[j] = v
 			}
-			entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey, value: val}
+			entries[i] = EvaluatedIndexEntry{key: key, primaryKey: record.PrimaryKey, value: val}
 		} else {
 			key := make(tuple.Tuple, len(values))
 			for j, v := range values {
 				key[j] = v
 			}
-			entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey}
+			entries[i] = EvaluatedIndexEntry{key: key, primaryKey: record.PrimaryKey}
 		}
 	}
 

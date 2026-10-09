@@ -73,11 +73,10 @@ func buildMacroFunction(spec antlrgen.IFunctionSpecificationContext, body *antlr
 	}
 	r := expr.New(analyzer, semantic.NewScope(nil))
 	r.SetMacroParameters(names, bound)
-	v, err := r.WalkExpressionForProjection(body.Expression())
+	v, err := r.WalkMacroBody(body.Expression())
 	if err != nil {
 		return nil, err
 	}
-	v = expr.MacroBodyValue(v)
 	if rc := spec.ReturnsClause(); rc != nil {
 		rt, ok := rc.ReturnsType().(*antlrgen.ReturnsTypeContext)
 		if !ok || rt.ReturnsTableType() != nil {

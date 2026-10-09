@@ -84,7 +84,7 @@ func (p *RecordQueryFirstOrDefaultPlan) GetQuantifiers() []expressions.Quantifie
 	if p.innerQ.GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return quantifierView(&p.innerQ)
 }
 
 // GetDefaultValue returns the fallback value used when the inner plan

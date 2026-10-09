@@ -116,8 +116,8 @@ locals {
     # GO_BIN="go", and the Bazel-SDK resolver falls back to it), so a box without Go on
     # PATH fails those jobs with `go: command not found` — exit 127, not a test failure.
     # Nothing installed it before: the old boxes were provisioned by hand.
-    go_version = "1.26.6"
-    go_sha256  = "708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89"
+    go_version = "1.26.9"
+    go_sha256  = "42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d"
     # bazelisk launcher (reads .bazelversion → Bazel 9.0.1; this is just the launcher).
     bazelisk_version = "1.28.1"
     bazelisk_sha256  = "22e7d3a188699982f661cf4687137ee52d1f24fec1ec893d91a6c4d791a75de8"
@@ -182,7 +182,10 @@ resource "hcloud_server" "runner" {
     github_repo         = var.github_repo
     github_runner_token = var.github_runner_token
     runner_name         = "gh-runner-fdb"
-    runner_labels       = var.runner_labels
+    # fdb-ci-main pins ci.yml's main job to this box, so its Bazel disk cache
+    # always holds the previous main run's actions and test results (a job that
+    # lands on the other box re-runs everything). See ci.yml.
+    runner_labels       = "${var.runner_labels},fdb-ci-main"
     runner_ephemeral    = var.runner_ephemeral
     runner_version      = local.versions.runner_version
     runner_sha256       = local.versions.runner_sha256
@@ -284,7 +287,9 @@ resource "hcloud_server" "runner_pool" {
     github_repo                       = var.github_repo
     github_runner_token               = local.pool_registration_token
     runner_name                       = "gh-runner-drain-${count.index}"
-    runner_labels                     = var.runner_labels
+    # The first pool box carries ci.yml's race and Java-conformance jobs
+    # (fdb-ci-aux), for the cache reason gh-runner-fdb's label gives.
+    runner_labels                     = count.index == 0 ? "${var.runner_labels},fdb-ci-aux" : var.runner_labels
     runner_ephemeral                  = false
     runner_version                    = local.versions.runner_version
     runner_sha256                     = local.versions.runner_sha256

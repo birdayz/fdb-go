@@ -165,6 +165,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
         "//pkg/recordlayer/vectorcodec",
+        "//pkg/recordlayer/vectorindex",
         "//pkg/relational/api",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/metadata",

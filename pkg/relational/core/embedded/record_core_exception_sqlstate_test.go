@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
@@ -46,8 +48,8 @@ func TestRecordCoreExceptionsMapAsJavasExceptionUtil(t *testing.T) {
 		{&recordlayer.FoundSplitWithoutStartError{}, api.ErrCodeUnknown},
 		{&recordlayer.PartlyBuiltError{}, api.ErrCodeUnknown},
 		{&recordlayer.RecordTypeChangedError{}, api.ErrCodeUnknown},
-		{&recordlayer.VectorIndexClusterTooLargeError{}, api.ErrCodeUnknown},
-		{&recordlayer.NegativeTaskCountError{}, api.ErrCodeUnknown},
+		{&vectorindex.VectorIndexClusterTooLargeError{}, api.ErrCodeUnknown},
+		{&vectorindex.NegativeTaskCountError{}, api.ErrCodeUnknown},
 		{&recordlayer.IndexKeySizeError{}, api.ErrCodeUnknown},
 		{&recordlayer.IndexValueSizeError{}, api.ErrCodeUnknown},
 		{&recordlayer.KeyExpressionInvalidResultError{}, api.ErrCodeUnknown},

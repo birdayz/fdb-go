@@ -73,24 +73,24 @@ func computeCensusDir(dir string, load func(string) (*FamilyFile, error)) (Censu
 	sort.Strings(matches)
 	seenKey := map[string]string{}
 	seenName := map[string]string{}
-	for _, path := range matches {
-		file, err := load(path)
-		if err != nil {
-			return c, nil, nil, err
-		}
+	err = loadInOrder(matches, load, func(path string, file *FamilyFile) error {
 		for _, scenario := range file.Scenarios {
 			id := path + "#" + scenario.Header.Name
 			if previous, duplicate := seenName[scenario.Header.Name]; duplicate {
-				return c, nil, nil, fmt.Errorf("%s and %s both commit scenario %s", previous, id, scenario.Header.Name)
+				return fmt.Errorf("%s and %s both commit scenario %s", previous, id, scenario.Header.Name)
 			}
 			seenName[strings.Clone(scenario.Header.Name)] = id
 			if previous, duplicate := seenKey[scenario.Header.DedupKey]; duplicate {
-				return c, nil, nil, fmt.Errorf("%s and %s share dedup key %s: the corpus is committing the same (feature vector, plan shape) point twice, which is volume without coverage",
+				return fmt.Errorf("%s and %s share dedup key %s: the corpus is committing the same (feature vector, plan shape) point twice, which is volume without coverage",
 					previous, id, scenario.Header.DedupKey)
 			}
 			seenKey[strings.Clone(scenario.Header.DedupKey)] = id
 		}
 		addToCensus(&c, file.Scenarios)
+		return nil
+	})
+	if err != nil {
+		return c, nil, nil, err
 	}
 	if c.Scenarios == 0 {
 		return c, nil, nil, fmt.Errorf("no scenarios under %s: a corpus gate over an empty corpus passes vacuously", dir)

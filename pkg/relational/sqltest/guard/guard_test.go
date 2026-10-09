@@ -120,7 +120,7 @@ func TestEverySQLTestPackageIsInTheCorpusAndHasTests(t *testing.T) {
 			return err
 		}
 		pkg := filepath.ToSlash(filepath.Join("pkg/relational/sqltest", must(filepath.Rel(base, filepath.Dir(p)))))
-		if slices.Contains([]string{"census", "guard", "testkit"}, filepath.Base(pkg)) {
+		if slices.Contains([]string{"guard", "testkit"}, filepath.Base(pkg)) {
 			return nil
 		}
 		src, err := os.ReadFile(p)

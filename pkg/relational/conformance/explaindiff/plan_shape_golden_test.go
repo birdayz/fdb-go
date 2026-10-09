@@ -46,10 +46,7 @@ const planShapeGoldenPath = "testdata/plan_shape.golden"
 func TestPlanShapeGolden(t *testing.T) {
 	t.Parallel()
 
-	got, _, err := explaindiff.GenerateBaseline(corpusDir)
-	if err != nil {
-		t.Fatalf("generate baseline: %v", err)
-	}
+	got := explaindiff.Render(collectCorpus(t))
 
 	if *updateGolden {
 		if err := os.WriteFile(planShapeGoldenPath, []byte(got), 0o644); err != nil {

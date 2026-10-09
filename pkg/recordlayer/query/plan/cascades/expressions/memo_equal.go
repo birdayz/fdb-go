@@ -18,10 +18,7 @@ func MemoEqualWithHashes(a, b RelationalExpression, aHash, bHash uint64) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	equality := newMemoEquality()
-	equality.hashes[a] = aHash
-	equality.hashes[b] = bHash
-	return equality.equal(a, b, EmptyAliasMap())
+	return newMemoEquality().equalWithHashes(nil, a, aHash, nil, b, bHash, EmptyAliasMap())
 }
 
 // MemoComparison runs several MemoEqual tests against one unchanged graph,
@@ -33,15 +30,7 @@ type MemoComparison struct {
 // MemberEqual is MemoEqualWithHashes for a member of ref, with the hash both
 // sides share.
 func (c *MemoComparison) MemberEqual(ref *Reference, member, expression RelationalExpression, hash uint64) bool {
-	if member == nil || expression == nil {
-		return member == nil && expression == nil
-	}
-	if c.equality.hashes == nil {
-		c.equality.hashes = make(map[RelationalExpression]uint64)
-	}
-	c.equality.hashes[member] = hash
-	c.equality.hashes[expression] = hash
-	return c.equality.equalIn(canonicalReferenceReadOnly(ref), member, nil, expression, EmptyAliasMap())
+	return c.equality.equalWithHashes(canonicalReferenceReadOnly(ref), member, hash, nil, expression, hash, EmptyAliasMap())
 }
 
 type refPair struct{ a, b *Reference }
@@ -63,6 +52,22 @@ type memoEquality struct {
 }
 
 func (e *memoEquality) dependencies(expression RelationalExpression) [][]int {
+	if !expression.CanCorrelate() {
+		return nil
+	}
+	// Quantifier dependencies follow from the children's correlations, which a
+	// current expression snapshot fixes, so they are kept on the snapshot. A
+	// custom correlation computer may not read every quantifier's group.
+	if snapshot, ok := e.correlations.expressions[expression]; ok {
+		if _, custom := expression.(correlationComputer); !custom {
+			if order := snapshot.order.Load(); order != nil {
+				return *order
+			}
+			deps := quantifierDependencies(expression.GetQuantifiers(), true, e.correlations.correlatedTo)
+			snapshot.order.Store(&deps)
+			return deps
+		}
+	}
 	if deps, ok := e.quantifierOrder[expression]; ok {
 		return deps
 	}
@@ -80,10 +85,21 @@ type refMatch struct {
 }
 
 func newMemoEquality() *memoEquality {
-	return &memoEquality{hashes: make(map[RelationalExpression]uint64)}
+	return &memoEquality{}
 }
 
 func (e *memoEquality) hash(expression RelationalExpression) uint64 {
+	return e.hashIn(nil, expression)
+}
+
+// hashIn is hash for a member of ref, read from ref's memoized member hashes
+// when it has one.
+func (e *memoEquality) hashIn(ref *Reference, expression RelationalExpression) uint64 {
+	if ref != nil {
+		if hash, ok := ref.memberHash[expression]; ok {
+			return hash
+		}
+	}
 	if hash, ok := e.hashes[expression]; ok {
 		return hash
 	}
@@ -114,9 +130,33 @@ func (e *memoEquality) equalIn(memberRef *Reference, member RelationalExpression
 	}
 	if member.CanCorrelate() != expression.CanCorrelate() ||
 		len(member.GetQuantifiers()) != len(expression.GetQuantifiers()) ||
-		e.hash(member) != e.hash(expression) {
+		e.hashIn(memberRef, member) != e.hashIn(expressionRef, expression) {
 		return false
 	}
+	return e.equalBody(memberRef, member, expressionRef, expression, aliases)
+}
+
+// equalWithHashes is equalIn given both sides' node hashes.
+func (e *memoEquality) equalWithHashes(memberRef *Reference, member RelationalExpression, memberHash uint64, expressionRef *Reference, expression RelationalExpression, expressionHash uint64, aliases *AliasMap) bool {
+	if member == nil || expression == nil {
+		return member == nil && expression == nil
+	}
+	if aliases == nil {
+		aliases = EmptyAliasMap()
+	}
+	if member == expression && aliases.DefinesOnlyIdentities() {
+		return true
+	}
+	if member.CanCorrelate() != expression.CanCorrelate() ||
+		len(member.GetQuantifiers()) != len(expression.GetQuantifiers()) ||
+		memberHash != expressionHash {
+		return false
+	}
+	return e.equalBody(memberRef, member, expressionRef, expression, aliases)
+}
+
+// equalBody is equalIn after the node shape and hashes agree.
+func (e *memoEquality) equalBody(memberRef *Reference, member RelationalExpression, expressionRef *Reference, expression RelationalExpression, aliases *AliasMap) bool {
 	if !childGroupsCanMatch(member, expression) {
 		return false
 	}

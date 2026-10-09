@@ -5,11 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"google.golang.org/protobuf/proto"
-
-	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -350,39 +346,6 @@ var _ = Describe("Deferred maintenance transaction contract", func() {
 			Expect(heartbeats(c)).To(BeEmpty())
 		})
 	})
-
-	It("explicitly merges HNSW and sliding HNSW without inventing deferred work", func() {
-		root := specSubspace()
-		builder := baseBuilder()
-		index := NewVectorIndex("vector", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
-		builder.AddIndex("Order", index)
-		md, err := builder.Build()
-		Expect(err).NotTo(HaveOccurred())
-		_, err = sharedDB.Run(context.Background(), func(rc *FDBRecordContext) (any, error) {
-			_, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Create()
-			return nil, err
-		})
-		Expect(err).NotTo(HaveOccurred())
-		oi := &OnlineIndexer{db: sharedDB, metaData: md, subspace: root, targetIndexes: []*Index{index}, leaseLengthMs: 30000}
-		Expect(oi.MergeIndexes(context.Background())).To(Succeed())
-		Expect(oi.mergers[index.Name].successes).To(Equal(1))
-		Expect(oi.sessionHeartbeat).To(BeNil())
-		_, err = sharedDB.Run(context.Background(), func(rc *FDBRecordContext) (any, error) {
-			store, err := oi.openStore(rc)
-			if err != nil {
-				return nil, err
-			}
-			maintainer, err := store.getIndexMaintainer(index)
-			if err != nil {
-				return nil, err
-			}
-			sliding := &slidingWindowIndexMaintainer{delegate: maintainer}
-			Expect(sliding.MergeIndex()).To(Succeed())
-			Expect(store.GetIndexDeferredMaintenanceControl().GetMergeRequiredIndexes()).To(BeNil())
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred())
-	})
 })
 
 // Java merges every requested index under AsyncUtil.whenAll
@@ -393,52 +356,23 @@ var _ = Describe("MergeIndexes over several targets", func() {
 		ctx := context.Background()
 		root := specSubspace()
 		builder := baseBuilder()
-		failing := NewVectorIndex("Order$merge_guardiann", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
-		failing.Options[IndexOptionVectorEngine] = "GUARDIANN"
-		failing.Options[IndexOptionGuardiannPrimaryClusterMin] = "3"
-		failing.Options[IndexOptionGuardiannPrimaryClusterMax] = "12"
-		failing.Options[IndexOptionGuardiannPrimaryClusterHardMax] = "40"
-		failing.Options[IndexOptionGuardiannCollapseMinDuplicates] = "6"
+		failing := NewIndex("Order$merge_failing", Field("price"))
+		failing.Type = indexTypeFailingMerge
 		merged := NewIndex("Order$merge_ok", Field("quantity"))
 		builder.AddIndex("Order", failing)
 		builder.AddIndex("Order", merged)
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
-		// Thirteen vectors over a maximum of twelve queue a split of the one cluster.
 		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Create()
-			if err != nil {
-				return nil, err
-			}
-			for i := int64(1); i <= 13; i++ {
-				if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(1)}); err != nil {
-					return nil, err
-				}
-			}
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred())
-		// Make that cluster's metadata unreadable, so the split fails.
-		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Open()
-			if err != nil {
-				return nil, err
-			}
-			g := &guardiann{ss: store.indexSubspace(md.GetIndex(failing.Name)).Sub(int64(1)), codec: &guardiannVectorCodec{config: guardiannConfig{numDimensions: 1}}}
-			tasks, err := g.fetchSomeTasks(rc.Transaction(), 10)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(tasks).NotTo(BeEmpty(), "no split was queued")
-			for _, t := range tasks {
-				rc.Transaction().Set(g.clusterMetadataKey(t.target()), tuple.Tuple{int64(0), int64(0), tuple.Tuple{int64(0), 0.0, 0.0, 0.0}, int64(0)}.Pack())
-			}
-			return nil, nil
+			_, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Create()
+			return nil, err
 		})
 		Expect(err).NotTo(HaveOccurred())
 		oi, err := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(md).
 			SetTargetIndexes([]*Index{md.GetIndex(failing.Name), md.GetIndex(merged.Name)}).SetSubspace(root).Build()
 		Expect(err).NotTo(HaveOccurred())
 		err = oi.MergeIndexes(ctx)
-		Expect(err).To(MatchError(ContainSubstring("has 4 elements, want 5")))
+		Expect(err).To(MatchError(ContainSubstring(failingMergeMessage)))
 		Expect(oi.mergers).To(HaveKey(merged.Name), "the second target was never merged")
 		Expect(oi.mergers[merged.Name].successes).To(Equal(1))
 	})
@@ -482,3 +416,31 @@ func FuzzIndexingMergerFeedback(f *testing.F) {
 		}
 	})
 }
+
+// indexTypeFailingMerge is a value index whose deferred maintenance always
+// fails, so a merge over several targets has one that fails.
+const indexTypeFailingMerge = "failing_merge_test"
+
+const failingMergeMessage = "failing_merge_test: merge refused"
+
+func init() { RegisterIndexMaintainerFactory(failingMergeFactory{}) }
+
+type failingMergeFactory struct{}
+
+func (failingMergeFactory) IndexTypes() []string { return []string{indexTypeFailingMerge} }
+
+func (failingMergeFactory) NewIndexMaintainer(state IndexMaintainerState) (IndexMaintainer, error) {
+	return &failingMergeMaintainer{
+		StandardIndexMaintainer: *newStandardIndexMaintainer(state.Index, state.IndexSubspace, state.Transaction, state.Store),
+	}, nil
+}
+
+func (failingMergeFactory) ValidateIndexOptions(*Index) error { return nil }
+
+func (failingMergeFactory) ValidateChangedOptions(_, _ *Index, _ map[string]bool) error {
+	return nil
+}
+
+type failingMergeMaintainer struct{ StandardIndexMaintainer }
+
+func (*failingMergeMaintainer) MergeIndex() error { return errors.New(failingMergeMessage) }

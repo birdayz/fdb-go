@@ -101,6 +101,7 @@ java_test(
 # gazelle:exclude ws_g_aggregate_state_conformance_test.go
 # gazelle:exclude ws_g_grouping_output_conformance_test.go
 # gazelle:exclude ws_h_macro_catalog_conformance_test.go
+# gazelle:exclude ws_h_boolean_macro_conformance_test.go
 # gazelle:exclude count_per_type_conformance_test.go
 # gazelle:exclude extension_options_conformance_test.go
 # gazelle:exclude fromless_select_java_probe_test.go
@@ -119,9 +120,11 @@ go_test(
         "conformance_suite_test.go",
         "container_test.go",
         "count_on_empty_conformance_test.go",
+        "fdb_env_test.go",
         "function_columns_conformance_test.go",
         "index_shape_helpers_test.go",
         "java_invoker_test.go",
+        "keyspace_domains_test.go",
         "named_call_conformance_test.go",
         "record_names_conformance_test.go",
         "recursive_column_list_conformance_test.go",
@@ -136,6 +139,7 @@ go_test(
         "ws_f_table_qualifier_conformance_test.go",
         "ws_g_aggregate_state_conformance_test.go",
         "ws_g_grouping_output_conformance_test.go",
+        "ws_h_boolean_macro_conformance_test.go",
         "ws_h_macro_catalog_conformance_test.go",
         "ws_j_enum_conformance_test.go",
         "ws_j_existence_policies_conformance_test.go",
@@ -206,9 +210,10 @@ go_test(
     srcs = [
         "conformance_suite_test.go",
         "container_test.go",
+        "fdb_env_test.go",
         "guardiann_byte_conformance_test.go",
-        "guardiann_probe_conformance_test.go",
         "java_invoker_test.go",
+        "keyspace_domains_test.go",
         "store_helpers_test.go",
     ],
     data = [
@@ -230,6 +235,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
+        "//pkg/recordlayer/vectorindex",
         "//pkg/relational/api",
         "//pkg/relational/conformance/plandiff",
         "//pkg/relational/core/catalog",
@@ -253,6 +259,46 @@ go_test(
     ],
 )
 
+# The GuardiANN target-only probes: every spec in guardiann_probe_conformance_test.go
+# drives the Java conformance server on fixed inputs and pins what it returns,
+# and none runs Go engine code. They were most of rfc257_guardiann_test (the
+# high-dimension peel measurement alone 303s of its 486s on CI) and reran on
+# every engine change; this target compiles only the engine-free suite files
+# (fdb_env_test.go, no keyspace_domains_test.go), so Bazel reruns it only when
+# the Java server, the FDB client or the probes change. Hand-maintained (# keep).
+
+# keep
+go_test(
+    name = "rfc257_guardiann_java_test",
+    size = "large",
+    srcs = [
+        "conformance_suite_test.go",
+        "fdb_env_test.go",
+        "guardiann_probe_conformance_test.go",
+        "java_invoker_test.go",
+    ],
+    data = [
+        ":conformance_server",
+    ],
+    tags = [
+        "conformance_java",
+        "resources:memory:500",
+    ],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_ginkgo_v2//types",
+        "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+        "@rules_go//go/runfiles",
+    ],
+)
+
 # The RFC-257 parity specs (the upgrade's JVM comparisons of what each engine
 # accepts, writes and reads) run in their own target for the reason
 # rfc257_oracle_test does: conformance_test measured 14m14s of its 900s on CI
@@ -269,19 +315,21 @@ go_test(
         "container_test.go",
         "count_per_type_conformance_test.go",
         "extension_options_conformance_test.go",
+        "fdb_env_test.go",
         "fromless_select_java_probe_test.go",
         "function_registry_conformance_test.go",
         "index_option_evolution_conformance_test.go",
         "java_invoker_test.go",
         "key_expression_absent_child_conformance_test.go",
         "key_validation_conformance_test.go",
+        "keyspace_domains_test.go",
         "null_standin_conformance_test.go",
         "store_helpers_test.go",
         "subspace_key_identity_conformance_test.go",
     ],
     data = [
         ":conformance_server",
-        "//pkg/recordlayer:testdata/hnsw_legacy_go_entry.json",
+        "//pkg/recordlayer/vectorindex:testdata/hnsw_legacy_go_entry.json",
     ],
     tags = [
         "conformance_java",
@@ -301,6 +349,7 @@ go_test(
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/query/plan/plans",
+        "//pkg/recordlayer/vectorindex",
         "//pkg/relational/api",
         "//pkg/relational/conformance/plandiff",
         "//pkg/relational/conformance/yamsql",
@@ -346,7 +395,9 @@ go_test(
         "conformance_suite_test.go",
         "container_test.go",
         "fault_inject_retry_conformance_test.go",
+        "fdb_env_test.go",
         "java_invoker_test.go",
+        "keyspace_domains_test.go",
         "run_sql_conformance_test.go",
         "run_sql_helpers_test.go",
         "store_helpers_test.go",
@@ -358,6 +409,7 @@ go_test(
     ],
     tags = [
         "conformance_java",
+        "resources:cpu:5",
         "resources:memory:500",
     ],
     deps = [
@@ -427,6 +479,7 @@ go_test(
         "duplicate_star_java_probe_test.go",
         "exists_inner_shadow_java_probe_test.go",
         "exists_under_or_java_probe_test.go",
+        "fdb_env_test.go",
         "in_comparand_source_java_probe_test.go",
         "in_join_ordering_java_probe_test.go",
         "in_list_shapes_java_probe_test.go",
@@ -435,6 +488,7 @@ go_test(
         "join_using_chain_java_probe_test.go",
         "join_using_star_java_probe_test.go",
         "join_without_on_java_probe_test.go",
+        "keyspace_domains_test.go",
         "mod_function_java_probe_test.go",
         "nested_groupby_key_java_probe_test.go",
         "nlj_orientation_java_probe_test.go",
@@ -542,6 +596,7 @@ go_test(
         "error_conformance_test.go",
         "existence_check_conformance_test.go",
         "fanout_index_conformance_test.go",
+        "fdb_env_test.go",
         "index_build_state_conformance_test.go",
         "index_conformance_test.go",
         "index_continuation_conformance_test.go",
@@ -552,6 +607,7 @@ go_test(
         "java_facts_conformance_test.go",
         "java_invoker_test.go",
         "java_planner_warmth_proof_test.go",
+        "keyspace_domains_test.go",
         "keyspace_interop_conformance_test.go",
         "lifecycle_error_test.go",
         "max_ever_version_index_conformance_test.go",
@@ -605,7 +661,7 @@ go_test(
     ],
     data = [
         ":conformance_server",
-        "//pkg/recordlayer:testdata/hnsw_legacy_go_entry.json",  # keep: legacy writer migration replay
+        "//pkg/recordlayer/vectorindex:testdata/hnsw_legacy_go_entry.json",  # keep: legacy writer migration replay
         # keep: the ANSI-tagged yamsql corpus, staged so
         # java_facts_conformance_test resolves it via runfiles and verifies each
         # tagged feature's roster Java? fact against the live Java server.

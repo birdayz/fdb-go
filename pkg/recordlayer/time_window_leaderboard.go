@@ -7,6 +7,8 @@ import (
 	"math/big"
 	"sort"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -77,7 +79,7 @@ func newLeaderboardDirectoryFromProto(pb *gen.TimeWindowLeaderboardDirectory) (*
 			NLevels:        int(lbpb.GetNlevels()),
 		}
 		if lbpb.SubspaceKey != nil {
-			sk, err := fastUnpack(lbpb.SubspaceKey)
+			sk, err := tuplefast.Unpack(lbpb.SubspaceKey)
 			if err != nil {
 				return nil, fmt.Errorf("leaderboard directory: unpack subspace key: %w", err)
 			}
@@ -420,7 +422,7 @@ func negateScoreRange(r TupleRange, groupPrefixSize int) (TupleRange, error) {
 // orderedScoreIndexKey represents an index entry with its score key (possibly negated)
 // for ordering. Used to find the "best" score for a leaderboard.
 type orderedScoreIndexKey struct {
-	entry    indexEntry
+	entry    EvaluatedIndexEntry
 	scoreKey tuple.Tuple
 }
 
