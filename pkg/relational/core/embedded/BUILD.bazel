@@ -243,6 +243,7 @@ go_test(
         "plan_harness_dml_test.go",
         "plan_harness_exists_guard_test.go",
         "plan_harness_one_final_test.go",
+        "plan_harness_schema_cache_test.go",
         "plan_harness_test.go",
         "plan_harness_trace_test.go",
         "plan_logging_test.go",
@@ -546,6 +547,7 @@ go_test(
         "primary_key_translation.go",
         "primary_key_translation_test.go",
         "macro_relop_test.go",
+        "plan_harness_schema_cache_test.go",
     ],
     deps = [
         "//gen",
