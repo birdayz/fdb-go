@@ -322,7 +322,7 @@ func (d *FDBDatabase) RunWithMaxAttempts(ctx context.Context, maxAttempts int, f
 // unbounded on the pure-Go client and libfdb_c and capped at 100 retries on
 // SimFDB. Only SPFresh's background lifecycles use it (spfreshRun): RFC-094
 // keeps them on the client loop, and nothing else may.
-func (d *FDBDatabase) runClientLoop(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
+func (d *FDBDatabase) RunClientLoop(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	result, _, err := d.runContexts(ctx, attemptPolicy{owner: "spfresh.lifecycle", maxAttempts: 1}, RouteClientLoop, nil, false, fn)
 	return result, err
 }
@@ -1109,7 +1109,7 @@ func (rc *FDBRecordContext) AddCommitCheck(check CommitCheckFunc) {
 // absent. The supplier runs under the registration lock and must not call back
 // into context hook registration. The supplied check runs outside that lock.
 // Matches Java's FDBRecordContext.getOrCreateCommitCheck().
-func (rc *FDBRecordContext) getOrCreateCommitCheck(name string, ifNotExists func(string) CommitCheckFunc) CommitCheckFunc {
+func (rc *FDBRecordContext) GetOrCreateCommitCheck(name string, ifNotExists func(string) CommitCheckFunc) CommitCheckFunc {
 	rc.commitMu.Lock()
 	defer rc.commitMu.Unlock()
 	if entry := rc.namedCommitChecks[name]; entry != nil {

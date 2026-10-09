@@ -137,7 +137,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			Expect(trimmed).To(Equal(pk))
 			// getEntryPrimaryKey should return the tail
 			entry := tuple.Tuple{int64(100), int64(42)} // (price, pk)
-			Expect(idx.getEntryPrimaryKey(entry)).To(Equal(tuple.Tuple{int64(42)}))
+			Expect(idx.EntryPrimaryKey(entry)).To(Equal(tuple.Tuple{int64(42)}))
 		})
 
 		It("trims fully overlapping PK", func() {
@@ -164,7 +164,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			idx.primaryKeyComponentPositions = []int{-1, 0}
 			// Entry: (name_value, record_type) — name is index col, record_type is appended
 			entry := tuple.Tuple{"Alice", int64(1)}
-			pk := idx.getEntryPrimaryKey(entry)
+			pk := idx.EntryPrimaryKey(entry)
 			// PK should be (record_type, name) — reconstructed in original order
 			Expect(pk).To(Equal(tuple.Tuple{int64(1), "Alice"}))
 		})

@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/vectorindex",
     ],
 )
 

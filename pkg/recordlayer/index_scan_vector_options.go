@@ -59,7 +59,7 @@ func (o VectorIndexScanOptions) ToProto() (*gen.PVectorIndexScanOptions, error) 
 		if value == nil && !wasPresent {
 			continue
 		}
-		encoded, err := valueToProto(value)
+		encoded, err := ValueToProto(value)
 		if err != nil {
 			return nil, err
 		}
@@ -93,7 +93,7 @@ func VectorIndexScanOptionsFromProto(p *gen.PVectorIndexScanOptions) (VectorInde
 		if _, seen := o.wirePresence[name]; seen {
 			return VectorIndexScanOptions{}, &RecordCoreError{Message: "vector index scan options set the same option under more than one name", IndexOption: name}
 		}
-		value, err := valueFromProto(entry.GetValue())
+		value, err := ValueFromProto(entry.GetValue())
 		if err != nil {
 			return VectorIndexScanOptions{}, err
 		}

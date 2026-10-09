@@ -2,6 +2,7 @@ package chaos
 
 import (
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/vectorindex"
 )
 
 // SPFresh maintenance drivers for the chaos scenario. The write path
@@ -16,13 +17,13 @@ import (
 // (an undrained queue or a poisoned task surfaces here). Maintenance changes
 // layout/recall, not record membership, so it does not touch the model.
 func (s *Scenario) RebalanceSPFresh(indexName string) (int, error) {
-	return recordlayer.RebalanceSPFreshIndex(mustOpCtx(), s.chaosDB, s.openStore, indexName)
+	return vectorindex.RebalanceSPFreshIndex(mustOpCtx(), s.chaosDB, s.openStore, indexName)
 }
 
 // RefineSPFresh runs one budgeted RFC-104 refinement pass through the
 // fault-injecting transactor. Returns (moved, cycleConverged, error).
 func (s *Scenario) RefineSPFresh(indexName string, budget int) (int, bool, error) {
-	return recordlayer.RefineSPFreshIndex(mustOpCtx(), s.chaosDB, s.openStore, indexName, budget)
+	return vectorindex.RefineSPFreshIndex(mustOpCtx(), s.chaosDB, s.openStore, indexName, budget)
 }
 
 // SweepSPFresh runs one bounded multi-tenant sweep pass through the
@@ -30,10 +31,10 @@ func (s *Scenario) RefineSPFresh(indexName string, budget int) (int, bool, error
 // timer. Generous per-pass budgets so a sweep drains most pending work in one
 // call; tests read timer.GetCount(CountSPFreshSplits/Merges/...) to PROVE the
 // lifecycle fired under faults (not a fake checkbox).
-func (s *Scenario) SweepSPFresh(indexName string, timer *recordlayer.StoreTimer) (recordlayer.SPFreshSweepResult, error) {
-	return recordlayer.SweepSPFreshIndexes(mustOpCtx(), s.chaosDB,
-		[]recordlayer.SPFreshTenant{{StoreBuilder: s.openStore, IndexName: indexName}},
-		recordlayer.SPFreshSweepOptions{Timer: timer, MaxRoundsPerTenant: 16, MaxActionsPerTenant: 256})
+func (s *Scenario) SweepSPFresh(indexName string, timer *recordlayer.StoreTimer) (vectorindex.SPFreshSweepResult, error) {
+	return vectorindex.SweepSPFreshIndexes(mustOpCtx(), s.chaosDB,
+		[]vectorindex.SPFreshTenant{{StoreBuilder: s.openStore, IndexName: indexName}},
+		vectorindex.SPFreshSweepOptions{Timer: timer, MaxRoundsPerTenant: 16, MaxActionsPerTenant: 256})
 }
 
 // DrainSPFresh drains the maintenance queue to quiescence through the CLEAN
@@ -44,7 +45,7 @@ func (s *Scenario) SweepSPFresh(indexName string, timer *recordlayer.StoreTimer)
 // clean pass completes it.
 func (s *Scenario) DrainSPFresh(indexName string) {
 	s.t.Helper()
-	if _, err := recordlayer.RebalanceSPFreshIndex(mustOpCtx(), s.cleanDB, s.openStore, indexName); err != nil {
+	if _, err := vectorindex.RebalanceSPFreshIndex(mustOpCtx(), s.cleanDB, s.openStore, indexName); err != nil {
 		s.t.Fatalf("chaos: DrainSPFresh %q (seed=%d): %v", indexName, s.seed, err)
 	}
 }

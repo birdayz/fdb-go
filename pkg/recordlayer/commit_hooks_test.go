@@ -133,7 +133,7 @@ var _ = Describe("Commit hooks", func() {
 			var wg sync.WaitGroup
 			for range 16 {
 				wg.Go(func() {
-					rtx.getOrCreateCommitCheck("retirement", func(string) CommitCheckFunc {
+					rtx.GetOrCreateCommitCheck("retirement", func(string) CommitCheckFunc {
 						supplied.Add(1)
 						return func() error { checked.Add(1); return nil }
 					})
@@ -157,7 +157,7 @@ var _ = Describe("Commit hooks", func() {
 				return nil
 			})
 			for _, name := range []string{"deleted", "retained"} {
-				rtx.getOrCreateCommitCheck(name, func(name string) CommitCheckFunc {
+				rtx.GetOrCreateCommitCheck(name, func(name string) CommitCheckFunc {
 					return func() error { order = append(order, name); return nil }
 				})
 			}
@@ -170,7 +170,7 @@ var _ = Describe("Commit hooks", func() {
 			rtx := NewFDBRecordContext(nil, nil)
 			var order []string
 			register := func(name, label string) {
-				rtx.getOrCreateCommitCheck(name, func(string) CommitCheckFunc {
+				rtx.GetOrCreateCommitCheck(name, func(string) CommitCheckFunc {
 					return func() error { order = append(order, label); return nil }
 				})
 			}
@@ -187,7 +187,7 @@ var _ = Describe("Commit hooks", func() {
 			rtx := NewFDBRecordContext(nil, nil)
 			checkErr := &RecordDoesNotExistError{PrimaryKey: tuple.Tuple{"named-check"}}
 			var order []string
-			rtx.getOrCreateCommitCheck("failure", func(string) CommitCheckFunc {
+			rtx.GetOrCreateCommitCheck("failure", func(string) CommitCheckFunc {
 				return func() error { order = append(order, "failure"); return checkErr }
 			})
 			rtx.AddCommitCheck(func() error { order = append(order, "later"); return nil })
@@ -373,7 +373,7 @@ func FuzzNamedCommitCheckLifecycle(f *testing.F) {
 					registrations = append(registrations, registration{id: id, key: key})
 					wantFactories++
 				}
-				rtx.getOrCreateCommitCheck(name, func(string) CommitCheckFunc {
+				rtx.GetOrCreateCommitCheck(name, func(string) CommitCheckFunc {
 					factories++
 					return func() error { actual = append(actual, id); return nil }
 				})

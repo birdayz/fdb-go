@@ -34,10 +34,10 @@ type maxEverVersionIndexMaintainer struct {
 	indexSubspace subspace.Subspace
 	tx            fdb.WritableTransaction
 	recordContext *FDBRecordContext
-	store         indexStoreContext
+	store         IndexStoreContext
 }
 
-func newMaxEverVersionIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction, recordContext *FDBRecordContext, store indexStoreContext) *maxEverVersionIndexMaintainer {
+func newMaxEverVersionIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction, recordContext *FDBRecordContext, store IndexStoreContext) *maxEverVersionIndexMaintainer {
 	return &maxEverVersionIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,

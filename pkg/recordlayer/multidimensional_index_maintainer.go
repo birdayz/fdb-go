@@ -6,6 +6,8 @@ import (
 	"math"
 	"math/big"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/gen"
 	"fdb.dev/pkg/async/rtree"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -19,7 +21,7 @@ import (
 // as the Point and remaining key components as the key suffix.
 // Matches Java's MultidimensionalIndexMaintainer.
 type multidimensionalIndexMaintainer struct {
-	standardIndexMaintainer
+	StandardIndexMaintainer
 	rTreeConfig rtree.RTreeConfig
 	// nodeSlotIndexSubspace is where the R-trees' node slot indexes live:
 	// the index's secondary subspace, then the indicator 0
@@ -32,7 +34,7 @@ func newMultidimensionalIndexMaintainer(
 	index *Index,
 	indexSubspace, secondarySubspace subspace.Subspace,
 	tx fdb.WritableTransaction,
-	store indexStoreContext,
+	store IndexStoreContext,
 	numDimensions int,
 ) (*multidimensionalIndexMaintainer, error) {
 	// Java's maintainer constructor reads the config the same way
@@ -42,7 +44,7 @@ func newMultidimensionalIndexMaintainer(
 		return nil, err
 	}
 	return &multidimensionalIndexMaintainer{
-		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
+		StandardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		rTreeConfig:             config,
 		nodeSlotIndexSubspace:   secondarySubspace.Sub(int64(0)),
 	}, nil
@@ -89,7 +91,7 @@ func parseRTreeConfig(index *Index, numDimensions int) (rtree.RTreeConfig, error
 		{IndexOptionRTreeSplitS, &config.SplitS},
 	} {
 		if v, ok := index.Options[o.key]; ok {
-			n, err := javaParseInt(v)
+			n, err := JavaParseInt(v)
 			if err != nil {
 				return rtree.RTreeConfig{}, err
 			}
@@ -146,17 +148,17 @@ func (m *multidimensionalIndexMaintainer) Update(oldRecord, newRecord *FDBStored
 		return fmt.Errorf("MULTIDIMENSIONAL index %q: root expression must be DimensionsKeyExpression", m.index.Name)
 	}
 
-	var oldEntries, newEntries []indexEntry
+	var oldEntries, newEntries []EvaluatedIndexEntry
 
 	if oldRecord != nil {
-		entries, err := m.filteredIndexEntries(oldRecord)
+		entries, err := m.FilteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for old record: %w", m.index.Name, err)
 		}
 		oldEntries = entries
 	}
 	if newRecord != nil {
-		entries, err := m.filteredIndexEntries(newRecord)
+		entries, err := m.FilteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for new record: %w", m.index.Name, err)
 		}
@@ -167,7 +169,7 @@ func (m *multidimensionalIndexMaintainer) Update(oldRecord, newRecord *FDBStored
 	// R-tree delete+insert when coordinates/value haven't changed.
 	if len(oldEntries) > 0 && len(newEntries) > 0 {
 		var err error
-		oldEntries, newEntries, err = removeCommonEntries(m.index, oldEntries, newEntries)
+		oldEntries, newEntries, err = RemoveCommonEntries(m.index, oldEntries, newEntries)
 		if err != nil {
 			return err
 		}
@@ -191,7 +193,7 @@ func (m *multidimensionalIndexMaintainer) Update(oldRecord, newRecord *FDBStored
 }
 
 // insertEntry inserts a single index entry into the appropriate R-tree.
-func (m *multidimensionalIndexMaintainer) insertEntry(dimExpr *DimensionsKeyExpression, entry indexEntry) error {
+func (m *multidimensionalIndexMaintainer) insertEntry(dimExpr *DimensionsKeyExpression, entry EvaluatedIndexEntry) error {
 	prefix, dims, suffix := dimExpr.SplitIndexEntry(entry.key)
 
 	// Validate dimensional coordinates are int64.
@@ -225,7 +227,7 @@ func (m *multidimensionalIndexMaintainer) insertEntry(dimExpr *DimensionsKeyExpr
 }
 
 // deleteEntry removes a single index entry from the appropriate R-tree.
-func (m *multidimensionalIndexMaintainer) deleteEntry(dimExpr *DimensionsKeyExpression, entry indexEntry) error {
+func (m *multidimensionalIndexMaintainer) deleteEntry(dimExpr *DimensionsKeyExpression, entry EvaluatedIndexEntry) error {
 	prefix, dims, suffix := dimExpr.SplitIndexEntry(entry.key)
 
 	point := rtree.Point{Coordinates: dims}
@@ -365,7 +367,7 @@ func (m *multidimensionalIndexMaintainer) scanBoundPrefix(
 				}
 				if cont.LastKey != nil {
 					var tupErr error
-					lastKey, tupErr = fastUnpack(cont.LastKey)
+					lastKey, tupErr = tuplefast.Unpack(cont.LastKey)
 					if tupErr != nil {
 						return &errorCursor[*IndexEntry]{
 							err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation lastKey: %w", m.index.Name, tupErr),
@@ -389,7 +391,7 @@ func (m *multidimensionalIndexMaintainer) scanBoundPrefix(
 			}
 			if cont.LastKey != nil {
 				var err error
-				lastKey, err = fastUnpack(cont.LastKey)
+				lastKey, err = tuplefast.Unpack(cont.LastKey)
 				if err != nil {
 					return &errorCursor[*IndexEntry]{
 						err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation lastKey: %w", m.index.Name, err),
@@ -541,7 +543,7 @@ func (m *multidimensionalIndexMaintainer) buildPointFilter(dimExpr *DimensionsKe
 // is rooted at, clear nothing, and leave the deleted records' entries
 // queryable.
 func (m *multidimensionalIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
-	if err := m.standardIndexMaintainer.CanDeleteWhere(prefix); err != nil {
+	if err := m.StandardIndexMaintainer.CanDeleteWhere(prefix); err != nil {
 		return err
 	}
 	dimExpr := m.getDimensionsExpression()
@@ -955,7 +957,7 @@ func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*
 	if !c.initialized {
 		c.initialized = true
 		if c.resumePrefixBytes != nil {
-			lastPrefix, err := fastUnpack(c.resumePrefixBytes)
+			lastPrefix, err := tuplefast.Unpack(c.resumePrefixBytes)
 			if err != nil {
 				return RecordCursorResult[*IndexEntry]{}, fmt.Errorf(
 					"MULTIDIMENSIONAL prefix skip-scan: invalid continuation prefix: %w", err)
@@ -1188,7 +1190,7 @@ func (c *prefixSkipScanCursor) findNextPrefix() (tuple.Tuple, bool, error) {
 	c.scanState.AddBytesScanned(int64(len(kvs[0].Key) + len(kvs[0].Value)))
 
 	// Unpack the key relative to the index subspace.
-	t, err := fastSubspaceUnpack(kvs[0].Key, len(c.m.indexSubspace.Bytes()))
+	t, err := tuplefast.SubspaceUnpack(kvs[0].Key, len(c.m.indexSubspace.Bytes()))
 	if err != nil {
 		// Key is not in our subspace — shouldn't happen, but skip gracefully.
 		return nil, false, nil

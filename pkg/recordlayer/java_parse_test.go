@@ -46,7 +46,7 @@ func TestJavaParseIntMatchesIntegerParseInt(t *testing.T) {
 		{"\u0661\u0660", 10, true},
 		{"99999999999999999999", 0, false},
 	} {
-		got, err := javaParseInt(c.in)
+		got, err := JavaParseInt(c.in)
 		if c.ok {
 			if err != nil || got != c.want {
 				t.Errorf("javaParseInt(%q) = %d, %v; Java gives %d", c.in, got, err, c.want)
@@ -381,13 +381,13 @@ func TestJavaParseDouble(t *testing.T) {
 		{"-1e400", math.Inf(-1)},
 		{"1e-400", 0},
 	} {
-		got, err := javaParseDouble(c.in)
+		got, err := JavaParseDouble(c.in)
 		if err != nil || got != c.want {
 			t.Errorf("javaParseDouble(%q) = %v, %v; want %v", c.in, got, err, c.want)
 		}
 	}
 	for _, in := range []string{"NaN", "-NaN", "+NaN", " NaN "} {
-		if got, err := javaParseDouble(in); err != nil || !math.IsNaN(got) {
+		if got, err := JavaParseDouble(in); err != nil || !math.IsNaN(got) {
 			t.Errorf("javaParseDouble(%q) = %v, %v; want NaN", in, got, err)
 		}
 	}
@@ -411,7 +411,7 @@ func TestJavaParseDouble(t *testing.T) {
 		{"1.2e3.4", `For input string: "1.2e3.4"`},
 		{"1.2x.3", `For input string: "1.2x.3"`},
 	} {
-		_, err := javaParseDouble(c.in)
+		_, err := JavaParseDouble(c.in)
 		var nfe *NumberFormatError
 		if !errors.As(err, &nfe) || err.Error() != c.text {
 			t.Errorf("javaParseDouble(%q) err = %v, want NumberFormatError %q", c.in, err, c.text)

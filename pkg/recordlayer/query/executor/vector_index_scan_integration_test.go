@@ -15,6 +15,8 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/recordlayer/vectorcodec"
+	// The vector indexes these specs scan are maintained by package vectorindex.
+	_ "fdb.dev/pkg/recordlayer/vectorindex"
 )
 
 // setupVectorStore builds a store whose Order type has a 2-d VECTOR (HNSW)

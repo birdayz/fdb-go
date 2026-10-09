@@ -8,6 +8,8 @@ import (
 	"math/big"
 	"math/rand"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -357,7 +359,7 @@ func (m *mutualIndexBuilder) buildFragmentRange(ctx context.Context, store *FDBR
 		lowEp = EndpointTypeTreeStart
 	} else {
 		var err error
-		if rangeStart, err = fastUnpack(r.Begin); err != nil {
+		if rangeStart, err = tuplefast.Unpack(r.Begin); err != nil {
 			return 0, fmt.Errorf("mutual indexer: unpack range begin: %w", err)
 		}
 	}

@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
@@ -604,7 +606,7 @@ func evaluateRankAggregate(
 			}
 			return nil, nil
 		}
-		scoreTuple, err := fastUnpack(scoreBytes)
+		scoreTuple, err := tuplefast.Unpack(scoreBytes)
 		if err != nil {
 			return nil, fmt.Errorf("evaluate %s: unpack score: %w", fn.Name, err)
 		}

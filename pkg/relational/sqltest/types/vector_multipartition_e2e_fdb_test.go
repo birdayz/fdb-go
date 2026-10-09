@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"google.golang.org/protobuf/proto"
@@ -65,7 +67,7 @@ func multiPartitionVectorSetup(t *testing.T, ctx context.Context) (*recordlayer.
 		m.Set(desc.Fields().ByName("ZONE"), protoreflect.ValueOfString(zone))
 		m.Set(desc.Fields().ByName("REGION"), protoreflect.ValueOfString(region))
 		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
-		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(recordlayer.SerializeVector(vec)))
+		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(vectorindex.SerializeVector(vec)))
 		return m
 	}
 	type rec struct {

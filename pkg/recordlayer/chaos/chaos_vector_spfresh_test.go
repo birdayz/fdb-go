@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
@@ -214,13 +216,13 @@ func TestSPFreshChaos_LifecycleSoakFaults(t *testing.T) {
 				s.Verify()
 			}
 
-			splits := timer.GetCount(recordlayer.CountSPFreshSplits)
-			merges := timer.GetCount(recordlayer.CountSPFreshMerges)
+			splits := timer.GetCount(vectorindex.CountSPFreshSplits)
+			merges := timer.GetCount(vectorindex.CountSPFreshMerges)
 			t.Logf("lifecycle soak seed=%d: splits=%d merges=%d csplits=%d npas=%d refineMoves=%d faults=%d",
 				seed, splits, merges,
-				timer.GetCount(recordlayer.CountSPFreshCSplits),
-				timer.GetCount(recordlayer.CountSPFreshNPAs),
-				timer.GetCount(recordlayer.CountSPFreshRefineMoves),
+				timer.GetCount(vectorindex.CountSPFreshCSplits),
+				timer.GetCount(vectorindex.CountSPFreshNPAs),
+				timer.GetCount(vectorindex.CountSPFreshRefineMoves),
 				len(s.FaultLog()))
 			if splits == 0 {
 				t.Fatalf("soak exercised no SPLITS under faults — not actually testing the split lifecycle")
@@ -392,7 +394,7 @@ func TestSPFreshChaos_BulkBuildUnderFault(t *testing.T) {
 	// must take over the token + resume the cellfin machine idempotently).
 	built := false
 	for attempt := 0; attempt < 10 && !built; attempt++ {
-		if err := recordlayer.BuildSPFreshIndex(ctx, s.ChaosDB(), s.OpenStore, spfreshChaosIndex, 42); err == nil {
+		if err := vectorindex.BuildSPFreshIndex(ctx, s.ChaosDB(), s.OpenStore, spfreshChaosIndex, 42); err == nil {
 			built = true
 		}
 	}
@@ -400,7 +402,7 @@ func TestSPFreshChaos_BulkBuildUnderFault(t *testing.T) {
 		// Faults kept interrupting — finish cleanly. A clean rerun MUST resume
 		// the interrupted build to completion (the crash-safety contract); if
 		// it can't, that's the bug.
-		if err := recordlayer.BuildSPFreshIndex(ctx, s.CleanDB(), s.OpenStore, spfreshChaosIndex, 42); err != nil {
+		if err := vectorindex.BuildSPFreshIndex(ctx, s.CleanDB(), s.OpenStore, spfreshChaosIndex, 42); err != nil {
 			t.Fatalf("clean build rerun after fault attempts failed to resume: %v", err)
 		}
 	}

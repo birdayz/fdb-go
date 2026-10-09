@@ -7,6 +7,8 @@ import (
 	"math"
 	"sort"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -20,7 +22,7 @@ import (
 //
 // Matches Java's TimeWindowLeaderboardIndexMaintainer.
 type timeWindowLeaderboardIndexMaintainer struct {
-	standardIndexMaintainer
+	StandardIndexMaintainer
 	secondarySubspace subspace.Subspace
 	rankedSetConfig   rankedSetConfig
 }
@@ -29,7 +31,7 @@ func newTimeWindowLeaderboardIndexMaintainer(
 	index *Index,
 	indexSubspace, secondarySubspace subspace.Subspace,
 	tx fdb.WritableTransaction,
-	store indexStoreContext,
+	store IndexStoreContext,
 ) (*timeWindowLeaderboardIndexMaintainer, error) {
 	// Java's maintainer constructor reads the config the same way
 	// (TimeWindowLeaderboardIndexMaintainer.java:100).
@@ -38,7 +40,7 @@ func newTimeWindowLeaderboardIndexMaintainer(
 		return nil, err
 	}
 	return &timeWindowLeaderboardIndexMaintainer{
-		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
+		StandardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		secondarySubspace:       secondarySubspace,
 		rankedSetConfig:         config.withEnv(store.Env()),
 	}, nil
@@ -53,17 +55,17 @@ func (m *timeWindowLeaderboardIndexMaintainer) Update(oldRecord, newRecord *FDBS
 	lockKey := string(m.secondarySubspace.Bytes())
 	m.store.AcquireWriteLock(lockKey)
 	defer m.store.ReleaseWriteLock(lockKey)
-	var oldEntries, newEntries []indexEntry
+	var oldEntries, newEntries []EvaluatedIndexEntry
 
 	if oldRecord != nil {
-		entries, err := m.filteredIndexEntries(oldRecord)
+		entries, err := m.FilteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for old record: %w", m.index.Name, err)
 		}
 		oldEntries = entries
 	}
 	if newRecord != nil {
-		entries, err := m.filteredIndexEntries(newRecord)
+		entries, err := m.FilteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for new record: %w", m.index.Name, err)
 		}
@@ -103,7 +105,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) Update(oldRecord, newRecord *FDBS
 // across all leaderboards.
 func (m *timeWindowLeaderboardIndexMaintainer) updateLeaderboardEntries(
 	dir *leaderboardDirectory,
-	entries []indexEntry,
+	entries []EvaluatedIndexEntry,
 	remove bool,
 ) error {
 	if len(entries) == 0 {
@@ -179,7 +181,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) updateLeaderboardEntries(
 // updateRankedSet adds or removes a score from the ranked set for the given leaderboard+group.
 func (m *timeWindowLeaderboardIndexMaintainer) updateRankedSet(
 	leaderboardGroupKey tuple.Tuple,
-	entry indexEntry,
+	entry EvaluatedIndexEntry,
 	scoreKey tuple.Tuple,
 	remove bool,
 	config rankedSetConfig,
@@ -247,7 +249,7 @@ type groupedScores struct {
 // Matches Java's groupOrderedScoreIndexKeys().
 func (m *timeWindowLeaderboardIndexMaintainer) groupOrderedScoreIndexKeys(
 	dir *leaderboardDirectory,
-	entries []indexEntry,
+	entries []EvaluatedIndexEntry,
 	groupPrefixSize int,
 ) ([]groupedScores, *int64, error) {
 	grouped := make(map[string]*groupedScores)
@@ -482,7 +484,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) scanWithTimeWindow(
 	leaderboardRange := prependLeaderboardKey(actualRange, lb.SubspaceKey)
 
 	// Scan B-tree.
-	rawCursor := m.standardIndexMaintainer.Scan(leaderboardRange, continuation, actualProps)
+	rawCursor := m.StandardIndexMaintainer.Scan(leaderboardRange, continuation, actualProps)
 
 	// Post-process: remove leaderboard key prefix and un-negate if needed.
 	return MapErrCursor(rawCursor, func(entry *IndexEntry) (*IndexEntry, error) {
@@ -614,7 +616,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) rankRangeToScoreRange(
 	if lowScoreBytes == nil {
 		return nil, nil
 	}
-	lowScore, err := fastUnpack(lowScoreBytes)
+	lowScore, err := tuplefast.Unpack(lowScoreBytes)
 	if err != nil {
 		return nil, fmt.Errorf("unpack low score: %w", err)
 	}
@@ -626,7 +628,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) rankRangeToScoreRange(
 			return nil, err
 		}
 		if highScoreBytes != nil {
-			highScore, err = fastUnpack(highScoreBytes)
+			highScore, err = tuplefast.Unpack(highScoreBytes)
 			if err != nil {
 				return nil, fmt.Errorf("unpack high score: %w", err)
 			}
@@ -967,9 +969,9 @@ func (m *timeWindowLeaderboardIndexMaintainer) TrimScores(scores []tuple.Tuple, 
 	}
 
 	// Convert score tuples to indexEntry format.
-	entries := make([]indexEntry, len(scores))
+	entries := make([]EvaluatedIndexEntry, len(scores))
 	for i, s := range scores {
-		entries[i] = indexEntry{key: s}
+		entries[i] = EvaluatedIndexEntry{key: s}
 	}
 
 	groupPrefixSize := 0
@@ -1103,7 +1105,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
 			}
 			return nil, fmt.Errorf("rank %d out of range", rankVal)
 		}
-		score, err := fastUnpack(scoreBytes)
+		score, err := tuplefast.Unpack(scoreBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -1149,7 +1151,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
 }
 
 // indexEntriesEqual checks if two index entry slices are identical.
-func indexEntriesEqual(a, b []indexEntry) bool {
+func indexEntriesEqual(a, b []EvaluatedIndexEntry) bool {
 	if len(a) != len(b) {
 		return false
 	}

@@ -3,6 +3,8 @@ package recordlayer
 import (
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -328,7 +330,7 @@ func loadWithSplit(
 	// Validate sequential indices and concatenate
 	expectedIndex := startSplitRecord + 1
 	for _, kv := range kvs {
-		keyTuple, unpackErr := fastSubspaceUnpack(kv.Key, len(recordSubspace.Bytes()))
+		keyTuple, unpackErr := tuplefast.SubspaceUnpack(kv.Key, len(recordSubspace.Bytes()))
 		if unpackErr != nil {
 			return nil, fmt.Errorf("failed to unpack split key: %w", unpackErr)
 		}

@@ -79,7 +79,7 @@ type AttemptObserver func(call AttemptCall, err error)
 // spfreshStalledSealBound is SimFDB's former retry backstop: under a simulated
 // environment, this many consecutive uncounted retries that each met the same
 // sealed postings fail the call (SPFreshStalledSealError).
-const spfreshStalledSealBound = 100
+const SPFreshStalledSealBound = 100
 
 // attemptLoop runs attempt until it succeeds, fails with an error that is not
 // retriable by the runner's rule (isRetriableAnyCause), or has used
@@ -121,7 +121,7 @@ func attemptLoop(ctx context.Context, env *dst.Env, observe AttemptObserver, pol
 				} else {
 					stalled, stallCount = window.Sealed, 1
 				}
-				if stallCount >= spfreshStalledSealBound {
+				if stallCount >= SPFreshStalledSealBound {
 					return nil, &SPFreshStalledSealError{Sealed: window.Sealed, Retries: stallCount}
 				}
 			}

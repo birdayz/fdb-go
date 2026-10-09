@@ -55,7 +55,7 @@ func (store *FDBRecordStore) replayPendingIndexWrite(index *Index, entry *Pendin
 		}
 	case gen.PendingWritesQueueEntry_DELETE_WHERE:
 		var deletion gen.DeleteWhere
-		if err := unmarshalPendingQueueAny(payload.GetData(), &deletion); err != nil {
+		if err := UnmarshalPendingQueueAny(payload.GetData(), &deletion); err != nil {
 			return &RecordCoreError{Message: "failed to parse pending write queue DELETE_WHERE entry data", Cause: err}
 		}
 		prefix, err := tuple.Unpack(deletion.GetPrefix())
@@ -92,7 +92,7 @@ func (rc *FDBRecordContext) PendingWriteQueueOptions() PendingWriteQueueOptions 
 	return PendingWriteQueueOptions{MaximumSize: 100000, DisableIndexOnOverflow: true}
 }
 
-func pendingWriteCommitCheckPrefix(ss subspace.Subspace) string {
+func PendingWriteCommitCheckPrefix(ss subspace.Subspace) string {
 	return fmt.Sprintf("pendingIndexWrite:%x:", ss.Bytes())
 }
 
@@ -113,8 +113,8 @@ func (store *FDBRecordStore) enqueuePendingIndexWrite(index *Index, entry *gen.P
 	// acquires its write side, so defer it until commit rather than deadlocking.
 	// Scope the name to the store as well as the index: contexts may share handles
 	// for different stores with identically named indexes.
-	name := pendingWriteCommitCheckPrefix(store.subspace) + "overflow:" + index.Name
-	store.context.getOrCreateCommitCheck(name, func(string) CommitCheckFunc {
+	name := PendingWriteCommitCheckPrefix(store.subspace) + "overflow:" + index.Name
+	store.context.GetOrCreateCommitCheck(name, func(string) CommitCheckFunc {
 		return func() error {
 			changed, err := store.MarkIndexDisabled(index.Name)
 			if err == nil && changed {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -33,7 +35,7 @@ type bitmapValueIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.WritableTransaction
-	store         indexStoreContext
+	store         IndexStoreContext
 	entrySize     int64
 	unique        bool
 }
@@ -42,7 +44,7 @@ func newBitmapValueIndexMaintainer(
 	index *Index,
 	indexSubspace subspace.Subspace,
 	tx fdb.WritableTransaction,
-	store indexStoreContext,
+	store IndexStoreContext,
 ) (*bitmapValueIndexMaintainer, error) {
 	entrySize, err := BitmapValueEntrySizeOption(index)
 	if err != nil {
@@ -74,7 +76,7 @@ func BitmapValueEntrySizeOption(index *Index) (int64, error) {
 	if !ok {
 		return bitmapValueDefaultEntrySize, nil
 	}
-	n, err := javaParseInt(v)
+	n, err := JavaParseInt(v)
 	if err != nil {
 		return 0, err
 	}
@@ -100,7 +102,7 @@ func bitmapByteSize(entrySize int64) int {
 
 // filteredIndexEntries is Java's StandardIndexMaintainer.filteredIndexEntries
 // over the bitmap index's evaluated entries (see standardIndexMaintainer's).
-func (m *bitmapValueIndexMaintainer) filteredIndexEntries(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
+func (m *bitmapValueIndexMaintainer) FilteredIndexEntries(record *FDBStoredRecord[proto.Message]) ([]EvaluatedIndexEntry, error) {
 	values := indexValuesFor(m.store, m.index, record)
 	if values == IndexValuesNone {
 		return nil, nil
@@ -109,13 +111,13 @@ func (m *bitmapValueIndexMaintainer) filteredIndexEntries(record *FDBStoredRecor
 	if err != nil {
 		return nil, err
 	}
-	entries := make([]indexEntry, len(tuples))
+	entries := make([]EvaluatedIndexEntry, len(tuples))
 	for i, values := range tuples {
 		key := make(tuple.Tuple, len(values))
 		for j, v := range values {
 			key[j] = v
 		}
-		entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey}
+		entries[i] = EvaluatedIndexEntry{key: key, primaryKey: record.PrimaryKey}
 	}
 	return keepMaintainedEntries(m.store, m.index, record, values, entries), nil
 }
@@ -128,10 +130,10 @@ func (m *bitmapValueIndexMaintainer) groupPrefixSize() int {
 // Update handles insert (old=nil), delete (new=nil), or update (both non-nil).
 // Matches Java's BitmapValueIndexMaintainer.update().
 func (m *bitmapValueIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	var oldEntries, newEntries []indexEntry
+	var oldEntries, newEntries []EvaluatedIndexEntry
 
 	if oldRecord != nil {
-		entries, err := m.filteredIndexEntries(oldRecord)
+		entries, err := m.FilteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate bitmap_value index %q for old record: %w", m.index.Name, err)
 		}
@@ -139,7 +141,7 @@ func (m *bitmapValueIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecor
 	}
 
 	if newRecord != nil {
-		entries, err := m.filteredIndexEntries(newRecord)
+		entries, err := m.FilteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate bitmap_value index %q for new record: %w", m.index.Name, err)
 		}
@@ -149,7 +151,7 @@ func (m *bitmapValueIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecor
 	// Skip unchanged entries.
 	if oldEntries != nil && newEntries != nil {
 		var err error
-		oldEntries, newEntries, err = removeCommonEntries(m.index, oldEntries, newEntries)
+		oldEntries, newEntries, err = RemoveCommonEntries(m.index, oldEntries, newEntries)
 		if err != nil {
 			return err
 		}
@@ -183,7 +185,7 @@ func (m *bitmapValueIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecor
 }
 
 // addEntry sets a bit in the bitmap for the given index entry.
-func (m *bitmapValueIndexMaintainer) addEntry(entry indexEntry) error {
+func (m *bitmapValueIndexMaintainer) addEntry(entry EvaluatedIndexEntry) error {
 	groupSize := m.groupPrefixSize()
 	if groupSize >= len(entry.key) {
 		// No position column — skip.
@@ -224,7 +226,7 @@ func (m *bitmapValueIndexMaintainer) addEntry(entry indexEntry) error {
 }
 
 // removeEntry clears a bit in the bitmap for the given index entry.
-func (m *bitmapValueIndexMaintainer) removeEntry(entry indexEntry, isWriteOnly bool) error {
+func (m *bitmapValueIndexMaintainer) removeEntry(entry EvaluatedIndexEntry, isWriteOnly bool) error {
 	groupSize := m.groupPrefixSize()
 	if groupSize >= len(entry.key) {
 		return nil
@@ -275,7 +277,7 @@ func (m *bitmapValueIndexMaintainer) removeEntry(entry indexEntry, isWriteOnly b
 // checkBitmapUniqueness checks that the bit position is not already set.
 // Uses snapshot read + read/write conflict keys for isolation.
 // Matches Java's BitmapValueIndexMaintainer.checkUniqueness().
-func (m *bitmapValueIndexMaintainer) checkBitmapUniqueness(fdbKey []byte, offset int64, entry indexEntry) error {
+func (m *bitmapValueIndexMaintainer) checkBitmapUniqueness(fdbKey []byte, offset int64, entry EvaluatedIndexEntry) error {
 	existing, err := m.tx.Snapshot().Get(fdb.Key(fdbKey)).Get()
 	if err != nil {
 		return fmt.Errorf("bitmap_value index %q uniqueness check: %w", m.index.Name, err)
@@ -642,7 +644,7 @@ func (c *bitmapKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexE
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("bitmap index scan: %w", err)
 	}
 
-	keyTuple, err := fastSubspaceUnpack(kv.Key, len(c.indexSubspace.Bytes()))
+	keyTuple, err := tuplefast.SubspaceUnpack(kv.Key, len(c.indexSubspace.Bytes()))
 	if err != nil {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("unpack bitmap index key: %w", err)
 	}

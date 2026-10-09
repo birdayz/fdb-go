@@ -373,7 +373,7 @@ func FromListWithContinuation[T any](items []T, continuation []byte) RecordCurso
 	return &listCursor[T]{items: items, pos: start}
 }
 
-func listCursorContinuation(pos int) []byte {
+func ListCursorContinuation(pos int) []byte {
 	return []byte{byte(pos >> 24), byte(pos >> 16), byte(pos >> 8), byte(pos)}
 }
 
@@ -383,7 +383,7 @@ func (c *listCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error)
 	}
 	value := c.items[c.pos]
 	c.pos++
-	return NewResultWithValue(value, &BytesContinuation{bytes: listCursorContinuation(c.pos)}), nil
+	return NewResultWithValue(value, &BytesContinuation{bytes: ListCursorContinuation(c.pos)}), nil
 }
 
 func (c *listCursor[T]) Close() error {

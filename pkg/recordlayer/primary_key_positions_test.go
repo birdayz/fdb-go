@@ -229,13 +229,13 @@ func TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimaryKey(t *testing.T) {
 	}
 
 	// What this build writes: (price, pk).
-	current := idx.getEntryPrimaryKey(tuple.Tuple{int64(100), int64(100)})
+	current := idx.EntryPrimaryKey(tuple.Tuple{int64(100), int64(100)})
 	if len(current) != 1 || current[0] != int64(100) {
 		t.Fatalf("an entry written by THIS build reads back with primary key %v, want [100]", current)
 	}
 
 	// What an older Go wrote: (price) alone, the primary key trimmed away.
-	legacy := idx.getEntryPrimaryKey(tuple.Tuple{int64(100)})
+	legacy := idx.EntryPrimaryKey(tuple.Tuple{int64(100)})
 	if len(legacy) != 0 {
 		t.Fatalf("a pre-upgrade trimmed entry now reads back with primary key %v.\n"+
 			"That is BETTER than the empty tuple this pins, so the hazard has changed shape: "+
@@ -299,14 +299,14 @@ func TestPreUpgradeTrimmedEntryWithAPartialOverlapReadsBackAShortWrongPrimaryKey
 	}
 
 	// What this build writes: (price) + the WHOLE primary key.
-	current := idx.getEntryPrimaryKey(tuple.Tuple{int64(100), int64(100), int64(7)})
+	current := idx.EntryPrimaryKey(tuple.Tuple{int64(100), int64(100), int64(7)})
 	if len(current) != 2 || current[0] != int64(100) || current[1] != int64(7) {
 		t.Fatalf("an entry written by THIS build reads back with primary key %v, want [100 7]", current)
 	}
 
 	// What an older build wrote: (price, order_id), with `price` trimmed out of
 	// the primary key because it already appeared in the index key.
-	legacy := idx.getEntryPrimaryKey(tuple.Tuple{int64(100), int64(7)})
+	legacy := idx.EntryPrimaryKey(tuple.Tuple{int64(100), int64(7)})
 
 	// NOT EMPTY -- that is the whole point of this arm. It is one component
 	// where the real key has two, and the component it does contain is the

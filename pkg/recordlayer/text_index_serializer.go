@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math/bits"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
@@ -213,7 +215,7 @@ func (s *TextIndexBunchedSerializer) DeserializeKey(data []byte, offset, length 
 			Data:    data,
 		}
 	}
-	t, err := fastUnpack(data[offset : offset+length])
+	t, err := tuplefast.Unpack(data[offset : offset+length])
 	if err != nil {
 		return nil, &BunchedSerializationError{
 			Message: fmt.Sprintf("unable to deserialize key: %v", err),
@@ -287,7 +289,7 @@ func (s *TextIndexBunchedSerializer) deserializeBunch(key tuple.Tuple, data []by
 						Data:    data,
 					}
 				}
-				entryKey, err = fastUnpack(keyBytes)
+				entryKey, err = tuplefast.Unpack(keyBytes)
 				if err != nil {
 					return nil, &BunchedSerializationError{
 						Message: fmt.Sprintf("unpacking key: %v", err),

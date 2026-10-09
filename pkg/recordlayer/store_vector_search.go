@@ -203,7 +203,7 @@ func (store *FDBRecordStore) ScanVectorIndexWithOptions(
 	// Peel any decorator (e.g. a sliding window) before asking for the concrete
 	// vector maintainer: a windowed vector index is still a vector index, and
 	// asserting on the outermost type would answer "not a VECTOR index".
-	vm, ok := maintainerAs[VectorIndexSearcher](maintainer)
+	vm, ok := IndexMaintainerAs[VectorIndexSearcher](maintainer)
 	if !ok {
 		return &errorCursor[*IndexEntry]{
 			err: fmt.Errorf("index %q (type %s) is not a VECTOR index", index.Name, index.Type),
@@ -248,7 +248,7 @@ func (store *FDBRecordStore) SearchVectorIndexWithPrefix(
 	// Peel any decorator (e.g. a sliding window) before asking for the concrete
 	// vector maintainer: a windowed vector index is still a vector index, and
 	// asserting on the outermost type would answer "not a VECTOR index".
-	vm, ok := maintainerAs[VectorIndexSearcher](maintainer)
+	vm, ok := IndexMaintainerAs[VectorIndexSearcher](maintainer)
 	if !ok {
 		return nil, fmt.Errorf("index %q (type %s) is not a VECTOR index", index.Name, index.Type)
 	}

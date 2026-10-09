@@ -1,6 +1,6 @@
 // Command spfresh-maintainer is the reference SPFresh maintenance worker
 // (RFC-156 §3.2). SPFresh maintenance is caller-driven; this is the thin,
-// runnable wrapper around recordlayer.RunSPFreshMaintenance that a deployment
+// runnable wrapper around vectorindex.RunSPFreshMaintenance that a deployment
 // can run standalone or copy as a starting point.
 //
 // It opens an FDB database, builds the tenant list (the ONE part every
@@ -20,6 +20,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"fdb.dev/pkg/recordlayer/vectorindex"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
@@ -60,20 +62,20 @@ func main() {
 
 	go logMetricsLoop(ctx, timer, *metricsInterval)
 
-	opts := recordlayer.SPFreshMaintenanceOptions{
+	opts := vectorindex.SPFreshMaintenanceOptions{
 		Tenants:        tenants,
 		SweepInterval:  *sweepInterval,
 		RefineInterval: *refineInterval,
 		DisableRefine:  *disableRefine,
-		Sweep:          recordlayer.SPFreshSweepOptions{MaxActionsPerTenant: *maxActions, Timer: timer},
-		Refine:         recordlayer.SPFreshRefineOptions{BudgetPerTenant: *refineBudget, Timer: timer},
-		OnSweep: func(res recordlayer.SPFreshSweepResult, err error) {
+		Sweep:          vectorindex.SPFreshSweepOptions{MaxActionsPerTenant: *maxActions, Timer: timer},
+		Refine:         vectorindex.SPFreshRefineOptions{BudgetPerTenant: *refineBudget, Timer: timer},
+		OnSweep: func(res vectorindex.SPFreshSweepResult, err error) {
 			if err != nil {
 				log.Printf("spfresh-maintainer: sweep: worked=%d actions=%d undrained=%d err=%v",
 					res.Worked, res.Actions, res.Undrained, err)
 			}
 		},
-		OnRefine: func(res recordlayer.SPFreshRefineResult, err error) {
+		OnRefine: func(res vectorindex.SPFreshRefineResult, err error) {
 			if err != nil {
 				log.Printf("spfresh-maintainer: refine: refined=%d moves=%d converged=%d err=%v",
 					res.Refined, res.Moves, res.Converged, err)
@@ -83,7 +85,7 @@ func main() {
 
 	log.Printf("spfresh-maintainer: started (sweep=%s refine=%s disableRefine=%v)",
 		*sweepInterval, *refineInterval, *disableRefine)
-	if err := recordlayer.RunSPFreshMaintenance(ctx, db, opts); err != nil {
+	if err := vectorindex.RunSPFreshMaintenance(ctx, db, opts); err != nil {
 		log.Fatalf("spfresh-maintainer: %v", err)
 	}
 	logMetrics(timer) // final snapshot
@@ -96,7 +98,7 @@ func main() {
 // inside the record layer. Replace the body with your enumeration — typically a
 // scan of your tenant directory plus, per tenant, a storeBuilder closure:
 //
-//	return []recordlayer.SPFreshTenant{{
+//	return []vectorindex.SPFreshTenant{{
 //	    StoreBuilder: func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
 //	        return recordlayer.NewStoreBuilder().SetContext(rtx).
 //	            SetMetaDataProvider(myMetadata).SetSubspace(tenantSubspace).CreateOrOpen()
@@ -106,7 +108,7 @@ func main() {
 //
 // Sharding the returned list across N worker processes is safe — sweeps are
 // concurrent-safe by construction (unique lease owners, task-level exclusion).
-func discoverTenants(_ *recordlayer.FDBDatabase) []recordlayer.SPFreshTenant {
+func discoverTenants(_ *recordlayer.FDBDatabase) []vectorindex.SPFreshTenant {
 	return nil
 }
 
@@ -130,14 +132,14 @@ func logMetricsLoop(ctx context.Context, timer *recordlayer.StoreTimer, every ti
 
 func logMetrics(timer *recordlayer.StoreTimer) {
 	log.Printf("spfresh-maintainer metrics: splits=%d merges=%d csplits=%d npas=%d zombieCleans=%d leaseSkips=%d taskErrors=%d refineMoves=%d refineConverged=%d",
-		timer.GetCount(recordlayer.CountSPFreshSplits),
-		timer.GetCount(recordlayer.CountSPFreshMerges),
-		timer.GetCount(recordlayer.CountSPFreshCSplits),
-		timer.GetCount(recordlayer.CountSPFreshNPAs),
-		timer.GetCount(recordlayer.CountSPFreshZombieCleans),
-		timer.GetCount(recordlayer.CountSPFreshLeaseSkips),
-		timer.GetCount(recordlayer.CountSPFreshTaskErrors),
-		timer.GetCount(recordlayer.CountSPFreshRefineMoves),
-		timer.GetCount(recordlayer.CountSPFreshRefineConverged),
+		timer.GetCount(vectorindex.CountSPFreshSplits),
+		timer.GetCount(vectorindex.CountSPFreshMerges),
+		timer.GetCount(vectorindex.CountSPFreshCSplits),
+		timer.GetCount(vectorindex.CountSPFreshNPAs),
+		timer.GetCount(vectorindex.CountSPFreshZombieCleans),
+		timer.GetCount(vectorindex.CountSPFreshLeaseSkips),
+		timer.GetCount(vectorindex.CountSPFreshTaskErrors),
+		timer.GetCount(vectorindex.CountSPFreshRefineMoves),
+		timer.GetCount(vectorindex.CountSPFreshRefineConverged),
 	)
 }

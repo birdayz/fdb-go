@@ -3,6 +3,8 @@ package recordlayer
 import (
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -22,7 +24,7 @@ type RankQuerier interface {
 //
 // Matches Java's rankIndexMaintainer.
 type rankIndexMaintainer struct {
-	standardIndexMaintainer                   // embedded — primary B-tree operations
+	StandardIndexMaintainer                   // embedded — primary B-tree operations
 	secondarySubspace       subspace.Subspace // ranked sets per group
 	rankedSetConfig         rankedSetConfig
 }
@@ -39,14 +41,14 @@ func newRankIndexMaintainer(
 	index *Index,
 	indexSubspace, secondarySubspace subspace.Subspace,
 	tx fdb.WritableTransaction,
-	store indexStoreContext,
+	store IndexStoreContext,
 ) (*rankIndexMaintainer, error) {
 	config, err := parseRankedSetConfig(index)
 	if err != nil {
 		return nil, err
 	}
 	return &rankIndexMaintainer{
-		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
+		StandardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		secondarySubspace:       secondarySubspace,
 		rankedSetConfig:         config.withEnv(store.Env()),
 	}, nil
@@ -68,7 +70,7 @@ func parseRankedSetConfig(index *Index) (rankedSetConfig, error) {
 		config.HashFunction, config.HashFunctionName = fn, v
 	}
 	if v, ok := index.Options[IndexOptionRankNLevels]; ok {
-		n, err := javaParseInt(v)
+		n, err := JavaParseInt(v)
 		if err != nil {
 			return rankedSetConfig{}, err
 		}
@@ -87,7 +89,7 @@ func parseRankedSetConfig(index *Index) (rankedSetConfig, error) {
 // for the given prefix. Matches Java's rankIndexMaintainer.deleteWhere().
 func (m *rankIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	// Clear primary (B-tree) entries.
-	if err := m.standardIndexMaintainer.DeleteWhere(prefix); err != nil {
+	if err := m.StandardIndexMaintainer.DeleteWhere(prefix); err != nil {
 		return err
 	}
 	// Clear secondary (ranked set) entries.
@@ -110,17 +112,17 @@ func (m *rankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 	lockKey := string(m.secondarySubspace.Bytes())
 	m.store.AcquireWriteLock(lockKey)
 	defer m.store.ReleaseWriteLock(lockKey)
-	var oldEntries, newEntries []indexEntry
+	var oldEntries, newEntries []EvaluatedIndexEntry
 
 	if oldRecord != nil {
-		entries, err := m.filteredIndexEntries(oldRecord)
+		entries, err := m.FilteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for old record: %w", m.index.Name, err)
 		}
 		oldEntries = entries
 	}
 	if newRecord != nil {
-		entries, err := m.filteredIndexEntries(newRecord)
+		entries, err := m.FilteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for new record: %w", m.index.Name, err)
 		}
@@ -129,7 +131,7 @@ func (m *rankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 
 	if oldEntries != nil && newEntries != nil {
 		var err error
-		oldEntries, newEntries, err = removeCommonEntries(m.index, oldEntries, newEntries)
+		oldEntries, newEntries, err = RemoveCommonEntries(m.index, oldEntries, newEntries)
 		if err != nil {
 			return err
 		}
@@ -215,13 +217,13 @@ func (m *rankIndexMaintainer) ScanByRank(
 	if scoreRange == nil {
 		return Empty[*IndexEntry]()
 	}
-	return m.standardIndexMaintainer.Scan(*scoreRange, continuation, scanProperties)
+	return m.StandardIndexMaintainer.Scan(*scoreRange, continuation, scanProperties)
 }
 
 // updateRankedSet adds or removes a score from the ranked set for the entry's group.
 // On remove with !CountDuplicates, only removes if no other B-tree entry has this score.
 // Matches Java's RankedSetIndexHelper.updateRankedSet().
-func (m *rankIndexMaintainer) updateRankedSet(entry indexEntry, remove bool) error {
+func (m *rankIndexMaintainer) updateRankedSet(entry EvaluatedIndexEntry, remove bool) error {
 	groupPrefixSize := m.getGroupingCount()
 
 	var rankSubspace subspace.Subspace
@@ -377,7 +379,7 @@ func (m *rankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*Tupl
 		return nil, err
 	}
 	if lowScoreBytes != nil {
-		lowScore, err = fastUnpack(lowScoreBytes)
+		lowScore, err = tuplefast.Unpack(lowScoreBytes)
 		if err != nil {
 			return nil, fmt.Errorf("unpack low score: %w", err)
 		}
@@ -394,7 +396,7 @@ func (m *rankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*Tupl
 			return nil, err
 		}
 		if highScoreBytes != nil {
-			highScore, err = fastUnpack(highScoreBytes)
+			highScore, err = tuplefast.Unpack(highScoreBytes)
 			if err != nil {
 				return nil, fmt.Errorf("unpack high score: %w", err)
 			}
@@ -491,7 +493,7 @@ func (m *rankIndexMaintainer) ScoreForRank(groupAndRank tuple.Tuple) (tuple.Tupl
 	if scoreBytes == nil {
 		return nil, nil
 	}
-	return fastUnpack(scoreBytes)
+	return tuplefast.Unpack(scoreBytes)
 }
 
 // extractRankValue extracts the rank value from a scan range tuple.

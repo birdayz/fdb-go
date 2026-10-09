@@ -193,7 +193,7 @@ func keyExpressionFromProtoDepth(expr *gen.KeyExpression, depth int) (KeyExpress
 	}
 	if expr.Value != nil {
 		found++
-		v, err := valueFromProto(expr.Value)
+		v, err := ValueFromProto(expr.Value)
 		if err != nil {
 			return nil, err
 		}
@@ -379,7 +379,7 @@ func (g *GroupingKeyExpression) ToKeyExpression() *gen.KeyExpression {
 // ToKeyExpression serializes LiteralKeyExpression to proto.
 // Matches Java's LiteralKeyExpression.toKeyExpression().
 func (l *LiteralKeyExpression) ToKeyExpression() *gen.KeyExpression {
-	v, _ := valueToProto(l.value)
+	v, _ := ValueToProto(l.value)
 	return &gen.KeyExpression{
 		Value: v,
 	}

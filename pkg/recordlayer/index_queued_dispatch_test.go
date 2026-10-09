@@ -679,8 +679,8 @@ var _ = Describe("Queued store dispatch", func() {
 		_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
 			for _, ss := range []subspace.Subspace{root, sibling} {
 				for _, family := range []string{"heartbeat:", "merge:"} {
-					name := pendingWriteCommitCheckPrefix(ss) + family + index.Name
-					rc.getOrCreateCommitCheck(name, func(string) CommitCheckFunc {
+					name := PendingWriteCommitCheckPrefix(ss) + family + index.Name
+					rc.GetOrCreateCommitCheck(name, func(string) CommitCheckFunc {
 						return func() error { ran[name] = true; return nil }
 					})
 				}
@@ -695,8 +695,8 @@ var _ = Describe("Queued store dispatch", func() {
 			Expect(DeleteStore(rc, root)).To(Succeed())
 			Expect(rc.HasVersionMutations()).To(BeFalse(), "the deleted store's buffered entries are cancelled")
 			for _, family := range []string{"heartbeat:", "merge:"} {
-				Expect(rc.getCommitCheck(pendingWriteCommitCheckPrefix(root)+family+index.Name)).To(BeNil(), family)
-				Expect(rc.getCommitCheck(pendingWriteCommitCheckPrefix(sibling)+family+index.Name)).NotTo(BeNil(), family)
+				Expect(rc.getCommitCheck(PendingWriteCommitCheckPrefix(root)+family+index.Name)).To(BeNil(), family)
+				Expect(rc.getCommitCheck(PendingWriteCommitCheckPrefix(sibling)+family+index.Name)).NotTo(BeNil(), family)
 			}
 			// Recreate and queue one write in the same transaction.
 			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).SetFormatVersion(15).Create()
@@ -711,7 +711,7 @@ var _ = Describe("Queued store dispatch", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		for name := range ran {
-			Expect(name).To(HavePrefix(pendingWriteCommitCheckPrefix(sibling)), "only the sibling's checks ran")
+			Expect(name).To(HavePrefix(PendingWriteCommitCheckPrefix(sibling)), "only the sibling's checks ran")
 		}
 		Expect(ran).To(HaveLen(2))
 		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
@@ -745,7 +745,7 @@ var _ = Describe("Queued store dispatch", func() {
 			Expect(err).NotTo(HaveOccurred())
 			_, err = store.SaveRecord(order(3, 7))
 			Expect(err).NotTo(HaveOccurred())
-			name := pendingWriteCommitCheckPrefix(root) + "overflow:" + index.Name
+			name := PendingWriteCommitCheckPrefix(root) + "overflow:" + index.Name
 			Expect(rc.getCommitCheck(name)).NotTo(BeNil())
 			Expect(DeleteStore(rc, root)).To(Succeed())
 			Expect(rc.getCommitCheck(name)).To(BeNil())

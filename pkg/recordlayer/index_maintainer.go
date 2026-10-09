@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"unsafe"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -153,13 +155,13 @@ func checkDeleteWhereBound(index *Index, prefix tuple.Tuple) error {
 // directory get a bound without each restating it, exactly as they inherit
 // StandardIndexMaintainer.canDeleteWhere in Java. The types whose secondary
 // layout is narrower still (permuted min/max, vector, sliding window) override.
-func (m *standardIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
+func (m *StandardIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 	return checkDeleteWhereBound(m.index, prefix)
 }
 
 // indexStoreContext provides the store methods needed by index maintainers.
 // Avoids circular dependency by using an interface instead of *FDBRecordStore directly.
-type indexStoreContext interface {
+type IndexStoreContext interface {
 	readIndexState(indexName string) (IndexState, error)
 	addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) error
 	removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) error
@@ -204,11 +206,11 @@ type indexStoreContext interface {
 // standardIndexMaintainer handles VALUE index maintenance.
 // Evaluates the index key expression against records, then sets/clears entries
 // in the index subspace. Matches Java's standardIndexMaintainer.
-type standardIndexMaintainer struct {
+type StandardIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.WritableTransaction
-	store         indexStoreContext
+	store         IndexStoreContext
 }
 
 // readTx resolves the transaction a SCAN's reads go through, from the
@@ -223,13 +225,13 @@ type standardIndexMaintainer struct {
 // VectorIndexMaintainer.java:201-202, TextIndexMaintainer.java:542,
 // RankIndexMaintainer.java:292, and the generic leaf at
 // KeyValueCursorBase.java:358 all spell it the same way.
-func (m *standardIndexMaintainer) readTx(scanProperties ScanProperties) fdb.ReadTransaction {
+func (m *StandardIndexMaintainer) ReadTransaction(scanProperties ScanProperties) fdb.ReadTransaction {
 	return readTransactionFor(m.tx,
 		scanProperties.ExecuteProperties.IsolationLevel.IsSnapshot())
 }
 
-func newStandardIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction, store indexStoreContext) *standardIndexMaintainer {
-	return &standardIndexMaintainer{
+func newStandardIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.WritableTransaction, store IndexStoreContext) *StandardIndexMaintainer {
+	return &StandardIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
 		tx:            tx,
@@ -240,13 +242,13 @@ func newStandardIndexMaintainer(index *Index, indexSubspace subspace.Subspace, t
 // UpdateWhileWriteOnly updates the index during WRITE_ONLY state.
 // standardIndexMaintainer is idempotent, so this is a pass-through to Update().
 // Matches Java's standardIndexMaintainer.updateWhileWriteOnly() + isIdempotent() = true.
-func (m *standardIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *StandardIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return m.Update(oldRecord, newRecord)
 }
 
 // Update handles insert (old=nil), delete (new=nil), or update (both non-nil).
 // Matches Java's standardIndexMaintainer.update().
-func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	// Fast path: insert-only — skip evaluateIndex wrapper,
 	// common-entry filtering, and old-entries loop.
 	if oldRecord == nil && newRecord != nil {
@@ -276,13 +278,13 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 							return err
 						}
 						if m.index.IsUnique() {
-							keyTuple, uErr := fastSubspaceUnpack(keyBytes, len(m.indexSubspace.Bytes()))
+							keyTuple, uErr := tuplefast.SubspaceUnpack(keyBytes, len(m.indexSubspace.Bytes()))
 							if uErr != nil {
 								return fmt.Errorf("unpack index key for uniqueness check: %w", uErr)
 							}
 							colCount := m.index.RootExpression.ColumnSize()
 							if colCount > 0 && len(keyTuple) > colCount {
-								entry := indexEntry{key: keyTuple[:colCount], primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
+								entry := EvaluatedIndexEntry{key: keyTuple[:colCount], primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
 								if err := m.checkUniqueness(entry); err != nil {
 									return err
 								}
@@ -299,18 +301,18 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 				if err == nil {
 					// Zero-alloc: reinterpret []any as tuple.Tuple (same layout).
 					key := *(*tuple.Tuple)(unsafe.Pointer(&values))
-					entry := indexEntry{key: key, primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
+					entry := EvaluatedIndexEntry{key: key, primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
 					return m.insertSingleEntry(entry, newRecord)
 				}
 			}
 		}
 	}
 
-	var oldEntries []indexEntry
-	var newEntries []indexEntry
+	var oldEntries []EvaluatedIndexEntry
+	var newEntries []EvaluatedIndexEntry
 
 	if oldRecord != nil {
-		entries, err := m.filteredIndexEntries(oldRecord)
+		entries, err := m.FilteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for old record: %w", m.index.Name, err)
 		}
@@ -318,7 +320,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	}
 
 	if newRecord != nil {
-		entries, err := m.filteredIndexEntries(newRecord)
+		entries, err := m.FilteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for new record: %w", m.index.Name, err)
 		}
@@ -328,7 +330,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	// Skip unchanged entries (optimization matching Java's skipUpdateForUnchangedKeys)
 	if oldEntries != nil && newEntries != nil {
 		var err error
-		oldEntries, newEntries, err = removeCommonEntries(m.index, oldEntries, newEntries)
+		oldEntries, newEntries, err = RemoveCommonEntries(m.index, oldEntries, newEntries)
 		if err != nil {
 			return err
 		}
@@ -389,7 +391,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 
 // insertInt64Entry handles inserting a VALUE index entry for an integer field.
 // Avoids the any boxing allocation by packing int64 directly.
-func (m *standardIndexMaintainer) insertInt64Entry(val int64, record *FDBStoredRecord[proto.Message]) error {
+func (m *StandardIndexMaintainer) insertInt64Entry(val int64, record *FDBStoredRecord[proto.Message]) error {
 	trimmedPK, err := m.index.TrimPrimaryKey(record.PrimaryKey)
 	if err != nil {
 		return err
@@ -407,7 +409,7 @@ func (m *standardIndexMaintainer) insertInt64Entry(val int64, record *FDBStoredR
 	}
 
 	if m.index.IsUnique() {
-		entry := indexEntry{key: tuple.Tuple{val}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+		entry := EvaluatedIndexEntry{key: tuple.Tuple{val}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
 		if err := m.checkUniqueness(entry); err != nil {
 			return err
 		}
@@ -417,7 +419,7 @@ func (m *standardIndexMaintainer) insertInt64Entry(val int64, record *FDBStoredR
 	return nil
 }
 
-func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRecord[proto.Message]) error {
+func (m *StandardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRecord[proto.Message]) error {
 	trimmedPK, err := m.index.TrimPrimaryKey(record.PrimaryKey)
 	if err != nil {
 		return err
@@ -435,7 +437,7 @@ func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRe
 	}
 
 	if m.index.IsUnique() && val != nil {
-		entry := indexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+		entry := EvaluatedIndexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
 		if err := m.checkUniqueness(entry); err != nil {
 			return err
 		}
@@ -447,7 +449,7 @@ func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRe
 
 // insertSingleEntry handles the insert of a single VALUE index entry.
 // Extracted from the Update loop to support the insert-only fast path.
-func (m *standardIndexMaintainer) insertSingleEntry(entry indexEntry, record *FDBStoredRecord[proto.Message]) error {
+func (m *StandardIndexMaintainer) insertSingleEntry(entry EvaluatedIndexEntry, record *FDBStoredRecord[proto.Message]) error {
 	trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
 	if err != nil {
 		return err
@@ -481,7 +483,7 @@ func (m *standardIndexMaintainer) insertSingleEntry(entry indexEntry, record *FD
 // Scan scans index entries within the given tuple range.
 // Creates a KeyValueCursor over the index subspace and maps KVs to IndexEntry.
 // Matches Java's standardIndexMaintainer.scan().
-func (m *standardIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+func (m *StandardIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
 	return newIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
@@ -501,7 +503,7 @@ func deleteWhereRange(tx fdb.WritableTransaction, indexSubspace subspace.Subspac
 
 // DeleteWhere clears all index entries whose key starts with the given prefix.
 // Matches Java's standardIndexMaintainer.deleteWhere().
-func (m *standardIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+func (m *StandardIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	// Backstop for direct callers; DeleteRecordsWhere asks CanDeleteWhere BEFORE
 	// it clears anything. Method dispatch here is static, so a maintainer that
 	// embeds this and overrides CanDeleteWhere with a NARROWER bound must — and
@@ -513,7 +515,7 @@ func (m *standardIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 }
 
 // indexEntry represents a single index entry (indexed values + record primary key).
-type indexEntry struct {
+type EvaluatedIndexEntry struct {
 	key        tuple.Tuple
 	primaryKey tuple.Tuple
 	value      tuple.Tuple // Non-nil for KeyWithValueExpression covering indexes
@@ -524,7 +526,7 @@ type indexEntry struct {
 // (indexValuesFor), otherwise its evaluated entries, only those the store's
 // filter admits under IndexValuesSome. Every maintainer's update path reads a
 // record's entries through it, as Java's StandardIndexMaintainer.update does.
-func (m *standardIndexMaintainer) filteredIndexEntries(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
+func (m *StandardIndexMaintainer) FilteredIndexEntries(record *FDBStoredRecord[proto.Message]) ([]EvaluatedIndexEntry, error) {
 	if record == nil {
 		return nil, nil
 	}
@@ -543,7 +545,7 @@ func (m *standardIndexMaintainer) filteredIndexEntries(record *FDBStoredRecord[p
 // Fans out when the expression returns multiple key tuples (e.g. repeated fields).
 // If the index has a predicate and the record doesn't match, returns nil (no entries).
 // Matches Java's standardIndexMaintainer.evaluateIndex().
-func (m *standardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
+func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Message]) ([]EvaluatedIndexEntry, error) {
 	// Check predicate for sparse/filtered indexes
 	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
 		return nil, nil
@@ -561,7 +563,7 @@ func (m *standardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 				for j, v := range values {
 					key[j] = v
 				}
-				return []indexEntry{{key: key, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}}, nil
+				return []EvaluatedIndexEntry{{key: key, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}}, nil
 			}
 			// Fall through on error (e.g. fan-out)
 		}
@@ -572,7 +574,7 @@ func (m *standardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 		return nil, err
 	}
 
-	entries := make([]indexEntry, len(tuples))
+	entries := make([]EvaluatedIndexEntry, len(tuples))
 	for i, values := range tuples {
 		if isKeyWithValue {
 			// Split at splitPoint: key columns go in FDB key, value columns in FDB value.
@@ -586,13 +588,13 @@ func (m *standardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 			for j, v := range valuePart {
 				val[j] = v
 			}
-			entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey, value: val}
+			entries[i] = EvaluatedIndexEntry{key: key, primaryKey: record.PrimaryKey, value: val}
 		} else {
 			key := make(tuple.Tuple, len(values))
 			for j, v := range values {
 				key[j] = v
 			}
-			entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey}
+			entries[i] = EvaluatedIndexEntry{key: key, primaryKey: record.PrimaryKey}
 		}
 	}
 
@@ -605,7 +607,7 @@ func (m *standardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 // Java reads the full range too (no limit) and registers the scan as a
 // commit check via addIndexUniquenessCommitCheck().
 // Matches Java's standardIndexMaintainer.checkUniqueness().
-func (m *standardIndexMaintainer) checkUniqueness(entry indexEntry) error {
+func (m *StandardIndexMaintainer) checkUniqueness(entry EvaluatedIndexEntry) error {
 	prefixKey := m.indexSubspace.Pack(entry.key)
 	r, err := fdb.PrefixRange(prefixKey)
 	if err != nil {
@@ -623,7 +625,7 @@ func (m *standardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 	indexColCount := len(entry.key)
 
 	for _, kv := range kvs {
-		existingTuple, err := fastSubspaceUnpack(kv.Key, len(m.indexSubspace.Bytes()))
+		existingTuple, err := tuplefast.SubspaceUnpack(kv.Key, len(m.indexSubspace.Bytes()))
 		if err != nil {
 			return fmt.Errorf("unpack existing index entry: %w", err)
 		}
@@ -637,7 +639,7 @@ func (m *standardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 		// components removed). Must use getEntryPrimaryKey to get full PK
 		// for correct comparison and violation entries.
 		// Matches Java's Index.getEntryPrimaryKey(indexEntry).
-		existingPK := m.index.getEntryPrimaryKey(existingTuple)
+		existingPK := m.index.EntryPrimaryKey(existingTuple)
 		if tuplesEqual(existingPK, entry.primaryKey) {
 			continue // Our own record — not a violation
 		}
@@ -672,7 +674,7 @@ func (m *standardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 // currentIndexState uses the context's shared state view, not a store object's
 // open-time snapshot. Explicit state-key conflicts cover negative decisions too,
 // without issuing a point read for each maintained record.
-func (m *standardIndexMaintainer) currentIndexState() (IndexState, error) {
+func (m *StandardIndexMaintainer) currentIndexState() (IndexState, error) {
 	if m.store == nil {
 		return IndexStateReadable, nil
 	}
@@ -821,8 +823,8 @@ func tuplesEqual(a, b tuple.Tuple) bool {
 // removeCommonEntries filters out entries that are identical in both old and new.
 // This avoids unnecessary FDB mutations when a record update doesn't change
 // the indexed value. Matches Java's standardIndexMaintainer.commonKeys optimization.
-func removeCommonEntries(idx *Index, old, new []indexEntry) ([]indexEntry, []indexEntry, error) {
-	packEntry := func(e indexEntry) (string, error) {
+func RemoveCommonEntries(idx *Index, old, new []EvaluatedIndexEntry) ([]EvaluatedIndexEntry, []EvaluatedIndexEntry, error) {
+	packEntry := func(e EvaluatedIndexEntry) (string, error) {
 		// Include value in the comparison key for KeyWithValueExpression indexes.
 		// Matches Java's IndexEntry.equals() which compares both key and value.
 		ek, err := indexEntryKey(idx, e.key, e.primaryKey)
@@ -846,7 +848,7 @@ func removeCommonEntries(idx *Index, old, new []indexEntry) ([]indexEntry, []ind
 	}
 
 	common := make(map[string]struct{})
-	var filteredOld []indexEntry
+	var filteredOld []EvaluatedIndexEntry
 	for _, e := range old {
 		p, err := packEntry(e)
 		if err != nil {
@@ -859,7 +861,7 @@ func removeCommonEntries(idx *Index, old, new []indexEntry) ([]indexEntry, []ind
 		}
 	}
 
-	var filteredNew []indexEntry
+	var filteredNew []EvaluatedIndexEntry
 	for _, e := range new {
 		p, err := packEntry(e)
 		if err != nil {

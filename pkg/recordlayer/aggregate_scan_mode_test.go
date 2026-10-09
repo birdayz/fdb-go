@@ -216,7 +216,7 @@ func TestFDB_AggregateScanModes(t *testing.T) {
 							wantMode = fdb.StreamingModeWantAll
 						}
 						got, err = PermutedMinIgnoringNulls(ctx, func(r TupleRange, p ScanProperties) RecordCursor[*IndexEntry] {
-							return m.standardIndexMaintainer.Scan(r, nil, p)
+							return m.StandardIndexMaintainer.Scan(r, nil, p)
 						}, idx.Name, tuple.Tuple{int64(10)}, 1, 2, props)
 					} else {
 						fn.Index = idx.Name

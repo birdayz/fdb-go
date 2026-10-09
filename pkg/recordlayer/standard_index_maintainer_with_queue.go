@@ -14,7 +14,7 @@ import (
 // serialized old and new records and replaying them through
 // UpdateWhileWriteOnly, so a replayed update is not queued again.
 type standardIndexMaintainerWithQueue struct {
-	standardIndexMaintainer
+	StandardIndexMaintainer
 }
 
 // pendingRecordStore is the part of the store a queued record round-trips
@@ -74,7 +74,7 @@ func (m *standardIndexMaintainerWithQueue) UpdateFromQueue(data *anypb.Any) erro
 		return &UnsupportedOperationError{Message: m.index.Name + " does not support the pending write queue"}
 	}
 	records := &gen.OldAndNewRecords{}
-	if err := unmarshalPendingQueueAny(data, records); err != nil {
+	if err := UnmarshalPendingQueueAny(data, records); err != nil {
 		return &RecordCoreError{Message: "failed to parse pending write queue entry data", Cause: err}
 	}
 	var oldRecord, newRecord *FDBStoredRecord[proto.Message]

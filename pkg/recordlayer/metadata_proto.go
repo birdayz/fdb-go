@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/internal/protovalue"
@@ -130,7 +132,7 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 			rtProto.SinceVersion = proto.Int32(int32(rt.SinceVersion))
 		}
 		if rt.explicitRecordTypeKey != nil {
-			v, err := valueToProto(rt.explicitRecordTypeKey)
+			v, err := ValueToProto(rt.explicitRecordTypeKey)
 			if err != nil {
 				return nil, fmt.Errorf("record type %s explicit key: %w", name, err)
 			}
@@ -344,7 +346,7 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 			// The proto carries an int32 for a key written as one, so without
 			// this a round-tripped metadata would compare unequal to the
 			// metadata it came from while encoding to identical bytes.
-			key, keyErr := valueFromProto(rtProto.ExplicitKey)
+			key, keyErr := ValueFromProto(rtProto.ExplicitKey)
 			if keyErr != nil {
 				return nil, keyErr
 			}
@@ -700,7 +702,7 @@ func indexFromProto(p *gen.Index) (*Index, error) {
 	// a key of several items and a null item, so it loaded metadata Java refuses
 	// and maintained the index under a subspace Java never reads.
 	if p.SubspaceKey != nil {
-		t, err := fastUnpack(p.SubspaceKey)
+		t, err := tuplefast.Unpack(p.SubspaceKey)
 		if err != nil {
 			return nil, fmt.Errorf("subspace key: %w", err)
 		}
@@ -778,7 +780,7 @@ func formerIndexFromProto(p *gen.FormerIndex) (*FormerIndex, error) {
 		RemovedVersion: int(p.GetRemovedVersion()),
 		AddedVersion:   int(p.GetAddedVersion()),
 	}
-	t, err := fastUnpack(p.SubspaceKey)
+	t, err := tuplefast.Unpack(p.SubspaceKey)
 	if err != nil {
 		return nil, fmt.Errorf("subspace key: %w", err)
 	}
@@ -798,7 +800,7 @@ func formerIndexFromProto(p *gen.FormerIndex) (*FormerIndex, error) {
 // producer (RFC-202 S5): a SimpleComparison's operand is stored in exactly
 // this encoding (IndexComparison.java:253).
 func LiteralToProtoValue(v any) (*gen.Value, error) {
-	return valueToProto(v)
+	return ValueToProto(v)
 }
 
 // UnsupportedValueTypeError is the RecordCoreException Java's
@@ -818,7 +820,7 @@ func (*UnsupportedValueTypeError) JavaRecordCoreException() {}
 
 // valueToProto serializes a Go value to a Value proto.
 // Matches Java's LiteralKeyExpression.toProtoValue().
-func valueToProto(v any) (*gen.Value, error) {
+func ValueToProto(v any) (*gen.Value, error) {
 	if v == nil {
 		return &gen.Value{}, nil
 	}
@@ -866,7 +868,7 @@ func protoDeserializationError(err error) error {
 // LiteralKeyExpression.fromProtoValue does (protovalue.FromProto): the one
 // field set, nil when none is, and a RecordCoreError "More than one value
 // encoded in value" when several are.
-func valueFromProto(p *gen.Value) (any, error) {
+func ValueFromProto(p *gen.Value) (any, error) {
 	v, err := protovalue.FromProto(p)
 	if err != nil {
 		return nil, &RecordCoreError{Message: err.Error()}

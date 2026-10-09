@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"fdb.dev/pkg/recordlayer"
 
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
@@ -638,7 +640,7 @@ func TestVectorPlan_ZeroCapAndParamRankAreBounded(t *testing.T) {
 
 // TestVectorPlan_MetricIsTheMaintainers pins that the planner's vector
 // candidate takes its metric from the maintainer's own parse
-// (recordlayer.VectorIndexMetric): a metric the maintainer refuses builds no
+// (vectorindex.VectorIndexMetric): a metric the maintainer refuses builds no
 // candidate, where the planner's own parser mapped an empty HNSW metric to
 // Euclidean and an SPFresh "cosine" to cosine while the SPFresh maintainer read
 // it as Euclidean. Each such query is unplannable rather than served under a
@@ -671,7 +673,7 @@ func TestVectorPlan_MetricIsTheMaintainers(t *testing.T) {
 				t.Fatalf("control: err=%v", err)
 			}
 			idx.Options[c.key] = c.value
-			if _, err := recordlayer.VectorIndexMetric(idx); err == nil {
+			if _, err := vectorindex.VectorIndexMetric(idx); err == nil {
 				t.Fatalf("the maintainer's parse admitted %s=%q", c.key, c.value)
 			}
 			_, _, err = planPhysicalForMetaData(query, md, nil, false, nil, plannerOptionsFrom(nil), nil)

@@ -33,7 +33,7 @@ chaos's double-commit fake). The brute-force loop-until-bug hunter that rides on
 a latency metric, in-memory cache bookkeeping, or an asymmetric seam's production arm. Check the
 calls before asserting a run replays. Known exceptions:
 
-- **`spfreshNowMs`** (`pkg/recordlayer/spfresh_util.go`, 23 call sites) — SPFresh task/lease
+- **`spfreshNowMs`** (`pkg/recordlayer/vectorindex/spfresh_util.go`, 23 call sites) — SPFresh task/lease
   timestamps DO reach persisted rows and are unseamed. A SPFresh-heavy run does not replay
   bit-exactly.
 - **Goroutine fan-out** (indexer / spfresh) — a seeded source fixes the POOL of drawn bytes, but

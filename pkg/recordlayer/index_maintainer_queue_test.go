@@ -17,12 +17,12 @@ import (
 var _ = Describe("Index maintainer pending queue", func() {
 	It("explicitly refuses unsupported maintainers", func() {
 		index := NewIndex("unsupported", Field("price"))
-		base := standardIndexMaintainer{index: index}
+		base := StandardIndexMaintainer{index: index}
 		for _, maintainer := range []IndexMaintainer{
 			&base, &atomicMutationIndexMaintainer{index: index}, &bitmapValueIndexMaintainer{index: index},
 			&maxEverVersionIndexMaintainer{index: index}, &textIndexMaintainer{index: index}, &versionIndexMaintainer{index: index},
-			&rankIndexMaintainer{standardIndexMaintainer: base}, &multidimensionalIndexMaintainer{standardIndexMaintainer: base},
-			&timeWindowLeaderboardIndexMaintainer{standardIndexMaintainer: base},
+			&rankIndexMaintainer{StandardIndexMaintainer: base}, &multidimensionalIndexMaintainer{StandardIndexMaintainer: base},
+			&timeWindowLeaderboardIndexMaintainer{StandardIndexMaintainer: base},
 		} {
 			Expect(maintainer.IsPendingWriteQueueAllowed()).To(BeFalse())
 			_, err := maintainer.SerializePendingWriteQueue(nil, nil)

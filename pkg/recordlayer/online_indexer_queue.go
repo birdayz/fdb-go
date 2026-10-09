@@ -267,7 +267,7 @@ func (oi *OnlineIndexer) drainPendingIndexWritesForIndex(ctx context.Context, in
 			if err != nil {
 				return nil, err
 			}
-			rc.getOrCreateCommitCheck(pendingWriteCommitCheckPrefix(store.subspace)+"heartbeat:"+index.Name, func(string) CommitCheckFunc {
+			rc.GetOrCreateCommitCheck(PendingWriteCommitCheckPrefix(store.subspace)+"heartbeat:"+index.Name, func(string) CommitCheckFunc {
 				return func() error {
 					state, err := store.readIndexState(index.Name)
 					if err != nil {

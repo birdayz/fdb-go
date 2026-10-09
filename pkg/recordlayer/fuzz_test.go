@@ -9,6 +9,8 @@ import (
 	"math/big"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -65,7 +67,7 @@ func FuzzFastUnpack(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// fastUnpack must never panic.
-		got, fastErr := fastUnpack(data)
+		got, fastErr := tuplefast.Unpack(data)
 
 		// tuple.Unpack (upstream FDB library) may panic on truncated input —
 		// that's their bug, not ours. Recover and treat as an error.
@@ -113,7 +115,7 @@ func FuzzFastUnpackRoundtrip(f *testing.F) {
 		original := tuple.Tuple{i, s, b}
 		packed := original.Pack()
 
-		got, err := fastUnpack(packed)
+		got, err := tuplefast.Unpack(packed)
 		if err != nil {
 			t.Fatalf("fastUnpack failed on valid packed tuple: %v\n  input: %x", err, packed)
 		}
