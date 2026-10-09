@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/onsi/ginkgo/v2"
+
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	"github.com/bazelbuild/rules_go/go/runfiles"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -46,6 +48,9 @@ type JavaInvoker struct {
 	// JavaServerPool. The pool recycles a server once it reaches the pool's
 	// maxInvocations bound. Guarded by mu.
 	borrows int
+	// release, when set, decides at Close whether this server goes back to the
+	// isolated-server cache (true: Close keeps it alive) or really closes.
+	release func(*JavaInvoker) bool
 }
 
 var (
@@ -84,6 +89,9 @@ func deregisterInvoker(j *JavaInvoker) {
 // from the suite teardown so a missed Close (panic, interrupt) can never leak a
 // JVM beyond the test process.
 func CloseAllJavaServers() {
+	isolatedCache.mu.Lock()
+	isolatedCache.inv = nil // the cached server closes below like any other
+	isolatedCache.mu.Unlock()
 	liveInvokersMu.Lock()
 	invs := make([]*JavaInvoker, 0, len(liveInvokers))
 	for j := range liveInvokers {
@@ -126,8 +134,63 @@ func NewJavaInvoker() *JavaInvoker {
 // fdb-relational 4.12.11.0's error-path teardown.
 //
 // Caller is responsible for Close()-ing the returned invoker.
+//
+// A server is REUSED across specs (Ginkgo runs a suite's specs one at a time)
+// for up to CONFORMANCE_JVM_REUSE hand-outs (default 8; 0 disables reuse), and
+// never after a spec that used it failed: a JVM start is most of a small
+// probe's cost (~5 s of a median 8 s spec on CI), while the leak the isolation
+// guards against compounds only over many error paths in one JVM, which the
+// bound and the failure recycle keep short.
 func NewIsolatedJavaInvoker() (*JavaInvoker, error) {
-	return startJavaServer()
+	isolatedCache.mu.Lock()
+	defer isolatedCache.mu.Unlock()
+	limit := isolatedReuseLimit()
+	if c := isolatedCache.inv; c != nil && !isolatedCache.inUse && isolatedCache.uses < limit {
+		isolatedCache.inUse = true
+		isolatedCache.uses++
+		return c, nil
+	}
+	inv, err := startJavaServer()
+	if err != nil || limit <= 1 {
+		return inv, err
+	}
+	if isolatedCache.inv == nil {
+		isolatedCache.inv, isolatedCache.uses, isolatedCache.inUse = inv, 1, true
+		inv.release = releaseIsolated
+	}
+	return inv, nil
+}
+
+var isolatedCache struct {
+	mu    sync.Mutex
+	inv   *JavaInvoker
+	uses  int
+	inUse bool
+}
+
+func isolatedReuseLimit() int {
+	if v := os.Getenv("CONFORMANCE_JVM_REUSE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return 8
+}
+
+// releaseIsolated returns the cached server to the cache unless it is used up
+// or the spec that held it failed, in which case it really closes.
+func releaseIsolated(j *JavaInvoker) bool {
+	isolatedCache.mu.Lock()
+	defer isolatedCache.mu.Unlock()
+	if isolatedCache.inv != j {
+		return false // not (or no longer) the cached server: really close
+	}
+	isolatedCache.inUse = false
+	if isolatedCache.uses >= isolatedReuseLimit() || ginkgo.CurrentSpecReport().Failed() {
+		isolatedCache.inv = nil
+		return false
+	}
+	return true
 }
 
 // defaultA3PoolSize is the number of Java servers the A3 parallel precompute
@@ -502,6 +565,9 @@ func startJavaServer() (*JavaInvoker, error) {
 
 // Close shuts down the Java server
 func (j *JavaInvoker) Close() error {
+	if j.release != nil && j.release(j) {
+		return nil
+	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
