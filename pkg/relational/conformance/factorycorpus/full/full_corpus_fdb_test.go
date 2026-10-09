@@ -16,6 +16,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -70,18 +72,121 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// TestFDB_FactoryCorpusFull executes every committed scenario.
-func TestFDB_FactoryCorpusFull(t *testing.T) {
+// The corpus runs as fullShards top-level tests, one per Bazel shard
+// (rules_go shards by top-level test function; shard_count in BUILD.bazel
+// must equal fullShards). One process replaying all ~8000 scenarios was the
+// suite's longest pole: 873 s on CI, most of it after every other target had
+// finished, with the other cores idle. Each shard is its own process with its
+// own container and loads only its own files.
+const fullShards = 8
+
+func TestFDB_FactoryCorpusFull0(t *testing.T) { runShard(t, 0) }
+func TestFDB_FactoryCorpusFull1(t *testing.T) { runShard(t, 1) }
+func TestFDB_FactoryCorpusFull2(t *testing.T) { runShard(t, 2) }
+func TestFDB_FactoryCorpusFull3(t *testing.T) { runShard(t, 3) }
+func TestFDB_FactoryCorpusFull4(t *testing.T) { runShard(t, 4) }
+func TestFDB_FactoryCorpusFull5(t *testing.T) { runShard(t, 5) }
+func TestFDB_FactoryCorpusFull6(t *testing.T) { runShard(t, 6) }
+func TestFDB_FactoryCorpusFull7(t *testing.T) { runShard(t, 7) }
+
+// shardFiles assigns the corpus files to fullShards shards, largest file
+// first onto the lightest shard (by bytes, a proxy for scenario count), and
+// returns shard's files. Every file lands in exactly one shard;
+// TestFDB_FactoryCorpusShardsCoverTheCorpus pins that.
+func shardFiles(t *testing.T, shard int) []string {
+	t.Helper()
+	assign := assignShards(t)
+	var out []string
+	for path, s := range assign {
+		if s == shard {
+			out = append(out, path)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func assignShards(t *testing.T) map[string]int {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(corpusDir, "*.yamsql"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("glob %s: %v (%d files): an empty corpus passes vacuously", corpusDir, err, len(paths))
+	}
+	type file struct {
+		path string
+		size int64
+	}
+	files := make([]file, len(paths))
+	for i, p := range paths {
+		st, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("stat %s: %v", p, err)
+		}
+		files[i] = file{p, st.Size()}
+	}
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].size != files[j].size {
+			return files[i].size > files[j].size
+		}
+		return files[i].path < files[j].path
+	})
+	var load [fullShards]int64
+	assign := make(map[string]int, len(files))
+	for _, f := range files {
+		best := 0
+		for s := 1; s < fullShards; s++ {
+			if load[s] < load[best] {
+				best = s
+			}
+		}
+		assign[f.path] = best
+		load[best] += f.size
+	}
+	return assign
+}
+
+// TestFDB_FactoryCorpusShardsCoverTheCorpus pins the partition: every
+// committed file belongs to exactly one shard, so the shards together run the
+// whole corpus once.
+func TestFDB_FactoryCorpusShardsCoverTheCorpus(t *testing.T) {
+	corpus, err := filepath.Glob(filepath.Join(corpusDir, "*.yamsql"))
+	if err != nil || len(corpus) == 0 {
+		t.Fatalf("glob %s: %v (%d files)", corpusDir, err, len(corpus))
+	}
+	seen := map[string]int{}
+	for s := 0; s < fullShards; s++ {
+		for _, f := range shardFiles(t, s) {
+			if prev, dup := seen[f]; dup {
+				t.Fatalf("%s is in shard %d and shard %d", f, prev, s)
+			}
+			seen[f] = s
+		}
+	}
+	for _, f := range corpus {
+		if _, ok := seen[f]; !ok {
+			t.Fatalf("%s is in no shard: the shards would not run it", f)
+		}
+	}
+}
+
+// runShard executes every committed scenario of one shard.
+func runShard(t *testing.T, shard int) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
-	files, err := factorycorpus.LoadDir(corpusDir)
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
+	var files []*factorycorpus.Scenario
+	for _, path := range shardFiles(t, shard) {
+		f, err := factorycorpus.Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		files = append(files, f.Scenarios...)
 	}
-	t.Logf("executing the full committed corpus: %d scenarios", len(files))
-
+	if len(files) == 0 {
+		t.Fatalf("shard %d of %d has no scenarios: it would pass vacuously", shard, fullShards)
+	}
+	t.Logf("executing shard %d of %d: %d scenarios", shard, fullShards, len(files))
 	// A scenario's own failure text is printed where it happens, buried in one
 	// subtest among thousands. The summary below is what makes a red legible:
 	// it is written to stderr, unbuffered and last, after every parallel

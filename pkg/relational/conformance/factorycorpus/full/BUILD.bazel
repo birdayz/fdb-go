@@ -30,14 +30,11 @@ go_test(
         "full_corpus_fdb_test.go",
     ],
     data = ["//pkg/relational/conformance/factorycorpus:testdata"],
-    # keep at 1: Bazel shards by TOP-LEVEL TEST FUNCTION, and this package has
-    # exactly one (TestFDB_FactoryCorpusFull). The corpus's parallelism is
-    # inside it — a t.Parallel() subtest per scenario — which no shard split can
-    # reach. shard_count = 4 therefore bought nothing and cost three extra FDB
-    # containers, each of which starts, finds no test assigned to its shard, and
-    # exits. Raise this only if the package ever grows a second top-level Test
-    # function, and then only to the number of such functions.
-    shard_count = 1,
+    # keep: Bazel (rules_go) shards by TOP-LEVEL TEST FUNCTION, and the corpus
+    # runs as one function per shard (TestFDB_FactoryCorpusFull0..7, each over a
+    # disjoint, size-balanced set of corpus files). Must equal fullShards in
+    # full_corpus_fdb_test.go. Each shard is its own process and FDB container.
+    shard_count = 8,
     tags = [
         "resources:memory:2600",
         "test-full",
