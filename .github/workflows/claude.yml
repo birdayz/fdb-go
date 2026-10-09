@@ -44,8 +44,12 @@ jobs:
         (github.event.review.author_association == 'OWNER' || github.event.review.author_association == 'MEMBER' || github.event.review.author_association == 'COLLABORATOR')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) &&
         (github.event.issue.author_association == 'OWNER' || github.event.issue.author_association == 'MEMBER' || github.event.issue.author_association == 'COLLABORATOR'))
-    runs-on: hetzner-fdb-vm
-    # Hard wall so a wedged run can never hold a CI box for hours
+    # GitHub-hosted, never the self-hosted fleet: the agent reads untrusted
+    # issue and pull-request content, and the self-hosted boxes are persistent,
+    # have sudo and write the fleet's shared Bazel cache (infra/runner-job-guard.sh
+    # refuses such jobs there anyway). Nothing here needs Bazel or FDB.
+    runs-on: ubuntu-latest
+    # Hard wall so a wedged run can never hold a runner for hours
     # (a review normally completes in well under 15 minutes).
     timeout-minutes: 45
     permissions:
@@ -59,12 +63,6 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 1
-
-      - name: Ensure system tools
-        run: |
-          if ! command -v unzip &>/dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq unzip
-          fi
 
       - name: Ensure bun is installed
         run: |
