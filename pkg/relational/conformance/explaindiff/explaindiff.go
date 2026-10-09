@@ -47,9 +47,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -155,7 +157,16 @@ func collect(dir string, reach *cascades.ReachabilityCollector) ([]Entry, Stats,
 		return nil, Stats{}, fmt.Errorf("no *.yaml scenarios under %s", dir)
 	}
 
-	var entries []Entry
+	// Statements are gathered in corpus order, planned concurrently (each plan
+	// is independent; generated aliases are renumbered per plan, and the
+	// reachability collector is mutex-guarded), and folded back in corpus
+	// order, so entries and stats are exactly the serial ones.
+	type job struct {
+		base, sql, errorPin, schemaTemplate string
+		idx                                 int
+		plan                                planFn
+	}
+	var jobs []job
 	st := Stats{Files: len(matches)}
 	for _, path := range matches {
 		base := filepath.Base(path)
@@ -186,14 +197,31 @@ func collect(dir string, reach *cascades.ReachabilityCollector) ([]Entry, Stats,
 				st.NonQuery++
 				continue
 			}
-			e := planOne(base, i, t.Query, t.EffectiveErrorCode(), s.SchemaTemplate, reach, plan)
-			if e.Failed() {
-				st.PlanErrors++
+			jobs = append(jobs, job{base, t.Query, t.EffectiveErrorCode(), s.SchemaTemplate, i, plan})
+		}
+	}
+	entries := make([]Entry, len(jobs))
+	work := make(chan int)
+	var wg sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), max(len(jobs), 1)) {
+		wg.Go(func() {
+			for k := range work {
+				j := jobs[k]
+				entries[k] = planOne(j.base, j.idx, j.sql, j.errorPin, j.schemaTemplate, reach, j.plan)
 			}
-			if e.UnexpectedlyFailed() {
-				st.UnexpectedErrors++
-			}
-			entries = append(entries, e)
+		})
+	}
+	for k := range jobs {
+		work <- k
+	}
+	close(work)
+	wg.Wait()
+	for _, e := range entries {
+		if e.Failed() {
+			st.PlanErrors++
+		}
+		if e.UnexpectedlyFailed() {
+			st.UnexpectedErrors++
 		}
 	}
 	return entries, st, nil
