@@ -195,7 +195,7 @@ func (p *RecordQueryStreamingAggregationPlan) GetQuantifiers() []expressions.Qua
 	if p.innerQ.GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return quantifierView(&p.innerQ)
 }
 
 // GetCorrelatedToWithoutChildren is Java's

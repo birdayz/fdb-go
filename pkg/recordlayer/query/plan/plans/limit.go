@@ -75,7 +75,7 @@ func (p *RecordQueryLimitPlan) GetQuantifiers() []expressions.Quantifier {
 	if p.innerQ.GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return quantifierView(&p.innerQ)
 }
 
 func (p *RecordQueryLimitPlan) GetResultType() values.Type { return p.GetResultValue().Type() }

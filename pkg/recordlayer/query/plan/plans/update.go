@@ -175,7 +175,7 @@ func (p *RecordQueryUpdatePlan) GetQuantifiers() []expressions.Quantifier {
 	if p.innerQ.GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return quantifierView(&p.innerQ)
 }
 
 // GetTargetRecordType returns the destination record-type name.

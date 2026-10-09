@@ -56,7 +56,7 @@ func (p *RecordQueryTempTableInsertPlan) GetQuantifiers() []expressions.Quantifi
 	if p.innerQ.GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return quantifierView(&p.innerQ)
 }
 
 func (p *RecordQueryTempTableInsertPlan) GetTempTableAlias() values.CorrelationIdentifier {

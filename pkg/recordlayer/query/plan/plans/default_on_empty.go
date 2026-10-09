@@ -201,7 +201,7 @@ func (p *RecordQueryDefaultOnEmptyPlan) GetQuantifiers() []expressions.Quantifie
 	if p.innerQ.GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return quantifierView(&p.innerQ)
 }
 
 func (p *RecordQueryDefaultOnEmptyPlan) GetResultType() values.Type { return p.GetResultValue().Type() }

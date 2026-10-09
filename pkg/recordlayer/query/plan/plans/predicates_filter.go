@@ -133,7 +133,7 @@ func (p *RecordQueryPredicatesFilterPlan) GetQuantifiers() []expressions.Quantif
 	if p.innerQ.GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return quantifierView(&p.innerQ)
 }
 
 // GetInnerAlias returns the correlation alias under which the current
