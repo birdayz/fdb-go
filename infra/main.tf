@@ -182,7 +182,10 @@ resource "hcloud_server" "runner" {
     github_repo         = var.github_repo
     github_runner_token = var.github_runner_token
     runner_name         = "gh-runner-fdb"
-    runner_labels       = var.runner_labels
+    # fdb-ci-main pins ci.yml's main job to this box, so its Bazel disk cache
+    # always holds the previous main run's actions and test results (a job that
+    # lands on the other box re-runs everything). See ci.yml.
+    runner_labels       = "${var.runner_labels},fdb-ci-main"
     runner_ephemeral    = var.runner_ephemeral
     runner_version      = local.versions.runner_version
     runner_sha256       = local.versions.runner_sha256
@@ -284,7 +287,9 @@ resource "hcloud_server" "runner_pool" {
     github_repo                       = var.github_repo
     github_runner_token               = local.pool_registration_token
     runner_name                       = "gh-runner-drain-${count.index}"
-    runner_labels                     = var.runner_labels
+    # The first pool box carries ci.yml's race and Java-conformance jobs
+    # (fdb-ci-aux), for the cache reason gh-runner-fdb's label gives.
+    runner_labels                     = count.index == 0 ? "${var.runner_labels},fdb-ci-aux" : var.runner_labels
     runner_ephemeral                  = false
     runner_version                    = local.versions.runner_version
     runner_sha256                     = local.versions.runner_sha256
