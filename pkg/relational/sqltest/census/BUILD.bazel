@@ -7,8 +7,9 @@ load("@rules_go//go:def.bzl", "go_test")
 # asserted here and only here. deps is the union of the packages' deps; a missing
 # one fails this build.
 #
-# Manual: it reruns the entire corpus on almost any change, so PR CI leaves it to
-# the per-package targets and nightly-coverage / `just test-full` run it.
+# Manual and nightly: it reruns the entire corpus on almost any change, while the
+# per-package targets already run every census gate (floors withheld), so only
+# nightly-coverage runs it; `just test-full` skips the nightly tag.
 go_test(
     name = "census_test",
     size = "large",
@@ -20,6 +21,7 @@ go_test(
     data = ["//pkg/relational/sqltest/agg/distinctelision:testdata"],
     tags = [
         "manual",
+        "nightly",
         "resources:cpu:8",
         "resources:memory:700",
         "test-full",

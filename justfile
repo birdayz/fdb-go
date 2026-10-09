@@ -108,7 +108,7 @@ build:
 # Bazel schedules tests in command-line order and has no priority knob, so a
 # 5-10 minute target listed by label order starts minutes late and becomes the
 # tail. Ordering only; a stale entry is harmless.
-test_full_first := "//pkg/relational/sqltest/census:census_test //conformance:rfc257_oracle_test //pkg/relational/conformance/factorycorpus/full:full_test //conformance:rfc257_guardiann_java_test //conformance:conformance_probes_test //conformance:conformance_test //pkg/fdbgo/client:client_test //pkg/relational/conformance/factory:factory_test //conformance:conformance_corpora_test //pkg/recordlayer:million_record_test //pkg/recordlayer/chaos:chaos_test"
+test_full_first := "//conformance:rfc257_oracle_test //pkg/relational/conformance/factorycorpus/full:full_test //conformance:rfc257_guardiann_java_test //conformance:conformance_probes_test //conformance:conformance_test //pkg/fdbgo/client:client_test //pkg/relational/conformance/factory:factory_test //conformance:conformance_corpora_test //pkg/recordlayer:million_record_test //pkg/recordlayer/chaos:chaos_test"
 
 # Standard edit/commit loop: unit tests and bounded integration tests, with nogo.
 # Heavy suites are tagged test-full (or conformance_java/stress/manual).
@@ -121,16 +121,20 @@ sqltest *args:
     bazelisk test //pkg/relational/sqldriver:all //pkg/relational/sqltest/... {{args}}
 
 # The whole sqltest corpus as one binary: the only run that asserts the census
-# floors. Manual target; nightly-coverage and `just test-full` run it too.
+# population floors (every sqltest package already runs the census gates, but
+# with the whole-corpus floors withheld). Tagged nightly: nightly-coverage runs
+# it, `just test-full` does not, since it reruns the entire corpus (~2500 CPU-s)
+# for a meta-coverage check.
 census *args:
     bazelisk test //pkg/relational/sqltest/census:census_test {{args}}
 
-# Thorough lane: all Bazel test targets, including manual stress/oracle targets.
+# Thorough lane: all Bazel test targets, including manual stress/oracle targets,
+# except those tagged nightly (run by the nightly workflows instead).
 # Query explicitly: //... alone silently omits manual targets. Cache stays enabled.
 test-full *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    all=$(bazelisk query 'kind(".*_test", //...)' --output=label)
+    all=$(bazelisk query 'kind(".*_test", //...) except attr(tags, "\bnightly\b", //...)' --output=label)
     test -n "$all" || { echo 'No test targets found' >&2; exit 1; }
     targets=$( { for t in {{test_full_first}}; do grep -Fx -- "$t" <<<"$all" || true; done; grep -Fvx -f <(tr ' ' '\n' <<<"{{test_full_first}}") <<<"$all"; } )
     test "$(wc -l <<<"$targets")" -eq "$(wc -l <<<"$all")" || { echo 'test-full reordering lost targets' >&2; exit 1; }
