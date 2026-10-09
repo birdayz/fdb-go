@@ -21,4 +21,5 @@ go_test(
     name = "continuation_test",
     srcs = ["continuation_test.go"],
     embed = [":continuation"],
+    tags = ["resources:cpu:2"],
 )

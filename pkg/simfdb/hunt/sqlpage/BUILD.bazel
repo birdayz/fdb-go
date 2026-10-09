@@ -35,6 +35,7 @@ go_test(
         "unionall_continuation_test.go",
     ],
     embed = [":sqlpage"],
+    tags = ["resources:cpu:3"],
     deps = [
         "//pkg/relational/api",
         "//pkg/relational/core/keyspace",

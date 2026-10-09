@@ -104,7 +104,10 @@ go_test(
         "union_oracle_test.go",
     ],
     embed = [":rowdiff"],
-    tags = ["test-full"],
+    tags = [
+        "resources:cpu:6",
+        "test-full",
+    ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/properties",

@@ -1178,6 +1178,7 @@ go_test(
         "planning_cost_model_vector_engine_test.go",
         "rule_call_observer.go",
     ],
+    tags = ["resources:cpu:2"],
     deps = [
         "//gen",
         "//pkg/fdbgo/fdb/tuple",

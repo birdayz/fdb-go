@@ -20,6 +20,7 @@ go_test(
     data = ["//pkg/relational/sqltest/agg/distinctelision:testdata"],
     tags = [
         "manual",
+        "resources:cpu:8",
         "resources:memory:700",
         "test-full",
     ],

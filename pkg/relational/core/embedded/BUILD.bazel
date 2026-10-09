@@ -549,6 +549,7 @@ go_test(
         "macro_relop_test.go",
         "plan_harness_schema_cache_test.go",
     ],
+    tags = ["resources:cpu:4"],
     deps = [
         "//gen",
         "//pkg/dst",

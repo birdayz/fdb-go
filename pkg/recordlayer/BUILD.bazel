@@ -480,8 +480,10 @@ go_test(
         "recordlayer_suite_test.go",
     ],
     embed = [":recordlayer"],
+    # Not exclusive: under --local_test_jobs=0 the memory tag already keeps it
+    # from sharing a budget it cannot fit, and exclusive pinned it to the very
+    # end of test-full as a 125 s serial tail.
     tags = [
-        "exclusive",
         "manual",
         "resources:memory:4300",
     ],

@@ -81,7 +81,10 @@ go_test(
         "//third_party/apple/fdb-record-layer:yamsql_corpus",
     ],
     embed = [":javacorpus"],
-    tags = ["resources:memory:400"],
+    tags = [
+        "resources:cpu:3",
+        "resources:memory:400",
+    ],
     deps = [
         "//pkg/dst",
         "//pkg/fdbgo/fdb",

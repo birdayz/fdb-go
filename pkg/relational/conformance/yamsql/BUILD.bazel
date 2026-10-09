@@ -80,7 +80,10 @@ go_test(
         "//:MODULE.bazel",
     ],
     embed = [":yamsql"],
-    tags = ["resources:memory:700"],
+    tags = [
+        "resources:cpu:3",
+        "resources:memory:700",
+    ],
     deps = [
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
