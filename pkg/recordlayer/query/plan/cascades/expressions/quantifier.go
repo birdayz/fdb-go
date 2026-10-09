@@ -529,7 +529,11 @@ func memberFlowedRow(alias values.CorrelationIdentifier, rv values.Value) (value
 	if rv == nil {
 		return nil, &FlowedObjectTypeUnavailableError{Alias: alias, Reason: "member has no result Value"}
 	}
-	relation, err := values.ExactRelationOf(rv.Type())
+	object, err := values.ExactTypeForValue(rv)
+	if err != nil {
+		return nil, fmt.Errorf("quantifier %s member result type: %w", alias.Name(), err)
+	}
+	relation, err := values.ExactRelationOfHandle(object)
 	if err != nil {
 		return nil, fmt.Errorf("quantifier %s member result type: %w", alias.Name(), err)
 	}
