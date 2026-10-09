@@ -119,3 +119,6 @@ flake-runs/
 
 # Local, untracked RFC-232 session handoff (durable findings belong in TODO.md).
 HANDOFF_RFC232_CLAUDE.md
+
+# Personal Bazel overrides (see the end of .bazelrc)
+/user.bazelrc

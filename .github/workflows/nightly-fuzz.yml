@@ -85,25 +85,25 @@ jobs:
 
       - name: Build C++ oracle
         if: steps.window.outputs.ok == 'true'
-        run: bazelisk build //cmd/fdb-diff-oracle:diff_oracle_bin
+        run: bazelisk build --config=ci //cmd/fdb-diff-oracle:diff_oracle_bin
 
       - name: Build Go fuzz test
         if: steps.window.outputs.ok == 'true'
-        run: bazelisk build //cmd/fdb-diff-oracle:fdb-diff-oracle_test
+        run: bazelisk build --config=ci //cmd/fdb-diff-oracle:fdb-diff-oracle_test
 
       - name: Build fuzzrun (fuzz failure classifier)
         if: steps.window.outputs.ok == 'true'
-        run: bazelisk build //cmd/fuzzrun
+        run: bazelisk build --config=ci //cmd/fuzzrun
 
       - name: Resolve Bazel Go SDK
         if: steps.window.outputs.ok == 'true'
         id: go-sdk
         run: |
-          OUTPUT_BASE=$(bazelisk info output_base 2>/dev/null)
+          OUTPUT_BASE=$(bazelisk info --config=ci output_base 2>/dev/null)
           GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
           if [ -z "$GO_BIN" ]; then
             echo "Bazel Go SDK not materialized (cold slot) — fetching it via bazel"
-            bazelisk run @rules_go//go -- version >/dev/null 2>&1 || true
+            bazelisk run --config=ci @rules_go//go -- version >/dev/null 2>&1 || true
             GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
           fi
           if [ -z "$GO_BIN" ]; then
@@ -136,7 +136,7 @@ jobs:
         run: |
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
           GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
-          FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
+          FUZZRUN=$(realpath "$(bazelisk cquery --config=ci --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
           TARGETS=$(grep -rhoP '^func \KFuzz\w+' cmd/fdb-diff-oracle/*_test.go | sort -u)
           if [ -z "$TARGETS" ]; then
             echo "::error::no Fuzz targets discovered in cmd/fdb-diff-oracle — fuzz gate is a no-op"
@@ -304,7 +304,7 @@ jobs:
         # helped: measured on Bazel 9.0.1, a memory budget with no per-target tag
         # still runs 4 tests concurrently. The job count is its own knob.
         run: >
-          bazelisk test
+          bazelisk test --config=ci
           //pkg/fdbgo/client:client_test
           //pkg/recordlayer:recordlayer_test
           //pkg/fdbgo/fdb:fdb_test
@@ -314,7 +314,7 @@ jobs:
           --@rules_go//go/config:race
           --local_test_jobs=1
           --test_timeout=900
-          --test_summary=detailed
+         
 
       - name: Record genuine-run heartbeat
         # See diff-fuzz's heartbeat above for the rationale. This job needs its OWN
@@ -386,17 +386,17 @@ jobs:
 
       - name: Build
         if: steps.window.outputs.ok == 'true'
-        run: bazelisk build //cmd/fdb-binding-stress:fdb-binding-stress //cmd/fdb-stacktester:fdb-stacktester
+        run: bazelisk build --config=ci //cmd/fdb-binding-stress:fdb-binding-stress //cmd/fdb-stacktester:fdb-stacktester
 
       - name: Run API binding stress (50 seeds × 1000 ops)
         if: steps.window.outputs.ok == 'true'
         # id: keyed by the genuine-run heartbeat below — this job's first real work.
         id: binding
-        run: bazelisk run //cmd/fdb-binding-stress -- -seeds 50 -ops 1000
+        run: bazelisk run --config=ci //cmd/fdb-binding-stress -- -seeds 50 -ops 1000
 
       - name: Run directory binding stress (30 seeds × 500 ops)
         if: steps.window.outputs.ok == 'true'
-        run: bazelisk run //cmd/fdb-binding-stress -- -seeds 30 -ops 500 -test-name directory
+        run: bazelisk run --config=ci //cmd/fdb-binding-stress -- -seeds 30 -ops 500 -test-name directory
 
       - name: Upload binding stress logs on failure
         # The harness writes each seed's tester output, FDB trace logs and docker
@@ -494,9 +494,9 @@ jobs:
         # for the non-selected targets are still replayed by the per-PR/CI gates.
         run: |
           mkdir -p /tmp/fuzz-cache
-          bazelisk build //cmd/fuzzrun
-          FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
-          VALID=$(bazelisk query 'kind(go_test, //pkg/fdbgo/...)' 2>/dev/null)
+          bazelisk build --config=ci //cmd/fuzzrun
+          FUZZRUN=$(realpath "$(bazelisk cquery --config=ci --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
+          VALID=$(bazelisk query --config=ci 'kind(go_test, //pkg/fdbgo/...)' 2>/dev/null)
           PAIRS=""
           for f in $(grep -rl '^func Fuzz' pkg/fdbgo/ --include='*_test.go'); do
             dir=$(dirname "$f")
@@ -575,7 +575,7 @@ jobs:
             RETRY_DEADLINE=$(( STEP_END - (TOTAL - RAN + 1) * PER_TARGET ))
             echo "=== $target $fn (90s) ==="
             "$FUZZRUN" -label "$target $fn" -deadline "$RETRY_DEADLINE" -racelog "$RACELOG" -- \
-              bazelisk test "$target" \
+              bazelisk test --config=ci "$target" \
                 --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
                 --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
                 --sandbox_writable_path=/tmp/fuzz-cache \
@@ -675,9 +675,9 @@ jobs:
         # DISCOVERED, not hard-listed; an empty discovery fails the job (no-op guard).
         run: |
           mkdir -p /tmp/fuzz-cache
-          bazelisk build //cmd/fuzzrun
-          FUZZRUN=$(realpath "$(bazelisk cquery --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
-          VALID=$(bazelisk query 'kind(go_test, //pkg/relational/... + //pkg/recordlayer/... + //pkg/rabitq/...)' 2>/dev/null)
+          bazelisk build --config=ci //cmd/fuzzrun
+          FUZZRUN=$(realpath "$(bazelisk cquery --config=ci --output=files //cmd/fuzzrun 2>/dev/null | tail -1)")
+          VALID=$(bazelisk query --config=ci 'kind(go_test, //pkg/relational/... + //pkg/recordlayer/... + //pkg/rabitq/...)' 2>/dev/null)
           PAIRS=""
           for f in $(grep -rl '^func Fuzz' pkg/relational pkg/recordlayer pkg/rabitq --include='*_test.go'); do
             dir=$(dirname "$f")
@@ -758,7 +758,7 @@ jobs:
             RETRY_DEADLINE=$(( STEP_END - (TOTAL - RAN + 1) * PER_TARGET ))
             echo "=== $target $fn (90s) ==="
             "$FUZZRUN" -label "$target $fn" -deadline "$RETRY_DEADLINE" -racelog "$RACELOG" -- \
-              bazelisk test "$target" \
+              bazelisk test --config=ci "$target" \
                 --test_arg=-test.run='^$' --test_arg=-test.fuzz="^${fn}\$" \
                 --test_arg=-test.fuzztime=90s --test_arg=-test.fuzzcachedir=/tmp/fuzz-cache \
                 --sandbox_writable_path=/tmp/fuzz-cache \

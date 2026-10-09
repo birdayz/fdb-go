@@ -87,12 +87,13 @@ jobs:
       # `bazelrunfiles` and `stress` still hold. Passing the label flag directly would
       # have to restate them and would silently drop any tag later added there.
       #
-      # --local_test_jobs=0 hands test scheduling to Bazel's resource accounting, so
-      # each target's tags = ["resources:memory:N"] (its measured peak, FDB container
-      # included) is charged against --local_resources=memory; any non-zero
-      # --local_test_jobs makes Bazel ignore those tags (measured, Bazel 9.0.1). 4500 MB
-      # is this 7.6 GB runner minus its idle baseline (~730 MB) and the Bazel server
-      # (~2500 MB); CPU still caps concurrency at the runner's 4 cores. A suite too big
+      # Scheduling comes from .bazelrc (--config=ci), the same rule as every machine:
+      # --local_test_jobs=0 hands it to Bazel's resource accounting, so each target's
+      # tags = ["resources:memory:N"] (its measured peak, FDB container included) and
+      # ["resources:cpu:N"] are charged against HOST_RAM*0.6 (test:ci) and HOST_CPUS; any
+      # non-zero --local_test_jobs makes Bazel ignore those tags (measured, Bazel
+      # 9.0.1). 0.6 is the 4500 MB this 7.6 GB runner was measured safe at: the runner
+      # minus its idle baseline (~730 MB) and the Bazel server (~2500 MB). A suite too big
       # to share the box (factory_test 3300 MB) runs only beside small ones, and one
       # larger than the whole budget runs alone, which is what "exclusive" did, except
       # that an exclusive target waited for every other test and then ran with three
@@ -102,7 +103,7 @@ jobs:
       # conformance-java job on the other runner; see there.
       - name: Build, lint & test
         id: test
-        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress,-conformance_java --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl --local_test_jobs=0 --local_resources=memory=4500 --profile=bazel-profile.json.gz
+        run: bazelisk test --config=ci //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress,-conformance_java --build_event_json_file=.bazel-bep.jsonl
 
       # tools/bazelscaleset is a standalone Go module (its own go.mod) so the
       # runner supervisor's GitHub-API dependencies never enter the
@@ -121,7 +122,7 @@ jobs:
         # only honest measure. This lane is where the heavy corpus targets carry
         # their real budgets, so it is where their growth shows up first.
         run: |
-          bazelisk query 'tests(//...)' --output=xml --xml:default_values > .bazel-targets.xml
+          bazelisk query --config=ci 'tests(//...)' --output=xml --xml:default_values > .bazel-targets.xml
           go run ./cmd/test-budget -lane suite -bep .bazel-bep.jsonl -targets .bazel-targets.xml -warn 0.70 -threshold 0.90
 
       # Report/upload run on test success OR failure (always() lost the report on a
@@ -131,8 +132,8 @@ jobs:
       - name: Generate test report
         if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
         run: |
-          bazelisk build //cmd/test-report
-          BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
+          bazelisk build --config=ci //cmd/test-report
+          BAZEL_BIN=$(bazelisk info --config=ci bazel-bin 2>/dev/null)
           "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
           echo "Report generated: $(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)') tests"
 
@@ -213,22 +214,22 @@ jobs:
       - name: Java conformance tests
         id: test
         run: |
-          N=$(bazelisk query 'attr(tags, conformance_java, tests(//...))' 2>/dev/null | wc -l)
+          N=$(bazelisk query --config=ci 'attr(tags, conformance_java, tests(//...))' 2>/dev/null | wc -l)
           if [ "$N" -eq 0 ]; then echo "::error::no conformance_java test targets — gate would be a no-op"; exit 1; fi
           echo "conformance_java targets: $N"
-          bazelisk test //... --build_tests_only --define gotags=fdbdocker --test_tag_filters=conformance_java,-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl --local_test_jobs=0 --local_resources=memory=4500 --profile=bazel-profile.json.gz
+          bazelisk test --config=ci //... --build_tests_only --define gotags=fdbdocker --test_tag_filters=conformance_java,-stress --build_event_json_file=.bazel-bep.jsonl
 
       - name: Timeout budgets
         if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
         run: |
-          bazelisk query 'tests(//...)' --output=xml --xml:default_values > .bazel-targets.xml
+          bazelisk query --config=ci 'tests(//...)' --output=xml --xml:default_values > .bazel-targets.xml
           go run ./cmd/test-budget -lane conformance-java -bep .bazel-bep.jsonl -targets .bazel-targets.xml -warn 0.70 -threshold 0.90
 
       - name: Generate test report
         if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
         run: |
-          bazelisk build //cmd/test-report
-          BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
+          bazelisk build --config=ci //cmd/test-report
+          BAZEL_BIN=$(bazelisk info --config=ci bazel-bin 2>/dev/null)
           "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
 
       - name: Upload test report and timing data as artifact
@@ -264,19 +265,19 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Build C++ oracle
-        run: bazelisk build //cmd/fdb-diff-oracle:diff_oracle_bin
+        run: bazelisk build --config=ci //cmd/fdb-diff-oracle:diff_oracle_bin
 
       - name: Build Go fuzz test
-        run: bazelisk build //cmd/fdb-diff-oracle:fdb-diff-oracle_test
+        run: bazelisk build --config=ci //cmd/fdb-diff-oracle:fdb-diff-oracle_test
 
       - name: Resolve Bazel Go SDK
         id: go-sdk
         run: |
-          OUTPUT_BASE=$(bazelisk info output_base 2>/dev/null)
+          OUTPUT_BASE=$(bazelisk info --config=ci output_base 2>/dev/null)
           GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
           if [ -z "$GO_BIN" ]; then
             echo "Bazel Go SDK not materialized (cold slot) — fetching it via bazel"
-            bazelisk run @rules_go//go -- version >/dev/null 2>&1 || true
+            bazelisk run --config=ci @rules_go//go -- version >/dev/null 2>&1 || true
             GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
           fi
           if [ -z "$GO_BIN" ]; then
@@ -488,7 +489,7 @@ jobs:
             done
             echo "$expr"
           }
-          q() { bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g query "tests($(qexpr "$1"))" 2>/dev/null | wc -l; }
+          q() { bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g query --config=ci "tests($(qexpr "$1"))" 2>/dev/null | wc -l; }
           NR=$(q "$REL_SCOPE"); NC=$(q "$CLIENT_SCOPE"); NX=$(q "$CASCADES_SCOPE")
           if [ "$NR" -eq 0 ]; then echo "::error::relational race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
           if [ "$NC" -eq 0 ]; then echo "::error::client race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
@@ -503,7 +504,7 @@ jobs:
           # build. (set -e stops on the first scope that races — same as the old two steps.)
           # Cascades runs FIRST: it is the cheap CPU-only scope, so a planner race is
           # reported in seconds instead of behind two testcontainer suites.
-          RACE="bazelisk --output_base=$RACE_BASE --host_jvm_args=-Xmx3g test --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors --local_resources=memory=HOST_RAM*0.6"
+          RACE="bazelisk --output_base=$RACE_BASE --host_jvm_args=-Xmx3g test --config=ci --@rules_go//go/config:race --test_tag_filters=-stress --test_output=errors"
           # Each scope writes its OWN event stream, and each scope's queried target
           # set is captured next to it, so the budget step below can say which
           # target used how much of which budget. One shared .bazel-bep.jsonl (the
@@ -512,7 +513,7 @@ jobs:
           for s in cascades:"$CASCADES_SCOPE" rel:"$REL_SCOPE" client:"$CLIENT_SCOPE"; do
             name="${s%%:*}"
             bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g \
-              query "tests($(qexpr "${s#*:}"))" --output=xml --xml:default_values \
+              query --config=ci "tests($(qexpr "${s#*:}"))" --output=xml --xml:default_values \
               > ".bazel-targets.race-$name.xml"
           done
           # `--` before the scope is load-bearing, not style: Bazel rejects a
@@ -521,8 +522,10 @@ jobs:
           # it. Passing it for every scope keeps the three invocations identical.
           $RACE --build_event_json_file=.bazel-bep.race-cascades.jsonl -- $CASCADES_SCOPE
           $RACE --build_event_json_file=.bazel-bep.race-rel.jsonl -- $REL_SCOPE
-          # One target at a time: race-instrumented client_test (no longer
-          # "exclusive") must not share the box with fdb_test's containers. Its peers
+          # One target at a time, kept on purpose even though .bazelrc now schedules
+          # by memory tags: the tags are NON-race peaks and -race multiplies memory
+          # several-fold, so they cannot keep race-instrumented client_test (no longer
+          # "exclusive") off the box while fdb_test's containers run. Its peers
           # are fdb_test plus seconds of unit tests, so this costs what exclusive did.
           $RACE --build_event_json_file=.bazel-bep.race-client.jsonl --local_test_jobs=1 -- $CLIENT_SCOPE
 

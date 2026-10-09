@@ -122,7 +122,7 @@ jobs:
         # heartbeat, not incremental coverage.
         run: |
           set -o pipefail
-          bazelisk test //pkg/relational/conformance/factorycorpus/full:full_test \
+          bazelisk test --config=ci //pkg/relational/conformance/factorycorpus/full:full_test \
             --test_timeout=3600 --test_output=streamed --nocache_test_results 2>&1 | tee corpus.log
 
       - name: Record genuine-run heartbeat
@@ -343,12 +343,12 @@ jobs:
           # Build first, separately, so a compile break fails as a compile break
           # instead of impersonating the tool's exit 1 (see the typed codes
           # above). After this succeeds the run below builds nothing.
-          bazelisk build //cmd/factory-run
+          bazelisk build --config=ci //cmd/factory-run
           # `bazelisk run` executes from the runfiles tree, not the workspace,
           # so every path flag must be absolute. Measured: with the relative
           # defaults the tool resolves testdata against the runfiles root, finds
           # no *.yamsql, and exits 2 on an empty corpus it should have loaded.
-          bazelisk run //cmd/factory-run -- \
+          bazelisk run --config=ci //cmd/factory-run -- \
             -out "$GITHUB_WORKSPACE/pkg/relational/conformance/factorycorpus/testdata" \
             -findings "$GITHUB_WORKSPACE/factory-findings" \
             -manifest "$GITHUB_WORKSPACE/factory-manifest.json" \

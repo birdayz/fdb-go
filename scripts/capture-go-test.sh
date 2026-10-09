@@ -35,20 +35,13 @@
 #              still visibly advancing (0-13s each). That is starvation against
 #              a wrong deadline, not a hang, and it is an artefact of the lane.
 #
-#   -p         `go test` runs up to GOMAXPROCS package binaries at once (24 on
-#              this host) and each FDB package starts its own container. Bazel
-#              caps exactly this at 4 (`.bazelrc`: --local_test_jobs=4, which
-#              exists because concurrent FDB containers are the scarce resource,
-#              not CPU). The go lane has NO equivalent knob — `-p` is the only
-#              one — so the cap is applied here by hand.
-#
-#              DO NOT "optimise" this back to the default. Raising it does not
-#              make the suite faster; it makes more containers contend for the
-#              same Docker daemon and pushes packages toward the deadline above,
-#              which is how a lane manufactures failures that read as product
-#              flakes. If it is raised, raise .bazelrc's cap in the same change
-#              and for the same measured reason, or the two lanes disagree about
-#              what the machine can hold.
+#   -p         one package binary per core, `go test`'s own default, stated
+#              explicitly. This used to be pinned at 4 to mirror .bazelrc's
+#              --local_test_jobs=4, which existed because concurrent FDB
+#              containers were believed to be the scarce resource. The measured
+#              cause was the kernel AIO pool (fs.aio-max-nr) exhausted by another
+#              service on the dev box; .bazelrc now schedules by declared CPU and
+#              memory on every machine, and no fixed machine size remains here.
 #
 # Override either by passing your own flag after `--`; the last occurrence wins.
 set -uo pipefail
@@ -59,9 +52,8 @@ pattern="./pkg/relational/..."
 # Above the largest declared Bazel budget in the tree (eternal => 3600s), so the
 # per-package deadline is the repo's, never go test's flat default.
 timeout_arg="3600s"
-# Mirrors .bazelrc's --local_test_jobs=4: at most this many container-starting
-# package binaries at a time.
-procs="4"
+# One container-starting package binary per core.
+procs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 extra=()
 
 while [[ $# -gt 0 ]]; do

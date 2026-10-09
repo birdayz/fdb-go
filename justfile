@@ -104,17 +104,6 @@ generate-parser:
 build:
     bazelisk build //...
 
-# Local test scheduling: Bazel's resource accounting instead of a count cap.
-# --local_test_jobs=0 charges each test 1 CPU (or its resources:cpu:N tag)
-# against HOST_CPUS and its resources:memory:N tag against 80% of RAM, so a
-# 24-core box runs ~24 single-core tests or a few multi-core ones at once.
-# (Any non-zero --local_test_jobs makes Bazel ignore those tags.)
-# The old cap of 8 blamed Docker for hangs past 8 FDB containers; the measured
-# cause was the kernel AIO pool (fs.aio-max-nr) exhausted by another service,
-# which fdbserver's 1510 "Disk i/o operation failed" reports. 48 concurrent
-# containers ran cleanly once that was raised.
-test_sched := "--local_test_jobs=0 --local_resources=memory=HOST_RAM*0.8"
-
 # Targets whose wall time sets test-full's critical path, started first.
 # Bazel schedules tests in command-line order and has no priority knob, so a
 # 5-10 minute target listed by label order starts minutes late and becomes the
@@ -124,7 +113,7 @@ test_full_first := "//pkg/relational/sqltest/census:census_test //conformance:rf
 # Standard edit/commit loop: unit tests and bounded integration tests, with nogo.
 # Heavy suites are tagged test-full (or conformance_java/stress/manual).
 test *args:
-    bazelisk test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress {{test_sched}} {{args}}
+    bazelisk test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress {{args}}
 
 # The end-to-end SQL suite: the driver's own tests plus every sqltest package
 # (cached; an edited test reruns only its own package).
@@ -145,7 +134,7 @@ test-full *args:
     test -n "$all" || { echo 'No test targets found' >&2; exit 1; }
     targets=$( { for t in {{test_full_first}}; do grep -Fx -- "$t" <<<"$all" || true; done; grep -Fvx -f <(tr ' ' '\n' <<<"{{test_full_first}}") <<<"$all"; } )
     test "$(wc -l <<<"$targets")" -eq "$(wc -l <<<"$all")" || { echo 'test-full reordering lost targets' >&2; exit 1; }
-    bazelisk test $targets {{test_sched}} {{args}}
+    bazelisk test $targets {{args}}
 
 # Convenience: run ONLY the full committed RFC-201 factory corpus, uncached.
 # It is part of `just test-full` too; this recipe exists for a forced standalone
