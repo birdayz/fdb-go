@@ -118,10 +118,10 @@ jobs:
       - name: Run tests with coverage
         if: steps.window.outputs.ok == 'true'
         id: coverage
-        # Memory-gated scheduling, as ci.yml's "Build, lint & test" step explains: the
+        # Memory-gated scheduling from .bazelrc, as ci.yml's "Build, lint & test" step explains: the
         # heavy container suites carry no "exclusive" tag, so a count-only
         # --local_test_jobs would pack them together on this 7.6 GB runner.
-        run: bazelisk coverage //... //cmd/fdb-stacktester/bindingtester:bindingtester_test //pkg/relational/sqltest/census:census_test --combined_report=lcov --test_summary=detailed --local_test_jobs=0 --local_resources=memory=4500
+        run: bazelisk coverage --config=ci //... //cmd/fdb-stacktester/bindingtester:bindingtester_test //pkg/relational/sqltest/census:census_test --combined_report=lcov
 
       - name: Race detector (FDB client + record layer)
         # `!cancelled()`, not the implicit success(): the step immediately above
@@ -149,7 +149,7 @@ jobs:
           bazelisk shutdown
           bazelisk --output_base=$HOME/.cache/bazel/_race_output_base \
             --host_jvm_args=-Xmx3g \
-            test \
+            test --config=ci \
             //pkg/fdbgo/client:client_test \
             //pkg/fdbgo/fdb:fdb_test \
             //pkg/recordlayer:recordlayer_test \
@@ -158,10 +158,9 @@ jobs:
             //conformance:conformance_corpora_test \
             --@rules_go//go/config:race \
             --build_event_json_file=.bazel-bep.race.jsonl \
-            --local_resources=memory=HOST_RAM*0.6 \
             --local_test_jobs=1 \
             --test_timeout=900 \
-            --test_summary=detailed
+           
 
       - name: Race detector (SQL conformance corpora)
         # Same condition, same reason as the race step above: this lane is the
@@ -201,13 +200,12 @@ jobs:
         run: |
           bazelisk --output_base=$HOME/.cache/bazel/_race_output_base \
             --host_jvm_args=-Xmx3g \
-            test //pkg/relational/conformance/... \
+            test --config=ci //pkg/relational/conformance/... \
             --@rules_go//go/config:race \
             --build_event_json_file=.bazel-bep.race-corpora.jsonl \
-            --local_resources=memory=HOST_RAM*0.6 \
             --local_test_jobs=1 \
             --test_timeout=60,300,900,3600 \
-            --test_summary=detailed
+           
 
       - name: Corpora race budgets
         # This lane is now the corpora's only instrumented run, so it is where
@@ -228,7 +226,7 @@ jobs:
             exit 0
           fi
           bazelisk --output_base=$HOME/.cache/bazel/_race_output_base --host_jvm_args=-Xmx3g \
-            query 'tests(//pkg/relational/conformance/...)' --output=xml --xml:default_values \
+            query --config=ci 'tests(//pkg/relational/conformance/...)' --output=xml --xml:default_values \
             > .bazel-targets.race-corpora.xml
           go run ./cmd/test-budget -lane nightly/corpora \
             -bep .bazel-bep.race-corpora.jsonl \
@@ -238,9 +236,9 @@ jobs:
       - name: Generate coverage report
         if: ${{ steps.window.outputs.ok == 'true' && !cancelled() && steps.coverage.outcome != 'skipped' }}
         run: |
-          bazelisk build //cmd/test-report
-          BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
-          LCOV=$(bazelisk info output_path 2>/dev/null)/_coverage/_coverage_report.dat
+          bazelisk build --config=ci //cmd/test-report
+          BAZEL_BIN=$(bazelisk info --config=ci bazel-bin 2>/dev/null)
+          LCOV=$(bazelisk info --config=ci output_path 2>/dev/null)/_coverage/_coverage_report.dat
           BEP_ARGS=(.bazel-bep.jsonl)
           [ -f .bazel-bep.race.jsonl ] && BEP_ARGS+=(.bazel-bep.race.jsonl)
           if [ -f "$LCOV" ]; then
@@ -340,7 +338,7 @@ jobs:
             echo "no current results — skipping comparison"
             exit 0
           fi
-          bazelisk run //cmd/bench-report -- \
+          bazelisk run --config=ci //cmd/bench-report -- \
             -old "$PWD/bench-baseline.txt" -new "$PWD/bench-results.txt" > bench-delta.md
           {
             echo "## Benchmark delta vs previous nightly master"

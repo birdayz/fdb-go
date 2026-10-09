@@ -93,10 +93,10 @@ jobs:
         # nightly-libfdbc, which compiles the `libfdbc`-tagged backend the Bazel build
         # also skips.
         run: |
-          OUTPUT_BASE=$(bazelisk info output_base 2>/dev/null)
+          OUTPUT_BASE=$(bazelisk info --config=ci output_base 2>/dev/null)
           GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
           if [ -z "$GO_BIN" ]; then
-            bazelisk run @rules_go//go -- version >/dev/null 2>&1 || true
+            bazelisk run --config=ci @rules_go//go -- version >/dev/null 2>&1 || true
             GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
           fi
           [ -n "$GO_BIN" ] || GO_BIN=go
@@ -123,7 +123,7 @@ jobs:
         # query and FAIL on an empty set — the no-fake-checkbox rule applied to CI:
         # a gate that silently runs nothing is worse than no gate.
         run: |
-          STRESS=$(bazelisk query 'attr(tags, stress, tests(//pkg/...))' 2>/dev/null)
+          STRESS=$(bazelisk query --config=ci 'attr(tags, stress, tests(//pkg/...))' 2>/dev/null)
           if [ -z "$STRESS" ]; then
             echo "::error::no stress targets resolved — the stress gate would be a no-op"
             exit 1
@@ -147,7 +147,7 @@ jobs:
           # stress run — the cardinal CI sin. With pipefail the bazel non-zero exit
           # propagates and fails the job.
           set -o pipefail
-          bazelisk test ${{ steps.targets.outputs.labels }} \
+          bazelisk test --config=ci ${{ steps.targets.outputs.labels }} \
             --test_timeout=3600 --test_output=streamed --test_arg=--test.v \
             --nocache_test_results 2>&1 | tee stress-output.txt
 

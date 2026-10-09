@@ -171,7 +171,7 @@ jobs:
         # range that genuinely outgrew its slot.
         run: |
           set -o pipefail
-          bazelisk test //pkg/relational/sqltest/metamorphic/rowdiff:rowdiff_test \
+          bazelisk test --config=ci //pkg/relational/sqltest/metamorphic/rowdiff:rowdiff_test \
             --test_output=streamed \
             --test_arg="--test.run=TestFDB_RowDiff_Smoke" \
             --test_arg="--test.v" \
@@ -222,7 +222,7 @@ jobs:
           set -o pipefail
           PSTART=$(( ${{ steps.seeds.outputs.start }} + 500000000 ))
           echo "Paging-sweeping seeds $PSTART..$(( PSTART + 5000 - 1 )) (5000 seeds ceiling, scanLimit=4)"
-          bazelisk test //pkg/relational/sqltest/metamorphic/rowdiff:rowdiff_test \
+          bazelisk test --config=ci //pkg/relational/sqltest/metamorphic/rowdiff:rowdiff_test \
             --test_output=streamed \
             --test_arg="--test.run=TestFDB_RowDiff_Paging" \
             --test_arg="--test.v" \

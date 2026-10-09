@@ -123,7 +123,7 @@ jobs:
         # and SILENTLY PASS a red sweep.
         run: |
           set -o pipefail
-          bazelisk test //pkg/relational/sqltest/metamorphic:metamorphic_test \
+          bazelisk test --config=ci //pkg/relational/sqltest/metamorphic:metamorphic_test \
             --test_output=streamed \
             --test_arg="--test.run=TestFDB_SargabilityDifferentialOracle" \
             --test_arg="--test.v" \
@@ -140,7 +140,7 @@ jobs:
         # fast even at very high combo counts; pipefail as above.
         run: |
           set -o pipefail
-          bazelisk test //pkg/recordlayer/query/plan/cascades:cascades_test \
+          bazelisk test --config=ci //pkg/recordlayer/query/plan/cascades:cascades_test \
             --test_output=streamed \
             --test_arg="--test.run=TestCardinalityPropertyBoundsCostEstimate_RandomCombos" \
             --test_arg="--test.v" \
