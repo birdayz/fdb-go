@@ -71,14 +71,18 @@ func TestJustTestLanes(t *testing.T) {
 		name, recipe, labels, args, want string
 		queryFail, testFail, fail        bool
 	}{
-		{name: "fast", recipe: "test", want: "test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress --local_test_jobs=4"},
-		{name: "full_includes_explicit_manual", recipe: "test-full", labels: "//pkg:unit_test\n//pkg:manual_test", want: "test //pkg:unit_test //pkg:manual_test --local_test_jobs=4"},
-		{name: "fast_args", recipe: "test", args: "--test_output=errors", want: "test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress --local_test_jobs=4 --test_output=errors"},
-		{name: "full_args", recipe: "test-full", labels: "//pkg:unit_test", args: "--test_output=errors", want: "test //pkg:unit_test --local_test_jobs=4 --test_output=errors"},
+		{name: "fast", recipe: "test", want: "test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress --local_test_jobs=0 --local_resources=memory=HOST_RAM*0.8"},
+		{name: "full_includes_explicit_manual", recipe: "test-full", labels: "//pkg:unit_test\n//pkg:manual_test", want: "test //pkg:unit_test //pkg:manual_test --local_test_jobs=0 --local_resources=memory=HOST_RAM*0.8"},
+		{name: "fast_args", recipe: "test", args: "--test_output=errors", want: "test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress --local_test_jobs=0 --local_resources=memory=HOST_RAM*0.8 --test_output=errors"},
+		{name: "full_args", recipe: "test-full", labels: "//pkg:unit_test", args: "--test_output=errors", want: "test //pkg:unit_test --local_test_jobs=0 --local_resources=memory=HOST_RAM*0.8 --test_output=errors"},
 		{name: "empty_is_not_green", recipe: "test-full", fail: true},
 		{name: "query_failure", recipe: "test-full", labels: "//pkg:partial_test", queryFail: true, fail: true},
-		{name: "full_test_failure", recipe: "test-full", labels: "//pkg:unit_test", want: "test //pkg:unit_test --local_test_jobs=4", testFail: true, fail: true},
-		{name: "fast_test_failure", recipe: "test", want: "test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress --local_test_jobs=4", testFail: true, fail: true},
+		{name: "full_test_failure", recipe: "test-full", labels: "//pkg:unit_test", want: "test //pkg:unit_test --local_test_jobs=0 --local_resources=memory=HOST_RAM*0.8", testFail: true, fail: true},
+		{name: "fast_test_failure", recipe: "test", want: "test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress --local_test_jobs=0 --local_resources=memory=HOST_RAM*0.8", testFail: true, fail: true},
+		// test_full_first is stubbed as "//pkg:slow_test //pkg:gone_test": a
+		// listed pole moves to the front, a stale entry is dropped, and every
+		// queried label is still passed exactly once.
+		{name: "full_poles_first", recipe: "test-full", labels: "//pkg:a_test\n//pkg:slow_test\n//pkg:z_test", want: "test //pkg:slow_test //pkg:a_test //pkg:z_test --local_test_jobs=0 --local_resources=memory=HOST_RAM*0.8"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -88,8 +92,8 @@ func TestJustTestLanes(t *testing.T) {
 			}
 			body, _, _ := strings.Cut(rest, "\n\n")
 			body = strings.ReplaceAll(body, "{{args}}", tc.args)
-			// test_jobs is a justfile variable (a third of the cores, at least 4).
-			body = strings.ReplaceAll(body, "{{test_jobs}}", "4")
+			body = strings.ReplaceAll(body, "{{test_sched}}", justVar(t, string(data), "test_sched"))
+			body = strings.ReplaceAll(body, "{{test_full_first}}", "//pkg:slow_test //pkg:gone_test")
 			dir := t.TempDir()
 			stub := `#!/bin/bash
 if [ "$1" = query ]; then
@@ -126,4 +130,15 @@ exit "$TEST_EXIT"
 			}
 		})
 	}
+}
+
+// justVar returns the value of a `name := "value"` justfile variable.
+func justVar(t *testing.T, justfile, name string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(justfile, "\n"+name+" := \"")
+	if !ok {
+		t.Fatalf("missing justfile variable %s", name)
+	}
+	v, _, _ := strings.Cut(rest, "\"\n")
+	return v
 }

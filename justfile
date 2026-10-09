@@ -104,19 +104,27 @@ generate-parser:
 build:
     bazelisk build //...
 
-# Concurrent test targets for the local lanes: a third of the cores, at least
-# the 4 .bazelrc sets for CI's 4-vCPU runners (which call bazelisk directly),
-# at most 8.
-# Measured on 24 cores, the whole sqltest suite uncached: 261 s at 4, 145 s at
-# 8, 154 s at 12 (CPU-bound beyond that).
-# Capped at 8: each concurrent FDB-backed target starts its own container, and
-# too many at once hang Docker (see .bazelrc).
-test_jobs := `c=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4); n=$(( c / 3 )); [ "$n" -lt 4 ] && n=4; [ "$n" -gt 8 ] && n=8; echo $n`
+# Local test scheduling: Bazel's resource accounting instead of a count cap.
+# --local_test_jobs=0 charges each test 1 CPU (or its resources:cpu:N tag)
+# against HOST_CPUS and its resources:memory:N tag against 80% of RAM, so a
+# 24-core box runs ~24 single-core tests or a few multi-core ones at once.
+# (Any non-zero --local_test_jobs makes Bazel ignore those tags.)
+# The old cap of 8 blamed Docker for hangs past 8 FDB containers; the measured
+# cause was the kernel AIO pool (fs.aio-max-nr) exhausted by another service,
+# which fdbserver's 1510 "Disk i/o operation failed" reports. 48 concurrent
+# containers ran cleanly once that was raised.
+test_sched := "--local_test_jobs=0 --local_resources=memory=HOST_RAM*0.8"
+
+# Targets whose wall time sets test-full's critical path, started first.
+# Bazel schedules tests in command-line order and has no priority knob, so a
+# 5-10 minute target listed by label order starts minutes late and becomes the
+# tail. Ordering only; a stale entry is harmless.
+test_full_first := "//pkg/relational/sqltest/census:census_test //conformance:rfc257_oracle_test //pkg/relational/conformance/factorycorpus/full:full_test //conformance:rfc257_guardiann_java_test //conformance:conformance_probes_test //conformance:conformance_test //pkg/fdbgo/client:client_test //pkg/relational/conformance/factory:factory_test //conformance:conformance_corpora_test //pkg/recordlayer:million_record_test //pkg/recordlayer/chaos:chaos_test"
 
 # Standard edit/commit loop: unit tests and bounded integration tests, with nogo.
 # Heavy suites are tagged test-full (or conformance_java/stress/manual).
 test *args:
-    bazelisk test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress --local_test_jobs={{test_jobs}} {{args}}
+    bazelisk test //... --build_tests_only --test_tag_filters=-test-full,-conformance_java,-stress {{test_sched}} {{args}}
 
 # The end-to-end SQL suite: the driver's own tests plus every sqltest package
 # (cached; an edited test reruns only its own package).
@@ -133,9 +141,11 @@ census *args:
 test-full *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    targets=$(bazelisk query 'kind(".*_test", //...)' --output=label)
-    test -n "$targets" || { echo 'No test targets found' >&2; exit 1; }
-    bazelisk test $targets --local_test_jobs={{test_jobs}} {{args}}
+    all=$(bazelisk query 'kind(".*_test", //...)' --output=label)
+    test -n "$all" || { echo 'No test targets found' >&2; exit 1; }
+    targets=$( { for t in {{test_full_first}}; do grep -Fx -- "$t" <<<"$all" || true; done; grep -Fvx -f <(tr ' ' '\n' <<<"{{test_full_first}}") <<<"$all"; } )
+    test "$(wc -l <<<"$targets")" -eq "$(wc -l <<<"$all")" || { echo 'test-full reordering lost targets' >&2; exit 1; }
+    bazelisk test $targets {{test_sched}} {{args}}
 
 # Convenience: run ONLY the full committed RFC-201 factory corpus, uncached.
 # It is part of `just test-full` too; this recipe exists for a forced standalone
