@@ -1147,14 +1147,11 @@ func (p *PreparedMemberEquality) DuplicateWithHashes(
 		if mHash != eHash || len(m.GetQuantifiers()) != eArity {
 			continue
 		}
-		if known {
-			equality.hashes[m] = mHash
-		}
 		nodeEqual := m.EqualsWithoutChildren(e, EmptyAliasMap())
-		if nodeEqual && (preparedSameChildReferences(m, e) || equality.equal(m, e, EmptyAliasMap())) {
+		if nodeEqual && (preparedSameChildReferences(m, e) || equality.equalWithHashes(nil, m, mHash, nil, e, eHash, EmptyAliasMap())) {
 			return true, false
 		}
-		if aliasAware && equality.equal(m, e, EmptyAliasMap()) {
+		if aliasAware && equality.equalWithHashes(nil, m, mHash, nil, e, eHash, EmptyAliasMap()) {
 			return true, true
 		}
 		if mergeAliased && ExactReplica(m, e) {
