@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -68,7 +69,7 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 		return standardIndexMaintainer{index: idx}
 	}
 
-	// The four roots whose maintainer bound is NARROWER than the one their root
+	// The roots whose maintainer bound is NARROWER than the one their root
 	// expression implies. Named here because each is used twice — once to build
 	// the maintainer, once to ask what the generic bound would have said — and
 	// the two must be the same index or the disagreement is not the row's.
@@ -85,11 +86,6 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 		// Grouping count 2, permutedSize 1 -> one clearable column.
 		RootExpression: GroupBy(Field("order_id"), Concat(Field("quantity"), Field("price"))),
 	}
-	vecPlain := &Index{
-		Name: "vec_plain", Type: IndexTypeVector,
-		RootExpression: Concat(Field("quantity"), Field("vector_data")),
-	}
-	spfIdx := plain("spf", IndexTypeVectorSPFresh)
 
 	cases := []deleteWhereBoundCase{
 		{
@@ -179,36 +175,6 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 			maintainer: &textIndexMaintainer{index: grouped("txt", IndexTypeText)},
 			bound:      1,
 		},
-		{
-			// A NON-KeyWithValue root deliberately: splitPrefixAndVector then
-			// reads the whole key as the vector and indexes every record under
-			// the EMPTY prefix, so no non-empty prefix names a graph. The
-			// inherited bound would be the root's width (2) — so this row is
-			// the one that fails if vector's override is ever lost, which a
-			// KeyWithValue row cannot detect (there the two bounds coincide,
-			// because KeyWithValueExpression.ColumnSize IS the split point).
-			name:             "VECTOR on a non-KeyWithValue root has no clearable prefix at all",
-			maintainer:       &vectorIndexMaintainer{standardIndexMaintainer: stdOf(vecPlain)},
-			bound:            0,
-			index:            vecPlain,
-			overridesGeneric: true,
-		},
-		{
-			name: "VECTOR stops at the KeyWithValue split point",
-			maintainer: &vectorIndexMaintainer{standardIndexMaintainer: stdOf(&Index{
-				Name: "vec", Type: IndexTypeVector,
-				RootExpression: KeyWithValue(
-					Concat(Field("quantity"), Field("vector_data")), 1),
-			})},
-			bound: 1,
-		},
-		{
-			name:             "SPFRESH accepts only the whole-index clear",
-			maintainer:       &spfreshIndexMaintainer{standardIndexMaintainer: stdOf(spfIdx)},
-			bound:            0,
-			index:            spfIdx,
-			overridesGeneric: true,
-		},
 	}
 
 	prefixOf := func(n int) tuple.Tuple {
@@ -265,11 +231,11 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 func TestSlidingWindowCanDeleteWhereNeverExceedsItsDelegate(t *testing.T) {
 	t.Parallel()
 
-	// The delegate accepts one column (split point 1); the window partitions on
-	// two. Without forwarding, the window would accept two.
-	delegate := &vectorIndexMaintainer{standardIndexMaintainer: standardIndexMaintainer{index: &Index{
-		Name: "vec", Type: IndexTypeVector,
-		RootExpression: KeyWithValue(Concat(Field("quantity"), Field("vector_data")), 1),
+	// The delegate accepts one column; the window partitions on two. Without
+	// forwarding, the window would accept two.
+	delegate := &narrowDeleteWhereMaintainer{standardIndexMaintainer: standardIndexMaintainer{index: &Index{
+		Name: "delegate", Type: IndexTypeValue,
+		RootExpression: Concat(Field("quantity"), Field("price")),
 	}}}
 	m := &slidingWindowIndexMaintainer{
 		index:                  &Index{Name: "win", Type: IndexTypeVector},
@@ -288,7 +254,20 @@ func TestSlidingWindowCanDeleteWhereNeverExceedsItsDelegate(t *testing.T) {
 	// It must be the DELEGATE's refusal that surfaces. Asserting only that
 	// SOME error came back would pass with the forwarding removed, since the
 	// window's own partition bound also refuses at some width.
-	if !strings.Contains(err.Error(), "vector index") {
+	if !strings.Contains(err.Error(), narrowDeleteWhereRefusal) {
 		t.Fatalf("expected the delegate's refusal to surface, got: %s", err)
 	}
+}
+
+const narrowDeleteWhereRefusal = "the delegate clears at most one column"
+
+// narrowDeleteWhereMaintainer is a delegate whose clearable prefix is one
+// column, narrower than its root's, as a vector index's split point is.
+type narrowDeleteWhereMaintainer struct{ standardIndexMaintainer }
+
+func (m *narrowDeleteWhereMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
+	if len(prefix) > 1 {
+		return errors.New(narrowDeleteWhereRefusal)
+	}
+	return nil
 }

@@ -26,6 +26,14 @@ type IndexMaintainerFactory interface {
 	ValidateChangedOptions(oldIndex, newIndex *Index, changed map[string]bool) error
 }
 
+// idempotentIndexMaintainerFactory is implemented by a factory whose
+// maintainers are idempotent (Java's IndexMaintainer.isIdempotent), which Go
+// asks per index type because the online indexer decides without a maintainer.
+// A factory that does not implement it is not idempotent.
+type idempotentIndexMaintainerFactory interface {
+	IsIdempotent(index *Index) bool
+}
+
 // IndexMaintainerState is Java's IndexMaintainerState: what a factory builds a
 // maintainer from.
 type IndexMaintainerState struct {

@@ -2384,6 +2384,13 @@ func isIndexIdempotent(index *Index) bool {
 	case IndexTypeCount, IndexTypeCountNotNull, IndexTypeCountUpdates, IndexTypeSum:
 		return false
 	default:
+		// A registered factory answers for its own type (Java asks the
+		// maintainer's isIdempotent).
+		if f, err := lookupIndexMaintainerFactory(index); err == nil && f != nil {
+			if i, ok := f.(idempotentIndexMaintainerFactory); ok {
+				return i.IsIdempotent(index)
+			}
+		}
 		// A type Go does not maintain has no maintainer, and Java no
 		// isIdempotent to ask. Go's own vector_spfresh index is built as
 		// non-idempotent (its generations are reconciled by

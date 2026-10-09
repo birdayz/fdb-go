@@ -36,8 +36,6 @@ func TestRetryPredicates_AnyCauseAndFirstCause(t *testing.T) {
 			&RecordCoreRetriableTransactionError{Message: "retry", Cause: notRetryable}, true, true,
 		},
 		{"a context no longer active", errTransactionNotActive(), false, false},
-		{"an unsplittable cluster", &ClusterUnsplittableError{}, false, false},
-		{"a capability refusal", &VectorCapabilityError{}, false, false},
 	}
 	for _, c := range cases {
 		if got := isRetriableAnyCause(c.err); got != c.any {

@@ -33,7 +33,7 @@ var _ = Describe("Format 15 queued lifecycle", func() {
 	ctx := context.Background()
 	metadata := func() (*RecordMetaData, *Index, *Index) {
 		builder := baseBuilder()
-		vector := NewVectorIndex("vector", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		vector := newValueWithQueueIndex("vector", Concat(Field("quantity"), Field("price")))
 		ordinary := NewIndex("ordinary", Field("price"))
 		builder.AddIndex("Order", vector)
 		builder.AddIndex("Order", ordinary)
@@ -144,11 +144,11 @@ var _ = Describe("Format 15 queued lifecycle", func() {
 			empty, err := store.isIndexPendingQueueEmpty(vector)
 			Expect(empty).To(BeTrue())
 			Expect(err).NotTo(HaveOccurred())
-			results, err := store.SearchVectorIndexWithPrefix(vector, tuple.Tuple{int64(1)}, []float64{100}, 10, 100)
+			// Record 1 moved from price 10 to 100 and record 2 was deleted while
+			// queued: the drained index holds (1, 30) for record 3, then (1, 100).
+			results, err := queuedIndexPrimaryKeys(store, vector, tuple.Tuple{int64(1)})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(results).To(HaveLen(2))
-			Expect(results[0].PrimaryKey).To(Equal(tuple.Tuple{int64(1)}))
-			Expect(results[0].Distance).To(BeZero())
+			Expect(results).To(Equal([]tuple.Tuple{{int64(3)}, {int64(1)}}))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -228,7 +228,7 @@ var _ = Describe("Format 15 queued lifecycle", func() {
 					return nil, err
 				}
 				Expect(store.GetIndexState(vector.Name)).To(Equal(IndexStateReadable))
-				results, err := store.SearchVectorIndexWithPrefix(vector, tuple.Tuple{int64(1)}, []float64{0}, 10, 100)
+				results, err := queuedIndexPrimaryKeys(store, vector, tuple.Tuple{int64(1)})
 				Expect(results).To(HaveLen(2))
 				return nil, err
 			})

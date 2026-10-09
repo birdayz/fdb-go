@@ -1313,18 +1313,10 @@ var _ = Describe("Replacement retirement", func() {
 		})
 	}
 
-	for _, method := range []string{"value", "typed", "time-window", "vector-scan", "vector-search"} {
+	for _, method := range []string{"value", "typed", "time-window"} {
 		scan := func(store *FDBRecordStore) RecordCursor[*IndexEntry] {
 			index := md.GetIndex("original")
 			switch method {
-			case "vector-scan":
-				return store.ScanVectorIndex(index, []float64{1, 0}, 1, 10, nil, ForwardScan())
-			case "vector-search":
-				_, err := store.SearchVectorIndex(index, []float64{1, 0}, 1, 10)
-				if err != nil {
-					return &errorCursor[*IndexEntry]{err: err}
-				}
-				return Empty[*IndexEntry]()
 			case "typed":
 				return store.ScanIndexByType(index, IndexScanByValue, TupleRangeAll, nil, ForwardScan())
 			case "time-window":
@@ -2470,44 +2462,6 @@ var _ = Describe("Bulk deletion state conflicts", func() {
 			})
 		}
 	}
-})
-
-var _ = Describe("SPFresh transactional search state", func() {
-	It("returns live results, rejects another handle's disable and propagates cancellation", func() {
-		b := baseBuilder()
-		index := NewIndex("spf_state", Concat(Field("price"), Field("quantity")))
-		index.Type = IndexTypeVectorSPFresh
-		index.Options = map[string]string{IndexOptionSPFreshNumDimensions: "2"}
-		b.AddIndex("Order", index)
-		md, err := b.Build()
-		Expect(err).NotTo(HaveOccurred())
-		tx, err := sharedDB.CreateTransaction()
-		Expect(err).NotTo(HaveOccurred())
-		defer tx.Cancel()
-		rtx := sharedDB.NewRecordContext(tx)
-		ss := specSubspace()
-		first, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Create()
-		Expect(err).NotTo(HaveOccurred())
-		_, err = first.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20)})
-		Expect(err).NotTo(HaveOccurred())
-		second, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
-		Expect(err).NotTo(HaveOccurred())
-		rows, err := SearchSPFreshIndex(second, index.Name, []float64{10, 20}, 1)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(rows).To(HaveLen(1))
-		Expect(rows[0].PrimaryKey).To(Equal(tuple.Tuple{int64(1)}))
-		_, err = first.MarkIndexDisabled(index.Name)
-		Expect(err).NotTo(HaveOccurred())
-		_, err = SearchSPFreshIndex(second, index.Name, []float64{10, 20}, 1)
-		var unreadable *IndexNotReadableError
-		Expect(errors.As(err, &unreadable)).To(BeTrue())
-		Expect(unreadable.CurrentState).To(Equal(IndexStateDisabled))
-		tx.Cancel()
-		_, err = SearchSPFreshIndex(second, index.Name, []float64{10, 20}, 1)
-		var canceled fdb.Error
-		Expect(errors.As(err, &canceled)).To(BeTrue())
-		Expect(canceled.Code).To(Equal(1025))
-	})
 })
 
 // stateWriteBarrier delegates to real FDB and pauses one completed state write
