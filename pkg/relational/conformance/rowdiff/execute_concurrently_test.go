@@ -21,6 +21,11 @@ func (blockingQuerier) QueryContext(ctx context.Context, _ string, _ ...any) (*s
 	return nil, ctx.Err()
 }
 
+func (blockingQuerier) BeginTx(ctx context.Context, _ *sql.TxOptions) (*sql.Tx, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 // A context cancelled while statements are still being handed out must still
 // resolve every statement's result: the caller awaits them in statement
 // order, so one left open hangs the seed (and its sweep) forever.
