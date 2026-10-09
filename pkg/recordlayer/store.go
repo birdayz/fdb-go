@@ -9,6 +9,8 @@ import (
 	"time"
 	"unsafe"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -2130,7 +2132,7 @@ func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]Uniquenes
 
 	var violations []UniquenessViolation
 	for _, kv := range kvs {
-		t, err := fastSubspaceUnpack(kv.Key, len(violationSubspace.Bytes()))
+		t, err := tuplefast.SubspaceUnpack(kv.Key, len(violationSubspace.Bytes()))
 		if err != nil {
 			return nil, fmt.Errorf("unpack violation key: %w", err)
 		}
@@ -2145,7 +2147,7 @@ func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]Uniquenes
 			// Value contains the conflicting PK (matching Java's wire format).
 			// Empty value means no cross-reference was stored.
 			if len(kv.Value) > 0 {
-				existingKey, err := fastUnpack(kv.Value)
+				existingKey, err := tuplefast.Unpack(kv.Value)
 				if err == nil {
 					v.ExistingKey = existingKey
 				}

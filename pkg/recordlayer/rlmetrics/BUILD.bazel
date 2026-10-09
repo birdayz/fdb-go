@@ -14,5 +14,6 @@ go_test(
     deps = [
         ":rlmetrics",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/vectorindex",
     ],
 )

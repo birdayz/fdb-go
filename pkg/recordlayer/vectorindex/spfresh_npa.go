@@ -1,0 +1,387 @@
+package vectorindex
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
+)
+
+// NPA reassignment (RFC-094 §6 step 3): after a split, vectors in the
+// NEIGHBORING postings may now be closer to a child centroid than to their
+// current copies. Re-evaluate the closure copy-set of every member of the
+// K_n nearest postings around the children and move the ones whose set
+// changed. Per-pk atomic: each move re-reads the pk's MEMBERSHIP with a REAL
+// read inside the moving transaction — the same serialization point the
+// foreground write path uses, so a concurrent update/delete of the pk aborts
+// one side at the resolver and the loser's retry sees truth.
+//
+// Idempotence: the recompute is deterministic over authoritative state — a
+// re-run (commit_unknown retry, lease takeover) finds already-moved pks'
+// closure unchanged and no-ops them. The task is cleared last.
+
+// spfreshNPABatch bounds pks moved per transaction (the §6 budget: ~10–30 KB
+// of moves over 1–2 txs per split).
+const spfreshNPABatch = 64
+
+// spfreshNPARun claims and executes one NPA task. Returns
+// errSPFreshNotFound-free semantics: a missing/zombie task is a clean no-op.
+// The returned outcome attributes the invocation: Acted for the
+// reassignment, Cleaned for the stale-task clear, Skipped (no write) when
+// the task is gone or another executor holds the lease.
+//
+// routing is an optional pre-loaded cache shared across a rebalance round:
+// loading the full routing table PER TASK was the maintenance-CPU bomb at
+// fine granularity (one O(fines) reload × one NPA per split — the Lmax=128
+// probe burned 9+ CPU-hours at 1M before this). Round-level staleness is
+// tolerated by the same argument as the per-task snapshot staleness below:
+// the plan only chooses CANDIDATES; the move transaction re-verifies every
+// pk against authoritative state. nil loads a fresh cache (direct callers,
+// tests).
+func spfreshNPARun(ctx context.Context, db *recordlayer.FDBDatabase, s *spfreshStorage, config SPFreshConfig, owner string, parentID int64, routing *spfreshRoutingCache) (spfreshTaskOutcome, error) {
+	// Claim + plan: resolve the children and the neighborhood, and collect
+	// move CANDIDATES (snapshot reads — staleness here only affects which pks
+	// get considered; the move tx re-verifies everything per pk).
+	type candidate struct {
+		pk  tuple.Tuple
+		vec []float64
+	}
+	var cands []candidate
+	var childA, childB int64
+	skipped := false // no write at all: task gone or foreign live lease
+	stale := false   // stale task cleared: a write, but no move pass to run
+	err := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
+		cands = cands[:0]
+		skipped, stale = false, false
+		tx := rtx.Transaction()
+		if _, cerr := spfreshTaskClaim(tx, s, spfreshTaskNPA, parentID, owner, spfreshLeaseDeadline(), spfreshNowMs()); cerr != nil {
+			if errors.Is(cerr, errSPFreshNotFound) || errors.Is(cerr, errSPFreshLeaseHeld) {
+				skipped = true // task gone, or another executor is mid-lifecycle
+				return nil
+			}
+			return cerr
+		}
+		// The parent's posting HDR carries (cell, childA, childB); absent
+		// means GC already drained the parent — stale task, delete.
+		hdr, herr := tx.Get(s.postingHDRKey(parentID)).Get()
+		if herr != nil {
+			return herr
+		}
+		if hdr == nil {
+			tx.Clear(s.taskKey(spfreshTaskNPA, parentID))
+			stale = true
+			return nil
+		}
+		cellID, a, b, derr := decodePostingHDR(hdr)
+		if derr != nil {
+			return derr
+		}
+		childA, childB = a, b
+
+		// Neighborhood: the K_n nearest fine centroids around each child.
+		cache := routing
+		if cache == nil || !cache.ready(s.generation) {
+			cache = newSPFreshRoutingCache(0)
+			if rerr := cache.fullReload(tx, s, s.generation); rerr != nil {
+				return rerr
+			}
+		}
+		neighbors := map[int64]bool{}
+		for _, childID := range []int64{childA, childB} {
+			row, rerr := spfreshReadCentroidForWrite(tx, s, cellID, childID)
+			if rerr != nil {
+				if errors.Is(rerr, errSPFreshNotFound) {
+					continue // child re-split/moved already; its NPA follows it
+				}
+				return rerr
+			}
+			cvec, verr := row.vector()
+			if verr != nil {
+				return verr
+			}
+			routed, rerr := cache.route(tx, s, cvec, 4, config.Kn)
+			if rerr != nil {
+				return rerr
+			}
+			for _, r := range routed {
+				if r.fineID != childA && r.fineID != childB {
+					neighbors[r.fineID] = true
+				}
+			}
+		}
+
+		// Candidates: members of the neighbor postings (snapshot, capped at
+		// the one-reply contract like the query path).
+		// Sidecar reads issued as one parallel burst (the plan is one tx; a
+		// serial Get per member at production Lmax flirts with the 5s limit).
+		type pending struct {
+			pk  tuple.Tuple
+			fut fdb.FutureByteSlice
+		}
+		var futs []pending
+		for fineID := range neighbors {
+			entries, _, _, _, perr := spfreshLoadPostingSnapshot(tx, s, fineID, 4*config.Lmax+1)
+			if perr != nil {
+				return perr
+			}
+			for _, e := range entries {
+				futs = append(futs, pending{pk: e.pk, fut: tx.Snapshot().Get(s.sidecarKey(e.pk))})
+			}
+		}
+		for _, f := range futs {
+			data, gerr := f.fut.Get()
+			if gerr != nil {
+				return gerr
+			}
+			if data == nil {
+				continue // no sidecar: nothing to re-evaluate against
+			}
+			v, verr := vectorcodec.Deserialize(data)
+			if verr != nil {
+				return verr
+			}
+			cands = append(cands, candidate{pk: f.pk, vec: v})
+		}
+		return nil
+	})
+	if err != nil || skipped {
+		return spfreshOutcomeSkipped, err
+	}
+	if stale {
+		return spfreshOutcomeCleaned, nil
+	}
+
+	// Move pass: per-pk atomic closure re-evaluation, batched.
+	quantizer := newSPFreshQuantizer(config)
+	for lo := 0; lo < len(cands); lo += spfreshNPABatch {
+		hi := min(lo+spfreshNPABatch, len(cands))
+		batch := cands[lo:hi]
+		err := spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
+			tx := rtx.Transaction()
+			// Centroid rows verified once per tx, REAL (the lifecycle fence):
+			// only ACTIVE centroids participate in the recomputed copy-set.
+			type centInfo struct {
+				vec []float64
+				ok  bool
+			}
+			cents := map[int64]centInfo{}
+			lookup := func(fineID int64) (centInfo, error) {
+				if ci, hit := cents[fineID]; hit {
+					return ci, nil
+				}
+				cellID, ferr := spfreshFindCentroidCell(tx, s, fineID)
+				if ferr != nil {
+					if errors.Is(ferr, errSPFreshNotFound) {
+						cents[fineID] = centInfo{}
+						return centInfo{}, nil
+					}
+					return centInfo{}, ferr
+				}
+				row, rerr := spfreshReadCentroidForWrite(tx, s, cellID, fineID)
+				if rerr != nil {
+					if errors.Is(rerr, errSPFreshNotFound) {
+						cents[fineID] = centInfo{}
+						return centInfo{}, nil
+					}
+					return centInfo{}, rerr
+				}
+				if row.state != spfreshStateActive {
+					cents[fineID] = centInfo{}
+					return centInfo{}, nil
+				}
+				vec, verr := row.vector()
+				if verr != nil {
+					return centInfo{}, verr
+				}
+				ci := centInfo{vec: vec, ok: true}
+				cents[fineID] = ci
+				return ci, nil
+			}
+
+			for _, cand := range batch {
+				// Per-pk serialization point.
+				current, merr := spfreshReadMembership(tx, s, cand.pk)
+				if merr != nil {
+					if errors.Is(merr, errSPFreshNotFound) {
+						continue // deleted since planning
+					}
+					return merr
+				}
+				// Candidate set: current copies ∪ the split children.
+				ids := make([]int64, 0, len(current)+2)
+				seen := map[int64]bool{}
+				for _, id := range append(append([]int64{}, current...), childA, childB) {
+					if !seen[id] {
+						seen[id] = true
+						ids = append(ids, id)
+					}
+				}
+				var pool []spfreshCandidate
+				vecsByID := map[int64][]float64{}
+				for _, id := range ids {
+					ci, lerr := lookup(id)
+					if lerr != nil {
+						return lerr
+					}
+					if !ci.ok {
+						continue
+					}
+					pool = append(pool, spfreshCandidate{id: id, d2: spfreshSquaredDistance(cand.vec, ci.vec), vec: ci.vec})
+					vecsByID[id] = ci.vec
+				}
+				if len(pool) == 0 {
+					continue
+				}
+				spfreshSortCandidates(pool)
+				kept := spfreshClosure(pool, config.Replication, config.Alpha)
+				newSet := make([]int64, 0, len(kept))
+				for _, k := range kept {
+					newSet = append(newSet, k.id)
+				}
+				if spfreshSameIDSet(current, newSet) {
+					continue // already optimal: idempotent no-op
+				}
+				keep := map[int64]bool{}
+				for _, id := range newSet {
+					keep[id] = true
+				}
+				for _, id := range current {
+					if !keep[id] {
+						tx.Clear(s.postingKey(id, cand.pk))
+						spfreshCounterAdd(tx, s, spfreshCounterFine, id, -1)
+					}
+				}
+				cur := map[int64]bool{}
+				for _, id := range current {
+					cur[id] = true
+				}
+				for _, id := range newSet {
+					if !cur[id] {
+						residual := make([]float64, len(cand.vec))
+						for d := range cand.vec {
+							residual[d] = cand.vec[d] - vecsByID[id][d]
+						}
+						tx.Set(s.postingKey(id, cand.pk), quantizer.Encode(residual))
+						spfreshCounterAdd(tx, s, spfreshCounterFine, id, 1)
+					}
+				}
+				tx.Set(s.membershipKey(cand.pk), encodeMembership(newSet))
+			}
+			return nil
+		})
+		if err != nil {
+			return spfreshOutcomeSkipped, fmt.Errorf("spfresh NPA: move batch at %d: %w", lo, err)
+		}
+	}
+
+	// Done: clear the task.
+	return spfreshOutcomeActed, spfreshRun(ctx, db, func(rtx *recordlayer.FDBRecordContext) error {
+		rtx.Transaction().Clear(s.taskKey(spfreshTaskNPA, parentID))
+		return nil
+	})
+}
+
+// spfreshFindCentroidCell locates the cell of a fine centroid by scanning the
+// coarse table and probing each cell's row (centroids are keyed (cell, fine);
+// the fineID alone does not name the cell). Bounded by the coarse count; only
+// lifecycle follow-ups need it — the hot paths always know the cell.
+func spfreshFindCentroidCell(tx fdb.WritableTransaction, s *spfreshStorage, fineID int64) (int64, error) {
+	ids, _, err := spfreshLoadAllCoarse(tx, s)
+	if err != nil {
+		return 0, err
+	}
+	for _, cellID := range ids {
+		if _, rerr := spfreshReadCentroidForWrite(tx, s, cellID, fineID); rerr == nil {
+			return cellID, nil
+		} else if !errors.Is(rerr, errSPFreshNotFound) {
+			return 0, rerr
+		}
+	}
+	return 0, errSPFreshNotFound
+}
+
+// spfreshFindCentroidCellSnapshot is the QUERY-PATH variant: it resolves the
+// fine's CURRENT cell with snapshot reads only — no conflict ranges. The
+// read-path split re-file uses it for the csplit-pause check (the routed
+// cellID can be stale after a completed coarse split) while
+// keeping queries conflict-free except for the one Set-if-absent that
+// actually files. hintCell (the routed cell) is probed FIRST — one point
+// read in the common still-current case; the moved-fine fallback issues the
+// whole coarse table as ONE parallel burst, never one blocking read per cell
+// (a serial scan added O(cells) round trips to the user query that hit the
+// cap).
+func spfreshFindCentroidCellSnapshot(tx fdb.WritableTransaction, s *spfreshStorage, fineID, hintCell int64) (int64, error) {
+	if hintCell != 0 {
+		data, gerr := tx.Snapshot().Get(s.centroidKey(hintCell, fineID)).Get()
+		if gerr != nil {
+			return 0, gerr
+		}
+		if data != nil {
+			return hintCell, nil
+		}
+	}
+	ids, _, err := spfreshLoadAllCoarse(tx, s)
+	if err != nil {
+		return 0, err
+	}
+	futs := make([]fdb.FutureByteSlice, len(ids))
+	for i, cellID := range ids {
+		if cellID == hintCell {
+			continue // already probed
+		}
+		futs[i] = tx.Snapshot().Get(s.centroidKey(cellID, fineID))
+	}
+	// Drain EVERY future even after a hit or an error (a pending read must
+	// not outlive this attempt — the cross-attempt contamination rule).
+	var found int64
+	var ferr error
+	for i, cellID := range ids {
+		if futs[i] == nil {
+			continue
+		}
+		data, gerr := futs[i].Get()
+		if gerr != nil && ferr == nil {
+			ferr = gerr
+		}
+		if data != nil && found == 0 {
+			found = cellID
+		}
+	}
+	if ferr != nil {
+		return 0, ferr
+	}
+	if found != 0 {
+		return found, nil
+	}
+	return 0, errSPFreshNotFound
+}
+
+// spfreshSortCandidates orders by d2 ascending with id tie-breaks.
+func spfreshSortCandidates(cands []spfreshCandidate) {
+	for i := 1; i < len(cands); i++ {
+		for j := i; j > 0 && (cands[j].d2 < cands[j-1].d2 || (cands[j].d2 == cands[j-1].d2 && cands[j].id < cands[j-1].id)); j-- {
+			cands[j], cands[j-1] = cands[j-1], cands[j]
+		}
+	}
+}
+
+// spfreshSameIDSet reports set equality ignoring order.
+func spfreshSameIDSet(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	m := map[int64]bool{}
+	for _, id := range a {
+		m[id] = true
+	}
+	for _, id := range b {
+		if !m[id] {
+			return false
+		}
+	}
+	return true
+}

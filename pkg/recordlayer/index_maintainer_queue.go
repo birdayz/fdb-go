@@ -7,13 +7,13 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
-func (m *standardIndexMaintainer) IsPendingWriteQueueAllowed() bool { return false }
+func (m *StandardIndexMaintainer) IsPendingWriteQueueAllowed() bool { return false }
 
-func (m *standardIndexMaintainer) SerializePendingWriteQueue(_, _ *FDBStoredRecord[proto.Message]) (*anypb.Any, error) {
+func (m *StandardIndexMaintainer) SerializePendingWriteQueue(_, _ *FDBStoredRecord[proto.Message]) (*anypb.Any, error) {
 	return nil, &UnsupportedOperationError{Message: m.index.Name + " does not support the pending write queue"}
 }
 
-func (m *standardIndexMaintainer) UpdateFromQueue(_ *anypb.Any) error {
+func (m *StandardIndexMaintainer) UpdateFromQueue(_ *anypb.Any) error {
 	return &UnsupportedOperationError{Message: m.index.Name + " does not support the pending write queue"}
 }
 
@@ -76,7 +76,7 @@ func (m *slidingWindowIndexMaintainer) SerializePendingWriteQueue(oldRecord, new
 
 func (m *slidingWindowIndexMaintainer) UpdateFromQueue(data *anypb.Any) error {
 	entry := &gen.SlidingWindowQueueEntry{}
-	if err := unmarshalPendingQueueAny(data, entry); err != nil {
+	if err := UnmarshalPendingQueueAny(data, entry); err != nil {
 		return &RecordCoreError{Message: "failed to parse sliding window pending write queue entry data", Cause: err}
 	}
 	var oldKey, newKey slidingWindowEntryKey

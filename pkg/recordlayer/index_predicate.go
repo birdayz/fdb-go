@@ -278,7 +278,7 @@ func simpleComparisonFromProto(sc *gen.SimpleComparison) (comparisonFunc, error)
 // DIVERGENCES.md), both when the meta-data is loaded. Integers and floats widen
 // to the forms Go compares record values in.
 func extractValueOperand(v *gen.Value) (any, error) {
-	val, err := valueFromProto(v)
+	val, err := ValueFromProto(v)
 	if err != nil {
 		return nil, err
 	}

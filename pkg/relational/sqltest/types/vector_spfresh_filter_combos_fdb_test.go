@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"google.golang.org/protobuf/proto"
@@ -93,7 +95,7 @@ func TestFDB_VectorSearch_ResidualFilterCombos(t *testing.T) {
 		m.Set(desc.Fields().ByName("PRICE"), protoreflect.ValueOfInt64(r.price))
 		m.Set(desc.Fields().ByName("USER_ID"), protoreflect.ValueOfInt64(r.user))
 		m.Set(desc.Fields().ByName("DESCRIPTION"), protoreflect.ValueOfString(r.desc))
-		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(recordlayer.SerializeVector(r.vec)))
+		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(vectorindex.SerializeVector(r.vec)))
 		return m
 	}
 
@@ -375,7 +377,7 @@ func TestFDB_VectorSearch_ColdStartCappedHonestTruncation(t *testing.T) {
 		m := dynamicpb.NewMessage(desc)
 		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(desc.Fields().ByName("CATEGORY"), protoreflect.ValueOfString(cat))
-		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(recordlayer.SerializeVector(vec)))
+		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(vectorindex.SerializeVector(vec)))
 		return m
 	}
 
@@ -471,7 +473,7 @@ func TestFDB_VectorSearch_ColdStartCappedHonestTruncation(t *testing.T) {
 
 	// Maintenance — the first query's terminal re-filed the oversized posting's
 	// split (refileCapped); draining the queue splits it into <=Lmax pieces.
-	if _, rerr := recordlayer.RebalanceSPFreshIndex(ctx, db, storeBuilder, "VEC_IDX"); rerr != nil {
+	if _, rerr := vectorindex.RebalanceSPFreshIndex(ctx, db, storeBuilder, "VEC_IDX"); rerr != nil {
 		t.Fatalf("rebalance: %v", rerr)
 	}
 

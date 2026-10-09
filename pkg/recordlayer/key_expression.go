@@ -1264,8 +1264,8 @@ func keyExpressionEquals(a, b KeyExpression) bool {
 			return false
 		}
 		// Compare via proto serialization for type-safe equality
-		ap, _ := valueToProto(av.value)
-		bp, _ := valueToProto(bv.value)
+		ap, _ := ValueToProto(av.value)
+		bp, _ := ValueToProto(bv.value)
 		return proto.Equal(ap, bp)
 	case *KeyWithValueExpression:
 		bv, ok := b.(*KeyWithValueExpression)

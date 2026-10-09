@@ -22,7 +22,7 @@ func (valueWithQueueFactory) IndexTypes() []string { return []string{indexTypeVa
 
 func (valueWithQueueFactory) NewIndexMaintainer(state IndexMaintainerState) (IndexMaintainer, error) {
 	return &standardIndexMaintainerWithQueue{
-		standardIndexMaintainer: *newStandardIndexMaintainer(state.Index, state.IndexSubspace, state.Transaction, state.Store),
+		StandardIndexMaintainer: *newStandardIndexMaintainer(state.Index, state.IndexSubspace, state.Transaction, state.Store),
 	}, nil
 }
 

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
@@ -59,7 +61,7 @@ func TestSPFreshMultiTenantSoak(t *testing.T) {
 
 	// One store + one SPFresh index per tenant, disjoint slices of SIFT.
 	type tenantState struct {
-		recordlayer.SPFreshTenant
+		vectorindex.SPFreshTenant
 		base [][]float64 // this tenant's vectors (by order_id - 1)
 	}
 	tenants := make([]tenantState, tenantCount)
@@ -88,11 +90,11 @@ func TestSPFreshMultiTenantSoak(t *testing.T) {
 			base[i] = float32sToFloat64s(baseVecs[lo+i])
 		}
 		tenants[ti] = tenantState{
-			SPFreshTenant: recordlayer.SPFreshTenant{StoreBuilder: sb, IndexName: "spf_mt"},
+			SPFreshTenant: vectorindex.SPFreshTenant{StoreBuilder: sb, IndexName: "spf_mt"},
 			base:          base,
 		}
 	}
-	sweepTenants := make([]recordlayer.SPFreshTenant, tenantCount)
+	sweepTenants := make([]vectorindex.SPFreshTenant, tenantCount)
 	for i := range tenants {
 		sweepTenants[i] = tenants[i].SPFreshTenant
 	}
@@ -109,7 +111,7 @@ func TestSPFreshMultiTenantSoak(t *testing.T) {
 		go func() {
 			defer sweeperWG.Done()
 			for !sweepDone.Load() {
-				res, serr := recordlayer.SweepSPFreshIndexes(ctx, vectorBenchDB, sweepTenants, recordlayer.SPFreshSweepOptions{MaxRoundsPerTenant: 4})
+				res, serr := vectorindex.SweepSPFreshIndexes(ctx, vectorBenchDB, sweepTenants, vectorindex.SPFreshSweepOptions{MaxRoundsPerTenant: 4})
 				if serr != nil {
 					t.Errorf("sweep: %v", serr)
 					return
@@ -152,7 +154,7 @@ func TestSPFreshMultiTenantSoak(t *testing.T) {
 					for i := lo; i < hi; i++ {
 						if _, serr := store.SaveRecord(&gen.Order{
 							OrderId:    proto.Int64(int64(i + 1)),
-							VectorData: recordlayer.SerializeVector(tn.base[i]),
+							VectorData: vectorindex.SerializeVector(tn.base[i]),
 						}); serr != nil {
 							return nil, serr
 						}
@@ -174,7 +176,7 @@ func TestSPFreshMultiTenantSoak(t *testing.T) {
 
 	// Drain the whole fleet to quiescence, then stop the sweepers.
 	for pass := 0; pass < 200; pass++ {
-		res, serr := recordlayer.SweepSPFreshIndexes(ctx, vectorBenchDB, sweepTenants, recordlayer.SPFreshSweepOptions{MaxRoundsPerTenant: 8})
+		res, serr := vectorindex.SweepSPFreshIndexes(ctx, vectorBenchDB, sweepTenants, vectorindex.SPFreshSweepOptions{MaxRoundsPerTenant: 8})
 		if serr != nil {
 			t.Fatalf("final drain: %v", serr)
 		}
@@ -198,7 +200,7 @@ func TestSPFreshMultiTenantSoak(t *testing.T) {
 	worstRecall := 1.0
 	for ti := range tenants {
 		tn := &tenants[ti]
-		pending, perr := recordlayer.SPFreshHasPendingMaintenance(ctx, vectorBenchDB, tn.StoreBuilder, tn.IndexName)
+		pending, perr := vectorindex.SPFreshHasPendingMaintenance(ctx, vectorBenchDB, tn.StoreBuilder, tn.IndexName)
 		if perr != nil {
 			t.Fatalf("tenant %d probe: %v", ti, perr)
 		}
@@ -224,7 +226,7 @@ func TestSPFreshMultiTenantSoak(t *testing.T) {
 					return nil, merr
 				}
 				cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
-					Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
+					Low:  tuple.Tuple{vectorindex.SerializeVector(query)},
 					High: tuple.Tuple{int64(k)},
 				}, nil, recordlayer.ScanProperties{})
 				got = got[:0]

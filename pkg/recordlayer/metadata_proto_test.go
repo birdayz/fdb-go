@@ -159,11 +159,11 @@ func TestValueToProtoRoundtrip(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			p, err := valueToProto(tt.val)
+			p, err := ValueToProto(tt.val)
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := valueFromProto(p)
+			got, err := ValueFromProto(p)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -189,11 +189,11 @@ func TestValueFromProto_MoreThanOneValue(t *testing.T) {
 			t.Fatalf("err = %T %v, want RecordCoreError \"More than one value encoded in value\"", err, err)
 		}
 	}
-	_, err := valueFromProto(two)
+	_, err := ValueFromProto(two)
 	wantRCE(t, err)
 	_, err = KeyExpressionFromProto(&gen.KeyExpression{Value: two})
 	wantRCE(t, err)
-	if v, err := valueFromProto(&gen.Value{}); v != nil || err != nil {
+	if v, err := ValueFromProto(&gen.Value{}); v != nil || err != nil {
 		t.Fatalf("an empty Value is (%v, %v), want (nil, nil)", v, err)
 	}
 	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)

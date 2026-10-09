@@ -6,6 +6,8 @@ import (
 	"maps"
 	"sync"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -536,7 +538,7 @@ func (store *FDBRecordStore) scheduleReplacementRetirement() {
 	store.rememberRetirementMetadata()
 	ctx := store.context
 	key := replacementRetirementMetadataKey(store.subspace)
-	ctx.getOrCreateCommitCheck(replacementRetirementCheckName(store.subspace), func(string) CommitCheckFunc {
+	ctx.GetOrCreateCommitCheck(replacementRetirementCheckName(store.subspace), func(string) CommitCheckFunc {
 		return func() error {
 			current, _ := ctx.Session(key).(*FDBRecordStore)
 			if current == nil {
@@ -705,7 +707,7 @@ func LoadIndexStates(tx fdb.ReadTransaction, ss subspace.Subspace) (map[string]I
 		if len(kv.Key) < prefixLen {
 			continue
 		}
-		t, err := fastUnpack(kv.Key[prefixLen:])
+		t, err := tuplefast.Unpack(kv.Key[prefixLen:])
 		if err != nil {
 			return nil, fmt.Errorf("failed to unpack index state key: %w", err)
 		}
@@ -718,7 +720,7 @@ func LoadIndexStates(tx fdb.ReadTransaction, ss subspace.Subspace) (map[string]I
 		}
 
 		// Unpack value to get state code.
-		valueTuple, err := fastUnpack(kv.Value)
+		valueTuple, err := tuplefast.Unpack(kv.Value)
 		if err != nil {
 			return nil, fmt.Errorf("failed to unpack index state value for %q: %w", indexName, err)
 		}

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
@@ -142,7 +144,7 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 			for i := lo; i < hi; i++ {
 				if _, serr := store.SaveRecord(&gen.Order{
 					OrderId:    proto.Int64(int64(i)),
-					VectorData: recordlayer.SerializeVector(baseF64[i]),
+					VectorData: vectorindex.SerializeVector(baseF64[i]),
 				}); serr != nil {
 					return nil, serr
 				}
@@ -157,7 +159,7 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 
 	// Bulk build.
 	buildStart := time.Now()
-	if err := recordlayer.BuildSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_data", 42); err != nil {
+	if err := vectorindex.BuildSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_data", 42); err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	buildDur := time.Since(buildStart)
@@ -180,7 +182,7 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 		}
 		// Effective replication (entries/N) is the x-axis of the α-led
 		// replication sweep — log it for every build.
-		t.Logf("TOPOLOGY: %s", recordlayer.SPFreshDebugTopology(rtx, store, "spf_data"))
+		t.Logf("TOPOLOGY: %s", vectorindex.SPFreshDebugTopology(rtx, store, "spf_data"))
 		return nil, nil
 	}); terr != nil {
 		t.Fatalf("topology dump: %v", terr)
@@ -217,7 +219,7 @@ func TestSPFreshSIFTBenchmark(t *testing.T) {
 				return nil, merr
 			}
 			cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
-				Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
+				Low:  tuple.Tuple{vectorindex.SerializeVector(query)},
 				High: tuple.Tuple{int64(k)},
 			}, nil, recordlayer.ScanProperties{})
 			got = got[:0]
@@ -353,7 +355,7 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 					query := float32sToFloat64s(qv)
 					qStart := time.Now()
 					cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
-						Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
+						Low:  tuple.Tuple{vectorindex.SerializeVector(query)},
 						High: high,
 					}, nil, recordlayer.ScanProperties{})
 					var got []int64
@@ -422,7 +424,7 @@ func runSIFTSweep(t *testing.T, ctx context.Context, storeBuilder func(*recordla
 								return nil, merr
 							}
 							cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
-								Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
+								Low:  tuple.Tuple{vectorindex.SerializeVector(query)},
 								High: high,
 							}, nil, recordlayer.ScanProperties{})
 							for {
@@ -497,8 +499,8 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 		}
 		src = sliceSource{base: baseF64}
 	}
-	recordlayer.SPFreshEnableAudit()
-	defer recordlayer.SPFreshDisableAudit()
+	vectorindex.SPFreshEnableAudit()
+	defer vectorindex.SPFreshDisableAudit()
 	t.Logf("SPFresh foreground fill: N=%d writers=%d batch=%d", n, writers, batchSize)
 
 	ensureVectorBenchDB(t)
@@ -561,7 +563,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 					for i := b; i < be; i++ {
 						src.at(i, vbuf)
 						if _, serr := store.SaveRecord(&gen.Order{
-							OrderId: proto.Int64(int64(i)), VectorData: recordlayer.SerializeVector(vbuf),
+							OrderId: proto.Int64(int64(i)), VectorData: vectorindex.SerializeVector(vbuf),
 						}); serr != nil {
 							return nil, serr
 						}
@@ -579,7 +581,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	go func() {
 		defer rebalancerWG.Done()
 		for !fillDone.Load() {
-			acts, rerr := recordlayer.RebalanceSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_fill")
+			acts, rerr := vectorindex.RebalanceSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_fill")
 			if rerr != nil {
 				errs <- fmt.Errorf("rebalancer: %w", rerr)
 				return
@@ -603,7 +605,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 	}
 	// Drain the remaining task queue (counts toward fill time: the index
 	// isn't "filled" until maintenance quiesces).
-	acts, err := recordlayer.RebalanceSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_fill")
+	acts, err := vectorindex.RebalanceSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_fill")
 	if err != nil {
 		t.Fatalf("final rebalance: %v", err)
 	}
@@ -616,8 +618,8 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 		if serr != nil {
 			return nil, serr
 		}
-		t.Logf("TOPOLOGY: %s", recordlayer.SPFreshDebugTopology(rtx, store, "spf_fill"))
-		t.Logf("INTEGRITY: %s", recordlayer.SPFreshDebugIntegrity(rtx, store, "spf_fill", 100))
+		t.Logf("TOPOLOGY: %s", vectorindex.SPFreshDebugTopology(rtx, store, "spf_fill"))
+		t.Logf("INTEGRITY: %s", vectorindex.SPFreshDebugIntegrity(rtx, store, "spf_fill", 100))
 		return nil, nil
 	}); err != nil {
 		t.Fatalf("topology dump: %v", err)
@@ -667,7 +669,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 						high = tuple.Tuple{int64(k), int64(cfg.kc), int64(cfg.w), int64(cfg.c)}
 					}
 					cursor := maintainer.(sbd).ScanByDistance(recordlayer.TupleRange{
-						Low:  tuple.Tuple{recordlayer.SerializeVector(query)},
+						Low:  tuple.Tuple{vectorindex.SerializeVector(query)},
 						High: high,
 					}, nil, recordlayer.ScanProperties{})
 					got = got[:0]
@@ -713,7 +715,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 		rstart := time.Now()
 		var moved int
 		if rv == "1" {
-			m, rerr := recordlayer.RefineSPFreshIndexAll(ctx, vectorBenchDB, storeBuilder, "spf_fill")
+			m, rerr := vectorindex.RefineSPFreshIndexAll(ctx, vectorBenchDB, storeBuilder, "spf_fill")
 			if rerr != nil {
 				t.Fatalf("refine: %v", rerr)
 			}
@@ -722,7 +724,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 			budget := siftEnvInt("SIFT_REFINE_BUDGET", 10000)
 			cycleMoves, calls := 0, 0
 			for {
-				m, wrapped, rerr := recordlayer.RefineSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_fill", budget)
+				m, wrapped, rerr := vectorindex.RefineSPFreshIndex(ctx, vectorBenchDB, storeBuilder, "spf_fill", budget)
 				if rerr != nil {
 					t.Fatalf("refine round: %v", rerr)
 				}
@@ -744,7 +746,7 @@ func TestSPFreshForegroundFillBenchmark(t *testing.T) {
 			if serr != nil {
 				return nil, serr
 			}
-			t.Logf("TOPOLOGY post-refine: %s", recordlayer.SPFreshDebugTopology(rtx, store, "spf_fill"))
+			t.Logf("TOPOLOGY post-refine: %s", vectorindex.SPFreshDebugTopology(rtx, store, "spf_fill"))
 			return nil, nil
 		}); terr != nil {
 			t.Fatalf("post-refine topology: %v", terr)

@@ -19,7 +19,7 @@ type atomicMutationIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.WritableTransaction
-	store         indexStoreContext
+	store         IndexStoreContext
 	mutation      atomicMutation
 }
 
@@ -27,7 +27,7 @@ func newAtomicMutationIndexMaintainer(
 	index *Index,
 	indexSubspace subspace.Subspace,
 	tx fdb.WritableTransaction,
-	store indexStoreContext,
+	store IndexStoreContext,
 	mutation atomicMutation,
 ) *atomicMutationIndexMaintainer {
 	return &atomicMutationIndexMaintainer{

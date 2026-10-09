@@ -96,7 +96,7 @@ func TestBug3_GetEntryPrimaryKeyTruncatedEntry(t *testing.T) {
 
 	// Normal case: 2 index columns + 2 PK columns = 4 elements
 	normalEntry := tuple.Tuple{"val_a", "val_b", "pk1", "pk2"}
-	pk := idx.getEntryPrimaryKey(normalEntry)
+	pk := idx.EntryPrimaryKey(normalEntry)
 	if len(pk) != 2 || pk[0] != "pk1" || pk[1] != "pk2" {
 		t.Fatalf("normal case: expected PK {pk1, pk2}, got %v", pk)
 	}
@@ -104,7 +104,7 @@ func TestBug3_GetEntryPrimaryKeyTruncatedEntry(t *testing.T) {
 	// Truncated case: only 2 elements (index columns only, no PK)
 	// This should error but instead returns empty tuple silently
 	truncatedEntry := tuple.Tuple{"val_a", "val_b"}
-	pk2 := idx.getEntryPrimaryKey(truncatedEntry)
+	pk2 := idx.EntryPrimaryKey(truncatedEntry)
 	if len(pk2) != 0 {
 		t.Fatalf("truncated entry: expected empty PK, got %v (len=%d)", pk2, len(pk2))
 	}
@@ -123,7 +123,7 @@ func TestBug3_GetEntryPrimaryKeyTruncatedEntry(t *testing.T) {
 
 	// Entry has only 1 element — way too short
 	tinyEntry := tuple.Tuple{"val_a"}
-	pk3 := idx2.getEntryPrimaryKey(tinyEntry)
+	pk3 := idx2.EntryPrimaryKey(tinyEntry)
 	// FIX: truncated entries now return empty tuple instead of nil-filled garbage
 	if len(pk3) != 0 {
 		t.Fatalf("expected empty PK for truncated entry, got %d elements: %v", len(pk3), pk3)

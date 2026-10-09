@@ -99,8 +99,8 @@ func TestAttemptLoop_StalledSealUnderSimulation(t *testing.T) {
 		return nil, &SPFreshSplitWindowError{Sealed: sealed}
 	})
 	var stalled *SPFreshStalledSealError
-	if !errors.As(err, &stalled) || runs != spfreshStalledSealBound || stalled.Retries != spfreshStalledSealBound {
-		t.Fatalf("got %d executions, err %v; want SPFreshStalledSealError after %d", runs, err, spfreshStalledSealBound)
+	if !errors.As(err, &stalled) || runs != SPFreshStalledSealBound || stalled.Retries != SPFreshStalledSealBound {
+		t.Fatalf("got %d executions, err %v; want SPFreshStalledSealError after %d", runs, err, SPFreshStalledSealBound)
 	}
 	if isRetriableAnyCause(err) {
 		t.Fatal("SPFreshStalledSealError must not be retriable")

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/rlmetrics"
 )
@@ -217,7 +219,7 @@ func TestWriteText_IsValidExpositionFormat(t *testing.T) {
 	timer.Record(recordlayer.EventCommit, 999)
 	timer.Increment(recordlayer.CountSaveRecordKey)
 	timer.IncrementBy(recordlayer.CountSaveRecordKeyBytes, 64)
-	timer.Increment(recordlayer.CountSPFreshSplits)
+	timer.Increment(vectorindex.CountSPFreshSplits)
 
 	body := render(t, timer)
 

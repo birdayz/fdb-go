@@ -65,8 +65,8 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 			RootExpression: Concat(Field("quantity"), Field("price")),
 		}
 	}
-	stdOf := func(idx *Index) standardIndexMaintainer {
-		return standardIndexMaintainer{index: idx}
+	stdOf := func(idx *Index) StandardIndexMaintainer {
+		return StandardIndexMaintainer{index: idx}
 	}
 
 	// The roots whose maintainer bound is NARROWER than the one their root
@@ -90,12 +90,12 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 	cases := []deleteWhereBoundCase{
 		{
 			name:       "VALUE takes the root's own width",
-			maintainer: &standardIndexMaintainer{index: plain("v", IndexTypeValue)},
+			maintainer: &StandardIndexMaintainer{index: plain("v", IndexTypeValue)},
 			bound:      2,
 		},
 		{
 			name: "KeyWithValue stops at the split point, not the inner width",
-			maintainer: &standardIndexMaintainer{index: &Index{
+			maintainer: &StandardIndexMaintainer{index: &Index{
 				Name: "kwv", Type: IndexTypeValue,
 				RootExpression: KeyWithValue(
 					Concat(Field("quantity"), Field("price"), Field("order_id")), 2),
@@ -104,20 +104,20 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 		},
 		{
 			name:       "RANK stops at the grouping columns its ranked sets are keyed by",
-			maintainer: &rankIndexMaintainer{standardIndexMaintainer: stdOf(grouped("rank", IndexTypeRank))},
+			maintainer: &rankIndexMaintainer{StandardIndexMaintainer: stdOf(grouped("rank", IndexTypeRank))},
 			bound:      1,
 		},
 		{
 			name: "TIME_WINDOW_LEADERBOARD stops at the grouping columns",
 			maintainer: &timeWindowLeaderboardIndexMaintainer{
-				standardIndexMaintainer: stdOf(grouped("lb", IndexTypeTimeWindowLeaderboard)),
+				StandardIndexMaintainer: stdOf(grouped("lb", IndexTypeTimeWindowLeaderboard)),
 			},
 			bound: 1,
 		},
 		{
 			name: "MULTIDIMENSIONAL stops at the R-tree prefix, not the whole key",
 			maintainer: &multidimensionalIndexMaintainer{
-				standardIndexMaintainer: stdOf(&Index{
+				StandardIndexMaintainer: stdOf(&Index{
 					Name: "md", Type: IndexTypeMultidimensional,
 					RootExpression: Dimensions(
 						Concat(Field("quantity"), Field("coord_x"), Field("coord_y")), 1, 2),
@@ -134,7 +134,7 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 			// above cannot detect that, because there the two bounds coincide.
 			name: "MULTIDIMENSIONAL wrapped in KeyWithValue still stops at the R-tree prefix",
 			maintainer: &multidimensionalIndexMaintainer{
-				standardIndexMaintainer: stdOf(mdWrapped),
+				StandardIndexMaintainer: stdOf(mdWrapped),
 			},
 			bound:            1,
 			index:            mdWrapped,
@@ -143,7 +143,7 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 		{
 			name: "PERMUTED subtracts the permuted columns from the grouping count",
 			maintainer: &permutedMinMaxIndexMaintainer{
-				standardIndexMaintainer: &standardIndexMaintainer{index: permIdx},
+				StandardIndexMaintainer: &StandardIndexMaintainer{index: permIdx},
 				permutedSize:            1,
 			},
 			bound:            1,
@@ -233,7 +233,7 @@ func TestSlidingWindowCanDeleteWhereNeverExceedsItsDelegate(t *testing.T) {
 
 	// The delegate accepts one column; the window partitions on two. Without
 	// forwarding, the window would accept two.
-	delegate := &narrowDeleteWhereMaintainer{standardIndexMaintainer: standardIndexMaintainer{index: &Index{
+	delegate := &narrowDeleteWhereMaintainer{StandardIndexMaintainer: StandardIndexMaintainer{index: &Index{
 		Name: "delegate", Type: IndexTypeValue,
 		RootExpression: Concat(Field("quantity"), Field("price")),
 	}}}
@@ -263,7 +263,7 @@ const narrowDeleteWhereRefusal = "the delegate clears at most one column"
 
 // narrowDeleteWhereMaintainer is a delegate whose clearable prefix is one
 // column, narrower than its root's, as a vector index's split point is.
-type narrowDeleteWhereMaintainer struct{ standardIndexMaintainer }
+type narrowDeleteWhereMaintainer struct{ StandardIndexMaintainer }
 
 func (m *narrowDeleteWhereMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 	if len(prefix) > 1 {

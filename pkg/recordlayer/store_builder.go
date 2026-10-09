@@ -9,6 +9,8 @@ import (
 	"math"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -275,7 +277,7 @@ func (store *FDBRecordStore) convertRecordVersionsToInline() error {
 	}
 
 	for _, kv := range kvs {
-		pk, err := fastSubspaceUnpack(kv.Key, len(legacy.Bytes()))
+		pk, err := tuplefast.SubspaceUnpack(kv.Key, len(legacy.Bytes()))
 		if err != nil {
 			return fmt.Errorf("unpack legacy version key: %w", err)
 		}

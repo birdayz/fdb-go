@@ -111,7 +111,7 @@ func (t slidingWindowExtremum) isWorseOrEqual(candidate, boundary tuple.Tuple) b
 // shared indexStoreContext: it has to load the records it evicts and promotes,
 // because the delegate index is updated with RECORDS, not with entry keys.
 type slidingWindowStore interface {
-	indexStoreContext
+	IndexStoreContext
 	loadRecordForIndexMaintenance(primaryKey tuple.Tuple) (*FDBStoredRecord[proto.Message], error)
 }
 
@@ -181,7 +181,7 @@ type indexMaintainerDecorator interface {
 // Java has no equivalent problem: its decorator extends the same abstract
 // IndexMaintainer and overrides scan(), so nothing downstream ever asks what
 // the concrete class is.
-func maintainerAs[T any](m IndexMaintainer) (T, bool) {
+func IndexMaintainerAs[T any](m IndexMaintainer) (T, bool) {
 	for {
 		if t, ok := any(m).(T); ok {
 			return t, true

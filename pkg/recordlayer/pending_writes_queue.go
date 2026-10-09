@@ -219,7 +219,7 @@ func pendingQueueAnyHasType(data *anypb.Any, name protoreflect.FullName) bool {
 	return slash >= 0 && url[slash+1:] == string(name)
 }
 
-func unmarshalPendingQueueAny(data *anypb.Any, message proto.Message) error {
+func UnmarshalPendingQueueAny(data *anypb.Any, message proto.Message) error {
 	name := message.ProtoReflect().Descriptor().FullName()
 	if !pendingQueueAnyHasType(data, name) {
 		return fmt.Errorf("pending queue Any type URL %q must end with /%s", data.GetTypeUrl(), name)

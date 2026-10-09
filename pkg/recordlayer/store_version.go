@@ -3,6 +3,8 @@ package recordlayer
 import (
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
@@ -110,7 +112,7 @@ func packVersion(version *FDBRecordVersion) ([]byte, error) {
 // unpackVersion unpacks a stored version value (a packed Tuple with a Versionstamp)
 // into an FDBRecordVersion. Matches Java's SplitHelper.unpackVersion().
 func unpackVersion(value []byte) (*FDBRecordVersion, error) {
-	t, err := fastUnpack(fdb.Key(value))
+	t, err := tuplefast.Unpack(fdb.Key(value))
 	if err != nil {
 		return nil, fmt.Errorf("failed to unpack version tuple: %w", err)
 	}

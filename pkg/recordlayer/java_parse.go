@@ -53,7 +53,7 @@ func (e *NumberFormatError) As(target any) bool {
 // Character.digit(char, 10) accepts, any Unicode decimal digit (general
 // category Nd) in the Basic Multilingual Plane: Java walks UTF-16 chars, so a
 // supplementary digit is two surrogates, neither of them a digit.
-func javaParseInt(s string) (int32, error) {
+func JavaParseInt(s string) (int32, error) {
 	if s == "" {
 		return 0, &NumberFormatError{Input: s}
 	}
@@ -112,7 +112,7 @@ func javaDecimalDigit(r rune) int {
 
 // javaParseDouble is Java's Double.parseDouble (javanum.ParseDouble), its
 // NumberFormatException reported as this package's NumberFormatError.
-func javaParseDouble(s string) (float64, error) {
+func JavaParseDouble(s string) (float64, error) {
 	v, err := javanum.ParseDouble(s)
 	var fe *javanum.FormatError
 	if errors.As(err, &fe) {

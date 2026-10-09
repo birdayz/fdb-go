@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
@@ -89,7 +91,7 @@ func (store *FDBRecordStore) ValidateIndex(ctx context.Context, index *Index) (*
 
 	for _, kv := range kvs {
 		result.TotalEntriesScanned++
-		t, err := fastSubspaceUnpack(kv.Key, len(indexSub.Bytes()))
+		t, err := tuplefast.SubspaceUnpack(kv.Key, len(indexSub.Bytes()))
 		if err != nil {
 			continue
 		}

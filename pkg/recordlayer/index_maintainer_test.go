@@ -20,17 +20,17 @@ var _ = Describe("indexMaintainer internals", func() {
 			return NewIndex("test_idx", Field("price"))
 		}
 
-		mkEntry := func(key tuple.Tuple, pk tuple.Tuple) indexEntry {
-			return indexEntry{key: key, primaryKey: pk}
+		mkEntry := func(key tuple.Tuple, pk tuple.Tuple) EvaluatedIndexEntry {
+			return EvaluatedIndexEntry{key: key, primaryKey: pk}
 		}
 
-		mkEntryWithValue := func(key tuple.Tuple, pk tuple.Tuple, val tuple.Tuple) indexEntry {
-			return indexEntry{key: key, primaryKey: pk, value: val}
+		mkEntryWithValue := func(key tuple.Tuple, pk tuple.Tuple, val tuple.Tuple) EvaluatedIndexEntry {
+			return EvaluatedIndexEntry{key: key, primaryKey: pk, value: val}
 		}
 
 		It("returns empty slices when both old and new are empty", func() {
 			idx := simpleIndex()
-			old, new, err := removeCommonEntries(idx, nil, nil)
+			old, new, err := RemoveCommonEntries(idx, nil, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(old).To(BeNil())
 			Expect(new).To(BeNil())
@@ -38,7 +38,7 @@ var _ = Describe("indexMaintainer internals", func() {
 
 		It("returns empty slices when both old and new are zero-length", func() {
 			idx := simpleIndex()
-			old, new, err := removeCommonEntries(idx, []indexEntry{}, []indexEntry{})
+			old, new, err := RemoveCommonEntries(idx, []EvaluatedIndexEntry{}, []EvaluatedIndexEntry{})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(old).To(BeNil())
 			Expect(new).To(BeNil())
@@ -46,8 +46,8 @@ var _ = Describe("indexMaintainer internals", func() {
 
 		It("returns all old entries when new is empty", func() {
 			idx := simpleIndex()
-			entries := []indexEntry{mkEntry(tuple.Tuple{int64(100)}, tuple.Tuple{int64(1)})}
-			old, new, err := removeCommonEntries(idx, entries, []indexEntry{})
+			entries := []EvaluatedIndexEntry{mkEntry(tuple.Tuple{int64(100)}, tuple.Tuple{int64(1)})}
+			old, new, err := RemoveCommonEntries(idx, entries, []EvaluatedIndexEntry{})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(old).To(HaveLen(1))
 			Expect(new).To(BeNil())
@@ -55,8 +55,8 @@ var _ = Describe("indexMaintainer internals", func() {
 
 		It("returns all new entries when old is empty", func() {
 			idx := simpleIndex()
-			entries := []indexEntry{mkEntry(tuple.Tuple{int64(200)}, tuple.Tuple{int64(2)})}
-			old, new, err := removeCommonEntries(idx, []indexEntry{}, entries)
+			entries := []EvaluatedIndexEntry{mkEntry(tuple.Tuple{int64(200)}, tuple.Tuple{int64(2)})}
+			old, new, err := RemoveCommonEntries(idx, []EvaluatedIndexEntry{}, entries)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(old).To(BeNil())
 			Expect(new).To(HaveLen(1))
@@ -66,7 +66,7 @@ var _ = Describe("indexMaintainer internals", func() {
 			idx := simpleIndex()
 			e1 := mkEntry(tuple.Tuple{int64(100)}, tuple.Tuple{int64(1)})
 			e2 := mkEntry(tuple.Tuple{int64(200)}, tuple.Tuple{int64(1)})
-			old, new, err := removeCommonEntries(idx, []indexEntry{e1, e2}, []indexEntry{e1, e2})
+			old, new, err := RemoveCommonEntries(idx, []EvaluatedIndexEntry{e1, e2}, []EvaluatedIndexEntry{e1, e2})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(old).To(BeNil())
 			Expect(new).To(BeNil())
@@ -78,9 +78,9 @@ var _ = Describe("indexMaintainer internals", func() {
 			oldOnly := mkEntry(tuple.Tuple{int64(200)}, tuple.Tuple{int64(1)})
 			newOnly := mkEntry(tuple.Tuple{int64(300)}, tuple.Tuple{int64(1)})
 
-			old, new, err := removeCommonEntries(idx,
-				[]indexEntry{common, oldOnly},
-				[]indexEntry{common, newOnly},
+			old, new, err := RemoveCommonEntries(idx,
+				[]EvaluatedIndexEntry{common, oldOnly},
+				[]EvaluatedIndexEntry{common, newOnly},
 			)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(old).To(HaveLen(1))
@@ -96,7 +96,7 @@ var _ = Describe("indexMaintainer internals", func() {
 			oldE := mkEntryWithValue(tuple.Tuple{int64(100)}, tuple.Tuple{int64(1)}, tuple.Tuple{"Rose"})
 			newE := mkEntryWithValue(tuple.Tuple{int64(100)}, tuple.Tuple{int64(1)}, tuple.Tuple{"Tulip"})
 
-			old, new, err := removeCommonEntries(idx, []indexEntry{oldE}, []indexEntry{newE})
+			old, new, err := RemoveCommonEntries(idx, []EvaluatedIndexEntry{oldE}, []EvaluatedIndexEntry{newE})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(old).To(HaveLen(1))
 			Expect(new).To(HaveLen(1))
@@ -107,7 +107,7 @@ var _ = Describe("indexMaintainer internals", func() {
 			oldE := mkEntryWithValue(tuple.Tuple{int64(100)}, tuple.Tuple{int64(1)}, tuple.Tuple{"Rose"})
 			newE := mkEntryWithValue(tuple.Tuple{int64(100)}, tuple.Tuple{int64(1)}, tuple.Tuple{"Rose"})
 
-			old, new, err := removeCommonEntries(idx, []indexEntry{oldE}, []indexEntry{newE})
+			old, new, err := RemoveCommonEntries(idx, []EvaluatedIndexEntry{oldE}, []EvaluatedIndexEntry{newE})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(old).To(BeNil())
 			Expect(new).To(BeNil())
@@ -118,7 +118,7 @@ var _ = Describe("indexMaintainer internals", func() {
 			oldE := mkEntry(tuple.Tuple{int64(100)}, tuple.Tuple{int64(1)}) // value = nil
 			newE := mkEntryWithValue(tuple.Tuple{int64(100)}, tuple.Tuple{int64(1)}, tuple.Tuple{"Rose"})
 
-			old, new, err := removeCommonEntries(idx, []indexEntry{oldE}, []indexEntry{newE})
+			old, new, err := RemoveCommonEntries(idx, []EvaluatedIndexEntry{oldE}, []EvaluatedIndexEntry{newE})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(old).To(HaveLen(1))
 			Expect(new).To(HaveLen(1))

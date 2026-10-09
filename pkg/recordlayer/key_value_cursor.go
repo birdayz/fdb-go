@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -316,7 +318,7 @@ func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[p
 		// Fast path: extract suffix via zero-alloc tuple scan.
 		// Only call full tuple.Unpack for the PK when building the returned record.
 		tupleBytes := kv.Key[prefixLen:]
-		suffix, pkEnd, splitErr := splitKeySuffix(tupleBytes)
+		suffix, pkEnd, splitErr := tuplefast.SplitKeySuffix(tupleBytes)
 		if splitErr != nil {
 			return nil, nil, fmt.Errorf("failed to parse key suffix: %w", splitErr)
 		}
@@ -327,7 +329,7 @@ func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[p
 			// Only decode PK when versioning is enabled (we need it for pendingVersionPK).
 			if c.storeRecordVersions {
 				if ver, verErr := unpackVersion(kv.Value); verErr == nil {
-					pk, pkErr := fastUnpack(tupleBytes[:pkEnd])
+					pk, pkErr := tuplefast.Unpack(tupleBytes[:pkEnd])
 					if pkErr != nil {
 						return nil, nil, fmt.Errorf("failed to unpack version primary key: %w", pkErr)
 					}
@@ -339,7 +341,7 @@ func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[p
 
 		case suffix == unsplitRecord:
 			// Unsplit record — decode PK only now that we need it
-			primaryKey, pkErr := fastUnpack(tupleBytes[:pkEnd])
+			primaryKey, pkErr := tuplefast.Unpack(tupleBytes[:pkEnd])
 			if pkErr != nil {
 				return nil, nil, fmt.Errorf("failed to unpack primary key: %w", pkErr)
 			}
@@ -369,7 +371,7 @@ func (c *keyValueCursor) readNextRecord(ctx context.Context) (*FDBStoredRecord[p
 
 		case suffix >= startSplitRecord:
 			// Split record — need full PK for chunk collection
-			primaryKey, pkErr := fastUnpack(tupleBytes[:pkEnd])
+			primaryKey, pkErr := tuplefast.Unpack(tupleBytes[:pkEnd])
 			if pkErr != nil {
 				return nil, nil, fmt.Errorf("failed to unpack primary key: %w", pkErr)
 			}
@@ -425,13 +427,13 @@ func (c *keyValueCursor) peekVersionKey(recordsSubspace subspace.Subspace, prima
 		return nil, nil
 	}
 	tupleBytes := kv.Key[c.prefixLength:]
-	suffix, pkEnd, err := splitKeySuffix(tupleBytes)
+	suffix, pkEnd, err := tuplefast.SplitKeySuffix(tupleBytes)
 	if err != nil {
 		c.bufferedKV = &kv
 		return nil, nil
 	}
 	if suffix == recordVersionSuffix {
-		kvPK, pkErr := fastUnpack(tupleBytes[:pkEnd])
+		kvPK, pkErr := tuplefast.Unpack(tupleBytes[:pkEnd])
 		if pkErr != nil {
 			c.bufferedKV = &kv
 			return nil, nil
@@ -524,7 +526,7 @@ func (c *keyValueCursor) readNextBareRecord(ctx context.Context) (*FDBStoredReco
 		return nil, nil, fmt.Errorf("record cursor: key length %d <= subspace prefix length %d (malformed or out-of-range key under the records subspace)", len(kv.Key), c.prefixLength)
 	}
 	// The whole tuple after the prefix is the primary key — there is no suffix.
-	primaryKey, pkErr := fastUnpack(kv.Key[c.prefixLength:])
+	primaryKey, pkErr := tuplefast.Unpack(kv.Key[c.prefixLength:])
 	if pkErr != nil {
 		return nil, nil, fmt.Errorf("failed to unpack legacy primary key: %w", pkErr)
 	}
@@ -591,7 +593,7 @@ func (c *keyValueCursor) readSplitRecord(
 			break
 		}
 		chunkTuple := kv.Key[c.prefixLength:]
-		suffix, chunkPKEnd, splitErr := splitKeySuffix(chunkTuple)
+		suffix, chunkPKEnd, splitErr := tuplefast.SplitKeySuffix(chunkTuple)
 		if splitErr != nil {
 			c.bufferedKV = &kv
 			break
@@ -599,7 +601,7 @@ func (c *keyValueCursor) readSplitRecord(
 
 		// Check if this KV belongs to the same primary key by comparing
 		// the raw PK bytes (avoids full tuple decode for non-matching keys).
-		kvPrimaryKey, pkErr := fastUnpack(chunkTuple[:chunkPKEnd])
+		kvPrimaryKey, pkErr := tuplefast.Unpack(chunkTuple[:chunkPKEnd])
 		if pkErr != nil {
 			c.bufferedKV = &kv
 			break

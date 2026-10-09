@@ -110,7 +110,7 @@ var _ = Describe("Legacy Go RaBitQ migration conformance", func() {
 		defer func() { Expect(env.Cleanup(ctx)).To(Succeed()) }()
 		r, err := runfiles.New()
 		Expect(err).NotTo(HaveOccurred())
-		path, err := r.Rlocation("_main/pkg/recordlayer/testdata/hnsw_legacy_go_entry.json")
+		path, err := r.Rlocation("_main/pkg/recordlayer/vectorindex/testdata/hnsw_legacy_go_entry.json")
 		Expect(err).NotTo(HaveOccurred())
 		data, err := os.ReadFile(path)
 		Expect(err).NotTo(HaveOccurred())

@@ -431,7 +431,7 @@ func (failingMergeFactory) IndexTypes() []string { return []string{indexTypeFail
 
 func (failingMergeFactory) NewIndexMaintainer(state IndexMaintainerState) (IndexMaintainer, error) {
 	return &failingMergeMaintainer{
-		standardIndexMaintainer: *newStandardIndexMaintainer(state.Index, state.IndexSubspace, state.Transaction, state.Store),
+		StandardIndexMaintainer: *newStandardIndexMaintainer(state.Index, state.IndexSubspace, state.Transaction, state.Store),
 	}, nil
 }
 
@@ -441,6 +441,6 @@ func (failingMergeFactory) ValidateChangedOptions(_, _ *Index, _ map[string]bool
 	return nil
 }
 
-type failingMergeMaintainer struct{ standardIndexMaintainer }
+type failingMergeMaintainer struct{ StandardIndexMaintainer }
 
 func (*failingMergeMaintainer) MergeIndex() error { return errors.New(failingMergeMessage) }

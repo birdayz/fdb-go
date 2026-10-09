@@ -3,6 +3,8 @@ package chaos
 import (
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
@@ -100,7 +102,7 @@ func verifyVectorSPFreshIndexes(store *recordlayer.FDBRecordStore, model *StoreM
 		//    pk among results is fine; a true miss means the record is not in
 		//    the index (lost insert / orphaned membership / dropped by a fault).
 		for _, entry := range entries {
-			results, err := recordlayer.SearchSPFreshIndex(store, idx.Name, entry.vector, k)
+			results, err := vectorindex.SearchSPFreshIndex(store, idx.Name, entry.vector, k)
 			if err != nil {
 				violations = append(violations, Violation{
 					Invariant:  "spfresh_index_self_search_error",
@@ -137,7 +139,7 @@ func verifyVectorSPFreshIndexes(store *recordlayer.FDBRecordStore, model *StoreM
 		}
 
 		// 2. No orphans: every pk a search returns must exist in the model.
-		if orphans, err := recordlayer.SearchSPFreshIndex(store, idx.Name, entries[0].vector, expectedCount+10); err == nil {
+		if orphans, err := vectorindex.SearchSPFreshIndex(store, idx.Name, entries[0].vector, expectedCount+10); err == nil {
 			for _, r := range orphans {
 				if !model.Has(r.PrimaryKey) {
 					violations = append(violations, Violation{
@@ -154,7 +156,7 @@ func verifyVectorSPFreshIndexes(store *recordlayer.FDBRecordStore, model *StoreM
 		//    Sample everything at chaos scale. STRICT — assumes the maintenance
 		//    queue is drained (the scenario drains before Verify).
 		const sampleAll = 1 << 30
-		report, err := recordlayer.SPFreshCheckIntegrity(store.GetContext(), store, idx.Name, sampleAll)
+		report, err := vectorindex.SPFreshCheckIntegrity(store.GetContext(), store, idx.Name, sampleAll)
 		if err != nil {
 			violations = append(violations, Violation{
 				Invariant: "spfresh_index_integrity_error",

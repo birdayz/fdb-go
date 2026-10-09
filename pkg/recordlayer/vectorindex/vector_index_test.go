@@ -1,0 +1,4967 @@
+package vectorindex
+
+import (
+	"context"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"math/rand"
+	"os"
+	"sort"
+	"strconv"
+	"time"
+
+	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/rabitq"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
+
+	. "github.com/onsi/ginkgo/v2"
+
+	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
+)
+
+var _ = Describe("Distance Metrics", func() {
+	It("euclidean distance is true L2 (sqrt); square variant is squared", func() {
+		a := []float64{1.0, 2.0, 3.0}
+		b := []float64{4.0, 5.0, 6.0}
+		// (4-1)^2 + (5-2)^2 + (6-3)^2 = 9+9+9 = 27; L2 = sqrt(27). Matches Java's
+		// EuclideanMetric.distance = Math.sqrt(...); EuclideanSquare keeps the sum.
+		Expect(euclideanDistance(a, b)).To(BeNumerically("~", math.Sqrt(27.0), 1e-9))
+		Expect(euclideanSquareDistance(a, b)).To(BeNumerically("~", 27.0, 1e-9))
+
+		// Distance to self is zero (both variants).
+		Expect(euclideanDistance(a, a)).To(BeNumerically("~", 0.0, 1e-9))
+		Expect(euclideanSquareDistance(a, a)).To(BeNumerically("~", 0.0, 1e-9))
+
+		// Single dimension: |7-3| = 4, squared = 16.
+		Expect(euclideanDistance([]float64{3.0}, []float64{7.0})).To(BeNumerically("~", 4.0, 1e-9))
+		Expect(euclideanSquareDistance([]float64{3.0}, []float64{7.0})).To(BeNumerically("~", 16.0, 1e-9))
+	})
+
+	It("cosine distance: orthogonal = 1.0, identical = 0.0", func() {
+		// Identical vectors: cosine distance = 0.
+		a := []float64{1.0, 2.0, 3.0}
+		Expect(cosineDistance(a, a)).To(BeNumerically("~", 0.0, 1e-9))
+
+		// Orthogonal vectors: cosine distance = 1.
+		x := []float64{1.0, 0.0}
+		y := []float64{0.0, 1.0}
+		Expect(cosineDistance(x, y)).To(BeNumerically("~", 1.0, 1e-9))
+
+		// Opposite vectors: cosine distance = 2.
+		neg := []float64{-1.0, -2.0, -3.0}
+		Expect(cosineDistance(a, neg)).To(BeNumerically("~", 2.0, 1e-9))
+
+		// A zero vector is +Inf from every vector (Java's CosineMetric).
+		zero := []float64{0.0, 0.0}
+		Expect(math.IsInf(cosineDistance(zero, x), 1)).To(BeTrue())
+	})
+
+	It("inner product distance is negative dot product", func() {
+		a := []float64{1.0, 2.0, 3.0}
+		b := []float64{4.0, 5.0, 6.0}
+		// dot = 1*4 + 2*5 + 3*6 = 4+10+18 = 32, distance = -32
+		Expect(innerProductDistance(a, b)).To(BeNumerically("~", -32.0, 1e-9))
+
+		// Orthogonal vectors: dot = 0, distance = 0.
+		x := []float64{1.0, 0.0}
+		y := []float64{0.0, 1.0}
+		Expect(innerProductDistance(x, y)).To(BeNumerically("~", 0.0, 1e-9))
+	})
+})
+
+var _ = Describe("Vector Serialization", func() {
+	It("round-trips float64 vectors", func() {
+		vec := []float64{1.0, -2.5, 3.14159, 0.0, math.MaxFloat64, math.SmallestNonzeroFloat64}
+		data := serializeVector(vec)
+
+		// First byte is type ordinal 2 (DOUBLE — Java VectorType.DOUBLE.ordinal() = 2).
+		Expect(data[0]).To(Equal(byte(2)))
+		Expect(len(data)).To(Equal(1 + 8*len(vec)))
+
+		got, err := deserializeVector(data)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(HaveLen(len(vec)))
+		for i := range vec {
+			Expect(got[i]).To(Equal(vec[i]))
+		}
+	})
+
+	It("handles empty vector", func() {
+		data := serializeVector(nil)
+		Expect(data).To(Equal([]byte{2}))
+
+		got, err := deserializeVector(data)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(HaveLen(0))
+	})
+
+	It("deserialize rejects empty data", func() {
+		_, err := deserializeVector(nil)
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("deserializes float32 vectors", func() {
+		buf := make([]byte, 1+4*3)
+		buf[0] = 1 // SINGLE type
+		binary.BigEndian.PutUint32(buf[1:], math.Float32bits(1.0))
+		binary.BigEndian.PutUint32(buf[5:], math.Float32bits(2.5))
+		binary.BigEndian.PutUint32(buf[9:], math.Float32bits(-0.5))
+
+		vec, err := deserializeVector(buf)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(vec).To(HaveLen(3))
+		Expect(vec[0]).To(BeNumerically("~", 1.0, 1e-6))
+		Expect(vec[1]).To(BeNumerically("~", 2.5, 1e-6))
+		Expect(vec[2]).To(BeNumerically("~", -0.5, 1e-6))
+	})
+
+	It("deserializes float16 vectors", func() {
+		// float16 for 1.0 = 0x3C00, float16 for 2.0 = 0x4000
+		// HALF ordinal = 0 (Java VectorType.HALF.ordinal() = 0)
+		buf := []byte{0, 0x3C, 0x00, 0x40, 0x00}
+		vec, err := deserializeVector(buf)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(vec).To(HaveLen(2))
+		Expect(vec[0]).To(BeNumerically("~", 1.0, 0.01))
+		Expect(vec[1]).To(BeNumerically("~", 2.0, 0.01))
+	})
+
+	It("rejects unknown vector type", func() {
+		buf := []byte{99, 0x00}
+		_, err := deserializeVector(buf)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("unsupported vector type"))
+	})
+})
+
+var _ = Describe("Layer Assignment", func() {
+	It("topLayer is deterministic for same PK", func() {
+		pk := tuple.Tuple{int64(42)}
+		l1 := topLayer(pk, 16)
+		l2 := topLayer(pk, 16)
+		Expect(l1).To(Equal(l2))
+	})
+
+	It("topLayer varies by PK", func() {
+		// With enough different PKs, we should see different layers.
+		layers := make(map[int]bool)
+		for i := int64(0); i < 1000; i++ {
+			pk := tuple.Tuple{i}
+			l := topLayer(pk, 4)
+			layers[l] = true
+		}
+		// With M=4, most will be layer 0, but some should be higher.
+		Expect(layers).To(HaveKey(0))
+		// With 1000 PKs and M=4, extremely likely to see at least layer 1.
+		Expect(len(layers)).To(BeNumerically(">=", 2))
+	})
+
+	It("topLayer is always >= 0", func() {
+		for i := int64(0); i < 100; i++ {
+			pk := tuple.Tuple{i}
+			Expect(topLayer(pk, 16)).To(BeNumerically(">=", 0))
+		}
+	})
+
+	It("splitMixLong matches expected values", func() {
+		// Verify the hash function produces consistent output.
+		// splitMixLong(0) should be deterministic.
+		r1 := splitMixLong(0)
+		r2 := splitMixLong(0)
+		Expect(r1).To(Equal(r2))
+
+		// Different inputs should produce different outputs.
+		r3 := splitMixLong(1)
+		Expect(r1).NotTo(Equal(r3))
+	})
+
+	It("splittableRandom.split matches java.util.SplittableRandom (known-answer)", func() {
+		// Oracle values generated with OpenJDK 25 (the SplitMix algorithm is fixed):
+		//   SplittableRandom r = new SplittableRandom(0x123456789abcdef0L);
+		//   r.nextLong();                      // p1
+		//   SplittableRandom c1 = r.split();   // c1a, c1b = c1.nextLong() x2
+		//   SplittableRandom c2 = r.split();   // c2a
+		//   r.nextLong();                      // p2 (parent stream resumes after splits)
+		//   SplittableRandom gc = c1.split();  // gca (split of a split child)
+		//   c1.nextDouble();                   // c1d
+		// HNSW delete relies on split(): one child per layer (Java Delete.deleteFromLayers).
+		r := &splittableRandom{seed: 0x123456789abcdef0, gamma: goldenGamma}
+		Expect(r.nextLong()).To(Equal(int64(1592342178222199016)), "p1")
+		c1 := r.split()
+		Expect(c1.nextLong()).To(Equal(int64(3429967862750260442)), "c1a")
+		Expect(c1.nextLong()).To(Equal(int64(-1062649399360441825)), "c1b")
+		c2 := r.split()
+		Expect(c2.nextLong()).To(Equal(int64(-7717078838966176596)), "c2a")
+		Expect(r.nextLong()).To(Equal(int64(6724426161381059673)), "p2")
+		gc := c1.split()
+		Expect(gc.nextLong()).To(Equal(int64(7881248587903041880)), "gca")
+		Expect(c1.nextDouble()).To(BeNumerically("~", 0.7535564508747816, 1e-15), "c1d")
+
+		// Delete's exact shape: seed 42, two sequential splits, one nextDouble each.
+		d := &splittableRandom{seed: 42, gamma: goldenGamma}
+		dl0 := d.split()
+		dl1 := d.split()
+		Expect(dl0.nextDouble()).To(BeNumerically("~", 0.5928260530359551, 1e-15), "dl0")
+		Expect(dl1.nextDouble()).To(BeNumerically("~", 0.19301583440619918, 1e-15), "dl1")
+	})
+
+	It("javaHashCode matches Java behavior", func() {
+		// Java: int hash = 1; for (byte b : data) hash = 31 * hash + b;
+		// For data = {1}, hash = 31*1 + 1 = 32
+		Expect(javaHashCode([]byte{1})).To(Equal(int32(32)))
+
+		// For data = {}, hash = 1
+		Expect(javaHashCode(nil)).To(Equal(int32(1)))
+
+		// For data = {0}, hash = 31*1 + 0 = 31
+		Expect(javaHashCode([]byte{0})).To(Equal(int32(31)))
+
+		// For negative byte values (e.g., 0xFF = -1 in signed)
+		// hash = 31*1 + (-1) = 30
+		Expect(javaHashCode([]byte{0xFF})).To(Equal(int32(30)))
+	})
+})
+
+// hnswConfigChecks is Java's Config constructor (Config.java:93-120): every
+// check, at and past each bound, with its text, in Java's order (a
+// configuration failing two checks is refused with the first).
+var _ = Describe("HNSW Config Validation", func() {
+	type edit func(*HNSWConfig, *bool, *int)
+	set := func(f func(*HNSWConfig)) edit { return func(c *HNSWConfig, _ *bool, _ *int) { f(c) } }
+	withRaBitQ := func(f func(*HNSWConfig), bits int) edit {
+		return func(c *HNSWConfig, use *bool, b *int) { *use, *b = true, bits; f(c) }
+	}
+	same := func(*HNSWConfig) {}
+	for _, c := range []struct {
+		name string
+		edit edit
+		want string
+	}{
+		{"the default", set(same), ""},
+		{"numDimensions 0", set(func(c *HNSWConfig) { c.NumDimensions = 0 }), "numDimensions must be (1, MAX_INT]"},
+		{"numDimensions 1", set(func(c *HNSWConfig) { c.NumDimensions = 1 }), ""},
+		{"m 3", set(func(c *HNSWConfig) { c.M = 3 }), "m must be [4, 200]"},
+		{"m 201, also above mMax", set(func(c *HNSWConfig) { c.M = 201 }), "m must be [4, 200]"},
+		{"m 4", set(func(c *HNSWConfig) { c.M, c.EfRepair = 4, 64 }), ""},
+		{"mMax 3", set(func(c *HNSWConfig) { c.MMax = 3 }), "mMax must be [4, 200]"},
+		{"mMax 201", set(func(c *HNSWConfig) { c.MMax = 201 }), "mMax must be [4, 200]"},
+		{"mMax0 3", set(func(c *HNSWConfig) { c.MMax0 = 3 }), "mMax0 must be [4, 300]"},
+		{"mMax0 301", set(func(c *HNSWConfig) { c.MMax0 = 301 }), "mMax0 must be [4, 300]"},
+		{"mMax0 300", set(func(c *HNSWConfig) { c.MMax0 = 300 }), ""},
+		{"m above mMax", set(func(c *HNSWConfig) { c.M = c.MMax + 1 }), "m must be less than or equal to mMax"},
+		{"mMax above mMax0", set(func(c *HNSWConfig) { c.MMax = c.MMax0 + 1 }), "mMax must be less than or equal to mMax0"},
+		{"efConstruction 99", set(func(c *HNSWConfig) { c.EfConstruction = 99 }), "efConstruction must be [100, 400]"},
+		{"efConstruction 401", set(func(c *HNSWConfig) { c.EfConstruction = 401 }), "efConstruction must be [100, 400]"},
+		{"efConstruction 400", set(func(c *HNSWConfig) { c.EfConstruction = 400 }), ""},
+		{"efRepair below m", set(func(c *HNSWConfig) { c.EfRepair = c.M - 1 }), "efRepair must be [m, 400]"},
+		{"efRepair 401", set(func(c *HNSWConfig) { c.EfRepair = 401 }), "efRepair must be [m, 400]"},
+		{"efRepair m", set(func(c *HNSWConfig) { c.EfRepair = c.M }), ""},
+		{"RaBitQ at the defaults", withRaBitQ(same, 4), ""},
+		{"sample probability 0 without RaBitQ", set(func(c *HNSWConfig) { c.SampleVectorStatsProbability = 0 }), ""},
+		{"sample probability 0", withRaBitQ(func(c *HNSWConfig) { c.SampleVectorStatsProbability = 0 }, 4), "sampleVectorStatsProbability out of range"},
+		{"sample probability above 1", withRaBitQ(func(c *HNSWConfig) { c.SampleVectorStatsProbability = 1.0000001 }, 4), "sampleVectorStatsProbability out of range"},
+		{"sample probability NaN", withRaBitQ(func(c *HNSWConfig) { c.SampleVectorStatsProbability = math.NaN() }, 4), "sampleVectorStatsProbability out of range"},
+		{"sample probability 1", withRaBitQ(func(c *HNSWConfig) { c.SampleVectorStatsProbability = 1 }, 4), ""},
+		{"maintain probability 0", withRaBitQ(func(c *HNSWConfig) { c.MaintainStatsProbability = 0 }, 4), "maintainStatsProbability out of range"},
+		{"maintain probability above 1", withRaBitQ(func(c *HNSWConfig) { c.MaintainStatsProbability = 2 }, 4), "maintainStatsProbability out of range"},
+		{"maintain probability 1", withRaBitQ(func(c *HNSWConfig) { c.MaintainStatsProbability = 1 }, 4), ""},
+		{"stats threshold 10", withRaBitQ(func(c *HNSWConfig) { c.StatsThreshold = 10 }, 4), "statThreshold out of range"},
+		{"stats threshold 10 without RaBitQ", set(func(c *HNSWConfig) { c.StatsThreshold = 10 }), ""},
+		{"stats threshold 11", withRaBitQ(func(c *HNSWConfig) { c.StatsThreshold = 11 }, 4), ""},
+		{"0 extra bits", withRaBitQ(same, 0), "raBitQNumExBits out of range"},
+		{"16 extra bits", withRaBitQ(same, 16), "raBitQNumExBits out of range"},
+		{"15 extra bits", withRaBitQ(same, 15), ""},
+		{"16 extra bits without RaBitQ", func(_ *HNSWConfig, _ *bool, b *int) { *b = 16 }, ""},
+		{"node fetches 0", set(func(c *HNSWConfig) { c.MaxNumConcurrentNodeFetches = 0 }), "maxNumConcurrentNodeFetches must be (0, 64]"},
+		{"node fetches 65", set(func(c *HNSWConfig) { c.MaxNumConcurrentNodeFetches = 65 }), "maxNumConcurrentNodeFetches must be (0, 64]"},
+		{"node fetches 64", set(func(c *HNSWConfig) { c.MaxNumConcurrentNodeFetches = 64 }), ""},
+		{"neighborhood fetches 0", set(func(c *HNSWConfig) { c.MaxNumConcurrentNeighborhoodFetches = 0 }), "maxNumConcurrentNeighborhoodFetches must be (0, 20]"},
+		{"neighborhood fetches 21", set(func(c *HNSWConfig) { c.MaxNumConcurrentNeighborhoodFetches = 21 }), "maxNumConcurrentNeighborhoodFetches must be (0, 20]"},
+		{"neighborhood fetches 20", set(func(c *HNSWConfig) { c.MaxNumConcurrentNeighborhoodFetches = 20 }), ""},
+		{"delete concurrency 0", set(func(c *HNSWConfig) { c.MaxNumConcurrentDeleteFromLayer = 0 }), "maxNumConcurrentDeleteFromLayer must be (0, 10]"},
+		{"delete concurrency 11", set(func(c *HNSWConfig) { c.MaxNumConcurrentDeleteFromLayer = 11 }), "maxNumConcurrentDeleteFromLayer must be (0, 10]"},
+		{"delete concurrency 10", set(func(c *HNSWConfig) { c.MaxNumConcurrentDeleteFromLayer = 10 }), ""},
+		{"two failures, the first reported", set(func(c *HNSWConfig) { c.EfConstruction, c.MaxNumConcurrentNodeFetches = 0, 0 }), "efConstruction must be [100, 400]"},
+	} {
+		It(c.name, func() {
+			config, use, bits := DefaultHNSWConfig(128), false, 4
+			c.edit(&config, &use, &bits)
+			err := hnswConfigChecks(config, use, bits)
+			if c.want == "" {
+				Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			var iae *recordlayer.IllegalArgumentError
+			Expect(errors.As(err, &iae)).To(BeTrue(), "%v", err)
+			Expect(iae.Message).To(Equal(c.want))
+		})
+	}
+})
+
+var _ = Describe("HNSW Graph Direct", func() {
+	ctx := context.Background()
+
+	// Helper: create an isolated HNSW graph with its own FDB subspace.
+	makeGraph := func(dims int) *hnswGraph {
+		ss := specSubspace().Sub("hnsw")
+		config := HNSWConfig{
+			NumDimensions:  dims,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+		}
+		storage := newHNSWStorage(ss, config)
+		return NewHNSWGraph(storage, config)
+	}
+
+	// Java's no-op quantizer stores a vector at its own precision, so a HALF
+	// column's nodes (and the entry point) are HALF, not widened to DOUBLE.
+	It("an untransformed insert keeps the vector's HALF precision", func() {
+		graph := makeGraph(2)
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for i, v := range [][]float64{{0.5, 1}, {1, 0.25}} {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.insertTyped(tx, pk, v, vectorcodec.TypeHalf)).To(Succeed())
+				raw, err := tx.Get(fdb.Key(graph.storage.dataSubspace.Pack(tuple.Tuple{int64(0), pk}))).Get()
+				Expect(err).NotTo(HaveOccurred())
+				vecBytes, _, _, err := parseNodeValue(raw)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(vecBytes).To(Equal(vectorcodec.SerializeHalf(v)))
+			}
+			info, err := graph.storage.loadAccessInfo(tx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.vectorBytes[0]).To(Equal(byte(vectorcodec.TypeHalf)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("a rewrite keeps a Java 4.14 compact node's covering values", func() {
+		graph := makeGraph(2)
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			pk := tuple.Tuple{int64(1)}
+			Expect(graph.Insert(tx, pk, []float64{0, 0})).To(Succeed())
+			key := fdb.Key(graph.storage.dataSubspace.Pack(tuple.Tuple{int64(0), pk}))
+			raw, err := tx.Get(key).Get()
+			Expect(err).NotTo(HaveOccurred())
+			covering := tuple.Tuple{tuple.Tuple{"cov", int64(7)}}.Pack()
+			tx.Set(key, append(append([]byte(nil), raw...), covering...))
+			graph.storage.cache = map[string]*parsedNode{}
+			Expect(graph.Insert(tx, tuple.Tuple{int64(2)}, []float64{1, 1})).To(Succeed())
+			after, err := tx.Get(key).Get()
+			Expect(err).NotTo(HaveOccurred())
+			_, neighbors, additional, err := parseNodeValue(after)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(neighbors).To(HaveLen(1), "the insert rewrote the node's neighbours")
+			Expect(additional).To(Equal(covering))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("new node selects M neighbors at layer 0, not MMax0 (Java parity)", func() {
+		// Java Insert.insertIntoLayer selects getConfig().getM() for the NEW node
+		// (Insert.java:507); maxConn (MMax/MMax0) is only the cap for pruning EXISTING
+		// neighbors. Use EUCLIDEAN_SQUARE (no triangle inequality → selectNeighbors takes a
+		// plain top-cap slice, no diversity pruning) so the new node's degree is exactly
+		// min(candidates, cap): post-fix M=4, pre-fix MMax0=8. Insert a dense cluster
+		// (>> MMax0 reachable); the LAST node's layer-0 degree (no later reverse edges) must
+		// be M=4, not MMax0=8 (the pre-fix Go value). Revert-proof: restore maxConn → 8.
+		config := HNSWConfig{NumDimensions: 4, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, Metric: VectorMetricEuclideanSquare}
+		graph := NewHNSWGraph(newHNSWStorage(specSubspace().Sub("hnsw-newnode-degree"), config), config)
+		rng := rand.New(rand.NewSource(7))
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			var lastPK tuple.Tuple
+			for i := 0; i < 60; i++ { // dense random cluster, well >> MMax0
+				lastPK = tuple.Tuple{int64(i)}
+				v := []float64{rng.Float64() * 10, rng.Float64() * 10, rng.Float64() * 10, rng.Float64() * 10}
+				Expect(graph.Insert(tx, lastPK, v)).To(Succeed())
+			}
+			_, neighbors, lerr := graph.storage.loadNodeLayer(tx, 0, lastPK)
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(len(neighbors)).To(Equal(config.M),
+				"new node must select M neighbors at layer 0, not MMax0 (pre-fix Go selected MMax0)")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert single node, search returns it", func() {
+		graph := makeGraph(3)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(1)}
+			vec := []float64{1.0, 2.0, 3.0}
+			Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+
+			results, err := graph.Search(tx, []float64{1.0, 2.0, 3.0}, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert 5 nodes, kNN k=3 returns 3 closest", func() {
+		graph := makeGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 5 points in 2D.
+			points := [][]float64{
+				{0.0, 0.0},   // id=0
+				{1.0, 0.0},   // id=1
+				{2.0, 0.0},   // id=2
+				{10.0, 0.0},  // id=3 (far)
+				{100.0, 0.0}, // id=4 (very far)
+			}
+			for i, p := range points {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, p)).To(Succeed())
+			}
+
+			// Query at origin, k=3 should return ids 0,1,2.
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 3, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+
+			// Results are sorted by distance (ascending).
+			// id=0: dist=0, id=1: dist=1, id=2: dist=4
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{0, 1, 2}))
+
+			// Verify distances are in ascending order.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert then delete, search does not return deleted node", func() {
+		graph := makeGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk1 := tuple.Tuple{int64(1)}
+			pk2 := tuple.Tuple{int64(2)}
+			pk3 := tuple.Tuple{int64(3)}
+			vec1 := []float64{0.0, 0.0}
+			vec2 := []float64{1.0, 0.0}
+			vec3 := []float64{2.0, 0.0}
+
+			Expect(graph.Insert(tx, pk1, vec1)).To(Succeed())
+			Expect(graph.Insert(tx, pk2, vec2)).To(Succeed())
+			Expect(graph.Insert(tx, pk3, vec3)).To(Succeed())
+
+			// Delete pk2.
+			Expect(graph.Delete(tx, pk2)).To(Succeed())
+
+			// Search for all 3 (k=3) near origin. Should only get pk1 and pk3.
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 3, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 3}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// Java's Insert leaves a present node as it is (Insert.java:195-197); an
+	// update whose entry changes is the maintainer's delete then insert.
+	It("insert same PK twice keeps the first node, only one result", func() {
+		graph := makeGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(42)}
+
+			Expect(graph.Insert(tx, pk, []float64{0.0, 0.0})).To(Succeed())
+			Expect(graph.Insert(tx, pk, []float64{5.0, 5.0})).To(Succeed())
+
+			// Search for all nodes. Should get exactly 1 result.
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
+			// The node keeps its first vector (0,0).
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("search empty graph returns nil", func() {
+		graph := makeGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			results, err := graph.Search(tx, []float64{1.0, 2.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(BeNil())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("search with k > num_nodes returns all nodes", func() {
+		graph := makeGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 3 nodes.
+			for i := range 3 {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, []float64{float64(i), 0.0})).To(Succeed())
+			}
+
+			// Search with k=10 but only 3 nodes exist.
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert 20 nodes, verify all retrievable", func() {
+		graph := makeGraph(3)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 20 nodes at distinct positions.
+			for i := range 20 {
+				pk := tuple.Tuple{int64(i)}
+				vec := []float64{float64(i), float64(i * 2), float64(i * 3)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Search with k=20: should find all of them.
+			results, err := graph.Search(tx, []float64{0.0, 0.0, 0.0}, 20, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(20))
+
+			// Verify all 20 distinct IDs are present.
+			gotIDs := make(map[int64]bool)
+			for _, r := range results {
+				gotIDs[r.PrimaryKey[0].(int64)] = true
+			}
+			Expect(gotIDs).To(HaveLen(20))
+			for i := range 20 {
+				Expect(gotIDs[int64(i)]).To(BeTrue(), "missing node %d", i)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("multiple layers: insert enough nodes to force multi-layer graph", func() {
+		// Use small M to increase probability of higher layers.
+		ss := specSubspace().Sub("hnsw-multilayer")
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 30 nodes. With M=4 and deterministic layer assignment,
+			// some nodes will be assigned to higher layers.
+			for i := range 30 {
+				pk := tuple.Tuple{int64(i)}
+				vec := []float64{float64(i) * 10.0, float64(i) * 10.0}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Verify the graph has an entry point.
+			epInfo, epErr := graph.storage.loadAccessInfo(tx)
+			Expect(epErr).NotTo(HaveOccurred())
+			Expect(epInfo.pk).NotTo(BeNil())
+			// With M=4 and 30 nodes, max layer should be >= 0.
+			Expect(epInfo.layer).To(BeNumerically(">=", 0))
+
+			// Verify search still works correctly across layers.
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(5))
+
+			// Closest to origin should be node 0 at (0,0).
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(0)))
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			// Results should be in ascending distance order.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete all nodes leaves graph empty", func() {
+		graph := makeGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 3 nodes then delete all.
+			type nodeInfo struct {
+				pk  tuple.Tuple
+				vec []float64
+			}
+			nodes := []nodeInfo{
+				{tuple.Tuple{int64(0)}, []float64{0.0, 0.0}},
+				{tuple.Tuple{int64(1)}, []float64{1.0, 0.0}},
+				{tuple.Tuple{int64(2)}, []float64{2.0, 0.0}},
+			}
+			for _, n := range nodes {
+				Expect(graph.Insert(tx, n.pk, n.vec)).To(Succeed())
+			}
+			for _, n := range nodes {
+				Expect(graph.Delete(tx, n.pk)).To(Succeed())
+			}
+
+			// Search should return nil (empty graph).
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(BeNil())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("node storage wire format: per-layer COMPACT", func() {
+		ss := specSubspace().Sub("hnsw-wire")
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              16,
+			MMax:           16,
+			MMax0:          32,
+			EfConstruction: 200,
+			Metric:         VectorMetricEuclidean,
+		}
+		storage := newHNSWStorage(ss, config)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(99)}
+			vec := []float64{1.5, 2.5}
+			vecBytes := serializeVector(vec)
+			neighbors := []tuple.Tuple{
+				{int64(1)},
+				{int64(2)},
+			}
+
+			storage.saveNodeLayer(tx, 0, pk, vecBytes, neighbors)
+
+			// Load it back.
+			gotVecBytes, gotNeighbors, err := storage.loadNodeLayer(tx, 0, pk)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(gotVecBytes).To(Equal(vecBytes))
+			Expect(gotNeighbors).To(HaveLen(2))
+			Expect(spanPKInt(gotNeighbors[0])).To(Equal(int64(1)))
+			Expect(spanPKInt(gotNeighbors[1])).To(Equal(int64(2)))
+
+			// Delete and verify.
+			storage.deleteNodeLayer(tx, 0, pk)
+			_, _, err = storage.loadNodeLayer(tx, 0, pk)
+			Expect(err).To(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete-repair keeps secondary candidates when EfRepair is omitted (zero normalizes to Java default)", func() {
+		// P3 regression. Java requires efRepair ∈ [m, 400] (Config.java:91-92) with
+		// default 64 — zero is invalid, NOT an "unlimited" sentinel. A Go struct literal
+		// that omits EfRepair used to carry 0 into the delete-repair sample rate
+		// (efRepair - |primary|)/numCandidates, going negative the moment any primary
+		// neighbor exists — every secondary repair candidate was silently dropped and
+		// deletes under-repaired the graph. NewHNSWGraph must normalize 0 → 64.
+		//
+		// Topology: D→[P1,P2], P1→[D,S1], P2→[D,S2]. The repair candidate set must be
+		// {P1,P2,S1,S2} (primaries + sampled secondaries). With the bug it was {P1,P2}.
+		ss := specSubspace().Sub("hnsw-efrepair-zero")
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			// EfRepair deliberately omitted (zero value) — the case under test.
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+		Expect(graph.config.EfRepair).To(Equal(64), "NewHNSWGraph must normalize EfRepair=0 to Java's default 64")
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			d := tuple.Tuple{int64(99)}
+			p1, p2 := tuple.Tuple{int64(1)}, tuple.Tuple{int64(2)}
+			s1, s2 := tuple.Tuple{int64(3)}, tuple.Tuple{int64(4)}
+			vec := func(x float64) []byte { return serializeVector([]float64{x, 0}) }
+
+			storage.saveNodeLayer(tx, 0, d, vec(0), []tuple.Tuple{p1, p2})
+			storage.saveNodeLayer(tx, 0, p1, vec(1), []tuple.Tuple{d, s1})
+			storage.saveNodeLayer(tx, 0, p2, vec(2), []tuple.Tuple{d, s2})
+			storage.saveNodeLayer(tx, 0, s1, vec(3), []tuple.Tuple{p1})
+			storage.saveNodeLayer(tx, 0, s2, vec(4), []tuple.Tuple{p2})
+
+			deletedNeighbors := [][]byte{nestPK(p1), nestPK(p2)}
+			cands, cerr := graph.findDeletionRepairCandidates(tx, 0, d, deletedNeighbors, newSplittableRandomForKey(d))
+			Expect(cerr).NotTo(HaveOccurred())
+
+			got := make(map[int64]bool, len(cands))
+			for _, c := range cands {
+				got[c.pk[0].(int64)] = true
+			}
+			Expect(got).To(HaveKey(int64(1)), "primary P1 must be a repair candidate")
+			Expect(got).To(HaveKey(int64(2)), "primary P2 must be a repair candidate")
+			// The red→green signal: with EfRepair stuck at 0 the sample rate is negative
+			// and the secondaries are dropped.
+			Expect(got).To(HaveKey(int64(3)), "secondary S1 must be sampled (EfRepair=0 bug dropped it)")
+			Expect(got).To(HaveKey(int64(4)), "secondary S2 must be sampled (EfRepair=0 bug dropped it)")
+			Expect(cands).To(HaveLen(4))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("access info round-trips", func() {
+		ss := specSubspace().Sub("hnsw-access")
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              16,
+			MMax:           16,
+			MMax0:          32,
+			EfConstruction: 200,
+			Metric:         VectorMetricEuclidean,
+		}
+		storage := newHNSWStorage(ss, config)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(42)}
+			vecBytes := serializeVector([]float64{1.0, 2.0})
+
+			storage.saveAccessInfo(tx, &hnswAccessInfo{
+				layer:       3,
+				pk:          pk,
+				vectorBytes: vecBytes,
+				rotatorSeed: -1,
+			})
+
+			gotInfo, err := storage.loadAccessInfo(tx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(gotInfo.layer).To(Equal(3))
+			Expect(tupleEqual(gotInfo.pk, pk)).To(BeTrue())
+			Expect(gotInfo.vectorBytes).To(Equal(vecBytes))
+
+			// Clear and verify.
+			storage.clearAccessInfo(tx)
+			_, err = storage.loadAccessInfo(tx)
+			Expect(err).To(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete with graph repair preserves connectivity", func() {
+		graph := makeGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert a chain: 0 -- 1 -- 2 -- 3 -- 4
+			// Positioned in a line so connections are sequential.
+			for i := range 5 {
+				pk := tuple.Tuple{int64(i)}
+				vec := []float64{float64(i) * 10.0, 0.0}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Delete node 2 (middle). Graph repair should reconnect 1 and 3.
+			Expect(graph.Delete(tx, tuple.Tuple{int64(2)})).To(Succeed())
+
+			// All remaining nodes should still be findable.
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(4))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{0, 1, 3, 4}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete entry point replaces it", func() {
+		graph := makeGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert several nodes.
+			for i := range 5 {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, []float64{float64(i), 0.0})).To(Succeed())
+			}
+
+			// Find the current entry point.
+			epInfo, _ := graph.storage.loadAccessInfo(tx)
+			Expect(epInfo.pk).NotTo(BeNil())
+
+			// Delete it.
+			Expect(graph.Delete(tx, epInfo.pk)).To(Succeed())
+
+			// Graph should still have an entry point.
+			newInfo, err := graph.storage.loadAccessInfo(tx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(newInfo.pk).NotTo(BeNil())
+			Expect(tupleEqual(newInfo.pk, epInfo.pk)).To(BeFalse(), "entry point should change after deletion")
+
+			// Search should still work.
+			results, searchErr := graph.Search(tx, []float64{0.0, 0.0}, 10, 100)
+			Expect(searchErr).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(4))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("all nodes reachable from entry point via BFS", func() {
+		graph := makeGraph(3)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 20 vectors at distinct positions.
+			for i := range 20 {
+				pk := tuple.Tuple{int64(i)}
+				vec := []float64{float64(i) * 5.0, float64(i) * 3.0, float64(i) * 7.0}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Load entry point.
+			epInfo, err := graph.storage.loadAccessInfo(tx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(epInfo.pk).NotTo(BeNil())
+
+			// BFS from entry point through layer 0 neighbors.
+			visited := make(map[string]bool)
+			queue := []tuple.Tuple{epInfo.pk}
+			visited[string(epInfo.pk.Pack())] = true
+
+			for len(queue) > 0 {
+				current := queue[0]
+				queue = queue[1:]
+
+				_, neighbors, loadErr := graph.storage.loadNodeLayerDispatch(tx, 0, current)
+				if loadErr != nil {
+					continue // node might not exist at layer 0 (shouldn't happen for layer 0)
+				}
+				for _, neighborSpan := range neighbors {
+					neighbor, derr := decodeNestedPK(neighborSpan)
+					Expect(derr).NotTo(HaveOccurred())
+					if !visited[string(neighbor.Pack())] {
+						visited[string(neighbor.Pack())] = true
+						queue = append(queue, neighbor)
+					}
+				}
+			}
+
+			// Every inserted PK must be reachable.
+			for i := range 20 {
+				pk := tuple.Tuple{int64(i)}
+				Expect(visited[string(pk.Pack())]).To(BeTrue(), "node %d should be reachable from entry point via BFS", i)
+			}
+			Expect(visited).To(HaveLen(20))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete entry point then reinsert same PK", func() {
+		graph := makeGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 3 vectors.
+			Expect(graph.Insert(tx, tuple.Tuple{int64(0)}, []float64{0.0, 0.0})).To(Succeed())
+			Expect(graph.Insert(tx, tuple.Tuple{int64(1)}, []float64{10.0, 0.0})).To(Succeed())
+			Expect(graph.Insert(tx, tuple.Tuple{int64(2)}, []float64{20.0, 0.0})).To(Succeed())
+
+			// Find current entry point (likely PK=0, the first inserted).
+			epInfo, _ := graph.storage.loadAccessInfo(tx)
+			Expect(epInfo.pk).NotTo(BeNil())
+
+			// Delete PK=0 (entry point).
+			Expect(graph.Delete(tx, tuple.Tuple{int64(0)})).To(Succeed())
+
+			// Search should work with remaining 2 nodes.
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			// Re-insert PK=0 with the same vector.
+			Expect(graph.Insert(tx, tuple.Tuple{int64(0)}, []float64{0.0, 0.0})).To(Succeed())
+
+			// All 3 should now be findable.
+			results, err = graph.Search(tx, []float64{0.0, 0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{0, 1, 2}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("handles all identical vectors", func() {
+		graph := makeGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 5 vectors all at the same position (1.0, 1.0).
+			for i := range 5 {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, []float64{1.0, 1.0})).To(Succeed())
+			}
+
+			// Search for (1.0, 1.0) with k=5: all 5 should be returned.
+			results, err := graph.Search(tx, []float64{1.0, 1.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(5))
+
+			// All distances should be ~0.
+			for _, r := range results {
+				Expect(r.Distance).To(BeNumerically("~", 0.0, 1e-9))
+			}
+
+			// All PKs should be distinct.
+			pkSet := make(map[int64]bool)
+			for _, r := range results {
+				pkSet[r.PrimaryKey[0].(int64)] = true
+			}
+			Expect(pkSet).To(HaveLen(5))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("HNSW Inlining Storage", func() {
+	ctx := context.Background()
+
+	// Helper: create an isolated HNSW graph with inlining enabled.
+	makeInliningGraph := func(dims int) *hnswGraph {
+		ss := specSubspace().Sub("hnsw-inlining")
+		config := HNSWConfig{
+			NumDimensions:  dims,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			UseInlining:    true,
+		}
+		storage := newHNSWStorage(ss, config)
+		return NewHNSWGraph(storage, config)
+	}
+
+	It("insert single node, search returns it (inlining)", func() {
+		graph := makeInliningGraph(3)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(1)}
+			vec := []float64{1.0, 2.0, 3.0}
+			Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+
+			results, err := graph.Search(tx, []float64{1.0, 2.0, 3.0}, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("lonely inlining node writes NO sentinel KV (Java wire compat)", func() {
+		// Java's InliningStorageAdapter writes NOTHING for a node with no neighbors at an
+		// inlining layer (BaseNeighborsChangeSet.writeDelta is a no-op for an empty change
+		// set). A sentinel would be a 2-element (layer, pk) key; Java's inlining scanner
+		// parses every KV at a layer as a 3-element edge via keyTuple.getNestedTuple(2)
+		// (InliningStorageAdapter.java:198/376), so a 2-element key crashes a Java reader
+		// sharing the cluster. Revert-proof: restore the `tx.Set(prefix, []byte{})` sentinel
+		// and this asserts a non-zero KV count → fails.
+		graph := makeInliningGraph(3)
+		pk := tuple.Tuple{int64(42)}
+		const layer = 1 // inlining (UseInlining=true, layer > 0)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			Expect(graph.storage.saveNodeLayerInlining(rtx.Transaction(), layer, pk, nil, nil)).To(Succeed())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Fresh transaction reads committed data directly from FDB (bypassing the cache):
+		// the lonely node's (layer, pk) prefix must hold zero KVs.
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			prefix := graph.storage.dataSubspace.Pack(tuple.Tuple{int64(layer), pk})
+			r, perr := fdb.PrefixRange(prefix)
+			Expect(perr).NotTo(HaveOccurred())
+			iter := rtx.Transaction().GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+			count := 0
+			for iter.Advance() {
+				_, gerr := iter.Get()
+				Expect(gerr).NotTo(HaveOccurred())
+				count++
+			}
+			Expect(count).To(BeZero(),
+				"a lonely inlining node must write zero KVs — a 2-element sentinel key breaks Java's inlining scanner")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("inlining graph with a lonely entry searches correctly on a cold cache (cross-tx)", func() {
+		// With the sentinel removed, a lonely entry point at an inlining layer must still be
+		// reachable when the per-tx cache is cold (a fresh transaction/process). Insert enough
+		// nodes that the top node is alone at an inlining layer, commit, then search from a
+		// fresh storage (cold cache) reading committed FDB data.
+		graph := makeInliningGraph(2)
+		const n = 60
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for i := 0; i < n; i++ {
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, []float64{float64(i), float64(i * 2)})).To(Succeed())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Fresh graph on the SAME subspace → cold cache → reads from committed FDB, exercising
+		// the (sentinel-less) lonely-entry descent end to end.
+		config := graph.config
+		coldGraph := NewHNSWGraph(newHNSWStorage(specSubspace().Sub("hnsw-inlining"), config), config)
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			results, serr := coldGraph.Search(rtx.Transaction(), []float64{7.0, 14.0}, 1, 100)
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(7)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("cold insert reaching a lonely inlining entry layer succeeds (Java: empty fetch = empty node)", func() {
+		// P4 regression. Java's InliningStorageAdapter
+		// cannot distinguish "node with no neighbors" from "node absent" (its Javadoc says
+		// so, InliningStorageAdapter.java:94-95); fetchNodeInternal returns a node with an
+		// EMPTY neighbor list for an empty range, never an error. Go returned
+		// errHNSWNotPresent, which the insert reverse-connection loop propagated raw:
+		// a COLD transaction (empty per-tx cache) inserting a node whose level reaches a
+		// lonely entry point's inlining layer selects that entry as a neighbor
+		// (searchLayerMulti pre-seeds the entry into its results), loads its empty edge
+		// range for the reverse edge, and failed with "node not found at layer N
+		// (inlining)". Same-tx inserts were saved by the cache (saveNodeLayerInlining
+		// caches empty-but-present), which is why only the cross-tx case broke.
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			UseInlining:    true,
+		}
+		ss := specSubspace().Sub("hnsw-inlining-cold-insert")
+
+		// Two PKs whose deterministic level reaches an inlining layer (>= 1).
+		var pks []tuple.Tuple
+		for i := int64(0); len(pks) < 2; i++ {
+			pk := tuple.Tuple{i}
+			if topLayer(pk, config.M) >= 1 {
+				pks = append(pks, pk)
+			}
+		}
+
+		// Tx 1: first node becomes the entry point, lonely (no neighbors → no KVs) at
+		// every inlining layer it occupies.
+		warmGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			return nil, warmGraph.Insert(rtx.Transaction(), pks[0], []float64{1, 1})
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Tx 2, COLD cache (fresh storage): the second insert reaches the lonely layer,
+		// selects the entry as its neighbor, and must add the reverse edge — not fail.
+		coldGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(coldGraph.Insert(tx, pks[1], []float64{2, 2})).To(Succeed(),
+				"cold insert reaching a lonely inlining entry layer must not fail (empty fetch = empty node)")
+			// Both nodes retrievable afterwards.
+			results, serr := coldGraph.Search(tx, []float64{1, 1}, 2, 100)
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			// The upper-layer edges must ACTUALLY be written, both directions —
+			// "succeeding" while silently skipping them (neighbor vector not in the cold
+			// cache → saveNodeLayerInlining dropped the edge) leaves the layer
+			// disconnected; layer-0 search masks it. Java cannot skip: the vector
+			// travels WITH the reference (NodeReferenceWithVector) from search to write.
+			st := coldGraph.storage
+			newToEp := st.dataSubspace.Pack(tuple.Tuple{int64(1), pks[1], pks[0]})
+			epToNew := st.dataSubspace.Pack(tuple.Tuple{int64(1), pks[0], pks[1]})
+			v1, gerr := tx.Get(fdb.Key(newToEp)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(v1).NotTo(BeNil(), "edge (layer 1, newNode → entry) must be written on a cold insert")
+			v2, gerr := tx.Get(fdb.Key(epToNew)).Get()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(v2).NotTo(BeNil(), "reverse edge (layer 1, entry → newNode) must be written on a cold insert")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("cold insert into a CONNECTED inlining layer succeeds (vector merges into source-cached entries)", func() {
+		// A node loaded as a SOURCE at an inlining layer is cached
+		// with vecBytes nil (inlining nodes don't store their own vector at their layer).
+		// If its vector later arrives — via a threaded neighborVec or an edge value naming
+		// it — the cache write must MERGE the vector into the existing entry, not skip it
+		// because "already cached". Otherwise a later reverse-edge save that resolves that
+		// node's vector from the cache fails with "no vector for neighbor".
+		//
+		// Natural trigger: a CONNECTED upper layer (A↔B at layer 1), cold insert C
+		// reaching layer 1. The search loads A as a source first (cached vec-nil), B's
+		// edge read hits the already-cached A and (pre-fix) skips filling A's vector;
+		// the reverse-edge save for B then needs A's vector → cold error.
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			UseInlining:    true,
+		}
+		ss := specSubspace().Sub("hnsw-inlining-cold-connected")
+
+		// Three PKs whose deterministic level reaches layer >= 1.
+		var pks []tuple.Tuple
+		for i := int64(0); len(pks) < 3; i++ {
+			pk := tuple.Tuple{i}
+			if topLayer(pk, config.M) >= 1 {
+				pks = append(pks, pk)
+			}
+		}
+
+		// Warm: two nodes both reaching layer 1 — the second insert connects them there,
+		// so layer 1 is a CONNECTED inlining layer (real edge KVs exist).
+		warmGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(warmGraph.Insert(tx, pks[0], []float64{1, 1})).To(Succeed())
+			Expect(warmGraph.Insert(tx, pks[1], []float64{2, 2})).To(Succeed())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Cold: the third insert reaches layer 1, selects both, and must be able to
+		// resolve every neighbor vector when writing the reverse edges.
+		coldGraph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(coldGraph.Insert(tx, pks[2], []float64{3, 3})).To(Succeed(),
+				"cold insert into a connected inlining layer must not fail (vector must merge into the source-cached entry)")
+			results, serr := coldGraph.Search(tx, []float64{1, 1}, 3, 100)
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert 5 nodes, kNN k=3 returns 3 closest (inlining)", func() {
+		graph := makeInliningGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			points := [][]float64{
+				{0.0, 0.0},   // id=0
+				{1.0, 0.0},   // id=1
+				{2.0, 0.0},   // id=2
+				{10.0, 0.0},  // id=3 (far)
+				{100.0, 0.0}, // id=4 (very far)
+			}
+			for i, p := range points {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, p)).To(Succeed())
+			}
+
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 3, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{0, 1, 2}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert then delete, search does not return deleted node (inlining)", func() {
+		graph := makeInliningGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk1 := tuple.Tuple{int64(1)}
+			pk2 := tuple.Tuple{int64(2)}
+			pk3 := tuple.Tuple{int64(3)}
+
+			Expect(graph.Insert(tx, pk1, []float64{0.0, 0.0})).To(Succeed())
+			Expect(graph.Insert(tx, pk2, []float64{1.0, 0.0})).To(Succeed())
+			Expect(graph.Insert(tx, pk3, []float64{2.0, 0.0})).To(Succeed())
+
+			Expect(graph.Delete(tx, pk2)).To(Succeed())
+
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 3, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 3}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert same PK twice keeps the first node with inlining", func() {
+		graph := makeInliningGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(42)}
+
+			Expect(graph.Insert(tx, pk, []float64{0.0, 0.0})).To(Succeed())
+			Expect(graph.Insert(tx, pk, []float64{5.0, 5.0})).To(Succeed())
+
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("inlining storage format: layer 0 uses compact, layers > 0 use inlining", func() {
+		// Use M=4 which gives some nodes at layer > 0.
+		// With many nodes, some will deterministically land on upper layers.
+		graph := makeInliningGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 20 points. With M=4, some will be on layer 1+.
+			for i := 0; i < 20; i++ {
+				pk := tuple.Tuple{int64(i)}
+				vec := []float64{float64(i), float64(i * 2)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Verify layer 0 uses compact format: check that a key at
+			// (0, pk) exists and has compact format value.
+			layer0Key := graph.storage.dataSubspace.Pack(tuple.Tuple{int64(0), tuple.Tuple{int64(0)}})
+			layer0Data, err := tx.Get(fdb.Key(layer0Key)).Get()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(layer0Data).NotTo(BeNil(), "layer 0 should use compact format (single KV)")
+
+			// Parse it as compact format — should succeed.
+			_, _, _, parseErr := parseNodeValue(layer0Data)
+			Expect(parseErr).NotTo(HaveOccurred())
+
+			// Find a node at layer > 0 by checking which PKs have topLayer > 0.
+			var upperLayerPK tuple.Tuple
+			for i := 0; i < 20; i++ {
+				pk := tuple.Tuple{int64(i)}
+				if topLayer(pk, graph.config.M) > 0 {
+					upperLayerPK = pk
+					break
+				}
+			}
+
+			if upperLayerPK != nil {
+				layer := topLayer(upperLayerPK, graph.config.M)
+				// At inlining layer, the compact-format key should NOT exist.
+				compactKey := graph.storage.dataSubspace.Pack(tuple.Tuple{int64(layer), upperLayerPK})
+				compactData, err := tx.Get(fdb.Key(compactKey)).Get()
+				Expect(err).NotTo(HaveOccurred())
+				// In inlining format, the compact key doesn't exist — instead, edges
+				// are stored at (layer, pk, neighborPK) keys.
+				Expect(compactData).To(BeNil(), "inlining layer should NOT have compact format key")
+
+				// Verify that the node is loadable from the dispatch layer.
+				_, neighbors, loadErr := graph.storage.loadNodeLayerDispatch(tx, layer, upperLayerPK)
+				Expect(loadErr).NotTo(HaveOccurred())
+				// Node at upper layer should have been saved (may have 0 or more neighbors).
+				_ = neighbors
+			}
+
+			// Search should still work correctly.
+			results, err := graph.Search(tx, []float64{5.0, 10.0}, 3, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("larger graph with inlining produces correct search results", func() {
+		graph := makeInliningGraph(4)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 50 nodes in 4D.
+			for i := 0; i < 50; i++ {
+				pk := tuple.Tuple{int64(i)}
+				vec := []float64{float64(i), float64(i * 3), float64(i * 7), float64(i * 11)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Search near origin: should find id=0 as the closest.
+			results, err := graph.Search(tx, []float64{0, 0, 0, 0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(5))
+
+			// id=0 should be the nearest (at the origin).
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(0)))
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			// Distances should be in ascending order.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("parseHNSWConfig reads hnswUseInlining option", func() {
+		idx := &recordlayer.Index{
+			Name: "test_vec",
+			Type: recordlayer.IndexTypeVector,
+			Options: map[string]string{
+				recordlayer.IndexOptionVectorNumDimensions: "128",
+				"hnswUseInlining":                          "true",
+			},
+		}
+		config := mustParseHNSWConfig(idx)
+		Expect(config.UseInlining).To(BeTrue())
+		Expect(config.NumDimensions).To(Equal(128))
+
+		// Without the option, should default to false.
+		idx2 := &recordlayer.Index{
+			Name: "test_vec2",
+			Type: recordlayer.IndexTypeVector,
+			Options: map[string]string{
+				recordlayer.IndexOptionVectorNumDimensions: "128",
+			},
+		}
+		config2 := mustParseHNSWConfig(idx2)
+		Expect(config2.UseInlining).To(BeFalse())
+	})
+
+	It("isInliningLayer returns correct values", func() {
+		ssInlining := specSubspace().Sub("hnsw-inlining-check")
+		configInlining := HNSWConfig{UseInlining: true}
+		storageInlining := newHNSWStorage(ssInlining, configInlining)
+
+		Expect(storageInlining.isInliningLayer(0)).To(BeFalse(), "layer 0 is always compact")
+		Expect(storageInlining.isInliningLayer(1)).To(BeTrue(), "layer 1 should be inlining")
+		Expect(storageInlining.isInliningLayer(5)).To(BeTrue(), "layer 5 should be inlining")
+
+		ssCompact := specSubspace().Sub("hnsw-compact-check")
+		configCompact := HNSWConfig{UseInlining: false}
+		storageCompact := newHNSWStorage(ssCompact, configCompact)
+
+		Expect(storageCompact.isInliningLayer(0)).To(BeFalse(), "layer 0 is always compact")
+		Expect(storageCompact.isInliningLayer(1)).To(BeFalse(), "layer 1 should be compact when UseInlining=false")
+	})
+
+	It("delete all nodes with inlining leaves empty graph", func() {
+		graph := makeInliningGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 5 nodes.
+			for i := 0; i < 5; i++ {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, []float64{float64(i), float64(i)})).To(Succeed())
+			}
+
+			// Delete all nodes.
+			for i := 0; i < 5; i++ {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Delete(tx, pk)).To(Succeed())
+			}
+
+			// Search should return no results.
+			results, err := graph.Search(tx, []float64{0, 0}, 3, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(BeNil())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("HNSW with RaBitQ", func() {
+	ctx := context.Background()
+
+	// Helper: create an isolated HNSW graph with RaBitQ enabled.
+	makeRaBitQGraph := func(dims, numExBits int) *hnswGraph {
+		ss := specSubspace().Sub("hnsw-rabitq")
+		config := HNSWConfig{
+			NumDimensions:  dims,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			Quantizer:      rabitq.NewQuantizer(rabitq.MetricEuclidean, numExBits),
+		}
+		storage := newHNSWStorage(ss, config)
+		return NewHNSWGraph(storage, config)
+	}
+
+	It("RaBitQ centroid bootstrap establishes a centroid after StatsThreshold inserts (Java parity)", func() {
+		// Java Insert.addToStatsIfNecessary: with RaBitQ + a translation-preserving metric and no
+		// centroid yet, inserts sample vectors into the SAMPLES subspace, roll them up, and once
+		// StatsThreshold accumulate, establish the rotated centroid and transition the transform.
+		// Force probabilities to 1.0 and a low threshold so the bootstrap fires deterministically.
+		const dims = 8
+		config := HNSWConfig{
+			NumDimensions: dims, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, EfRepair: 64,
+			Metric:                       VectorMetricEuclidean,
+			Quantizer:                    rabitq.NewQuantizer(rabitq.MetricEuclidean, 4),
+			SampleVectorStatsProbability: 1.0, // always sample
+			MaintainStatsProbability:     1.0, // always roll up
+			StatsThreshold:               10,  // establish the centroid once 10 accumulate
+		}
+		storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-bootstrap"), config)
+		graph := NewHNSWGraph(storage, config)
+		rng := rand.New(rand.NewSource(11))
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			// firstInsert (node 0) does not sample; nodes 1..14 each sample + roll up, so by
+			// ~node 10 the accumulated count reaches StatsThreshold and the centroid is established.
+			for i := 0; i < 15; i++ {
+				v := make([]float64, dims)
+				for d := range v {
+					v[d] = rng.NormFloat64()
+				}
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, v)).To(Succeed())
+			}
+			info, lerr := storage.loadAccessInfo(tx)
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(info.hasTransform()).To(BeTrue(), "centroid must be established after StatsThreshold inserts")
+			Expect(info.centroid).NotTo(BeNil())
+			Expect(info.rotatorSeed).NotTo(Equal(int64(-1)))
+			// The SAMPLES subspace must be cleared once the centroid is established.
+			r, perr := fdb.PrefixRange(storage.samplesSubspace.Bytes())
+			Expect(perr).NotTo(HaveOccurred())
+			kvs, gerr := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(kvs).To(BeEmpty(), "samples must be deleted after the centroid is established")
+			// Search still works over the mixed (identity + transformed) graph.
+			q := make([]float64, dims)
+			for d := range q {
+				q[d] = rng.NormFloat64()
+			}
+			results, serr := graph.Search(tx, q, 3, 100)
+			Expect(serr).NotTo(HaveOccurred())
+			Expect(len(results)).To(BeNumerically(">", 0))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("writes a SAMPLES key as (count, version-4 tuple UUID) and still consumes a byte-string one", func() {
+		// Java StorageHelpers.appendSampledVector: Tuple.from(partialCount,
+		// UUID.randomUUID()). An older Go wrote a 16-byte string there; the
+		// element is ignored on read, so those entries are still consumed.
+		config := HNSWConfig{NumDimensions: 2, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, EfRepair: 64, Metric: VectorMetricEuclidean}
+		storage := newHNSWStorage(specSubspace().Sub("hnsw-sample-uuid"), config)
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			Expect(storage.appendSampledVector(tx, 3, []float64{1, 2})).To(Succeed())
+			tx.Set(fdb.Key(storage.samplesSubspace.Pack(tuple.Tuple{int64(2), make([]byte, 16)})),
+				tuple.Tuple{serializeVector([]float64{5, 6})}.Pack())
+			r, perr := fdb.PrefixRange(storage.samplesSubspace.Bytes())
+			Expect(perr).NotTo(HaveOccurred())
+			kvs, gerr := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+			Expect(gerr).NotTo(HaveOccurred())
+			var uuids int
+			for _, kv := range kvs {
+				key, uerr := storage.samplesSubspace.Unpack(kv.Key)
+				Expect(uerr).NotTo(HaveOccurred())
+				if u, ok := key[1].(tuple.UUID); ok {
+					uuids++
+					Expect(key[0]).To(Equal(int64(3)))
+					Expect(u[6]>>4).To(Equal(byte(4)), "version 4")
+					Expect(u[8]>>6).To(Equal(byte(2)), "IETF variant")
+				}
+			}
+			Expect(uuids).To(Equal(1))
+			consumed, cerr := storage.consumeSampledVectors(tx, 10)
+			Expect(cerr).NotTo(HaveOccurred())
+			Expect(consumed).To(HaveLen(2))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert single node and search returns it", func() {
+		graph := makeRaBitQGraph(8, 4)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(1)}
+			vec := []float64{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+			Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+
+			results, err := graph.Search(tx, vec, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
+			// Self-distance should be approximately zero (RaBitQ approximation).
+			Expect(results[0].Distance).To(BeNumerically("<", 0.5))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("stores plain bytes pre-centroid and RaBitQ-encoded bytes post-centroid (Java parity)", func() {
+		// Java parity (Insert.java:262-278, 196-198): for a translation-preserving metric
+		// (Euclidean), RaBitQ uses the noOp quantizer until a centroid is sampled, so
+		// pre-centroid vectors are stored PLAIN (type ordinal 2, DOUBLE) and only become
+		// RaBitQ-encoded (type ordinal 3) once the centroid is established. Storing
+		// RaBitQ-encoded bytes pre-centroid (the old Go behavior) is a wire divergence:
+		// Java would read those bytes as RaBitQ under an identity transform and mis-decode.
+		const dims = 4
+		config := HNSWConfig{
+			NumDimensions: dims, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, EfRepair: 64,
+			Metric:                       VectorMetricEuclidean,
+			Quantizer:                    rabitq.NewQuantizer(rabitq.MetricEuclidean, 4),
+			SampleVectorStatsProbability: 1.0,
+			MaintainStatsProbability:     1.0,
+			StatsThreshold:               8,
+		}
+		storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-storefmt"), config)
+		graph := NewHNSWGraph(storage, config)
+		rng := rand.New(rand.NewSource(7))
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// First (pre-centroid) node: must be stored PLAIN (DOUBLE, type ordinal 2).
+			pre := tuple.Tuple{int64(0)}
+			Expect(graph.Insert(tx, pre, []float64{1.0, 2.0, 3.0, 4.0})).To(Succeed())
+			preBytes, _, lerr := graph.storage.loadNodeLayer(tx, 0, pre)
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(len(preBytes)).To(BeNumerically(">", 0))
+			Expect(preBytes[0]).To(Equal(byte(2)), "pre-centroid vector must be stored PLAIN (DOUBLE), not RaBitQ")
+
+			// Insert until the centroid is established (StatsThreshold accumulates).
+			i := int64(1)
+			for {
+				v := make([]float64, dims)
+				for d := range v {
+					v[d] = rng.NormFloat64()
+				}
+				Expect(graph.Insert(tx, tuple.Tuple{i}, v)).To(Succeed())
+				info, ierr := graph.storage.loadAccessInfo(tx)
+				Expect(ierr).NotTo(HaveOccurred())
+				if info.hasTransform() {
+					break
+				}
+				i++
+				Expect(i).To(BeNumerically("<", 100), "centroid should establish well before 100 inserts")
+			}
+
+			// A node inserted AFTER the centroid is established must be RaBitQ-encoded.
+			post := tuple.Tuple{int64(1000)}
+			pv := make([]float64, dims)
+			for d := range pv {
+				pv[d] = rng.NormFloat64()
+			}
+			Expect(graph.Insert(tx, post, pv)).To(Succeed())
+			postBytes, _, perr := graph.storage.loadNodeLayer(tx, 0, post)
+			Expect(perr).NotTo(HaveOccurred())
+			Expect(len(postBytes)).To(BeNumerically(">", 0))
+			Expect(postBytes[0]).To(Equal(byte(3)), "post-centroid vector must be RaBitQ-encoded (type ordinal 3)")
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert 5 nodes and kNN k=3 returns 3 closest", func() {
+		graph := makeRaBitQGraph(4, 6)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 5 points in 4D (well-separated).
+			points := [][]float64{
+				{0.0, 0.0, 0.0, 0.0},    // id=0
+				{1.0, 0.0, 0.0, 0.0},    // id=1
+				{2.0, 0.0, 0.0, 0.0},    // id=2
+				{100.0, 0.0, 0.0, 0.0},  // id=3 (far)
+				{1000.0, 0.0, 0.0, 0.0}, // id=4 (very far)
+			}
+			for i, p := range points {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, p)).To(Succeed())
+			}
+
+			// Query near origin, k=3 should return ids 0,1,2.
+			results, err := graph.Search(tx, []float64{0.0, 0.0, 0.0, 0.0}, 3, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{0, 1, 2}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("keeps deletion replacements in transformed coordinates after centroid bootstrap", func() {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		config := DefaultHNSWConfig(4)
+		config.M, config.MMax, config.MMax0 = 4, 4, 8
+		config.Quantizer = rabitq.NewQuantizer(rabitq.MetricEuclidean, 4)
+		config.SampleVectorStatsProbability = 1
+		config.MaintainStatsProbability = 1
+		config.StatsThreshold = 1
+		ss := specSubspace().Sub("entry-replacement-coordinates")
+		vectors := map[int64][]float64{1: {1, 2, 3, 4}, 2: {-3, 8, 2, 6}}
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for _, pk := range []int64{1, 2} {
+				graph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+				Expect(graph.Insert(tx, tuple.Tuple{pk}, vectors[pk])).To(Succeed())
+			}
+			storage := newHNSWStorage(ss, config)
+			before, err := storage.loadAccessInfo(tx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(before.hasTransform()).To(BeTrue(), "the replacement must cross the centroid transition")
+			for _, pk := range []int64{1, 2} {
+				raw, _, err := storage.loadNodeLayer(tx, 0, tuple.Tuple{pk})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(raw).To(Equal(serializeVector(vectors[pk])), "both data nodes must have been inserted pre-centroid")
+			}
+			graph := NewHNSWGraph(storage, config)
+			Expect(graph.Delete(tx, before.pk)).To(Succeed())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Reopen in a separate transaction with no node or transform cache.
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			storage := newHNSWStorage(ss, config)
+			after, err := storage.loadAccessInfo(tx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(after.hasTransform()).To(BeTrue())
+			Expect(after.pk).To(Equal(tuple.Tuple{int64(2)}))
+			raw := serializeVector(vectors[2])
+			graph := NewHNSWGraph(storage, config)
+			want := serializeVector(graph.buildTransform(after).apply(vectors[2]))
+			Expect(want).NotTo(Equal(raw), "a fixed-point vector would make this coordinate regression vacuous")
+
+			// The prefix-independent image also serves as a replay fixture when this
+			// regression is run against a pre-fix writer. Keep the full operation
+			// sequence above: a hand-written raw tuple cannot prove an old writer
+			// actually produced the ambiguous access-info representation.
+			kvs, err := tx.GetRange(ss, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+			Expect(err).NotTo(HaveOccurred())
+			for _, kv := range kvs {
+				fmt.Fprintf(GinkgoWriter, "HNSW_ENTRY_FIXTURE key=%x value=%x\n", []byte(kv.Key[len(ss.Bytes()):]), kv.Value)
+			}
+			Expect(after.vectorBytes).To(Equal(want), "access-info must store the transformed replacement, not the original raw node bytes")
+			results, err := graph.Search(tx, vectors[2], 1, 10)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].PrimaryKey).To(Equal(tuple.Tuple{int64(2)}))
+			Expect(results[0].Distance).To(Equal(float64(0)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete works with RaBitQ", func() {
+		graph := makeRaBitQGraph(4, 4)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 3 nodes.
+			for i := int64(0); i < 3; i++ {
+				vec := []float64{float64(i), 0.0, 0.0, 0.0}
+				Expect(graph.Insert(tx, tuple.Tuple{i}, vec)).To(Succeed())
+			}
+
+			// Delete the middle one.
+			Expect(graph.Delete(tx, tuple.Tuple{int64(1)})).To(Succeed())
+
+			// Search should return only 2 results.
+			results, err := graph.Search(tx, []float64{0.0, 0.0, 0.0, 0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// An update is the maintainer's delete of the old entry and insert of the
+	// new one (an insert of a present key leaves the node as it is, below).
+	It("update (delete then insert) works with RaBitQ", func() {
+		graph := makeRaBitQGraph(4, 4)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(1)}
+			vec1 := []float64{1.0, 0.0, 0.0, 0.0}
+			Expect(graph.Insert(tx, pk, vec1)).To(Succeed())
+
+			vec2 := []float64{100.0, 0.0, 0.0, 0.0}
+			Expect(graph.Delete(tx, pk)).To(Succeed())
+			Expect(graph.Insert(tx, pk, vec2)).To(Succeed())
+
+			// Search near new position should find it close.
+			results, err := graph.Search(tx, vec2, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
+			Expect(results[0].Distance).To(BeNumerically("<", 1.0))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("recall is reasonable with 20 random 8D vectors", func() {
+		dims := 8
+		numVectors := 20
+		k := 5
+		numExBits := 6
+		graph := makeRaBitQGraph(dims, numExBits)
+
+		rng := rand.New(rand.NewSource(42))
+		vectors := make([][]float64, numVectors)
+		for i := 0; i < numVectors; i++ {
+			vectors[i] = make([]float64, dims)
+			for j := 0; j < dims; j++ {
+				vectors[i][j] = rng.NormFloat64() * 10
+			}
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			for i, v := range vectors {
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, v)).To(Succeed())
+			}
+
+			// Query with vector[0], find k nearest.
+			query := vectors[0]
+			results, err := graph.Search(tx, query, k, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(k))
+
+			// Compute brute-force k nearest.
+			type idDist struct {
+				id   int64
+				dist float64
+			}
+			var all []idDist
+			for i, v := range vectors {
+				d := euclideanDistance(query, v)
+				all = append(all, idDist{id: int64(i), dist: d})
+			}
+			sort.Slice(all, func(i, j int) bool { return all[i].dist < all[j].dist })
+			trueKNN := make(map[int64]bool)
+			for i := 0; i < k; i++ {
+				trueKNN[all[i].id] = true
+			}
+
+			// Count recall.
+			hits := 0
+			for _, r := range results {
+				if trueKNN[r.PrimaryKey[0].(int64)] {
+					hits++
+				}
+			}
+			recall := float64(hits) / float64(k)
+			// With RaBitQ, approximate distances may reorder slightly.
+			// Require at least 60% recall (lenient due to approximation + small dataset).
+			Expect(recall).To(BeNumerically(">=", 0.6),
+				"RaBitQ recall should be >= 60%% (got %.0f%%)", recall*100)
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("search is correct after a mid-stream centroid bootstrap (mixed plain + RaBitQ graph)", func() {
+		// P1 regression. When the RaBitQ centroid is established mid-stream, the nodes
+		// inserted before it are stored plain (identity coordinates) and the nodes after
+		// it are RaBitQ-encoded (rotated + centroid-translated coordinates). The query is
+		// transformed into the post-centroid system, so the pre-centroid plain nodes MUST
+		// be lifted into that system at read (Java's StorageTransform) before comparison.
+		//
+		// Before the fix Go stored pre-centroid vectors RaBitQ-encoded in identity space
+		// and never lifted them, so after the transition they were compared against a
+		// centroid-space query in the wrong coordinate system — a pre-centroid vector
+		// could not even retrieve itself. Self-retrieval of the pre-centroid nodes is the
+		// red→green signal: exact for a correctly-lifted plain vector, garbage otherwise.
+		const dims = 12
+		config := HNSWConfig{
+			NumDimensions: dims, M: 8, MMax: 8, MMax0: 16, EfConstruction: 200, EfRepair: 64,
+			Metric:                       VectorMetricEuclidean,
+			Quantizer:                    rabitq.NewQuantizer(rabitq.MetricEuclidean, 6),
+			SampleVectorStatsProbability: 1.0,
+			MaintainStatsProbability:     1.0,
+			StatsThreshold:               15, // centroid establishes around the 15th insert
+		}
+		storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-mixed-recall"), config)
+		graph := NewHNSWGraph(storage, config)
+		rng := rand.New(rand.NewSource(2026))
+
+		const n = 80
+		vectors := make([][]float64, n)
+		for i := range vectors {
+			vectors[i] = make([]float64, dims)
+			for d := range vectors[i] {
+				vectors[i][d] = rng.NormFloat64() * 5
+			}
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			preCentroidCount := 0
+			centroidEstablished := false
+			for i, v := range vectors {
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, v)).To(Succeed())
+				if !centroidEstablished {
+					info, ierr := graph.storage.loadAccessInfo(tx)
+					Expect(ierr).NotTo(HaveOccurred())
+					if info.hasTransform() {
+						centroidEstablished = true
+					} else {
+						preCentroidCount++
+					}
+				}
+			}
+			// The graph must genuinely be mixed: some plain pre-centroid nodes AND a
+			// transition that actually fired, else this test would not exercise the bug.
+			Expect(centroidEstablished).To(BeTrue(), "centroid must establish mid-stream")
+			Expect(preCentroidCount).To(BeNumerically(">", 5), "must have several pre-centroid (plain) nodes")
+			Expect(preCentroidCount).To(BeNumerically("<", n), "must have post-centroid (RaBitQ) nodes too")
+
+			// Every pre-centroid node must retrieve itself as its own nearest neighbor.
+			// This is exact for a correctly-lifted plain vector; the pre-fix bug made it
+			// impossible (wrong coordinate system).
+			for i := 0; i < preCentroidCount; i++ {
+				results, serr := graph.Search(tx, vectors[i], 1, 200)
+				Expect(serr).NotTo(HaveOccurred())
+				Expect(results).NotTo(BeEmpty(), "pre-centroid node %d returned no results", i)
+				Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(i)),
+					"pre-centroid node %d must retrieve itself as nearest (mixed-coordinate bug)", i)
+				Expect(results[0].Distance).To(BeNumerically("<", 1e-6),
+					"pre-centroid self-distance must be ~0 (exact, lifted)")
+			}
+
+			// And overall recall@5 over the whole mixed graph must be high.
+			const k = 5
+			hits, total := 0, 0
+			for i := 0; i < n; i += 7 {
+				results, serr := graph.Search(tx, vectors[i], k, 200)
+				Expect(serr).NotTo(HaveOccurred())
+				type idDist struct {
+					id   int
+					dist float64
+				}
+				all := make([]idDist, n)
+				for j := range vectors {
+					all[j] = idDist{j, euclideanDistance(vectors[i], vectors[j])}
+				}
+				sort.Slice(all, func(a, b int) bool { return all[a].dist < all[b].dist })
+				trueK := make(map[int]bool, k)
+				for j := 0; j < k; j++ {
+					trueK[all[j].id] = true
+				}
+				for _, r := range results {
+					if trueK[int(r.PrimaryKey[0].(int64))] {
+						hits++
+					}
+					total++
+				}
+			}
+			recall := float64(hits) / float64(total)
+			Expect(recall).To(BeNumerically(">=", 0.8),
+				"recall@5 over the mixed graph should be >= 80%% (got %.0f%%)", recall*100)
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("persists Java RaBitQ bytes at compact and inline write boundaries across coordinate representations", func() {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		// Literal from Java 4.14.2.0 encodeRaBitQVector([-3,8,2,6],4),
+		// also retained in TestRaBitQJavaEncodingGoldens. Do not derive this
+		// storage oracle by calling the Go encoder.
+		want, err := hex.DecodeString("03405c400000000000bff0b3bb6b02f4c43fe0710ee86e1c9957e7b0")
+		Expect(err).NotTo(HaveOccurred())
+		current := []float64{-3, 8, 2, 6}
+		for _, representation := range []string{"raw", "transformed", "encoded", "cached-raw"} {
+			ss := specSubspace().Sub("write-boundary", representation)
+			config := makeRaBitQGraph(4, 4).config
+			config.UseInlining = true
+			pk, neighbor := tuple.Tuple{int64(1)}, tuple.Tuple{int64(2)}
+			_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				storage := newHNSWStorage(ss, config)
+				graph := NewHNSWGraph(storage, config)
+				// Rotation of zero is zero, so the translation independently
+				// determines the expected transformed vector exactly.
+				graph.opXform = newHNSWTransform(42, current, 4, false)
+				vector := hnswVector{data: serializeVector(make([]float64, 4))}
+				switch representation {
+				case "transformed":
+					vector = hnswVector{data: serializeVector(current), transformed: true}
+				case "encoded":
+					vector = hnswVector{data: want}
+				}
+				Expect(graph.saveNodeLayer(tx, 0, neighbor, vector, nil, nil)).To(Succeed())
+				inlineVector := vector
+				if representation == "cached-raw" {
+					storage.cacheNeighborVector(1, neighbor, vector.data)
+					inlineVector = hnswVector{}
+				}
+				Expect(graph.saveNodeLayer(tx, 1, pk, hnswVector{}, []tuple.Tuple{neighbor}, []hnswVector{inlineVector})).To(Succeed())
+				Expect(storage.getVectorBytesFromCache(0, neighbor)).To(Equal(want), representation)
+				Expect(storage.getVectorBytesFromCache(1, neighbor)).To(Equal(want), representation)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				storage := newHNSWStorage(ss, config)
+				compact, err := tx.Get(fdb.Key(storage.dataSubspace.Pack(tuple.Tuple{int64(0), neighbor}))).Get()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(compact).To(Equal(tuple.Tuple{int64(0), tuple.Tuple{want}, tuple.Tuple{}}.Pack()), representation)
+				edge, err := tx.Get(fdb.Key(storage.dataSubspace.Pack(tuple.Tuple{int64(1), pk, neighbor}))).Get()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(edge).To(Equal(tuple.Tuple{want}.Pack()), representation)
+				decoded, _, err := storage.loadNodeLayer(tx, 0, neighbor)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(decoded).To(Equal(want), representation)
+				_, neighbors, err := storage.loadNodeLayerDispatch(tx, 1, pk)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(neighbors).To(HaveLen(1))
+				Expect(storage.getVectorBytesFromCache(1, neighbor)).To(Equal(want), representation)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+	})
+
+	It("validates the Java RaBitQ statistics threshold boundary", func() {
+		config := DefaultHNSWConfig(4)
+		for _, threshold := range []int{-1, 0, 1, 10, 11, 1000} {
+			config.StatsThreshold = threshold
+			Expect(hnswConfigChecks(config, false, 4)).To(Succeed())
+			index := recordlayer.NewVectorIndex("threshold", recordlayer.Field("vector_data"), 4)
+			index.Options["hnswUseRaBitQ"] = "true"
+			index.Options[recordlayer.IndexOptionHNSWStatsThreshold] = fmt.Sprint(threshold)
+			parsed, err := parseHNSWConfig(index)
+			if threshold <= 10 {
+				// Config's check, Java's text, when the index is read.
+				Expect(err).To(MatchError("statThreshold out of range"))
+				Expect(hnswConfigChecks(config, true, 4)).To(MatchError("statThreshold out of range"))
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(parsed.StatsThreshold).To(Equal(threshold))
+				Expect(hnswConfigChecks(config, true, 4)).To(Succeed())
+			}
+		}
+	})
+
+	It("decodeStoredVector reconstructs approximate vector from RaBitQ bytes", func() {
+		dims := 8
+		numExBits := 7
+		graph := makeRaBitQGraph(dims, numExBits)
+
+		original := []float64{1.0, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0}
+		graph.opXform = newHNSWTransform(42, make([]float64, dims), dims, false)
+		encoded, err := graph.nodeVectorBytes(hnswVector{data: serializeVector(original), transformed: true})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(encoded[0]).To(Equal(byte(3))) // RABITQ
+
+		decoded, err := graph.decodeStoredVector(encoded)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(decoded).To(HaveLen(dims))
+
+		// Decoded should approximate the original direction.
+		// Compute cosine similarity.
+		origNorm := normalizeVector(original)
+		decNorm := normalizeVector(decoded)
+		cosSim := dot(origNorm, decNorm)
+		Expect(cosSim).To(BeNumerically(">", 0.9),
+			"decoded vector should approximate original direction (cosine=%.3f)", cosSim)
+	})
+
+	It("parseHNSWConfig reads RaBitQ options", func() {
+		idx := &recordlayer.Index{
+			Name: "test_vec",
+			Type: recordlayer.IndexTypeVector,
+			Options: map[string]string{
+				"hnswNumDimensions":   "32",
+				"hnswUseRaBitQ":       "true",
+				"hnswRaBitQNumExBits": "6",
+			},
+		}
+		config := mustParseHNSWConfig(idx)
+		Expect(config.Quantizer).NotTo(BeNil())
+		Expect(config.Quantizer.GetTypeByte()).To(Equal(byte(3)))
+		Expect(config.NumDimensions).To(Equal(32))
+	})
+
+	It("parseHNSWConfig defaults when RaBitQ options absent", func() {
+		idx := &recordlayer.Index{
+			Name:    "test_vec",
+			Type:    recordlayer.IndexTypeVector,
+			Options: map[string]string{},
+		}
+		config := mustParseHNSWConfig(idx)
+		Expect(config.Quantizer).To(BeNil())
+	})
+
+	// An extra-bit count Config refuses (outside 1 to 15) is refused as Java's
+	// Config refuses it; one Config admits and Java's RaBitQuantizer does not
+	// (9 to 15) builds the configuration with that count, kept as it is, since
+	// Java refuses it only where an operation constructs the quantizer.
+	It("parseHNSWConfig refuses an extra-bit count Java's Config refuses and keeps one it admits", func() {
+		for bits, want := range map[string]string{
+			"99": "raBitQNumExBits out of range",
+			"0":  "raBitQNumExBits out of range",
+			"9":  "",
+			"15": "",
+		} {
+			idx := &recordlayer.Index{
+				Name: "test_vec",
+				Type: recordlayer.IndexTypeVector,
+				Options: map[string]string{
+					"hnswUseRaBitQ":       "true",
+					"hnswRaBitQNumExBits": bits,
+				},
+			}
+			config, err := parseHNSWConfig(idx)
+			if want == "" {
+				Expect(err).NotTo(HaveOccurred(), bits)
+				Expect(strconv.Itoa(config.Quantizer.(*rabitq.Quantizer).NumExBits())).To(Equal(bits))
+				continue
+			}
+			var iae *recordlayer.IllegalArgumentError
+			Expect(errors.As(err, &iae)).To(BeTrue(), "%s: %v", bits, err)
+			Expect(iae.Message).To(Equal(want), bits)
+		}
+	})
+
+	// Java's HNSW constructs its RaBitQuantizer, whose constructor refuses 9 to
+	// 15 extra bits, only where an operation quantizes (Primitives.quantizer
+	// once the access info can use RaBitQ; Insert.firstInsert for a metric that
+	// is not translation-preserving), so a Euclidean index serves inserts until
+	// its centroid is established and refuses every insert, search and delete of
+	// a present node after it, while a search of an empty graph and a delete of
+	// an absent node are served; a cosine index refuses its first insert.
+	It("refuses 9 to 15 extra bits where Java constructs the quantizer", func() {
+		const dims = 8
+		refused := func(err error) bool {
+			var iae *recordlayer.IllegalArgumentError
+			return errors.As(err, &iae) && iae.Message == "RaBitQ encodes 1 to 8 extra bits, not 9"
+		}
+		for _, metric := range []VectorMetric{VectorMetricEuclidean, VectorMetricCosine} {
+			config := HNSWConfig{
+				NumDimensions: dims, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, EfRepair: 64,
+				Metric:                       metric,
+				Quantizer:                    rabitq.NewQuantizer(rabitq.Metric(metric), 9),
+				SampleVectorStatsProbability: 1.0,
+				MaintainStatsProbability:     1.0,
+				StatsThreshold:               11,
+			}
+			storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-bits9", int64(metric)), config)
+			graph := NewHNSWGraph(storage, config)
+			rng := rand.New(rand.NewSource(3))
+			vec := func() []float64 {
+				v := make([]float64, dims)
+				for d := range v {
+					v[d] = rng.NormFloat64()
+				}
+				return v
+			}
+			_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				results, serr := graph.Search(tx, vec(), 3, 100)
+				Expect(serr).NotTo(HaveOccurred(), "a search of an empty graph constructs no quantizer")
+				Expect(results).To(BeEmpty())
+				if metric == VectorMetricCosine {
+					Expect(refused(graph.Insert(tx, tuple.Tuple{int64(0)}, vec()))).To(BeTrue(),
+						"a cosine index quantizes its first node")
+					return nil, nil
+				}
+				inserted := 0
+				for ; inserted < 40; inserted++ {
+					if ierr := graph.Insert(tx, tuple.Tuple{int64(inserted)}, vec()); ierr != nil {
+						Expect(refused(ierr)).To(BeTrue(), "%v", ierr)
+						break
+					}
+				}
+				// The first node and the eleven sampled after it establish the
+				// centroid; the next insert is the first to quantize.
+				Expect(inserted).To(Equal(12))
+				info, lerr := storage.loadAccessInfo(tx)
+				Expect(lerr).NotTo(HaveOccurred())
+				Expect(info.hasTransform()).To(BeTrue())
+				_, serr = graph.Search(tx, vec(), 3, 100)
+				Expect(refused(serr)).To(BeTrue(), "%v", serr)
+				Expect(refused(graph.Delete(tx, tuple.Tuple{int64(0)}))).To(BeTrue())
+				Expect(graph.Delete(tx, tuple.Tuple{int64(1000)})).To(Succeed(),
+					"a delete of an absent node returns before the quantizer")
+				Expect(graph.Insert(tx, tuple.Tuple{int64(0)}, vec())).To(Succeed(),
+					"an insert of a present node returns before the quantizer")
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred(), fmt.Sprint(metric))
+		}
+	})
+
+	// Java's Insert leaves a node already in the graph as it is
+	// (Insert.java:195-197); Go deleted and re-inserted it, rewiring the
+	// graph's edges and storing the new vector.
+	It("leaves a node already in the graph as it is", func() {
+		const dims = 4
+		// Every insert after the first samples its vector (firstInsert does not
+		// sample) and none rolls the samples up or forms a centroid, so the
+		// samples subspace holds one per node but the first, and an insert
+		// that reached addToStatsIfNecessary would add one.
+		ss := specSubspace().Sub("hnsw-rabitq-present")
+		config := HNSWConfig{
+			NumDimensions: dims, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100,
+			Metric:                       VectorMetricEuclidean,
+			Quantizer:                    rabitq.NewQuantizer(rabitq.MetricEuclidean, 4),
+			SampleVectorStatsProbability: 1,
+			MaintainStatsProbability:     0,
+			StatsThreshold:               1 << 20,
+		}
+		graph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for i := 0; i < 12; i++ {
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, []float64{float64(i), 1, 2, 3})).To(Succeed())
+			}
+			// The nodes, the access info and the samples: Java's Insert
+			// returns before sampling too (Insert.java:195-197).
+			snapshot := func() [][]fdb.KeyValue {
+				var out [][]fdb.KeyValue
+				for _, sub := range []subspace.Subspace{graph.storage.dataSubspace, graph.storage.accessSubspace, graph.storage.samplesSubspace} {
+					r, perr := fdb.PrefixRange(sub.Bytes())
+					Expect(perr).NotTo(HaveOccurred())
+					kvs, gerr := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+					Expect(gerr).NotTo(HaveOccurred())
+					out = append(out, kvs)
+				}
+				return out
+			}
+			before := snapshot()
+			Expect(before[1]).NotTo(BeEmpty(), "the access info is written")
+			Expect(before[2]).NotTo(BeEmpty(), "the samples are written, so an extra one would show")
+			Expect(graph.Insert(tx, tuple.Tuple{int64(5)}, []float64{-9, -9, -9, -9})).To(Succeed())
+			Expect(snapshot()).To(Equal(before), "the graph's bytes are unchanged")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("computeDistance handles both raw and RaBitQ vectors", func() {
+		dims := 4
+		graph := makeRaBitQGraph(dims, 4)
+
+		query := []float64{1.0, 2.0, 3.0, 4.0}
+
+		// Raw DOUBLE vector.
+		rawBytes := serializeVector([]float64{2.0, 3.0, 4.0, 5.0})
+		distRaw := graph.computeDistance(query, rawBytes)
+		expected := euclideanDistance(query, []float64{2.0, 3.0, 4.0, 5.0})
+		Expect(distRaw).To(BeNumerically("~", expected, 1e-9))
+
+		// RaBitQ encoded vector.
+		rq := rabitq.NewRaBitQuantizer(rabitq.MetricEuclidean, 4)
+		encoded := rq.Encode([]float64{2.0, 3.0, 4.0, 5.0})
+		rabitqBytes := encoded.ToBytes()
+		distRaBitQ := graph.computeDistance(query, rabitqBytes)
+		// Should be finite and reasonably close to exact.
+		Expect(math.IsInf(distRaBitQ, 0)).To(BeFalse())
+		Expect(math.IsNaN(distRaBitQ)).To(BeFalse())
+		Expect(distRaBitQ).To(BeNumerically("~", expected, expected*0.5))
+	})
+
+	It("RaBitQ Euclidean self-distance is finite and >= 0 (clamp negative estimate)", func() {
+		// The RaBitQ squared-L2 estimate can be slightly NEGATIVE near zero distance
+		// (it is an estimate, not a true sum of squares). The Euclidean metric sqrt's it,
+		// so without clamping a self/near-self match becomes NaN — which sorts as
+		// "not nearest" and drops the match (chaos vector_index_self_search_miss).
+		// computeDistance must clamp to >= 0. Revert-proof: drop the math.Max(0, …) and
+		// some self-distance below goes NaN.
+		dims := 16
+		graph := makeRaBitQGraph(dims, 4)
+		rq := rabitq.NewRaBitQuantizer(rabitq.MetricEuclidean, 4)
+		rng := rand.New(rand.NewSource(60606)) // the chaos seed that surfaced the NaN
+		for i := 0; i < 300; i++ {
+			v := make([]float64, dims)
+			for j := range v {
+				v[j] = rng.NormFloat64()
+			}
+			d := graph.computeDistance(v, rq.Encode(v).ToBytes()) // self-distance
+			Expect(math.IsNaN(d)).To(BeFalse(), "self-distance must not be NaN — clamp the negative RaBitQ estimate before sqrt")
+			Expect(d).To(BeNumerically(">=", 0.0))
+		}
+	})
+
+	It("empty graph returns nil results", func() {
+		graph := makeRaBitQGraph(4, 4)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			results, err := graph.Search(tx, []float64{1.0, 2.0, 3.0, 4.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("VectorIndex Store Integration", func() {
+	ctx := context.Background()
+
+	baseMetaData := func() *recordlayer.RecordMetaDataBuilder {
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+		return builder
+	}
+
+	It("rejects an invalid HNSW config when the index is used (validation wired into maintainer)", func() {
+		ks := specSubspace()
+		// m=20 > default mMax=16 — a config Java's Config constructor rejects. The store
+		// must surface the error when it constructs the vector index maintainer, not
+		// silently build a bad graph. Revert-proof: drop Config's checks from
+		// readHNSWOptions and the save succeeds.
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		vecIdx.Options[recordlayer.IndexOptionHNSWM] = "20"
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, serr := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			if serr != nil {
+				return nil, serr // validation may fire at store open (maintainer construction)
+			}
+			_, serr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			return nil, serr
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("m must be less than or equal to mMax"))
+	})
+
+	It("save records with int fields, SearchVectorIndex returns nearest", func() {
+		ks := specSubspace()
+
+		// Create a VECTOR index on (price, quantity) as a 2D vector.
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert orders as 2D points: (price, quantity).
+			// id=1: (10, 10), id=2: (20, 20), id=3: (100, 100), id=4: (50, 50)
+			for _, o := range []struct {
+				id       int64
+				price    int32
+				quantity int32
+			}{
+				{1, 10, 10},
+				{2, 20, 20},
+				{3, 100, 100},
+				{4, 50, 50},
+			} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.quantity),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Query near (15, 15) — closest should be id=1 (10,10) and id=2 (20,20).
+			results, err := store.SearchVectorIndex(vecIdx, []float64{15.0, 15.0}, 2, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			// Both results should be the two closest points.
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 2}))
+
+			// Results should be in ascending distance order.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			// id=1 at (10,10): dist to (15,15) = sqrt((15-10)^2 + (15-10)^2) = sqrt(50)
+			// id=2 at (20,20): dist to (15,15) = sqrt((15-20)^2 + (15-20)^2) = sqrt(50)
+			// Both equidistant at sqrt(50) (true L2).
+			Expect(results[0].Distance).To(BeNumerically("~", math.Sqrt(50.0), 1e-6))
+			Expect(results[1].Distance).To(BeNumerically("~", math.Sqrt(50.0), 1e-6))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete record removes from vector index", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 3 orders.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30), Quantity: proto.Int32(30)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete order id=2.
+			existed, err := store.DeleteRecord(tuple.Tuple{int64(2)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(existed).To(BeTrue())
+
+			// Search for all (k=10): should only find 2 records.
+			results, err := store.SearchVectorIndex(vecIdx, []float64{0.0, 0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 3}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanIndex rejects VECTOR index with error", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// ScanIndex should reject VECTOR indexes, matching Java's behavior.
+			cursor := store.ScanIndex(vecIdx, recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan())
+			_, err = cursor.OnNext(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("BY_DISTANCE"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanVectorIndex returns kNN results as cursor", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 4 orders as 2D points: (price, quantity).
+			for _, o := range []struct {
+				id       int64
+				price    int32
+				quantity int32
+			}{
+				{1, 10, 10},
+				{2, 20, 20},
+				{3, 100, 100},
+				{4, 50, 50},
+			} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.quantity),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// ScanVectorIndex near (15, 15), k=2.
+			cursor := store.ScanVectorIndex(vecIdx, []float64{15.0, 15.0}, 2, 100, nil, recordlayer.ForwardScan())
+			var entries []*recordlayer.IndexEntry
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					break
+				}
+				entries = append(entries, result.GetValue())
+			}
+
+			Expect(entries).To(HaveLen(2))
+
+			// Both results should be the two closest points (ids 1 and 2).
+			gotIDs := make([]int64, len(entries))
+			for i, e := range entries {
+				gotIDs[i] = e.Key[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 2}))
+
+			// Plain indexes return vectors by default, as Java's toIndexEntry does.
+			for _, e := range entries {
+				coordinate := float64(e.Key[0].(int64) * 10)
+				Expect(e.Value).To(Equal(tuple.Tuple{serializeVector([]float64{coordinate, coordinate})}))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanIndexByType BY_DISTANCE returns kNN results", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, o := range []struct {
+				id       int64
+				price    int32
+				quantity int32
+			}{
+				{1, 10, 10},
+				{2, 20, 20},
+				{3, 100, 100},
+				{4, 50, 50},
+			} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.quantity),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Use ScanIndexByType with VectorDistanceScanRange helper.
+			scanRange := recordlayer.VectorDistanceScanRange([]float64{15.0, 15.0}, 2, 100)
+			cursor := store.ScanIndexByType(vecIdx, recordlayer.IndexScanByDistance, scanRange, nil, recordlayer.ForwardScan())
+
+			var entries []*recordlayer.IndexEntry
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					break
+				}
+				entries = append(entries, result.GetValue())
+			}
+
+			Expect(entries).To(HaveLen(2))
+
+			gotIDs := make([]int64, len(entries))
+			for i, e := range entries {
+				gotIDs[i] = e.Key[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 2}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanVectorIndex on empty index returns no results", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			cursor := store.ScanVectorIndex(vecIdx, []float64{1.0, 2.0}, 5, 100, nil, recordlayer.ForwardScan())
+			result, err := cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.HasNext()).To(BeFalse())
+			Expect(result.GetNoNextReason()).To(Equal(recordlayer.SourceExhausted))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanVectorIndex returns all results when k > count", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 2 records.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Request k=100 but only 2 exist.
+			cursor := store.ScanVectorIndex(vecIdx, []float64{0.0, 0.0}, 100, 200, nil, recordlayer.ForwardScan())
+			var entries []*recordlayer.IndexEntry
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					break
+				}
+				entries = append(entries, result.GetValue())
+			}
+			Expect(entries).To(HaveLen(2))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanVectorIndex results are sorted by distance ascending", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert points at varying distances from origin.
+			for _, o := range []struct {
+				id       int64
+				price    int32
+				quantity int32
+			}{
+				{1, 10, 10},   // dist^2 = 200
+				{2, 1, 1},     // dist^2 = 2
+				{3, 50, 50},   // dist^2 = 5000
+				{4, 5, 5},     // dist^2 = 50
+				{5, 100, 100}, // dist^2 = 20000
+			} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.quantity),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			cursor := store.ScanVectorIndex(vecIdx, []float64{0.0, 0.0}, 5, 200, nil, recordlayer.ForwardScan())
+			var gotIDs []int64
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					break
+				}
+				gotIDs = append(gotIDs, result.GetValue().Key[0].(int64))
+			}
+
+			// Expected order by distance from origin (sqrt is monotone, so the order is the
+			// same whether L2 or squared): id=2(1,1) < id=4(5,5) < id=1(10,10) < id=3(50,50) < id=5(100,100)
+			Expect(gotIDs).To(Equal([]int64{2, 4, 1, 3, 5}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanIndexByType BY_DISTANCE on non-VECTOR index returns error", func() {
+		ks := specSubspace()
+
+		valueIdx := recordlayer.NewIndex("Order$price", recordlayer.Field("price"))
+		builder := baseMetaData()
+		builder.AddIndex("Order", valueIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			scanRange := recordlayer.VectorDistanceScanRange([]float64{1.0}, 1, 100)
+			cursor := store.ScanIndexByType(valueIdx, recordlayer.IndexScanByDistance, scanRange, nil, recordlayer.ForwardScan())
+			_, err = cursor.OnNext(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("does not support BY_DISTANCE"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("SearchVectorIndex on non-vector index returns error", func() {
+		ks := specSubspace()
+
+		// Create a VALUE index (not VECTOR).
+		valueIdx := recordlayer.NewIndex("Order$price", recordlayer.Field("price"))
+		builder := baseMetaData()
+		builder.AddIndex("Order", valueIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// SearchVectorIndex should reject non-VECTOR index.
+			_, err = store.SearchVectorIndex(valueIdx, []float64{1.0}, 1, 100)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not a VECTOR index"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("vectorDistance dispatches to correct metric", func() {
+		a := []float64{3.0, 4.0}
+		b := []float64{0.0, 0.0}
+
+		// Euclidean (true L2): sqrt(3^2 + 4^2) = sqrt(25) = 5
+		Expect(vectorDistance(a, b, VectorMetricEuclidean)).To(BeNumerically("~", 5.0, 1e-9))
+
+		// Euclidean-square: 3^2 + 4^2 = 25 (no sqrt)
+		Expect(vectorDistance(a, b, VectorMetricEuclideanSquare)).To(BeNumerically("~", 25.0, 1e-9))
+
+		// Cosine: 1 - dot/(normA*normB); b is a zero vector, +Inf (Java's CosineMetric).
+		Expect(math.IsInf(vectorDistance(a, b, VectorMetricCosine), 1)).To(BeTrue())
+
+		// Inner product: -dot = -(3*0 + 4*0) = 0
+		Expect(vectorDistance(a, b, VectorMetricInnerProduct)).To(BeNumerically("~", 0.0, 1e-9))
+
+		// Non-zero cosine case.
+		c := []float64{1.0, 0.0}
+		d := []float64{1.0, 1.0}
+		// cos(45deg) = 1/sqrt(2), distance = 1 - 1/sqrt(2) ~ 0.2929
+		Expect(vectorDistance(c, d, VectorMetricCosine)).To(BeNumerically("~", 1.0-1.0/math.Sqrt(2), 1e-6))
+	})
+
+	It("wrong dimension query returns error", func() {
+		ks := specSubspace()
+
+		// Create a 128D VECTOR index.
+		vecIdx := recordlayer.NewVectorIndex("vec_128d", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 128)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert a record with 128D vector.
+			vec128 := make([]byte, 1+8*128)
+			vec128[0] = 2 // DOUBLE type
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId:    proto.Int64(1),
+				VectorData: vec128,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Search with a 3D query vector (wrong dimension).
+			_, searchErr := store.SearchVectorIndex(vecIdx, []float64{1.0, 2.0, 3.0}, 1, 100)
+			Expect(searchErr).To(HaveOccurred())
+			Expect(searchErr.Error()).To(ContainSubstring("128"))
+			Expect(searchErr.Error()).To(ContainSubstring("3"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("old vector position not returned after update", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_update_pos", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert PK=1 at (0, 0).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(0), Quantity: proto.Int32(0)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert PK=2 at (100, 100) — far away.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update PK=1 to (100, 100) — move it far from origin.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Search near (0, 0) with k=1: should NOT find PK=1 (it moved).
+			results, err := store.SearchVectorIndex(vecIdx, []float64{0.0, 0.0}, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			// The closest to origin should be one of the two records at (100,100),
+			// NOT at the old position (0,0). Distance to (100,100) = sqrt(100^2 + 100^2) = sqrt(20000).
+			Expect(results[0].Distance).To(BeNumerically("~", math.Sqrt(20000.0), 1e-6))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("handles 768-dimensional vectors", func() {
+		ks := specSubspace()
+
+		// Create 768D VECTOR index using KWV(Field("vector_data"), 0).
+		vecIdx := recordlayer.NewVectorIndex("vec_768d", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 768)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Generate 10 random 768D vectors.
+			rng := rand.New(rand.NewSource(42))
+			for i := int64(0); i < 10; i++ {
+				vec := make([]float64, 768)
+				for d := range vec {
+					vec[d] = rng.NormFloat64()
+				}
+				vecBytes := serializeVector(vec)
+
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:    proto.Int64(i + 1),
+					VectorData: vecBytes,
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Search with k=5: should return 5 results.
+			queryVec := make([]float64, 768)
+			for d := range queryVec {
+				queryVec[d] = rng.NormFloat64()
+			}
+			results, err := store.SearchVectorIndex(vecIdx, queryVec, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(5))
+
+			// Verify 5 distinct PKs.
+			pkSet := make(map[int64]bool)
+			for _, r := range results {
+				pkSet[r.PrimaryKey[0].(int64)] = true
+			}
+			Expect(pkSet).To(HaveLen(5))
+
+			// Distances should be in ascending order.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("disables and rebuilds the retained legacy Go RaBitQ graph from authoritative records", func() {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		data, err := os.ReadFile("testdata/hnsw_legacy_go_entry.json")
+		Expect(err).NotTo(HaveOccurred())
+		var fixture struct {
+			Writer string `json:"writer"`
+			Record struct {
+				PK     int64     `json:"pk"`
+				Vector []float64 `json:"vector"`
+			} `json:"remaining_record"`
+			KVs []struct {
+				Key   string `json:"key_hex"`
+				Value string `json:"value_hex"`
+			} `json:"kvs_relative_to_graph_prefix"`
+		}
+		Expect(json.Unmarshal(data, &fixture)).To(Succeed())
+		Expect(fixture.Writer).To(Equal("e48f5b4965543cd4d99b5578356059e12d969c7c"))
+		Expect(fixture.KVs).To(HaveLen(2))
+		Expect(fixture.Record.PK).To(Equal(int64(2)))
+		Expect(fixture.Record.Vector).To(Equal([]float64{-3, 8, 2, 6}))
+		ks := specSubspace()
+		index := recordlayer.NewVectorIndex("legacy_rabitq", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 4)
+		index.Options[recordlayer.IndexOptionVectorMetric] = "EUCLIDEAN_METRIC"
+		index.Options[recordlayer.IndexOptionHNSWM] = "4"
+		index.Options[recordlayer.IndexOptionHNSWMMax] = "4"
+		index.Options[recordlayer.IndexOptionHNSWMMax0] = "8"
+		index.Options["hnswUseRaBitQ"] = "true"
+		index.Options["hnswRaBitQNumExBits"] = "4"
+		index.Options[recordlayer.IndexOptionHNSWSampleVectorStatsProbability] = "1.0"
+		index.Options[recordlayer.IndexOptionHNSWMaintainStatsProbability] = "1.0"
+		index.Options[recordlayer.IndexOptionHNSWStatsThreshold] = "11"
+		builder := baseMetaData()
+		builder.AddIndex("Order", index)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		open := func(rtx *recordlayer.FDBRecordContext) *recordlayer.FDBRecordStore {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			return store
+		}
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store := open(rtx)
+			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(fixture.Record.PK), VectorData: serializeVector(fixture.Record.Vector)})
+			Expect(err).NotTo(HaveOccurred())
+			ss := store.IndexSubspace(index)
+			rtx.Transaction().ClearRange(ss)
+			for _, kv := range fixture.KVs {
+				key, err := hex.DecodeString(kv.Key)
+				Expect(err).NotTo(HaveOccurred())
+				value, err := hex.DecodeString(kv.Value)
+				Expect(err).NotTo(HaveOccurred())
+				rtx.Transaction().Set(fdb.Key(append(ss.Bytes(), key...)), value)
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store := open(rtx)
+			storage := newHNSWStorage(store.IndexSubspace(index), mustParseHNSWConfig(index))
+			info, err := storage.loadAccessInfo(rtx.Transaction())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.hasTransform()).To(BeTrue())
+			Expect(info.vectorBytes).To(Equal(serializeVector(fixture.Record.Vector)), "replay must retain the old writer's ambiguous entry")
+			changed, err := store.MarkIndexDisabled(index.Name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeTrue())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store := open(rtx)
+			Expect(store.GetIndexState(index.Name)).To(Equal(recordlayer.IndexStateDisabled))
+			_, err := store.SearchVectorIndex(index, fixture.Record.Vector, 1, 10)
+			var unreadable *recordlayer.IndexNotReadableError
+			Expect(errors.As(err, &unreadable)).To(BeTrue())
+			kvs, err := rtx.Transaction().GetRange(store.IndexSubspace(index), fdb.RangeOptions{}).GetSliceWithError()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(kvs).To(BeEmpty(), "disable must clear every legacy graph key")
+			record, err := store.LoadRecord(tuple.Tuple{fixture.Record.PK})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(record.Record.(*gen.Order).GetVectorData()).To(Equal(serializeVector(fixture.Record.Vector)))
+			// The old fixture used threshold 1, which Java rejects. Keep its
+			// graph bytes intact but rebuild with Java-valid threshold 11 and
+			// enough authoritative records to exercise centroid establishment.
+			for id := int64(100); id < 111; id++ {
+				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), VectorData: serializeVector([]float64{float64(id), 2, 3, 4})})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(store.RebuildIndex(index)).To(Succeed())
+			Expect(store.GetIndexState(index.Name)).To(Equal(recordlayer.IndexStateReadable))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store := open(rtx)
+			results, err := store.SearchVectorIndex(index, fixture.Record.Vector, 1, 10)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].PrimaryKey).To(Equal(tuple.Tuple{fixture.Record.PK}))
+			Expect(results[0].Distance).To(Equal(float64(0)))
+			// The rebuild established a centroid from authoritative records.
+			// Exercise its active encoder, then delete the rebuilt entry.
+			for i, vector := range [][]float64{{1, 2, 3, 4}, {4, -1, 7, 9}} {
+				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 3)), VectorData: serializeVector(vector)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			deleted, err := store.DeleteRecord(tuple.Tuple{fixture.Record.PK})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store := open(rtx)
+			storage := newHNSWStorage(store.IndexSubspace(index), mustParseHNSWConfig(index))
+			info, err := storage.loadAccessInfo(rtx.Transaction())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.hasTransform()).To(BeTrue())
+			encoded, _, err := storage.loadNodeLayer(rtx.Transaction(), 0, tuple.Tuple{int64(4)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(encoded).NotTo(BeEmpty())
+			Expect(encoded[0]).To(Equal(byte(3)), "post-rebuild writes must reach the active RaBitQ encoder")
+			results, err := store.SearchVectorIndex(index, []float64{4, -1, 7, 9}, 100, 100)
+			Expect(err).NotTo(HaveOccurred())
+			var ids []int64
+			for _, result := range results {
+				ids = append(ids, result.PrimaryKey[0].(int64))
+			}
+			wantIDs := []int64{3, 4}
+			for id := int64(100); id < 111; id++ {
+				wantIDs = append(wantIDs, id)
+			}
+			Expect(ids).To(ConsistOf(wantIDs))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("RebuildIndex rebuilds VECTOR index", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_rebuild", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 5 records.
+			for i := int64(1); i <= 5; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(i),
+					Price:    proto.Int32(int32(i * 10)),
+					Quantity: proto.Int32(int32(i * 10)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Verify search works before rebuild.
+			results, err := store.SearchVectorIndex(vecIdx, []float64{10.0, 10.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(5))
+
+			// Manually clear the index data subspace (corrupt the index).
+			idxSubspace := store.IndexSubspace(vecIdx)
+			pr, prErr := fdb.PrefixRange(idxSubspace.Bytes())
+			Expect(prErr).NotTo(HaveOccurred())
+			rtx.Transaction().ClearRange(pr)
+
+			// Search after corruption should return no results (empty graph).
+			results, err = store.SearchVectorIndex(vecIdx, []float64{10.0, 10.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(0))
+
+			// Rebuild the index.
+			Expect(store.RebuildIndex(vecIdx)).To(Succeed())
+
+			// Search should find all 5 records again.
+			results, err = store.SearchVectorIndex(vecIdx, []float64{10.0, 10.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(5))
+
+			// Verify all 5 distinct PKs are present.
+			pkSet := make(map[int64]bool)
+			for _, r := range results {
+				pkSet[r.PrimaryKey[0].(int64)] = true
+			}
+			Expect(pkSet).To(HaveLen(5))
+			for i := int64(1); i <= 5; i++ {
+				Expect(pkSet[i]).To(BeTrue(), "PK=%d should be found after rebuild", i)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("medium-scale search with 500 vectors", func() {
+		ks := specSubspace()
+
+		// 2D HNSW index on (price, quantity).
+		vecIdx := recordlayer.NewVectorIndex("vec_500", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Insert 500 vectors in batches of 50 to stay under FDB transaction limits.
+		const totalVectors = 500
+		const batchSize = 50
+
+		for batchStart := 0; batchStart < totalVectors; batchStart += batchSize {
+			batchEnd := batchStart + batchSize
+			if batchEnd > totalVectors {
+				batchEnd = totalVectors
+			}
+
+			_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := batchStart; i < batchEnd; i++ {
+					// Deterministic spread: (i*2, i*3) gives distinct 2D positions.
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId:  proto.Int64(int64(i + 1)),
+						Price:    proto.Int32(int32(i * 2)),
+						Quantity: proto.Int32(int32(i * 3)),
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		// Search for k=10 nearest to (500, 750).
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			results, err := store.SearchVectorIndex(vecIdx, []float64{500.0, 750.0}, 10, 64)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(10))
+
+			// Results must be sorted by distance ascending.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance),
+					"result %d (dist=%.2f) should be >= result %d (dist=%.2f)",
+					i, results[i].Distance, i-1, results[i-1].Distance)
+			}
+
+			// The query point (500, 750) maps to i=250 (price=500, qty=750).
+			// Nearby vectors: i=249 (498, 747), i=251 (502, 753), i=248 (496, 744), ...
+			// Verify the closest results are geometrically near i=250.
+			// All 10 results should have IDs in the range [241, 261] (i.e., within ~10 of 250).
+			for _, r := range results {
+				id := r.PrimaryKey[0].(int64)
+				// The vector at id maps to i = id-1.
+				// Distance from i=250: price diff = (i-250)*2, qty diff = (i-250)*3
+				// Squared distance = ((i-250)*2)^2 + ((i-250)*3)^2 = (i-250)^2 * 13
+				// For the 10 nearest, |i-250| <= 9, so id in [242, 260].
+				Expect(id).To(BeNumerically(">=", int64(242)),
+					"result id=%d should be near the query point (id >= 242)", id)
+				Expect(id).To(BeNumerically("<=", int64(260)),
+					"result id=%d should be near the query point (id <= 260)", id)
+			}
+
+			// Verify the closest result: i=250, id=251, vector=(500, 750), distance=0.
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(251)))
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-6))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("HNSW Search Quality", func() {
+	ctx := context.Background()
+
+	It("search recall matches brute-force for 100 vectors", func() {
+		ss := specSubspace().Sub("hnsw-recall")
+		config := HNSWConfig{
+			NumDimensions:  8,
+			M:              16,
+			MMax:           16,
+			MMax0:          32,
+			EfConstruction: 200,
+			Metric:         VectorMetricEuclidean,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		const numVectors = 100
+		const dims = 8
+		const k = 10
+
+		// Deterministic random vectors.
+		rng := rand.New(rand.NewSource(42))
+		vectors := make([][]float64, numVectors)
+		for i := range numVectors {
+			vec := make([]float64, dims)
+			for d := range dims {
+				vec[d] = rng.Float64()*200.0 - 100.0 // [-100, 100)
+			}
+			vectors[i] = vec
+		}
+		queryVec := make([]float64, dims)
+		for d := range dims {
+			queryVec[d] = rng.Float64()*200.0 - 100.0
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert all vectors.
+			for i, vec := range vectors {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// HNSW search.
+			results, err := graph.Search(tx, queryVec, k, 200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(k))
+
+			// Brute-force: compute all distances, sort, take top k.
+			type distID struct {
+				id   int64
+				dist float64
+			}
+			bruteForce := make([]distID, numVectors)
+			for i, vec := range vectors {
+				bruteForce[i] = distID{int64(i), euclideanDistance(queryVec, vec)}
+			}
+			sort.Slice(bruteForce, func(i, j int) bool {
+				return bruteForce[i].dist < bruteForce[j].dist
+			})
+			topK := make(map[int64]bool, k)
+			for i := 0; i < k; i++ {
+				topK[bruteForce[i].id] = true
+			}
+
+			// Compute recall: how many of the HNSW results are in the brute-force top-k.
+			hnswIDs := make(map[int64]bool, k)
+			for _, r := range results {
+				hnswIDs[r.PrimaryKey[0].(int64)] = true
+			}
+			overlap := 0
+			for id := range hnswIDs {
+				if topK[id] {
+					overlap++
+				}
+			}
+			recall := float64(overlap) / float64(k)
+			GinkgoWriter.Printf("HNSW recall@%d: %.2f (%d/%d match brute-force)\n", k, recall, overlap, k)
+			Expect(recall).To(BeNumerically(">=", 0.8),
+				"HNSW recall should be at least 80%% with efSearch >= k")
+
+			// Verify HNSW results are in ascending distance order.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("HNSW High-Dimensional Vectors", func() {
+	ctx := context.Background()
+
+	It("handles 128D vectors correctly", func() {
+		ss := specSubspace().Sub("hnsw-128d")
+		config := HNSWConfig{
+			NumDimensions:  128,
+			M:              16,
+			MMax:           16,
+			MMax0:          32,
+			EfConstruction: 200,
+			Metric:         VectorMetricEuclidean,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		const numVectors = 50
+		const dims = 128
+		const k = 5
+
+		// Deterministic random vectors.
+		rng := rand.New(rand.NewSource(7777))
+		vectors := make([][]float64, numVectors)
+		for i := range numVectors {
+			vec := make([]float64, dims)
+			for d := range dims {
+				vec[d] = rng.NormFloat64() // standard normal
+			}
+			vectors[i] = vec
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			for i, vec := range vectors {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Search with a vector from the set (should find itself first).
+			queryVec := vectors[0]
+			results, err := graph.Search(tx, queryVec, k, 200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(k))
+
+			// Distances must be non-negative and sorted ascending.
+			for i, r := range results {
+				Expect(r.Distance).To(BeNumerically(">=", 0.0),
+					"distance at position %d should be non-negative", i)
+				if i > 0 {
+					Expect(r.Distance).To(BeNumerically(">=", results[i-1].Distance),
+						"distances should be sorted ascending at position %d", i)
+				}
+			}
+
+			// First result should be the query vector itself (distance ~0).
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(0)))
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			// Search with a random query vector not in the set.
+			randomQuery := make([]float64, dims)
+			for d := range dims {
+				randomQuery[d] = rng.NormFloat64()
+			}
+			results2, err := graph.Search(tx, randomQuery, k, 200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results2).To(HaveLen(k))
+
+			for i, r := range results2 {
+				Expect(r.Distance).To(BeNumerically(">=", 0.0),
+					"distance at position %d should be non-negative", i)
+				if i > 0 {
+					Expect(r.Distance).To(BeNumerically(">=", results2[i-1].Distance),
+						"distances should be sorted ascending at position %d", i)
+				}
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+// SPFresh's own cosine clamps the similarity to [-1, 1]; the HNSW/GuardiANN
+// cosine is Java's CosineMetric, which does not (hnsw_cosine_java_test.go).
+var _ = Describe("SPFresh Cosine Distance Clamping", func() {
+	cosineDistance := spfreshCosineDistance
+	It("cosine distance is non-negative even for identical vectors", func() {
+		v := []float64{1.0, 0.0, 0.0}
+		dist := cosineDistance(v, v)
+		Expect(dist).To(BeNumerically(">=", 0.0))
+		Expect(dist).To(BeNumerically("<=", 0.001)) // should be ~0
+
+		// Test with very similar vectors that could cause floating-point edge cases
+		// where dot/(normA*normB) might exceed 1.0 without clamping.
+		a := []float64{1.0000000000001, 0.9999999999999, 1.0}
+		b := []float64{1.0, 1.0, 1.0}
+		dist = cosineDistance(a, b)
+		Expect(dist).To(BeNumerically(">=", 0.0))
+	})
+
+	It("cosine distance is non-negative for large identical vectors", func() {
+		// Large vectors amplify floating-point accumulation errors.
+		rng := rand.New(rand.NewSource(12345))
+		large := make([]float64, 1000)
+		for i := range large {
+			large[i] = rng.Float64()*2.0 - 1.0
+		}
+		dist := cosineDistance(large, large)
+		Expect(dist).To(BeNumerically(">=", 0.0))
+		Expect(dist).To(BeNumerically("<=", 1e-10))
+	})
+
+	It("cosine distance is non-negative for scaled vectors", func() {
+		// v and 2*v are identical in direction; distance should be 0, not negative.
+		v := []float64{3.0, 4.0, 5.0}
+		scaled := make([]float64, len(v))
+		for i := range v {
+			scaled[i] = v[i] * 2.0
+		}
+		dist := cosineDistance(v, scaled)
+		Expect(dist).To(BeNumerically(">=", 0.0))
+		Expect(dist).To(BeNumerically("<=", 1e-10))
+	})
+})
+
+var _ = Describe("VectorIndex Prefix Partitioning", func() {
+	ctx := context.Background()
+
+	baseMetaData := func() *recordlayer.RecordMetaDataBuilder {
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+		return builder
+	}
+
+	It("grouped VECTOR index stores per-prefix HNSW graphs", func() {
+		ks := specSubspace()
+
+		// Index: KWV(Concat(Field("quantity"), Field("price")), 1)
+		// quantity is the prefix (group key), price is the vector (1D).
+		vecIdx := recordlayer.NewVectorIndex("vec_grouped",
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1 (quantity=1): prices 10, 20, 100
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 2 (quantity=2): prices 50, 60
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(60), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Search in group 1 near price=15: should find id=1(10) and id=2(20), not group 2 records.
+			results, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)}, []float64{15.0}, 2, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 2}))
+
+			// Search in group 2 near price=55: should find id=4(50) and id=5(60) only.
+			results2, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(2)}, []float64{55.0}, 2, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results2).To(HaveLen(2))
+
+			gotIDs2 := make([]int64, len(results2))
+			for i, r := range results2 {
+				gotIDs2[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs2, func(i, j int) bool { return gotIDs2[i] < gotIDs2[j] })
+			Expect(gotIDs2).To(Equal([]int64{4, 5}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("search in empty prefix returns no results", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_grouped_empty",
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert into group 1 only.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Search in group 99 (empty): should return 0 results.
+			results, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(99)}, []float64{10.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(0))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete record removes from correct prefix graph", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_grouped_del",
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1: id=1 and id=2.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 2: id=3.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete id=1 from group 1.
+			existed, err := store.DeleteRecord(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(existed).To(BeTrue())
+
+			// Group 1 should only have id=2 now.
+			results, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)}, []float64{0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(2)))
+
+			// Group 2 should still have id=3 (unaffected by delete in group 1).
+			results2, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(2)}, []float64{0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results2).To(HaveLen(1))
+			Expect(results2[0].PrimaryKey[0].(int64)).To(Equal(int64(3)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanVectorIndexWithPrefix returns cursor results scoped to prefix", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_grouped_scan",
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1: id=1(price=10), id=2(price=20).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 2: id=3(price=50).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// ScanVectorIndexWithPrefix for group 1.
+			cursor := store.ScanVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)},
+				[]float64{15.0}, 10, 100, nil, recordlayer.ForwardScan())
+			var entries []*recordlayer.IndexEntry
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					break
+				}
+				entries = append(entries, result.GetValue())
+			}
+
+			// Should only contain group 1 records.
+			// Key = (prefix..., trimmedPK...) — for splitPoint=1, PK is at Key[1].
+			Expect(entries).To(HaveLen(2))
+			gotIDs := make([]int64, len(entries))
+			for i, e := range entries {
+				gotIDs[i] = e.Key[1].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 2}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanIndexByType BY_DISTANCE with prefix via VectorDistanceScanRangeWithPrefix", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_grouped_scantype",
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1: id=1(price=10), id=2(price=20).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 2: id=3(price=50), id=4(price=60).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(60), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Scan group 2 via ScanIndexByType + VectorDistanceScanRangeWithPrefix.
+			scanRange := recordlayer.VectorDistanceScanRangeWithPrefix([]float64{55.0}, 2, 100, tuple.Tuple{int64(2)})
+			cursor := store.ScanIndexByType(vecIdx, recordlayer.IndexScanByDistance, scanRange, nil, recordlayer.ForwardScan())
+
+			var entries []*recordlayer.IndexEntry
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					break
+				}
+				entries = append(entries, result.GetValue())
+			}
+
+			// Should only contain group 2 records.
+			// Key = (prefix..., trimmedPK...) — for splitPoint=1, PK is at Key[1].
+			Expect(entries).To(HaveLen(2))
+			gotIDs := make([]int64, len(entries))
+			for i, e := range entries {
+				gotIDs[i] = e.Key[1].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{3, 4}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("update record in grouped index moves between prefix graphs", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_grouped_update",
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert id=1 in group 1.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify it's in group 1.
+			results, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)}, []float64{10.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(1)))
+
+			// Update id=1 to group 2.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1 should now be empty.
+			results1, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)}, []float64{10.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results1).To(HaveLen(0))
+
+			// Group 2 should now have id=1.
+			results2, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(2)}, []float64{10.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results2).To(HaveLen(1))
+			Expect(results2[0].PrimaryKey[0].(int64)).To(Equal(int64(1)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("non-KWV index (no prefix) still works via backward-compatible APIs", func() {
+		ks := specSubspace()
+
+		// Non-grouped vector index: Concat(Field("price"), Field("quantity")) as 2D vector.
+		vecIdx := recordlayer.NewVectorIndex("vec_noprefix", recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Backward-compatible API (no prefix) should work.
+			results, err := store.SearchVectorIndex(vecIdx, []float64{15.0, 15.0}, 2, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("SearchVectorIndexRecordsWithPrefix fetches records from correct prefix", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_grouped_recs",
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1: id=1(price=10).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 2: id=2(price=50).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Fetch records from group 1.
+			records, err := store.SearchVectorIndexRecordsWithPrefix(ctx, vecIdx, tuple.Tuple{int64(1)}, []float64{10.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(records).To(HaveLen(1))
+			order := records[0].Record.Record.(*gen.Order)
+			Expect(order.GetOrderId()).To(Equal(int64(1)))
+			Expect(order.GetQuantity()).To(Equal(int32(1)))
+
+			// Fetch records from group 2.
+			records2, err := store.SearchVectorIndexRecordsWithPrefix(ctx, vecIdx, tuple.Tuple{int64(2)}, []float64{50.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(records2).To(HaveLen(1))
+			order2 := records2[0].Record.Record.(*gen.Order)
+			Expect(order2.GetOrderId()).To(Equal(int64(2)))
+			Expect(order2.GetQuantity()).To(Equal(int32(2)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("DeleteWhere on a leading prefix clears the graphs BELOW it", func() {
+		ks := specSubspace()
+
+		// A grouped vector index keyed by (zone, category) stores each group at
+		// hnswSubspace.Sub(zone, category). Clearing only the graph AT (zone)
+		// left every category under it behind: the records were deleted while
+		// their HNSW nodes stayed queryable, so a search returned primary keys
+		// that no longer resolve to anything.
+		//
+		// Java range-clears Range.startsWith(indexSubspace.pack(prefix)), which
+		// takes the descendants with it.
+		vecIdx := recordlayer.NewVectorIndex("vec_two_level_group",
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price"), recordlayer.Field("vector_data")), 2), 3)
+		builder := baseMetaData()
+		builder.GetRecordType("Order").SetPrimaryKey(
+			recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price"), recordlayer.Field("order_id")),
+		)
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, serr := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			// zone 1 has two categories; zone 2 is the control that must survive.
+			for _, o := range []struct{ id, zone, cat int64 }{
+				{1, 1, 10}, {2, 1, 20}, {3, 2, 10},
+			} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId:    proto.Int64(o.id),
+					Quantity:   proto.Int32(int32(o.zone)),
+					Price:      proto.Int32(int32(o.cat)),
+					VectorData: serializeVector([]float64{float64(o.id), 0, 0}),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+
+			// Both of zone 1's category graphs hold a record.
+			for _, cat := range []int64{10, 20} {
+				res, e := store.SearchVectorIndexWithPrefix(vecIdx,
+					tuple.Tuple{int64(1), cat}, []float64{0, 0, 0}, 10, 100)
+				Expect(e).NotTo(HaveOccurred())
+				Expect(res).To(HaveLen(1))
+			}
+
+			Expect(store.DeleteRecordsWhere(tuple.Tuple{int64(1)})).To(Succeed())
+
+			// Every graph under zone 1 is gone — including (1, 20), which is a
+			// DESCENDANT of the cleared prefix rather than the prefix itself.
+			for _, cat := range []int64{10, 20} {
+				res, e := store.SearchVectorIndexWithPrefix(vecIdx,
+					tuple.Tuple{int64(1), cat}, []float64{0, 0, 0}, 10, 100)
+				Expect(e).NotTo(HaveOccurred())
+				Expect(res).To(BeEmpty(),
+					"category %d under the deleted zone still answers searches", cat)
+			}
+
+			// Zone 2 is untouched.
+			res, e := store.SearchVectorIndexWithPrefix(vecIdx,
+				tuple.Tuple{int64(2), int64(10)}, []float64{0, 0, 0}, 10, 100)
+			Expect(e).NotTo(HaveOccurred())
+			Expect(res).To(HaveLen(1))
+			Expect(res[0].PrimaryKey[0]).To(Equal(int64(2)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("grouped 2D vector index with bytes vector_data field", func() {
+		ks := specSubspace()
+
+		// Index: KWV(Concat(Field("quantity"), Field("vector_data")), 1)
+		// quantity is the prefix, vector_data (bytes) is the vector.
+		vecIdx := recordlayer.NewVectorIndex("vec_grouped_bytes",
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 3)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			mkVec := func(vals ...float64) []byte {
+				return serializeVector(vals)
+			}
+
+			// Group 1: two 3D vectors.
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Quantity: proto.Int32(1),
+				VectorData: mkVec(1.0, 2.0, 3.0),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(2), Quantity: proto.Int32(1),
+				VectorData: mkVec(4.0, 5.0, 6.0),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 2: one 3D vector.
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(3), Quantity: proto.Int32(2),
+				VectorData: mkVec(100.0, 100.0, 100.0),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Search group 1 near (2,3,4): should find id=1 and id=2, not id=3.
+			results, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)}, []float64{2.0, 3.0, 4.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 2}))
+
+			// Search group 2: should only find id=3.
+			results2, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(2)}, []float64{100.0, 100.0, 100.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results2).To(HaveLen(1))
+			Expect(results2[0].PrimaryKey[0].(int64)).To(Equal(int64(3)))
+			Expect(results2[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("multiple prefix values do not leak between partitions", func() {
+		ks := specSubspace()
+
+		vecIdx := recordlayer.NewVectorIndex("vec_grouped_isolation",
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert into 5 different groups with 2 records each.
+			for g := int32(1); g <= 5; g++ {
+				for j := int32(0); j < 2; j++ {
+					id := int64(g)*100 + int64(j)
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId:  proto.Int64(id),
+						Price:    proto.Int32(g*10 + j),
+						Quantity: proto.Int32(g),
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+			}
+
+			// Search each group: should find exactly 2 records from that group.
+			for g := int64(1); g <= 5; g++ {
+				results, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{g}, []float64{0.0}, 10, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(2), "group %d should have exactly 2 results", g)
+
+				for _, r := range results {
+					// Each result's PK should start with the group's hundred (e.g., group 1 = 100, 101).
+					pk := r.PrimaryKey[0].(int64)
+					Expect(pk/100).To(Equal(g), "result PK %d should belong to group %d", pk, g)
+				}
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("HNSW Extended Neighbor Selection", func() {
+	ctx := context.Background()
+
+	It("selectNeighbors heuristic prefers diverse directions", func() {
+		// Unit test: 5 candidates, maxConn=2.
+		// Candidate A is closest, candidate B is close but near A,
+		// candidate C is farther but in a different direction.
+		// The heuristic should pick A and C (diverse), not A and B (clustered).
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean, // satisfies triangle inequality
+		}
+		ss := specSubspace().Sub("hnsw-heuristic-unit")
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		// Query at origin (0,0). Distances are true L2 (sqrt), matching euclideanDistance —
+		// the candidate query-distance and the heuristic's internal pairwise distance must
+		// be in the same (sqrt) space or the diversity comparison is wrong.
+		// A = (1, 0)   -> dist = 1
+		// B = (1.1, 0) -> dist = 1.1              (very close to A)
+		// C = (0, 2)   -> dist = 2                (different direction from A)
+		// D = (0, 2.1) -> dist = 2.1              (close to C)
+		// E = (3, 3)   -> dist = sqrt(18) ≈ 4.243 (far away)
+		candidates := []hnswCandidate{
+			candSpan(1, []float64{1, 0}, 1.0),
+			candSpan(2, []float64{1.1, 0}, 1.1),
+			candSpan(3, []float64{0, 2}, 2.0),
+			candSpan(4, []float64{0, 2.1}, 2.1),
+			candSpan(5, []float64{3, 3}, math.Sqrt(18.0)),
+		}
+
+		selected := graph.selectNeighbors(candidates, 2)
+		Expect(selected).To(HaveLen(2))
+
+		// First should be A (closest).
+		Expect(candPKInt(selected[0])).To(Equal(int64(1)))
+		// Second should be C (diverse direction), not B (clustered with A).
+		// dist(B, A) = 0.1 < B.dist=1.1 -> B is pruned
+		// dist(C, A) = sqrt(5) ≈ 2.236 > C.dist=2 -> C is selected
+		Expect(candPKInt(selected[1])).To(Equal(int64(3)))
+	})
+
+	It("keepPrunedConnections fills up to maxConn", func() {
+		config := HNSWConfig{
+			NumDimensions:         2,
+			M:                     4,
+			MMax:                  4,
+			MMax0:                 8,
+			EfConstruction:        100,
+			Metric:                VectorMetricEuclidean,
+			KeepPrunedConnections: true,
+		}
+		ss := specSubspace().Sub("hnsw-keep-pruned-unit")
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		// Query at origin. All candidates are on the X axis (same direction).
+		// Heuristic will pick only the closest, prune the rest.
+		// With keepPrunedConnections, pruned ones fill up to maxConn.
+		candidates := []hnswCandidate{
+			candSpan(1, []float64{1, 0}, 1.0),
+			candSpan(2, []float64{2, 0}, 4.0),
+			candSpan(3, []float64{3, 0}, 9.0),
+			candSpan(4, []float64{4, 0}, 16.0),
+			candSpan(5, []float64{5, 0}, 25.0),
+		}
+
+		// maxConn=3: heuristic selects only id=1 (closest), then prunes 2,3,4,5.
+		// keepPrunedConnections adds back 2, 3 to fill up to 3.
+		selected := graph.selectNeighbors(candidates, 3)
+		Expect(selected).To(HaveLen(3))
+		Expect(candPKInt(selected[0])).To(Equal(int64(1)))
+		Expect(candPKInt(selected[1])).To(Equal(int64(2)))
+		Expect(candPKInt(selected[2])).To(Equal(int64(3)))
+	})
+
+	It("heuristic is skipped for cosine metric (no triangle inequality)", func() {
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricCosine, // does NOT satisfy triangle inequality
+		}
+		ss := specSubspace().Sub("hnsw-cosine-no-heuristic")
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		// With cosine metric, selectNeighbors should do simple sort-and-truncate,
+		// NOT the diversity heuristic.
+		candidates := []hnswCandidate{
+			candSpan(1, []float64{1, 0}, 0.1),
+			candSpan(2, []float64{1.1, 0}, 0.2),
+			candSpan(3, []float64{0, 2}, 0.5),
+		}
+
+		selected := graph.selectNeighbors(candidates, 2)
+		Expect(selected).To(HaveLen(2))
+		// Simple sort: takes the two closest by dist.
+		Expect(candPKInt(selected[0])).To(Equal(int64(1)))
+		Expect(candPKInt(selected[1])).To(Equal(int64(2)))
+	})
+
+	It("extendCandidates explores 2nd-degree neighbors during insert", func() {
+		ss := specSubspace().Sub("hnsw-extend-insert")
+		config := HNSWConfig{
+			NumDimensions:    8,
+			M:                16,
+			MMax:             16,
+			MMax0:            32,
+			EfConstruction:   200,
+			Metric:           VectorMetricEuclidean,
+			ExtendCandidates: true,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		const numVectors = 50
+		const dims = 8
+		const k = 5
+
+		rng := rand.New(rand.NewSource(99))
+		vectors := make([][]float64, numVectors)
+		for i := range numVectors {
+			vec := make([]float64, dims)
+			for d := range dims {
+				vec[d] = rng.Float64()*200.0 - 100.0
+			}
+			vectors[i] = vec
+		}
+		queryVec := make([]float64, dims)
+		for d := range dims {
+			queryVec[d] = rng.Float64()*200.0 - 100.0
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			for i, vec := range vectors {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			results, err := graph.Search(tx, queryVec, k, 200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(k))
+
+			// Results must be sorted by distance.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("keepPrunedConnections maintains graph connectivity after inserts", func() {
+		ss := specSubspace().Sub("hnsw-keep-pruned-insert")
+		config := HNSWConfig{
+			NumDimensions:         8,
+			M:                     4,
+			MMax:                  4,
+			MMax0:                 8,
+			EfConstruction:        100,
+			Metric:                VectorMetricEuclidean,
+			KeepPrunedConnections: true,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		const numVectors = 30
+		const dims = 8
+		const k = 5
+
+		rng := rand.New(rand.NewSource(2024))
+		vectors := make([][]float64, numVectors)
+		for i := range numVectors {
+			vec := make([]float64, dims)
+			for d := range dims {
+				vec[d] = rng.Float64()*200.0 - 100.0
+			}
+			vectors[i] = vec
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			for i, vec := range vectors {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Every inserted vector should be findable by searching for itself.
+			for i, vec := range vectors {
+				results, err := graph.Search(tx, vec, 1, 200)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(1), "vector %d should be findable", i)
+				Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(i)),
+					"vector %d should find itself as nearest neighbor", i)
+				Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("both extendCandidates and keepPrunedConnections together", func() {
+		ss := specSubspace().Sub("hnsw-both-options")
+		config := HNSWConfig{
+			NumDimensions:         8,
+			M:                     8,
+			MMax:                  8,
+			MMax0:                 16,
+			EfConstruction:        100,
+			Metric:                VectorMetricEuclidean,
+			ExtendCandidates:      true,
+			KeepPrunedConnections: true,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		const numVectors = 60
+		const dims = 8
+		const k = 10
+
+		rng := rand.New(rand.NewSource(31337))
+		vectors := make([][]float64, numVectors)
+		for i := range numVectors {
+			vec := make([]float64, dims)
+			for d := range dims {
+				vec[d] = rng.Float64()*200.0 - 100.0
+			}
+			vectors[i] = vec
+		}
+		queryVec := make([]float64, dims)
+		for d := range dims {
+			queryVec[d] = rng.Float64()*200.0 - 100.0
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			for i, vec := range vectors {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Search with both options.
+			results, err := graph.Search(tx, queryVec, k, 200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(k))
+
+			// Verify sorted order.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			// Brute-force recall check.
+			type distID struct {
+				id   int64
+				dist float64
+			}
+			bruteForce := make([]distID, numVectors)
+			for i, vec := range vectors {
+				bruteForce[i] = distID{int64(i), euclideanDistance(queryVec, vec)}
+			}
+			sort.Slice(bruteForce, func(i, j int) bool {
+				return bruteForce[i].dist < bruteForce[j].dist
+			})
+			topK := make(map[int64]bool, k)
+			for i := 0; i < k; i++ {
+				topK[bruteForce[i].id] = true
+			}
+
+			hnswIDs := make(map[int64]bool, k)
+			for _, r := range results {
+				hnswIDs[r.PrimaryKey[0].(int64)] = true
+			}
+			overlap := 0
+			for id := range hnswIDs {
+				if topK[id] {
+					overlap++
+				}
+			}
+			recall := float64(overlap) / float64(k)
+			GinkgoWriter.Printf("HNSW (extend+keepPruned) recall@%d: %.2f\n", k, recall)
+			Expect(recall).To(BeNumerically(">=", 0.7))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete works correctly with heuristic neighbor selection", func() {
+		ss := specSubspace().Sub("hnsw-heuristic-delete")
+		config := HNSWConfig{
+			NumDimensions:         4,
+			M:                     4,
+			MMax:                  4,
+			MMax0:                 8,
+			EfConstruction:        100,
+			Metric:                VectorMetricEuclidean,
+			ExtendCandidates:      true,
+			KeepPrunedConnections: true,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		const numVectors = 20
+		const dims = 4
+
+		rng := rand.New(rand.NewSource(555))
+		vectors := make([][]float64, numVectors)
+		for i := range numVectors {
+			vec := make([]float64, dims)
+			for d := range dims {
+				vec[d] = rng.Float64()*100.0 - 50.0
+			}
+			vectors[i] = vec
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert all vectors.
+			for i, vec := range vectors {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Delete first 5 vectors.
+			for i := 0; i < 5; i++ {
+				Expect(graph.Delete(tx, tuple.Tuple{int64(i)})).To(Succeed())
+			}
+
+			// Deleted nodes must actually be GONE — not re-created by a later delete's
+			// repair. Java's shouldUsePrimaryCandidateForRepair rejects the node being
+			// deleted, so a stale self-reference never re-enters the candidate set and gets
+			// re-saved. Revert-proof: stop excluding the deleted node from the primary set
+			// and these loads find the (re-created) node.
+			for i := 0; i < 5; i++ {
+				_, _, lerr := storage.loadNodeLayer(tx, 0, tuple.Tuple{int64(i)})
+				Expect(lerr).To(HaveOccurred(), "deleted node %d must be gone at layer 0, not re-created", i)
+			}
+
+			// Remaining 15 vectors should all be findable.
+			for i := 5; i < numVectors; i++ {
+				results, err := graph.Search(tx, vectors[i], 1, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(1), "vector %d should be findable after deletes", i)
+				Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(i)))
+			}
+
+			// Deleted vectors should not appear in search results.
+			for i := 0; i < 5; i++ {
+				results, err := graph.Search(tx, vectors[i], numVectors, 200)
+				Expect(err).NotTo(HaveOccurred())
+				for _, r := range results {
+					Expect(r.PrimaryKey[0].(int64)).To(BeNumerically(">=", int64(5)),
+						"deleted vector %d should not appear in results", i)
+				}
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("parseHNSWConfig reads extendCandidates and keepPrunedConnections options", func() {
+		idx := &recordlayer.Index{
+			Name: "test_vec",
+			Options: map[string]string{
+				recordlayer.IndexOptionVectorNumDimensions:         "64",
+				recordlayer.IndexOptionVectorExtendCandidates:      "true",
+				recordlayer.IndexOptionVectorKeepPrunedConnections: "true",
+			},
+		}
+		config := mustParseHNSWConfig(idx)
+		Expect(config.NumDimensions).To(Equal(64))
+		Expect(config.ExtendCandidates).To(BeTrue())
+		Expect(config.KeepPrunedConnections).To(BeTrue())
+
+		// Default (false) when not set.
+		idx2 := &recordlayer.Index{
+			Name: "test_vec2",
+			Options: map[string]string{
+				recordlayer.IndexOptionVectorNumDimensions: "32",
+			},
+		}
+		config2 := mustParseHNSWConfig(idx2)
+		Expect(config2.ExtendCandidates).To(BeFalse())
+		Expect(config2.KeepPrunedConnections).To(BeFalse())
+
+		// Explicit "false" value.
+		idx3 := &recordlayer.Index{
+			Name: "test_vec3",
+			Options: map[string]string{
+				recordlayer.IndexOptionVectorExtendCandidates:      "false",
+				recordlayer.IndexOptionVectorKeepPrunedConnections: "false",
+			},
+		}
+		config3 := mustParseHNSWConfig(idx3)
+		Expect(config3.ExtendCandidates).To(BeFalse())
+		Expect(config3.KeepPrunedConnections).To(BeFalse())
+	})
+
+	It("satisfiesTriangleInequality returns correct values per metric", func() {
+		Expect(VectorMetricEuclidean.satisfiesTriangleInequality()).To(BeTrue())
+		Expect(VectorMetricEuclideanSquare.satisfiesTriangleInequality()).To(BeFalse())
+		Expect(VectorMetricCosine.satisfiesTriangleInequality()).To(BeFalse())
+		Expect(VectorMetricInnerProduct.satisfiesTriangleInequality()).To(BeFalse())
+	})
+
+	It("parses configurable fetch limits from index options", func() {
+		idx := &recordlayer.Index{
+			Name: "test_vec_fetch_limits",
+			Options: map[string]string{
+				recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches:         "32",
+				recordlayer.IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "15",
+				recordlayer.IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "5",
+			},
+		}
+		config := mustParseHNSWConfig(idx)
+		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(32))
+		Expect(config.MaxNumConcurrentNeighborhoodFetches).To(Equal(15))
+		Expect(config.MaxNumConcurrentDeleteFromLayer).To(Equal(5))
+	})
+
+	It("uses default fetch limits when options are absent", func() {
+		idx := &recordlayer.Index{
+			Name:    "test_vec_default_limits",
+			Options: map[string]string{},
+		}
+		config := mustParseHNSWConfig(idx)
+		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(16))
+		Expect(config.MaxNumConcurrentNeighborhoodFetches).To(Equal(10))
+		Expect(config.MaxNumConcurrentDeleteFromLayer).To(Equal(2))
+	})
+
+	// A limit Config refuses is refused, as Java's Config constructor refuses it
+	// (Config.java:114-120), in its order; none falls back to a default.
+	It("refuses out-of-range fetch limits as Java's Config does", func() {
+		for _, c := range []struct {
+			option, value, want string
+		}{
+			{recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches, "0", "maxNumConcurrentNodeFetches must be (0, 64]"},
+			{recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches, "65", "maxNumConcurrentNodeFetches must be (0, 64]"},
+			{recordlayer.IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches, "21", "maxNumConcurrentNeighborhoodFetches must be (0, 20]"},
+			{recordlayer.IndexOptionHNSWMaxNumConcurrentDeleteFromLayer, "-1", "maxNumConcurrentDeleteFromLayer must be (0, 10]"},
+		} {
+			_, err := parseHNSWConfig(&recordlayer.Index{Name: "test_vec_bad_limits", Options: map[string]string{c.option: c.value}})
+			var iae *recordlayer.IllegalArgumentError
+			Expect(errors.As(err, &iae)).To(BeTrue(), "%s=%s: %v", c.option, c.value, err)
+			Expect(iae.Message).To(Equal(c.want))
+		}
+	})
+
+	It("refuses a non-numeric fetch limit with Integer.parseInt's text", func() {
+		idx := &recordlayer.Index{
+			Name: "test_vec_nonnumeric_limits",
+			Options: map[string]string{
+				recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches: "abc",
+			},
+		}
+		_, err := parseHNSWConfig(idx)
+		var nfe *recordlayer.NumberFormatError
+		Expect(errors.As(err, &nfe)).To(BeTrue(), "%v", err)
+		Expect(nfe.Error()).To(Equal(`For input string: "abc"`))
+	})
+
+	It("accepts boundary fetch limit values", func() {
+		idx := &recordlayer.Index{
+			Name: "test_vec_boundary_limits",
+			Options: map[string]string{
+				recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches:         "64", // max valid
+				recordlayer.IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "1",  // min valid
+				recordlayer.IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "10", // max valid
+			},
+		}
+		config := mustParseHNSWConfig(idx)
+		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(64))
+		Expect(config.MaxNumConcurrentNeighborhoodFetches).To(Equal(1))
+		Expect(config.MaxNumConcurrentDeleteFromLayer).To(Equal(10))
+	})
+})
+
+var _ = Describe("Vector Search Cursor Continuation", func() {
+	ctx := context.Background()
+	// Minimal maintainer for the cursor/continuation logic: entryFullPK only
+	// reads m.index (no component positions → PK = key with prefix stripped),
+	// so a bare &Index{} suffices for these synthetic-entry replay tests.
+	m := &vectorIndexMaintainer{StandardIndexMaintainer: *recordlayer.NewStandardIndexMaintainer(recordlayer.IndexMaintainerState{Index: &recordlayer.Index{}})}
+
+	// mustVectorSearchCursor asserts construction succeeds (valid or absent
+	// continuation); corrupt-continuation tests call newVectorSearchCursor
+	// directly and assert the error.
+	mustVectorSearchCursor := func(entries []*recordlayer.IndexEntry, cont []byte, prefix tuple.Tuple) *vectorSearchCursor {
+		cursor, err := m.newVectorSearchCursor(entries, cont, prefix)
+		Expect(err).NotTo(HaveOccurred())
+		return cursor
+	}
+
+	It("returns all results without continuation", func() {
+		entries := []*recordlayer.IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
+			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{2.0}},
+			{Key: tuple.Tuple{int64(3)}, Value: tuple.Tuple{3.0}},
+		}
+		cursor := mustVectorSearchCursor(entries, nil, nil)
+
+		var results []*recordlayer.IndexEntry
+		for {
+			r, err := cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			if !r.HasNext() {
+				Expect(r.GetNoNextReason()).To(Equal(recordlayer.SourceExhausted))
+				break
+			}
+			results = append(results, r.GetValue())
+		}
+		Expect(results).To(HaveLen(3))
+		Expect(results[0].Key[0].(int64)).To(Equal(int64(1)))
+		Expect(results[1].Key[0].(int64)).To(Equal(int64(2)))
+		Expect(results[2].Key[0].(int64)).To(Equal(int64(3)))
+	})
+
+	It("resumes from continuation by skipping already-returned entries", func() {
+		entries := []*recordlayer.IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
+			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{2.0}},
+			{Key: tuple.Tuple{int64(3)}, Value: tuple.Tuple{3.0}},
+			{Key: tuple.Tuple{int64(4)}, Value: tuple.Tuple{4.0}},
+		}
+
+		// Get first result and its continuation.
+		cursor := mustVectorSearchCursor(entries, nil, nil)
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue().Key[0].(int64)).To(Equal(int64(1)))
+
+		cont, err := r.GetContinuation().ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Resume from continuation — should skip entry 1.
+		cursor2 := mustVectorSearchCursor(entries, cont, nil)
+		var remaining []*recordlayer.IndexEntry
+		for {
+			r, err := cursor2.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			if !r.HasNext() {
+				break
+			}
+			remaining = append(remaining, r.GetValue())
+		}
+		Expect(remaining).To(HaveLen(3))
+		Expect(remaining[0].Key[0].(int64)).To(Equal(int64(2)))
+		Expect(remaining[1].Key[0].(int64)).To(Equal(int64(3)))
+		Expect(remaining[2].Key[0].(int64)).To(Equal(int64(4)))
+	})
+
+	It("handles continuation at same distance with different PKs", func() {
+		// Two entries at distance 1.0 with different primary keys.
+		entries := []*recordlayer.IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
+			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{1.0}}, // same distance
+			{Key: tuple.Tuple{int64(3)}, Value: tuple.Tuple{2.0}},
+		}
+
+		// Read first entry, get continuation.
+		cursor := mustVectorSearchCursor(entries, nil, nil)
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		cont, err := r.GetContinuation().ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Resume — should skip entry with PK 1 (same dist, PK <= continuation PK).
+		// Entry with PK 2 at same distance should still be returned.
+		cursor2 := mustVectorSearchCursor(entries, cont, nil)
+		var remaining []*recordlayer.IndexEntry
+		for {
+			r, err := cursor2.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			if !r.HasNext() {
+				break
+			}
+			remaining = append(remaining, r.GetValue())
+		}
+		Expect(remaining).To(HaveLen(2))
+		Expect(remaining[0].Key[0].(int64)).To(Equal(int64(2)))
+		Expect(remaining[1].Key[0].(int64)).To(Equal(int64(3)))
+	})
+
+	It("continuation at the end returns empty on resume", func() {
+		entries := []*recordlayer.IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
+		}
+
+		// Read the only entry.
+		cursor := mustVectorSearchCursor(entries, nil, nil)
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		cont, err := r.GetContinuation().ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Resume — should return empty.
+		cursor2 := mustVectorSearchCursor(entries, cont, nil)
+		r, err = cursor2.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeFalse())
+		Expect(r.GetNoNextReason()).To(Equal(recordlayer.SourceExhausted))
+	})
+
+	It("empty entries returns exhausted", func() {
+		cursor := mustVectorSearchCursor([]*recordlayer.IndexEntry{}, nil, nil)
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeFalse())
+		Expect(r.GetNoNextReason()).To(Equal(recordlayer.SourceExhausted))
+	})
+
+	It("invalid continuation fails with ContinuationParseError instead of restarting", func() {
+		entries := []*recordlayer.IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
+			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{2.0}},
+		}
+
+		// Garbage continuation bytes must surface an error, never a silent
+		// fresh restart (which would re-emit already-returned rows). Java:
+		// VectorIndexMaintainer.Continuation.fromBytes throws
+		// RecordCoreException("error parsing continuation").
+		cursor, err := m.newVectorSearchCursor(entries, []byte{0xff, 0xfe}, nil)
+		Expect(cursor).To(BeNil())
+		var parseErr *recordlayer.ContinuationParseError
+		Expect(errors.As(err, &parseErr)).To(BeTrue(), "want *ContinuationParseError, got %T: %v", err, err)
+		Expect(parseErr.RawBytes).To(Equal([]byte{0xff, 0xfe}))
+		Expect(parseErr.Unwrap()).NotTo(BeNil())
+	})
+
+	It("inner position uses Java ListCursor's 4-byte big-endian encoding", func() {
+		entries := []*recordlayer.IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{nil}},
+		}
+		encoded := encodeVectorScanContinuation(entries, 259)
+		var contProto gen.VectorIndexScanContinuation
+		Expect(contProto.UnmarshalVT(encoded)).To(Succeed())
+		// Java: ByteBuffer.allocate(Integer.BYTES).putInt(nextPosition)
+		// (ListCursor.Continuation.toBytes) — 259 = 0x00000103.
+		Expect(contProto.GetInnerContinuation()).To(Equal([]byte{0x00, 0x00, 0x01, 0x03}))
+	})
+
+	It("short inner position is an error, matching Java's BufferUnderflow", func() {
+		entries := []*recordlayer.IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{nil}},
+		}
+		contProto := &gen.VectorIndexScanContinuation{
+			IndexEntries: []*gen.VectorIndexScanContinuation_IndexEntry{
+				{Key: entries[0].Key.Pack(), Value: entries[0].Value.Pack()},
+			},
+			InnerContinuation: []byte{0x01}, // Java: ByteBuffer.getInt underflows
+		}
+		encoded, err := contProto.MarshalVT()
+		Expect(err).NotTo(HaveOccurred())
+		_, _, perr := m.parseVectorScanContinuation(encoded, nil)
+		Expect(perr).To(HaveOccurred())
+		Expect(perr.Error()).To(ContainSubstring("inner position"))
+	})
+
+	It("page-by-page pagination collects all results", func() {
+		// Simulate paginated scanning: read 2 at a time.
+		entries := []*recordlayer.IndexEntry{
+			{Key: tuple.Tuple{int64(10)}, Value: tuple.Tuple{0.5}},
+			{Key: tuple.Tuple{int64(20)}, Value: tuple.Tuple{1.5}},
+			{Key: tuple.Tuple{int64(30)}, Value: tuple.Tuple{2.5}},
+			{Key: tuple.Tuple{int64(40)}, Value: tuple.Tuple{3.5}},
+			{Key: tuple.Tuple{int64(50)}, Value: tuple.Tuple{4.5}},
+		}
+
+		var allResults []*recordlayer.IndexEntry
+		var cont []byte
+
+		for {
+			cursor := mustVectorSearchCursor(entries, cont, nil)
+			pageCount := 0
+			var lastCont recordlayer.RecordCursorContinuation
+			for pageCount < 2 {
+				r, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !r.HasNext() {
+					lastCont = nil
+					break
+				}
+				allResults = append(allResults, r.GetValue())
+				lastCont = r.GetContinuation()
+				pageCount++
+			}
+			cursor.Close()
+
+			if lastCont == nil {
+				break
+			}
+			var err error
+			cont, err = lastCont.ToBytes()
+			Expect(err).NotTo(HaveOccurred())
+			if cont == nil {
+				break
+			}
+		}
+
+		Expect(allResults).To(HaveLen(5))
+		Expect(allResults[0].Key[0].(int64)).To(Equal(int64(10)))
+		Expect(allResults[1].Key[0].(int64)).To(Equal(int64(20)))
+		Expect(allResults[2].Key[0].(int64)).To(Equal(int64(30)))
+		Expect(allResults[3].Key[0].(int64)).To(Equal(int64(40)))
+		Expect(allResults[4].Key[0].(int64)).To(Equal(int64(50)))
+	})
+
+	It("encodeVectorScanContinuation and parseVectorScanContinuation round-trip", func() {
+		entries := []*recordlayer.IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{nil}},
+			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{nil}},
+			{Key: tuple.Tuple{int64(3)}, Value: tuple.Tuple{nil}},
+		}
+
+		encoded := encodeVectorScanContinuation(entries, 1)
+		parsed, innerPos, err := m.parseVectorScanContinuation(encoded, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(parsed).To(HaveLen(3))
+		Expect(innerPos).To(Equal(1))
+		Expect(parsed[0].Key[0].(int64)).To(Equal(int64(1)))
+		Expect(parsed[1].Key[0].(int64)).To(Equal(int64(2)))
+		Expect(parsed[2].Key[0].(int64)).To(Equal(int64(3)))
+	})
+
+	It("close prevents further results", func() {
+		entries := []*recordlayer.IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
+			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{2.0}},
+		}
+		cursor := mustVectorSearchCursor(entries, nil, nil)
+
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+
+		Expect(cursor.Close()).To(Succeed())
+
+		// After close, should return exhausted.
+		r, err = cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeFalse())
+	})
+})
+
+var _ = Describe("HNSW Pipelined Multi-Layer Deletion", func() {
+	ctx := context.Background()
+
+	makeGraph := func(dims int) *hnswGraph {
+		ss := specSubspace().Sub("hnsw-pipeline-delete")
+		config := HNSWConfig{
+			NumDimensions:  dims,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+		}
+		storage := newHNSWStorage(ss, config)
+		return NewHNSWGraph(storage, config)
+	}
+
+	It("delete works correctly with pipelined reads", func() {
+		graph := makeGraph(3)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert several nodes to build a multi-layer graph.
+			for i := int64(1); i <= 20; i++ {
+				vec := []float64{float64(i), float64(i * 2), float64(i * 3)}
+				Expect(graph.Insert(tx, tuple.Tuple{i}, vec)).To(Succeed())
+			}
+
+			// Delete a node — should work with pipelined reads.
+			Expect(graph.Delete(tx, tuple.Tuple{int64(5)})).To(Succeed())
+
+			// Verify the node is gone.
+			results, err := graph.Search(tx, []float64{5.0, 10.0, 15.0}, 20, 100)
+			Expect(err).NotTo(HaveOccurred())
+			for _, r := range results {
+				Expect(tupleEqual(r.PrimaryKey, tuple.Tuple{int64(5)})).To(BeFalse(),
+					"deleted node should not appear in search results")
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete non-existent node is a no-op", func() {
+		graph := makeGraph(3)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			Expect(graph.Insert(tx, tuple.Tuple{int64(1)}, []float64{1, 2, 3})).To(Succeed())
+
+			// Delete a node that doesn't exist — should not error.
+			Expect(graph.Delete(tx, tuple.Tuple{int64(999)})).To(Succeed())
+
+			// Original node should still be searchable.
+			results, err := graph.Search(tx, []float64{1, 2, 3}, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(tupleEqual(results[0].PrimaryKey, tuple.Tuple{int64(1)})).To(BeTrue())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete all nodes leaves empty graph", func() {
+		graph := makeGraph(3)
+
+		_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			for i := int64(1); i <= 5; i++ {
+				Expect(graph.Insert(tx, tuple.Tuple{i}, []float64{float64(i), 0, 0})).To(Succeed())
+			}
+
+			for i := int64(1); i <= 5; i++ {
+				Expect(graph.Delete(tx, tuple.Tuple{i})).To(Succeed())
+			}
+
+			results, err := graph.Search(tx, []float64{1, 0, 0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(0))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+// --- span-representation test helpers (HNSW carries neighbor PKs as nested spans) ---
+
+// candSpan builds an hnswCandidate whose PK is the int64 id, in span form.
+func candSpan(id int64, vec []float64, dist float64) hnswCandidate {
+	return hnswCandidate{pkSpan: nestPK(tuple.Tuple{id}), vec: vec, dist: dist}
+}
+
+// candPKInt decodes a candidate's span PK and returns its first int64 element.
+func candPKInt(c hnswCandidate) int64 {
+	pk, err := decodeNestedPK(c.pkSpan)
+	if err != nil {
+		panic(err)
+	}
+	return pk[0].(int64)
+}
+
+// spanPKInt decodes a neighbor span and returns its first int64 element.
+func spanPKInt(span []byte) int64 {
+	pk, err := decodeNestedPK(span)
+	if err != nil {
+		panic(err)
+	}
+	return pk[0].(int64)
+}
+
+// mustParseHNSWConfig is parseHNSWConfig for an index whose options parse.
+func mustParseHNSWConfig(index *recordlayer.Index) HNSWConfig {
+	config, err := parseHNSWConfig(index)
+	Expect(err).NotTo(HaveOccurred())
+	return config
+}
+
+var _ = Describe("HNSW returned vectors", func() {
+	It("reconstructs Java quantized payloads and preserves an explicit omission", func() {
+		cfg := DefaultHNSWConfig(3)
+		cfg.Quantizer = rabitq.NewQuantizer(rabitq.MetricEuclidean, 4)
+		storage := newHNSWStorage(specSubspace().Sub("returned-vectors"), cfg)
+		encoded, err := hex.DecodeString("0340218a6f8ff36398bfd24f6f0e0ad5b63fc34edb3de0b770fb7a")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			pk := tuple.Tuple{int64(1)}
+			storage.saveAccessInfo(tx, &hnswAccessInfo{pk: pk, vectorBytes: encoded, rotatorSeed: 42, centroid: []float64{-0.25, 0.5, -0.75}})
+			storage.saveNodeLayer(tx, 0, pk, encoded, nil)
+			for _, include := range []bool{true, false} {
+				graph := NewHNSWGraph(storage, cfg)
+				results, err := graph.searchWithVectors(tx, []float64{1.5, 2.5, 3.5}, 1, 10, include)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(1))
+				if include {
+					// Java StorageTransform.untransform: testdata/GuardiannVectors.java.
+					Expect(hex.EncodeToString(results[0].Vector)).To(Equal("023fee714ee8af20254000392c4f941c064007fca06b941fd5"))
+				} else {
+					Expect(results[0].Vector).To(BeNil())
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})

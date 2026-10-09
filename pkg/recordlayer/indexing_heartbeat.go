@@ -3,6 +3,8 @@ package recordlayer
 import (
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/gen"
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -238,7 +240,7 @@ func (e *IndexingHeartbeatKeyError) Error() string {
 // a throw in Java (ClassCastException / IndexOutOfBoundsException) and an
 // IndexingHeartbeatKeyError here.
 func heartbeatIndexerID(key []byte, ss subspace.Subspace, index *Index) (uuid.UUID, error) {
-	parts, err := fastSubspaceUnpack(key, len(ss.Bytes()))
+	parts, err := tuplefast.SubspaceUnpack(key, len(ss.Bytes()))
 	if err == nil && len(parts) >= 1 {
 		if id, ok := parts[0].(tuple.UUID); ok {
 			return uuid.UUID(id), nil

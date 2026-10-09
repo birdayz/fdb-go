@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"maps"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -210,7 +212,7 @@ func DeleteStore(ctx *FDBRecordContext, ss subspace.Subspace) error {
 	// which can recreate a DISABLED state key after this clear. Cancel the
 	// subspace's pending check so deletion cannot resurrect store data (RFC-257).
 	ctx.removeCommitCheck(replacementRetirementCheckName(ss))
-	ctx.removeCommitChecksWithPrefix(pendingWriteCommitCheckPrefix(ss))
+	ctx.removeCommitChecksWithPrefix(PendingWriteCommitCheckPrefix(ss))
 	ctx.PutSession(replacementRetirementMetadataKey(ss), nil)
 	ctx.SetDirtyStoreState(true)
 	begin, end := ss.FDBRangeKeys()
@@ -591,7 +593,7 @@ func (store *FDBRecordStore) ScanUniquenessViolationsForValue(
 	colCount := index.RootExpression.ColumnSize()
 	var violations []UniquenessViolation
 	for _, kv := range kvs {
-		t, err := fastSubspaceUnpack(kv.Key, len(violationSubspace.Bytes()))
+		t, err := tuplefast.SubspaceUnpack(kv.Key, len(violationSubspace.Bytes()))
 		if err != nil {
 			return nil, fmt.Errorf("unpack violation key: %w", err)
 		}
@@ -602,7 +604,7 @@ func (store *FDBRecordStore) ScanUniquenessViolationsForValue(
 				PrimaryKey: tuple.Tuple(t[colCount:]),
 			}
 			if len(kv.Value) > 0 {
-				existingKey, err := fastUnpack(kv.Value)
+				existingKey, err := tuplefast.Unpack(kv.Value)
 				if err == nil {
 					v.ExistingKey = existingKey
 				}

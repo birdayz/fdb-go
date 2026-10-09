@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"fdb.dev/pkg/recordlayer/internal/tuplefast"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -249,7 +251,7 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 	if len(kv.Key) < prefixLen {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("count index key shorter than subspace prefix")
 	}
-	keyTuple, err := fastUnpack(kv.Key[prefixLen:])
+	keyTuple, err := tuplefast.Unpack(kv.Key[prefixLen:])
 	if err != nil {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("unpack count index key: %w", err)
 	}
@@ -260,7 +262,7 @@ func (c *countKVCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEn
 		// TUPLE variants: decode value as tuple-packed bytes
 		if len(kv.Value) > 0 {
 			var err2 error
-			valueTuple, err2 = fastUnpack(kv.Value)
+			valueTuple, err2 = tuplefast.Unpack(kv.Value)
 			if err2 != nil {
 				return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("unpack tuple value: %w", err2)
 			}

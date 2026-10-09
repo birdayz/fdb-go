@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/vectorindex"
+
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
 	"google.golang.org/protobuf/proto"
@@ -60,7 +62,7 @@ func TestFDB_VectorSearch_SPFreshE2E(t *testing.T) {
 	makeRec := func(id int64, vec []float64) proto.Message {
 		m := dynamicpb.NewMessage(desc)
 		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
-		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(recordlayer.SerializeVector(vec)))
+		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(vectorindex.SerializeVector(vec)))
 		return m
 	}
 	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -181,7 +183,7 @@ func TestFDB_VectorSearch_ResidualBugPin(t *testing.T) {
 		m := dynamicpb.NewMessage(desc)
 		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(desc.Fields().ByName("CATEGORY"), protoreflect.ValueOfString(category))
-		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(recordlayer.SerializeVector(vec)))
+		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(vectorindex.SerializeVector(vec)))
 		return m
 	}
 	type rec struct {
@@ -314,7 +316,7 @@ func TestFDB_VectorSearch_RarePredicateWidening(t *testing.T) {
 		m := dynamicpb.NewMessage(desc)
 		m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(id))
 		m.Set(desc.Fields().ByName("CATEGORY"), protoreflect.ValueOfString(category))
-		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(recordlayer.SerializeVector(vec)))
+		m.Set(desc.Fields().ByName("EMBEDDING"), protoreflect.ValueOfBytes(vectorindex.SerializeVector(vec)))
 		return m
 	}
 	// 250 'other' decoys near the origin (ids 1..250) + 12 'target' matches in a
