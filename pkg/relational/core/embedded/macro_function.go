@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -77,7 +78,13 @@ func buildMacroFunction(spec antlrgen.IFunctionSpecificationContext, body *antlr
 	if err != nil {
 		return nil, err
 	}
-	v = expr.MacroBodyValue(v)
+	if v, err = expr.MacroBodyValue(v); err != nil {
+		var apiErr *api.Error
+		if errors.As(err, &apiErr) {
+			return nil, err
+		}
+		return nil, api.WrapErrorf(err, api.ErrCodeUnsupportedOperation, "function %s", m.Name)
+	}
 	if rc := spec.ReturnsClause(); rc != nil {
 		rt, ok := rc.ReturnsType().(*antlrgen.ReturnsTypeContext)
 		if !ok || rt.ReturnsTableType() != nil {

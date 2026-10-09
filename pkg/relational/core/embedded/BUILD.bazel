@@ -224,6 +224,7 @@ go_test(
         "logical_builder_test.go",
         "logical_predicate_test.go",
         "logical_qualify_test.go",
+        "macro_relop_test.go",
         "mint_distinct_test.go",
         "mixed_case_stored_name_probe_test.go",
         "nulls_order_test.go",
@@ -543,6 +544,7 @@ go_test(
         "case_sensitive_identifiers_test.go",
         "primary_key_translation.go",
         "primary_key_translation_test.go",
+        "macro_relop_test.go",
     ],
     deps = [
         "//gen",
