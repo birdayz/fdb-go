@@ -1857,6 +1857,18 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 // entirely; here the prefix is retained as fixed, which is strictly more
 // information.
 func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
+	if p == nil || p.orderingCache == nil {
+		return p.hintRichOrdering()
+	}
+	if entry := p.orderingCache.entry.Load(); entry != nil && entry.owner == p {
+		return entry.ordering
+	}
+	ordering := p.hintRichOrdering()
+	p.orderingCache.entry.Store(&indexOrderingEntry{owner: p, ordering: ordering})
+	return ordering
+}
+
+func (p *RecordQueryIndexPlan) hintRichOrdering() *properties.RichOrdering {
 	if p == nil || len(p.GetColumnNames()) == 0 {
 		return properties.EmptyOrdering()
 	}
