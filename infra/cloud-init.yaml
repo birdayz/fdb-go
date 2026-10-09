@@ -625,4 +625,4 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable --now orphan-fdb-sweep.timer
   - systemctl enable --now bazel-cache-prune.timer
-  - '[ "$(hostname)" != gh-runner-fdb ] || docker run -d --restart=always --name bazel-remote -v /mnt/ci-data/bazel-remote:/data -p 10.77.0.2:9092:9092 buchgr/bazel-remote-cache@sha256:8e17332e2ceb8b69f67bb08d6a1a51b3e11aaa5a25644c8a34f09d1ff1811a53 --dir /data --max_size 60'
+  - '[ "$(hostname)" != gh-runner-fdb ] || docker run -d --restart=always --name bazel-remote -v /mnt/ci-data/bazel-remote:/data -p 10.77.0.2:9092:9092 buchgr/bazel-remote-cache@sha256:8e17332e2ceb8b69f67bb08d6a1a51b3e11aaa5a25644c8a34f09d1ff1811a53 --dir /data --max_size 30'

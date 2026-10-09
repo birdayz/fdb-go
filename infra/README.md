@@ -449,13 +449,22 @@ bazel-remote cache on gh-runner-fdb (`grpc://10.77.0.2:9092`). The cache is
 reachable only over the `ci-fleet` private network (`shared_cache.tf`), so a
 job is cache-warm on whichever box runs it.
 
-Enable it on the live fleet. `user_data` is `ignore_changes`, so cloud-init
-only covers boxes provisioned later:
+Enabling it on the live fleet was done without tofu, by
+`.github/workflows/fleet-shared-cache.yml`. That workflow creates the network,
+attaches both boxes via the Hetzner API using the HCLOUD_TOKEN secret, and runs
+`enable-shared-cache.sh` on each box. To re-run it, push to the
+`ops/fleet-shared-cache` branch. `user_data` is `ignore_changes`, so the
+cloud-init lines only cover boxes provisioned later.
+
+The tofu state does not know these resources yet. Import them before the next
+`tofu apply`, otherwise the apply fails on the existing network name:
 
 ```sh
-cd infra && tofu apply            # creates ci-fleet and attaches both boxes; no replacement
-ssh root@<gh-runner-fdb-ip>     'bash -s server' < enable-shared-cache.sh
-ssh root@<gh-runner-drain-0-ip> 'bash -s client' < enable-shared-cache.sh
+NET=$(hcloud network describe ci-fleet -o format='{{.ID}}')
+tofu import hcloud_network.ci "$NET"
+tofu import hcloud_network_subnet.ci "$NET-10.77.0.0/24"
+tofu import hcloud_server_network.runner "$(hcloud server describe gh-runner-fdb -o format='{{.ID}}')-$NET"
+tofu import 'hcloud_server_network.runner_pool[0]' "$(hcloud server describe gh-runner-drain-0 -o format='{{.ID}}')-$NET"
 ```
 
 The script is idempotent and ends by checking that the cache answers. An

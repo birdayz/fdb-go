@@ -28,7 +28,7 @@ stopgap. It works, but it has costs:
    `hcloud_server_network`, which does not replace the servers.
 2. **Cache server.** One `bazel-remote` container (pinned by digest, the same
    supply-chain rule as RFC-108 §1) on `gh-runner-fdb`:
-   - storage on its data volume: `--max_size` 40 GiB, LRU;
+   - storage on its data volume: `--max_size` 30 GiB, LRU;
    - gRPC bound to the private IP only;
    - no public port; the Hetzner firewall drops 9092 on the public interface.
 3. **Bazel config.** Each box's `/etc/bazel.bazelrc` (not the committed
