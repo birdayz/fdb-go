@@ -193,6 +193,10 @@ var valueNullabilityCensus = map[string]nullabilityCensusEntry{
 		censusSame, "nullable BOOLEAN", "RelOpValue is a BooleanValue",
 		func() Value { return &BinaryRelOpValue{} },
 	},
+	"TautologicalValue": {
+		censusSame, "nullable BOOLEAN", "TautologicalValue is a BooleanValue",
+		func() Value { return TautologicalValue{} },
+	},
 	"UnaryRelOpValue": {
 		censusSame, "nullable BOOLEAN", "RelOpValue is a BooleanValue",
 		func() Value { return &UnaryRelOpValue{} },

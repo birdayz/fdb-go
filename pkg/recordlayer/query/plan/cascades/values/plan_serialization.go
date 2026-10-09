@@ -8,6 +8,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 // DerivedStorageName is the protobuf spelling Java gives a name that states
@@ -396,6 +397,46 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		return &gen.PValue{SpecificValue: &gen.PValue_SubscriptValue{SubscriptValue: &gen.PSubscriptValue{
 			Index: index, Source: source,
 		}}}, nil
+	case TautologicalValue:
+		// TautologicalValue.toValueProto packs the empty PTautologicalValue.
+		return &gen.PValue{SpecificValue: &gen.PValue_AdditionalValues{AdditionalValues: &anypb.Any{TypeUrl: tautologicalValueTypeURL}}}, nil
+	case *ConditionSelectorValue:
+		cs := &gen.PConditionSelectorValue{}
+		for _, impl := range vv.Implications {
+			p, err := c.ValueToProto(impl)
+			if err != nil {
+				return nil, err
+			}
+			cs.Implications = append(cs.Implications, p)
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_ConditionSelectorValue{ConditionSelectorValue: cs}}, nil
+	case *PickValue:
+		selector, err := c.ValueToProto(vv.Selector)
+		if err != nil {
+			return nil, err
+		}
+		pick := &gen.PPickValue{SelectorValue: selector}
+		for _, alt := range vv.Alternatives {
+			p, err := c.ValueToProto(alt)
+			if err != nil {
+				return nil, err
+			}
+			pick.AlternativeValues = append(pick.AlternativeValues, p)
+		}
+		if pick.ResultType, err = c.TypeToProto(vv.Typ); err != nil {
+			return nil, err
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_PickValue{PickValue: pick}}, nil
+	case *InOpValue:
+		probe, err := c.ValueToProto(vv.Probe)
+		if err != nil {
+			return nil, err
+		}
+		list, err := c.ValueToProto(vv.List)
+		if err != nil {
+			return nil, err
+		}
+		return &gen.PValue{SpecificValue: &gen.PValue_InOpValue{InOpValue: &gen.PInOpValue{ProbeValue: probe, InArrayValue: list}}}, nil
 	case *BooleanValue:
 		// Java's boolean literal is a LiteralValue (LiteralValue.toProto).
 		obj := &gen.PComparableObject{SpecificObject: &gen.PComparableObject_PrimitiveObject{PrimitiveObject: &gen.Value{}}}
@@ -498,7 +539,7 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		trie, err := primitivePromotionTrie(pv.Child.Type(), pv.Target)
+		trie, err := c.promotionTrie(pv.Child.Type(), pv.Target)
 		if err != nil {
 			return nil, err
 		}
@@ -514,6 +555,43 @@ var javaTypeCodeNames = map[TypeCode]string{
 	TypeCodeFloat: "FLOAT", TypeCodeDouble: "DOUBLE", TypeCodeString: "STRING", TypeCodeBytes: "BYTES",
 	TypeCodeVersion: "VERSION", TypeCodeEnum: "ENUM", TypeCodeUuid: "UUID", TypeCodeArray: "ARRAY",
 	TypeCodeRecord: "RECORD", TypeCodeVector: "VECTOR",
+}
+
+// promotionTrie is PromoteValue.computePromotionsTrie
+// (PromoteValue.java:353-405) for primitive and array types: an array node
+// carries an ArrayCoercionBiFunction and, when the elements need one, the
+// element trie under index -1.
+func (c *SerializationContext) promotionTrie(from, to Type) (*gen.PCoercionTrieNode, error) {
+	fa, fromArray := from.(*ArrayType)
+	ta, toArray := to.(*ArrayType)
+	if !fromArray || !toArray {
+		return primitivePromotionTrie(from, to)
+	}
+	elems, err := c.promotionTrie(fa.ElementType, ta.ElementType)
+	if err != nil {
+		return nil, err
+	}
+	if elems == nil && fa.Nullable == ta.Nullable {
+		return nil, nil
+	}
+	fromType, err := c.TypeToProto(fa)
+	if err != nil {
+		return nil, err
+	}
+	toType, err := c.TypeToProto(ta)
+	if err != nil {
+		return nil, err
+	}
+	node := &gen.PCoercionTrieNode{
+		ChildrenMapIsNull: proto.Bool(elems == nil),
+		Value: &gen.PCoercionBiFunction{SpecificFunction: &gen.PCoercionBiFunction_ArrayCoercionBiFunction{
+			ArrayCoercionBiFunction: &gen.PArrayCoercionBiFunction{FromArrayType: fromType, ToArrayType: toType, ElementsTrie: elems},
+		}},
+	}
+	if elems != nil {
+		node.ChildPair = []*gen.PCoercionTrieNode_IntChildPair{{Index: proto.Int32(-1), ChildCoercionTrieNode: elems}}
+	}
+	return node, nil
 }
 
 // primitivePromotionTrie is PromoteValue.computePromotionsTrie for a
@@ -585,6 +663,8 @@ func literalToProto(v any, typ Type) (*gen.PComparableObject, error) {
 	}
 	pv := &gen.Value{}
 	switch x := v.(type) {
+	case nil:
+		// LiteralKeyExpression.toProtoValue(null): an empty Value.
 	case int64:
 		pv.LongValue = proto.Int64(x)
 	case int32:
@@ -745,6 +825,48 @@ func (c *SerializationContext) ValueFromProto(p *gen.PValue) (Value, error) {
 			return nil, err
 		}
 		return NewArrayConstructorValue(t, elems), nil
+	case p.GetAdditionalValues() != nil:
+		if p.GetAdditionalValues().GetTypeUrl() == tautologicalValueTypeURL {
+			return TautologicalValue{}, nil
+		}
+		return nil, fmt.Errorf("deserialize value: unsupported %s", p.GetAdditionalValues().GetTypeUrl())
+	case p.GetConditionSelectorValue() != nil:
+		var implications []Value
+		for _, pi := range p.GetConditionSelectorValue().GetImplications() {
+			v, err := c.ValueFromProto(pi)
+			if err != nil {
+				return nil, err
+			}
+			implications = append(implications, v)
+		}
+		return NewConditionSelectorValue(implications), nil
+	case p.GetPickValue() != nil:
+		pick := p.GetPickValue()
+		selector, err := c.ValueFromProto(pick.GetSelectorValue())
+		if err != nil {
+			return nil, err
+		}
+		alternatives := make([]Value, len(pick.GetAlternativeValues()))
+		for i, pa := range pick.GetAlternativeValues() {
+			if alternatives[i], err = c.ValueFromProto(pa); err != nil {
+				return nil, err
+			}
+		}
+		t, err := c.TypeFromProto(pick.GetResultType())
+		if err != nil {
+			return nil, err
+		}
+		return NewPickValue(selector, alternatives, t), nil
+	case p.GetInOpValue() != nil:
+		probe, err := c.ValueFromProto(p.GetInOpValue().GetProbeValue())
+		if err != nil {
+			return nil, err
+		}
+		list, err := c.ValueFromProto(p.GetInOpValue().GetInArrayValue())
+		if err != nil {
+			return nil, err
+		}
+		return &InOpValue{Probe: probe, List: list}, nil
 	case p.GetLikeOperatorValue() != nil:
 		src, err := c.ValueFromProto(p.GetLikeOperatorValue().GetSrcChild())
 		if err != nil {
