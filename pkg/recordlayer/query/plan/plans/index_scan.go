@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -141,6 +143,19 @@ type RecordQueryIndexPlan struct {
 	// W2). Carried through every With* struct-copy. nil for struct-literal test
 	// plans that bypass the constructor — GetResultValue falls back to PlanExprBase.
 	resultValue values.Value
+	// orderingCache memoizes HintRichOrdering, a pure function of this plan.
+	// With* copies share the box, so an entry names the plan it was derived
+	// for. nil for struct-literal plans, which derive it on every call.
+	orderingCache *indexOrderingCache
+}
+
+type indexOrderingCache struct {
+	entry atomic.Pointer[indexOrderingEntry]
+}
+
+type indexOrderingEntry struct {
+	owner    *RecordQueryIndexPlan
+	ordering *properties.RichOrdering
 }
 
 // NewRecordQueryIndexPlan constructs an index scan plan.
@@ -166,6 +181,7 @@ func NewRecordQueryIndexPlan(
 		flowedType:        base.resultValue.Type(),
 		reverse:           reverse,
 		resultValue:       base.resultValue,
+		orderingCache:     &indexOrderingCache{},
 	}, nil
 }
 

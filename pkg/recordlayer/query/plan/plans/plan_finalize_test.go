@@ -488,6 +488,7 @@ var specimens = map[string]specimen{
 		allow: map[string]string{
 			"resultValue":     resultValueIsMinted,
 			"orderingColumns": "a function key column's ordering Value, compared by the ordering property and never evaluated",
+			"orderingCache":   "a memo of HintRichOrdering: Values the ordering property compares, never evaluated",
 			"entryReader":     "evaluated leaf by leaf against the bound entry by the covering cursor, never as a record constructor, so nothing in it is stamped",
 		},
 	},
