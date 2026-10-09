@@ -389,12 +389,14 @@ write_files:
     permissions: "0644"
     content: |
       # Keep this box's one bazel server resident between jobs (RFC-155 §7). No -Xmx bound:
-      # one server has ample RAM and a cold-build analysis wants the JVM default heap.
+      # cold-build analysis wants the JVM default heap.
       startup --max_idle_secs=21600
       build --disk_cache=/mnt/ci-data/bazel-disk-cache
       build --repository_cache=/mnt/ci-data/bazel-repo-cache
       build --experimental_disk_cache_gc_max_size=20G
       build --experimental_disk_cache_gc_max_age=14d
+      build --remote_cache=grpc://10.77.0.2:9092
+      build --remote_timeout=10s
 
   # Wrapper: load the GitHub App private key from its 0600 file into the env var the
   # supervisor reads, then exec it (keeps the multi-line PEM out of the unit). App ids are
@@ -623,3 +625,4 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable --now orphan-fdb-sweep.timer
   - systemctl enable --now bazel-cache-prune.timer
+  - '[ "$(hostname)" != gh-runner-fdb ] || docker run -d --restart=always --name bazel-remote -v /mnt/ci-data/bazel-remote:/data -p 10.77.0.2:9092:9092 buchgr/bazel-remote-cache@sha256:8e17332e2ceb8b69f67bb08d6a1a51b3e11aaa5a25644c8a34f09d1ff1811a53 --dir /data --max_size 60'

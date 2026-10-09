@@ -1,6 +1,6 @@
 # RFC-257: A Bazel cache shared by the CI fleet
 
-Status: proposed (needs an owner `tofu apply`). Follow-up to RFC-108's "Cache
+Status: implemented in infra/ (shared_cache.tf, enable-shared-cache.sh); needs an owner `tofu apply` + the enable script (infra/README.md). Follow-up to RFC-108's "Cache
 provenance", which requires an RFC before any non-local cache.
 
 ## Problem
@@ -14,7 +14,7 @@ that ran its predecessor:
 - In the same run, the Java conformance job landed on `gh-runner-fdb` and hit the
   cache in 40 s.
 
-Commit `69392239c` pins jobs to boxes (`fdb-ci-main`, `fdb-ci-aux`) as a
+Commit `69392239c` pinned jobs to boxes (`fdb-ci-main`, `fdb-ci-aux`) as a
 stopgap. It works, but it has costs:
 
 - A pinned job waits while its box is down or busy with another PR's run.

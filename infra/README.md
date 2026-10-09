@@ -441,3 +441,26 @@ that automation is a follow-up — the flag itself just sets the mode.
 
 `terraform.tfstate*` is local state (gitignored). Do not commit it — it can contain the
 registration token and resource ids.
+
+## Fleet-shared Bazel cache (RFC-257)
+
+Every runner keeps its local `--disk_cache` and also uses one shared
+bazel-remote cache on gh-runner-fdb (`grpc://10.77.0.2:9092`). The cache is
+reachable only over the `ci-fleet` private network (`shared_cache.tf`), so a
+job is cache-warm on whichever box runs it.
+
+Enable it on the live fleet. `user_data` is `ignore_changes`, so cloud-init
+only covers boxes provisioned later:
+
+```sh
+cd infra && tofu apply            # creates ci-fleet and attaches both boxes; no replacement
+ssh root@<gh-runner-fdb-ip>     'bash -s server' < enable-shared-cache.sh
+ssh root@<gh-runner-drain-0-ip> 'bash -s client' < enable-shared-cache.sh
+```
+
+The script is idempotent and ends by checking that the cache answers. An
+unreachable cache only produces warnings, because Bazel falls back to
+building locally, and `--remote_timeout` bounds the wait.
+
+To roll back, delete the `# RFC-257 shared cache` block from
+`/etc/bazel.bazelrc`, and on the server also run `docker rm -f bazel-remote`.
