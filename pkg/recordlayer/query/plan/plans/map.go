@@ -75,7 +75,7 @@ func (p *RecordQueryMapPlan) GetQuantifiers() []expressions.Quantifier {
 	if p.innerQ.GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return quantifierView(&p.innerQ)
 }
 
 // GetResultValue returns the transformation value.

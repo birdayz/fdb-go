@@ -65,7 +65,7 @@ func (p *RecordQueryFilterPlan) GetQuantifiers() []expressions.Quantifier {
 	if p.innerQ.GetRangesOver() == nil {
 		return nil
 	}
-	return []expressions.Quantifier{p.innerQ}
+	return quantifierView(&p.innerQ)
 }
 
 // GetResultType returns the inner's result type (filter doesn't
