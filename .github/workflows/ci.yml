@@ -23,13 +23,7 @@ concurrency:
 jobs:
   ci:
     name: Build, Lint & Test
-    # Pinned (fdb-ci-main): each runner has its own Bazel disk cache, so this job
-    # is cache-warm only on the box that ran the previous main job. Unpinned, a
-    # push that changed nothing but ci.yml re-ran ~135 tests on the other box
-    # (run 37876412173) while its conformance job hit the cache in 40 s. The other
-    # jobs share the second box (fdb-ci-aux), for the same reason. A pinned job
-    # waits while its box is down; re-label (infra/main.tf) to move it.
-    runs-on: [hetzner-fdb-vm, fdb-ci-main]
+    runs-on: hetzner-fdb-vm
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -201,7 +195,7 @@ jobs:
     # the end) while the other runner finished the race job and went idle. Running
     # them here, on the second runner, takes their quarter off the critical path.
     # Same bazel flags as the main lane, so the build reuses this runner's disk cache.
-    runs-on: [hetzner-fdb-vm, fdb-ci-aux]
+    runs-on: hetzner-fdb-vm
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -263,7 +257,7 @@ jobs:
     # divergences unrelated to the change. (It did exactly that here: it surfaced the
     # latent IPAddress variant-marshal wire bug — real, but pre-existing — fixed in this
     # RFC §7.) Active fuzzing is the (revived) nightly net's job (nightly-fuzz.yml §7).
-    runs-on: [hetzner-fdb-vm, fdb-ci-aux]
+    runs-on: hetzner-fdb-vm
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -306,7 +300,7 @@ jobs:
 
   frl-go-install:
     name: go install lane (cmd/frl)
-    runs-on: [hetzner-fdb-vm, fdb-ci-aux]
+    runs-on: hetzner-fdb-vm
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -338,7 +332,7 @@ jobs:
 
   govulncheck:
     name: Vulnerability scan
-    runs-on: [hetzner-fdb-vm, fdb-ci-aux]
+    runs-on: hetzner-fdb-vm
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -377,7 +371,7 @@ jobs:
 
   race:
     name: Race detector (SQL layer + client + cascades)
-    runs-on: [hetzner-fdb-vm, fdb-ci-aux]
+    runs-on: hetzner-fdb-vm
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
