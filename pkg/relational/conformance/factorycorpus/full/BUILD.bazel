@@ -39,7 +39,6 @@ go_test(
     # function, and then only to the number of such functions.
     shard_count = 1,
     tags = [
-        "exclusive",
         "resources:memory:2600",
         "test-full",
     ],

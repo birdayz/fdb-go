@@ -86,9 +86,20 @@ jobs:
       # (rules_go go/private/context.bzl:998-1000 appends `--define gotags` to it), so
       # `bazelrunfiles` and `stress` still hold. Passing the label flag directly would
       # have to restate them and would silently drop any tag later added there.
+      #
+      # --local_test_jobs=0 hands test scheduling to Bazel's resource accounting, so
+      # each target's tags = ["resources:memory:N"] (its measured peak, FDB container
+      # included) is charged against --local_resources=memory; any non-zero
+      # --local_test_jobs makes Bazel ignore those tags (measured, Bazel 9.0.1). 4500 MB
+      # is this 7.6 GB runner minus its idle baseline (~730 MB) and the Bazel server
+      # (~2500 MB); CPU still caps concurrency at the runner's 4 cores. A suite too big
+      # to share the box (factory_test 3300 MB) runs only beside small ones, and one
+      # larger than the whole budget runs alone, which is what "exclusive" did, except
+      # that an exclusive target waited for every other test and then ran with three
+      # idle slots (~700 s of serial tail per run).
       - name: Build, lint & test
         id: test
-        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl
+        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl --local_test_jobs=0 --local_resources=memory=4500
 
       # tools/bazelscaleset is a standalone Go module (its own go.mod) so the
       # runner supervisor's GitHub-API dependencies never enter the
@@ -437,7 +448,10 @@ jobs:
           # it. Passing it for every scope keeps the three invocations identical.
           $RACE --build_event_json_file=.bazel-bep.race-cascades.jsonl -- $CASCADES_SCOPE
           $RACE --build_event_json_file=.bazel-bep.race-rel.jsonl -- $REL_SCOPE
-          $RACE --build_event_json_file=.bazel-bep.race-client.jsonl -- $CLIENT_SCOPE
+          # One target at a time: race-instrumented client_test (no longer
+          # "exclusive") must not share the box with fdb_test's containers. Its peers
+          # are fdb_test plus seconds of unit tests, so this costs what exclusive did.
+          $RACE --build_event_json_file=.bazel-bep.race-client.jsonl --local_test_jobs=1 -- $CLIENT_SCOPE
 
       - name: FDB container loss diagnostics (on failure)
         # Three red lanes in two days, on BOTH hetzner-fdb-vm hosts, carried the

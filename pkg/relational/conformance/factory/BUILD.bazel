@@ -93,7 +93,6 @@ go_test(
         "EQUIV_WORKERS": "",
     },
     tags = [
-        "exclusive",
         "resources:memory:3300",
         "test-full",
     ],

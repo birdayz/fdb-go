@@ -52,7 +52,11 @@ coverage --instrumentation_filter="^//pkg/fdbgo/client[/:],^//pkg/fdbgo/fdb[/:],
 # 4 concurrent test targets is right for CI's 4-vCPU runners; `just test` and
 # `just test-full` raise it to a third of the cores on bigger machines.
 # Any non-zero value also makes Bazel IGNORE tags = ["resources:memory:N"] on
-# tests (measured, Bazel 9.0.1), which is why heavy suites need "exclusive".
+# tests (measured, Bazel 9.0.1). CI's container lanes therefore pass
+# --local_test_jobs=0 --local_resources=memory=4500, which charges each
+# target's declared memory and keeps the heavy suites (factory_test,
+# full_test, client_test) from sharing the 7.6 GB runner with each other
+# (ci.yml, "Build, lint & test").
 test --local_test_jobs=4
 # `bazelrunfiles`: runfiles-only suites (conformance, bindingtester) — excluded from
 #   a plain `go test ./...` so it doesn't panic looking for Bazel runfiles.
