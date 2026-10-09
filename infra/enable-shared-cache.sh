@@ -72,4 +72,9 @@ for _ in $(seq 1 30); do
 	sleep 2
 done
 echo "shared cache NOT reachable at $IP:9092" >&2
+if [ "$ROLE" = server ]; then
+	docker ps -a --filter name=bazel-remote >&2
+	docker logs --tail 40 bazel-remote >&2 || true
+	ss -ltnp >&2 || true
+fi
 exit 1
