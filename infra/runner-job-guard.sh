@@ -27,7 +27,8 @@ pull_request | pull_request_target | pull_request_review | pull_request_review_c
 	;;
 issue_comment)
 	# @claude on a pull request from a fork: the agent would act on fork content.
-	if jq -e '.issue.pull_request' "${GITHUB_EVENT_PATH:?}" >/dev/null; then
+	is_pr=$(jq -r '.issue | if type == "object" then has("pull_request") else error("missing issue object") end' "${GITHUB_EVENT_PATH:?}")
+	if [ "$is_pr" != false ]; then
 		echo "runner-job-guard: refusing issue_comment on a pull request on a self-hosted runner" >&2
 		exit 1
 	fi

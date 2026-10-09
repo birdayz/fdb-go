@@ -8,8 +8,8 @@ legal/security, performance, operations, and a simulated HN thread. Owner and st
 
 | # | Decision | Notes |
 |---|---|---|
-| D1 | ~~Revoke the leaked GitHub OAuth `client_secret`~~ **done 2026-10-09 (owner rotated all metrognome secrets)** | `examples/metrognome/config.yaml:7` (commit `6ad7ae7e5`). Its branches are deleted, but closed PRs #58 and #65 keep the refs forever. Treat it as compromised. |
-| D2 | Git history: keep, strip binaries, or squash | 440 MiB pack; 55 MB `factory-migrate` binary. `v0.1.0` is already in the Go module proxy. Must be decided before forks exist. |
+| D1 | ~~Revoke the leaked GitHub OAuth `client_secret`~~ **done 2026-10-09 (owner rotated all metrognome secrets)** | `examples/metrognome/config.yaml:7` (commit `6ad7ae7e5`). Its branches are deleted, but closed PRs #58 and #65 retain accessible history. Rotation addresses the credential; history cleanup is a separate, disruptive operation. Treat the exposed value as compromised. |
+| D2 | Git history: keep, strip binaries, or squash | 440 MiB pack; 55 MB `factory-migrate` binary. `v0.1.0` is already in the Go module proxy. Rewriting history does not remove copies in forks, caches or module proxies. |
 | D3 | Agent material in the public tree | `CLAUDE.md` ("ABSOLUTE PRIME DIRECTIVE"), `.claude/` (Graefe/Torvalds personas, 24/7 shifts), `shifts/`, 19 root `.md` files, and real people as reviewer names in RFCs, commits and tests. |
 | D4 | AI-assisted disclosure | The HN-thread simulation's top comment is commit forensics. Disclose first, in your own words, and point at the oracles: Java conformance, the libfdb_c differential, the binding tester. |
 | D5 | Shrink the public API (about 88% of 11.5k exported identifiers should be internal) | Planner, simfdb, dst, conformance, gomock mocks and test seams are importable. Hard to take back after launch. |
@@ -51,7 +51,7 @@ legal/security, performance, operations, and a simulated HN thread. Owner and st
 ### Security and legal
 | Sev | Item | Owner |
 |---|---|---|
-| B | Fork PRs could reach persistent root runners | **done**: runner job-started guard (both boxes) + approval for all outside contributors |
+| B | Fork PRs could reach persistent root runners | **mitigated**: runner job-started guard (both boxes) + approval for all outside contributors; persistent sudo/Docker hosts and shared-cache trust remain risks |
 | H | `claude.yml` on self-hosted runners with write tokens | **done** (PR #788): GitHub-hosted |
 | H | Tag/release protection; secret scanning; push protection; Dependabot; private vulnerability reporting | **done** (settings) |
 | H | Apache §4 headers on ~288 ported files; NOTICE; trademark wording; third-party notices; SECURITY.md link | fix-legal |
@@ -67,7 +67,7 @@ legal/security, performance, operations, and a simulated HN thread. Owner and st
 ### Operations
 | Sev | Item | Owner |
 |---|---|---|
-| H | Java conformance is not a required check | open (settings, once #788 merges) |
+| H | Java conformance must gate merges | **done** (settings): required `Java conformance (Go vs Java 4.14.2.0)`; verified all six previous required checks and strictness preserved |
 | H | Unbounded default limits (retries, timeouts, statement memory/rows), not settable from the DSN | open |
 | H | No CONTRIBUTING / SUPPORT / issue templates; bus factor 1 | open |
 | M | `go 1.26.9` patch-level directive; v0.1.0 has no GitHub release | release |
