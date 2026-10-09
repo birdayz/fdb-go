@@ -6,12 +6,9 @@ BUF_VERSION := "1.67.0"
 # `just test` followed by `just race`/`just coverage` cold-recompiles both ways every
 # time. Dedicated bases keep each config's cache warm and isolated; the default base stays
 # pure-normal-config and never thrashes.
-#   race_base — SHARED with CI: ci.yml's race job + nightly-coverage's race step use this
-#     exact path, so local `just race` and CI warm the same race cache.
-#   cov_base  — LOCAL ONLY: nightly-coverage still runs `bazelisk coverage` on the default
-#     base (its report step + memory-shutdown are coupled to it), so this only isolates
-#     local `just coverage` from the local `just test` cache. Sharing it with nightly is a
-#     follow-up (needs --output_base threaded through the coverage report step).
+#   race_base — SHARED with CI: ci.yml's race job uses this exact path, so local
+#     `just race` and CI warm the same race cache.
+#   cov_base  — isolates local `just coverage` from the local `just test` cache.
 race_base := env_var('HOME') / ".cache/bazel/_race_output_base"
 cov_base := env_var('HOME') / ".cache/bazel/_coverage_output_base"
 
@@ -120,21 +117,12 @@ test *args:
 sqltest *args:
     bazelisk test //pkg/relational/sqldriver:all //pkg/relational/sqltest/... {{args}}
 
-# The whole sqltest corpus as one binary: the only run that asserts the census
-# population floors (every sqltest package already runs the census gates, but
-# with the whole-corpus floors withheld). Tagged nightly: nightly-coverage runs
-# it, `just test-full` does not, since it reruns the entire corpus (~2500 CPU-s)
-# for a meta-coverage check.
-census *args:
-    bazelisk test //pkg/relational/sqltest/census:census_test {{args}}
-
-# Thorough lane: all Bazel test targets, including manual stress/oracle targets,
-# except those tagged nightly (run by the nightly workflows instead).
+# Thorough lane: all Bazel test targets, including manual stress/oracle targets.
 # Query explicitly: //... alone silently omits manual targets. Cache stays enabled.
 test-full *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    all=$(bazelisk query 'kind(".*_test", //...) except attr(tags, "\bnightly\b", //...)' --output=label)
+    all=$(bazelisk query 'kind(".*_test", //...)' --output=label)
     test -n "$all" || { echo 'No test targets found' >&2; exit 1; }
     targets=$( { for t in {{test_full_first}}; do grep -Fx -- "$t" <<<"$all" || true; done; grep -Fvx -f <(tr ' ' '\n' <<<"{{test_full_first}}") <<<"$all"; } )
     test "$(wc -l <<<"$targets")" -eq "$(wc -l <<<"$all")" || { echo 'test-full reordering lost targets' >&2; exit 1; }
@@ -142,7 +130,7 @@ test-full *args:
 
 # Convenience: run ONLY the full committed RFC-201 factory corpus, uncached.
 # It is part of `just test-full` too; this recipe exists for a forced standalone
-# re-run (e.g. reproducing the nightly heartbeat job locally).
+# re-run.
 factory-corpus:
     bazelisk test //pkg/relational/conformance/factorycorpus/full:full_test \
         --test_output=streamed --nocache_test_results
@@ -492,15 +480,13 @@ race:
 # Run all tests with race detector. Dedicated output_base (see `race`). First run on a
 # cold race cache recompiles instrumented (~3 min); subsequent runs are warm.
 #
-# THREE DIFFERENT RACE SETS EXIST. They are not meant to be equal, so do not
+# TWO DIFFERENT RACE SETS EXIST. They are not meant to be equal, so do not
 # "reconcile" them without reading why:
 #
 #   this recipe          client, fdb, recordlayer, chaos, conformance (+ corpora), cascades/...
-#   nightly-coverage.yml client, fdb, recordlayer, chaos, conformance (+ corpora)
 #   ci.yml (PR gate)     relational/..., client, transport, fdb, cascades/...
 #
-# This recipe mirrors NIGHTLY-COVERAGE (not the PR gate) and always has: it is
-# the "everything heavy I can run locally" set — chaos and conformance are far
+# This recipe is the "everything heavy I can run locally" set — chaos and conformance are far
 # too slow to gate a PR, while the PR gate instead carries relational/..., whose
 # database/sql concurrency is the highest-yield race surface and which is too
 # expensive to belong in a recipe developers run repeatedly.
@@ -530,7 +516,7 @@ verify:
     echo "=== Race detector (see race-all: does NOT cover relational/..., unlike the PR gate) ==="
     just race-all
     echo "=== Fuzz smoke (3 targets, 10s each) ==="
-    # Routed through //cmd/fuzzrun for the same reason the nightly is: Go's fuzz
+    # Routed through //cmd/fuzzrun: Go's fuzz
     # coordinator intermittently reports a clean -fuzztime expiry as
     # "context deadline exceeded" (golang/go#72104). A shorter budget narrows that
     # window, it does not close it.

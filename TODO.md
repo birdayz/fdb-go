@@ -1466,15 +1466,19 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## Follow-ups after the 4.14.2.0 migration (not blocking)
 
-- [ ] **Re-evaluate every nightly workflow (all disabled 2026-10-09 via `gh workflow disable`).**
-  Nightly Coverage, Factory, Fuzz, Oracles, Reconcile, RowDiff and Stress are disabled in GitHub
-  (the files are unchanged). A late-firing nightly could take both CI runners, and it is unclear
-  which of them still find anything. For each one, decide keep, merge into another, or delete,
-  based on what it has caught. Re-enable with `gh workflow enable <file>`.
-  - **Coverage that now runs nowhere:** `//pkg/relational/sqltest/census:census_test` (the
-    whole-corpus census floors), and the -race runs of `//pkg/relational/conformance/...` and of
-    the client and record-layer containers.
-  - **Still on:** `nightly-libfdbc.yml`, because it is also the required per-PR check.
+- [ ] **Decide which nightly nets to bring back (all deleted 2026-10-09).** The seven nightly
+  workflows (coverage, factory, fuzz, oracles, reconcile, rowdiff, stress), `cmd/verify-pr-checks`
+  (used only by reconcile) and the `census_test` target were removed: a late nightly could hold
+  both CI runners, and nobody could say what they still caught. The libfdb_c cross-client
+  differential moved into ci.yml as its own per-PR job. Each one is in git history
+  (`git show 8d3f8c4ad:.github/workflows/<file>`). Bring one back only with a stated catch rate.
+  What no longer runs anywhere:
+  - the `-race` runs of `//pkg/relational/conformance/...` and of the client, record-layer and
+    chaos container suites;
+  - active fuzzing;
+  - the 10K/100K/1M stress suite;
+  - coverage reporting;
+  - the self-checking oracles and the nightly rowdiff and factory batches.
 
 - [ ] Two IN lists ordered by their own columns: Java plans nested in-unions
   over both explodes; Go keeps sorted in-joins (`w8_in5x5`/`w8_in4x6`, declared

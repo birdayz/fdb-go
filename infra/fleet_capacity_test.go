@@ -55,7 +55,7 @@ import (
 // bugs in the instrument, and an instrument that silently reports a wrong ratio
 // is worse than one that reports none.
 //
-// The window is GitHub's and is not configurable: nightly-libfdbc.yml sets
+// The window is GitHub's and is not configurable: ci.yml's libfdbc-differential job sets
 // timeout-minutes 40 and an inner `go test -timeout 30m`, so the ~10 minutes has
 // no relationship to any budget in this repo. Slots are the only lever we own.
 
@@ -280,7 +280,7 @@ func TestPushFanOutVersusTheRunnerPool(t *testing.T) {
 			"  ~10-minute unacquired window is CANCELLED having executed zero steps — the\n"+
 			"  lane reports RED while having tested nothing. At this ratio, queueing is the\n"+
 			"  first explanation to check, ahead of anything the lane actually tests.\n"+
-			"  The window is GitHub's and is not configurable: nightly-libfdbc.yml already\n"+
+			"  The window is GitHub's and is not configurable: ci.yml's libfdbc job already\n"+
 			"  allows timeout-minutes 40. Slots are the only lever this repo owns — raise\n"+
 			"  var.runner_count to %d in main.tf and apply to restore the 1:1 fit.",
 			total, runnerLabel, slots, dedicatedRunners, total-slots, detail,

@@ -1,21 +1,18 @@
 load("@rules_go//go:def.bzl", "go_test")
 
-# The full committed RFC-201 corpus runs in `just test-full` and non-race CI.
-# The nightly corpus job re-runs it on master as a scheduled heartbeat.
-#
-# One container, one top-level test function, a t.Parallel() subtest per
-# scenario.
+# The full committed RFC-201 corpus runs in `just test-full` and non-race CI,
+# as eight shards (see shard_count below).
 #
 # What it costs, measured, because an earlier version of this comment claimed
 # "well under a minute at 2000 scenarios" and the corpus is now 5000:
 #
-#   514s   non-race, alone on the CI runner (nightly-factory run 30747534073)
+#   514s   non-race, alone on the CI runner (run 30747534073)
 #   1328s  -race, four cores, all 5000 scenarios passing
 #   1830s  -race on the CI runner while co-scheduled with three other targets
 #   3612s  the same, on a run where it hit the wall and TIMED OUT (PR #590)
 #
 # That last line is why the corpus targets are no longer in the PR race lane
-# (ci.yml's REL_SCOPE subtracts them; nightly-coverage races them instead). The
+# (ci.yml's REL_SCOPE subtracts them). The
 # eternal budget is not the problem and raising it further would not help: the
 # spread between 1328s and 3612s is contention on a 7.6 GB box, not work.
 go_test(

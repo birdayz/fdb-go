@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -97,14 +98,21 @@ func TestJustTestLanes(t *testing.T) {
 			dir := t.TempDir()
 			stub := `#!/bin/bash
 if [ "$1" = query ]; then
-    [ "$2" = 'kind(".*_test", //...) except attr(tags, "\bnightly\b", //...)' ] || exit 91
+    [ "$2" = 'kind(".*_test", //...)' ] || exit 91
     printf '%s\n' "$LABELS"
     exit "$QUERY_EXIT"
 fi
 printf '%s\n' "$*" > "$CALLS"
 exit "$TEST_EXIT"
 `
-			if err := os.WriteFile(filepath.Join(dir, "bazelisk"), []byte(stub), 0o700); err != nil {
+			// Written under syscall.ForkLock: these subtests run in parallel, and a
+			// fork while the stub's write fd is open hands that fd to the child, so
+			// exec'ing the stub fails with ETXTBSY. In the cases that expect a
+			// failing lane that looked like a pass with no Bazel invocation.
+			syscall.ForkLock.Lock()
+			err := os.WriteFile(filepath.Join(dir, "bazelisk"), []byte(stub), 0o700)
+			syscall.ForkLock.Unlock()
+			if err != nil {
 				t.Fatal(err)
 			}
 			calls := filepath.Join(dir, "calls")

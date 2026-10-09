@@ -68,7 +68,7 @@ jobs:
         # The whole test suite drives real FDB testcontainers; without Docker every
         # FDB test hits the allowed `FDB not available (no Docker)` skip and this job
         # — the gate that BLOCKS MERGES — reports SUCCESS with no coverage (codex,
-        # RFC-107). This matters more than the nightly/race jobs: fail loudly.
+        # RFC-107). This matters more than the race job: fail loudly.
         run: |
           docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the test suite would skip (exit 0) and the merge gate would silently pass with no coverage"; exit 1; }
 
@@ -245,18 +245,17 @@ jobs:
 
   wire-oracle:
     name: Wire-type oracle (deterministic)
-    # RFC-115 §5. The cross-client DATA-plane differential is already per-PR
-    # (nightly-libfdbc.yml). This promotes the cmd/fdb-diff-oracle WIRE-type oracle —
-    # nightly-only until now (nightly-fuzz.yml) — to per-PR, so a marshal regression in
-    # a less-traveled reply type (e.g. the 8 reply-parse types) reddens BEFORE merge,
-    # not ~a day later.
+    # RFC-115 §5. The cross-client DATA-plane differential runs per-PR (the
+    # libfdbc-differential job); this runs the cmd/fdb-diff-oracle WIRE-type oracle
+    # per-PR, so a marshal regression in a less-traveled reply type (e.g. the 8
+    # reply-parse types) reddens before merge.
     #
     # Per-PR is DETERMINISTIC ONLY: TestDiff* + every Fuzz* SEED corpus replayed against
     # the C++ oracle. ACTIVE fuzzing (new-input discovery) is deliberately NOT a per-PR
     # gate — it is non-deterministic in WHAT it finds, so it reddens PRs on pre-existing
     # divergences unrelated to the change. (It did exactly that here: it surfaced the
     # latent IPAddress variant-marshal wire bug — real, but pre-existing — fixed in this
-    # RFC §7.) Active fuzzing is the (revived) nightly net's job (nightly-fuzz.yml §7).
+    # RFC §7.) Active fuzzing is not a gate; `just verify` runs a fuzz smoke.
     runs-on: hetzner-fdb-vm
     timeout-minutes: 20
     steps:
@@ -293,7 +292,7 @@ jobs:
         # alone silently skipped the seed corpora (the comment used to overclaim). With it,
         # a marshal regression in ANY oracle-compared type — or on any accumulated
         # interesting seed — reddens HERE, per-PR. Deterministic, ~0.1s. Active fuzzing
-        # (new-input discovery) stays nightly (nightly-fuzz.yml §7).
+        # (new-input discovery) is not a gate.
         run: |
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
           DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run='TestDiff|^Fuzz' -v -count=1 ./cmd/fdb-diff-oracle/
@@ -369,6 +368,50 @@ jobs:
         # now lives in cmd/vulnscan next to the scan it applies to.
         run: go run ./cmd/vulnscan
 
+  libfdbc-differential:
+    # The libfdb_c (cgo) backend is behind the `libfdbc` build tag
+    # (pkg/internal/fdbclient), so the Bazel lanes build and test only the pure-Go
+    # client. This job builds the real cgo backend and runs the cross-client
+    # differential: the pure-Go client and libfdb_c against one real FoundationDB,
+    # asserting byte-identical records, index entries, split records and
+    # continuations. The check name is a required status check; keep it.
+    name: Cross-client wire differential (-tags libfdbc)
+    runs-on: hetzner-fdb-vm
+    timeout-minutes: 40
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Resolve Bazel Go SDK
+        id: go-sdk
+        run: |
+          OUTPUT_BASE=$(bazelisk info --config=ci output_base 2>/dev/null)
+          GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
+          if [ -z "$GO_BIN" ]; then
+            echo "Bazel Go SDK not materialized (cold slot) — fetching it via bazel"
+            bazelisk run --config=ci @rules_go//go -- version >/dev/null 2>&1 || true
+            GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
+          fi
+          if [ -z "$GO_BIN" ]; then
+            echo "Bazel Go SDK not found — trying system go"
+            GO_BIN=go
+          fi
+          echo "go-bin=$GO_BIN" >> "$GITHUB_OUTPUT"
+          echo "Using Go: $GO_BIN ($($GO_BIN version))"
+
+      - name: Build the libfdb_c backend (-tags libfdbc)
+        run: |
+          GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
+          "$GO_BIN" build -tags libfdbc ./pkg/fdbgo/libfdbc/... ./pkg/internal/fdbclient/...
+
+      - name: Cross-client differential + libfdbc unit tests (-tags libfdbc, cgo + Docker)
+        run: |
+          GO_BIN="${{ steps.go-sdk.outputs.go-bin }}"
+          "$GO_BIN" test -tags libfdbc -count=1 -timeout 30m -v \
+            ./pkg/fdbgo/libfdbc/... ./pkg/internal/fdbclient/...
+
   race:
     name: Race detector (SQL layer + client + cascades)
     runs-on: hetzner-fdb-vm
@@ -403,8 +446,8 @@ jobs:
         # self-hosted runner the normal build and the race build cold-recompile on EVERY
         # PR (the CI slowness). A DEDICATED --output_base gives the race config its own
         # warm analysis + action cache that never thrashes — and is never thrashed by —
-        # the normal build. Same base path as nightly-coverage's race step, so they share
-        # one warm race cache. Mirrors nightly-coverage's memory discipline:
+        # the normal build. Same base path as `just race`, so they share one warm
+        # race cache. Memory discipline:
         #   - `bazelisk shutdown` frees the normal-base server's heap before the race
         #     server starts (7.6 GB box; FDB testcontainers also run here);
         #   - --host_jvm_args=-Xmx3g caps the race server; --local_resources bounds
@@ -442,8 +485,7 @@ jobs:
         # driver → planner → executor stack the end-to-end SQL suite already drives
         # from ~1600 concurrent tests, over per-scenario state that is shared with nothing. The
         # race-coverage delta is ~0 and the cost is the merge queue. They keep
-        # running non-instrumented in "Build, Lint & Test" on every PR, and under
-        # the detector in nightly-coverage's race step.
+        # running non-instrumented in "Build, Lint & Test" on every PR.
         #
         # The end-to-end SQL suite (//pkg/relational/sqltest/...) is excluded for
         # the same reason: it is content coverage of that stack, not a concurrency
