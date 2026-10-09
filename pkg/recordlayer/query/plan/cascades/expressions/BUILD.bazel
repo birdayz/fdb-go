@@ -87,6 +87,7 @@ go_test(
         "memo_equal_test.go",
         "permutation_test.go",
         "projection_name_survives_copy_rebuild_rebase_test.go",
+        "qov_prototype_test.go",
         "quantifier_test.go",
         "rebase_test_helper_test.go",
         "reference_concurrent_read_test.go",

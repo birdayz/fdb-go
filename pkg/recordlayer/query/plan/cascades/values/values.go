@@ -5520,12 +5520,26 @@ func NewQuantifiedObjectValue(
 	correlation CorrelationIdentifier,
 	flowed Type,
 ) (QuantifiedObjectValue, error) {
-	if correlation.IsZero() {
-		return nil, resolutionError(CorrelationZero, "qov.correlation", "correlation is zero")
+	if err := checkQOVCorrelation(correlation); err != nil {
+		return nil, err
 	}
-	if correlation.isCurrent() {
-		return nil, resolutionError(CorrelationKindMismatch, "qov.correlation", "current is owner-scoped")
+	prototype, err := NewQOVPrototype(flowed)
+	if err != nil {
+		return nil, err
 	}
+	return prototype.instantiate(correlation), nil
+}
+
+// QOVPrototype is what NewQuantifiedObjectValue derives from a flowed type:
+// its exact snapshot and source layout. Deriving it once lets QOVs over the
+// same unchanged type skip re-snapshotting it.
+type QOVPrototype struct {
+	flowed *exactType
+	layout *qovRecordLayout
+}
+
+// NewQOVPrototype snapshots flowed as NewQuantifiedObjectValue does.
+func NewQOVPrototype(flowed Type) (*QOVPrototype, error) {
 	handle, err := SnapshotExactType(flowed)
 	if err != nil {
 		return nil, err
@@ -5534,11 +5548,29 @@ func NewQuantifiedObjectValue(
 	if exact.code == TypeCodeNull || exact.code == TypeCodeRelation {
 		return nil, resolutionError(TypeMalformedCode, "qov.flowed", "QOV root must be an object or scalar exact type")
 	}
-	return &quantifiedObjectValue{
-		correlation:  correlation,
-		flowed:       exact,
-		sourceLayout: snapshotQOVRecordLayout(flowed),
-	}, nil
+	return &QOVPrototype{flowed: exact, layout: snapshotQOVRecordLayout(flowed)}, nil
+}
+
+// QuantifiedObjectValue is NewQuantifiedObjectValue over the prototype's type.
+func (p *QOVPrototype) QuantifiedObjectValue(correlation CorrelationIdentifier) (QuantifiedObjectValue, error) {
+	if err := checkQOVCorrelation(correlation); err != nil {
+		return nil, err
+	}
+	return p.instantiate(correlation), nil
+}
+
+func (p *QOVPrototype) instantiate(correlation CorrelationIdentifier) QuantifiedObjectValue {
+	return &quantifiedObjectValue{correlation: correlation, flowed: p.flowed, sourceLayout: p.layout}
+}
+
+func checkQOVCorrelation(correlation CorrelationIdentifier) error {
+	if correlation.IsZero() {
+		return resolutionError(CorrelationZero, "qov.correlation", "correlation is zero")
+	}
+	if correlation.isCurrent() {
+		return resolutionError(CorrelationKindMismatch, "qov.correlation", "current is owner-scoped")
+	}
+	return nil
 }
 
 // AsQuantifiedObjectValue exact-recognizes the package-owned concrete node.

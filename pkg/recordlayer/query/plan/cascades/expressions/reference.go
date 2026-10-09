@@ -913,6 +913,8 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 type flowedTypeMemo struct {
 	typ     values.Type
 	version uint64
+	// prototypes cache the QOV prototypes of typ, plain and nullable-widened.
+	prototypes [2]atomic.Pointer[values.QOVPrototype]
 }
 
 // cachedFlowedType returns the memoized GetFlowedObjectType answer when it was
@@ -927,6 +929,17 @@ func (r *Reference) cachedFlowedType() (values.Type, bool) {
 		return nil, false
 	}
 	return memo.typ, true
+}
+
+// cachedFlowedMemo is the flowed-type memo for the current member set, or nil.
+func (r *Reference) cachedFlowedMemo() *flowedTypeMemo {
+	if r == nil {
+		return nil
+	}
+	if memo := r.flowedType.Load(); memo != nil && memo.version == r.memberVersion {
+		return memo
+	}
+	return nil
 }
 
 func (r *Reference) setCachedFlowedType(typ values.Type) {
