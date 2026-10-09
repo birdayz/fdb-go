@@ -46,11 +46,13 @@ test --test_timeout=60,300,900,3600
 # pkg/linters/) which dilutes the coverage percentage.
 coverage --instrumentation_filter="^//pkg/fdbgo/client[/:],^//pkg/fdbgo/fdb[/:],^//pkg/fdbgo/transport[/:],^//pkg/recordlayer[/:]"
 
-# Limit concurrent test targets to prevent Docker socket contention.
-# 9 test targets all create FDB testcontainers (socat + FDB + network each).
-# Docker socket can't handle 9× parallel container creation → timeouts/hangs.
-# 4 concurrent test targets is right for CI's 4-vCPU runners; `just test` and
-# `just test-full` raise it to a third of the cores on bigger machines.
+# Limit concurrent test targets for a plain `bazelisk test`: 4 is right for
+# CI's 4-vCPU runners. `just test` / `just test-full` switch to resource
+# accounting instead (--local_test_jobs=0 plus resources:cpu/memory tags).
+# The old claim that Docker hangs past ~8 concurrent FDB containers was the
+# kernel AIO pool (fs.aio-max-nr) exhausted by another service on the dev box:
+# fdbserver then fails with 1510 "Disk i/o operation failed". With the pool
+# raised, 48 concurrent containers ran cleanly.
 # Any non-zero value also makes Bazel IGNORE tags = ["resources:memory:N"] on
 # tests (measured, Bazel 9.0.1). CI's container lanes therefore pass
 # --local_test_jobs=0 --local_resources=memory=4500, which charges each
