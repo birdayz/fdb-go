@@ -57,6 +57,9 @@ type ReferencePlanProperties interface {
 // Methods that MUST NOT canonicalize: Canonical, ID, IsForwarded, and the
 // merge primitive absorb — they operate on the receiver's own identity.
 type Reference struct {
+	// The member lanes only grow by append; every other change installs a new
+	// slice. A lane read once is therefore immutable, which lets an admission
+	// view hold it without a copy.
 	members      []RelationalExpression
 	finalMembers []RelationalExpression
 	// forced holds the members that arrived after the group's exploration
@@ -286,8 +289,8 @@ func (r *Reference) AdmissionView() *ReferenceAdmissionView {
 		reference:   r,
 		version:     r.memberVersion,
 		resultType:  r.admittedResultType,
-		exploratory: append([]RelationalExpression(nil), r.members...),
-		final:       append([]RelationalExpression(nil), r.finalMembers...),
+		exploratory: slices.Clip(r.members),
+		final:       slices.Clip(r.finalMembers),
 	}
 }
 
@@ -1296,8 +1299,8 @@ func (r *Reference) ConstraintsMap() *ConstraintsMap {
 func (r *Reference) AdvancePlannerStage(newStage PlannerStage) {
 	r = r.Canonical()
 	r.plannerStage = newStage
-	r.members = append(r.members[:0], r.finalMembers...)
-	r.finalMembers = r.finalMembers[:0]
+	r.members = slices.Clone(r.finalMembers)
+	r.finalMembers = nil
 	r.memberVersion++
 	r.memberLayout++
 	bumpCorrelationEpoch()
@@ -1409,7 +1412,7 @@ func (r *Reference) ContainsExactly(expr RelationalExpression) bool {
 // Mirrors Java's Reference.pruneWith.
 func (r *Reference) PruneWith(expr RelationalExpression) {
 	r = r.Canonical()
-	r.finalMembers = append(r.finalMembers[:0], expr)
+	r.finalMembers = []RelationalExpression{expr}
 	if r.planProperties != nil {
 		r.planProperties.RetainMembers(r.finalMembers)
 	}
@@ -1424,7 +1427,7 @@ func (r *Reference) PruneWith(expr RelationalExpression) {
 // Exploratory members are untouched — same contract as PruneWith.
 func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 	r = r.Canonical()
-	kept := r.finalMembers[:0]
+	kept := make([]RelationalExpression, 0, len(r.finalMembers))
 	for _, m := range r.finalMembers {
 		if _, ok := keep[m]; ok {
 			kept = append(kept, m)
@@ -1443,7 +1446,7 @@ func (r *Reference) PruneToSet(keep map[RelationalExpression]struct{}) {
 // ClearFinalMembers removes all final members.
 func (r *Reference) ClearFinalMembers() {
 	r = r.Canonical()
-	r.finalMembers = r.finalMembers[:0]
+	r.finalMembers = nil
 	if r.planProperties != nil {
 		r.planProperties.RetainMembers(nil)
 	}
