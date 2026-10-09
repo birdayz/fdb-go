@@ -109,7 +109,7 @@ var _ = Describe("GuardiANN target oracle", func() {
 	runSplitProbe := func(near, far int) splitProbe {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		env, err := SetupTenantEnvironment(ctx, sharedContainer, "guardiann_split_"+uuid.New().String())
+		env, err := SetupJavaTenant(ctx, sharedContainer, "guardiann_split_"+uuid.New().String())
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { Expect(env.Cleanup(context.Background())).To(Succeed()) })
 		var result splitProbe
@@ -169,7 +169,7 @@ var _ = Describe("GuardiANN target oracle", func() {
 	It("records a split beside an emptied neighbour", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		env, err := SetupTenantEnvironment(ctx, sharedContainer, "guardiann_empty_"+uuid.New().String())
+		env, err := SetupJavaTenant(ctx, sharedContainer, "guardiann_empty_"+uuid.New().String())
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { Expect(env.Cleanup(context.Background())).To(Succeed()) })
 		var result struct {
@@ -223,7 +223,7 @@ var _ = Describe("GuardiANN target oracle", func() {
 		defer cancel()
 		// The Java OnlineIndexer opens its own non-tenant contexts; the step uses a
 		// unique prefix of the shared container and clears it on every exit.
-		env, err := SetupTenantEnvironment(ctx, sharedContainer, "guardiann_queue_"+uuid.New().String())
+		env, err := SetupJavaTenant(ctx, sharedContainer, "guardiann_queue_"+uuid.New().String())
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { Expect(env.Cleanup(context.Background())).To(Succeed()) })
 		var result struct {
@@ -270,7 +270,7 @@ var _ = Describe("GuardiANN target oracle", func() {
 	It("records ordinary-save backpressure at the hard cap without merges", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		env, err := SetupTenantEnvironment(ctx, sharedContainer, "guardiann_readable_"+uuid.New().String())
+		env, err := SetupJavaTenant(ctx, sharedContainer, "guardiann_readable_"+uuid.New().String())
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func() { Expect(env.Cleanup(context.Background())).To(Succeed()) })
 		var result struct {
@@ -418,7 +418,7 @@ var _ = Describe("GuardiANN target oracle", func() {
 		} {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			DeferCleanup(cancel)
-			env, err := SetupTenantEnvironment(ctx, sharedContainer, "guardiann_knob_"+uuid.New().String())
+			env, err := SetupJavaTenant(ctx, sharedContainer, "guardiann_knob_"+uuid.New().String())
 			Expect(err).NotTo(HaveOccurred())
 			DeferCleanup(func() { Expect(env.Cleanup(context.Background())).To(Succeed()) })
 			var r knobResult
@@ -533,7 +533,7 @@ var _ = Describe("GuardiANN target oracle", func() {
 		} {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			DeferCleanup(cancel)
-			env, err := SetupTenantEnvironment(ctx, sharedContainer, "guardiann_inline_"+uuid.New().String())
+			env, err := SetupJavaTenant(ctx, sharedContainer, "guardiann_inline_"+uuid.New().String())
 			Expect(err).NotTo(HaveOccurred())
 			DeferCleanup(func() { Expect(env.Cleanup(context.Background())).To(Succeed()) })
 			var r inlineResult
@@ -1325,7 +1325,7 @@ var _ = Describe("GuardiANN target oracle", func() {
 		for _, sh := range shapes() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			DeferCleanup(cancel)
-			env, err := SetupTenantEnvironment(ctx, sharedContainer, "guardiann_shape_"+uuid.New().String())
+			env, err := SetupJavaTenant(ctx, sharedContainer, "guardiann_shape_"+uuid.New().String())
 			Expect(err).NotTo(HaveOccurred())
 			DeferCleanup(func() { Expect(env.Cleanup(context.Background())).To(Succeed()) })
 			var r struct {
@@ -1380,7 +1380,7 @@ var _ = Describe("GuardiANN target oracle", func() {
 		for _, scenario := range []string{"collapse", "reassign", "merge", "bits9Live", "bits9Obsolete"} {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			DeferCleanup(cancel)
-			env, err := SetupTenantEnvironment(ctx, sharedContainer, "guardiann_obsolete_"+uuid.New().String())
+			env, err := SetupJavaTenant(ctx, sharedContainer, "guardiann_obsolete_"+uuid.New().String())
 			Expect(err).NotTo(HaveOccurred())
 			DeferCleanup(func() { Expect(env.Cleanup(context.Background())).To(Succeed()) })
 			var r struct {
@@ -1446,7 +1446,7 @@ var _ = Describe("GuardiANN target oracle", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			DeferCleanup(cancel)
 			// The probe writes under its own random record-store subspace and clears it on exit.
-			env, err := SetupTenantEnvironment(ctx, sharedContainer, "guardiann_record_inline_"+uuid.New().String())
+			env, err := SetupJavaTenant(ctx, sharedContainer, "guardiann_record_inline_"+uuid.New().String())
 			Expect(err).NotTo(HaveOccurred())
 			DeferCleanup(func() { Expect(env.Cleanup(context.Background())).To(Succeed()) })
 			var r struct {
