@@ -609,13 +609,6 @@ var _ = Describe("Index Scan Unit Tests", func() {
 			_, err := c.OnNext(ctx)
 			Expect(err).To(Equal(context.Canceled))
 		})
-		It("vectorSearchCursor.OnNext returns the ctx error", func() {
-			c := &vectorSearchCursor{}
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			_, err := c.OnNext(ctx)
-			Expect(err).To(Equal(context.Canceled))
-		})
 		It("rtreeScanCursor.OnNext returns the ctx error", func() {
 			c := &rtreeScanCursor{}
 			ctx, cancel := context.WithCancel(context.Background())

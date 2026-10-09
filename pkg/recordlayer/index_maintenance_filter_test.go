@@ -203,28 +203,6 @@ var _ = Describe("IndexMaintenanceFilter", func() {
 		Expect(counts).NotTo(HaveKey("max_by_qty/7"))
 	})
 
-	It("refuses SOME in the sliding window, and maintains no window entry for NONE", func() {
-		idx := newWindowedVectorIndex("sw_filter", 2, gen.RowNumberWindowPredicate_ASC)
-		md := build(func(b *RecordMetaDataBuilder) { b.AddIndex("Order", idx) })
-		o := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), CoordX: proto.Int64(1), CoordY: proto.Int64(1)}
-		err := run(md, &recordingFilter{values: IndexValuesSome}, func(store *FDBRecordStore, _ *FDBRecordContext) error {
-			_, err := store.SaveRecord(o)
-			return err
-		})
-		var rc *RecordCoreError
-		Expect(errors.As(err, &rc)).To(BeTrue(), "%v", err)
-		Expect(rc.Message).To(Equal("filtering type SOME is not supported"))
-
-		Expect(run(md, &recordingFilter{values: IndexValuesNone}, func(store *FDBRecordStore, rtx *FDBRecordContext) error {
-			if _, err := store.SaveRecord(o); err != nil {
-				return err
-			}
-			keys, _ := readSlidingWindowEntries(rtx.Transaction(), slidingWindowSubspaceFor(store.subspace, idx), nil)
-			Expect(keys).To(BeEmpty())
-			return nil
-		})).To(Succeed())
-	})
-
 	It("is the online indexer's stores' filter", func() {
 		ks := specSubspace()
 		noIndex := build(func(*RecordMetaDataBuilder) {})

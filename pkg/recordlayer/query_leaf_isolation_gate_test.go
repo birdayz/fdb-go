@@ -24,6 +24,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,11 @@ type leafIsolationVerdict struct {
 	// exercises this type's scan end to end, or is empty when the type is not
 	// a query leaf.
 	coveredBy string
+	// coveredIn, when set, is the package whose own leaf test runs the
+	// coveredBy subtests: the package implementing the type, which this
+	// package's tests cannot link (linkedIndexTypePackages). That package's
+	// test pins the leaf names.
+	coveredIn string
 	// reason explains a type with no leaf coverage. Required when coveredBy is
 	// empty — "why can no plan reach this scan?" is the question that went
 	// unasked about VECTOR.
@@ -90,10 +96,13 @@ var leafIsolationDeclaration = map[string]leafIsolationVerdict{
 	// isolation left the entire suite green — measured, by reverting the
 	// SPFresh reads to snapshot and watching only the HNSW arm stay passing.
 	// A declaration is only worth what the named subtest actually executes.
-	"IndexTypeVector": {coveredBy: "vector_scan_by_distance"},
+	"IndexTypeVector": {coveredBy: "vector_scan_by_distance", coveredIn: "fdb.dev/pkg/recordlayer/vectorindex"},
 	// Two entries, because SPFresh serves BY_DISTANCE through two independent
 	// read paths: the one-shot top-k and the demand-widening ordered stream.
-	"IndexTypeVectorSPFresh": {coveredBy: "spfresh_scan_by_distance + spfresh_ordered_stream"},
+	"IndexTypeVectorSPFresh": {
+		coveredBy: "spfresh_scan_by_distance + spfresh_ordered_stream",
+		coveredIn: "fdb.dev/pkg/recordlayer/vectorindex",
+	},
 }
 
 // TestQueryLeafIsolationDeclarationIsExhaustive fails when an index type is
@@ -130,6 +139,15 @@ func TestQueryLeafIsolationDeclarationIsExhaustive(t *testing.T) {
 		// leaf, which builds no SPFresh index at all, so a regression there
 		// left the suite green. A name nobody resolves is how false coverage
 		// gets written down and believed.
+		if verdict.coveredIn != "" {
+			// The claim resolves in the implementing package, and only there.
+			typ := indexTypeConstValue(t, name)
+			if pkg := linkedIndexTypePackages[typ]; pkg != verdict.coveredIn {
+				t.Errorf("index type %s claims coverage in %s, but its implementing package is %q",
+					name, verdict.coveredIn, pkg)
+			}
+			continue
+		}
 		for _, leafName := range strings.Split(verdict.coveredBy, "+") {
 			leafName = strings.TrimSpace(leafName)
 			if leafName == "" {
@@ -195,4 +213,37 @@ func leafScanExists(name string) bool {
 		}
 	}
 	return false
+}
+
+// indexTypeConstValue is the string value index.go gives the IndexType
+// constant name.
+func indexTypeConstValue(t *testing.T, name string) string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "index.go", indexGoSource, 0)
+	if err != nil {
+		t.Fatalf("parse index.go: %v", err)
+	}
+	value := ""
+	ast.Inspect(file, func(n ast.Node) bool {
+		vs, ok := n.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		for i, ident := range vs.Names {
+			if ident.Name != name || i >= len(vs.Values) {
+				continue
+			}
+			if lit, ok := vs.Values[i].(*ast.BasicLit); ok {
+				value, err = strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+			}
+		}
+		return true
+	})
+	if value == "" {
+		t.Fatalf("index.go gives %s no string literal value", name)
+	}
+	return value
 }

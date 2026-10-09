@@ -18,14 +18,14 @@ import (
 // unique VALUE or RANK index: a save then fails where Java's does, in the
 // maintainer's serializePendingWriteQueue ("does not support the pending
 // write queue", FDBRecordStore.updateSecondaryIndexes), and a rank scan is
-// refused as not readable. A queue-capable vector index enqueues the save.
+// refused as not readable. A queue-capable index enqueues the save.
 var _ = Describe("WRITE_ONLY_WITH_QUEUE consumers", func() {
 	ctx := context.Background()
 	metadata := func() *RecordMetaData {
 		builder := baseBuilder()
 		builder.AddIndex("Order", NewIndex("uniq", Field("quantity")).SetUnique())
 		builder.AddIndex("Order", NewRankIndex("rank", Ungrouped(Field("price"))))
-		builder.AddIndex("Order", NewVectorIndex("vector", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1))
+		builder.AddIndex("Order", newValueWithQueueIndex("vector", Concat(Field("quantity"), Field("price"))))
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 		return md
@@ -100,7 +100,7 @@ var _ = Describe("WRITE_ONLY_WITH_QUEUE consumers", func() {
 		})
 	}
 
-	It("enqueues a save into a queued vector index and leaves the others maintained", func() {
+	It("enqueues a save into a queued index and leaves the others maintained", func() {
 		md := metadata()
 		queue(md, "vector")
 		Expect(inStore(md, func(store *FDBRecordStore) error {

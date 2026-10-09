@@ -26,7 +26,7 @@ var _ = Describe("Rebuild policy WRITE_ONLY_WITH_QUEUE", func() {
 		Expect(err).NotTo(HaveOccurred())
 		b2 := baseBuilder()
 		b2.AddIndex("Order", NewIndex("ordinary", Field("price")))
-		vector := NewVectorIndex("vector", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		vector := newValueWithQueueIndex("vector", Concat(Field("quantity"), Field("price")))
 		vector.AddedVersion, vector.LastModifiedVersion = v1.Version()+1, v1.Version()+1
 		b2.AddIndex("Order", vector)
 		v2, err := b2.Build()

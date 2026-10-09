@@ -1,35 +1,5 @@
 package recordlayer
 
-// RFC-198 open question 2, answered behaviorally: does any read a SELECT plan
-// reaches bypass ExecuteProperties.IsolationLevel?
-//
-// The question matters because Decision 2 makes in-transaction SQL reads
-// SERIALIZABLE, and "serializable" is not a property of the isolation FIELD —
-// it is a property of every leaf that consults it. An unconditional Snapshot()
-// call reached from a SELECT plan would take no read conflict range and would
-// be a silent hole: reads that look isolated, a commit that succeeds, and a
-// lost update with no error. The RFC's survey found the unconditional
-// Snapshot() sites (range_set.go, bunched_map.go, index_state.go, database.go,
-// aggregate_function.go) to be index-maintenance, store-state or ranked-set
-// internals rather than query leaves — but "not reached from a SELECT plan" is
-// a reachability claim, and reachability claims get a test.
-//
-// This is that test, and it is BEHAVIORAL rather than a source survey: for
-// each leaf the query path scans through, the same scan is run under both
-// isolation levels and the outcome that actually matters is measured — whether
-// a concurrent write into the scanned range conflicts the reader's commit.
-// SERIALIZABLE must conflict (the read took a conflict range); SNAPSHOT must
-// not (it took none). A leaf that ignored the level would produce the same
-// answer for both, and both directions are asserted, so ignoring it in EITHER
-// direction fails.
-//
-// What gets re-armed if this test ever fails: the SQL layer's promise that an
-// explicit transaction's reads are serializable (RFC-198 Decision 2) rests on
-// exactly these leaves. A leaf that stops consulting the level makes
-// in-transaction SELECTs silently snapshot-isolated on that access path, and
-// the lost update criterion 2 pins comes back for any query the planner routes
-// through it.
-
 import (
 	"context"
 	"errors"
@@ -44,48 +14,80 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// leafScan drains one query leaf over the seeded store. Each entry is a read
-// path a SELECT plan reaches: the record scan behind a full table scan, the
-// index scan behind an index access path, and the primary-key-only scan behind
-// a covering plan that needs keys and not records.
-type leafScan struct {
+// vectorLeafFixture carries the kNN indexes the seeded store holds.
+type vectorLeafFixture struct {
+	vectorIndex  *Index // Order$vec — the HNSW kNN access path
+	spfreshIndex *Index // Order$spf — the SPFresh kNN access path
+}
+
+// vectorLeafScan drains one kNN query leaf over the seeded store.
+type vectorLeafScan struct {
 	name string
-	// scan drains the leaf with the given properties, returning how many
-	// elements it saw (asserted non-zero, so an empty scan can never be
-	// mistaken for "no conflict range because nothing was read").
-	scan func(t *testing.T, store *FDBRecordStore, fx leafFixture, props ScanProperties) int
+	scan func(t *testing.T, store *FDBRecordStore, fx vectorLeafFixture, props ScanProperties) int
 }
 
-// leafFixture carries the indexes the seeded store holds, so a leaf can pick
-// the access path it needs without every leaf sharing one index.
-type leafFixture struct {
-	valueIndex *Index // Order$price — the ordinary value index
-}
-
-func queryLeafScans() []leafScan {
-	return []leafScan{
+// vectorLeafScans is the vector leaves recordlayer's
+// leafIsolationDeclaration names for IndexTypeVector and
+// IndexTypeVectorSPFresh.
+func vectorLeafScans() []vectorLeafScan {
+	return []vectorLeafScan{
 		{
-			name: "record_scan",
-			scan: func(t *testing.T, store *FDBRecordStore, _ leafFixture, props ScanProperties) int {
-				return drainLeaf(t, store.ScanRecords(nil, props))
+			// The VECTOR leaf. A kNN scan is a query leaf like any other — the
+			// executor forwards the statement's ScanProperties to it — and its
+			// HNSW traversal reads the graph through the transaction. Java
+			// derives that read's isolation from ScanProperties exactly as the
+			// generic leaf cursor does (VectorIndexMaintainer.java:201-202 is
+			// character-for-character KeyValueCursorBase.java:358), so a
+			// serializable kNN scan must take conflict ranges.
+			name: "vector_scan_by_distance",
+			scan: func(t *testing.T, store *FDBRecordStore, fx vectorLeafFixture, props ScanProperties) int {
+				return drainVectorLeaf(t, store.ScanIndexByType(fx.vectorIndex, IndexScanByDistance,
+					vectorKNNRange(vectorLeafQuery, 5), nil, props))
 			},
 		},
 		{
-			name: "index_scan",
-			scan: func(t *testing.T, store *FDBRecordStore, fx leafFixture, props ScanProperties) int {
-				return drainLeaf(t, store.ScanIndex(fx.valueIndex, TupleRangeAll, nil, props))
+			// SPFresh is a SEPARATE implementation of the same BY_DISTANCE
+			// contract — its own routing, postings and re-rank reads, none of
+			// which the HNSW leaf above executes a line of. Declaring it
+			// "covered" by that leaf was a false coverage claim: a regression
+			// in SPFresh's isolation would have left the whole suite green.
+			name: "spfresh_scan_by_distance",
+			scan: func(t *testing.T, store *FDBRecordStore, fx vectorLeafFixture, props ScanProperties) int {
+				return drainVectorLeaf(t, store.ScanIndexByType(fx.spfreshIndex, IndexScanByDistance,
+					vectorKNNRange(vectorLeafQuery, 5), nil, props))
 			},
 		},
 		{
-			name: "record_key_scan",
-			scan: func(t *testing.T, store *FDBRecordStore, _ leafFixture, props ScanProperties) int {
-				return drainLeaf(t, store.ScanRecordKeys(nil, props))
+			// The ordered-stream path is a THIRD read path, not a variant of
+			// the one above: it widens on demand through its own frontier and
+			// was the site that discarded its ScanProperties entirely.
+			name: "spfresh_ordered_stream",
+			scan: func(t *testing.T, store *FDBRecordStore, fx vectorLeafFixture, props ScanProperties) int {
+				return drainVectorLeaf(t, store.ScanIndexByType(fx.spfreshIndex,
+					IndexScanByDistanceOrderedStream,
+					vectorKNNRange(vectorLeafQuery, 5), nil, props))
 			},
 		},
 	}
 }
 
-func drainLeaf[T any](t *testing.T, cursor RecordCursor[T]) int {
+// vectorLeafQuery is the kNN probe point. It sits next to the seeded rows so
+// the search returns them and the concurrent writer's move is inside the
+// neighbourhood the reader actually traversed.
+var vectorLeafQuery = []float64{3, 3}
+
+// vectorKNNRange builds the BY_DISTANCE TupleRange the vector maintainers
+// agree on: Low = (serialized query vector), High = (k).
+func vectorKNNRange(query []float64, k int64) TupleRange {
+	return TupleRange{
+		Low:          tuple.Tuple{serializeVector(query)},
+		High:         tuple.Tuple{k},
+		LowEndpoint:  EndpointTypeRangeInclusive,
+		HighEndpoint: EndpointTypeRangeInclusive,
+	}
+}
+
+func drainVectorLeaf[T any](t *testing.T, cursor RecordCursor[T]) int {
 	t.Helper()
 	defer cursor.Close() //nolint:errcheck
 	n := 0
@@ -101,12 +103,15 @@ func drainLeaf[T any](t *testing.T, cursor RecordCursor[T]) int {
 	}
 }
 
-// TestQueryLeavesConsultIsolationLevel is RFC-198 OQ-2's pin.
-func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
+// TestVectorQueryLeavesConsultIsolationLevel is recordlayer's
+// TestQueryLeavesConsultIsolationLevel (RFC-198 OQ-2) over the vector leaves:
+// each kNN read path, run under both isolation levels, must take a read
+// conflict range exactly when the scan is serializable.
+func TestVectorQueryLeavesConsultIsolationLevel(t *testing.T) {
 	t.Parallel()
 
 	const indexName = "Order$price"
-	buildMetaData := func(t *testing.T) (*RecordMetaData, leafFixture) {
+	buildMetaData := func(t *testing.T) (*RecordMetaData, vectorLeafFixture) {
 		t.Helper()
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -114,14 +119,32 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		index := NewIndex(indexName, Field("price"))
 		builder.AddIndex("Order", index)
+		// (price, quantity) as a 2-D vector: the same records carry both the
+		// value index and the kNN access path, so one seeded store serves
+		// every leaf and the concurrent write below moves a row in BOTH.
+		vecIndex := NewVectorIndex("Order$vec", Concat(Field("price"), Field("quantity")), 2)
+		builder.AddIndex("Order", vecIndex)
+		// The SPFresh index over the same 2-D coordinates. A separate index
+		// type with a separate implementation of the BY_DISTANCE contract, so
+		// it needs its own fixture — sharing the HNSW one would be the very
+		// false-coverage claim this fixture exists to remove.
+		spfIndex := &Index{
+			Name:           "Order$spf",
+			Type:           IndexTypeVectorSPFresh,
+			RootExpression: Concat(Field("price"), Field("quantity")),
+			Options: map[string]string{
+				IndexOptionSPFreshNumDimensions: "2",
+			},
+		}
+		builder.AddIndex("Order", spfIndex)
 		md, err := builder.Build()
 		if err != nil {
 			t.Fatalf("build metadata: %v", err)
 		}
-		return md, leafFixture{valueIndex: index}
+		return md, vectorLeafFixture{vectorIndex: vecIndex, spfreshIndex: spfIndex}
 	}
 
-	for _, leaf := range queryLeafScans() {
+	for _, leaf := range vectorLeafScans() {
 		for _, level := range []struct {
 			name         string
 			isolation    IsolationLevel
@@ -137,7 +160,7 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 				env.Buggify = dst.DisabledBuggifier()
 				sim := simfdb.New(env)
 				db := NewFDBDatabaseWithBackend(sim).SetEnv(env)
-				sub := subspace.FromBytes(tuple.Tuple{"oq2", leaf.name, level.name}.Pack())
+				sub := subspace.FromBytes(tuple.Tuple{"oq2-vector", leaf.name, level.name}.Pack())
 				md, fx := buildMetaData(t)
 
 				// Seed rows 1..5 and, separately, the row the reader will
@@ -249,5 +272,25 @@ func TestQueryLeavesConsultIsolationLevel(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestVectorLeafNamesMatchCoreDeclaration pins the leaf names recordlayer's
+// leafIsolationDeclaration claims for the vector types, which that package
+// cannot resolve itself: renaming or dropping a leaf here must fail.
+func TestVectorLeafNamesMatchCoreDeclaration(t *testing.T) {
+	t.Parallel()
+	want := map[string]bool{"vector_scan_by_distance": true, "spfresh_scan_by_distance": true, "spfresh_ordered_stream": true}
+	got := map[string]bool{}
+	for _, leaf := range vectorLeafScans() {
+		got[leaf.name] = true
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("leaf %q, claimed by recordlayer's leafIsolationDeclaration, is not run", name)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("vector leaves %v, want exactly %v (update leafIsolationDeclaration)", got, want)
 	}
 }

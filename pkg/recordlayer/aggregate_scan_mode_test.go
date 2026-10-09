@@ -114,9 +114,9 @@ func TestFDB_AggregateScanModes(t *testing.T) {
 		})
 	}
 
-	for _, kind := range []string{"count", "sum", "min", "max", "bitmap", "permuted_min", "permuted_max", "extremum", "repair_iterator", "repair_small", "repair_want_all", "spfresh_sample", "spfresh_assignment"} {
+	for _, kind := range []string{"count", "sum", "min", "max", "bitmap", "permuted_min", "permuted_max", "extremum", "repair_iterator", "repair_small", "repair_want_all"} {
 		for _, isolation := range []IsolationLevel{SerializableIsolation, SnapshotIsolation} {
-			if (kind == "extremum" || kind == "spfresh_assignment") && isolation != SerializableIsolation || kind == "spfresh_sample" && isolation != SnapshotIsolation {
+			if kind == "extremum" && isolation != SerializableIsolation {
 				continue
 			}
 			t.Run(fmt.Sprintf("%s/isolation=%d", kind, isolation), func(t *testing.T) {
@@ -150,10 +150,6 @@ func TestFDB_AggregateScanModes(t *testing.T) {
 				case "bitmap":
 					idx = NewBitmapValueIndex("scan_mode", GroupBy(Field("order_id")))
 					fn = &IndexAggregateFunction{Name: FunctionNameBitmapValue, Operand: GroupBy(Field("order_id"))}
-				case "spfresh_sample", "spfresh_assignment":
-					idx = NewIndex("scan_mode", Concat(Field("price"), Field("quantity")))
-					idx.Type = IndexTypeVectorSPFresh
-					idx.Options = map[string]string{IndexOptionSPFreshNumDimensions: "2"}
 				default:
 					idx = NewPermutedMinIndex("scan_mode", GroupBy(Field("quantity"), Field("price")), 1)
 					fn = NewMinAggregateFunction(Ungrouped(Field("quantity")))
@@ -176,11 +172,6 @@ func TestFDB_AggregateScanModes(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
-					if idx.Type == IndexTypeVectorSPFresh {
-						if _, err := store.MarkIndexDisabled(idx.Name); err != nil {
-							return nil, err
-						}
-					}
 					for i := int64(1); i <= 3; i++ {
 						if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)), Quantity: proto.Int32(int32(i))}); err != nil {
 							return nil, err
@@ -197,88 +188,60 @@ func TestFDB_AggregateScanModes(t *testing.T) {
 					return openStore(rctx)
 				}
 				wantMode := fdb.StreamingModeIterator
-				if idx.Type == IndexTypeVectorSPFresh {
-					recorder.prefixes = [][]byte{ks.Sub(RecordKey).Bytes()}
-					var got []spfreshBuildInput
-					var inTx func(*FDBRecordContext, []spfreshBuildInput) error
-					var post func([]spfreshBuildInput) error
-					if kind == "spfresh_assignment" {
-						inTx = func(_ *FDBRecordContext, batch []spfreshBuildInput) error {
-							// Assignment callbacks are idempotent across transaction retries.
-							for _, entry := range batch {
-								found := false
-								for _, prior := range got {
-									found = found || bytes.Equal(prior.fullPK.Pack(), entry.fullPK.Pack())
-								}
-								if !found {
-									got = append(got, entry)
-								}
-							}
-							return nil
+				_, err = db.Run(ctx, func(rctx *FDBRecordContext) (any, error) {
+					store, err := observeStore(rctx)
+					if err != nil {
+						return nil, err
+					}
+					var got tuple.Tuple
+					if kind == "extremum" || kind == "repair_iterator" || kind == "repair_small" || kind == "repair_want_all" {
+						maintainer, maintErr := store.getIndexMaintainer(idx)
+						if maintErr != nil {
+							return nil, maintErr
 						}
+						m := maintainer.(*permutedMinMaxIndexMaintainer)
+						if kind == "extremum" {
+							got, err = m.getExtremum(tuple.Tuple{int64(10)})
+							if err == nil && (len(got) < 2 || got[0] != int64(10) || got[1] != int64(1)) {
+								t.Fatalf("extremum key = %v, want prefix [10 1]", got)
+							}
+							return nil, err
+						}
+						props := DefaultExecuteProperties().WithIsolationLevel(isolation).WithSkip(7).WithReturnedRowLimit(17)
+						if kind == "repair_small" {
+							props.DefaultCursorStreamingMode = StreamingModeSmall
+							wantMode = fdb.StreamingModeSmall
+						} else if kind == "repair_want_all" {
+							props.DefaultCursorStreamingMode = StreamingModeWantAll
+							wantMode = fdb.StreamingModeWantAll
+						}
+						got, err = PermutedMinIgnoringNulls(ctx, func(r TupleRange, p ScanProperties) RecordCursor[*IndexEntry] {
+							return m.standardIndexMaintainer.Scan(r, nil, p)
+						}, idx.Name, tuple.Tuple{int64(10)}, 1, 2, props)
 					} else {
-						post = func(batch []spfreshBuildInput) error { got = append(got, batch...); return nil }
+						fn.Index = idx.Name
+						got, err = store.EvaluateAggregateFunction(ctx, []string{"Order"}, fn, TupleRangeAll, isolation)
 					}
-					err = spfreshScanRecordBatches(ctx, db, observeStore, idx, ks.Sub(IndexKey).Sub(idx.SubspaceTupleKey()), 2, inTx, post)
-					if err == nil && len(got) != 3 {
-						t.Fatalf("SPFresh batch scan returned %d vectors, want 3", len(got))
+					if err != nil {
+						return nil, err
 					}
-				} else {
-					_, err = db.Run(ctx, func(rctx *FDBRecordContext) (any, error) {
-						store, err := observeStore(rctx)
-						if err != nil {
-							return nil, err
+					if kind == "bitmap" {
+						if len(got) != 1 {
+							t.Fatalf("bitmap result = %v, want one bitmap", got)
 						}
-						var got tuple.Tuple
-						if kind == "extremum" || kind == "repair_iterator" || kind == "repair_small" || kind == "repair_want_all" {
-							maintainer, maintErr := store.getIndexMaintainer(idx)
-							if maintErr != nil {
-								return nil, maintErr
-							}
-							m := maintainer.(*permutedMinMaxIndexMaintainer)
-							if kind == "extremum" {
-								got, err = m.getExtremum(tuple.Tuple{int64(10)})
-								if err == nil && (len(got) < 2 || got[0] != int64(10) || got[1] != int64(1)) {
-									t.Fatalf("extremum key = %v, want prefix [10 1]", got)
-								}
-								return nil, err
-							}
-							props := DefaultExecuteProperties().WithIsolationLevel(isolation).WithSkip(7).WithReturnedRowLimit(17)
-							if kind == "repair_small" {
-								props.DefaultCursorStreamingMode = StreamingModeSmall
-								wantMode = fdb.StreamingModeSmall
-							} else if kind == "repair_want_all" {
-								props.DefaultCursorStreamingMode = StreamingModeWantAll
-								wantMode = fdb.StreamingModeWantAll
-							}
-							got, err = PermutedMinIgnoringNulls(ctx, func(r TupleRange, p ScanProperties) RecordCursor[*IndexEntry] {
-								return m.standardIndexMaintainer.Scan(r, nil, p)
-							}, idx.Name, tuple.Tuple{int64(10)}, 1, 2, props)
-						} else {
-							fn.Index = idx.Name
-							got, err = store.EvaluateAggregateFunction(ctx, []string{"Order"}, fn, TupleRangeAll, isolation)
+						bitmap, ok := got[0].([]byte)
+						set := 0
+						for _, b := range bitmap {
+							set += bits.OnesCount8(b)
 						}
-						if err != nil {
-							return nil, err
+						if !ok || len(bitmap) == 0 || bitmap[0] != 14 || set != 3 {
+							t.Fatalf("bitmap = %x, want exactly bits 1,2,3", bitmap)
 						}
-						if kind == "bitmap" {
-							if len(got) != 1 {
-								t.Fatalf("bitmap result = %v, want one bitmap", got)
-							}
-							bitmap, ok := got[0].([]byte)
-							set := 0
-							for _, b := range bitmap {
-								set += bits.OnesCount8(b)
-							}
-							if !ok || len(bitmap) == 0 || bitmap[0] != 14 || set != 3 {
-								t.Fatalf("bitmap = %x, want exactly bits 1,2,3", bitmap)
-							}
-						} else if !bytes.Equal(got.Pack(), want.Pack()) {
-							t.Fatalf("aggregate = %v, want %v", got, want)
-						}
-						return nil, nil
-					})
-				}
+					} else if !bytes.Equal(got.Pack(), want.Pack()) {
+						t.Fatalf("aggregate = %v, want %v", got, want)
+					}
+					return nil, nil
+				})
 				if err != nil {
 					t.Fatal(err)
 				}
