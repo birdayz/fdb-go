@@ -1331,6 +1331,9 @@ func (c duecUncompressedConnector) Connect(ctx context.Context) (driver.Conn, er
 func duecLoadN(t *testing.T, ctx context.Context, db *sql.DB, table string, nullEvery, rows int) {
 	t.Helper()
 	const batch = 250
+	// Insert streams per table. Not a machine size: the bound is the one FDB
+	// process in the package's container, whose commit rate the 6 parallel
+	// tables already share; 16 streams measured slower than 8.
 	const workers = 8
 	start := time.Now()
 	var wg sync.WaitGroup

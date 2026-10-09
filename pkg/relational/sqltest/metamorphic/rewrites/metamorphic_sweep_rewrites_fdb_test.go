@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -204,7 +203,7 @@ func TestFDB_MetamorphicRewriteEquivalenceSweep(t *testing.T) {
 	var mu sync.Mutex
 	work := make(chan string)
 	var wg sync.WaitGroup
-	for range min(runtime.GOMAXPROCS(0), 8) {
+	for range testkit.ReadWorkers() {
 		wg.Go(func() {
 			for q := range work {
 				ri, ei := testkit.QueryRowStrings(t, ctx, w.Idx, q)
