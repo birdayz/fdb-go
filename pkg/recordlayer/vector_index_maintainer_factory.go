@@ -55,6 +55,7 @@ var (
 	_ byDistanceScanner    = (*vectorIndexMaintainer)(nil)
 	_ byDistanceScanner    = (*spfreshIndexMaintainer)(nil)
 	_ orderedStreamScanner = (*spfreshIndexMaintainer)(nil)
+	_ VectorIndexSearcher  = (*vectorIndexMaintainer)(nil)
 )
 
 // unwrapVectorMaintainer peels any decorators off a maintainer and returns the

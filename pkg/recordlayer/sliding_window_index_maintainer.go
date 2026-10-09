@@ -147,7 +147,7 @@ type slidingWindowIndexMaintainer struct {
 
 // delegateMaintainer exposes the wrapped maintainer so that store-level entry
 // points which need a CONCRETE maintainer type can see through the decoration.
-// See unwrapVectorMaintainer.
+// See maintainerAs.
 func (m *slidingWindowIndexMaintainer) delegateMaintainer() IndexMaintainer { return m.delegate }
 
 // indexMaintainerDecorator is implemented by maintainers that wrap another

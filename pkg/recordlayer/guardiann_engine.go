@@ -300,7 +300,7 @@ func (m *vectorIndexMaintainer) searchGuardiann(readTx fdb.ReadTransaction, pref
 		return nil, fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
 			m.index.Name, m.guardiannConfig.numDimensions, len(query))
 	}
-	cfg, err := opts.guardiannSearchConfig()
+	cfg, err := guardiannSearchConfigOf(opts)
 	if err != nil {
 		return nil, err
 	}
