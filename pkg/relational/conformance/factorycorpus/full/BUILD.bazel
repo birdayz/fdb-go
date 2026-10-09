@@ -36,7 +36,8 @@ go_test(
     # full_corpus_fdb_test.go. Each shard is its own process and FDB container.
     shard_count = 8,
     tags = [
-        "resources:memory:2600",
+        # Per shard: Go 0.8-1.6 GB measured plus its FDB container (~0.6 GB).
+        "resources:memory:2000",
         "test-full",
     ],
     deps = [
