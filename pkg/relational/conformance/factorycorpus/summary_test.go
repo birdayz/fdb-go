@@ -238,10 +238,7 @@ func TestSubtestFramingFitsLogCap(t *testing.T) {
 		t.Fatalf("parse cap: %v", err)
 	}
 
-	scenarios, err := factorycorpus.LoadDir("testdata")
-	if err != nil {
-		t.Fatalf("LoadDir: %v", err)
-	}
+	scenarios := loadCorpus(t)
 	framing := 0
 	for _, s := range scenarios {
 		framing += factorycorpus.SubtestFramingBytes("TestFDB_FactoryCorpusFull/" + s.Header.Name)
