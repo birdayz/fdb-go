@@ -64,6 +64,7 @@ go_test(
         "exact_replica_test.go",
         "explode_test.go",
         "expression_test.go",
+        "finals_of_at_stage_test.go",
         "flowed_leg_table_agreement_test.go",
         "flowed_row_refinement_test.go",
         "flowed_type_memo_invalidation_test.go",

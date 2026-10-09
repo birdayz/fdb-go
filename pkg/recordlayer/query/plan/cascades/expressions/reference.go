@@ -1255,6 +1255,35 @@ func (r *Reference) FinalMembers() []RelationalExpression {
 // InsertFinal adds e to the finalMembers set only. Does NOT add to
 // exploratory members. Mirrors Java's Reference.insertFinalExpression.
 func (r *Reference) InsertFinal(e RelationalExpression) bool {
+	var comparison MemoComparison
+	return r.insertFinal(e, &comparison, false)
+}
+
+// FinalsOfAtStage is a Reference over members as finals, each admitted as
+// InsertFinal admits it, at stage; pinned makes a single member a pinned final.
+// Nothing can read the new Reference while it is built, so its insertions
+// share one comparison and move no correlation epoch.
+func FinalsOfAtStage(members []RelationalExpression, stage PlannerStage, pinned bool) *Reference {
+	if len(members) == 0 {
+		return nil
+	}
+	var r *Reference
+	if pinned && len(members) == 1 {
+		r = PinnedFinalOf(members[0])
+	} else {
+		r = FinalOfAtStage(members[0], stage)
+	}
+	var comparison MemoComparison
+	for _, m := range members[1:] {
+		r.insertFinal(m, &comparison, true)
+	}
+	return r
+}
+
+// insertFinal is InsertFinal comparing through comparison, which must not
+// outlive a graph change other than r's own appends. A fresh r, which no
+// other Reference ranges over, needs no correlation epoch bump.
+func (r *Reference) insertFinal(e RelationalExpression, comparison *MemoComparison, fresh bool) bool {
 	r = r.Canonical()
 	if e == nil {
 		panic("Reference.InsertFinal: nil expression")
@@ -1267,14 +1296,14 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 		if m.EqualsWithoutChildren(e, EmptyAliasMap()) && sameChildReferences(m, e) {
 			return false
 		}
-		if r.MemberHash(m) == eHash && m.EqualsWithoutChildren(e, EmptyAliasMap()) && MemoEqualWithHashes(m, e, eHash, eHash) {
+		if r.MemberHash(m) == eHash && m.EqualsWithoutChildren(e, EmptyAliasMap()) && comparison.MemberEqual(r, m, e, eHash) {
 			return false
 		}
 		// Alias-aware tier (GATED) — see Insert. finalMembers intern the same way
 		// (RFC-077 7.5); the PLANNING yield path inserts into BOTH member sets, so
 		// both must dedup alias-aware or the merge re-enumeration's physical
 		// alternatives duplicate under fresh merge-quantifier aliases.
-		if aliasAware && r.MemberHash(m) == eHash && MemoEqualWithHashes(m, e, eHash, eHash) {
+		if aliasAware && r.MemberHash(m) == eHash && comparison.MemberEqual(r, m, e, eHash) {
 			r.aliasAwareDedups++
 			return false
 		}
@@ -1288,8 +1317,10 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	r.winner = nil
 	r.admittedResultType = nil
 	r.memberVersion++
-	bumpCorrelationEpoch()
-	r.saveCorrelationBase()
+	if !fresh {
+		bumpCorrelationEpoch()
+		r.saveCorrelationBase()
+	}
 	r.correlatedToCache.Store(nil)
 	return true
 }

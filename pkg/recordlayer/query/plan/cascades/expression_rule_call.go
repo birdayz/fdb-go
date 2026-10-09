@@ -380,18 +380,7 @@ func newRestrictedFinalReference(
 ) *expressions.Reference {
 	assertMembersOf(caller, source, members)
 
-	var ref *expressions.Reference
-	for i, m := range members {
-		if i == 0 {
-			if stage == expressions.StagePlanned && len(members) == 1 {
-				ref = expressions.PinnedFinalOf(m)
-			} else {
-				ref = expressions.FinalOfAtStage(m, stage)
-			}
-		} else {
-			ref.InsertFinal(m)
-		}
-	}
+	ref := expressions.FinalsOfAtStage(members, stage, stage == expressions.StagePlanned)
 	if ref == nil {
 		return &expressions.Reference{}
 	}
