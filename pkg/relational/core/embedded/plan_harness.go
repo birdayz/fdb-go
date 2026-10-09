@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"strings"
+	"sync"
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
@@ -234,11 +235,49 @@ func planPhysicalForTestObserved(
 	popts plannerOptions,
 	observe func(logical.LogicalOperator, *expressions.Reference),
 ) (plans.RecordQueryPlan, *cascades.ExtractionVerificationReport, error) {
-	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
+	md, err := harnessMetaData(schemaDDL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("schema DDL: %w", err)
 	}
-	return planPhysicalForMetaData(sql, tmpl.Underlying(), stats, verifyExtraction, reach, popts, observe)
+	return planPhysicalForMetaData(sql, md, stats, verifyExtraction, reach, popts, observe)
+}
+
+// harnessSchemas holds the meta-data built from each schema DDL the harness
+// has planned against. Corpus sweeps plan many queries over one schema, and a
+// connection likewise plans every statement over its one shared, immutable
+// meta-data; rebuilding it per query cost as much as a few percent of a sweep.
+var harnessSchemas = struct {
+	sync.Mutex
+	byDDL map[string]*recordlayer.RecordMetaData
+}{byDDL: map[string]*recordlayer.RecordMetaData{}}
+
+// harnessSchemaLimit bounds the cache; past it the cache starts over.
+const harnessSchemaLimit = 1024
+
+// harnessMetaData is buildSchemaTemplateFromDDL's meta-data, built once per
+// DDL. A DDL that fails to build is rebuilt, and fails, on every call.
+func harnessMetaData(schemaDDL string) (*recordlayer.RecordMetaData, error) {
+	harnessSchemas.Lock()
+	md, ok := harnessSchemas.byDDL[schemaDDL]
+	harnessSchemas.Unlock()
+	if ok {
+		return md, nil
+	}
+	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
+	if err != nil {
+		return nil, err
+	}
+	md = tmpl.Underlying()
+	harnessSchemas.Lock()
+	defer harnessSchemas.Unlock()
+	if cached, ok := harnessSchemas.byDDL[schemaDDL]; ok {
+		return cached, nil
+	}
+	if len(harnessSchemas.byDDL) >= harnessSchemaLimit {
+		clear(harnessSchemas.byDDL)
+	}
+	harnessSchemas.byDDL[schemaDDL] = md
+	return md, nil
 }
 
 // planPhysicalForMetaData is planPhysicalForTestObserved over meta-data the
@@ -794,7 +833,8 @@ func PlanRecordQueryAssertingAllIndexesReadable(
 	// and pages nowhere.
 	popts.config.SingleReadVersion = true
 	plan, _, err := planRecordQueryAndSubqueriesWithOptions(
-		sql, md, defaultEmbeddedTemplate, stats, popts)
+		sql, md, defaultEmbeddedTemplate, stats, popts,
+	)
 	return plan, err
 }
 
