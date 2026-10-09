@@ -449,12 +449,13 @@ bazel-remote cache on gh-runner-fdb (`grpc://10.77.0.2:9092`). The cache is
 reachable only over the `ci-fleet` private network (`shared_cache.tf`), so a
 job is cache-warm on whichever box runs it.
 
-Enabling it on the live fleet was done without tofu, by
-`.github/workflows/fleet-shared-cache.yml`. That workflow creates the network,
-attaches both boxes via the Hetzner API using the HCLOUD_TOKEN secret, and runs
-`enable-shared-cache.sh` on each box. To re-run it, push to the
-`ops/fleet-shared-cache` branch. `user_data` is `ignore_changes`, so the
-cloud-init lines only cover boxes provisioned later.
+It was enabled on the live fleet on 2026-10-09, without tofu. A one-shot
+workflow, since deleted (see git history:
+`.github/workflows/fleet-shared-cache.yml`), created the network, attached
+both boxes via the Hetzner API using the HCLOUD_TOKEN secret, and ran
+`enable-shared-cache.sh server|client` on each box with sudo. The script is
+idempotent and safe to re-run as root on a box. `user_data` is
+`ignore_changes`, so the cloud-init lines only cover boxes provisioned later.
 
 The tofu state does not know these resources yet. Import them before the next
 `tofu apply`, otherwise the apply fails on the existing network name:
