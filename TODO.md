@@ -1466,6 +1466,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## Follow-ups after the 4.14.2.0 migration (not blocking)
 
+- [ ] **Re-evaluate every nightly workflow (all disabled 2026-10-09 via `gh workflow disable`).**
+  Nightly Coverage, Factory, Fuzz, Oracles, Reconcile, RowDiff and Stress are disabled in GitHub
+  (the files are unchanged). A late-firing nightly could take both CI runners, and it is unclear
+  which of them still find anything. For each one, decide keep, merge into another, or delete,
+  based on what it has caught. Re-enable with `gh workflow enable <file>`.
+  - **Coverage that now runs nowhere:** `//pkg/relational/sqltest/census:census_test` (the
+    whole-corpus census floors), and the -race runs of `//pkg/relational/conformance/...` and of
+    the client and record-layer containers.
+  - **Still on:** `nightly-libfdbc.yml`, because it is also the required per-PR check.
+
 - [ ] Two IN lists ordered by their own columns: Java plans nested in-unions
   over both explodes; Go keeps sorted in-joins (`w8_in5x5`/`w8_in4x6`, declared
   DIFF-PATH rfc-191). Needs Go's in-join rules to accept a select with several
