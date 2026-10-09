@@ -905,24 +905,6 @@ type PredicateValueHolder interface {
 	SetPredicate(predicates.QueryPredicate)
 }
 
-// MacroBodyValue is a macro body as the Value Java builds for it: a LIKE is
-// a LikeOperatorValue (ExpressionVisitor.visitLikePredicate), which persists
-// where the predicate wrapper cannot.
-func MacroBodyValue(v values.Value) values.Value {
-	pv, ok := v.(*predicateValue)
-	if !ok {
-		return v
-	}
-	cp, ok := pv.pred.(*predicates.ComparisonPredicate)
-	if !ok || cp.Comparison.Type != predicates.ComparisonLike {
-		return v
-	}
-	if pattern, ok := cp.Comparison.Operand.(*values.PatternForLikeValue); ok {
-		return values.NewLikeOperatorValue(cp.Operand, pattern)
-	}
-	return v
-}
-
 // predicateValue wraps a QueryPredicate as a Value for use in CASE
 // conditions. Evaluates to true/false/nil (SQL 3VL).
 type predicateValue struct {
@@ -1403,6 +1385,10 @@ func (r *Resolver) walkMacroCall(udf *antlrgen.UserDefinedScalarFunctionCallCont
 		}
 	}
 	v, err := macro.Expand(bound)
+	if err != nil {
+		return nil, true, err
+	}
+	v, err = r.lowerMacroBody(v)
 	return v, true, err
 }
 
@@ -2218,8 +2204,12 @@ func bareValueAtom(expr antlrgen.IExpressionContext) antlrgen.IExpressionAtomCon
 
 // liftValueToPredicate is the predicate a bare value used as one is.
 func (r *Resolver) liftValueToPredicate(v values.Value) (predicates.QueryPredicate, error) {
-	// A BooleanValue converts itself (Expression.Utils.toUnderlyingPredicate);
-	// LIKE is LikeOperatorValue.toQueryPredicate.
+	// A BooleanValue converts itself (Expression.Utils.toUnderlyingPredicate):
+	// a resolved condition is its predicate (an expanded macro body's
+	// RelOpValue/AndOrValue/NotValue), LIKE is LikeOperatorValue.toQueryPredicate.
+	if pv, ok := v.(*predicateValue); ok {
+		return pv.pred, nil
+	}
 	if like, ok := v.(*values.LikeOperatorValue); ok {
 		if pattern, ok := like.Pattern.(*values.PatternForLikeValue); ok {
 			return predicates.NewComparisonPredicate(like.Probe, predicates.Comparison{

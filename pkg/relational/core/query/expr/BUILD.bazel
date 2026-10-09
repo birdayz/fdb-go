@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "expr.go",
         "float32_bounds.go",
+        "macro_body.go",
         "named_arguments.go",
         "parameters.go",
         "parse_decimal.go",

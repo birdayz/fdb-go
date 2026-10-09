@@ -16,7 +16,11 @@ func TestLikeMacroBodyRoundTripsThroughThePredicate(t *testing.T) {
 	pattern := values.NewPatternForLikeValue(&values.ConstantValue{Value: "a%", Typ: values.NotNullString}, values.NewNullValue(values.NullType))
 	pred := predicates.NewComparisonPredicate(probe, predicates.Comparison{Type: predicates.ComparisonLike, Operand: pattern})
 
-	body, ok := MacroBodyValue(&predicateValue{pred: pred}).(*values.LikeOperatorValue)
+	bodyValue, err := MacroBodyValue(&predicateValue{pred: pred})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := bodyValue.(*values.LikeOperatorValue)
 	if !ok || body.Probe != probe || body.Pattern != pattern {
 		t.Fatalf("macro body = %#v, want a LikeOperatorValue over the probe and pattern", body)
 	}
