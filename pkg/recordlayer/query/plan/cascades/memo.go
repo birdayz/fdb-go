@@ -3,6 +3,7 @@ package cascades
 import (
 	"iter"
 	"maps"
+	"slices"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -581,7 +582,10 @@ func (m *Memo) findCandidateParents(qs []expressions.Quantifier, eligible func(*
 			return
 		}
 
-		copied := false
+		// Filter the first child's edges against the others' edge sets in place
+		// of copying and narrowing a list.
+		var setBuf [8]map[parentEdge]struct{}
+		others := setBuf[:0]
 		for _, q := range qs[1:] {
 			child := q.GetRangesOver()
 			if child == nil {
@@ -594,34 +598,43 @@ func (m *Memo) findCandidateParents(qs []expressions.Quantifier, eligible func(*
 			if len(childParents) == 0 {
 				return
 			}
-			if !copied {
-				candidateOrder = append([]parentEdge(nil), candidateOrder...)
-				copied = true
-			}
-			n := 0
-			for _, c := range candidateOrder {
-				if _, ok := childParents[c]; ok {
-					candidateOrder[n] = c
-					n++
-				}
-			}
-			candidateOrder = candidateOrder[:n]
-			if n == 0 {
-				return
-			}
+			others = append(others, childParents)
 		}
 
 		// A memo hit needs only the first eligible group, not a copy of all parents.
-		seen := make(map[*expressions.Reference]struct{})
+		var seenBuf [8]*expressions.Reference
+		seen := seenBuf[:0]
+		var seenSet map[*expressions.Reference]struct{}
+	edges:
 		for _, edge := range candidateOrder {
-			if _, duplicate := seen[edge.parent]; !duplicate {
-				if eligible != nil && !eligible(edge.parent) {
+			for _, set := range others {
+				if _, ok := set[edge]; !ok {
+					continue edges
+				}
+			}
+			if seenSet != nil {
+				if _, duplicate := seenSet[edge.parent]; duplicate {
 					continue
 				}
-				seen[edge.parent] = struct{}{}
-				if !yield(edge.parent) {
-					return
+			} else if slices.Contains(seen, edge.parent) {
+				continue
+			}
+			if eligible != nil && !eligible(edge.parent) {
+				continue
+			}
+			if seenSet == nil && len(seen) == len(seenBuf) {
+				seenSet = make(map[*expressions.Reference]struct{}, 2*len(seen))
+				for _, parent := range seen {
+					seenSet[parent] = struct{}{}
 				}
+			}
+			if seenSet != nil {
+				seenSet[edge.parent] = struct{}{}
+			} else {
+				seen = append(seen, edge.parent)
+			}
+			if !yield(edge.parent) {
+				return
 			}
 		}
 	}
