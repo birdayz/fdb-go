@@ -376,7 +376,6 @@ go_test(
         "metadata_validate_records_test.go",
         "metadata_validation_test.go",
         "metadata_validator_additions_test.go",
-        "million_record_test.go",
         "min_max_ever_tuple_index_test.go",
         "min_max_index_test.go",
         "multi_type_index_test.go",
@@ -575,7 +574,11 @@ go_test(
 
 # Million record tests are manual, so `just test` omits them; `just test-full`
 # runs them. The specs are Ginkgo specs: the suite file supplies the FDB
-# container, sharedDB, specSubspace and the RunSpecs entry point.
+# container, sharedDB, specSubspace and the RunSpecs entry point. Excluded from
+# gazelle so the spec stays out of recordlayer_test: it had crept back in, where
+# its Label("manual") gates nothing and the 1M-record scan ran in the fast lane
+# (157 s of recordlayer_test's 242 s on CI, at 4.3 GB against an 800 MB budget).
+# gazelle:exclude million_record_test.go
 go_test(
     name = "million_record_test",
     timeout = "eternal",
