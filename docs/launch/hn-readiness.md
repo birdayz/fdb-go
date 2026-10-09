@@ -8,7 +8,7 @@ legal/security, performance, operations, and a simulated HN thread. Owner and st
 
 | # | Decision | Notes |
 |---|---|---|
-| D1 | **Revoke the leaked GitHub OAuth `client_secret`** | `examples/metrognome/config.yaml:7` (commit `6ad7ae7e5`). Its branches are deleted, but closed PRs #58 and #65 keep the refs forever. Treat it as compromised. |
+| D1 | ~~Revoke the leaked GitHub OAuth `client_secret`~~ **done 2026-10-09 (owner rotated all metrognome secrets)** | `examples/metrognome/config.yaml:7` (commit `6ad7ae7e5`). Its branches are deleted, but closed PRs #58 and #65 keep the refs forever. Treat it as compromised. |
 | D2 | Git history: keep, strip binaries, or squash | 440 MiB pack; 55 MB `factory-migrate` binary. `v0.1.0` is already in the Go module proxy. Must be decided before forks exist. |
 | D3 | Agent material in the public tree | `CLAUDE.md` ("ABSOLUTE PRIME DIRECTIVE"), `.claude/` (Graefe/Torvalds personas, 24/7 shifts), `shifts/`, 19 root `.md` files, and real people as reviewer names in RFCs, commits and tests. |
 | D4 | AI-assisted disclosure | The HN-thread simulation's top comment is commit forensics. Disclose first, in your own words, and point at the oracles: Java conformance, the libfdb_c differential, the binding tester. |
