@@ -99,7 +99,7 @@ jobs:
       # idle slots (~700 s of serial tail per run).
       - name: Build, lint & test
         id: test
-        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl --local_test_jobs=0 --local_resources=memory=4500
+        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --define gotags=fdbdocker --test_tag_filters=-stress --test_summary=detailed --build_event_json_file=.bazel-bep.jsonl --local_test_jobs=0 --local_resources=memory=4500 --profile=bazel-profile.json.gz
 
       # tools/bazelscaleset is a standalone Go module (its own go.mod) so the
       # runner supervisor's GitHub-API dependencies never enter the
@@ -169,6 +169,20 @@ jobs:
           name: test-report
           path: test-report.html
           retention-days: 30
+
+      # The run's timeline, for CI speed work: Bazel's JSON trace profile (every
+      # action and test, with start and duration; open in chrome://tracing or
+      # Perfetto) and the build event stream (each test attempt's start time).
+      - name: Upload timing data as artifact
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: bazel-timing
+          path: |
+            bazel-profile.json.gz
+            .bazel-bep.jsonl
+          include-hidden-files: true
+          retention-days: 14
 
   wire-oracle:
     name: Wire-type oracle (deterministic)
