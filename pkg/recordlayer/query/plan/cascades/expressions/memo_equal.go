@@ -52,6 +52,22 @@ type memoEquality struct {
 }
 
 func (e *memoEquality) dependencies(expression RelationalExpression) [][]int {
+	if !expression.CanCorrelate() {
+		return nil
+	}
+	// Quantifier dependencies follow from the children's correlations, which a
+	// current expression snapshot fixes, so they are kept on the snapshot. A
+	// custom correlation computer may not read every quantifier's group.
+	if snapshot, ok := e.correlations.expressions[expression]; ok {
+		if _, custom := expression.(correlationComputer); !custom {
+			if order := snapshot.order.Load(); order != nil {
+				return *order
+			}
+			deps := quantifierDependencies(expression.GetQuantifiers(), true, e.correlations.correlatedTo)
+			snapshot.order.Store(&deps)
+			return deps
+		}
+	}
 	if deps, ok := e.quantifierOrder[expression]; ok {
 		return deps
 	}
