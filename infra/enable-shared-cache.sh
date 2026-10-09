@@ -50,9 +50,16 @@ echo "ci-fleet: $IFACE $MY_IP via $GW"
 if [ "$ROLE" = server ]; then
 	[ "$MY_IP" = "$IP" ] || { echo "this box is $MY_IP, the cache server must be $IP" >&2; exit 1; }
 	mkdir -p /mnt/ci-data/bazel-remote
+	# The image runs unprivileged: the data dir and the process both belong to runner.
+	chown runner:runner /mnt/ci-data/bazel-remote
+	# Recreate a container from an earlier attempt without the right user.
+	if docker inspect bazel-remote >/dev/null 2>&1 && [ "$(docker inspect -f '{{.Config.User}}' bazel-remote)" != "$(id -u runner):$(id -g runner)" ]; then
+		docker rm -f bazel-remote
+	fi
 	if ! docker inspect bazel-remote >/dev/null 2>&1; then
 		# 30 GiB of the 100 GiB data volume (it also holds Docker, the 20 GiB disk cache and the FDB build); LRU-evicted by bazel-remote.
 		docker run -d --restart=always --name bazel-remote \
+			-u "$(id -u runner):$(id -g runner)" \
 			-v /mnt/ci-data/bazel-remote:/data \
 			-p "$IP:9092:9092" \
 			"$IMAGE" --dir /data --max_size 30
@@ -67,6 +74,12 @@ fi
 for _ in $(seq 1 30); do
 	if (exec 3<>"/dev/tcp/$IP/9092") 2>/dev/null; then
 		echo "shared cache reachable at $IP:9092"
+		# Never exposed beyond the private network: every listener on 9092 must be $IP.
+		if [ "$ROLE" = server ] && ss -Hltn 'sport = :9092' | awk '{print $4}' | grep -v "^$IP:9092$"; then
+			echo "bazel-remote listens beyond $IP: refusing (see the addresses above)" >&2
+			docker rm -f bazel-remote >&2
+			exit 1
+		fi
 		exit 0
 	fi
 	sleep 2
