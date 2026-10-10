@@ -3861,18 +3861,23 @@ func executeInsert(
 	// Phase 2: save the already-charged records (no further charging — the budget is
 	// settled before the first write).
 	results := make([]QueryResult, 0, len(built))
-	for _, msg := range built {
-		var stored *recordlayer.FDBStoredRecord[proto.Message]
-		var serr error
-		if props.DryRun {
-			// DRY RUN: validate (incl. the existence check → 23505 on an existing
-			// PK, parity with the real path) and preview the insert without
-			// staging a write; echo from the returned would-be-stored record
-			// (Java RecordQueryInsertPlan + dryRunSaveRecordAsync), not a real save.
-			stored, serr = store.DryRunSaveRecord(msg, recordlayer.RecordExistenceCheckErrorIfExists)
-		} else {
-			stored, serr = store.SaveRecordWithOptions(msg, recordlayer.RecordExistenceCheckErrorIfExists)
+	if !props.DryRun {
+		// Java pipelines INSERT's saves; serially, each new row waited on its own reads.
+		saved, serr := store.SaveRecordsPipelined(built, recordlayer.RecordExistenceCheckErrorIfExists)
+		if serr != nil {
+			return nil, fmt.Errorf("executor: inserting record: %w", serr)
 		}
+		for _, stored := range saved {
+			results = append(results, FromStoredRecord(stored))
+		}
+		return recordlayer.FromList(results), nil
+	}
+	for _, msg := range built {
+		// DRY RUN: validate (incl. the existence check → 23505 on an existing
+		// PK, parity with the real path) and preview the insert without
+		// staging a write; echo from the returned would-be-stored record
+		// (Java RecordQueryInsertPlan + dryRunSaveRecordAsync), not a real save.
+		stored, serr := store.DryRunSaveRecord(msg, recordlayer.RecordExistenceCheckErrorIfExists)
 		if serr != nil {
 			return nil, fmt.Errorf("executor: inserting record: %w", serr)
 		}

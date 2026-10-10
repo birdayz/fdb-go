@@ -578,30 +578,95 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
-	return store.saveRecordInternal(record, existenceCheck, false)
+	return store.saveRecordInternal(record, existenceCheck, false, nil)
 }
 
-// saveRecordInternal implements the save logic with an explicit overrideLock parameter.
-// When overrideLock is true, the FORBID_RECORD_UPDATE lock check is skipped.
-// This eliminates the goroutine-unsafe overrideLock field pattern.
-func (store *FDBRecordStore) saveRecordInternal(
-	record proto.Message,
+// SaveRecordsPipelined saves records in order exactly as SaveRecordWithOptions
+// would one at a time, but keeps a pipeline's worth of the existing-record reads
+// in flight, as Java's INSERT does (RecordQueryAbstractDataModificationPlan
+// mapPipelined at FDBRecordStore.DEFAULT_PIPELINE_SIZE). The first failing
+// record stops the save and is the one reported; the reads already started for
+// the rest of its window stay in the transaction, as Java's do.
+func (store *FDBRecordStore) SaveRecordsPipelined(
+	records []proto.Message,
 	existenceCheck RecordExistenceCheck,
-	overrideLock bool,
-) (*FDBStoredRecord[proto.Message], error) {
-	if record == nil {
-		return nil, fmt.Errorf("cannot save nil record")
+) ([]*FDBStoredRecord[proto.Message], error) {
+	saved := make([]*FDBStoredRecord[proto.Message], 0, len(records))
+	for start := 0; start < len(records); start += defaultPipelineSize {
+		window := records[start:min(start+defaultPipelineSize, len(records))]
+		loads := store.startExistingRecordLoads(window)
+		for i, record := range window {
+			stored, err := store.saveRecordInternal(record, existenceCheck, false, loads[i])
+			if err != nil {
+				return nil, err
+			}
+			saved = append(saved, stored)
+		}
 	}
-	startTime := time.Now()
-	// Extract the primary key from the record
+	return saved, nil
+}
+
+// saveTarget is what a save derives from its record before reading anything.
+type saveTarget struct {
+	recordTypeName string
+	recordType     *RecordType
+	record         proto.Message // as every later load reads it
+	write          proto.Message // what the save serializes
+	primaryKey     tuple.Tuple
+}
+
+// existingRecordLoad is a save's read of the record already stored under its
+// key, started ahead of the save. A nil pending reads at save time.
+type existingRecordLoad struct {
+	input   proto.Message
+	target  saveTarget
+	err     error
+	pending *pendingRecordLoad
+}
+
+// startExistingRecordLoads starts the existing-record read of every record in
+// window at once. A record repeating an earlier one's key reads at save time
+// instead, so it sees that save.
+func (store *FDBRecordStore) startExistingRecordLoads(window []proto.Message) []*existingRecordLoad {
+	loads := make([]*existingRecordLoad, len(window))
+	seen := make(map[string]struct{}, len(window))
+	for i, record := range window {
+		load := &existingRecordLoad{input: record}
+		loads[i] = load
+		if load.target, load.err = store.saveTargetFor(record); load.err != nil {
+			continue
+		}
+		key := string(load.target.primaryKey.Pack())
+		if _, repeated := seen[key]; repeated {
+			continue
+		}
+		seen[key] = struct{}{}
+		pending := startLoadWithSplit(
+			store.context.Transaction(),
+			store.recordsSubspace,
+			load.target.primaryKey,
+			store.metaData.IsSplitLongRecords(),
+			store.omitUnsplitRecordSuffix(),
+			true,
+		)
+		load.pending = &pending
+	}
+	return loads
+}
+
+// saveTargetFor resolves record's type, Java form and primary key.
+func (store *FDBRecordStore) saveTargetFor(record proto.Message) (saveTarget, error) {
+	if record == nil {
+		return saveTarget{}, fmt.Errorf("cannot save nil record")
+	}
 	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 	recordType := store.metaData.GetRecordType(recordTypeName)
 	if recordType == nil {
-		return nil, unknownRecordTypeError(recordTypeName)
+		return saveTarget{}, unknownRecordTypeError(recordTypeName)
 	}
 
 	if recordType.PrimaryKey == nil {
-		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
+		return saveTarget{}, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
 	// A closed enum field holding a number its enum does not declare is read by
 	// every later load, in both engines, as unset (proto_closed_enums.go), so
@@ -624,11 +689,46 @@ func (store *FDBRecordStore) saveRecordInternal(
 		Record:     record,
 	}, record)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract primary key: %w", err)
+		return saveTarget{}, fmt.Errorf("failed to extract primary key: %w", err)
 	}
-	// Reinterpret []any as tuple.Tuple ([]TupleElement where TupleElement=any).
-	// Identical memory layout — no copy needed.
-	primaryKey := *(*tuple.Tuple)(unsafe.Pointer(&keyValues))
+	return saveTarget{
+		recordTypeName: recordTypeName,
+		recordType:     recordType,
+		record:         record,
+		write:          writeRecord,
+		// Reinterpret []any as tuple.Tuple ([]TupleElement where TupleElement=any).
+		// Identical memory layout — no copy needed.
+		primaryKey: *(*tuple.Tuple)(unsafe.Pointer(&keyValues)),
+	}, nil
+}
+
+// saveRecordInternal implements the save logic with an explicit overrideLock parameter.
+// When overrideLock is true, the FORBID_RECORD_UPDATE lock check is skipped.
+// This eliminates the goroutine-unsafe overrideLock field pattern. A non-nil
+// load must have been started for this record.
+func (store *FDBRecordStore) saveRecordInternal(
+	input proto.Message,
+	existenceCheck RecordExistenceCheck,
+	overrideLock bool,
+	load *existingRecordLoad,
+) (*FDBStoredRecord[proto.Message], error) {
+	var target saveTarget
+	var pending *pendingRecordLoad
+	var err error
+	if load != nil {
+		if load.input != input {
+			return nil, fmt.Errorf("existing-record load started for a different record")
+		}
+		target, pending, err = load.target, load.pending, load.err
+	} else {
+		target, err = store.saveTargetFor(input)
+	}
+	if err != nil {
+		return nil, err
+	}
+	startTime := time.Now()
+	recordTypeName, recordType := target.recordTypeName, target.recordType
+	record, writeRecord, primaryKey := target.record, target.write, target.primaryKey
 
 	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
@@ -637,14 +737,18 @@ func (store *FDBRecordStore) saveRecordInternal(
 	// This is needed for: existence checks, record counting, and future
 	// index updates / version management.
 	var oldsizeInfo sizeInfo
-	oldValue, err := loadWithSplit(
-		store.context.Transaction(),
-		recordsSubspace,
-		primaryKey,
-		splitEnabled,
-		store.omitUnsplitRecordSuffix(),
-		&oldsizeInfo,
-	)
+	if pending == nil {
+		now := startLoadWithSplit(
+			store.context.Transaction(),
+			recordsSubspace,
+			primaryKey,
+			splitEnabled,
+			store.omitUnsplitRecordSuffix(),
+			false,
+		)
+		pending = &now
+	}
+	oldValue, err := pending.finish(&oldsizeInfo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load existing record: %w", err)
 	}
