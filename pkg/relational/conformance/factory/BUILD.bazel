@@ -92,9 +92,11 @@ go_test(
         "EQUIV_SEEDS": "",
         "EQUIV_WORKERS": "",
     },
+    # Measured on the 4 vCPU CI runner, run alone: 4.9-5.0 GB above the
+    # box's baseline at peak (FDB containers included), declared with headroom.
     tags = [
         "resources:cpu:4",
-        "resources:memory:3300",
+        "resources:memory:5500",
         "test-full",
     ],
     deps = [

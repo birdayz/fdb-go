@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -382,5 +383,54 @@ func TestMatrixEntriesSizesOrRefuses(t *testing.T) {
 					"ENTRY; under-counting here is the unsafe direction", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSelfHostedJobsReapLeakedContainersFirst pins that every job on the pool
+// reaps an earlier job's leftover containers before it does any work: a
+// timed-out job's FDB C++ build container outlived it and OOM-killed the next
+// job's tests, and a job without this step inherits such a leak unseen.
+func TestSelfHostedJobsReapLeakedContainersFirst(t *testing.T) {
+	t.Parallel()
+	paths, err := filepath.Glob("../.github/workflows/*.yml")
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("glob workflows: %v (found %d)", err, len(paths))
+	}
+	checked := 0
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read %s: %v", p, err)
+		}
+		var wf struct {
+			Jobs map[string]struct {
+				RunsOn yaml.Node `yaml:"runs-on"`
+				Steps  []struct {
+					Uses string `yaml:"uses"`
+					Run  string `yaml:"run"`
+				} `yaml:"steps"`
+			} `yaml:"jobs"`
+		}
+		if err := yaml.Unmarshal(b, &wf); err != nil {
+			t.Fatalf("parse %s: %v", p, err)
+		}
+		for name, job := range wf.Jobs {
+			if !usesLabel(&job.RunsOn, runnerLabel) {
+				continue
+			}
+			checked++
+			// Checkout first is fine: the reaper is a checked-in script.
+			i := 0
+			for i < len(job.Steps) && strings.HasPrefix(job.Steps[i].Uses, "actions/checkout@") {
+				i++
+			}
+			if i >= len(job.Steps) || strings.TrimSpace(job.Steps[i].Run) != "infra/reap-leaked-containers.sh" {
+				t.Errorf("%s: job %q runs on %s but its first step after checkout is not "+
+					"`run: infra/reap-leaked-containers.sh`", filepath.Base(p), name, runnerLabel)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatalf("no job runs on %s: the check matched nothing", runnerLabel)
 	}
 }

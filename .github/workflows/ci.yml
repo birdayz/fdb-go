@@ -27,6 +27,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      - name: Reap containers an earlier job left running
+        run: infra/reap-leaked-containers.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -103,8 +106,8 @@ jobs:
       # non-zero --local_test_jobs makes Bazel ignore those tags (measured, Bazel
       # 9.0.1). 0.6 is the 4500 MB this 7.6 GB runner was measured safe at: the runner
       # minus its idle baseline (~730 MB) and the Bazel server (~2500 MB). A suite too big
-      # to share the box (factory_test 3300 MB) runs only beside small ones, and one
-      # larger than the whole budget runs alone, which is what "exclusive" did, except
+      # to share the box runs only beside small ones, and one larger than the whole
+      # budget (factory_test 5500 MB) runs alone, which is what "exclusive" did, except
       # that an exclusive target waited for every other test and then ran with three
       # idle slots (~700 s of serial tail per run).
       #
@@ -210,6 +213,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      - name: Reap containers an earlier job left running
+        run: infra/reap-leaked-containers.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -272,6 +278,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Reap containers an earlier job left running
+        run: infra/reap-leaked-containers.sh
+
       - name: Build C++ oracle
         run: bazelisk build --config=ci //cmd/fdb-diff-oracle:diff_oracle_bin
 
@@ -314,6 +323,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      - name: Reap containers an earlier job left running
+        run: infra/reap-leaked-containers.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -345,6 +357,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      - name: Reap containers an earlier job left running
+        run: infra/reap-leaked-containers.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -394,6 +409,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Reap containers an earlier job left running
+        run: infra/reap-leaked-containers.sh
+
       - name: Resolve Bazel Go SDK
         id: go-sdk
         run: |
@@ -428,6 +446,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      - name: Reap containers an earlier job left running
+        run: infra/reap-leaked-containers.sh
 
       - name: Check Docker (else the race gates silently no-op)
         # Both race steps below drive real FDB testcontainers; without Docker the
