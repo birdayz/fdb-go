@@ -53,22 +53,52 @@ var _ = Describe("SaveRecordsPipelined", func() {
 		return out
 	}
 
-	It("saves every record and index entry across windows", func() {
+	It("saves every record and index entry across windows, split or not", func() {
+		for _, split := range []bool{true, false} {
+			md, ss := metaData(split), specSubspace().Sub(split)
+			inStore(md, ss, func(s *FDBRecordStore) {
+				var records []proto.Message
+				var want []int64
+				for i := range int64(25) {
+					records = append(records, order(i, int32(100+i)))
+					want = append(want, 100+i)
+				}
+				saved, err := s.SaveRecordsPipelined(records, RecordExistenceCheckErrorIfExists)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(saved).To(HaveLen(25))
+				for i, rec := range saved {
+					Expect(rec.PrimaryKey).To(Equal(tuple.Tuple{int64(i)}))
+				}
+				Expect(prices(s)).To(Equal(want))
+			})
+		}
+	})
+
+	It("sends a window's reads before waiting on any", func() {
 		md, ss := metaData(true), specSubspace()
 		inStore(md, ss, func(s *FDBRecordStore) {
-			var records []proto.Message
-			var want []int64
-			for i := range int64(25) {
-				records = append(records, order(i, int32(100+i)))
-				want = append(want, 100+i)
+			var log []string
+			tx := recordingReadTx{ReadTransaction: s.context.Transaction(), log: &log}
+			window := []proto.Message{order(1, 10), order(2, 20), order(1, 30)}
+			loads := s.startExistingRecordLoads(tx, window)
+			// Two reads (unsplit key, first chunk) for each distinct key; the
+			// repeated key reads at its save.
+			Expect(log).To(Equal([]string{"send", "send", "send", "send"}))
+			Expect(loads[2].sent).To(BeFalse())
+			for i, record := range window {
+				_, err := s.saveRecordInternal(record, RecordExistenceCheckNone, false, &loads[i])
+				Expect(err).NotTo(HaveOccurred())
 			}
-			saved, err := s.SaveRecordsPipelined(records, RecordExistenceCheckErrorIfExists)
+			Expect(prices(s)).To(Equal([]int64{20, 30}))
+		})
+	})
+
+	It("keeps SaveRecordBatch from reading a repeated key before its earlier save", func() {
+		md, ss := metaData(true), specSubspace()
+		inStore(md, ss, func(s *FDBRecordStore) {
+			_, err := s.SaveRecordBatch([]proto.Message{order(1, 10), order(2, 15), order(1, 20)})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(saved).To(HaveLen(25))
-			for i, rec := range saved {
-				Expect(rec.PrimaryKey).To(Equal(tuple.Tuple{int64(i)}))
-			}
-			Expect(prices(s)).To(Equal(want))
+			Expect(prices(s)).To(Equal([]int64{15, 20}))
 		})
 	})
 
@@ -129,6 +159,27 @@ var _ = Describe("SaveRecordsPipelined", func() {
 		})
 	})
 })
+
+// recordingReadTx logs each read it sends and each wait on one.
+type recordingReadTx struct {
+	fdb.ReadTransaction
+	log *[]string
+}
+
+type recordingFuture struct {
+	fdb.FutureByteSlice
+	log *[]string
+}
+
+func (tx recordingReadTx) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
+	*tx.log = append(*tx.log, "send")
+	return recordingFuture{FutureByteSlice: tx.ReadTransaction.Get(key), log: tx.log}
+}
+
+func (f recordingFuture) Get() ([]byte, error) {
+	*f.log = append(*f.log, "wait")
+	return f.FutureByteSlice.Get()
+}
 
 // orderedReadTx records when each Get is issued and when its value is taken.
 type orderedReadTx struct {

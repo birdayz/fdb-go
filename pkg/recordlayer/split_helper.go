@@ -257,6 +257,7 @@ type pendingRecordLoad struct {
 	legacy           bool
 	key              []byte // the bare key (legacy layout) or the unsplit key
 	value            fdb.FutureByteSlice
+	firstSplitKey    []byte // with firstSplit, when probed
 	firstSplit       fdb.FutureByteSlice
 }
 
@@ -287,13 +288,10 @@ func startLoadWithSplit(
 	}
 	p.value = tx.Get(fdb.Key(p.key))
 	if probeSplit && splitLongRecords {
-		p.firstSplit = tx.Get(fdb.Key(p.firstSplitKey()))
+		p.firstSplitKey = recordSubspace.Pack(appendToTuple(primaryKey, startSplitRecord))
+		p.firstSplit = tx.Get(fdb.Key(p.firstSplitKey))
 	}
 	return p
-}
-
-func (p *pendingRecordLoad) firstSplitKey() []byte {
-	return p.recordSubspace.Pack(appendToTuple(p.primaryKey, startSplitRecord))
 }
 
 func (p *pendingRecordLoad) finish(sizeInfo *sizeInfo) ([]byte, error) {
@@ -317,12 +315,7 @@ func (p *pendingRecordLoad) finish(sizeInfo *sizeInfo) ([]byte, error) {
 	}
 
 	if value != nil {
-		// A probed chunk read joins the load, as Java's loadSplitViaGets joins its gets.
-		if p.firstSplit != nil {
-			if _, err := p.firstSplit.Get(); err != nil {
-				return nil, fmt.Errorf("failed to get first split chunk: %w", err)
-			}
-		}
+		// A probed chunk read is not waited on: the serial path never sends it.
 		sizeInfo.KeyCount = 1
 		sizeInfo.KeySize = len(p.key)
 		sizeInfo.ValueSize = len(value)
@@ -336,9 +329,9 @@ func (p *pendingRecordLoad) finish(sizeInfo *sizeInfo) ([]byte, error) {
 	}
 
 	// Check for split record: scan from suffix 1 onwards
-	firstSplitKey := p.firstSplitKey()
-	firstSplit := p.firstSplit
+	firstSplitKey, firstSplit := p.firstSplitKey, p.firstSplit
 	if firstSplit == nil {
+		firstSplitKey = recordSubspace.Pack(appendToTuple(primaryKey, startSplitRecord))
 		firstSplit = tx.Get(fdb.Key(firstSplitKey))
 	}
 	firstValue, err := firstSplit.Get()

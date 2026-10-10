@@ -3862,7 +3862,7 @@ func executeInsert(
 	// settled before the first write).
 	results := make([]QueryResult, 0, len(built))
 	if !props.DryRun {
-		// Java pipelines INSERT's saves; serially, each new row waited on its own reads.
+		// Java pipelines INSERT's saves; the rows' existence reads overlap.
 		saved, serr := store.SaveRecordsPipelined(built, recordlayer.RecordExistenceCheckErrorIfExists)
 		if serr != nil {
 			return nil, fmt.Errorf("executor: inserting record: %w", serr)

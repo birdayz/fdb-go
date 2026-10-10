@@ -7,10 +7,12 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 	"unsafe"
@@ -581,22 +583,24 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	return store.saveRecordInternal(record, existenceCheck, false, nil)
 }
 
-// SaveRecordsPipelined saves records in order exactly as SaveRecordWithOptions
-// would one at a time, but keeps a pipeline's worth of the existing-record reads
-// in flight, as Java's INSERT does (RecordQueryAbstractDataModificationPlan
-// mapPipelined at FDBRecordStore.DEFAULT_PIPELINE_SIZE). The first failing
-// record stops the save and is the one reported; the reads already started for
-// the rest of its window stay in the transaction, as Java's do.
+// SaveRecordsPipelined saves records in order as SaveRecordWithOptions would
+// one at a time, but sends the existing-record reads of each window of
+// defaultPipelineSize records together: Java's INSERT pipelines its saves
+// (RecordQueryAbstractDataModificationPlan mapPipelined, at
+// FDBRecordStore.DEFAULT_PIPELINE_SIZE). The first failing record stops the save
+// and is the one reported; the reads already sent for the rest of its window
+// stay in the transaction, as Java's do.
 func (store *FDBRecordStore) SaveRecordsPipelined(
 	records []proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) ([]*FDBStoredRecord[proto.Message], error) {
 	saved := make([]*FDBStoredRecord[proto.Message], 0, len(records))
+	tx := store.context.Transaction()
 	for start := 0; start < len(records); start += defaultPipelineSize {
 		window := records[start:min(start+defaultPipelineSize, len(records))]
-		loads := store.startExistingRecordLoads(window)
+		loads := store.startExistingRecordLoads(tx, window)
 		for i, record := range window {
-			stored, err := store.saveRecordInternal(record, existenceCheck, false, loads[i])
+			stored, err := store.saveRecordInternal(record, existenceCheck, false, &loads[i])
 			if err != nil {
 				return nil, err
 			}
@@ -616,40 +620,39 @@ type saveTarget struct {
 }
 
 // existingRecordLoad is a save's read of the record already stored under its
-// key, started ahead of the save. A nil pending reads at save time.
+// key, sent ahead of the save; without sent, the save reads for itself.
 type existingRecordLoad struct {
-	input   proto.Message
 	target  saveTarget
 	err     error
-	pending *pendingRecordLoad
+	pending pendingRecordLoad
+	sent    bool
 }
 
-// startExistingRecordLoads starts the existing-record read of every record in
-// window at once. A record repeating an earlier one's key reads at save time
-// instead, so it sees that save.
-func (store *FDBRecordStore) startExistingRecordLoads(window []proto.Message) []*existingRecordLoad {
-	loads := make([]*existingRecordLoad, len(window))
-	seen := make(map[string]struct{}, len(window))
+// startExistingRecordLoads sends the existing-record read of every record in
+// window. A record repeating an earlier key in window is left to read at its
+// save, since a read sent before the earlier save would miss it.
+func (store *FDBRecordStore) startExistingRecordLoads(tx fdb.ReadTransaction, window []proto.Message) []existingRecordLoad {
+	loads := make([]existingRecordLoad, len(window))
+	keys := make([][]byte, 0, len(window))
 	for i, record := range window {
-		load := &existingRecordLoad{input: record}
-		loads[i] = load
+		load := &loads[i]
 		if load.target, load.err = store.saveTargetFor(record); load.err != nil {
 			continue
 		}
-		key := string(load.target.primaryKey.Pack())
-		if _, repeated := seen[key]; repeated {
+		key := load.target.primaryKey.Pack()
+		if slices.ContainsFunc(keys, func(k []byte) bool { return bytes.Equal(k, key) }) {
 			continue
 		}
-		seen[key] = struct{}{}
-		pending := startLoadWithSplit(
-			store.context.Transaction(),
+		keys = append(keys, key)
+		load.pending = startLoadWithSplit(
+			tx,
 			store.recordsSubspace,
 			load.target.primaryKey,
 			store.metaData.IsSplitLongRecords(),
 			store.omitUnsplitRecordSuffix(),
 			true,
 		)
-		load.pending = &pending
+		load.sent = true
 	}
 	return loads
 }
@@ -705,28 +708,24 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message) (saveTarget, er
 // saveRecordInternal implements the save logic with an explicit overrideLock parameter.
 // When overrideLock is true, the FORBID_RECORD_UPDATE lock check is skipped.
 // This eliminates the goroutine-unsafe overrideLock field pattern. A non-nil
-// load must have been started for this record.
+// load is record's, from startExistingRecordLoads.
 func (store *FDBRecordStore) saveRecordInternal(
-	input proto.Message,
+	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 	overrideLock bool,
 	load *existingRecordLoad,
 ) (*FDBStoredRecord[proto.Message], error) {
+	startTime := time.Now()
 	var target saveTarget
-	var pending *pendingRecordLoad
 	var err error
 	if load != nil {
-		if load.input != input {
-			return nil, fmt.Errorf("existing-record load started for a different record")
-		}
-		target, pending, err = load.target, load.pending, load.err
+		target, err = load.target, load.err
 	} else {
-		target, err = store.saveTargetFor(input)
+		target, err = store.saveTargetFor(record)
 	}
 	if err != nil {
 		return nil, err
 	}
-	startTime := time.Now()
 	recordTypeName, recordType := target.recordTypeName, target.recordType
 	record, writeRecord, primaryKey := target.record, target.write, target.primaryKey
 
@@ -737,18 +736,19 @@ func (store *FDBRecordStore) saveRecordInternal(
 	// This is needed for: existence checks, record counting, and future
 	// index updates / version management.
 	var oldsizeInfo sizeInfo
-	if pending == nil {
-		now := startLoadWithSplit(
+	var oldValue []byte
+	if load != nil && load.sent {
+		oldValue, err = load.pending.finish(&oldsizeInfo)
+	} else {
+		oldValue, err = loadWithSplit(
 			store.context.Transaction(),
 			recordsSubspace,
 			primaryKey,
 			splitEnabled,
 			store.omitUnsplitRecordSuffix(),
-			false,
+			&oldsizeInfo,
 		)
-		pending = &now
 	}
-	oldValue, err := pending.finish(&oldsizeInfo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load existing record: %w", err)
 	}
