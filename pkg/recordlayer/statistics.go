@@ -700,6 +700,12 @@ func writeStatistics(
 	return nanos, err
 }
 
+// ReadRunner runs a read-only body with retries: an *FDBDatabase, or a caller's
+// runner that configures each transaction (timeout, tags) first.
+type ReadRunner interface {
+	RunRead(ctx context.Context, fn func(fdb.ReadTransaction) (any, error)) (any, error)
+}
+
 // ReadStatistics returns the statistics collected for one store, or ok=false if
 // there are none. It is a SNAPSHOT read: a planner read must never add a
 // conflict range, or planning could make a transaction retry.
@@ -779,7 +785,7 @@ const (
 // would compare one run's stamp against a version drawn after another run.
 func ReadStatisticsAtWithRefusal(
 	ctx context.Context,
-	db *FDBDatabase,
+	db ReadRunner,
 	stats StatisticsSubspace,
 	storeSubspace subspace.Subspace,
 	tags ...string,

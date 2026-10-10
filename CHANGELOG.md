@@ -23,10 +23,20 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   recreate them.
 - **SQL behaviour:** follows Java 4.14.2.0 where both engines run a query; see the PR for the
   per-change list.
-- **FDB client option semantics:** unchanged since v0.1.0; the honored / `UnsupportedOptionError` /
-  safe-no-op classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77.
+- **FDB client option semantics:** the honored / `UnsupportedOptionError` / safe-no-op
+  classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77, with one change:
+  `Transaction.SetTimeout` outside [0, INT_MAX] now records a deferred 2006
+  (`invalid_option_value`) like libfdb_c, where a negative value used to disable the timeout (0 still disables it).
+- **DSN booleans are strictly `true`/`false`** (any case): a bare `?flag`, `1`/`0`, `t`/`f`,
+  `yes`/`no` and `on`/`off` now fail at open with 22023.
 - **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
+
+### Added
+- The SQL driver DSN sets `max_rows`, `execution_scanned_rows_limit`, `execution_scanned_bytes_limit`,
+  `execution_time_limit`, `max_statement_memory_bytes`, `transaction_timeout`, and the planner knobs
+  `plan_right_deep`, `disable_planner_rewriting` and `disabled_planner_rules`. The transaction timeout
+  and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
 - The Cascades planner plans about 2x faster with the same plans: memo deduplication rejects

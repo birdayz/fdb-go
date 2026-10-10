@@ -1419,7 +1419,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		return query.Result{}, api.NewError(api.ErrCodeUnsupportedOperation,
 			"statement continuations are not supported: Go SQL tokens are engine-private and no resume entry point exists")
 	}
-	ss, ssErr := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
+	ss, ssErr := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
 	if ssErr != nil {
 		return query.Result{}, ssErr
 	}
@@ -2305,7 +2305,7 @@ func (r *paginatingRows) fetchPage() error {
 	// in its own auto-commit transaction via DB.Run, unchanged. A captured
 	// transaction that has since ended is a loud 25F01, never a silent fresh
 	// transaction (Decision 3).
-	_, txErr := c.runInCapturedTx(r.ctx, r.tx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, txErr := c.runInCapturedTx(r.ctx, r.tx, r.options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		if attempts > 0 {
 			// Java's ThrottledRetryingIterator decreases work on every failed
 			// attempt. SQL pages use time rather than its scanned-row quota:
@@ -2817,13 +2817,13 @@ func (g *cascadesGenerator) fetchTableStatistics(ctx context.Context, md *record
 	if !recordlayer.IsRecordTypeExpression(countKey) {
 		return nil
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
 	if err != nil {
 		return nil
 	}
 
 	countSubspace := ss.Sub(recordlayer.RecordCountKey)
-	result, runErr := c.sess.DB.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
+	result, runErr := configuredRunner{c.sess.DB, c.Options()}.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
 		counts := make(map[string]float64)
 		for name := range md.RecordTypes() {
 			rt := md.GetRecordType(name)
@@ -2905,11 +2905,11 @@ func (g *cascadesGenerator) fetchIndexStateSnapshot(
 	if len(md.GetAllIndexes()) == 0 {
 		return nil, nil
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
 	if err != nil {
 		return nil, err
 	}
-	result, runErr := c.runInCapturedTx(ctx, c.activeTx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	result, runErr := c.runInCapturedTx(ctx, c.activeTx, c.Options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		store, storeErr := c.storeIn(rctx, c.activeTx, ss)
 		if storeErr != nil {
 			return nil, storeErr

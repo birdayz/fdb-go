@@ -1,9 +1,9 @@
 package sqldriver_test
 
 // End-to-end proof that ?transaction_tags= drives real SQL execution: the tags
-// are applied to every transaction the connection opens (the single seam in
-// EmbeddedConnection.beginTransaction covers autocommit and explicit BEGIN
-// alike), and both reads and writes still work with the tags on the wire.
+// are applied to every transaction the connection opens (transactionConfigurer
+// covers autocommit and explicit BEGIN alike), and both reads and writes still
+// work with the tags on the wire.
 //
 // The tag bytes themselves are pinned against real C++ ObjectWriter output at
 // the client layer; what this test adds is that the SQL layer actually reaches

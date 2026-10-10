@@ -1227,6 +1227,8 @@ func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
 	if c.sess.CatalogReady {
 		return nil
 	}
+	// Unconfigured: this is the shared catalog's bootstrap, which Java runs at
+	// engine start rather than in any connection's transaction.
 	_, err := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
 		// Run commits; a commit in its body is refused (RecordContextNotActiveError).
@@ -1255,11 +1257,11 @@ func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantA
 	// One attempt, as the target's relational layer runs a statement in its one
 	// transaction: a conflicting DDL surfaces 40001 and a maybe-committed one its
 	// 1021, instead of being re-executed.
-	_, err := c.sess.DB.RunWithMaxAttempts(ctx, 1, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.sess.DB.RunWithMaxAttempts(ctx, 1, configured(c.Options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
 		// Run commits; a commit in its body is refused (RecordContextNotActiveError).
 		return nil, action.Execute(txn)
-	})
+	}))
 	return err
 }
 
@@ -1272,9 +1274,9 @@ func (c *EmbeddedConnection) ApplyMetadataOperation(ctx context.Context, op func
 	if err := c.ensureCatalogInit(ctx); err != nil {
 		return err
 	}
-	_, err := c.sess.DB.RunWithMaxAttempts(ctx, 1, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err := c.sess.DB.RunWithMaxAttempts(ctx, 1, configured(c.Options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		return nil, op(c.sess.Factory, catalog.NewFDBTransaction(rctx))
-	})
+	}))
 	return err
 }
 

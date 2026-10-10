@@ -2,6 +2,9 @@ package sqldriver
 
 import (
 	"errors"
+	"math"
+	"slices"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
@@ -18,11 +21,14 @@ func TestConnectionOptions_UnknownParameterIsRefused(t *testing.T) {
 	}
 	_, err = dsn.ConnectionOptions()
 	var apiErr *api.Error
-	const want = "unknown DSN parameter dryrun, zz; accepted parameters are cluster_file, dry_run, " +
-		"isolation_level_snapshot, plan_cache_primary_max_entries, plan_cache_primary_time_to_live_millis, " +
-		"plan_cache_secondary_max_entries, plan_cache_secondary_time_to_live_millis, " +
-		"plan_cache_tertiary_max_entries, plan_cache_tertiary_time_to_live_millis, " +
-		"planner_statistics, restrict_ddl_to_session_database, schema, transaction_tags"
+	const want = "unknown DSN parameter dryrun, zz; accepted parameters are cluster_file, " +
+		"disable_planner_rewriting, disabled_planner_rules, dry_run, execution_scanned_bytes_limit, " +
+		"execution_scanned_rows_limit, execution_time_limit, isolation_level_snapshot, " +
+		"max_rows, max_statement_memory_bytes, plan_cache_primary_max_entries, " +
+		"plan_cache_primary_time_to_live_millis, plan_cache_secondary_max_entries, " +
+		"plan_cache_secondary_time_to_live_millis, plan_cache_tertiary_max_entries, " +
+		"plan_cache_tertiary_time_to_live_millis, plan_right_deep, planner_statistics, " +
+		"restrict_ddl_to_session_database, schema, transaction_tags, transaction_timeout"
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter || apiErr.Message != want {
 		t.Fatalf("ConnectionOptions = %v; want 22023 %q", err, want)
 	}
@@ -88,5 +94,152 @@ func TestConnectionOptions_PlanCacheParameters(t *testing.T) {
 		if _, err := d.ConnectionOptions(); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter {
 			t.Errorf("%s: %v, want 22023", bad, err)
 		}
+	}
+}
+
+// Execution limits and planner knobs are DSN parameters named by the
+// lower-cased option, converted and range-checked by the option's contract as
+// Java's Options.fromProperties does, and refused before FDB is opened.
+func TestConnectionOptions_ExecutionLimits(t *testing.T) {
+	t.Parallel()
+	notInt := []string{"", "false", "1.5", "1ms", "%20", "%2B", "0x10"}
+	for _, tc := range []struct {
+		param  string
+		option api.OptionName
+		value  string
+		want   any
+		bad    []string
+	}{
+		{"max_rows", api.OptMaxRows, "17", 17, append([]string{"-1", "2147483648"}, notInt...)},
+		{"execution_scanned_rows_limit", api.OptExecutionScannedRowsLimit, "3", 3, append([]string{"-1", "2147483648"}, notInt...)},
+		{"execution_scanned_bytes_limit", api.OptExecutionScannedBytesLimit, "8192", int64(8192), append([]string{"-1", "9223372036854775808"}, notInt...)},
+		{"execution_time_limit", api.OptExecutionTimeLimit, "200", int64(200), append([]string{"-1", "9223372036854775808"}, notInt...)},
+		{"max_statement_memory_bytes", api.OptMaxStatementMemoryBytes, "1048576", int64(1048576), append([]string{"-1", "9223372036854775808"}, notInt...)},
+		{"transaction_timeout", api.OptTransactionTimeout, "2500", int64(2500), append([]string{"-2", "9223372036854775808"}, notInt...)},
+		{"transaction_timeout", api.OptTransactionTimeout, "2147483647", int64(math.MaxInt32), []string{"2147483648"}},
+	} {
+		t.Run(tc.param, func(t *testing.T) {
+			t.Parallel()
+			connector, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?" + tc.param + "=" + tc.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := connector.(*Connector).connOpts.Get(tc.option); got != tc.want {
+				t.Fatalf("%s=%v (%T), want %v (%T)", tc.param, got, got, tc.want, tc.want)
+			}
+			for _, bad := range tc.bad {
+				_, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?cluster_file=/does/not/exist&" + tc.param + "=" + bad)
+				var apiErr *api.Error
+				if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter || !strings.Contains(err.Error(), tc.param) {
+					t.Errorf("%s=%s: got %v, want 22023 naming the parameter", tc.param, bad, err)
+				}
+			}
+		})
+	}
+	connector, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?disabled_planner_rules=MatchLeafRule,%20SelectMergeRule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := connector.(*Connector).connOpts.Get(api.OptDisabledPlannerRules).([]string); strings.Join(got, "|") != "MatchLeafRule|SelectMergeRule" {
+		t.Fatalf("disabled_planner_rules = %q", got)
+	}
+	connector, err = (&Driver{}).OpenConnector("fdbsql:///FRL/db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := connector.(*Connector).connOpts
+	if len(opts.AllEntries()) != 0 || opts.Get(api.OptMaxRows) != math.MaxInt32 ||
+		opts.Get(api.OptExecutionScannedRowsLimit) != math.MaxInt32 ||
+		opts.Get(api.OptExecutionScannedBytesLimit) != int64(math.MaxInt64) ||
+		opts.Get(api.OptExecutionTimeLimit) != int64(0) || opts.Get(api.OptTransactionTimeout) != nil ||
+		opts.Get(api.OptMaxStatementMemoryBytes) != nil {
+		t.Fatalf("absent DSN limits changed defaults: %v", opts.AllEntries())
+	}
+	for _, query := range []string{
+		"max_rows=0", "execution_time_limit=0", "execution_scanned_rows_limit=0",
+		"execution_scanned_bytes_limit=0", "max_statement_memory_bytes=0",
+		"transaction_timeout=0", "transaction_timeout=-1", "max_rows=%2B5",
+	} {
+		if _, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?" + query); err != nil {
+			t.Errorf("%s: %v", query, err)
+		}
+	}
+}
+
+// Every boolean parameter takes exactly Java's spellings, in any case; anything
+// Java's parseBoolean would silently read as false is refused with 22023.
+func TestConnectionOptions_BooleansAreStrict(t *testing.T) {
+	t.Parallel()
+	accepted := map[string]bool{"true": true, "TRUE": true, "True": true, "false": false, "FALSE": false, "fAlSe": false}
+	rejected := []string{"", "1", "0", "t", "f", "yes", "no", "on", "off", "%20true", "true%20", "ture"}
+	for _, name := range boolDSNOptions {
+		param := strings.ToLower(string(name))
+		for raw, want := range accepted {
+			c, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?" + param + "=" + raw)
+			if err != nil {
+				t.Fatalf("%s=%s: %v", param, raw, err)
+			}
+			if got := c.(*Connector).connOpts.Get(name); got != want {
+				t.Fatalf("%s=%s read as %v", param, raw, got)
+			}
+		}
+		for _, raw := range rejected {
+			_, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?" + param + "=" + raw)
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter || !strings.Contains(err.Error(), param) {
+				t.Errorf("%s=%s: got %v, want 22023 naming the parameter", param, raw, err)
+			}
+		}
+		if _, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?" + param); err == nil {
+			t.Errorf("bare ?%s accepted", param)
+		}
+	}
+}
+
+// The exported parameter names are the lower-cased option names they set.
+func TestConnectionOptions_ExportedParamNames(t *testing.T) {
+	t.Parallel()
+	for param, name := range map[string]api.OptionName{
+		DryRunParam:                       api.OptDryRun,
+		IsolationLevelSnapshotParam:       api.OptIsolationLevelSnapshot,
+		PlannerStatisticsParam:            api.OptPlannerStatistics,
+		RestrictDDLToSessionDatabaseParam: api.OptRestrictDDLToSessionDatabase,
+		TransactionTagsParam:              api.OptTransactionTags,
+	} {
+		if param != strings.ToLower(string(name)) || !slices.Contains(acceptedDSNParams, param) {
+			t.Errorf("%s does not name %s", param, name)
+		}
+	}
+}
+
+// A contract failure reads as one 22023 naming the parameter, not a nested code.
+func TestConnectionOptions_ErrorCodeNotDoubled(t *testing.T) {
+	t.Parallel()
+	_, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?max_rows=x")
+	if err == nil || strings.Count(err.Error(), "22023") != 1 || !strings.Contains(err.Error(), `"max_rows"`) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// A query string url.Query would partly drop is refused, so a malformed limit
+// can never leave the connection unbounded; duplicates keep the first value.
+func TestParseDSN_MalformedLimitIsNotDropped(t *testing.T) {
+	t.Parallel()
+	for _, query := range []string{"max_rows=%xx", "max_rows=1;transaction_timeout=2", "transaction_timeout=%"} {
+		_, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?cluster_file=/secret&" + query)
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter || strings.Contains(err.Error(), "/secret") {
+			t.Errorf("malformed query %s: got %v, want 22023 without the DSN", query, err)
+		}
+	}
+	c, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?max_rows=2&max_rows=7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.(*Connector).connOpts.Get(api.OptMaxRows); got != 2 {
+		t.Fatalf("duplicate DSN parameters must keep the first value: %v", got)
+	}
+	if _, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?max_row=2"); err == nil || !strings.Contains(err.Error(), "max_rows") {
+		t.Fatalf("unknown option did not list max_rows: %v", err)
 	}
 }

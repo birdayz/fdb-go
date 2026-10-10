@@ -975,6 +975,8 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; throws UNSUPPORTED_QUERY | SQL-standard XOR with NULL propagation |
 | Scalar subqueries in expressions | Grammar has no `subqueryExpressionAtom` (parse error) | Translated via `ScalarSubqueryValue` (`DecorrelateValuesRule` covers the other values-box patterns) |
 | Direct-API insert of a bare `UUID ARRAY` | `RecordTypeTable.toDynamicMessage` (4.14.2.0) converts a UUID attribute (#4243) but its repeated-field path calls `addRepeatedField` with the unconverted `java.util.UUID`, which protobuf refuses for the UUID message field (read from source, not measured) | Each element is written as the two-word UUID message (`embedded/direct_access.go` `directFieldValue`); UUIDs inside structs in an array match Java |
+| `MAX_STATEMENT_MEMORY_BYTES` option (DSN `max_statement_memory_bytes`) | No such option | Statement-wide byte budget for in-memory buffering (RFC-130); a breach is 54F01 |
+| `TRANSACTION_TAGS` option (DSN `transaction_tags`) | No such option | FDB transaction tags on every connection transaction, for ratekeeper throttling |
 
 Go-only plan types: `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryValuesPlan`, `RecordQueryNestedLoopJoinPlan`. `RecordQueryMergeSortUnionPlan` is Go's collapsed ordered-union counterpart, not a semantic extension; its `removeDuplicates=false` mode is an extension. Go also has a keyless concat shape named `RecordQueryUnionPlan`; Java's same-named class is keyed and ordered, so the Go shape—not the class name—is the extension.
 
@@ -4212,3 +4214,12 @@ rejected", the validator's message as its cause. Pinned by
 The ported validator's messages carry the names and versions inline ("former index key used for new
 index in meta-data (subspace key=…, index=…)"), where Java's `MetaDataException` carries them as log
 keys beside a fixed message. The fixed part of each message is Java's.
+
+## Driver DSN parameters vs Java connection Properties
+
+The Go driver takes connection options from the DSN query string. Java takes them from JDBC `Properties` (`Options.fromProperties`, Options.java:520-533). Where the two differ:
+
+- **Keys are lower-case.** Java looks up the upper-case enum name (`Name.valueOf(key)`, Options.java:526). Go accepts the lower-cased name (`max_rows`, not `MAX_ROWS`). An unknown key is 22023 and lists the accepted ones; in Java it is an `IllegalArgumentException`.
+- **Booleans accept only `true`/`false`, in any case.** Java's `Boolean::parseBoolean` (TypeContract.java:36) reads every other value as false, so `dry_run=1` would silently mean "off". Go rejects everything else with 22023: `""`, a bare `?flag`, `1`/`0`, `t`/`f`, `yes`/`no`, `on`/`off`, and padded values. This covers every boolean DSN parameter.
+- **`transaction_timeout` is at most 2147483647.** The Java contract allows any long (Options.java:586). FDB's `TIMEOUT` option takes [0, INT_MAX] (`extractIntOption`, ReadYourWrites.actor.cpp:2571), so a larger value fails every transaction with 2006. Go rejects it when the DSN is opened. A value passed to `SetOption` keeps the Java contract and fails at the transaction with 2006, as in both clients.
+- **A malformed query string is 22023.** A bad escape or a `;` separator is refused. Go's `url.Query` would otherwise drop the pair, and the limit it carried, without an error.

@@ -7,7 +7,9 @@
 package sqldriver
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"sort"
 	"strings"
@@ -38,6 +40,7 @@ const (
 //
 //	fdbsql:///PATH                             — embedded, default cluster file
 //	fdbsql:///PATH?cluster_file=/path          — embedded, explicit cluster file
+//	fdbsql:///PATH?max_rows=100&dry_run=true   — connection options (acceptedDSNParams)
 //	fdbsql://HOST:PORT/PATH                    — remote (gRPC), NOT YET IMPLEMENTED
 //
 // The path component is the database path (Java's
@@ -108,32 +111,44 @@ const (
 
 // acceptedDSNParams is every query parameter the driver reads. cluster_file
 // and schema are read from the same map as the options.
-var acceptedDSNParams = append([]string{
+var acceptedDSNParams = append(append([]string{
 	"cluster_file",
-	DryRunParam,
-	IsolationLevelSnapshotParam,
-	PlannerStatisticsParam,
-	RestrictDDLToSessionDatabaseParam,
 	"schema",
 	TransactionTagsParam,
-}, planCacheDSNParams()...)
+}, dsnParams(boolDSNOptions)...), dsnParams(contractDSNOptions)...)
 
-// planCacheOptions are the engine plan cache's sizes and TTLs, which a DSN
-// sets by the lower-cased option name (`plan_cache_tertiary_max_entries=4`):
-// Java's FRL takes them as engine options (EmbeddedConfig sets them for the
-// yaml tests). The connector's shared plan cache is built from them.
-var planCacheOptions = []api.OptionName{
+// boolDSNOptions are parsed strictly (parseDSNBool): Java's Boolean.parseBoolean
+// would read a misspelled value as false.
+var boolDSNOptions = []api.OptionName{
+	api.OptDryRun,
+	api.OptIsolationLevelSnapshot,
+	api.OptPlannerStatistics,
+	api.OptRestrictDDLToSessionDatabase,
+	api.OptPlanRightDeep,
+	api.OptDisablePlannerRewriting,
+}
+
+// contractDSNOptions are converted and range-checked by the option contracts,
+// as Java's Options.fromProperties does for connection Properties.
+var contractDSNOptions = []api.OptionName{
 	api.OptPlanCachePrimaryMaxEntries,
 	api.OptPlanCachePrimaryTimeToLiveMillis,
 	api.OptPlanCacheSecondaryMaxEntries,
 	api.OptPlanCacheSecondaryTimeToLiveMillis,
 	api.OptPlanCacheTertiaryMaxEntries,
 	api.OptPlanCacheTertiaryTimeToLiveMillis,
+	api.OptMaxRows,
+	api.OptExecutionScannedRowsLimit,
+	api.OptExecutionScannedBytesLimit,
+	api.OptExecutionTimeLimit,
+	api.OptTransactionTimeout,
+	api.OptMaxStatementMemoryBytes,
+	api.OptDisabledPlannerRules,
 }
 
-func planCacheDSNParams() []string {
-	out := make([]string, len(planCacheOptions))
-	for i, o := range planCacheOptions {
+func dsnParams(options []api.OptionName) []string {
+	out := make([]string, len(options))
+	for i, o := range options {
 		out[i] = strings.ToLower(string(o))
 	}
 	return out
@@ -166,34 +181,15 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 			strings.Join(unknown, ", "), strings.Join(names, ", "))
 	}
 	opts := api.NoOptions()
-	for _, b := range []struct {
-		param  string
-		option api.OptionName
-	}{
-		{DryRunParam, api.OptDryRun},
-		{IsolationLevelSnapshotParam, api.OptIsolationLevelSnapshot},
-	} {
-		if raw, present := d.Options[b.param]; present {
-			v, err := parseDSNBool(b.param, raw)
+	for _, name := range boolDSNOptions {
+		param := strings.ToLower(string(name))
+		if raw, present := d.Options[param]; present {
+			v, err := parseDSNBool(param, raw)
 			if err != nil {
 				return nil, err
 			}
-			opts = opts.With(b.option, v)
+			opts = opts.With(name, v)
 		}
-	}
-	if raw, present := d.Options[RestrictDDLToSessionDatabaseParam]; present {
-		v, err := parseDSNBool(RestrictDDLToSessionDatabaseParam, raw)
-		if err != nil {
-			return nil, err
-		}
-		opts = opts.With(api.OptRestrictDDLToSessionDatabase, v)
-	}
-	if raw, present := d.Options[PlannerStatisticsParam]; present {
-		v, err := parseDSNBool(PlannerStatisticsParam, raw)
-		if err != nil {
-			return nil, err
-		}
-		opts = opts.With(api.OptPlannerStatistics, v)
 	}
 	if raw, present := d.Options[TransactionTagsParam]; present {
 		tags, err := parseDSNTags(raw)
@@ -202,8 +198,9 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 		}
 		opts = opts.With(api.OptTransactionTags, tags)
 	}
-	for _, name := range planCacheOptions {
-		raw, present := d.Options[strings.ToLower(string(name))]
+	for _, name := range contractDSNOptions {
+		param := strings.ToLower(string(name))
+		raw, present := d.Options[param]
 		if !present {
 			continue
 		}
@@ -211,8 +208,17 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 		if err == nil {
 			err = api.ValidateOption(name, v)
 		}
+		if err == nil && name == api.OptTransactionTimeout && v.(int64) > math.MaxInt32 {
+			// FDB's TIMEOUT option takes [0, INT_MAX]; past it every transaction fails 2006.
+			err = api.NewErrorf(api.ErrCodeInvalidParameter, "FDB transaction timeout is at most %d ms, got %s", math.MaxInt32, raw)
+		}
 		if err != nil {
-			return nil, err
+			msg := err.Error()
+			var apiErr *api.Error
+			if errors.As(err, &apiErr) {
+				msg = apiErr.Message
+			}
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "DSN option %q: %s", param, msg)
 		}
 		opts = opts.With(name, v)
 	}
@@ -254,19 +260,17 @@ func parseDSNTags(raw string) ([]string, error) {
 	return uniq, nil
 }
 
-// parseDSNBool reads a boolean DSN parameter. A bare `?name` (empty value)
-// means true, the usual URL-flag convention; anything not recognisable as a
-// boolean is an error rather than a silent false, because silently reading a
-// misspelled security flag as "off" is the failure mode that matters.
+// parseDSNBool accepts only Java's spellings, true/false in any case; any other
+// value, which Java's parseBoolean would silently read as false, is an error.
 func parseDSNBool(name, raw string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", "1", "t", "true", "yes", "on":
+	switch {
+	case strings.EqualFold(raw, "true"):
 		return true, nil
-	case "0", "f", "false", "no", "off":
+	case strings.EqualFold(raw, "false"):
 		return false, nil
 	default:
 		return false, api.NewErrorf(api.ErrCodeInvalidParameter,
-			"DSN option %q must be a boolean, got %q", name, raw)
+			"DSN option %q must be true or false, got %q", name, raw)
 	}
 }
 
@@ -274,7 +278,8 @@ func parseDSNBool(name, raw string) (bool, error) {
 //
 // Returns a relational Error with code InvalidPath if the DSN is
 // malformed or uses an unsupported scheme. Matches Java's behavior
-// (JDBCRelationalDriver.acceptsURL + connect).
+// (JDBCRelationalDriver.acceptsURL + connect). A malformed query string is
+// InvalidParameter, like every other bad parameter.
 func ParseDSN(s string) (*DSN, error) {
 	if s == "" {
 		return nil, api.NewError(api.ErrCodeInvalidPath, "empty DSN")
@@ -296,10 +301,17 @@ func ParseDSN(s string) (*DSN, error) {
 			"DSN is missing database path (expected fdbsql:///PATH)")
 	}
 
+	// url.Query drops a malformed pair (bad escape, `;`) silently; a dropped
+	// limit would leave the connection unbounded, so it is an error instead.
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return nil, api.WrapError(api.ErrCodeInvalidParameter, "malformed DSN query", err)
+	}
+
 	dsn := &DSN{Path: u.Path, Options: make(map[string]string)}
 
 	// Extract reserved options that have typed fields.
-	if schema := u.Query().Get("schema"); schema != "" {
+	if schema := query.Get("schema"); schema != "" {
 		dsn.Schema = schema
 	}
 
@@ -314,7 +326,7 @@ func ParseDSN(s string) (*DSN, error) {
 
 	// Flatten query values (first value wins, matches Java's
 	// JDBCURI.getFirstValue pattern).
-	for key, values := range u.Query() {
+	for key, values := range query {
 		if len(values) == 0 {
 			dsn.Options[key] = ""
 		} else {

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -460,5 +461,67 @@ func TestMappedRangeDeferredEntryDoesNotReadReplacement(t *testing.T) {
 				t.Fatalf("new ordinary entry lost replacement failure: got %v, want 2004", err)
 			}
 		})
+	}
+}
+
+// TestSetTimeout_OutOfRangePoisons pins RYW setOption(TIMEOUT): extractIntOption(value,
+// 0, INT_MAX) throws invalid_option_value (2006) into deferredError before the timeout
+// is applied, so every later op fails 2006; a poisoned transaction skips the option.
+func TestSetTimeout_OutOfRangePoisons(t *testing.T) {
+	t.Parallel()
+	for _, ms := range []int64{-1, math.MaxInt32 + 1, math.MaxInt64} {
+		tx := newTestTx()
+		tx.SetTimeout(500)
+		deadline := tx.deadlineNs.Load()
+		tx.SetTimeout(ms)
+		if e := tx.deferredErr.Load(); e == nil || e.Code != 2006 {
+			t.Fatalf("SetTimeout(%d): want deferred 2006, got %v", ms, e)
+		}
+		if tx.timeoutNs.Load() != int64(500*time.Millisecond) || tx.deadlineNs.Load() != deadline {
+			t.Fatalf("SetTimeout(%d) changed the applied timeout to %v", ms, time.Duration(tx.timeoutNs.Load()))
+		}
+	}
+	for _, ms := range []int64{0, 1, math.MaxInt32} {
+		tx := newTestTx()
+		tx.SetTimeout(ms)
+		if e := tx.deferredErr.Load(); e != nil {
+			t.Fatalf("SetTimeout(%d) poisoned: %v", ms, e)
+		}
+		if tx.timeoutNs.Load() != int64(time.Duration(ms)*time.Millisecond) {
+			t.Fatalf("SetTimeout(%d) not applied", ms)
+		}
+	}
+	tx := newTestTx()
+	tx.deferredErr.Store(&wire.FDBError{Code: ErrInvalidMutationType})
+	tx.SetTimeout(500)
+	if tx.timeoutNs.Load() != 0 || tx.deferredErr.Load().Code != ErrInvalidMutationType {
+		t.Fatal("a poisoned transaction applied a timeout or lost its first error")
+	}
+}
+
+// TestSetTimeout_OutOfRangeFailsEveryOp is the libfdb_c behaviour end to end: the
+// option call succeeds, every later read and the commit fail 2006, Reset clears it.
+func TestSetTimeout_OutOfRangeFailsEveryOp(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+	k := []byte(t.Name() + "_k")
+
+	tx := db.CreateTransaction()
+	tx.SetTimeout(math.MaxInt32 + 1)
+	if _, err := tx.Get(ctx, k); deferredCodeOf(err) != 2006 {
+		t.Fatalf("Get after SetTimeout(INT_MAX+1): want 2006, got %v", err)
+	}
+	tx.Set(k, []byte("v"))
+	if err := tx.Commit(ctx); deferredCodeOf(err) != 2006 {
+		t.Fatalf("Commit after SetTimeout(INT_MAX+1): want 2006, got %v", err)
+	}
+	tx.Reset()
+	tx.SetTimeout(math.MaxInt32)
+	tx.Set(k, []byte("v"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("Commit after Reset with SetTimeout(INT_MAX): %v", err)
 	}
 }

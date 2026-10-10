@@ -251,7 +251,7 @@ func writeTemplateRow(store *recordlayer.FDBRecordStore, rl *metadata.RecordLaye
 		META_DATA:        payload,
 	}
 	if _, err := store.SaveRecord(rec); err != nil {
-		return api.WrapErrorf(err, api.ErrCodeInternalError, "save schema template")
+		return storeError(err, "save schema template")
 	}
 	return nil
 }

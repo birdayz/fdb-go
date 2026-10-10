@@ -316,7 +316,7 @@ func (c *RecordLayerStoreCatalog) restoreInTransaction(ctx context.Context, db *
 		TEMPLATE_VERSION: proto.Int32(int32(version)),
 		META_DATA:        md,
 	}); err != nil {
-		return false, api.WrapErrorf(err, api.ErrCodeInternalError, "restore schema template")
+		return false, storeError(err, "restore schema template")
 	}
 	if opts.beforeCommit != nil {
 		opts.beforeCommit()

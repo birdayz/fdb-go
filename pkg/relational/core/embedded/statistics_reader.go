@@ -46,7 +46,7 @@ import (
 // methods, and TestIntegration_Stats_FleetCollectIsReadableByTheConnection is
 // what proves the two agree.
 func (c *EmbeddedConnection) statisticsLocation(ctx context.Context) (recordlayer.StatisticsSubspace, subspace.Subspace, error) {
-	storeSubspace, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
+	storeSubspace, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
 	if err != nil {
 		return recordlayer.StatisticsSubspace{}, nil, err
 	}
@@ -287,7 +287,7 @@ func evaluateCollectedStatistics(
 	// undecodable key or value -- would be reported as "not collected", which is
 	// the one thing it is not. Only NoHeader means absent.
 	stats, readRefusal, readVersion, rErr := recordlayer.ReadStatisticsAtWithRefusal(
-		ctx, c.sess.DB, statsSubspace, storeSubspace, c.statisticsTags()...)
+		ctx, configuredRunner{c.sess.DB, c.Options()}, statsSubspace, storeSubspace)
 	ok := rErr == nil && readRefusal == recordlayer.StatisticsReadOK
 	in.ReadErr, in.Found, in.Stats, in.ReadRefusal = rErr, ok, stats, readRefusal
 	if rErr == nil && ok {
@@ -599,8 +599,8 @@ func (e *noClusterVersionError) Error() string {
 	return "statistics read produced no cluster version"
 }
 
-// statisticsTags returns the connection's FDB transaction tags, which every
-// statistics transaction must carry.
+// statisticsTags returns the connection's FDB transaction tags, which statistics
+// collection and clear must carry.
 //
 // Threaded as a parameter rather than wrapped around the database. Wrapping
 // means reconstructing an *FDBDatabase, and this repo's copy-method gate
@@ -609,8 +609,8 @@ func (e *noClusterVersionError) Error() string {
 // seeded clock for the wall clock, unreplayably, and only when tags happen to
 // be configured. A parameter is visible at every call site.
 //
-// Why it matters at all: beginTransaction's comment calls itself "the single
-// transaction-creation seam in the SQL layer", and statistics work does not go
+// Why it matters at all: statement transactions and the planner's statistics
+// read are tagged by transactionConfigurer, but collection and clear do not go
 // through it — collection opens its own transaction per batch. Untagged, the
 // heaviest job in the system escapes the cluster's ratekeeper.
 func (c *EmbeddedConnection) statisticsTags() []string {

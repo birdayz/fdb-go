@@ -84,7 +84,7 @@ func (s *directAccessStatement) run(ctx context.Context, tableName string, opts 
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"direct access to table %q of schema %q from a connection to schema %q", table, schemaName, c.sess.Schema)
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ func (s *directAccessStatement) run(ctx context.Context, tableName string, opts 
 		}
 		own = true
 	}
-	result, err := c.runInCapturedTx(ctx, tx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	result, err := c.runInCapturedTx(ctx, tx, c.Options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		// Inside the transaction, so the metadata is the transaction's.
 		if err := c.ensureMetaData(ctx); err != nil {
 			return nil, err
