@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (TranslateValueFunction.java),
+// Copyright 2015-2021 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package plans
 
 import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"

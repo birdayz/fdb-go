@@ -41,6 +41,7 @@ go_test(
         "conflictrange_workload_test.go",
         "convert_teardown_test.go",
         "database_bootstrap_test.go",
+        "database_default_test.go",
         "directory_test.go",
         "error_benchmark_test.go",
         "error_test.go",

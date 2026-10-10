@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (IndexingHeartbeat.java,
+// IndexingSubspaces.java, SynchronizedSessionLockedException.java,
+// OnlineIndexer.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2019 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package recordlayer
 
 import (

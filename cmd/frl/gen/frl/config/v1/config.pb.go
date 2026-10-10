@@ -95,7 +95,7 @@ type Context struct {
 	// Identifier used by `--context` and `Config.current_context`.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Path to an FDB cluster file. Empty → use FDB's default lookup
-	// (FDB_CLUSTER_FILE env var, then /etc/foundationdb/fdb.cluster).
+	// (present FDB_CLUSTER_FILE, local fdb.cluster, then the platform default).
 	ClusterFile string `protobuf:"bytes,2,opt,name=cluster_file,json=clusterFile,proto3" json:"cluster_file,omitempty"`
 	// KeySpace path of the record store to operate on (e.g. "/myapp/prod/orders").
 	// Parsed by the record layer's keyspace path resolver at command time.

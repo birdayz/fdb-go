@@ -1,164 +1,143 @@
-/* fdb.dev landing polish. Loaded by hextra after the theme's compiled CSS.
-   Note: hextra ships PRECOMPILED Tailwind, so ad-hoc `hx:` utilities used only in
-   our content don't exist in the stylesheet. We style the landing with real
-   classes here instead. */
-
-/* ---- Layout rhythm --------------------------------------------------------- */
-/* Body copy reads left-aligned at a comfortable measure, never centered
-   (centered multi-line paragraphs look unfinished), aligned under each heading. */
-/* hextra-home lays content out in a flex column with align-items:flex-start, so
-   block children shrink-wrap to content instead of stretching. width:100% makes
-   max-width actually govern the measure (and lets the bench 1fr track expand). */
-.s-body { width: 100%; max-width: 46rem; line-height: 1.62; }
-.s-body p { margin: 0.9rem 0; }
-.hero-code { width: 100%; max-width: 44rem; }
-/* Quickstart steps. Like the blocks above, this must be told to fill the measure:
-   hextra-home shrink-wraps its flex children, so without width:100% the steps grow
-   to their widest code line and blow past the viewport on mobile (and drag the
-   fixed sidebar's width:100% out with them). Bounding the width lets long code
-   lines scroll inside their own block instead of scrolling the whole page. */
-/* margin-top clears the callout above so its box doesn't crowd step 1's number. */
-.s-steps { width: 100%; max-width: 46rem; margin-top: 2rem; }
-.s-steps pre, .hero-code pre { overflow-x: auto; }
-
-/* Quickstart step number markers. The theme's 33px circle has a 4px border, so its
-   content box is only 25px — line-height-based centering of the digit is therefore
-   unreliable (it sits low). Center the digit with flexbox instead, which ignores the
-   border math. The circle is also sized for a larger heading, so against our h3
-   (24px line) it sits low; lift it half the size difference so its center aligns with
-   the heading line. */
-.s-steps .hextra-steps :where(h2, h3, h4, h5, h6):not(.no-step-marker)::before {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: -4.5px;
+/* Site-owned styles; Hextra's precompiled utilities do not include new classes. */
+:root {
+  --launch-text: #182323;
+  --launch-muted: #526060;
+  --launch-border: #d5dddd;
+  --launch-panel: #f5f7f6;
+  --launch-accent: #176550;
+  --launch-accent-bg: #e9f3ef;
 }
-
-/* Hero headings wrap naturally and balance their lines. This replaces the &nbsp;
-   runs that used to keep phrases together: those formed unbreakable units that
-   overflowed narrow mobile viewports. text-wrap:balance gives tidy multi-line
-   headings without the overflow risk. Scoped to the hero shortcode headings
-   (.not-prose) so docs prose headings keep normal wrapping. */
-main h1.not-prose, main h2.not-prose { text-wrap: balance; }
-
-/* Hero headings. The theme sizes the section h2 at text-4xl on phones (36px) but
-   text-3xl on desktop — larger on mobile than on desktop, and equal to the h1 at
-   320px, which flattens the hierarchy. Scale the section h2 down on small screens,
-   and relax the theme's leading-none so the now-wrapping headings don't crowd. */
-main h1.not-prose { line-height: 1.15; }
-main h2.not-prose { font-size: 1.5rem; line-height: 1.2; }   /* 24px on phones */
-@media (min-width: 640px) {
-  main h2.not-prose { font-size: 1.875rem; }                 /* 30px from sm up, matches desktop */
+.dark {
+  --launch-text: #e7edeb;
+  --launch-muted: #a5b1ad;
+  --launch-border: #323c38;
+  --launch-panel: #171d1a;
+  --launch-accent: #98d9ba;
+  --launch-accent-bg: #1a2c23;
 }
-
-/* Hero CTAs: real gap so the buttons never touch when they stack on mobile, and
-   full-width (equal, not ragged) on phones. */
-.hero-cta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 2rem 0 3rem; }
-/* Transparent border so the primary button matches the secondary's bordered box
-   height exactly (otherwise the secondary's 1px border makes it 2px taller). */
-.hero-cta a { margin: 0; border: 1px solid transparent; }
-@media (max-width: 480px) {
-  .hero-cta a { flex: 1 1 100%; text-align: center; }
+.hextra-nav-container nav { max-width: 75rem; }
+.launch-home {
+  width: min(100% - 3rem, 70rem);
+  margin: 0 auto;
+  padding: 5rem 0 2rem;
+  color: var(--launch-text);
+  font-size: 1rem;
+  line-height: 1.65;
 }
-.hero-note {
-  width: 100%;
-  max-width: 44rem;
-  margin-top: 1.1rem;
-  font-size: 0.85rem;
-  line-height: 1.55;
-  color: #828b9a;
+.launch-home *, .launch-home *::before, .launch-home *::after { box-sizing: border-box; }
+.launch-home a { text-underline-offset: 0.2em; }
+.launch-home a:hover { text-decoration: underline; }
+.launch-home a:focus-visible { outline: 2px solid var(--launch-accent); outline-offset: 5px; border-radius: 2px; }
+.launch-home p { margin: 0; }
+.launch-home code { font-size: 0.86em; }
+.launch-home h1, .launch-home h2, .launch-home h3 { text-wrap: balance; }
+.launch-home h1 { margin: 0.9rem 0 1.5rem; font-size: clamp(3.1rem, 5.5vw, 4.8rem); font-weight: 650; letter-spacing: -0.065em; line-height: 1.02; }
+.launch-home h2 { font-size: clamp(1.7rem, 3vw, 2.35rem); font-weight: 600; letter-spacing: -0.045em; line-height: 1.2; margin: 0.7rem 0 1.2rem; }
+.launch-home h3 { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.35; }
+.launch-eyebrow { color: var(--launch-muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.launch-hero { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr); gap: 5rem; align-items: center; }
+.launch-intro .launch-lead { font-size: 1.35rem; line-height: 1.5; max-width: 31rem; }
+.launch-intro .launch-detail { max-width: 29rem; color: var(--launch-muted); margin-top: 1rem; }
+.launch-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1.4rem; margin-top: 2rem; }
+.launch-button { display: inline-flex; align-items: center; justify-content: center; gap: 1rem; padding: 0.75rem 1.1rem; border: 1px solid var(--launch-accent); border-radius: 5px; background: var(--launch-accent); color: #fff; font-weight: 600; font-size: 0.92rem; line-height: 1.5; }
+.dark .launch-button { color: #10261c; }
+.launch-home .launch-button:hover { text-decoration: none; filter: brightness(1.08); }
+.launch-source { display: inline-flex; align-items: center; gap: 0.4rem; min-height: 44px; font-size: 0.92rem; font-weight: 550; }
+.hero-mobile-status { display: none; }
+.launch-stack { margin: 0; border: 1px solid var(--launch-border); border-radius: 8px; padding: 1.4rem; }
+.launch-stack figcaption { font-size: 0.72rem; color: var(--launch-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 1rem; }
+.stack-layer { display: grid; grid-template-columns: 1fr auto; gap: 0.1rem 1rem; padding: 0.6rem 0.85rem; background: var(--launch-panel); border: 1px solid var(--launch-border); border-radius: 4px; }
+.stack-layer strong { font-size: 0.94rem; font-weight: 600; grid-column: 1; grid-row: 1; }
+.stack-entry { color: var(--launch-muted); font-size: 0.65rem; grid-column: 2; grid-row: 1; align-self: center; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.stack-note { color: var(--launch-muted); font-size: 0.75rem; grid-column: 1 / -1; }
+.stack-connector { height: 1.2rem; text-align: center; line-height: 1.2rem; color: var(--launch-muted); }
+.stack-client { background: var(--launch-accent-bg); border-color: var(--launch-accent); }
+.stack-wire { display: flex; flex-direction: column; align-items: center; color: var(--launch-muted); font-size: 0.62rem; line-height: 1.1rem; padding-top: 0.3rem; }
+.stack-server { display: flex; flex-direction: column; text-align: center; border: 1px dashed var(--launch-border); border-radius: 4px; padding: 0.55rem; }
+.stack-server strong { font-size: 0.9rem; font-weight: 550; }
+.stack-server span { font-size: 0.73rem; color: var(--launch-muted); }
+.launch-stack .stack-caption { color: var(--launch-muted); font-size: 0.73rem; line-height: 1.55; margin-top: 1rem; }
+.launch-status { display: flex; align-items: center; gap: 1.2rem; margin-top: 3rem; padding: 1.1rem 0; border-block: 1px solid var(--launch-border); font-size: 0.81rem; }
+.status-label { white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.7rem; padding: 0.22rem 0.5rem; border-radius: 3px; background: var(--launch-panel); border: 1px solid var(--launch-border); }
+.launch-status p { flex: 1; color: var(--launch-muted); }
+.launch-status a { color: var(--launch-accent); white-space: nowrap; }
+.launch-section { padding: 4.5rem 0; border-bottom: 1px solid var(--launch-border); }
+.section-heading { max-width: 45rem; margin-bottom: 2rem; }
+.section-heading > p:last-child:not(.launch-eyebrow) { color: var(--launch-muted); max-width: 41rem; }
+.launch-api-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; }
+.api-card { display: flex; flex-direction: column; }
+.api-number { display: block; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.67rem; letter-spacing: 0.06em; color: var(--launch-muted); margin-bottom: 0.85rem; }
+.api-card h3 { margin-bottom: 0.75rem; }
+.api-card p { color: var(--launch-muted); font-size: 0.92rem; }
+.package-link { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; color: var(--launch-accent); border-top: 1px solid var(--launch-border); margin-top: auto; padding-top: 1rem; }
+.api-card p + .package-link { margin-top: 1.3rem; }
+.package-link code { overflow-wrap: anywhere; }
+.launch-example { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: 3.5rem; align-items: start; }
+.launch-example > div:first-child > p:not(.launch-eyebrow) { color: var(--launch-muted); font-size: 0.95rem; margin-top: 1rem; }
+.example-links { display: flex; flex-wrap: wrap; gap: 1.3rem; margin-top: 1.5rem; font-size: 0.9rem; color: var(--launch-accent); }
+.launch-code { min-width: 0; border: 1px solid var(--launch-border); border-radius: 6px; overflow: hidden; }
+.code-caption { display: flex; justify-content: space-between; background: var(--launch-panel); padding: 0.7rem 1rem; border-bottom: 1px solid var(--launch-border); color: var(--launch-muted); font-size: 0.72rem; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.launch-code .highlight { margin: 0; }
+.launch-code pre { margin: 0; padding: 1.2rem 1rem; overflow-x: auto; scrollbar-color: var(--launch-border) var(--launch-panel); scrollbar-width: thin; font-size: 0.76rem; line-height: 1.8; border-radius: 0; }
+.launch-code pre code { font-size: inherit; }
+.launch-code .code-footnote { padding: 0.8rem 1rem; border-top: 1px solid var(--launch-border); color: var(--launch-muted); font-size: 0.72rem; line-height: 1.7; }
+.code-footnote a { color: var(--launch-accent); display: inline-block; }
+.evidence-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; }
+.evidence-grid h3 { font-size: 1rem; margin-bottom: 0.7rem; }
+.evidence-grid p { color: var(--launch-muted); font-size: 0.89rem; }
+.evidence-grid a { display: inline-block; color: var(--launch-accent); font-size: 0.82rem; margin-top: 1rem; }
+.launch-boundary { border-left: 2px solid var(--launch-accent); padding-left: 1.1rem; margin-top: 2.6rem; max-width: 52rem; font-size: 0.88rem; }
+.launch-boundary strong { font-weight: 550; }
+.launch-boundary p { color: var(--launch-muted); margin: 0.45rem 0; }
+.launch-boundary a { display: inline-block; color: var(--launch-accent); margin-right: 1.25rem; margin-top: 0.4rem; }
+.launch-evidence .performance-note { color: var(--launch-muted); font-size: 0.77rem; line-height: 1.7; margin-top: 2rem; }
+.performance-note a { color: var(--launch-accent); }
+.launch-next { display: grid; grid-template-columns: 1fr 0.9fr; gap: 5rem; }
+.launch-next p:not(.launch-eyebrow) { color: var(--launch-muted); font-size: 0.95rem; max-width: 28rem; }
+.launch-next .launch-button { margin-top: 1.5rem; }
+.launch-reading { padding-top: 0.2rem; }
+.launch-reading a { display: flex; flex-direction: column; padding: 1rem 0; border-bottom: 1px solid var(--launch-border); }
+.launch-reading a:first-child { padding-top: 0; }
+.launch-reading a:last-child { border-bottom: 0; }
+.launch-reading a span:first-child { font-size: 0.95rem; font-weight: 550; }
+.launch-reading a span:last-child { color: var(--launch-muted); font-size: 0.78rem; margin-top: 0.2rem; }
+.launch-home .launch-independent { color: var(--launch-muted); font-size: 0.74rem; line-height: 1.6; padding-top: 1.5rem; max-width: 47rem; }
+@media (max-width: 1000px) {
+  .launch-hero { gap: 2.5rem; }
+  .launch-stack { padding: 1rem; }
+  .stack-layer { grid-template-columns: 1fr; }
+  .stack-entry { grid-column: 1; grid-row: 3; font-size: 0.61rem; }
+  .launch-example { gap: 2rem; grid-template-columns: 0.85fr 1.15fr; }
 }
-.hero-note a { color: var(--color-primary-400, #4aa8ff); }
-
-/* ---- Benchmark component ----------------------------------------------------
-   A database benchmark shown the way a systems engineer reads one: monospace,
-   tabular numbers, one bar per row whose LENGTH encodes the speedup (longer is
-   faster). Pure-Go in the theme accent; parity rows go quiet. Honest by design —
-   each bar is speedup ÷ max-speedup, so nothing is exaggerated. */
-.bench {
-  width: 100%;
-  max-width: 44rem;
-  margin: 1.5rem 0 0.75rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
+@media (max-width: 760px) {
+  .launch-home { padding-top: 3rem; }
+  .launch-hero, .launch-example, .launch-next { grid-template-columns: minmax(0, 1fr); gap: 2.5rem; }
+  .launch-hero { align-items: start; }
+  .launch-intro .launch-lead { font-size: 1.22rem; }
+  .launch-detail { font-size: 0.94rem; }
+  .hero-mobile-status { display: inline-block; margin-top: 0.8rem; color: var(--launch-accent); font-size: 0.8rem; }
+  .launch-stack { max-width: 34rem; width: 100%; }
+  .stack-layer { grid-template-columns: 1fr auto; }
+  .stack-entry { grid-column: 2; grid-row: 1; }
+  .launch-status { display: grid; grid-template-columns: auto 1fr; gap: 0.6rem 0.9rem; margin-top: 2rem; }
+  .launch-status .status-label { align-self: start; }
+  .launch-status a { grid-column: 2; }
+  .launch-section { padding: 3rem 0; }
+  .launch-api-grid, .evidence-grid { grid-template-columns: 1fr; gap: 2rem; }
+  .api-card { max-width: 35rem; }
+  .api-card p + .package-link { margin-top: 0.9rem; }
+  .evidence-grid article { max-width: 35rem; }
+  .launch-example { gap: 1.7rem; }
+  .launch-next { gap: 2rem; }
+  .launch-reading a:first-child { padding-top: 1rem; border-top: 1px solid var(--launch-border); }
 }
-.bench-head {
-  font-size: 0.72rem;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: #79828f;
+@media (max-width: 380px) {
+  .launch-home { width: calc(100% - 2rem); }
+  .launch-home h1 { font-size: clamp(2.3rem, 13.2vw, 2.9rem); }
+  .launch-actions { gap: 1rem; }
+  .launch-stack { padding: 0.8rem; }
+  .stack-entry { grid-column: 1; grid-row: 3; }
 }
-.bench-row {
-  display: grid;
-  grid-template-columns: 8.5rem minmax(7.5rem, auto) 1fr 2.6rem;
-  align-items: center;
-  gap: 0.4rem 1.1rem;
+@media (prefers-reduced-motion: reduce) {
+  .launch-home * { scroll-behavior: auto; transition: none; }
 }
-.bench-name { font-size: 0.92rem; color: #d6dbe4; font-weight: 500; }
-.bench-name small { color: #79828f; font-weight: 400; }
-.bench-nums {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-variant-numeric: tabular-nums;
-  font-size: 0.8rem;
-  color: #828b9a;
-  white-space: nowrap;
-}
-.bench-nums b { color: var(--color-primary-400, #4aa8ff); font-weight: 600; }
-.bench-track { height: 0.5rem; background: #1d2129; border-radius: 99px; overflow: hidden; }
-.bench-fill {
-  height: 100%;
-  border-radius: 99px;
-  background: linear-gradient(90deg, var(--color-primary-700, #1763a0), var(--color-primary-400, #4aa8ff));
-}
-.bench-fill.is-par { background: #3a4150; }
-.bench-x {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-weight: 700;
-  font-size: 0.95rem;
-  color: var(--color-primary-400, #4aa8ff);
-  text-align: right;
-}
-.bench-x.is-par { color: #6b7280; }
-
-.muted-note {
-  width: 100%;
-  max-width: 46rem;
-  font-size: 0.85rem;
-  line-height: 1.55;
-  color: #828b9a;
-  margin-top: 0.6rem;
-}
-.muted-note code { color: #aeb6c2; }
-.muted-note a { color: var(--color-primary-400, #4aa8ff); }
-
-@media (max-width: 640px) {
-  .bench-row {
-    grid-template-columns: 1fr auto;
-    gap: 0.3rem 0.75rem;
-    padding-bottom: 0.5rem;
-  }
-  .bench-name { grid-column: 1; grid-row: 1; }
-  .bench-x   { grid-column: 2; grid-row: 1; }
-  .bench-nums { grid-column: 1 / -1; grid-row: 2; }
-  .bench-track { grid-column: 1 / -1; grid-row: 3; }
-}
-
-/* ---- Light mode -------------------------------------------------------------
-   The palette above is authored for the dark default. hextra toggles `.dark`
-   on <html>, so anything without it is light — override every hard-coded
-   dark-canvas color or the bench labels vanish into the white background. */
-html:not(.dark) .bench-head { color: #6b7280; }
-html:not(.dark) .bench-name { color: #374151; }
-html:not(.dark) .bench-name small { color: #6b7280; }
-html:not(.dark) .bench-nums { color: #6b7280; }
-html:not(.dark) .bench-nums b { color: var(--color-primary-600, #1a6fc4); }
-html:not(.dark) .bench-track { background: #e5e7eb; }
-html:not(.dark) .bench-fill.is-par { background: #9ca3af; }
-html:not(.dark) .bench-x { color: var(--color-primary-600, #1a6fc4); }
-html:not(.dark) .bench-x.is-par { color: #6b7280; }
-html:not(.dark) .muted-note,
-html:not(.dark) .hero-note { color: #5b6472; }
-html:not(.dark) .muted-note code { color: #374151; }
-html:not(.dark) .muted-note a,
-html:not(.dark) .hero-note a { color: var(--color-primary-600, #1a6fc4); }

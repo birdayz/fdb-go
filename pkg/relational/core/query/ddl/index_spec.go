@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (IndexSpec.java,
+// IndexableAggregateValue.java, StreamableAggregateValue.java,
+// IndexPredicates.java, and others),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package ddl
 
 import (

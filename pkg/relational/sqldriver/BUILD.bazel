@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# gazelle:exclude clusterfile_lookup_test.go
+
 go_library(
     name = "sqldriver",
     srcs = [
@@ -98,6 +100,12 @@ go_test(
         "//pkg/simfdb",
         "@com_github_google_uuid//:uuid",
     ],
+)
+
+go_test(
+    name = "clusterfile_lookup_test",
+    srcs = ["clusterfile_lookup_test.go"],
+    embed = [":sqldriver"],
 )
 
 # DSN unit tests: no FDB, so they run in the fast lane (`just test`), unlike

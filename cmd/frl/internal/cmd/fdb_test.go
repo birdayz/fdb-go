@@ -1,8 +1,15 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	configv1 "fdb.dev/cmd/frl/gen/frl/config/v1"
 )
@@ -92,5 +99,175 @@ func TestConfigureNewOutcome(t *testing.T) {
 				t.Errorf("configureNewOutcome(%q, %v) = %v; wantNil=%t", tc.output, tc.err, got, tc.wantNil)
 			}
 		})
+	}
+}
+
+// The published port must not expose unauthenticated FDB on host LAN interfaces.
+func TestFdbRunArgs_LoopbackPublishNotHostNetwork(t *testing.T) {
+	t.Parallel()
+	args := fdbRunArgs("frl-fdb", "img:tag", 4689)
+	want := []string{
+		"run", "-d", "--name", "frl-fdb", "--network", "bridge",
+		"--publish", "127.0.0.1:4689:4689",
+		"--env", "FDB_NETWORKING_MODE=host",
+		"--env", "FDB_PORT=4689",
+		"--env", "FDB_CLUSTER_FILE_CONTENTS=docker:docker@127.0.0.1:4689",
+		"img:tag",
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("fdbRunArgs =\n  %q\nwant\n  %q", args, want)
+	}
+	if got := fdbClusterString(4500); got != "docker:docker@127.0.0.1:4500" {
+		t.Fatalf("fdbClusterString(4500) = %q", got)
+	}
+}
+
+func TestFdbUpRejectsInvalidPort(t *testing.T) {
+	t.Parallel()
+	for _, port := range []int{-1, 0, 65536} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			t.Parallel()
+			cmd := newFdbUpCmd()
+			cmd.SetArgs([]string{"--port", strconv.Itoa(port)})
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "port must be between") {
+				t.Fatalf("invalid port %d: %v", port, err)
+			}
+		})
+	}
+}
+
+func TestFdbCommandsRespectCanceledContext(t *testing.T) {
+	t.Parallel()
+	for _, subcommand := range []string{"up", "down", "status"} {
+		t.Run(subcommand, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			root := NewRoot()
+			root.SetArgs([]string{"fdb", subcommand})
+			if err := root.ExecuteContext(ctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled fdb %s: %v", subcommand, err)
+			}
+		})
+	}
+}
+
+func TestRunDockerRespectsCanceledContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if out, err := runDocker(ctx, "version"); !errors.Is(err, context.Canceled) || out != "" {
+		t.Fatalf("canceled Docker operation: output=%q, error=%v", out, err)
+	}
+}
+
+func TestFDBRetryCancellation(t *testing.T) {
+	t.Parallel()
+	for _, success := range []bool{false, true} {
+		t.Run(fmt.Sprintf("callback_success_%t", success), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- retry(ctx, 3, time.Hour, func() error {
+					cancel()
+					if success {
+						return nil
+					}
+					return errors.New("retryable failure")
+				})
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("canceled retry: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("canceled retry did not stop its backoff")
+			}
+		})
+	}
+}
+
+func TestFDBRetryBudget(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	calls := 0
+	if err := retry(ctx, 3, 0, func() error {
+		calls++
+		return nil
+	}); !errors.Is(err, context.DeadlineExceeded) || calls != 0 {
+		t.Fatalf("expired retry budget: calls=%d, error=%v", calls, err)
+	}
+	wantErr := errors.New("retryable failure")
+	if err := retry(context.Background(), 3, 0, func() error {
+		calls++
+		return wantErr
+	}); !errors.Is(err, wantErr) || calls != 3 {
+		t.Fatalf("attempt budget: calls=%d, error=%v", calls, err)
+	}
+}
+
+func TestFdbUpRequiresLocalDockerEndpoint(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		endpoint string
+		local    bool
+	}{
+		{"unix:///var/run/docker.sock", true},
+		{"unix:///Users/dev/.docker/run/docker.sock", true},
+		{"npipe:////./pipe/docker_engine", true},
+		{"ssh://remote", false},
+		{"tcp://192.0.2.1:2376", false},
+		{"tcp://localhost:2375", false},
+		{"", false},
+	} {
+		t.Run(tc.endpoint, func(t *testing.T) {
+			t.Parallel()
+			if err := validateLocalDockerEndpoint(tc.endpoint); (err == nil) != tc.local {
+				t.Fatalf("validateLocalDockerEndpoint(%q) = %v; local=%t", tc.endpoint, err, tc.local)
+			}
+		})
+	}
+}
+
+func TestEnsureFdbImagePullsOnlyMissingImageWithoutDeadline(t *testing.T) {
+	t.Parallel()
+	for _, present := range []bool{true, false} {
+		var calls []string
+		inspect := func(_ context.Context, args ...string) (string, error) {
+			calls = append(calls, strings.Join(args, " "))
+			if present {
+				return "[]", nil
+			}
+			return "", errors.New("No such image")
+		}
+		pull := func(ctx context.Context, image string, _ io.Writer) error {
+			if _, ok := ctx.Deadline(); ok {
+				t.Error("image pull inherited a deadline")
+			}
+			calls = append(calls, "pull "+image)
+			return nil
+		}
+		if err := ensureFdbImage(context.Background(), "fdb:test", io.Discard, inspect, pull); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"image inspect fdb:test"}
+		if !present {
+			want = append(want, "pull fdb:test")
+		}
+		if !slices.Equal(calls, want) {
+			t.Fatalf("present=%v calls=%q, want %q", present, calls, want)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := ensureFdbImage(ctx, "fdb:test", io.Discard,
+		func(context.Context, ...string) (string, error) { return "", context.Canceled },
+		func(context.Context, string, io.Writer) error { t.Error("canceled lookup pulled"); return nil })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled image lookup: %v", err)
 	}
 }

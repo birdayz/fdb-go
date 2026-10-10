@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (CardinalitiesProperty.java),
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package properties is Cascades' per-RelationalExpression
 // derived-property machinery — the "decision support" the planner uses
 // to pick a single best plan from an equivalence class of equivalent

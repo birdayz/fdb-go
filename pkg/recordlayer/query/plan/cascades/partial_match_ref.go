@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (Reference.java,
+// MatchCandidate.java, PartialMatch.java),
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package cascades
 
 import "fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"

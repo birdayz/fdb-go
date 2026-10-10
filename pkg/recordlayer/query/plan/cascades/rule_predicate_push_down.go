@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (PredicatePushDownRule.java,
+// SelectExpression.java, FinalMemoizer.java, RewriteOuterJoinRule.java,
+// and others),
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package cascades
 
 import (

@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (SemanticException.java,
+// PatternForLikeValue.java, ErrorCode.java, LikeOperatorValue.java),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package values
 
 import (

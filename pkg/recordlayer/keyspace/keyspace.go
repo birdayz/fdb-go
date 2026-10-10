@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (KeySpaceDirectory.java,
+// KeySpace.java, KeySpacePath.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package keyspace provides a logical directory tree abstraction over FDB.
 //
 // KeySpace defines a schema of named directories with typed keys.

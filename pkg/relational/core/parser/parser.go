@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (QueryParser.java,
+// ParseHelpers.java),
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package parser — public wrapper around the ANTLR-generated Relational SQL
 // parser and lexer. Consumers call Parse(sql) and receive a parse tree ready
 // for the semantic analyzer. Returned contexts are read-only parse trees; the

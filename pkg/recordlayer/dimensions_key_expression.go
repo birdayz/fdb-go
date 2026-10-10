@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (DimensionsKeyExpression.java),
+// Copyright 2023 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package recordlayer
 
 import (

@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (LiteralKeyExpression.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package protovalue reads a key expression's Value proto as Java's
 // LiteralKeyExpression.fromProtoValue does (LiteralKeyExpression.java:134-173),
 // the one reader of both the meta-data loader (a literal key, a record type's

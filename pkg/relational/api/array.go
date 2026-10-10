@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (ArrayMetaData.java,
+// RelationalArray.java),
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package api
 
 // Array is a typed SQL array column value. Mirrors Java's

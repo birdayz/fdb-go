@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (TupleOrdering.java),
+// Copyright 2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package tupleordering is Java's TupleOrdering: tuples packed so that their
 // byte order is a chosen direction and NULL placement, the encoding order
 // functions store in index keys. The planner's ordered-bytes Values and the

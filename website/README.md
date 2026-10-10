@@ -1,7 +1,7 @@
 # fdb.dev website
 
-The source for [fdb.dev](https://fdb.dev) — landing page, docs, changelog, performance
-dashboard, and the Go vanity-import stubs. Built with [Hugo](https://gohugo.io) + the
+The source for [fdb.dev](https://fdb.dev) — landing page, docs, changelog, and
+Go vanity-import stubs. Built with [Hugo](https://gohugo.io) + the
 [hextra](https://github.com/imfing/hextra) theme (vendored under `themes/hextra`), deployed
 to GitHub Pages.
 
@@ -11,6 +11,8 @@ to GitHub Pages.
 cd website
 hugo server          # http://localhost:1313
 hugo --gc --minify   # production build into ./public
+python3 check.py public  # local links, anchors, canonical/SEO/OG/vanity metadata
+python3 -B -m unittest discover -p 'check_test.py'  # checker failure-path fixtures
 ```
 
 No npm step is required — hextra ships precompiled CSS (`themes/hextra/assets/css/compiled/main.css`).
@@ -19,13 +21,28 @@ No npm step is required — hextra ships precompiled CSS (`themes/hextra/assets/
 
 ```
 content/
-  _index.md          landing page (layout: hextra-home)
+  _index.md          landing page (layout: launch-home)
   docs/              user guide (getting started, record layer, SQL, maturity)
   changelog.md       rendered from the repo CHANGELOG.md (see below)
-static/install.sh    the frl CLI installer (curl -fsSL https://fdb.dev/install.sh | sh)
+layouts/launch-home.html  homepage shell (the theme owns docs/navigation)
+assets/css/custom.css     homepage styles, including light/dark/mobile
+static/og.svg             editable social card; render to static/og.png
+static/install.sh         the frl CLI installer
 data/                site data (nested Go module list for vanity imports)
 themes/hextra/       vendored theme (no go.mod; not part of the Go/Bazel build — see .bazelignore)
 ```
+
+## Social card
+
+After editing the source, regenerate the PNG used by Open Graph and Twitter cards:
+
+```sh
+rsvg-convert static/og.svg -o static/og.png
+```
+
+Keep the card and the page/site descriptions free of unverified performance or
+compatibility claims. Check the homepage at narrow and desktop widths in both
+themes after changing its layout.
 
 ## Changelog (single source of truth)
 

@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (MatchConstantValueRule.java,
+// Value.java, MatchValueRule.java,
+// MatchFieldValueAgainstQuantifiedObjectValueRule.java, and others),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package values
 
 // PullUpValue rewrites v so that it references the output of

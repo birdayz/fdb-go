@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (ErrorCode.java),
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package yamsql is a SQL-level conformance harness for the Go SQL driver.
 //
 // Each scenario is a YAML file describing a schema template, optional

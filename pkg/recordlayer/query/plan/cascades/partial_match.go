@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (PartialMatch.java,
+// SelectExpression.java, MatchCandidate.java, AliasMap.java, and others),
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package cascades
 
 import (

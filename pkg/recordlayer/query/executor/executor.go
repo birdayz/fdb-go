@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (MessageHelpers.java,
+// QueryResult.java, IndexOrphanBehavior.java, RecordCursor.java,
+// and others),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2021 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package executor bridges RecordQueryPlan trees (Cascades planner
 // output) and the FDBRecordStore scanning API to produce
 // RecordCursor[QueryResult] streams. Mirrors Java's

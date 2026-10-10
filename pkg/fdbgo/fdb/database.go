@@ -296,9 +296,12 @@ func MustOpen(clusterFile string, _ []byte) Database {
 	return MustOpenDatabase(clusterFile)
 }
 
-// OpenDefault opens the database at the default cluster file (/etc/foundationdb/fdb.cluster).
+// OpenDefault opens the database of the default cluster file: FDB_CLUSTER_FILE
+// when set, else ./fdb.cluster when it exists, else the platform default
+// (/etc/foundationdb/fdb.cluster on Linux), as libfdb_c resolves it
+// (client.LookupClusterFileName). Like Apple's binding, it is OpenDatabase("").
 func OpenDefault() (Database, error) {
-	return OpenDatabase("/etc/foundationdb/fdb.cluster")
+	return OpenDatabase("")
 }
 
 // MustOpenDefault opens the default database or panics.

@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (Half.java, RealVector.java,
+// VectorType.java, HalfRealVector.java, and others),
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Copyright 2023 Christian Heina
+// Modifications Copyright 2015-2025 Apple Inc. and the FoundationDB project authors.
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package vectorcodec is the on-disk byte codec for HNSW vector columns,
 // wire-compatible with Java's RealVector.fromBytes / VectorType. It is a leaf
 // package (stdlib only) so it can be shared by the record-layer maintainer and

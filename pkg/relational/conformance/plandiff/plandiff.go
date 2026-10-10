@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (SchemaTemplate.java),
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package plandiff is the Phase 4.-1 plan-equivalence harness from
 // RFC-022 §4.-1. Its job: feed a SQL string + schema into both the Go
 // planner and Java's Cascades planner, capture each side's plan tree,

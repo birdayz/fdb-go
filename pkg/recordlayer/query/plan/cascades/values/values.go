@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (FieldValue.java,
+// CastValue.java, ArithmeticValue.java, PromoteValue.java, and others),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2024 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package values is the Value-tier of the Go Cascades planner port —
 // scalar / row-context expressions that compose into predicates,
 // projections, and join keys. Mirrors Java's

@@ -278,6 +278,7 @@ go_test(
         "sql_plan_fuzz_test.go",
         "statistics_leaf_typing_test.go",
         "statistics_reader_test.go",
+        "stored_query_warm_up_logging_test.go",
         "struct_ddl_test.go",
         "subquery_clause_test.go",
         "system_filter_test.go",
@@ -548,6 +549,7 @@ go_test(
         "primary_key_translation_test.go",
         "macro_relop_test.go",
         "plan_harness_schema_cache_test.go",
+        "stored_query_warm_up_logging_test.go",
     ],
     tags = ["resources:cpu:4"],
     deps = [

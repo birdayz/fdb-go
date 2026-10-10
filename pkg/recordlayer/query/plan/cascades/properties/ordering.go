@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (OrderingProperty.java),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package properties — OrderingProperty file.
 //
 // Ordering tracks whether an expression's output rows are produced

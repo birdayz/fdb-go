@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (FieldValue.java,
+// RemoveSortRule.java, RelationalExpression.java),
+// Copyright 2015-2019 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Go extension — no Java equivalent.
 //
 // Java's Cascades has no physical sort operator; RemoveSortRule

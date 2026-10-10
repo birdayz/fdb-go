@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (EnumeratingIterator.java,
+// EnumeratingIterable.java),
+// Copyright 2015-2021 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package combinatorics
 
 // EnumeratingIterator iterates over permutations of a set, optionally

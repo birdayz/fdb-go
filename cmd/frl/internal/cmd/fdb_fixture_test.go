@@ -59,9 +59,8 @@ func fdbFixturePortAllowed(port, ephemeralFirst, ephemeralLast int) bool {
 	return port >= 1024 && port <= 65535 && (port < ephemeralFirst || port > ephemeralLast)
 }
 
-// UDP leases coordinate these fixtures across processes sharing the host network.
-// They do not reserve TCP against unrelated explicit binders; excluding the kernel's
-// ephemeral range prevents outbound TCP connections from taking the handoff port.
+// UDP leases coordinate fixtures; excluding ephemeral ports prevents automatic TCP allocation.
+// Neither protects the TCP handoff against unrelated explicit binders.
 func acquireFDBFixturePort(candidates []int, ephemeralFirst, ephemeralLast int) (*fdbFixturePortLease, error) {
 	for _, port := range candidates {
 		if !fdbFixturePortAllowed(port, ephemeralFirst, ephemeralLast) {

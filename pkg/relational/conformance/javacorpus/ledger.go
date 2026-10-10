@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (
+// RelationalResultSetMetaData.java),
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package javacorpus executes the vendored Java `.yamsql` acceptance corpus
 // (parsed by the sibling javayamsql package) against the Go SQL engine.
 //

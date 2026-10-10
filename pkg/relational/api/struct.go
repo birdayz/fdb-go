@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (StructMetaData.java,
+// RelationalStruct.java),
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package api
 
 // Struct is a SQL STRUCT column value. Mirrors Java's RelationalStruct

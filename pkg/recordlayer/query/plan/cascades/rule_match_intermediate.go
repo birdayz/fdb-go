@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (SelectExpression.java,
+// PredicateWithValueAndRanges.java, MatchIntermediateRule.java,
+// MatchCandidate.java, and others),
+// Copyright 2015-2019 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2023 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package cascades
 
 import (

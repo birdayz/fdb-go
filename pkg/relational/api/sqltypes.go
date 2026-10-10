@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (SqlTypeNamesSupport.java,
+// DataType.java),
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package api
 
 // Mappings between the SQL type name syntax used in the parser and
