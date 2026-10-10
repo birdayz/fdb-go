@@ -154,23 +154,35 @@ func TestCostModel_PlanHashMintedAliasBlind(t *testing.T) {
 }
 
 // TestCostModel_PlanHashContentSensitive pins the other half of alias
-// blindness: a REAL content difference — a different literal inside an
-// otherwise identical predicate tree — MUST change the hash. Alias-blind is
-// not content-blind: the predicate folds through SemanticHashCode, which
-// keeps literals (a content-blind hash would tie plans that filter
-// differently and hand the winner to arrival order).
+// blindness: real content (comparison type, constant type) changes the hash,
+// while a constant's VALUE does not, so a literal and the statement-pool
+// reference standing for it break cost ties identically.
 func TestCostModel_PlanHashContentSensitive(t *testing.T) {
 	t.Parallel()
-	build := func(lit int64) plans.RecordQueryPlan {
+	build := func(cmp predicates.Comparison) plans.RecordQueryPlan {
 		scanG := hashScan("PG")
 		alias := values.NamedCorrelationIdentifier("q$1")
 		q := expressions.NamedForEachQuantifier(alias, expressions.FinalOf(scanG))
-		pred := predicates.NewComparisonPredicate(hashField(q, 1),
-			predicates.NewLiteralComparison(predicates.ComparisonEquals, lit))
+		pred := predicates.NewComparisonPredicate(hashField(q, 1), cmp)
 		return mustHashConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 			q, []predicates.QueryPredicate{pred}, alias))
 	}
-	if stablePlanHash(build(1)) == stablePlanHash(build(2)) {
-		t.Fatal("stablePlanHash is content-blind: predicates differing only in their literal hashed equal — such ties fall to arrival order")
+	long := func(n int64) values.Value { return &values.ConstantValue{Value: n, Typ: values.NotNullLong} }
+	eq := func(v values.Value) predicates.Comparison {
+		return predicates.Comparison{Type: predicates.ComparisonEquals, Operand: v}
+	}
+	one := stablePlanHash(build(eq(long(1))))
+	if stablePlanHash(build(eq(long(2)))) != one {
+		t.Fatal("stablePlanHash depends on a literal's value: a cached plan would win ties differently from fresh planning of another binding")
+	}
+	ref := values.NewConstantObjectValue(values.NamedCorrelationIdentifier("pool"), "0", values.NotNullLong)
+	if stablePlanHash(build(eq(ref))) != one {
+		t.Fatal("a statement-pool reference and its literal hash differently, so bound planning breaks ties unlike literal planning")
+	}
+	if stablePlanHash(build(predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: long(1)})) == one {
+		t.Fatal("stablePlanHash is content-blind: a different comparison hashed equal")
+	}
+	if stablePlanHash(build(eq(&values.ConstantValue{Value: "1", Typ: values.NotNullString}))) == one {
+		t.Fatal("stablePlanHash ignores a constant's type")
 	}
 }

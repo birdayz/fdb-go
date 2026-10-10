@@ -115,8 +115,7 @@ var _ = Describe("DupAliasExistsOrderProbe", func() {
 				name:     "exists_scans_second_legs_table",
 				sql:      "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIQ)",
 				wantJava: fromOrder,
-				wantGo:   reversed,
-				note:     "same tie as the control, surfaced through the peel",
+				wantGo:   fromOrder,
 			},
 			{
 				// Same table as the first leg but FILTERED: Go's tie falls Java's

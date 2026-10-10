@@ -49,7 +49,7 @@ func TestExactRunnerFDB(t *testing.T) {
 	empty := [][]yamsql.Scalar{}
 	s := &yamsql.Scenario{Name: "exact-routes", SchemaTemplate: "CREATE TABLE t (id BIGINT, x DOUBLE, PRIMARY KEY(id))", Tests: []yamsql.Test{
 		{Exec: "INSERT INTO t VALUES (?, ?)", Args: []yamsql.Scalar{scalar("int64", "1"), scalar("float64", "8000000000000000")}, Rowcount: &one},
-		{Query: "SELECT ? / 2 FROM t", Args: []yamsql.Scalar{scalar("float64", "4008000000000000")}, ExactRows: exact(scalar("float64", "3ff8000000000000")), ColumnTypes: []string{"DOUBLE"}, PlanContains: "Map(Scan(T), {_0: (@0 / @1)})"},
+		{Query: "SELECT ? / 2 FROM t", Args: []yamsql.Scalar{scalar("float64", "4008000000000000")}, ExactRows: exact(scalar("float64", "3ff8000000000000")), ColumnTypes: []string{"DOUBLE"}, PlanContains: "Map(Scan(T), {_0: (3 / @1)})"},
 		{Query: "SELECT x FROM t", ExactRows: exact(scalar("float64", "8000000000000000")), ColumnTypes: []string{"DOUBLE"}},
 		{Query: "SELECT x FROM t WHERE id = ?", Args: []yamsql.Scalar{scalar("int64", "2")}, ExactRows: &empty, ColumnTypes: []string{"DOUBLE"}},
 		{Query: "SELECT 1 / ? FROM t", Args: []yamsql.Scalar{scalar("int64", "0")}, ErrorCode: "22012"},

@@ -55,12 +55,12 @@ func TestFDB_StatementOptions_PlanCache(t *testing.T) {
 	if c := lastCache(); c != embedded.PlanCacheHit {
 		t.Fatalf("commented spelling: cache %v, want hit", c)
 	}
-	// A literal differing only in case is another value and another entry.
+	// Normalized literals share the plan, but keep their case-sensitive payloads.
 	if got := run("SELECT B64'ywjj' FROM Item WHERE item_id = 1"); string(got) == "abc" {
 		t.Fatalf("B64'ywjj' returned the cached B64'YWJj' value %q", got)
 	}
-	if c := lastCache(); c != embedded.PlanCacheMiss {
-		t.Fatalf("B64'ywjj': cache %v, want miss", c)
+	if c := lastCache(); c != embedded.PlanCacheHit {
+		t.Fatalf("B64'ywjj': cache %v, want hit", c)
 	}
 	// PLAN RIGHT DEEP plans under another configuration and so another entry.
 	run("SELECT B64'YWJj' FROM Item WHERE item_id = 1 OPTIONS (PLAN RIGHT DEEP)")

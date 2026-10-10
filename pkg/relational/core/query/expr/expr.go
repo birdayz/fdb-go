@@ -997,7 +997,7 @@ func isTypedNullConstant(v values.Value) bool {
 // IS [NOT] NULL over it folds without evaluating it, as in Java.
 func notNullConstant(v values.Value) bool {
 	t := v.Type()
-	return t != nil && t.Code() != values.TypeCodeUnknown && !t.IsNullable() && values.IsConstantValue(v)
+	return t != nil && t.Code() != values.TypeCodeUnknown && !t.IsNullable() && values.IsConstantExpression(v)
 }
 
 // arithmeticEncapsulationError is Java's answer to a refused encapsulation:
@@ -1100,6 +1100,7 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"a comparison operand of complex type (record) is not supported")
 	}
+	left, right = specializeCrossTypeComparands(left, right)
 	left, right = widenConstAgainstDoubleColumn(op, left, right)
 	op, left, right = narrowFloatConstAgainstInt(op, left, right)
 	left, right = promoteColumnColumnNumeric(left, right)

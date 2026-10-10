@@ -283,7 +283,7 @@ func (c *WindowedIndexScanMatchCandidate) buildTranslateValueFunction() plans.Tr
 			return value, true
 		}
 		switch value.(type) {
-		case *values.ConstantValue:
+		case *values.ConstantValue, *values.ConstantObjectValue:
 			return value, true
 		default:
 			return nil, false

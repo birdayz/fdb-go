@@ -101,3 +101,39 @@ func TestRebaseLegRefsToBoxUsesNestedWindowPath(t *testing.T) {
 		t.Fatalf("unset window kind did not fail closed: got %T ok=%v", got, ok)
 	}
 }
+
+func TestWrapRVFullyBakedConstantPool(t *testing.T) {
+	t.Parallel()
+
+	rowType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	}}
+	boxField := exactTestField(t, exactTestQOV(t, "$box", rowType), 0)
+	foreignField := exactTestField(t, exactTestQOV(t, "$foreign", rowType), 0)
+	pool := values.NamedCorrelationIdentifier("pool")
+	constant := values.NewConstantObjectValue(pool, "0", values.NotNullLong)
+	nested := &values.ArithmeticValue{Op: values.OpAdd, Left: boxField, Right: constant}
+	for _, tc := range []struct {
+		name  string
+		value values.Value
+		want  bool
+	}{
+		{"direct", constant, true},
+		{"nullable", values.NewConstantObjectValue(pool, "1", values.NullableLong), true},
+		{"arithmetic", nested, true},
+		{"mixed_record", values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "ID", Value: boxField},
+			values.RecordConstructorField{Name: "PARAM", Value: constant},
+			values.RecordConstructorField{Name: "COMPUTED", Value: nested},
+		), true},
+		{"foreign_field", &values.ArithmeticValue{Op: values.OpAdd, Left: foreignField, Right: constant}, false},
+		{"unbound_parameter", &values.ArithmeticValue{Op: values.OpAdd, Left: values.NewParameterValue(1), Right: constant}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := wrapRVFullyBaked(tc.value, "$box", nil); got != tc.want {
+				t.Fatalf("wrapRVFullyBaked(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
