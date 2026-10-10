@@ -895,7 +895,10 @@ class SqlPlanSteps {
         // Open the store once through SQL so its header exists before a Go writer opens it.
         try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:" + dbPath + "?schema=" + schemaName);
              Statement st = conn.createStatement()) {
-            st.executeQuery("SELECT * FROM T").close();
+            withFdbRetry(() -> {
+                st.executeQuery("SELECT * FROM T").close();
+                return null;
+            });
         }
         byte[] prefix;
         try (com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext ctx = sharedDatabase.openContext()) {

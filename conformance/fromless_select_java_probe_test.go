@@ -257,7 +257,7 @@ var _ = Describe("FromlessSelectJavaProbe", func() {
 			{"SELECT 1", `{"columns":[{"name":"_0","type":"INTEGER"}],"rows":[[1]]}`},
 			{"SELECT status FROM orders WHERE status = 'pending'", `{"columns":[{"name":"STATUS","type":"STRING"}],"rows":[["pending"],["pending"]]}`},
 		} {
-			jr := javaRunner.RunWithSetup(ctx, indexSchema, indexSetup, probe.sql)
+			jr := runJavaRetrying(ctx, javaRunner, indexSchema, indexSetup, probe.sql)
 			gr := goRunner.RunWithSetup(ctx, indexSchema, indexSetup, probe.sql)
 			fmt.Fprintf(GinkgoWriter, "FROMLESS-INDEX-PROBE %s\n JAVA %s\n GO %s\n", probe.sql, render(jr), render(gr))
 			Expect(render(jr)).To(Equal(probe.want), probe.sql)
@@ -391,12 +391,12 @@ var _ = Describe("GroupAliasIdentityJavaProbe", func() {
 		}
 		var mismatches []string
 		for _, p := range probes {
-			javaRun := javaRunner.RunWithSetup(ctx, schema, setup, p.sql)
+			javaRun := runJavaRetrying(ctx, javaRunner, schema, setup, p.sql)
 			goRun := goRunner.RunWithSetup(ctx, schema, setup, p.sql)
 			java := render(javaRun)
 			goResult := render(goRun)
 			if wantPlan, unordered := javaUnorderedUnion[p.name]; unordered {
-				explain := javaRunner.RunWithSetup(ctx, schema, setup, "EXPLAIN "+p.sql)
+				explain := runJavaRetrying(ctx, javaRunner, schema, setup, "EXPLAIN "+p.sql)
 				Expect(explain.Err).NotTo(HaveOccurred(), "the target's plan of %s", p.sql)
 				Expect(explain.Rows.Rows).NotTo(BeEmpty(), "the target's plan of %s", p.sql)
 				plan := fmt.Sprint(explain.Rows.Rows[0][0])
