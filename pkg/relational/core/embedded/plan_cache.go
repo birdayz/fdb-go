@@ -44,14 +44,16 @@ type PlanCache struct {
 // key text. Using a struct (not scope+delim+sql concatenated into one string)
 // avoids copying the text a second time on every warm hit.
 type cacheKey struct {
-	scope string
-	sql   string
+	scope       string
+	sql         string
+	equivalence string
 }
 
 type planCacheEntry struct {
 	plan         plans.RecordQueryPlan
 	scalarSubs   []PlannedScalarSubquery
 	outputLabels []string
+	constraint   queryBindingConstraint
 }
 
 // lruItem is the value stored in each list element. It carries its own key

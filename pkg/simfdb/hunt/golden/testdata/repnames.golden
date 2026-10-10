@@ -48,7 +48,7 @@ ROWS(3) cols=[G, G, ID, W]:
   [200, 9, 100, 1]
 
 === SELECT * FROM (SELECT g, SUM(v) AS s FROM ga GROUP BY g) u, c WHERE c.id = 100
-PLAN: NestedLoopJoin(INNER, Map(StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))), {G: _current.G#0, S: _current.SUM(V)#1}), Scan(C, [=]))
+PLAN: NestedLoopJoin(INNER, Scan(C, [=]), Map(StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))), {G: _current.G#0, S: _current.SUM(V)#1}))
 ROWS(2) cols=[G, S, ID, W]:
   [100, 12, 100, 1]
   [200, 9, 100, 1]

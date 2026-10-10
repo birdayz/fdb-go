@@ -13,15 +13,16 @@ import (
 	"sync/atomic"
 	"time"
 
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
 )
 
 // queryPlanCache is what the planner caches plans in: a key's plan is found by
 // the schema template's name, the query key (the verbatim scope and the query
-// text) and the plan's equivalence (the bound parameter values Go plans in).
+// text) and the plan's binding constraints.
 type queryPlanCache interface {
-	lookup(template string, key cacheKey, equivalence string) (*planCacheEntry, bool)
-	store(template string, key cacheKey, equivalence string, entry *planCacheEntry)
+	lookup(template string, key cacheKey, bindings queryBindings) (*planCacheEntry, bool)
+	store(template string, key cacheKey, bindings queryBindings, entry *planCacheEntry)
 	// numEntries is Java's primaryCacheNumEntries, which plan logging reports.
 	numEntries() int
 	Invalidate()
@@ -33,13 +34,11 @@ type queryPlanCache interface {
 //
 //   - primary: the schema template's name; entries expire after the TTL
 //     without access (Caffeine expireAfterAccess);
-//   - secondary: the query key, Java's QueryCacheKey. Go's key is the verbatim
-//     scope (database, schema, metadata version, planner options and index
-//     states) and the token-rendered query text with its literals, since Go
-//     plans literals in where Java extracts them; it also keeps database and
-//     schema, so two schemas of one template do not share plans;
-//   - tertiary: the plan's equivalence, Java's PhysicalPlanEquivalence. Go's
-//     is the bound parameter values, which Go plans in.
+//   - secondary: the query key, Java's QueryCacheKey: metadata version,
+//     planner options, index states, temporary functions and normalized SQL.
+//     Store-specific collected statistics additionally scope database/schema;
+//   - tertiary: the plan's equivalence, Java's PhysicalPlanEquivalence: types,
+//     equal-input aliases, and exact values consumed by specialized planning.
 //
 // Secondary and tertiary entries expire the TTL after they were written
 // (expireAfterWrite); expiry is lazy, on access. The sizes and TTLs are the
@@ -141,23 +140,37 @@ func (c *RelationalPlanCache) stages(template string, key cacheKey, count bool) 
 	return tertiary
 }
 
-func (c *RelationalPlanCache) lookup(template string, key cacheKey, equivalence string) (*planCacheEntry, bool) {
+func (c *RelationalPlanCache) lookup(template string, key cacheKey, bindings queryBindings) (*planCacheEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry, ok := c.stages(template, key, true).get(equivalence, c.now())
-	if !ok {
+	stage := c.stages(template, key, true)
+	now := c.now()
+	var best *planCacheEntry
+	var bestKey string
+	for el := stage.ll.Front(); el != nil; {
+		next := el.Next()
+		item := el.Value.(*planCacheStageItem[string, *planCacheEntry])
+		if stage.expired(item, now) {
+			stage.remove(item.key)
+		} else if item.value.constraint.accepts(bindings) && cachePlanPrecedes(item.value, best) {
+			best, bestKey = item.value, item.key
+		}
+		el = next
+	}
+	if best == nil {
 		c.tertiaryMiss.Add(1)
 		return nil, false
 	}
+	stage.get(bestKey, now)
 	c.tertiaryHit.Add(1)
-	return &planCacheEntry{plan: entry.plan, scalarSubs: entry.scalarSubs, outputLabels: slices.Clone(entry.outputLabels)}, true
+	return &planCacheEntry{plan: best.plan, scalarSubs: best.scalarSubs, outputLabels: slices.Clone(best.outputLabels)}, true
 }
 
-func (c *RelationalPlanCache) store(template string, key cacheKey, equivalence string, entry *planCacheEntry) {
+func (c *RelationalPlanCache) store(template string, key cacheKey, bindings queryBindings, entry *planCacheEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	stored := &planCacheEntry{plan: entry.plan, scalarSubs: entry.scalarSubs, outputLabels: slices.Clone(entry.outputLabels)}
-	c.stages(template, key, false).put(equivalence, stored, c.now())
+	stored := &planCacheEntry{plan: entry.plan, scalarSubs: entry.scalarSubs, outputLabels: slices.Clone(entry.outputLabels), constraint: bindings.constraint()}
+	c.stages(template, key, false).put(bindings.equivalence, stored, c.now())
 }
 
 func (c *RelationalPlanCache) numEntries() int {
@@ -280,19 +293,48 @@ func (s *planCacheStage[K, V]) clear() {
 	s.items = map[K]*list.Element{}
 }
 
-// lookup, store and numEntries make the per-connection PlanCache a
-// queryPlanCache with one template and the equivalence appended to the text,
-// its key before the engine-wide cache.
-func (c *PlanCache) lookup(_ string, key cacheKey, equivalence string) (*planCacheEntry, bool) {
-	plan, subs, labels, ok := c.GetWithOutputLabels(key.scope, key.sql+equivalence)
-	if !ok {
-		return nil, false
-	}
-	return &planCacheEntry{plan: plan, scalarSubs: subs, outputLabels: labels}, true
+// Java's StableSelectorCostModel chooses the smallest plan hash when multiple
+// cached specializations admit the current bindings.
+func cachePlanPrecedes(candidate, current *planCacheEntry) bool {
+	return current == nil || plans.PlanHash(candidate.plan) < plans.PlanHash(current.plan)
 }
 
-func (c *PlanCache) store(_ string, key cacheKey, equivalence string, entry *planCacheEntry) {
-	c.PutWithOutputLabels(key.scope, key.sql+equivalence, entry.plan, entry.scalarSubs, entry.outputLabels)
+func (c *PlanCache) lookup(_ string, key cacheKey, bindings queryBindings) (*planCacheEntry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var best *list.Element
+	var entry *planCacheEntry
+	for el := c.ll.Front(); el != nil; el = el.Next() {
+		item := el.Value.(*lruItem)
+		if item.key.scope == key.scope && item.key.sql == key.sql && item.entry.constraint.accepts(bindings) && cachePlanPrecedes(item.entry, entry) {
+			best, entry = el, item.entry
+		}
+	}
+	if best == nil {
+		c.misses.Add(1)
+		return nil, false
+	}
+	c.ll.MoveToBack(best)
+	c.hits.Add(1)
+	return &planCacheEntry{plan: entry.plan, scalarSubs: entry.scalarSubs, outputLabels: slices.Clone(entry.outputLabels)}, true
+}
+
+func (c *PlanCache) store(_ string, key cacheKey, bindings queryBindings, entry *planCacheEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key.equivalence = bindings.equivalence
+	stored := &planCacheEntry{plan: entry.plan, scalarSubs: entry.scalarSubs, outputLabels: slices.Clone(entry.outputLabels), constraint: bindings.constraint()}
+	if el, ok := c.items[key]; ok {
+		el.Value.(*lruItem).entry = stored
+		c.ll.MoveToBack(el)
+		return
+	}
+	c.items[key] = c.ll.PushBack(&lruItem{key: key, entry: stored})
+	for c.ll.Len() > c.maxSize {
+		oldest := c.ll.Front()
+		delete(c.items, oldest.Value.(*lruItem).key)
+		c.ll.Remove(oldest)
+	}
 }
 
 func (c *PlanCache) numEntries() int { return c.Len() }

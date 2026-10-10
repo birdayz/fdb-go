@@ -74,7 +74,7 @@ tests:
   # v values: 1, 1, 2, 3, 3, NULL, NULL → v/2: 0, 0, 1, 1, 1, NULL, NULL
   # distinct → 0, 1, NULL.
   - query: SELECT DISTINCT v / 2 AS bucket FROM t ORDER BY bucket
-    plan_contains: "Distinct(InMemorySort([_current.BUCKET#0 ASC], Map(Scan(T), {BUCKET: (_current.V#2 / 2)})))"
+    plan_contains: "Distinct(InMemorySort([_current.BUCKET#0 ASC], Map(Scan(T), {BUCKET: (_current.V#2 / @0)})))"
     rows:
       - [~]
       - [0]
@@ -87,7 +87,7 @@ tests:
   # `SELECT DISTINCT v FROM t ORDER BY v` stanza above, which already
   # pins NULLS FIRST.
   - query: SELECT DISTINCT v / 2 FROM t ORDER BY 1
-    plan_contains: "Distinct(InMemorySort([_current._0#0 ASC], Map(Scan(T), {_0: (_current.V#2 / 2)})))"
+    plan_contains: "Distinct(InMemorySort([_current._0#0 ASC], Map(Scan(T), {_0: (_current.V#2 / @0)})))"
     rows:
       - [~]
       - [0]

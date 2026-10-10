@@ -5,6 +5,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -70,6 +71,40 @@ func TestCostModel_PlanHashOrderSensitive(t *testing.T) {
 		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), hashResultValue()))
 	if stablePlanHash(ab) != stablePlanHash(ab2) {
 		t.Fatal("stablePlanHash is not structural: two identical trees hashed differently")
+	}
+}
+
+func TestCostModel_ConstantPoolJoinOrderTies(t *testing.T) {
+	t.Parallel()
+	for _, operand := range []values.Value{
+		&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+		values.NewConstantObjectValue(values.NamedCorrelationIdentifier("pool"), "0", values.NotNullLong),
+	} {
+		a, b := hashScan("GA"), hashScan("C")
+		q := expressions.ForEachQuantifier(expressions.FinalOf(b))
+		filter := mustHashConstruct(plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(q,
+			[]predicates.QueryPredicate{predicates.NewComparisonPredicate(hashField(q, 1),
+				predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand})}, q.GetAlias()))
+		rangeResult := predicates.EmptyComparisonRange().Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand})
+		if !rangeResult.Complete() {
+			t.Fatal("fixture equality did not form a scan bound")
+		}
+		for _, other := range []plans.RecordQueryPlan{
+			filter, b.WithScanComparisons([]*predicates.ComparisonRange{rangeResult.Range}),
+		} {
+			ab := mustHashConstruct(plans.NewRecordQueryNestedLoopJoinPlan(a, other, nil, plans.JoinInner,
+				values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), hashResultValue()))
+			ba := mustHashConstruct(plans.NewRecordQueryNestedLoopJoinPlan(other, a, nil, plans.JoinInner,
+				values.NamedCorrelationIdentifier("B"), values.NamedCorrelationIdentifier("A"), hashResultValue()))
+			ca := concretePlanCost(ab, properties.DefaultStatistics{}, nil)
+			cb := concretePlanCost(ba, properties.DefaultStatistics{}, nil)
+			if ca != cb {
+				t.Fatalf("%T/%T materialized join orders have different costs: %+v / %+v", operand, other, ca, cb)
+			}
+			if got, want := PlanningCostModelLess(ab, ba), costExprHash(ab) < costExprHash(ba); got != want {
+				t.Fatalf("%T/%T join order was not selected by the content hash", operand, other)
+			}
+		}
 	}
 }
 

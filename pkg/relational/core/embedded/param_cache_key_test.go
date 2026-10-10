@@ -9,11 +9,8 @@ import (
 	"fdb.dev/pkg/relational/core/parser"
 )
 
-// The plan-cache key renders every bound value exactly (ws-e-design.md 4.2):
-// a cached plan carries its bound constants, so two bindings that share a key
-// would run the first binding's constant. TRUE and FALSE, NaN payloads, the
-// signed zeros, NULL beside an empty STRING or BYTES, and arrays element by
-// element must all key apart; equal values must key alike.
+// Exact binding encodings constrain specialization and identify duplicate
+// values before runtime slots are assigned. Float bits and carrier types matter.
 func TestBindStatementParameters_KeyIsExact(t *testing.T) {
 	t.Parallel()
 	key := func(v any) string {
@@ -62,9 +59,8 @@ func TestBindStatementParameters_KeyIsExact(t *testing.T) {
 	}
 }
 
-// End to end through the generator's live plan cache: a second binding of the
-// same text is a cache MISS when its value differs and a HIT when it is equal.
-func TestPlanCache_BoundValuesKeyApart(t *testing.T) {
+// Boolean folding is constrained by evaluation, as in Java EvaluatesToValue.
+func TestPlanCache_BooleanEvaluationConstraint(t *testing.T) {
 	t.Parallel()
 	cap := &captureLogger{}
 	g, md := newLoggingGenerator(t, ordersSchema, cap)

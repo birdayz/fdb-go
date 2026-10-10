@@ -27,25 +27,25 @@ func TestRelationalPlanCache_Stages(t *testing.T) {
 	q2 := cacheKey{scope: "s", sql: "SELECT 2"}
 	plan := &planCacheEntry{plan: &stubPlan{label: "p"}, outputLabels: []string{"A"}}
 
-	if _, ok := c.lookup("T", q1, ""); ok {
+	if _, ok := c.lookup("T", q1, queryBindings{equivalence: ""}); ok {
 		t.Fatal("hit on an empty cache")
 	}
-	c.store("T", q1, "", plan)
-	got, ok := c.lookup("T", q1, "")
+	c.store("T", q1, queryBindings{equivalence: ""}, plan)
+	got, ok := c.lookup("T", q1, queryBindings{equivalence: ""})
 	if !ok || got.plan != plan.plan || len(got.outputLabels) != 1 {
 		t.Fatalf("lookup after store = %v, %v", got, ok)
 	}
 	got.outputLabels[0] = "mutated"
-	if again, _ := c.lookup("T", q1, ""); again.outputLabels[0] != "A" {
+	if again, _ := c.lookup("T", q1, queryBindings{equivalence: ""}); again.outputLabels[0] != "A" {
 		t.Error("a lookup's labels alias the cached entry")
 	}
-	if _, ok := c.lookup("T", q1, "param=1"); ok {
+	if _, ok := c.lookup("T", q1, queryBindings{equivalence: "param=1"}); ok {
 		t.Error("another equivalence hit")
 	}
-	if _, ok := c.lookup("T", q2, ""); ok {
+	if _, ok := c.lookup("T", q2, queryBindings{equivalence: ""}); ok {
 		t.Error("another query hit")
 	}
-	if _, ok := c.lookup("U", q1, ""); ok {
+	if _, ok := c.lookup("U", q1, queryBindings{equivalence: ""}); ok {
 		t.Error("another template hit")
 	}
 	want := PlanCacheCounts{PrimaryMiss: 2, SecondaryMiss: 3, TertiaryHit: 2, TertiaryMiss: 4}
@@ -67,23 +67,23 @@ func TestRelationalPlanCache_SizeBounds(t *testing.T) {
 	q := func(s string) cacheKey { return cacheKey{scope: "s", sql: s} }
 
 	for _, eq := range []string{"a", "b", "c"} {
-		c.store("T", q("x"), eq, entry)
+		c.store("T", q("x"), queryBindings{equivalence: eq}, entry)
 	}
-	if _, ok := c.lookup("T", q("x"), "a"); ok {
+	if _, ok := c.lookup("T", q("x"), queryBindings{equivalence: "a"}); ok {
 		t.Error("the least recently used equivalence survived the tertiary bound")
 	}
 	for _, eq := range []string{"b", "c"} {
-		if _, ok := c.lookup("T", q("x"), eq); !ok {
+		if _, ok := c.lookup("T", q("x"), queryBindings{equivalence: eq}); !ok {
 			t.Errorf("equivalence %s evicted", eq)
 		}
 	}
-	c.store("T", q("y"), "", entry)
-	c.store("T", q("z"), "", entry)
-	if _, ok := c.lookup("T", q("x"), "b"); ok {
+	c.store("T", q("y"), queryBindings{equivalence: ""}, entry)
+	c.store("T", q("z"), queryBindings{equivalence: ""}, entry)
+	if _, ok := c.lookup("T", q("x"), queryBindings{equivalence: "b"}); ok {
 		t.Error("the least recently used query survived the secondary bound")
 	}
-	c.store("U", q("x"), "", entry)
-	c.store("V", q("x"), "", entry)
+	c.store("U", q("x"), queryBindings{equivalence: ""}, entry)
+	c.store("V", q("x"), queryBindings{equivalence: ""}, entry)
 	if n := c.numEntries(); n != 2 {
 		t.Errorf("primary entries = %d, want 2", n)
 	}
@@ -103,21 +103,21 @@ func TestRelationalPlanCache_TTL(t *testing.T) {
 		primaryTTL: 10 * time.Second, secondaryTTL: 30 * time.Second, tertiaryTTL: 30 * time.Second,
 	})
 	key := cacheKey{scope: "s", sql: "SELECT 1"}
-	c.store("T", key, "", &planCacheEntry{plan: &stubPlan{}})
+	c.store("T", key, queryBindings{equivalence: ""}, &planCacheEntry{plan: &stubPlan{}})
 	for i := 0; i < 5; i++ {
 		clock.t = clock.t.Add(5 * time.Second)
-		if _, ok := c.lookup("T", key, ""); !ok {
+		if _, ok := c.lookup("T", key, queryBindings{equivalence: ""}); !ok {
 			t.Fatalf("expired at %d s while read every 5 s", 5*(i+1))
 		}
 	}
 	clock.t = clock.t.Add(5 * time.Second) // 30 s after the write
-	if _, ok := c.lookup("T", key, ""); ok {
+	if _, ok := c.lookup("T", key, queryBindings{equivalence: ""}); ok {
 		t.Error("a plan outlived its write TTL by being read")
 	}
-	c.store("T", key, "", &planCacheEntry{plan: &stubPlan{}})
+	c.store("T", key, queryBindings{equivalence: ""}, &planCacheEntry{plan: &stubPlan{}})
 	clock.t = clock.t.Add(11 * time.Second)
 	before := c.Counts().PrimaryMiss
-	if _, ok := c.lookup("T", key, ""); ok {
+	if _, ok := c.lookup("T", key, queryBindings{equivalence: ""}); ok {
 		t.Error("a template survived its access TTL")
 	}
 	if c.Counts().PrimaryMiss != before+1 {

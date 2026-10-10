@@ -42,6 +42,39 @@ func TestFDB_PlanCacheIsEngineWide(t *testing.T) {
 	}
 }
 
+func TestFDB_PlanCacheVariedParameters(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testkit.SetupErrorDB(t, "/FRL/testdb_plan_cache_parameters", "plan_cache_parameters",
+		"CREATE TABLE T (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE INDEX t_v ON T (v)")
+	if _, err := db.ExecContext(ctx, "INSERT INTO T VALUES (1, 10), (2, 20), (3, 30)"); err != nil {
+		t.Fatal(err)
+	}
+	var cache *embedded.RelationalPlanCache
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) { cache = ec.SharedPlanCache() })
+	stmt, err := conn.PrepareContext(ctx, "SELECT v FROM T WHERE id = ?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stmt.Close()
+	before := cache.Counts()
+	for i := 0; i < 500; i++ {
+		id := int64(i%3 + 1)
+		prior := cache.Counts()
+		var got int64
+		if err := stmt.QueryRowContext(ctx, id).Scan(&got); err != nil || got != id*10 {
+			t.Fatalf("binding %d: got %d, %v; want %d", i, got, err, id*10)
+		}
+		if after := cache.Counts(); after.TertiaryMiss != prior.TertiaryMiss {
+			t.Logf("cache miss at execution %d, id=%d: before=%+v after=%+v", i, id, prior, after)
+		}
+	}
+	after := cache.Counts()
+	if hits, misses := after.TertiaryHit-before.TertiaryHit, after.TertiaryMiss-before.TertiaryMiss; hits != 499 || misses != 1 {
+		t.Fatalf("500 varied parameter executions: hits=%d misses=%d, want 499/1", hits, misses)
+	}
+}
+
 // TestFDB_PlanCacheKeysTemporaryFunctions pins Java's transaction-bound key
 // component (QueryCacheKey's auxiliary metadata): a query over a temporary
 // function is cached under the function's definition, so the same text over
@@ -123,9 +156,9 @@ func TestFDB_StoredQueriesWarmThePlanCache(t *testing.T) {
 	if got := cache.Counts().TertiaryHit; got != hits+1 {
 		t.Fatalf("q1's first execution hit the cache %d times, want 1: the warm-up did not plan it", got-hits)
 	}
-	// Control: a query no template stores misses on its first execution.
+	// Control: a query shape no template stores misses on its first execution.
 	hits = cache.Counts().TertiaryHit
-	if err := conn.QueryRowContext(ctx, "SELECT id FROM T WHERE v = 8").Scan(&id); err != nil || id != 2 {
+	if err := conn.QueryRowContext(ctx, "SELECT id FROM T WHERE v >= 8").Scan(&id); err != nil || id != 2 {
 		t.Fatalf("control = %d, %v; want 2", id, err)
 	}
 	if got := cache.Counts().TertiaryHit; got != hits {
