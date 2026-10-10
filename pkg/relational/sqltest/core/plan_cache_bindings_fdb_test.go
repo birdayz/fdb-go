@@ -58,7 +58,7 @@ func TestFDB_PlanCacheBindingShapes(t *testing.T) {
 		{"false then true", "SELECT id FROM T WHERE ? ORDER BY id", []any{false}, []any{true}, nil, []int64{1, 2, 3}, false},
 		{"contradiction then range", "SELECT id FROM T WHERE v>=? AND v<=? ORDER BY id", []any{int64(30), int64(10)}, []any{int64(10), int64(30)}, nil, []int64{1, 2, 3}, true},
 		{"case", "SELECT CASE WHEN ? THEN id ELSE id * 10 END FROM T ORDER BY id", []any{true}, []any{false}, []int64{1, 2, 3}, []int64{10, 20, 30}, false},
-		{"coalesce error pruning", "SELECT id FROM T WHERE COALESCE(?, 1/0=1) ORDER BY id", []any{true}, []any{false}, []int64{1, 2, 3}, nil, false},
+		{"coalesce error pruning", "SELECT id FROM T WHERE COALESCE(?, 1/0) = 1 ORDER BY id", []any{int64(1)}, []any{int64(2)}, []int64{1, 2, 3}, nil, false},
 		{"scalar subquery", "SELECT id FROM T WHERE v=(SELECT ? FROM T WHERE id=1)", []any{int64(10)}, []any{int64(30)}, []int64{1}, []int64{3}, true},
 		{"join", "SELECT a.id FROM T a JOIN T b ON a.v=b.v WHERE b.id=?", []any{int64(1)}, []any{int64(3)}, []int64{1}, []int64{3}, true},
 		{"join output", "SELECT a.id+? FROM T a JOIN T b ON a.v=b.v ORDER BY a.id", []any{int64(7)}, []any{int64(8)}, []int64{8, 9, 10}, []int64{9, 10, 11}, true},

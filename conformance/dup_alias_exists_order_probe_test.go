@@ -107,8 +107,7 @@ var _ = Describe("DupAliasExistsOrderProbe", func() {
 				name:     "exists_scans_first_legs_table",
 				sql:      "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIP)",
 				wantJava: fromOrder,
-				wantGo:   reversed,
-				note:     "same tie as the control, surfaced through the peel",
+				wantGo:   fromOrder,
 			},
 			{
 				// A different table in the subquery.
@@ -136,9 +135,7 @@ var _ = Describe("DupAliasExistsOrderProbe", func() {
 		}
 
 		// The corpus entry dup_from_alias_shadowing_exists runs the shadowing shape
-		// over tables named SHP/SHQ instead of EIP/EIQ. Today the renamed spelling
-		// falls reversed while the EIP/EIQ one agrees with Java: the tie-break hash
-		// consumes the identifiers, so a rename flips either one independently.
+		// over SHP/SHQ; the tie-break hash consumes identifiers, so a rename can flip it.
 		nameSchema := "CREATE TABLE T_DUP_SHP (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
 			" CREATE TABLE T_DUP_SHQ (qid BIGINT, PRIMARY KEY (qid))"
 		nameSetup := []string{
@@ -155,9 +152,9 @@ var _ = Describe("DupAliasExistsOrderProbe", func() {
 		Expect(ng.Err).NotTo(HaveOccurred())
 		Expect(render(nj)).To(Equal(fromOrder),
 			"renamed_shadowing_exists: Java must still put the first FROM item outermost")
-		Expect(render(ng)).To(Equal(reversed),
-			"renamed_shadowing_exists: Go's row order moved. If it now matches Java, drop\n"+
-				"the dup_from_alias_shadowing_exists corpus annotation and re-pin here.")
+		Expect(render(ng)).To(Equal(fromOrder),
+			"renamed_shadowing_exists: Go's row order moved off Java's; the tie is broken by\n"+
+				"a constant-agnostic plan hash, as Java's planHash(VC0) is.")
 
 		for _, p := range probes {
 			jr := runner.RunWithSetup(ctx, schema, setup, p.sql)
