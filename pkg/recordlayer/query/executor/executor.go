@@ -524,7 +524,7 @@ func executeIndexScan(
 	if err != nil {
 		return nil, err
 	}
-	return applySkipLimit(&indexFetchCursor{inner: indexCursor, store: store},
+	return applySkipLimit(newIndexFetchCursor(indexCursor, store, props.ScanState),
 		props.Skip, props.ReturnedRowLimit), nil
 }
 
@@ -787,7 +787,7 @@ func executeVectorIndexScan(
 	if err != nil {
 		return nil, fmt.Errorf("executor: opening vector partition scan ranges for %q: %w", p.GetIndexName(), err)
 	}
-	result := &indexFetchCursor{inner: indexCursor, store: store}
+	result := newIndexFetchCursor(indexCursor, store, props.ScanState)
 	return applySkipLimit(result, props.Skip, props.ReturnedRowLimit), nil
 }
 
@@ -1367,33 +1367,35 @@ func terminalOnError(res recordlayer.RecordCursorResult[QueryResult], err error)
 }
 
 type indexFetchCursor struct {
-	inner    recordlayer.RecordCursor[*recordlayer.IndexEntry]
-	store    *recordlayer.FDBRecordStore
-	pipeline recordlayer.RecordCursor[QueryResult]
+	inner     recordlayer.RecordCursor[*recordlayer.IndexEntry]
+	store     *recordlayer.FDBRecordStore
+	scanState *recordlayer.ScanLimiterState
+	pipeline  recordlayer.RecordCursor[QueryResult]
 }
 
-// Built lazily because callers construct the cursor as a struct literal.
-func (c *indexFetchCursor) init() {
-	if c.pipeline == nil {
-		c.pipeline = recordlayer.MapPipelined(c.inner, c.load, recordlayer.DefaultPipelineSize)
-	}
+// newIndexFetchCursor fetches each entry's record; scanState, when set, is
+// charged the loaded bytes as Java's fetchIndexRecords charges its ExecuteState.
+func newIndexFetchCursor(inner recordlayer.RecordCursor[*recordlayer.IndexEntry], store *recordlayer.FDBRecordStore, scanState *recordlayer.ScanLimiterState) *indexFetchCursor {
+	c := &indexFetchCursor{inner: inner, store: store, scanState: scanState}
+	c.pipeline = recordlayer.MapPipelined(inner, c.load, recordlayer.DefaultPipelineSize)
+	return c
 }
 
 func (c *indexFetchCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	c.init()
 	return terminalOnError(c.pipeline.OnNext(ctx))
 }
 
-func (c *indexFetchCursor) load(entry *recordlayer.IndexEntry) func() (QueryResult, error) {
+func (c *indexFetchCursor) load(entry *recordlayer.IndexEntry) recordlayer.PendingRead[QueryResult] {
 	pk := entry.PrimaryKey()
-	var loaded func() (*recordlayer.FDBStoredRecord[proto.Message], error)
-	if pk != nil {
-		loaded = c.store.LoadRecordAsync(pk)
+	if pk == nil {
+		return recordlayer.NewPendingRead(func() (QueryResult, error) { return c.finish(entry, nil, nil, nil) }, nil)
 	}
-	return func() (QueryResult, error) { return c.finish(entry, pk, loaded) }
+	return recordlayer.MapPendingRead(c.store.LoadRecordAsync(pk, c.scanState), func(rec *recordlayer.FDBStoredRecord[proto.Message], err error) (QueryResult, error) {
+		return c.finish(entry, pk, rec, err)
+	})
 }
 
-func (c *indexFetchCursor) finish(entry *recordlayer.IndexEntry, pk tuple.Tuple, loaded func() (*recordlayer.FDBStoredRecord[proto.Message], error)) (QueryResult, error) {
+func (c *indexFetchCursor) finish(entry *recordlayer.IndexEntry, pk tuple.Tuple, rec *recordlayer.FDBStoredRecord[proto.Message], err error) (QueryResult, error) {
 	indexName := ""
 	if entry.Index != nil {
 		indexName = entry.Index.Name
@@ -1411,7 +1413,6 @@ func (c *indexFetchCursor) finish(entry *recordlayer.IndexEntry, pk tuple.Tuple,
 		}
 	}
 
-	rec, err := loaded()
 	if err != nil {
 		return QueryResult{}, fmt.Errorf("executor: loading record for index entry pk %v: %w", pk, err)
 	}
@@ -1435,12 +1436,9 @@ func (c *indexFetchCursor) finish(entry *recordlayer.IndexEntry, pk tuple.Tuple,
 	return FromStoredRecord(rec), nil
 }
 
-func (c *indexFetchCursor) Close() error {
-	c.init()
-	return c.pipeline.Close()
-}
+func (c *indexFetchCursor) Close() error { return c.pipeline.Close() }
 
-func (c *indexFetchCursor) IsClosed() bool { c.init(); return c.pipeline.IsClosed() }
+func (c *indexFetchCursor) IsClosed() bool { return c.pipeline.IsClosed() }
 
 func executeTypeFilter(
 	ctx context.Context,
@@ -1952,7 +1950,7 @@ func executeFetchFromPartialRecord(
 	if err != nil {
 		return nil, err
 	}
-	return &fetchFullRecordCursor{inner: innerCursor, store: store}, nil
+	return newFetchFullRecordCursor(innerCursor, store, props.ScanState), nil
 }
 
 // fetchFullRecordCursor resolves each incoming row to its full stored record by
@@ -1971,32 +1969,31 @@ func executeFetchFromPartialRecord(
 // indexFetchCursor's: an entry whose base record is missing means the index and
 // the records disagree, and query execution never uses SKIP.
 type fetchFullRecordCursor struct {
-	inner    recordlayer.RecordCursor[QueryResult]
-	store    *recordlayer.FDBRecordStore
-	pipeline recordlayer.RecordCursor[QueryResult]
+	store     *recordlayer.FDBRecordStore
+	scanState *recordlayer.ScanLimiterState
+	pipeline  recordlayer.RecordCursor[QueryResult]
 }
 
-// Built lazily because callers construct the cursor as a struct literal.
-func (c *fetchFullRecordCursor) init() {
-	if c.pipeline == nil {
-		c.pipeline = recordlayer.MapPipelined(c.inner, c.load, recordlayer.DefaultPipelineSize)
-	}
+func newFetchFullRecordCursor(inner recordlayer.RecordCursor[QueryResult], store *recordlayer.FDBRecordStore, scanState *recordlayer.ScanLimiterState) *fetchFullRecordCursor {
+	c := &fetchFullRecordCursor{store: store, scanState: scanState}
+	c.pipeline = recordlayer.MapPipelined(inner, c.load, recordlayer.DefaultPipelineSize)
+	return c
 }
 
 func (c *fetchFullRecordCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
-	c.init()
 	return terminalOnError(c.pipeline.OnNext(ctx))
 }
 
-func (c *fetchFullRecordCursor) load(row QueryResult) func() (QueryResult, error) {
-	var loaded func() (*recordlayer.FDBStoredRecord[proto.Message], error)
-	if row.Record == nil && row.PrimaryKey != nil {
-		loaded = c.store.LoadRecordAsync(row.PrimaryKey)
+func (c *fetchFullRecordCursor) load(row QueryResult) recordlayer.PendingRead[QueryResult] {
+	if row.Record != nil || row.PrimaryKey == nil {
+		return recordlayer.NewPendingRead(func() (QueryResult, error) { return c.finish(row, nil, nil) }, nil)
 	}
-	return func() (QueryResult, error) { return c.finish(row, loaded) }
+	return recordlayer.MapPendingRead(c.store.LoadRecordAsync(row.PrimaryKey, c.scanState), func(rec *recordlayer.FDBStoredRecord[proto.Message], err error) (QueryResult, error) {
+		return c.finish(row, rec, err)
+	})
 }
 
-func (c *fetchFullRecordCursor) finish(row QueryResult, loaded func() (*recordlayer.FDBStoredRecord[proto.Message], error)) (QueryResult, error) {
+func (c *fetchFullRecordCursor) finish(row QueryResult, rec *recordlayer.FDBStoredRecord[proto.Message], err error) (QueryResult, error) {
 	if row.Record != nil {
 		return row, nil
 	}
@@ -2012,7 +2009,6 @@ func (c *fetchFullRecordCursor) finish(row QueryResult, loaded func() (*recordla
 			Message: "fetch from partial record: row carries neither a stored record nor a primary key",
 		}
 	}
-	rec, err := loaded()
 	if err != nil {
 		return QueryResult{}, fmt.Errorf("executor: loading record for partial row pk %v: %w", pk, err)
 	}
@@ -2028,12 +2024,9 @@ func (c *fetchFullRecordCursor) finish(row QueryResult, loaded func() (*recordla
 	return FromStoredRecord(rec), nil
 }
 
-func (c *fetchFullRecordCursor) Close() error {
-	c.init()
-	return c.pipeline.Close()
-}
+func (c *fetchFullRecordCursor) Close() error { return c.pipeline.Close() }
 
-func (c *fetchFullRecordCursor) IsClosed() bool { c.init(); return c.pipeline.IsClosed() }
+func (c *fetchFullRecordCursor) IsClosed() bool { return c.pipeline.IsClosed() }
 
 func executeDistinct(
 	ctx context.Context,

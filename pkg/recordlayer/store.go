@@ -359,38 +359,58 @@ func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockR
 // Handles both unsplit (suffix 0) and split (suffixes 1, 2, ...) records
 // via SplitHelper, matching Java's FDBRecordStore.loadRecordAsync().
 func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecord[proto.Message], error) {
-	return store.LoadRecordAsync(primaryKey)()
+	return store.LoadRecordAsync(primaryKey, nil).Get()
 }
 
-// LoadRecordAsync sends the record's reads now and returns the call that waits
-// for them and finishes the load, the analog of Java's loadRecordAsync future.
-// The caller must keep using the store from one goroutine.
-func (store *FDBRecordStore) LoadRecordAsync(primaryKey tuple.Tuple) func() (*FDBStoredRecord[proto.Message], error) {
-	startTime := time.Now()
-	tx := store.context.Transaction()
-	recordsSubspace := store.recordsSubspace
-	split, omitSuffix := store.metaData.IsSplitLongRecords(), store.omitUnsplitRecordSuffix()
-	first := startLoadWithSplit(tx, recordsSubspace, primaryKey, split, omitSuffix, false)
-	var version func() (*FDBRecordVersion, error)
+// LoadRecordAsync sends the record's reads now, like Java's loadRecordAsync;
+// Get finishes the load. A non-nil scanState is charged the loaded bytes.
+func (store *FDBRecordStore) LoadRecordAsync(primaryKey tuple.Tuple, scanState *ScanLimiterState) PendingRead[*FDBStoredRecord[proto.Message]] {
+	issueStart := time.Now()
+	load := &recordLoad{
+		store: store, tx: store.context.Transaction(), primaryKey: primaryKey, scanState: scanState,
+		split: store.metaData.IsSplitLongRecords(),
+	}
+	load.first = startLoadWithSplit(load.tx, store.recordsSubspace, primaryKey, load.split, store.omitUnsplitRecordSuffix(), false)
 	if store.metaData.IsStoreRecordVersions() {
-		version = store.loadRecordVersionAsync(primaryKey, false)
+		load.version = store.loadRecordVersionAsync(primaryKey, false)
 	}
-	return func() (*FDBStoredRecord[proto.Message], error) {
-		return store.finishLoadRecord(tx, primaryKey, first, version, startTime)
-	}
+	load.issueCost = time.Since(issueStart)
+	return NewPendingRead(load.finish, load.ready)
 }
 
-func (store *FDBRecordStore) finishLoadRecord(
-	tx fdb.ReadTransaction,
-	primaryKey tuple.Tuple,
-	first pendingRecordLoad,
-	version func() (*FDBRecordVersion, error),
-	startTime time.Time,
-) (*FDBStoredRecord[proto.Message], error) {
+// recordLoad is one issued LoadRecordAsync; split and omitSuffix are fixed at issue.
+type recordLoad struct {
+	store      *FDBRecordStore
+	tx         fdb.ReadTransaction
+	primaryKey tuple.Tuple
+	scanState  *ScanLimiterState
+	split      bool
+	first      pendingRecordLoad
+	version    PendingRead[*FDBRecordVersion]
+	issueCost  time.Duration
+}
+
+// A missing unsplit value of a splitting store still needs the chunk reads.
+func (l *recordLoad) ready() bool {
+	if !l.first.value.IsReady() || (l.version != nil && !l.version.IsReady()) {
+		return false
+	}
+	value, err := l.first.value.Get()
+	return err != nil || value != nil || !l.split
+}
+
+// The load timer counts the caller's issue and wait, not time queued behind earlier rows.
+func (l *recordLoad) finish() (*FDBStoredRecord[proto.Message], error) {
+	waitStart := time.Now()
+	store, primaryKey := l.store, l.primaryKey
 	var sizeInfo sizeInfo
-	value, err := first.finish(&sizeInfo)
+	value, err := l.first.finish(&sizeInfo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load record %v: %w", primaryKey, err)
+	}
+	// Java charges every completed load, found or not (FDBRecordStore.loadTypedRecord).
+	if l.scanState != nil {
+		l.scanState.AddBytesScanned(int64(sizeInfo.KeySize + sizeInfo.ValueSize))
 	}
 	if value == nil {
 		return nil, nil // Record not found
@@ -416,15 +436,15 @@ func (store *FDBRecordStore) finishLoadRecord(
 
 	// Load version if versioning is enabled.
 	// Matches Java's loadTypedRecord which eagerly loads the version.
-	if version != nil {
-		ver, err := version()
+	if l.version != nil {
+		ver, err := l.version.Get()
 		if err != nil {
 			return nil, fmt.Errorf("load record version for %v: %w", primaryKey, err)
 		}
 		stored.Version = ver
 	}
 
-	store.context.Timer().RecordSince(EventLoadRecord, startTime)
+	store.context.Timer().Record(EventLoadRecord, (l.issueCost + time.Since(waitStart)).Nanoseconds())
 
 	return stored, nil
 }

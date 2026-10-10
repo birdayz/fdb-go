@@ -135,25 +135,25 @@ func unpackVersion(value []byte) (*FDBRecordVersion, error) {
 // Returns nil if no version is stored or versioning is not enabled.
 // Matches Java's FDBRecordStore.loadRecordVersionAsync().
 func (store *FDBRecordStore) LoadRecordVersion(primaryKey tuple.Tuple, snapshot bool) (*FDBRecordVersion, error) {
-	return store.loadRecordVersionAsync(primaryKey, snapshot)()
+	return store.loadRecordVersionAsync(primaryKey, snapshot).Get()
 }
 
 // loadRecordVersionAsync sends the version read now; the result waits for it.
-func (store *FDBRecordStore) loadRecordVersionAsync(primaryKey tuple.Tuple, snapshot bool) func() (*FDBRecordVersion, error) {
+func (store *FDBRecordStore) loadRecordVersionAsync(primaryKey tuple.Tuple, snapshot bool) PendingRead[*FDBRecordVersion] {
 	oldFormat := store.useOldVersionFormat()
 
 	// In the legacy layout the version subspace is cleared whenever the store is not
 	// configured to keep versions, so we can answer without any I/O. Matches Java's
 	// loadRecordVersionAsync: `useOldVersionFormat() && !metaData.isStoreRecordVersions()`.
 	if oldFormat && !store.metaData.IsStoreRecordVersions() {
-		return func() (*FDBRecordVersion, error) { return nil, nil }
+		return NewPendingRead(func() (*FDBRecordVersion, error) { return nil, nil }, nil)
 	}
 
 	versionKey := store.versionKey(primaryKey)
 
 	// Check local cache first (for versions saved in the current transaction)
 	if localVer, ok := store.context.GetLocalVersion(versionKey); ok {
-		return func() (*FDBRecordVersion, error) { return IncompleteVersion(localVer) }
+		return NewPendingRead(func() (*FDBRecordVersion, error) { return IncompleteVersion(localVer) }, nil)
 	}
 
 	// Read from FDB
@@ -163,7 +163,7 @@ func (store *FDBRecordStore) loadRecordVersionAsync(primaryKey tuple.Tuple, snap
 	} else {
 		future = store.context.Transaction().Get(fdb.Key(versionKey))
 	}
-	return func() (*FDBRecordVersion, error) { return decodeLoadedVersion(future, oldFormat) }
+	return NewPendingRead(func() (*FDBRecordVersion, error) { return decodeLoadedVersion(future, oldFormat) }, future.IsReady)
 }
 
 func decodeLoadedVersion(future fdb.FutureByteSlice, oldFormat bool) (*FDBRecordVersion, error) {

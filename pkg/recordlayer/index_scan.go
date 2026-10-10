@@ -828,37 +828,35 @@ func (store *FDBRecordStore) ScanIndexRecords(
 		}
 	}
 
+	if scanProperties.ExecuteProperties.ScanState == nil {
+		// Record loads charge the byte budget of the scan that found them.
+		scanProperties.ExecuteProperties.ScanState = NewScanLimiterState()
+	}
 	indexCursor := store.ScanIndex(index, scanRange, continuation, scanProperties)
-	cursor := &indexRecordCursor{inner: indexCursor, store: store}
-	cursor.pipeline = MapPipelined(indexCursor, cursor.load, DefaultPipelineSize)
-	return cursor
+	loader := &indexRecordLoader{store: store, scanState: scanProperties.ExecuteProperties.ScanState}
+	return MapPipelined(indexCursor, loader.load, DefaultPipelineSize)
 }
 
-// indexRecordCursor maps index entries to stored records by loading each record
-// via its primary key. An orphan entry (the record no longer exists) raises a
-// RecordCoreStorageError, matching Java's IndexOrphanBehavior.ERROR default.
-type indexRecordCursor struct {
-	inner    RecordCursor[*IndexEntry]
-	store    *FDBRecordStore
-	pipeline RecordCursor[*FDBIndexedRecord]
+// indexRecordLoader loads the record of each index entry. An orphan entry (the
+// record no longer exists) raises a RecordCoreStorageError, matching Java's
+// IndexOrphanBehavior.ERROR default.
+type indexRecordLoader struct {
+	store     *FDBRecordStore
+	scanState *ScanLimiterState
 }
 
-func (c *indexRecordCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBIndexedRecord], error) {
-	return c.pipeline.OnNext(ctx)
-}
-
-func (c *indexRecordCursor) load(entry *IndexEntry) func() (*FDBIndexedRecord, error) {
+func (c *indexRecordLoader) load(entry *IndexEntry) PendingRead[*FDBIndexedRecord] {
 	pk := entry.PrimaryKey()
-	loaded := c.store.LoadRecordAsync(pk)
-	return func() (*FDBIndexedRecord, error) { return c.finish(entry, pk, loaded) }
+	return MapPendingRead(c.store.LoadRecordAsync(pk, c.scanState), func(rec *FDBStoredRecord[proto.Message], err error) (*FDBIndexedRecord, error) {
+		return c.finish(entry, pk, rec, err)
+	})
 }
 
-func (c *indexRecordCursor) finish(entry *IndexEntry, pk tuple.Tuple, loaded func() (*FDBStoredRecord[proto.Message], error)) (*FDBIndexedRecord, error) {
+func (c *indexRecordLoader) finish(entry *IndexEntry, pk tuple.Tuple, rec *FDBStoredRecord[proto.Message], err error) (*FDBIndexedRecord, error) {
 	indexName := ""
 	if entry.Index != nil {
 		indexName = entry.Index.Name
 	}
-	rec, err := loaded()
 	if err != nil {
 		return nil, fmt.Errorf("load record for index entry %v: %w", pk, err)
 	}
@@ -884,10 +882,6 @@ func (c *indexRecordCursor) finish(entry *IndexEntry, pk tuple.Tuple, loaded fun
 		Record:     rec,
 	}, nil
 }
-
-func (c *indexRecordCursor) Close() error { return c.pipeline.Close() }
-
-func (c *indexRecordCursor) IsClosed() bool { return c.pipeline.IsClosed() }
 
 // byDistanceScanner is the BY_DISTANCE access-method contract every vector
 // index maintainer implements (RFC-094 §10): Low = (serialized query vector

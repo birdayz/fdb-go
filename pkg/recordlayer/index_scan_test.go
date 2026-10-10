@@ -1040,6 +1040,36 @@ var _ = Describe("IndexScanning", func() {
 					Expect(rec.Record.Version).To(Equal(want.Version))
 				}
 				Expect(probe.issuedAtWait).To(Equal(DefaultPipelineSize))
+				// Serial version reads would wait after one record's reads.
+				Expect(probe.versionsAtWait).To(Equal(DefaultPipelineSize))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("charges loaded record bytes to the scan's byte budget", func() {
+			priceIndex := NewIndex("Order$price", Field("price"))
+			metaData := buildMetaWithIndex(priceIndex)
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				insertOrders(store, 4)
+				indexOnly := ForwardScan()
+				indexOnly.ExecuteProperties.ScanState = NewScanLimiterState()
+				_, err = AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, indexOnly))
+				Expect(err).NotTo(HaveOccurred())
+				withRecords := ForwardScan()
+				withRecords.ExecuteProperties.ScanState = NewScanLimiterState()
+				records, err := AsList(ctx, store.ScanIndexRecords("Order$price", TupleRangeAll, nil, withRecords))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(records).To(HaveLen(4))
+				recordBytes := int64(0)
+				for _, rec := range records {
+					recordBytes += int64(rec.Record.KeySize + rec.Record.ValueSize)
+				}
+				Expect(recordBytes).To(BeNumerically(">", 0))
+				Expect(withRecords.ExecuteProperties.ScanState.BytesScanned()).To(Equal(indexOnly.ExecuteProperties.ScanState.BytesScanned() + recordBytes))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

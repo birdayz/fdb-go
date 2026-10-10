@@ -14,6 +14,8 @@ type recordFetchProbe struct {
 	records        subspace.Subspace
 	issued         map[any]bool
 	issuedAtWait   int
+	versions       int
+	versionsAtWait int
 	waited         bool
 	maxOutstanding int
 	resolved       map[any]bool
@@ -33,6 +35,9 @@ func (p *recordFetchProbe) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
 		return future
 	}
 	p.issued[t[0]] = true
+	if t[len(t)-1] == int64(-1) {
+		p.versions++
+	}
 	p.maxOutstanding = max(p.maxOutstanding, len(p.issued)-len(p.resolved))
 	return &probedFuture{FutureByteSlice: future, probe: p, record: t[0]}
 }
@@ -47,6 +52,7 @@ func (f *probedFuture) Get() ([]byte, error) {
 	if !f.probe.waited {
 		f.probe.waited = true
 		f.probe.issuedAtWait = len(f.probe.issued)
+		f.probe.versionsAtWait = f.probe.versions
 	}
 	f.probe.resolved[f.record] = true
 	return f.FutureByteSlice.Get()

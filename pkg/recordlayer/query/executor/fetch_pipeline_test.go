@@ -68,9 +68,9 @@ func TestIntegrationIndexAndPartialFetchesPipeline(t *testing.T) {
 				var cursor recordlayer.RecordCursor[QueryResult]
 				if partial {
 					rows := recordlayer.MapCursor(entries, func(e *recordlayer.IndexEntry) QueryResult { return QueryResult{PrimaryKey: e.PrimaryKey()} })
-					cursor = &fetchFullRecordCursor{inner: rows, store: store}
+					cursor = newFetchFullRecordCursor(rows, store, nil)
 				} else {
-					cursor = &indexFetchCursor{inner: entries, store: store}
+					cursor = newIndexFetchCursor(entries, store, nil)
 				}
 				defer cursor.Close()
 				for want := int64(1); want <= count; want++ {

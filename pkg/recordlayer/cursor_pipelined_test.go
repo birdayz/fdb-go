@@ -12,17 +12,18 @@ import (
 type pipelineProbe struct {
 	events []string
 	fail   map[int]error
+	ready  map[int]bool
 }
 
-func (p *pipelineProbe) issue(v int) func() (int, error) {
+func (p *pipelineProbe) issue(v int) PendingRead[int] {
 	p.events = append(p.events, fmt.Sprintf("issue %d", v))
-	return func() (int, error) {
+	return NewPendingRead(func() (int, error) {
 		p.events = append(p.events, fmt.Sprintf("resolve %d", v))
 		if err := p.fail[v]; err != nil {
 			return 0, err
 		}
 		return v * 10, nil
-	}
+	}, func() bool { return p.ready[v] })
 }
 
 func (p *pipelineProbe) take() []string {
@@ -103,15 +104,19 @@ func TestMapPipelinedSourceErrorFailsBeforeQueuedRows(t *testing.T) {
 	expectEvents(t, probe.take(), "issue 0")
 }
 
-func TestMapPipelinedTimeLimitResumesAfterLastReturnedRow(t *testing.T) {
+func TestMapPipelinedTimeLimitKeepsOnlyTheCompletedPrefix(t *testing.T) {
 	t.Parallel()
-	probe := &pipelineProbe{}
-	source := newOOBStopCursorUnit([]int{0, 1, 2}, TimeLimitReached, NewBytesContinuation(ListCursorContinuation(3)))
-	cursor := MapPipelined[int, int](source, probe.issue, 3)
+	probe := &pipelineProbe{ready: map[int]bool{1: true, 3: true}}
+	source := newOOBStopCursorUnit([]int{0, 1, 2, 3}, TimeLimitReached, NewBytesContinuation(ListCursorContinuation(4)))
+	cursor := MapPipelined[int, int](source, probe.issue, 4)
 	defer cursor.Close()
 	first, err := cursor.OnNext(context.Background())
 	if err != nil || first.GetValue() != 0 {
 		t.Fatalf("first: %v, %v", first, err)
+	}
+	second, err := cursor.OnNext(context.Background())
+	if err != nil || !second.HasNext() || second.GetValue() != 10 {
+		t.Fatalf("completed entry dropped: %v, %v", second, err)
 	}
 	for range 2 {
 		stop, err := cursor.OnNext(context.Background())
@@ -119,11 +124,45 @@ func TestMapPipelinedTimeLimitResumesAfterLastReturnedRow(t *testing.T) {
 			t.Fatalf("stop: %v, %v", stop, err)
 		}
 		cont, err := stop.GetContinuation().ToBytes()
-		if err != nil || !bytes.Equal(cont, ListCursorContinuation(1)) {
-			t.Fatalf("stop continuation skipped unreturned rows: %x, %v", cont, err)
+		if err != nil || !bytes.Equal(cont, ListCursorContinuation(2)) {
+			t.Fatalf("stop continuation skipped the unfinished row: %x, %v", cont, err)
 		}
 	}
-	expectEvents(t, probe.take(), "issue 0", "issue 1", "issue 2", "resolve 0")
+	expectEvents(t, probe.take(), "issue 0", "issue 1", "issue 2", "issue 3", "resolve 0", "resolve 1")
+}
+
+func TestMapPipelinedTimeLimitFailsOnACompletedFailure(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("completed load failed")
+	probe := &pipelineProbe{ready: map[int]bool{1: true}, fail: map[int]error{1: boom}}
+	source := newOOBStopCursorUnit([]int{0, 1, 2}, TimeLimitReached, NewBytesContinuation(ListCursorContinuation(3)))
+	cursor := MapPipelined[int, int](source, probe.issue, 3)
+	defer cursor.Close()
+	if r, err := cursor.OnNext(context.Background()); err != nil || r.GetValue() != 0 {
+		t.Fatalf("first: %v, %v", r, err)
+	}
+	if _, err := cursor.OnNext(context.Background()); !errors.Is(err, boom) {
+		t.Fatalf("time-limited stop hid a completed failure: %v", err)
+	}
+}
+
+func TestMapPipelinedClosedCursorDoesNotPullSource(t *testing.T) {
+	t.Parallel()
+	inner := newCloseTrackerUnit(FromList([]int{1, 2}))
+	probe := &pipelineProbe{}
+	cursor := MapPipelined[int, int](inner, probe.issue, 2)
+	if err := cursor.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !cursor.IsClosed() || !inner.wasClosed() {
+		t.Fatal("Close not reported")
+	}
+	if _, err := cursor.OnNext(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("OnNext after Close: %v", err)
+	}
+	if len(probe.take()) != 0 {
+		t.Fatal("closed cursor issued work")
+	}
 }
 
 func TestMapPipelinedStopBeforeFirstRowOrOtherLimitsDrain(t *testing.T) {
