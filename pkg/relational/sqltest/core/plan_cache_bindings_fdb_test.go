@@ -37,8 +37,7 @@ func cacheQueryIDs(t *testing.T, conn *sql.Conn, text string, args ...any) []int
 func TestFDB_PlanCacheBindingShapes(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := testkit.SetupErrorDB(t, "/FRL/cache_binding_shapes", "cache_binding_shapes",
-		"CREATE TABLE T (id BIGINT, v BIGINT, PRIMARY KEY(id)) CREATE INDEX i_v ON T(v)")
+	db := testkit.SetupErrorDB(t, "/FRL/cache_binding_shapes", "cache_binding_shapes", testkit.PlanCacheBindingShapesSchema)
 	if _, err := db.ExecContext(ctx, "INSERT INTO T VALUES (1,10),(2,20),(3,30)"); err != nil {
 		t.Fatal(err)
 	}
@@ -48,42 +47,20 @@ func TestFDB_PlanCacheBindingShapes(t *testing.T) {
 		cache = ec.SharedPlanCache()
 		ec.SetPlanLogger(logger)
 	})
-	for _, tc := range []struct {
-		name, query           string
-		first, second         []any
-		wantFirst, wantSecond []int64
-		hit                   bool
-	}{
-		{"secondary", "SELECT id FROM T WHERE v=?", []any{int64(10)}, []any{int64(30)}, []int64{1}, []int64{3}, true},
-		{"false then true", "SELECT id FROM T WHERE ? ORDER BY id", []any{false}, []any{true}, nil, []int64{1, 2, 3}, false},
-		{"contradiction then range", "SELECT id FROM T WHERE v>=? AND v<=? ORDER BY id", []any{int64(30), int64(10)}, []any{int64(10), int64(30)}, nil, []int64{1, 2, 3}, true},
-		{"case", "SELECT CASE WHEN ? THEN id ELSE id * 10 END FROM T ORDER BY id", []any{true}, []any{false}, []int64{1, 2, 3}, []int64{10, 20, 30}, false},
-		{"coalesce error pruning", "SELECT id FROM T WHERE COALESCE(?, 1/0) = 1 ORDER BY id", []any{int64(1)}, []any{int64(2)}, []int64{1, 2, 3}, nil, false},
-		{"scalar subquery", "SELECT id FROM T WHERE v=(SELECT ? FROM T WHERE id=1)", []any{int64(10)}, []any{int64(30)}, []int64{1}, []int64{3}, true},
-		{"join", "SELECT a.id FROM T a JOIN T b ON a.v=b.v WHERE b.id=?", []any{int64(1)}, []any{int64(3)}, []int64{1}, []int64{3}, true},
-		{"join output", "SELECT a.id+? FROM T a JOIN T b ON a.v=b.v ORDER BY a.id", []any{int64(7)}, []any{int64(8)}, []int64{8, 9, 10}, []int64{9, 10, 11}, true},
-		{"derived join output", "SELECT x.c FROM (SELECT id-? AS c FROM T) x JOIN T b ON x.c=b.id ORDER BY x.c", []any{int64(0)}, []any{int64(1)}, []int64{1, 2, 3}, []int64{1, 2}, true},
-		{"in array", "SELECT id FROM T WHERE id IN ? ORDER BY id", []any{[]int64{1, 1}}, []any{[]int64{2, 3}}, []int64{1}, []int64{2, 3}, false},
-		{"limit", "SELECT id FROM T ORDER BY id LIMIT ?", []any{int64(1)}, []any{int64(2)}, []int64{1}, []int64{1, 2}, false},
-		{"equality partition", "SELECT id FROM T WHERE id=? OR id=? ORDER BY id", []any{int64(1), int64(1)}, []any{int64(2), int64(3)}, []int64{1}, []int64{2, 3}, false},
-		{"additional equality", "SELECT ? + ? FROM T WHERE id=3", []any{int64(1), int64(2)}, []any{int64(4), int64(4)}, []int64{3}, []int64{8}, true},
-		{"named", "SELECT id FROM T WHERE id=?target", []any{sql.Named("target", int64(1))}, []any{sql.Named("target", int64(3))}, []int64{1}, []int64{3}, true},
-		{"null", "SELECT id FROM T WHERE ? IS NULL ORDER BY id", []any{nil}, []any{int64(1)}, []int64{1, 2, 3}, nil, false},
-		{"numeric lane", "SELECT id FROM T WHERE v>? ORDER BY id", []any{int64(10)}, []any{float64(20.5)}, []int64{2, 3}, []int64{3}, false},
-	} {
+	for _, tc := range testkit.PlanCacheBindingShapes {
 		cache.Invalidate()
 		before := len(logger.Snapshot())
-		if got := cacheQueryIDs(t, conn, tc.query, tc.first...); !reflect.DeepEqual(got, tc.wantFirst) {
-			t.Fatalf("%s first: %v, want %v", tc.name, got, tc.wantFirst)
+		if got := cacheQueryIDs(t, conn, tc.Query, tc.First...); !reflect.DeepEqual(got, tc.WantFirst) {
+			t.Fatalf("%s first: %v, want %v", tc.Name, got, tc.WantFirst)
 		}
-		if got := cacheQueryIDs(t, conn, tc.query, tc.second...); !reflect.DeepEqual(got, tc.wantSecond) {
-			t.Fatalf("%s second: %v, want %v", tc.name, got, tc.wantSecond)
+		if got := cacheQueryIDs(t, conn, tc.Query, tc.Second...); !reflect.DeepEqual(got, tc.WantSecond) {
+			t.Fatalf("%s second: %v, want %v", tc.Name, got, tc.WantSecond)
 		}
 		events := logger.Snapshot()[before:]
-		if len(events) != 2 || events[0].Cache != embedded.PlanCacheMiss || (events[1].Cache == embedded.PlanCacheHit) != tc.hit {
-			t.Fatalf("%s cache events: %+v, want miss then hit=%v", tc.name, events, tc.hit)
+		if len(events) != 2 || events[0].Cache != embedded.PlanCacheMiss || (events[1].Cache == embedded.PlanCacheHit) != tc.Hit {
+			t.Fatalf("%s cache events: %+v, want miss then hit=%v", tc.Name, events, tc.Hit)
 		}
-		if tc.name == "secondary" && !strings.Contains(events[1].PlanExplain, "IndexScan(I_V") {
+		if tc.Name == "secondary" && !strings.Contains(events[1].PlanExplain, "IndexScan(I_V") {
 			t.Fatalf("reusable equality lost indexed access: %s", events[1].PlanExplain)
 		}
 	}
