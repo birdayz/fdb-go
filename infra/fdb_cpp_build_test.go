@@ -28,7 +28,6 @@ func TestFDBCppBuildResourceContract(t *testing.T) {
 		`"FDB_BUILD_CPUS": str(cpus),`,
 		`"FDB_BUILD_MEMORY_MB": str(memory),`,
 		`cxx_flags = "-O3 -DNDEBUG"`,
-		`--param=ggc-min-expand=20 --param=ggc-min-heapsize=32768`,
 		`fail("FDB C++ resources must be compact or large, got " + value)`,
 		`build_setting = config.string(flag = True)`,
 		`"_resources": attr.label(default = "//cmd/fdb-schema-extract:resources")`,

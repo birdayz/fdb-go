@@ -36,8 +36,6 @@ def _fdb_cpp_build_impl(ctx):
         cpus = _COMPACT_CPUS
         memory = _COMPACT_MEMORY_MB
         resources = _compact_resources
-        # GCC collection frequency changes compiler memory use, not generated code.
-        cxx_flags += " --param=ggc-min-expand=20 --param=ggc-min-heapsize=32768"
     else:
         cpus = _LARGE_CPUS
         memory = _LARGE_MEMORY_MB
