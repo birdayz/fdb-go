@@ -20,7 +20,7 @@ import (
 	"testing"
 )
 
-// explainOnConn returns the EXPLAIN plan text for q on the pinned connection,
+// ExplainConn returns the EXPLAIN plan text for q on the pinned connection,
 // so the connection's api.Options are the ones in effect. EXPLAIN routes
 // through the same planSelectCascades the real query path uses.
 func ExplainConn(t *testing.T, ctx context.Context, conn *sql.Conn, q string) string {

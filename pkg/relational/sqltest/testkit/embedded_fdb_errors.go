@@ -21,14 +21,14 @@ import (
 	"fdb.dev/pkg/relational/api"
 )
 
-// errorTestTemplates is every schema-template name setupErrorTestDB has
+// errorTestTemplates is every schema-template name SetupErrorDB has
 // created in this test binary. The template is named after the schema alone
 // and lives in the one catalog every parallel test shares, so two tests
 // passing the same schema name race to create it and the loser fails
 // "Schema template already exists" (42F62), whichever runs second.
 var errorTestTemplates sync.Map
 
-// setupErrorTestDB creates a fresh database + schema template + schema
+// SetupErrorDB creates a fresh database + schema template + schema
 // and returns a *sql.DB wired into that schema. Same shape as the
 // happy-path tests' setup, factored so the error tests can share it.
 func SetupErrorDB(t *testing.T, dbPath, schemaName, ddl string) *sql.DB {

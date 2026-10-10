@@ -1251,7 +1251,7 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
 	return done
 }
 
-// PingRequest file identifier from C++ flow/genericactors.actor.h.
+// pingRequestFileID is the PingRequest file identifier from C++ flow/genericactors.actor.h.
 const pingRequestFileID uint32 = 4707015
 
 // pingRequestVTable: PingRequest has 1 field (bytes/RelativeOffset, 4 bytes, align 4).

@@ -54,13 +54,13 @@ func MhScanStrings(ctx context.Context, db *sql.DB, q string) ([]string, error) 
 
 // ---- random predicate generation -------------------------------------------
 
-// mhGen generates random predicates. The column names are parameters so the
+// MhGen generates random predicates. The column names are parameters so the
 // same generator can drive fixtures with different schemas; a generator that
 // emits a column the table does not have produces a 42703 on BOTH sides, which
 // is an EMPTY comparison, not a passing one.
 type MhGen struct {
 	R *rand.Rand
-	// intCols/dblCols/strCols/boolCols default (when nil) to the hunt-1 fixture.
+	// IntCols/DblCols/StrCols/BoolCols default (when nil) to the hunt-1 fixture.
 	IntCols, DblCols, StrCols, BoolCols []string
 }
 

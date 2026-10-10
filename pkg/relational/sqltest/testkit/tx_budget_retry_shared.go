@@ -58,7 +58,7 @@ type txBeginner interface {
 	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 }
 
-// TxRetryOpts configures retryTx. The zero value is usable: three attempts, no
+// TxRetryOpts configures RetryTx. The zero value is usable: three attempts, no
 // hooks.
 type TxRetryOpts struct {
 	// Attempts bounds the retry. Bounded on purpose: an explicit transaction
@@ -78,7 +78,7 @@ type TxRetryOpts struct {
 	OnRetry func(attempt int, err error)
 }
 
-// TxAttempt is what retryTx hands each attempt. The attempt number is exposed
+// TxAttempt is what RetryTx hands each attempt. The attempt number is exposed
 // because a test that injects a one-shot spike must be able to assert the spike
 // actually pre-empted something — a retry that never fired proves nothing.
 type TxAttempt struct {

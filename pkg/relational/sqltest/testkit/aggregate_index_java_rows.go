@@ -6,7 +6,7 @@ import (
 
 // MmAggregateIndexRowsAgree reports whether rows read through SUM / COUNT
 // aggregate indexes (idx) are the answer Java's index gives for the records the
-// unindexed twin reads (oracle). Both are mmRows output: one "|"-joined string
+// unindexed twin reads (oracle). Both are QueryRowStrings output: one "|"-joined string
 // per row, in the read's order, the last nAgg columns aggregates.
 //
 // Java reads such an index alone (AggregateIndexMatchCandidate has no notion of

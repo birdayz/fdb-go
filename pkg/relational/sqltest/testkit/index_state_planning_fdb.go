@@ -246,7 +246,7 @@ func (f *IndexStatePlanningFixture) SetIndexState(
 	return err
 }
 
-// SetIndexDisabled drives an index to DISABLED, the state setIndexState cannot
+// SetIndexDisabled drives an index to DISABLED, the state SetIndexState cannot
 // reach. DISABLED and WRITE_ONLY are both non-READABLE but they are not the same
 // state — DISABLED additionally clears the index data — and a check written
 // against "not readable" must hold for both.

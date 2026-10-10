@@ -96,7 +96,7 @@ func (w *Twin) Exec(stmt string) {
 	}
 }
 
-// mmRows runs q and renders each row as a |-joined string so a case can state
+// QueryRowStrings runs q and renders each row as a |-joined string so a case can state
 // its expectation without knowing the column count. NULL renders as "NULL",
 // which is distinct from the empty string a NULL-free empty column produces.
 func QueryRowStrings(t *testing.T, ctx context.Context, db *sql.DB, q string) ([]string, error) {

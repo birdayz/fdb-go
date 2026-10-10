@@ -220,7 +220,7 @@ type StandardIndexMaintainer struct {
 	store         IndexStoreContext
 }
 
-// readTx resolves the transaction a SCAN's reads go through, from the
+// ReadTransaction resolves the transaction a SCAN's reads go through, from the
 // caller's isolation level. Every maintainer that performs a query read uses
 // this — it is the one mechanism, inherited rather than re-decided per leaf,
 // which is the whole point: an index type that reads through

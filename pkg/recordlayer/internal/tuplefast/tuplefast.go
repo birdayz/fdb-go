@@ -52,7 +52,7 @@ var sizeLimits = [9]int64{
 
 var minInt64Big = big.NewInt(math.MinInt64)
 
-// tupleSkip returns the byte size of the first tuple element, or -1 on truncated input.
+// Skip returns the byte size of the first tuple element, or -1 on truncated input.
 func Skip(b []byte) int {
 	if len(b) == 0 {
 		return -1
@@ -300,15 +300,15 @@ func fastDecodeVersionstamp(b []byte) (tuple.Versionstamp, int) {
 	return tuple.Versionstamp{TransactionVersion: tv, UserVersion: uv}, versionstampLen + 1
 }
 
-// fastUnpack decodes a tuple from raw bytes. Drop-in replacement for tuple.Unpack
+// Unpack decodes a tuple from raw bytes. Drop-in replacement for tuple.Unpack
 // with zero allocation on the integer decode path.
 func Unpack(b []byte) (tuple.Tuple, error) {
 	t, _, err := fastDecodeTuple(b, false)
 	return t, err
 }
 
-// fastSubspaceUnpack strips the subspace prefix and decodes the remainder using
-// fastUnpack. Drop-in replacement for subspace.Unpack() with zero-alloc integer
+// SubspaceUnpack strips the subspace prefix and decodes the remainder using
+// Unpack. Drop-in replacement for subspace.Unpack() with zero-alloc integer
 // decode. Returns error if key is shorter than prefix.
 func SubspaceUnpack(key []byte, prefixLen int) (tuple.Tuple, error) {
 	if len(key) < prefixLen {

@@ -10,7 +10,7 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-// planExplainVia retrieves the Cascades physical plan Explain string
+// ExplainVia retrieves the Cascades physical plan Explain string
 // via the underlying EmbeddedConnection for the given query.
 func ExplainVia(t *testing.T, ctx context.Context, db *sql.DB, query string) string {
 	t.Helper()
