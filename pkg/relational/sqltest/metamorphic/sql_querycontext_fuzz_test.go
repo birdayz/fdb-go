@@ -42,7 +42,7 @@ func FuzzSQL_QueryContext(f *testing.F) {
 		"CREATE TABLE t (id BIGINT, name STRING, amount BIGINT, PRIMARY KEY (id))")
 	_, _ = setup.ExecContext(ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE fuzz_tmpl")
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S", strings.ToUpper(dbPath), testkit.ClusterFile()))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S&max_total_task_count=150000", strings.ToUpper(dbPath), testkit.ClusterFile()))
 	if err != nil {
 		f.Fatalf("open query conn: %v", err)
 	}

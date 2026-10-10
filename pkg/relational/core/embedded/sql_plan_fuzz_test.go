@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"fdb.dev/pkg/relational/api"
+
 	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/session"
 )
@@ -30,6 +32,8 @@ func FuzzSQLPlan(f *testing.F) {
 		planCache:                NewPlanCache(256),
 		slowQueryThresholdMicros: defaultSlowQueryThresholdMicros(),
 	}
+	// Mutated SQL keeps the harness backstop; connection planning is unbounded.
+	conn.SetOptions(api.NoOptions().With(api.OptMaxTotalTaskCount, harnessTaskBudget))
 	g := newCascadesGenerator(conn)
 	ctx := context.Background()
 

@@ -65,6 +65,10 @@ type plannerOptions struct {
 	// everything it does not set at RecordQueryPlannerConfiguration's default.
 	config cascades.PlannerConfiguration
 
+	// Java's three Cascades budgets, 0 = unbounded. They only decide whether
+	// planning fails, never which plan wins, so cacheKeyPart leaves them out.
+	maxTaskQueueSize, maxTotalTaskCount, maxNumMatchesPerRuleCall int
+
 	// trace attributes the run's work for the no-FDB diagnostics harness; the
 	// connection path never sets it.
 	trace *cascades.PlannerTrace
@@ -141,6 +145,9 @@ func plannerOptionsFrom(o *api.Options) plannerOptions {
 		po.config.VectorIndexEnginePreference = "GUARDIANN"
 	}
 	po.useCollectedStatistics = optBool(o, api.OptPlannerStatistics, false)
+	po.maxTaskQueueSize = int(optInt64(o, api.OptMaxTaskQueueSize, 0))
+	po.maxTotalTaskCount = int(optInt64(o, api.OptMaxTotalTaskCount, 0))
+	po.maxNumMatchesPerRuleCall = int(optInt64(o, api.OptMaxNumMatchesPerRuleCall, 0))
 	return po
 }
 
@@ -263,19 +270,8 @@ func (p plannerOptions) cacheKeyPart() string {
 // planningRules are the phase-PLANNING expression rules the callsite needs
 // (BatchA for SELECT, BatchA + DML wrappers for DML).
 //
-// RFC-232's ordering-safe child-stage handoff makes every parent wait for the
-// physicalization it consumes. That closes a genuine nil-plan hole, but also
-// turns formerly skipped work into counted planner tasks. 150k retains the
-// ordinary complexity tripwire. PLAN_RIGHT_DEEP explicitly selects the
-// smaller search topology but its six-way SQL authority now completes at
-// ~176k correctness-required tasks, so that opt-in mode receives a separate
-// 250k ceiling. The unrestricted bushy shape still exceeds 150k and fails
-// closed.
-const (
-	embeddedPlannerMaxTasks          = 150_000
-	embeddedRightDeepPlannerMaxTasks = 250_000
-)
-
+// Java's SQL layer sets no planner budget, so planning is bounded only by the
+// caller's context unless the connection configures one.
 func newCascadesPlanner(
 	md *recordlayer.RecordMetaData,
 	popts plannerOptions,
@@ -285,15 +281,13 @@ func newCascadesPlanner(
 	rules := cascades.DefaultExpressionRules()
 	rules = append(rules, cascades.RewritingRules()...)
 	planCtx := buildCascadesPlanContext(md, popts.config)
-	maxTasks := embeddedPlannerMaxTasks
-	if popts.config.ShouldJoinRightDeep {
-		maxTasks = embeddedRightDeepPlannerMaxTasks
-	}
 	planner := cascades.NewPlanner(rules, planCtx).
 		WithImplementationRules(cascades.DefaultImplementationRules()).
 		WithPlanningExpressionRules(planningRules).
 		WithStatistics(stats).
-		WithMaxTasks(maxTasks)
+		WithMaxTasks(popts.maxTotalTaskCount)
+	planner.MaxTaskQueueSize = popts.maxTaskQueueSize
+	planner.MaxNumMatchesPerRuleCall = popts.maxNumMatchesPerRuleCall
 	planner.DisabledRules = popts.disabledRules
 	planner.WithTrace(popts.trace)
 	return planner

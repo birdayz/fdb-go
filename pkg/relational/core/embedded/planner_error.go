@@ -148,14 +148,8 @@ func translatePlannerError(planErr error, unableToPlanMessage string) error {
 		return planErr
 	}
 
-	// Planning budgets. Java's SQL layer never reaches these: its
-	// PlannerConfiguration.buildRecordQueryPlannerConfiguration sets none of the
-	// three cap setters, and every guard is gated on a positive bound that
-	// defaults to 0 ("unbound"). So this is a Go-only condition, not a shared
-	// surface to conform to, and it gets a Go-chosen class-54 code —
-	// program-limit-exceeded is exactly "gave up, query too complex, retryable
-	// after simplification". Java's own UNKNOWN is documented as "shouldn't be
-	// used in general" and would say nothing about what went wrong.
+	// Planning budgets, reachable only through the Go-only MAX_* options: Java's
+	// SQL layer sets none, so the class-54 code is Go's (see DIVERGENCES.md).
 	if errors.Is(planErr, cascades.ErrPlannerCapHit) ||
 		errors.Is(planErr, cascades.ErrPlannerQueueCapHit) ||
 		errors.Is(planErr, cascades.ErrPlannerRuleMatchCapHit) {

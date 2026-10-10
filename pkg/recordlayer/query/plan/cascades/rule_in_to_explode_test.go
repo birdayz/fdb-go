@@ -70,7 +70,7 @@ func exploreInExplodeRewriting(p *Planner, rootRef *expressions.Reference) (int,
 	p.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: rootRef})
 	p.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: rootRef})
 	for len(p.stack) > 0 {
-		if p.tasksRun >= p.MaxTasks {
+		if p.tasksRun >= testTaskBound(p) {
 			return p.tasksRun, false
 		}
 		p.pop().Run(context.Background(), p)

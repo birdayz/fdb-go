@@ -225,9 +225,9 @@ var goOnlyErrorCodes = map[ErrorCode]string{
 		"not valid UTF-8. A Java String is UTF-16 and cannot hold such text, so " +
 		"the condition cannot arise there; Go refuses it rather than store bytes " +
 		"Java would read back as U+FFFD.",
-	ErrCodePlanComplexityLimitReached: "Go bounds Cascades planning at 100,000 tasks; Java's SQL layer " +
-		"never enables its three planner caps, so the condition cannot arise " +
-		"there and no Java code names it. See DIVERGENCES.md.",
+	ErrCodePlanComplexityLimitReached: "Raised only when a connection sets a Go-only MAX_* planner " +
+		"budget option; Java's SQL layer exposes and enables none of its three " +
+		"planner caps, so the condition cannot arise there. See DIVERGENCES.md.",
 	ErrCodeStatementCompletionUnknown: "SQL-standard 40003 for FDB commit_unknown_result (1021) on a " +
 		"non-retrying explicit transaction (RFC-198 Decision 7). Java's enum has " +
 		"no member for it: 1021 has no case in FDBExceptions, falls to the " +

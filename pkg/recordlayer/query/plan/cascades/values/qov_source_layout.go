@@ -120,6 +120,21 @@ func PhysicalCarrierType(layout OrdinalLayout) Type {
 	return carrier.FlowedType()
 }
 
+// NewPhysicalCarrierQOV is NewQuantifiedObjectValue(correlation, PhysicalCarrierType(layout)),
+// rebinding a record carrier's frozen snapshot and layout as rebase does.
+func NewPhysicalCarrierQOV(correlation CorrelationIdentifier, layout OrdinalLayout) (QuantifiedObjectValue, error) {
+	if layout != nil {
+		if q, ok := layout.Carrier().(*quantifiedObjectValue); ok && q != nil && q.flowed != nil &&
+			q.flowed.code == TypeCodeRecord && !q.flowed.anyRecord {
+			if err := checkQOVCorrelation(correlation); err != nil {
+				return nil, err
+			}
+			return &quantifiedObjectValue{correlation: correlation, flowed: q.flowed, sourceLayout: q.sourceLayout}, nil
+		}
+	}
+	return NewQuantifiedObjectValue(correlation, PhysicalCarrierType(layout))
+}
+
 // LayoutWithSeedLegs returns layout with its carrier stating the leg boundaries
 // the RESULT VALUE knows, for the case where the layout itself cannot know them.
 //

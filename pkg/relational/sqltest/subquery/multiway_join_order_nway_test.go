@@ -33,7 +33,7 @@ import (
 // correct rows + the index-probe property, not plan byte-identity.
 //
 // ≥5-way joins are correct too (verified manually), but the bushy re-enumeration
-// is exponential and a 5-way exceeds the planner's DEFAULT task budget, so it may
+// is exponential and a 5-way can exhaust a configured task budget, so it may
 // fail to plan loudly. That is acceptable and pinned here as "correct OR loud,
 // never wrong rows": the contract is identical-to-correct or a loud plan-failure,
 // NEVER a silent wrong row. Making the shared join sub-products intern so the

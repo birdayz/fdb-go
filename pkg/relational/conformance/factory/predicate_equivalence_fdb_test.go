@@ -451,7 +451,7 @@ func equivSeed(ctx context.Context, t *testing.T, setupDB *sql.DB, dbPath string
 	defer setupDB.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA %s/%s", dbPath, schema)) //nolint:errcheck
 	defer setupDB.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA TEMPLATE %s", tmpl))     //nolint:errcheck
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schema)))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s&max_total_task_count=150000", strings.ToUpper(dbPath), clusterFilePath, strings.ToUpper(schema)))
 	if err != nil {
 		t.Errorf("seed %d: open: %v", seed, err)
 		return res

@@ -114,8 +114,8 @@ func TestPlanner_RejectsRetryAfterCapError(t *testing.T) {
 	if firstPlan != nil {
 		t.Fatalf("capped Plan returned %T, want nil", firstPlan)
 	}
-	if firstTasks != 1 {
-		t.Fatalf("capped Plan ran %d tasks, want 1", firstTasks)
+	if firstTasks != 2 {
+		t.Fatalf("capped Plan ran %d tasks, want 2 (Java runs bound+1)", firstTasks)
 	}
 
 	// Raising the cap must not turn the partially-drained task stack into a
