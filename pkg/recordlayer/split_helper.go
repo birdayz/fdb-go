@@ -242,11 +242,62 @@ func loadWithSplit(
 	omitUnsplitRecordSuffix bool,
 	sizeInfo *sizeInfo,
 ) ([]byte, error) {
+	p := startLoadWithSplit(tx, recordSubspace, primaryKey, splitLongRecords, omitUnsplitRecordSuffix, false)
+	return p.finish(sizeInfo)
+}
+
+// pendingRecordLoad is loadWithSplit with its first reads sent and not yet
+// waited for. probeSplit also sends the first split chunk's read, which a
+// missing record needs next, so the miss costs one round trip, not two.
+type pendingRecordLoad struct {
+	tx               fdb.ReadTransaction
+	recordSubspace   subspace.Subspace
+	primaryKey       tuple.Tuple
+	splitLongRecords bool
+	legacy           bool
+	key              []byte // the bare key (legacy layout) or the unsplit key
+	value            fdb.FutureByteSlice
+	firstSplitKey    []byte // with firstSplit, when probed
+	firstSplit       fdb.FutureByteSlice
+}
+
+func startLoadWithSplit(
+	tx fdb.ReadTransaction,
+	recordSubspace subspace.Subspace,
+	primaryKey tuple.Tuple,
+	splitLongRecords bool,
+	omitUnsplitRecordSuffix bool,
+	probeSplit bool,
+) pendingRecordLoad {
+	p := pendingRecordLoad{
+		tx:               tx,
+		recordSubspace:   recordSubspace,
+		primaryKey:       primaryKey,
+		splitLongRecords: splitLongRecords,
+	}
 	if !splitLongRecords && omitUnsplitRecordSuffix {
 		// Legacy unsplit layout: the value is at the bare key with no suffix.
 		// Matches Java's SplitHelper.loadUnsplitLegacy().
-		bareKey := recordSubspace.Pack(primaryKey)
-		value, err := tx.Get(fdb.Key(bareKey)).Get()
+		p.legacy = true
+		p.key = recordSubspace.Pack(primaryKey)
+	} else {
+		// Try unsplit first (most common case).
+		// Use PackConcatWithPrefix to avoid the intermediate tuple allocation
+		// from appendToTuple(primaryKey, unsplitRecord).
+		p.key = tuple.PackConcatWithPrefix(recordSubspace.Bytes(), primaryKey, unsplitSuffix)
+	}
+	p.value = tx.Get(fdb.Key(p.key))
+	if probeSplit && splitLongRecords {
+		p.firstSplitKey = recordSubspace.Pack(appendToTuple(primaryKey, startSplitRecord))
+		p.firstSplit = tx.Get(fdb.Key(p.firstSplitKey))
+	}
+	return p
+}
+
+func (p *pendingRecordLoad) finish(sizeInfo *sizeInfo) ([]byte, error) {
+	tx, recordSubspace, primaryKey := p.tx, p.recordSubspace, p.primaryKey
+	value, err := p.value.Get()
+	if p.legacy {
 		if err != nil {
 			return nil, fmt.Errorf("failed to get legacy unsplit record: %w", err)
 		}
@@ -254,40 +305,36 @@ func loadWithSplit(
 			return nil, nil
 		}
 		sizeInfo.KeyCount = 1
-		sizeInfo.KeySize = len(bareKey)
+		sizeInfo.KeySize = len(p.key)
 		sizeInfo.ValueSize = len(value)
 		sizeInfo.IsSplit = false
 		return value, nil
 	}
-
-	// Try unsplit first (most common case).
-	// Use PackConcatWithPrefix to avoid the intermediate tuple allocation
-	// from appendToTuple(primaryKey, unsplitRecord).
-	unsplitKey := tuple.PackConcatWithPrefix(recordSubspace.Bytes(), primaryKey, unsplitSuffix)
-
-	value, err := tx.Get(fdb.Key(unsplitKey)).Get()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get unsplit record: %w", err)
 	}
 
 	if value != nil {
+		// A probed chunk read is not waited on: the serial path never sends it.
 		sizeInfo.KeyCount = 1
-		sizeInfo.KeySize = len(unsplitKey)
+		sizeInfo.KeySize = len(p.key)
 		sizeInfo.ValueSize = len(value)
 		sizeInfo.IsSplit = false
 		return value, nil
 	}
 
-	if !splitLongRecords {
+	if !p.splitLongRecords {
 		// Not found and splitting not enabled — record doesn't exist
 		return nil, nil
 	}
 
 	// Check for split record: scan from suffix 1 onwards
-	firstSplitKeyTuple := appendToTuple(primaryKey, startSplitRecord)
-	firstSplitKey := recordSubspace.Pack(firstSplitKeyTuple)
-
-	firstValue, err := tx.Get(fdb.Key(firstSplitKey)).Get()
+	firstSplitKey, firstSplit := p.firstSplitKey, p.firstSplit
+	if firstSplit == nil {
+		firstSplitKey = recordSubspace.Pack(appendToTuple(primaryKey, startSplitRecord))
+		firstSplit = tx.Get(fdb.Key(firstSplitKey))
+	}
+	firstValue, err := firstSplit.Get()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get first split chunk: %w", err)
 	}

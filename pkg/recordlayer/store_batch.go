@@ -82,6 +82,16 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	}
 
 	pending := make([]pendingRecord, len(records))
+	// Reads are sent before any write, so a repeated key reads at its own turn
+	// instead: its early read would miss the earlier save.
+	existenceReads := func(primaryKey tuple.Tuple, unsplitKey fdb.Key) (unsplit, split fdb.FutureByteSlice) {
+		unsplit = tx.Get(unsplitKey)
+		if splitEnabled {
+			split = tx.Get(fdb.Key(recordsSubspace.Pack(appendToTuple(primaryKey, startSplitRecord))))
+		}
+		return unsplit, split
+	}
+	seen := make(map[string]struct{}, len(records))
 
 	for i, record := range records {
 		if record == nil {
@@ -120,13 +130,10 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		// All futures are pipelined: N×2 frames queued, one TCP flush.
 		unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
 		unsplitKey := fdb.Key(recordsSubspace.Pack(unsplitKeyTuple))
-		unsplitFut := tx.Get(unsplitKey)
-
-		var splitFut fdb.FutureByteSlice
-		if splitEnabled {
-			firstSplitKeyTuple := appendToTuple(primaryKey, startSplitRecord)
-			firstSplitKey := fdb.Key(recordsSubspace.Pack(firstSplitKeyTuple))
-			splitFut = tx.Get(firstSplitKey)
+		var unsplitFut, splitFut fdb.FutureByteSlice
+		if _, repeated := seen[string(unsplitKey)]; !repeated {
+			seen[string(unsplitKey)] = struct{}{}
+			unsplitFut, splitFut = existenceReads(primaryKey, unsplitKey)
 		}
 
 		pending[i] = pendingRecord{
@@ -178,6 +185,9 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	for i := range pending {
 		p := &pending[i]
 
+		if p.unsplitFut == nil {
+			p.unsplitFut, p.splitFut = existenceReads(p.primaryKey, p.unsplitKey)
+		}
 		// Resolve pipelined existence checks (both unsplit + split).
 		unsplitVal, err := p.unsplitFut.Get()
 		if err != nil {
