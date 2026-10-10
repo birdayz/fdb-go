@@ -280,18 +280,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # The scope step diffs a PR's merge commit against its base parent.
+          fetch-depth: 2
+
+      # A PR that changes nothing the oracle is built from cannot change its result, and
+      # master runs it on every push; skipping keeps the C++ build off most PR runs.
+      - name: Does this change reach the oracle?
+        id: scope
+        run: infra/wire-oracle-scope.sh
 
       - name: Reap containers an earlier job left running
         timeout-minutes: 2
         run: infra/reap-leaked-containers.sh
 
       - name: Build C++ oracle
+        if: steps.scope.outputs.run == 'true'
         run: bazelisk build --config=ci //cmd/fdb-diff-oracle:diff_oracle_bin
 
       - name: Build Go fuzz test
+        if: steps.scope.outputs.run == 'true'
         run: bazelisk build --config=ci //cmd/fdb-diff-oracle:fdb-diff-oracle_test
 
       - name: Resolve Bazel Go SDK
+        if: steps.scope.outputs.run == 'true'
         id: go-sdk
         run: |
           OUTPUT_BASE=$(bazelisk info --config=ci output_base 2>/dev/null)
@@ -309,6 +321,7 @@ jobs:
           echo "Using Go: $GO_BIN ($($GO_BIN version))"
 
       - name: Deterministic wire-type oracle (TestDiff + all fuzz seed corpora)
+        if: steps.scope.outputs.run == 'true'
         # Runs every TestDiff* against the C++ oracle AND replays all Fuzz* SEED corpora
         # (committed under testdata/fuzz + each f.Add). The `^Fuzz` in -run is load-bearing:
         # without it `go test` does NOT exercise the Fuzz functions at all, so -run=TestDiff
