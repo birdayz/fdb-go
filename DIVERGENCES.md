@@ -2904,11 +2904,11 @@ partition fails. RFC-257 WS-D declared (h). Pinned by "GuardiANN unsplittable cl
     mass; at least 2^(r+1) - 1 members have left by round r. It refits k = 2 on what remains,
     reassigns every primary and takes the first partition that is not INVALID. That is at most
     floor(log2(n - 1)) refits.
-  - The peel runs only when its work floor(log2(n-1)) * n * max(d, 64) * f is at most 1.96e7,
-    which covers n = 2000 up to d = 980 at the default KMeans knobs. The knob factor f is
+  - The peel runs only when its work floor(log2(n-1)) * max(n, 128) * max(d, 128) * f is at most
+    1.96e7, which covers n = 2000 up to d = 980 at the default KMeans knobs. The knob factor f is
     max(I(R+1)/32, (R+1)(2I+2)/72, 1): the fit's iterations or its objective passes per vector
-    relative to the default's, whichever is larger. Below 64 dimensions a vector's fixed cost per
-    pass dominates, so d is priced at no less than 64.
+    relative to the default's, whichever is larger. Below 128 the fixed costs of a pass (per
+    vector) and of a restart (per fit) dominate, so n and d are each priced at no less than 128.
   - Otherwise Go reconciles the cluster in place: it removes stale references, recomputes counts and
     statistics (the stored distance maximum is never lowered), clears SPLIT_MERGE and applies the
     ordinary merge rule.

@@ -24,8 +24,8 @@ import (
 // knobs, Euclidean. The
 // admission ignores the metric and RaBitQ, so W = B is also timed under cosine
 // and with RaBitQ (Euclidean and cosine), at I = 1, R = 31, whose restarts cost
-// the most per unit of the knob factor, and at the d the admission floors, 64,
-// with the most restarts it admits.
+// the most per unit of the knob factor, and at the n and d the admission floors,
+// 128, with the most restarts it admits.
 //
 // Deliberate deviation from the design, which times the peel's wall clock under
 // the suite's concurrency: the budget is the process CPU the peel uses, GC
@@ -113,8 +113,16 @@ func TestGuardiannPeelPerformanceCriterion(t *testing.T) {
 		{2000, 551, VectorMetricCosine, false, 1, 31},
 		{2000, 551, VectorMetricEuclidean, true, 1, 31},
 		{2000, 551, VectorMetricCosine, true, 1, 31},
-		{2000, 64, VectorMetricEuclidean, false, 1, 274}, // the most restarts the admission allows
-		{2000, 1, VectorMetricEuclidean, false, 1, 274},  // priced as d = 64
+		{2000, 128, VectorMetricEuclidean, false, 1, 136}, // the most restarts the admission allows
+		{2000, 128, VectorMetricCosine, false, 1, 136},
+		{2000, 128, VectorMetricEuclidean, true, 1, 136},
+		{2000, 128, VectorMetricCosine, true, 1, 136},
+		{2000, 1, VectorMetricEuclidean, false, 1, 136},   // priced as d = 128
+		{128, 128, VectorMetricEuclidean, false, 1, 3587}, // both floors: the most restarts per vector
+		{128, 128, VectorMetricCosine, false, 1, 3587},
+		{128, 128, VectorMetricEuclidean, true, 1, 3587},
+		{128, 128, VectorMetricCosine, true, 1, 3587},
+		{3, 1, VectorMetricEuclidean, false, 1, 21532}, // priced as n = d = 128
 	}
 	var worst time.Duration
 	for run := 0; run < 2; run++ {

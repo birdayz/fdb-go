@@ -1,6 +1,7 @@
 package vectorindex
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"reflect"
@@ -300,12 +301,15 @@ func distanceReference(c *guardiannVectorCodec, a, b gVector) (float64, error) {
 }
 
 // The kernel fit equals the reference over odd vector counts (the kernels'
-// leftovers), every metric, plain, mixed and all-RaBitQ vectors with a zero
-// vector among them, k = 1..4 and the default and many-restart knobs.
+// leftovers), every metric, plain, mixed and all-RaBitQ vectors, k = 1..4 and
+// the default and many-restart knobs; one shape holds a zero vector, which
+// fails cosine fits with a quantizer and pins the error path.
 func TestKMeansFitMatchesReference(t *testing.T) {
 	t.Parallel()
 	rnd := rand.New(rand.NewSource(9))
-	for _, shape := range [][2]int{{41, 3}, {37, 64}, {23, 131}} {
+	fitted := map[string]int{}
+	for s, shape := range [][2]int{{41, 3}, {37, 64}, {23, 131}, {39, 17}} {
+		zero := s == 3
 		raw := make([][]float64, shape[0])
 		for i := range raw {
 			v := make([]float64, shape[1])
@@ -315,7 +319,7 @@ func TestKMeansFitMatchesReference(t *testing.T) {
 					v[j%shape[1]] += 50
 				}
 			}
-			if i == 7 {
+			if zero && i == 7 {
 				clear(v)
 			}
 			raw[i] = v
@@ -335,7 +339,7 @@ func TestKMeansFitMatchesReference(t *testing.T) {
 						t.Fatal(err)
 					}
 					vectors[i] = gVector{data: half, typ: vectorcodec.TypeHalf}
-					if i != 7 && (encoded == "all" || encoded == "mixed" && i%3 != 1) {
+					if !(zero && i == 7) && (encoded == "all" || encoded == "mixed" && i%3 != 1) {
 						if vectors[i], err = codec.decode(codec.encode(vectors[i])); err != nil {
 							t.Fatal(err)
 						}
@@ -351,8 +355,18 @@ func TestKMeansFitMatchesReference(t *testing.T) {
 						if werr == nil && !reflect.DeepEqual(got, want) {
 							t.Fatalf("n=%d d=%d metric %v %s knobs %v k=%d: objective %v, want %v", shape[0], shape[1], metric, encoded, knobs, k, got.objective, want.objective)
 						}
+						if werr == nil {
+							fitted[fmt.Sprintf("metric %v %s", metric, encoded)]++
+						}
 					}
 				}
+			}
+		}
+	}
+	for _, metric := range []VectorMetric{VectorMetricEuclidean, VectorMetricCosine, VectorMetricEuclideanSquare} {
+		for _, encoded := range []string{"none", "mixed", "all"} {
+			if key := fmt.Sprintf("metric %v %s", metric, encoded); fitted[key] == 0 {
+				t.Errorf("%s: no fit succeeded, so none was compared", key)
 			}
 		}
 	}
