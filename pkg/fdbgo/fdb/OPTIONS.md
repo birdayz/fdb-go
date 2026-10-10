@@ -42,7 +42,7 @@ C++ references are into the FoundationDB 7.3.77 source: `T::setOption` =
 
 | Option (method) | Pure-Go | libfdb_c (C++) | Unsafe if ignored? | Notes |
 |---|---|---|---|---|
-| `SetTimeout` | **honored** | RYW:2570 sets `timeoutsEnabled`/`operationTimeout` | n/a | wires the tx deadline |
+| `SetTimeout` | **honored** | RYW:2570 sets `timeoutsEnabled`/`operationTimeout` | n/a | wires the tx deadline; outside [0, INT_MAX] a deferred 2006 |
 | `SetRetryLimit` | **honored** | RYW:2575 `maxRetries` | n/a | |
 | `SetMaxRetryDelay` | **honored** | T:7062 `maxBackoff` | n/a | |
 | `SetSizeLimit` | **honored** | T:7067 `sizeLimit` | n/a | |

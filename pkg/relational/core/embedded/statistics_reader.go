@@ -599,8 +599,8 @@ func (e *noClusterVersionError) Error() string {
 	return "statistics read produced no cluster version"
 }
 
-// statisticsTags returns the connection's FDB transaction tags, which every
-// statistics transaction must carry.
+// statisticsTags returns the connection's FDB transaction tags, which statistics
+// collection and clear must carry.
 //
 // Threaded as a parameter rather than wrapped around the database. Wrapping
 // means reconstructing an *FDBDatabase, and this repo's copy-method gate
@@ -609,9 +609,9 @@ func (e *noClusterVersionError) Error() string {
 // seeded clock for the wall clock, unreplayably, and only when tags happen to
 // be configured. A parameter is visible at every call site.
 //
-// Why it matters at all: statement transactions are tagged by
-// transactionConfigurer, and statistics work does not go through it —
-// collection opens its own transaction per batch. Untagged, the
+// Why it matters at all: statement transactions and the planner's statistics
+// read are tagged by transactionConfigurer, but collection and clear do not go
+// through it — collection opens its own transaction per batch. Untagged, the
 // heaviest job in the system escapes the cluster's ratekeeper.
 func (c *EmbeddedConnection) statisticsTags() []string {
 	tags, _ := c.Options().Get(api.OptTransactionTags).([]string)

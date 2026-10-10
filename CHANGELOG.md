@@ -23,8 +23,12 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   recreate them.
 - **SQL behaviour:** follows Java 4.14.2.0 where both engines run a query; see the PR for the
   per-change list.
-- **FDB client option semantics:** unchanged since v0.1.0; the honored / `UnsupportedOptionError` /
-  safe-no-op classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77.
+- **FDB client option semantics:** the honored / `UnsupportedOptionError` / safe-no-op
+  classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77, with one change:
+  `Transaction.SetTimeout` outside [0, INT_MAX] now records a deferred 2006
+  (`invalid_option_value`) like libfdb_c, where -1 used to disable the timeout.
+- **DSN booleans are strictly `true`/`false`** (any case): a bare `?flag`, `1`/`0`, `t`/`f`,
+  `yes`/`no` and `on`/`off` now fail at open with 22023.
 - **Required versions:** Java `fdb-record-layer-core` **4.14.2.0**, FDB C++ client **7.3.77**, Go
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
 

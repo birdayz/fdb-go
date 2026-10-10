@@ -247,7 +247,10 @@ func TestDSN_TransactionOptionsReachEveryTransaction(t *testing.T) {
 					t.Fatalf("%s opened no transaction", what)
 				}
 				for _, tx := range txs {
-					if !slices.Equal(tx.timeouts, tc.timeout) || !slices.Equal(tx.tags, []string{"tenant"}) {
+					tx.mu.Lock()
+					ok := slices.Equal(tx.timeouts, tc.timeout) && slices.Equal(tx.tags, []string{"tenant"})
+					tx.mu.Unlock()
+					if !ok {
 						t.Errorf("%s: %s", what, describeTxs(txs))
 						return
 					}
@@ -315,7 +318,9 @@ type recordedTx struct {
 func describeTxs(txs []*recordedTx) string {
 	parts := make([]string, len(txs))
 	for i, tx := range txs {
+		tx.mu.Lock()
 		parts[i] = fmt.Sprintf("{timeouts=%v tags=%v}", tx.timeouts, tx.tags)
+		tx.mu.Unlock()
 	}
 	return fmt.Sprintf("%d transactions %s", len(txs), strings.Join(parts, " "))
 }

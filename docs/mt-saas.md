@@ -236,11 +236,11 @@ Both are pinned end-to-end by `TestFDB_RestrictDDLToSessionDatabase`
 Two details worth knowing before you deploy it:
 
 - **A malformed boolean is an error, not "off".** `restrict_ddl_to_session_database=ture` fails at
-  `sql.Open`/`OpenConnector` with SQLSTATE **22023** (`pkg/relational/sqldriver/dsn.go:103-113`),
-  before FDB is touched (decode at `pkg/relational/sqldriver/driver.go:123-136`). A security flag
-  that degrades silently on a typo is worse than none. The value is lower-cased and
-  whitespace-trimmed first (`dsn.go:104`), so accepted true spellings are the bare flag, `1`, `t`,
-  `true`, `yes`, `on` in any case; false is `0`, `f`, `false`, `no`, `off`; anything else is 22023.
+  `sql.Open`/`OpenConnector` with SQLSTATE **22023** (`parseDSNBool`,
+  `pkg/relational/sqldriver/dsn.go:265`), before FDB is touched (decode in `OpenConnector`,
+  `pkg/relational/sqldriver/driver.go:187`). A security flag that degrades silently on a typo is
+  worse than none. Only `true` and `false` are accepted, in any case; anything else, including a
+  bare flag, `1`/`0`, `yes`/`no` and `on`/`off`, is 22023.
 - **The Connector's DSN is frozen.** `OpenConnector` deep-clones the parsed DSN before anything
   reads it (`driver.go:130`) and `DSN()` hands out a defensive copy (`driver.go:251`), so nothing
   outside the package can flip the restriction — or the `cluster_file` — between `OpenConnector` and
