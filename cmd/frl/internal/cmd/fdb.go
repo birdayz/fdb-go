@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,10 +68,8 @@ func newFdbUpCmd() *cobra.Command {
   frl fdb up --name myfdb --context myfdb --port 4689
   frl sql --cluster-file $(frl fdb up) --database /FRL/demo`,
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Minute)
-			defer cancel()
-			if err := ctx.Err(); err != nil {
+		RunE: func(cmd *cobra.Command, _ []string) (err error) {
+			if err := cmd.Context().Err(); err != nil {
 				return err
 			}
 			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
@@ -85,15 +84,27 @@ func newFdbUpCmd() *cobra.Command {
 			if _, err := exec.LookPath("docker"); err != nil {
 				return fmt.Errorf("docker not found on PATH: %w", err)
 			}
-			if err := requireLocalDocker(ctx); err != nil {
+			if err := requireLocalDocker(cmd.Context()); err != nil {
 				return err
 			}
-			if running, err := dockerContainerExists(ctx, name); err != nil {
+			if running, err := dockerContainerExists(cmd.Context(), name); err != nil {
 				return err
 			} else if running {
 				return fmt.Errorf("container %q already exists; run `frl fdb down --name %s` first (or pick --name)", name, name)
 			}
+			// A first-run pull can take minutes; only Ctrl-C bounds it.
+			if err := ensureFdbImage(cmd.Context(), image, progress, runDocker, pullDockerImage); err != nil {
+				return err
+			}
 
+			ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Minute)
+			defer cancel()
+			// Remove a container this command created but could not finish starting.
+			defer func() {
+				if err != nil {
+					_, _ = runDocker(context.WithoutCancel(cmd.Context()), "rm", "-fv", name)
+				}
+			}()
 			fmt.Fprintf(progress, "Starting %s (container %q, 127.0.0.1:%d)...\n", image, name, port)
 			if o, err := runDocker(ctx, fdbRunArgs(name, image, port)...); err != nil {
 				return fmt.Errorf("docker run: %w\n%s", err, o)
@@ -106,7 +117,7 @@ func newFdbUpCmd() *cobra.Command {
 				o, err := runDocker(ctx, "exec", name, "fdbcli", "--timeout", "5", "--exec", "configure new single memory")
 				return configureNewOutcome(o, err)
 			}); err != nil {
-				return fmt.Errorf("configure cluster (is the image healthy? `frl fdb down --name %s` to clean up): %w", name, err)
+				return fmt.Errorf("configure cluster (is the image healthy?): %w", err)
 			}
 
 			fmt.Fprint(progress, "Waiting for the database to become available")
@@ -293,7 +304,7 @@ func configureNewOutcome(output string, err error) error {
 
 func requireLocalDocker(ctx context.Context) error {
 	endpoint := os.Getenv("DOCKER_HOST")
-	// DOCKER_CONTEXT overrides DOCKER_HOST, just as it does in the Docker CLI.
+	// With DOCKER_CONTEXT set, ask the CLI which endpoint it actually selects.
 	if endpoint == "" || os.Getenv("DOCKER_CONTEXT") != "" {
 		out, err := runDocker(ctx, "context", "inspect", "--format", "{{.Endpoints.docker.Host}}")
 		if err != nil {
@@ -309,6 +320,33 @@ func validateLocalDockerEndpoint(endpoint string) error {
 		return nil
 	}
 	return fmt.Errorf("frl fdb up requires a local Docker socket (unix or npipe); the selected endpoint is not supported because the cluster advertises 127.0.0.1")
+}
+
+// ensureFdbImage pulls image only when it is absent, under the caller's context.
+func ensureFdbImage(ctx context.Context, image string, progress io.Writer,
+	inspect func(context.Context, ...string) (string, error),
+	pull func(context.Context, string, io.Writer) error,
+) error {
+	if _, err := inspect(ctx, "image", "inspect", image); err == nil {
+		return nil
+	} else if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	fmt.Fprintf(progress, "Pulling %s (first run only; this can take several minutes)...\n", image)
+	return pull(ctx, image, progress)
+}
+
+func pullDockerImage(ctx context.Context, image string, progress io.Writer) error {
+	command := exec.CommandContext(ctx, "docker", "pull", image)
+	command.Stdout, command.Stderr = progress, progress
+	command.WaitDelay = time.Second
+	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("docker pull %s: %w", image, err)
+	}
+	return nil
 }
 
 func runDocker(ctx context.Context, args ...string) (string, error) {

@@ -34,8 +34,7 @@ its schema template. Do not point it at a store you need to keep.
 
 ```sh
 go build -o frl ./cmd/frl
-FDB_CLUSTER_FILE="$(./frl fdb up)" || exit 1
-export FDB_CLUSTER_FILE
+FDB_CLUSTER_FILE="$(./frl fdb up)" && export FDB_CLUSTER_FILE
 go run ./example/sql
 ```
 

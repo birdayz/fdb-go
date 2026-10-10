@@ -52,8 +52,7 @@ go build -o frl ./cmd/frl
 
 # Start AND configure a disposable single-node cluster.
 # stdout is the cluster-file path.
-FDB_CLUSTER_FILE="$(./frl fdb up)" || exit 1
-export FDB_CLUSTER_FILE
+FDB_CLUSTER_FILE="$(./frl fdb up)" && export FDB_CLUSTER_FILE
 
 # Run the complete SQL example, or the record-store example.
 go run ./example/sql
@@ -107,7 +106,7 @@ transaction wrapper and keep external side effects outside the callback.
 Record Layer and SQL backend selection is static per binary:
 
 ```sh
-go build ./...  # pure-Go backend; no libfdb_c
+go build ./cmd/frl ./pkg/...  # pure-Go backend; no libfdb_c
 CGO_ENABLED=1 go build -tags libfdbc ./...  # C compiler + matching libfdb_c headers/library
 ```
 

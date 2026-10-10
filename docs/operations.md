@@ -72,7 +72,7 @@ rdb, _ := recordlayer.NewFDBDatabaseFactory().GetDatabase(clusterFile) // pure-G
 ```
 
 ```sh
-go build ./...                       # default: pure-Go
+go build ./cmd/frl ./pkg/...         # default: pure-Go
 CGO_ENABLED=1 go build -tags libfdbc ./...   # libfdb_c
 ```
 

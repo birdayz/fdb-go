@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -229,5 +230,44 @@ func TestFdbUpRequiresLocalDockerEndpoint(t *testing.T) {
 				t.Fatalf("validateLocalDockerEndpoint(%q) = %v; local=%t", tc.endpoint, err, tc.local)
 			}
 		})
+	}
+}
+
+func TestEnsureFdbImagePullsOnlyMissingImageWithoutDeadline(t *testing.T) {
+	t.Parallel()
+	for _, present := range []bool{true, false} {
+		var calls []string
+		inspect := func(_ context.Context, args ...string) (string, error) {
+			calls = append(calls, strings.Join(args, " "))
+			if present {
+				return "[]", nil
+			}
+			return "", errors.New("No such image")
+		}
+		pull := func(ctx context.Context, image string, _ io.Writer) error {
+			if _, ok := ctx.Deadline(); ok {
+				t.Error("image pull inherited a deadline")
+			}
+			calls = append(calls, "pull "+image)
+			return nil
+		}
+		if err := ensureFdbImage(context.Background(), "fdb:test", io.Discard, inspect, pull); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"image inspect fdb:test"}
+		if !present {
+			want = append(want, "pull fdb:test")
+		}
+		if !slices.Equal(calls, want) {
+			t.Fatalf("present=%v calls=%q, want %q", present, calls, want)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := ensureFdbImage(ctx, "fdb:test", io.Discard,
+		func(context.Context, ...string) (string, error) { return "", context.Canceled },
+		func(context.Context, string, io.Writer) error { t.Error("canceled lookup pulled"); return nil })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled image lookup: %v", err)
 	}
 }

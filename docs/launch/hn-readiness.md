@@ -36,7 +36,7 @@ legal/security, performance, operations, and a simulated HN thread. Owner and st
 | B | Every quickstart fails (domain registration, `NOT NULL`, DSN case, unconfigured docker FDB, swallowed errors, typed-store snippet) | fix-quickstart |
 | B | "2–4× faster" claims are false (pre-RFC-104 GRV cache; one-way netem labelled as RTT) | fix-perfclaims |
 | B | `go get` gives v0.1.0, 682 commits behind and storage-incompatible; `go install …/cmd/frl@latest` resolves to the stale nested module | release (after fixes): cut v0.2.0, retract `cmd/frl` v0.1.0 |
-| H | macOS: `frl fdb up` uses `--network host`; the README cluster file uses the container IP | open |
+| H | macOS: `frl fdb up` used `--network host` | **done** (PR #788): loopback-published bridge network |
 | H | Positioning: what it is, and the "unofficial / not Apple" disclaimer | fix-legal |
 | M | Library logs INFO to stderr on every open | fix-quickstart |
 
