@@ -3,7 +3,7 @@
 # Trigger: push the project's release tag (the maintainer's release act, per
 # RELEASE.md):
 #
-#   git tag v0.2.0 && git push origin v0.2.0
+#   git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
 #
 # frl is a package of the root module, so the root tag is what
 # `go install fdb.dev/cmd/frl@vX.Y.Z` resolves: the binaries here are
@@ -139,11 +139,11 @@ jobs:
           TAG: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          test -f "docs/release-notes/${TAG}.md" || { echo "::error::docs/release-notes/${TAG}.md is missing"; exit 1; }
-          scripts/release-notes.sh "$TAG" | tee -a "$GITHUB_STEP_SUMMARY"
+          scripts/release-notes.sh --check "$TAG" > "$RUNNER_TEMP/notes.md"
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/notes.md"
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -155,7 +155,7 @@ jobs:
             cmd/frl/dist/frl_*.tar.gz cmd/frl/dist/checksums.txt
 
       - name: Verify published download URL (what install.sh fetches)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
           # The install script downloads via the tag's URL; prove it resolves

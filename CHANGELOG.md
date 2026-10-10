@@ -75,7 +75,8 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - A query block reports its faults in Java's clause order: a join's ON first, then the WHERE, then the select list (an unknown function in the select list included).
 - `frl` is a package of the root module and releases under the project's `vX.Y.Z` tag. The nested
   module `fdb.dev/cmd/frl` is retracted (`cmd/frl/v0.1.1`), so `go install fdb.dev/cmd/frl@latest`
-  builds `frl` from the root module.
+  builds `frl` from the root module. A module that requires `fdb.dev/cmd/frl` drops it with
+  `go get fdb.dev/cmd/frl@none` before upgrading `fdb.dev`, or the build reports an ambiguous import.
 - SQL `LIKE` follows Java 4.14.2.0: wildcards cross newlines, `LIKE NULL` is allowed, and invalid escapes raise 22019/2200B/22025 per row.
 - SQL comments follow Java 4.14.2.0: block comments nest, an unterminated one is 42601, and `#` is no longer a comment.
 - `OPTIONS (...)` is statement-level only and adds `PLAN RIGHT DEEP` and `ISOLATION LEVEL SNAPSHOT`; `PLAN` and `DEEP` are reserved words.
