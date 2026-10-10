@@ -43,12 +43,18 @@ java_library(
 
 java_binary(
     name = "conformance_server",
+    # FDB_LIBRARY_PATH_FDB_C loads the pinned libfdb_c before FDB Java's JNI library,
+    # which then binds to it by soname instead of searching the host (x86_64 only).
+    data = ["@libfdb_c_linux_x86_64//file"],
     # The conformance server handles 200+ requests in one suite run.
     # Default JVM heap (~256MB) hits GC pressure after ~80-100 requests
     # and per-request latency grows past the 30s HTTP timeout. -Xmx2g
     # gives enough headroom for the full corpus without running into
     # GC stalls.
-    jvm_flags = ["-Xmx2g"],
+    jvm_flags = [
+        "-Xmx2g",
+        "-DFDB_LIBRARY_PATH_FDB_C=$${JAVA_RUNFILES}/$(rlocationpath @libfdb_c_linux_x86_64//file)",
+    ],
     main_class = "com.birdayz.conformance.ConformanceServer",
     visibility = ["//visibility:public"],
     runtime_deps = [":conformance_lib"],
@@ -460,6 +466,7 @@ go_test(
 # does. Hand-maintained (# keep): the probes plus the helpers they compile
 # against.
 # gazelle:exclude *_java_probe_test.go
+# gazelle:exclude libfdbc_pin_test.go
 
 # keep
 go_test(
@@ -471,6 +478,7 @@ go_test(
         "case_condition_typing_java_probe_test.go",
         "case_parenthesized_condition_java_probe_test.go",
         "comma_join_java_probe_test.go",
+        "libfdbc_load_java_probe_test.go",
         "conformance_suite_test.go",
         "container_test.go",
         "correlated_having_exists_java_probe_test.go",
@@ -516,6 +524,77 @@ go_test(
     tags = [
         "conformance_java",
         "resources:memory:500",
+    ],
+    deps = [
+        "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+        "//pkg/rabitq",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/query/plan/plans",
+        "//pkg/recordlayer/vectorcodec",
+        "//pkg/relational/api",
+        "//pkg/relational/conformance/plandiff",
+        "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/keyspace",
+        "//pkg/relational/core/metadata",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_ginkgo_v2//types",
+        "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//encoding/prototext",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//reflect/protoregistry",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
+        "@org_golang_google_protobuf//types/known/anypb",
+        "@rules_go//go/runfiles",
+    ],
+)
+
+# The launcher half of the libfdb_c pin, in the fast lane; the JVM half is
+# LibfdbCLoadJavaProbe in conformance_probes_test.
+# keep
+go_test(
+    name = "libfdbc_pin_test",
+    srcs = ["libfdbc_pin_test.go"],
+    data = [":conformance_server"],
+    deps = ["@rules_go//go/runfiles"],
+)
+
+# The six-table planning-cost probe spends ~14 min in a ~1.1 GB (peak RSS) JVM,
+# so it is its own manual target outside the conformance lanes.
+# keep
+go_test(
+    name = "conformance_planning_cost_test",
+    size = "enormous",
+    srcs = [
+        "conformance_suite_test.go",
+        "container_test.go",
+        "fdb_env_test.go",
+        "java_invoker_test.go",
+        "keyspace_domains_test.go",
+        "six_table_chain_planning_cost_java_probe_test.go",
+    ],
+    data = [":conformance_server"],
+    tags = [
+        "conformance_java",
+        "manual",
+        "resources:memory:1500",
+        "test-full",
     ],
     deps = [
         "//gen",
