@@ -1687,7 +1687,8 @@ var _ = Describe("WS-J Go-stored template planned by the target", func() {
 			"CREATE TABLE T2 (id BIGINT, d BIGINT, PRIMARY KEY (id)) " +
 			"CREATE INDEX dmask AS SELECT d & 1 FROM T2 ORDER BY d & 1 " +
 			"CREATE INDEX dplus AS SELECT d + 1 FROM T2 ORDER BY d + 1"
-		driverName := "WSJ_DRV_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
+		// Fixed mixed case catches accidental folding even when the UUID has only digits.
+		driverName := "WSJ_DRV_mixed_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
 		goName := "WSJ_GO_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
 		javaName := "WSJ_JAVA_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
 
@@ -1695,9 +1696,11 @@ var _ = Describe("WS-J Go-stored template planned by the target", func() {
 		sysDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFilePath))
 		Expect(err).NotTo(HaveOccurred())
 		defer sysDB.Close()
-		_, err = sysDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA TEMPLATE %s %s", driverName, body))
+		_, err = sysDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA TEMPLATE \"%s\" %s", driverName, body))
 		Expect(err).NotTo(HaveOccurred(), "Go stores the template through its SQL driver")
-		defer func() { _, _ = sysDB.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS "+driverName) }()
+		defer func() {
+			_, _ = sysDB.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS \""+driverName+"\"")
+		}()
 
 		// The library arm distinguishes metadata construction from driver persistence.
 		goTmpl, err := embedded.BuildSchemaTemplateFromDDLNamed(body, goName)
