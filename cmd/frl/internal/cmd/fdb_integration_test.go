@@ -2,13 +2,14 @@
 // owner addition): stdout carries exactly the cluster-file path so
 // `frl <cmd> --cluster-file $(frl fdb up)` works with zero config.
 // Drives the real docker CLI (same prerequisite as the command itself);
-// uses a non-default port so it can't collide with a developer's
-// default frl-fdb instance or a parallel CI job on the same host.
+// leases a non-ephemeral port to exclude automatic outbound port allocation
+// and coordinate competing instances of this fixture.
 package cmd
 
 import (
 	"bytes"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,19 +35,36 @@ func TestIntegration_FdbUp_StdoutChainsIntoClusterFileFlag(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("FDB not available (no Docker)")
 	}
-	// Unique name + non-default port: safe next to the developer's own
-	// frl-fdb container and other CI jobs on a shared host network.
-	name := fmt.Sprintf("frl-e2e-%d", os.Getpid())
-	const port = 47501
+	ephemeral, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
+	if err != nil {
+		t.Fatalf("read host-network ephemeral port range: %v", err)
+	}
+	first, last, err := fdbFixtureEphemeralRange(string(ephemeral))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := acquireFDBFixturePort(fdbFixturePortCandidates(rand.IntN(fdbFixturePortCount)), first, last)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(lease.close)
+	port := lease.port
 
 	tmp := t.TempDir()
+	name := fdbFixtureContainerName(tmp)
 	t.Setenv("FRL_CONFIG", filepath.Join(tmp, "config.yaml"))
-
+	t.Cleanup(func() {
+		out, errOut, err := runCmdSplit(t, "fdb", "down", "--name", name)
+		if err != nil {
+			t.Errorf("fdb down: %v\nstdout: %s\nstderr: %s", err, out, errOut)
+		}
+	})
+	// Keep the UDP lease until after container teardown; FDB needs the TCP socket.
+	if err := lease.handoffTCP(); err != nil {
+		t.Fatal(err)
+	}
 	stdout, stderr, err := runCmdSplit(t, "fdb", "up",
 		"--name", name, "--context", name, "--port", strconv.Itoa(port))
-	t.Cleanup(func() {
-		_, _, _ = runCmdSplit(t, "fdb", "down", "--name", name)
-	})
 	if err != nil {
 		logs, logErr := runDocker("logs", name)
 		t.Fatalf("fdb up: %v\nstdout: %s\nstderr: %s\ncontainer logs (error %v):\n%s", err, stdout, stderr, logErr, logs)

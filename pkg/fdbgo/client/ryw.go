@@ -325,8 +325,8 @@ func (c *rywCache) materializeCommit() []Mutation {
 	return out
 }
 
-// coalesceCommitMutations replays a validated mutation snapshot through a throwaway RYW write map and
-// materializes it, yielding the coalesced commit vector libfdb_c ships (RFC-172 / #28). Working from the
+// coalesceCommitMutations coalesces a validated mutation snapshot, using an ordered-Set specialization
+// or a throwaway RYW write map, yielding the vector libfdb_c ships (RFC-172 / #28). Working from the
 // SNAPSHOT rather than the live tx.ryw keeps the shipped set byte-identical to the set Commit just
 // validated: the write map is a pure function of the op-log — the site-B/C value-fold and the
 // coalesceOverAtomics chain-fold use only LOCAL write state, never DB reads — so the replay reproduces
@@ -334,6 +334,9 @@ func (c *rywCache) materializeCommit() []Mutation {
 // snapshot) is simply absent and can never ship unvalidated. Single-key clears are stored in the op-log as
 // MutClearRange(k, k+\x00), so clearRange reproduces the original clear().
 func coalesceCommitMutations(muts []Mutation) []Mutation {
+	if out, ok := coalescePlainSetMutations(muts); ok {
+		return out
+	}
 	var wm rywCache
 	for _, m := range muts {
 		switch m.Type {
@@ -346,6 +349,37 @@ func coalesceCommitMutations(muts []Mutation) []Mutation {
 		}
 	}
 	return wm.materializeCommit()
+}
+
+// Ordered Sets need only last-write-wins, not replay (C++ WriteMap.cpp:125-137).
+// Operands remain owned by the leased snapshot until captureCommit copies them.
+func coalescePlainSetMutations(muts []Mutation) ([]Mutation, bool) {
+	unique := 0
+	for i, m := range muts {
+		if m.Type != MutSetValue {
+			return nil, false
+		}
+		if i == 0 {
+			unique++
+			continue
+		}
+		switch bytes.Compare(muts[i-1].Key, m.Key) {
+		case 1:
+			return nil, false
+		case -1:
+			unique++
+		}
+	}
+	out := make([]Mutation, 0, unique)
+	for _, m := range muts {
+		n := len(out)
+		if n > 0 && bytes.Equal(out[n-1].Key, m.Key) {
+			out[n-1] = m
+		} else {
+			out = append(out, m)
+		}
+	}
+	return out, true
 }
 
 // mutationsHaveVersionstamp reports whether the op-log carries any SetVersionstamped{Key,Value}. Those ops

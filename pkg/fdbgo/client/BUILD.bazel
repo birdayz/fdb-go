@@ -51,11 +51,13 @@ go_library(
     ],
 )
 
+# gazelle:exclude commit_coalesce_unit_test.go
 # gazelle:exclude ownership_unit_test.go
 # gazelle:exclude read_result_ownership_unit_test.go
 go_test(
     name = "ownership_unit_test",
     srcs = [
+        "commit_coalesce_unit_test.go",
         "ownership_unit_test.go",
         "read_result_ownership_unit_test.go",
     ],

@@ -72,6 +72,7 @@ go_test(
         "completion_test.go",
         "config_test.go",
         "domain_registration_test.go",
+        "fdb_fixture_test.go",
         "fdb_integration_test.go",
         "fdb_test.go",
         "fleet_fanout_test.go",
