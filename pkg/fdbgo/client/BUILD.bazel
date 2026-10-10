@@ -80,9 +80,13 @@ go_test(
 )
 
 # gazelle:exclude ryw_issue_view_unit_test.go
+# gazelle:exclude ryw_range_cut_unit_test.go
 go_test(
     name = "ryw_issue_view_unit_test",
-    srcs = ["ryw_issue_view_unit_test.go"],
+    srcs = [
+        "ryw_issue_view_unit_test.go",
+        "ryw_range_cut_unit_test.go",
+    ],
     embed = [":client"],
     deps = ["//pkg/fdbgo/wire"],
 )

@@ -201,3 +201,80 @@ func formatKVs(kvs []KeyValue) string {
 	b.WriteByte(']')
 	return b.String()
 }
+
+// The multi-fetch path (local writes in range) re-walks and merges against the
+// write map as issued; a write made while a storage fetch is in flight stays out.
+func TestRYWGetRangeMultiFetchUsesIssueTimeWriteSpan(t *testing.T) {
+	t.Parallel()
+	storage := []KeyValue{
+		{Key: []byte("mf/a"), Value: []byte("1")},
+		{Key: []byte("mf/b"), Value: []byte("2")},
+		{Key: []byte("mf/c"), Value: []byte("3")},
+		{Key: []byte("mf/d"), Value: []byte("4")},
+	}
+	operand := append([]byte("stamp-"), make([]byte, 14)...)
+	// k is a storage key and gap a new key, both inside the first fetch's span.
+	later := map[string]func(c *rywCache, k, gap []byte){
+		"set-existing":          func(c *rywCache, k, _ []byte) { c.set(k, []byte("late")) },
+		"set-new":               func(c *rywCache, _, gap []byte) { c.set(gap, []byte("late")) },
+		"clear-existing":        func(c *rywCache, k, _ []byte) { c.clear(k) },
+		"versionstamp-existing": func(c *rywCache, k, _ []byte) { c.atomic(MutSetVersionstampedValue, k, operand) },
+		"versionstamp-new":      func(c *rywCache, _, gap []byte) { c.atomic(MutSetVersionstampedValue, gap, operand) },
+		"svk-range":             func(c *rywCache, k, _ []byte) { c.addUnreadableRange(k, keyAfterBytes(k)) },
+	}
+	issue := func(c *rywCache) {
+		c.set([]byte("mf/a5"), []byte("local"))
+		c.atomic(MutAddValue, []byte("mf/d"), issueViewNum(1))
+	}
+	stub := func(split bool, onFirst func()) func(context.Context, []byte, []byte, int, int, bool) ([]KeyValue, bool, error) {
+		calls := 0
+		return func(_ context.Context, b, e []byte, _ int, _ int, reverse bool) ([]KeyValue, bool, error) {
+			calls++
+			if calls == 1 {
+				onFirst() // a write issued while the storage read is in flight
+			}
+			var in []KeyValue
+			for _, kv := range storage {
+				if bytes.Compare(kv.Key, b) >= 0 && bytes.Compare(kv.Key, e) < 0 {
+					in = append(in, kv)
+				}
+			}
+			if reverse {
+				for i, j := 0, len(in)-1; i < j; i, j = i+1, j-1 {
+					in[i], in[j] = in[j], in[i]
+				}
+			}
+			if split && calls == 1 && len(in) > 2 {
+				return in[:2], true, nil
+			}
+			return in, false, nil
+		}
+	}
+	for name, laterOps := range later {
+		for _, reverse := range []bool{false, true} {
+			for _, split := range []bool{false, true} {
+				for _, byteTarget := range []int{1 << 20, ByteLimitUnlimited} {
+					t.Run(fmt.Sprintf("%s/reverse=%t/split=%t/bytes=%d", name, reverse, split, byteTarget), func(t *testing.T) {
+						t.Parallel()
+						k, gap := []byte("mf/b"), []byte("mf/a7")
+						if reverse {
+							k, gap = []byte("mf/c"), []byte("mf/c5")
+						}
+						var control rywCache
+						issue(&control)
+						want, wantMore, wantErr := control.getRange(context.Background(), []byte("mf/"), []byte("mf0"), 0, byteTarget, reverse, stub(split, func() {}))
+						if wantErr != nil {
+							t.Fatalf("control: %v", wantErr)
+						}
+						var c rywCache
+						issue(&c)
+						got, more, err := c.getRange(context.Background(), []byte("mf/"), []byte("mf0"), 0, byteTarget, reverse, stub(split, func() { laterOps(&c, k, gap) }))
+						if err != nil || more != wantMore || !sameKVs(got, want) {
+							t.Fatalf("ISSUE_VIEW_MULTI: range = %s, more=%t, %v; want %s, more=%t as issued", formatKVs(got), more, err, formatKVs(want), wantMore)
+						}
+					})
+				}
+			}
+		}
+	}
+}

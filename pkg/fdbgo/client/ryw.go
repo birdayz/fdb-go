@@ -668,6 +668,10 @@ func (c *rywCache) getRange(
 	unreadableCap := c.unreadableScanCapLocked(begin, end, reverse)
 	hasWrites := c.hasWritesInRangeLocked(begin, end)
 	hasClears := c.hasClearsInRangeLocked(begin, end)
+	var view *rywWriteSpan
+	if hasWrites || hasClears {
+		view = c.captureWriteSpanLocked(begin, end)
+	}
 	c.mu.Unlock()
 
 	requestedBegin, requestedEnd := begin, end
@@ -704,7 +708,9 @@ func (c *rywCache) getRange(
 			return nil, false, err
 		}
 		c.cacheServerResult(begin, end, kvs, more, reverse)
-		if byteTarget > 0 {
+		cut, remainingBytes := applyRangeByteLimit(kvs, byteTarget)
+		bytesReached := byteTarget > 0 && remainingBytes <= 0
+		if byteTarget > 0 && more && !bytesReached && c.replyEdgeKnown(begin, end, kvs, reverse) {
 			// Re-walk storage only, within the issue-time cap: the read was issued
 			// with no writes in range, and later writes must not join it.
 			if rows, rowsMore, known, err := c.localRange(begin, end, limit, byteTarget, reverse, false); known {
@@ -717,12 +723,12 @@ func (c *rywCache) getRange(
 				return rows, rowsMore || unreadableCap != nil, nil
 			}
 		}
-		kvs, remainingBytes := applyRangeByteLimit(kvs, byteTarget)
-		bytesReached := byteTarget > 0 && remainingBytes <= 0
-		if !more && !bytesReached && reached(len(kvs)) {
+		if !more && !bytesReached && reached(len(cut)) {
 			return nil, false, &wire.FDBError{Code: ErrAccessedUnreadable}
 		}
-		return kvs, more || bytesReached || unreadableCap != nil, nil
+		// A byte-limited page ends like the cache re-walk, which reports a filled row limit.
+		limitStop := byteTarget > 0 && limitReached(limit, len(cut))
+		return cut, more || bytesReached || limitStop || unreadableCap != nil, nil
 	}
 
 	// Slow path: iterative fetch + merge. Loop until we either fill
@@ -752,7 +758,7 @@ func (c *rywCache) getRange(
 			return nil, false, err
 		}
 		if byteTarget > 0 {
-			if rows, more, known, err := c.localRange(requestedBegin, requestedEnd, limit, byteTarget, reverse, true); known {
+			if rows, more, known, err := c.localRangeInSpan(view, requestedBegin, requestedEnd, limit, byteTarget, reverse); known {
 				return rows, more, err
 			}
 		}
@@ -767,7 +773,7 @@ func (c *rywCache) getRange(
 			boundary = serverKVs[len(serverKVs)-1].Key
 		}
 
-		batch := c.mergeBatch(serverKVs, curBegin, curEnd, boundary, reverse)
+		batch := c.mergeBatchInSpan(view, serverKVs, curBegin, curEnd, boundary, reverse)
 
 		take := len(batch)
 		if take > remaining {
@@ -838,11 +844,109 @@ func (c *rywCache) getSnapshotRange(
 				return rows, more, err
 			}
 		}
-		var remainingBytes int
-		rows, remainingBytes = applyRangeByteLimit(rows, byteTarget)
-		more = more || (byteTarget > 0 && remainingBytes <= 0)
+		cut, remainingBytes := applyRangeByteLimit(rows, byteTarget)
+		bytesReached := byteTarget > 0 && remainingBytes <= 0
+		if byteTarget > 0 && more && !bytesReached && c.replyEdgeKnown(begin, end, rows, reverse) {
+			if rows, more, known, err := c.localRange(begin, end, limit, byteTarget, reverse, false); known {
+				return rows, more, err
+			}
+		}
+		return cut, more || bytesReached || (byteTarget > 0 && limitReached(limit, len(cut))), nil
 	}
 	return rows, more, err
+}
+
+// replyEdgeKnown reports whether a more=true storage reply is followed by cached
+// state, so only the snapshot-cache walk can tell where the page ends.
+func (c *rywCache) replyEdgeKnown(begin, end []byte, kvs []KeyValue, reverse bool) bool {
+	if len(kvs) == 0 {
+		return true
+	}
+	last := kvs[len(kvs)-1].Key
+	if (!reverse && isKeyAfter(end, last)) || (reverse && bytes.Equal(last, begin)) {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.serverCache.knownPast(last, reverse)
+}
+
+// rywWriteSpan is the write-map state over one read's range as of its issue: C++
+// iterates a WriteMap version later writes do not change (WriteMap.h:158-160).
+type rywWriteSpan struct {
+	writes           map[string]rywEntry
+	sortedKeys       []string
+	cleared          []rywRange
+	unreadableRanges []rywRange
+	unreadableKeys   []string
+	bypassUnreadable bool
+}
+
+// captureWriteSpanLocked copies the write-map state intersecting [begin, end).
+// Atomic stacks are cloned because coalesceOverAtomics folds into the top in place.
+func (c *rywCache) captureWriteSpanLocked(begin, end []byte) *rywWriteSpan {
+	c.ensureSortedLocked()
+	i := sort.SearchStrings(c.sortedKeys, string(begin))
+	j := sort.SearchStrings(c.sortedKeys, string(end))
+	s := &rywWriteSpan{
+		writes:           make(map[string]rywEntry, j-i),
+		sortedKeys:       append(make([]string, 0, j-i), c.sortedKeys[i:j]...),
+		cleared:          overlappingRanges(c.cleared, begin, end),
+		unreadableRanges: overlappingRanges(c.unreadableRanges, begin, end),
+		bypassUnreadable: c.bypassUnreadable,
+	}
+	for _, k := range s.sortedKeys {
+		e := c.writes[k]
+		if e.hasAtomics {
+			e.atomics = append([]rywMutation(nil), e.atomics...)
+		}
+		s.writes[k] = e
+	}
+	ui := sort.SearchStrings(c.unreadableKeys, string(begin))
+	uj := sort.SearchStrings(c.unreadableKeys, string(end))
+	s.unreadableKeys = append([]string(nil), c.unreadableKeys[ui:uj]...)
+	return s
+}
+
+// overlappingRanges returns the sorted, non-overlapping ranges intersecting [begin, end), unclipped.
+func overlappingRanges(ranges []rywRange, begin, end []byte) []rywRange {
+	lo := sort.Search(len(ranges), func(i int) bool { return bytes.Compare(ranges[i].end, begin) > 0 })
+	hi := sort.Search(len(ranges), func(i int) bool { return bytes.Compare(ranges[i].begin, end) >= 0 })
+	if lo >= hi {
+		return nil
+	}
+	return append([]rywRange(nil), ranges[lo:hi]...)
+}
+
+// swapWriteSpanLocked exchanges the live write-map fields with s; a second call
+// restores them. The snapshot cache stays live: it only holds storage state.
+func (c *rywCache) swapWriteSpanLocked(s *rywWriteSpan) {
+	c.writes, s.writes = s.writes, c.writes
+	c.sortedKeys, s.sortedKeys = s.sortedKeys, c.sortedKeys
+	c.cleared, s.cleared = s.cleared, c.cleared
+	c.unreadableRanges, s.unreadableRanges = s.unreadableRanges, c.unreadableRanges
+	c.unreadableKeys, s.unreadableKeys = s.unreadableKeys, c.unreadableKeys
+	c.bypassUnreadable, s.bypassUnreadable = s.bypassUnreadable, c.bypassUnreadable
+}
+
+// localRangeInSpan walks [begin, end) against the issue-time write span; the walk
+// never leaves the span, so write-map state outside it cannot change the rows.
+func (c *rywCache) localRangeInSpan(s *rywWriteSpan, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.swapWriteSpanLocked(s)
+	defer c.swapWriteSpanLocked(s)
+	return c.localRangeLocked(begin, end, limit, byteTarget, reverse, true)
+}
+
+// mergeBatchInSpan is mergeBatch against the issue-time write span. Resolved atomics
+// fold into the span only, never into the live write map.
+func (c *rywCache) mergeBatchInSpan(s *rywWriteSpan, serverKVs []KeyValue, rangeBegin, rangeEnd, boundary []byte, reverse bool) []KeyValue {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.swapWriteSpanLocked(s)
+	defer c.swapWriteSpanLocked(s)
+	return c.mergeBatchLocked(serverKVs, rangeBegin, rangeEnd, boundary, reverse)
 }
 
 // applyRangeByteLimit includes the row that exhausts the budget, guaranteeing
@@ -1063,7 +1167,15 @@ func (c *rywCache) mergeBatch(
 ) []KeyValue {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.mergeBatchLocked(serverKVs, rangeBegin, rangeEnd, boundary, reverse)
+}
 
+func (c *rywCache) mergeBatchLocked(
+	serverKVs []KeyValue,
+	rangeBegin, rangeEnd []byte,
+	boundary []byte,
+	reverse bool,
+) []KeyValue {
 	c.ensureSortedLocked()
 
 	// Phase 1: Filter server results — remove cleared keys.

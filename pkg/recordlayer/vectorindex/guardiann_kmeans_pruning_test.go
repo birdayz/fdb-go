@@ -15,7 +15,7 @@ func scalarKMeansL2(a, b []float64) float64 {
 	s := 0.0
 	for i := range a {
 		d := a[i] - b[i]
-		s += d * d
+		s += float64(d * d)
 	}
 	return s
 }

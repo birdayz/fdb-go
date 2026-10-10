@@ -334,6 +334,26 @@ func (sc *snapshotCache) getKey(key []byte) ([]byte, bool) {
 	return nil, true // key is in known range but doesn't exist at server
 }
 
+// knownPast reports whether the cache knows the position adjacent to key in scan
+// direction: keyAfter(key) forward, the keys just below key in reverse.
+func (sc *snapshotCache) knownPast(key []byte, reverse bool) bool {
+	es := sc.entries
+	if reverse {
+		i := sort.Search(len(es), func(i int) bool { return bytes.Compare(es[i].begin, key) >= 0 })
+		return i > 0 && bytes.Compare(es[i-1].end, key) >= 0
+	}
+	i := sort.Search(len(es), func(i int) bool { return bytes.Compare(es[i].begin, key) > 0 })
+	if i > 0 && bytes.Compare(es[i-1].end, key) > 0 && !isKeyAfter(es[i-1].end, key) {
+		return true
+	}
+	return i < len(es) && isKeyAfter(es[i].begin, key)
+}
+
+// isKeyAfter reports a == keyAfter(b) without allocating.
+func isKeyAfter(a, b []byte) bool {
+	return len(a) == len(b)+1 && a[len(b)] == 0 && bytes.Equal(a[:len(b)], b)
+}
+
 // cloneReadKVs separates public results from immutable RYW/cache storage.
 func cloneReadKVs(kvs []KeyValue) []KeyValue {
 	if len(kvs) == 0 {
