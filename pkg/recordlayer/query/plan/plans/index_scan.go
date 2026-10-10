@@ -503,14 +503,6 @@ func (p *RecordQueryIndexPlan) GetResultType() values.Type { return p.flowedType
 // GetChildren returns nil — index scans are leaves.
 func (p *RecordQueryIndexPlan) GetChildren() []RecordQueryPlan { return nil }
 
-// EqualsWithoutChildren compares index name, scan comparisons (shape AND
-// comparands), record types, and reverse flag. The comparands are load-bearing:
-// an index scan is a memo LEAF, deduped by HashCodeWithoutChildren +
-// EqualsWithoutChildren, so comparing only the range SHAPE would collapse
-// IndexScan([= 5]) and IndexScan([= 7]) into one Reference and let extraction
-// materialize the wrong-comparand scan. Mirrors Java's
-// RecordQueryIndexPlan.equalsWithoutChildren, which compares
-// Objects.equals(scanParameters, that.scanParameters) — full comparand equality.
 // structuralKey folds the index scan's identity: index name, SARG comparison
 // ranges (shape AND comparands — two different-comparand scans must stay in
 // distinct References, else the memo materializes the wrong-comparand scan,

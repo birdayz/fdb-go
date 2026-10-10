@@ -646,15 +646,15 @@ type commitCheckRegistration struct {
 	active bool // protected by FDBRecordContext.commitMu
 }
 
+// nextTransactionID generates unique IDs for FDBRecordContext instances.
+var nextTransactionID atomic.Int64
+
 // FDBRecordContext represents a transactional context for record operations.
 // It wraps an FDB transaction and provides additional record layer functionality.
 // Goroutine-safe: all mutable fields are protected by atomics, mutexes, or the
 // lockRegistry. Multiple goroutines may safely operate on the same context
 // within a single FDB transaction (matching Java's CompletableFuture model).
 // Matches Java's FDBRecordContext.
-// nextTransactionID generates unique IDs for FDBRecordContext instances.
-var nextTransactionID atomic.Int64
-
 type FDBRecordContext struct {
 	tx            fdb.WritableTransaction
 	ctx           context.Context

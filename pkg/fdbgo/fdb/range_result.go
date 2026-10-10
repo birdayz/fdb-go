@@ -198,7 +198,7 @@ func (rr goRangeResult) Iterator() RangeIterator {
 // exported form, ModeTargetBytes.
 func EffectiveRowLimit(limit int) int { return effectiveLimit(limit) }
 
-// RangeIterator returns key-value pairs one at a time from a range read.
+// goRangeIterator returns key-value pairs one at a time from a range read.
 // Fetches data lazily in batches based on the StreamingMode.
 // Call Advance() before each Get(). Get() is idempotent — it returns the
 // current element without advancing. Only Advance() moves forward.

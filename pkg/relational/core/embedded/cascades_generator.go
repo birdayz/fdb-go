@@ -4406,12 +4406,6 @@ func findDistinctAggregate(op logical.LogicalOperator) string {
 	return ""
 }
 
-// findFullOuterWithExists rejects FULL OUTER JOIN combined with an
-// EXISTS / NOT EXISTS subquery in the same WHERE. The join+EXISTS
-// flatten path (translateJoinWithExists) builds a semi-join shape that
-// cannot carry the FULL-outer drain, so such a query would otherwise be
-// silently mistranslated to an inner join. FULL OUTER is a Go-only query
-// extension; Java's SQL layer has no outer joins at all.
 // findUnfoldableProjectedExists rejects a PROJECTED EXISTS (an ExistsValue in a
 // SELECT-list value) in a query shape the RFC-141 fold cannot thread through, so
 // the EXISTS would otherwise be silently dropped before translation (the

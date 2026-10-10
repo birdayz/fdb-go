@@ -150,7 +150,7 @@ func (p *RecordQueryLoadByKeysPlan) structuralKey() *structuralKey {
 		}, []byte(p.keysSource.String()))
 }
 
-// EqualsWithoutChildren compares the key sources.
+// EqualsPlanWithoutChildren compares the key sources.
 func (p *RecordQueryLoadByKeysPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryLoadByKeysPlan)
 	return ok && p.keyFor(p).Equal(o.keyFor(o))

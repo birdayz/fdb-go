@@ -33,11 +33,6 @@ import (
 // See FormatVersion.java for the full list.
 const (
 	formatVersionInfoAdded = 1 // Minimum version (INFO_ADDED in Java)
-	// formatVersionSaveUnsplitWithSuffix (5, SAVE_UNSPLIT_WITH_SUFFIX) is the version at
-	// which every record key carries a split suffix even when split_long_records is false —
-	// unless DataStoreInfo.omit_unsplit_record_suffix is true (set when a store created at an
-	// earlier format version is upgraded). Below this version, unsplit records are stored at
-	// the bare key recordsSubspace.pack(primaryKey) with no suffix.
 	// formatVersionRecordCountAdded (2, RECORD_COUNT_ADDED) is the version at which
 	// record counts exist on disk at all. An existing store below it has no counts
 	// worth trusting, so reconciliation rebuilds them unconditionally — Java's first
@@ -46,7 +41,12 @@ const (
 	formatVersionRecordCountAdded = 2
 	// formatVersionRecordCountKeyAdded (3, RECORD_COUNT_KEY_ADDED) is the version at
 	// which the store header can carry a record-count key at all.
-	formatVersionRecordCountKeyAdded   = 3
+	formatVersionRecordCountKeyAdded = 3
+	// formatVersionSaveUnsplitWithSuffix (5, SAVE_UNSPLIT_WITH_SUFFIX) is the version at
+	// which every record key carries a split suffix even when split_long_records is false —
+	// unless DataStoreInfo.omit_unsplit_record_suffix is true (set when a store created at an
+	// earlier format version is upgraded). Below this version, unsplit records are stored at
+	// the bare key recordsSubspace.pack(primaryKey) with no suffix.
 	formatVersionSaveUnsplitWithSuffix = 5
 	// formatVersionSaveVersionWithRecord (6, SAVE_VERSION_WITH_RECORD) is the version at which
 	// record versions are stored inline adjacent to the record (recordsSubspace.pack(pk, -1))
@@ -1033,16 +1033,6 @@ func (store *FDBRecordStore) AddRecordWriteConflict(primaryKey tuple.Tuple) erro
 	return store.context.Transaction().AddWriteConflictRange(recordRange)
 }
 
-// getRangeForRecord calculates the key range that covers all possible record type variants
-// for the given primary key. This matches Java's TupleRange.allOf(primaryKey).toRange(recordsSubspace())
-//
-// Java equivalent: TupleRange.allOf(primaryKey).toRange(recordsSubspace())
-// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/TupleRange.java:371-377, 449-456
-//
-// Java's TupleRange.allOf() creates a range with RANGE_INCLUSIVE endpoints:
-//   - Begin: recordsSubspace.pack(primaryKey)
-//   - End: recordsSubspace.pack(primaryKey) + 0xFF
-//
 // hasVersionIndex returns true if any index uses IndexTypeVersion.
 // Used to decide whether old record versions need to be loaded for index maintenance.
 func (store *FDBRecordStore) hasVersionIndex() bool {
@@ -1054,6 +1044,16 @@ func (store *FDBRecordStore) hasVersionIndex() bool {
 	return false
 }
 
+// getRangeForRecord calculates the key range that covers all possible record type variants
+// for the given primary key. This matches Java's TupleRange.allOf(primaryKey).toRange(recordsSubspace())
+//
+// Java equivalent: TupleRange.allOf(primaryKey).toRange(recordsSubspace())
+// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/TupleRange.java:371-377, 449-456
+//
+// Java's TupleRange.allOf() creates a range with RANGE_INCLUSIVE endpoints:
+//   - Begin: recordsSubspace.pack(primaryKey)
+//   - End: recordsSubspace.pack(primaryKey) + 0xFF
+//
 // This is different from using Sub(), which would add an extra 0x00 byte to the begin key.
 // The range covers all keys that start with the primary key tuple (e.g., {orderID, UNSPLIT_RECORD}).
 func (store *FDBRecordStore) getRangeForRecord(primaryKey tuple.Tuple) fdb.ExactRange {

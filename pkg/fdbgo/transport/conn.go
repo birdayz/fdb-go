@@ -323,12 +323,12 @@ func withMonitorCadence(loop, timeout time.Duration) connOption {
 	}
 }
 
-// dialWith is the implementation behind Dial, plus test-only connOptions.
 // defaultHandshakeTimeout bounds the TLS upgrade + ConnectPacket exchange when the
 // caller's ctx carries no deadline. The handshake is normally sub-second; this is a
 // generous ceiling so a stalled peer can't wedge the dial forever.
 const defaultHandshakeTimeout = 10 * time.Second
 
+// dialWith is the implementation behind Dial, plus test-only connOptions.
 func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.Config, opts ...connOption) (*Conn, error) {
 	if dialFn == nil {
 		var d net.Dialer

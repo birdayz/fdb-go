@@ -95,9 +95,8 @@ func (p part) scanComps() []*predicates.ComparisonRange {
 func (p part) sks() []SortKey { s, _ := p.list.([]SortKey); return s }
 func (p part) eqHash() []byte { h, _ := p.list.([]byte); return h }
 
-// structuralKey is an ordered list of a plan's identifying fields.
-// structuralKey carries its first few parts INLINE, which is a pure allocation
-// decision and changes no key, hash or comparison.
+// structuralKeyInlineParts is how many parts a structuralKey carries INLINE, a
+// pure allocation decision that changes no key, hash or comparison.
 //
 // A key is rebuilt on every dedup comparison — memo admission tests each intent
 // against each existing member, and both EqualsWithoutChildren and
@@ -120,6 +119,7 @@ func (p part) eqHash() []byte { h, _ := p.list.([]byte); return h }
 // comment. Any new payload field belongs in `ref`/`list`, not beside them.
 const structuralKeyInlineParts = 4
 
+// structuralKey is an ordered list of a plan's identifying fields.
 type structuralKey struct {
 	parts  []part
 	inline [structuralKeyInlineParts]part

@@ -7,8 +7,8 @@ import (
 	"net"
 )
 
-// ConnectPacket is exchanged by both sides on TCP connection establishment.
-// Packed struct (no padding), 44 bytes total.
+// ConnectPacketSize is the wire size of the ConnectPacket both sides exchange on
+// TCP connection establishment. Packed struct (no padding), 44 bytes total.
 //
 // Layout:
 //

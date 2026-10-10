@@ -518,16 +518,16 @@ func unwrappedCellAtom(cell antlrgen.IExpressionWithOptionalNameContext) antlrge
 	return pred.ExpressionAtom()
 }
 
-// firstSubqueryOrExistsAtom walks an ANTLR expression tree with typed
-// nodes and reports the first severed subquery form found: "subquery"
-// for a scalar-subquery atom, "EXISTS" for an EXISTS atom, "" when the
-// tree has neither. The wording feeds the RFC-145 severed-arm message.
 // stmtClock carries the session's statement-stable timestamp into the
 // VALUES fold as the values.StatementClock capability.
 type stmtClock struct{ now time.Time }
 
 func (c stmtClock) StatementNow() time.Time { return c.now }
 
+// firstSubqueryOrExistsAtom walks an ANTLR expression tree with typed
+// nodes and reports the first severed subquery form found: "subquery"
+// for a scalar-subquery atom, "EXISTS" for an EXISTS atom, "" when the
+// tree has neither. The wording feeds the RFC-145 severed-arm message.
 func firstSubqueryOrExistsAtom(ctx antlr.Tree) string {
 	if ctx == nil {
 		return ""

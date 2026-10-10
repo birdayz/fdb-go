@@ -731,8 +731,8 @@ const (
 	StatisticsReadTimestampMismatch StatisticsReadRefusal = "entry timestamp disagrees with the header"
 )
 
-// ReadStatisticsAt is ReadStatistics plus the cluster version the read was
-// taken at, from the SAME transaction.
+// ReadStatisticsAtWithRefusal is ReadStatistics plus the cluster version the
+// read was taken at, from the SAME transaction, and why an unusable set was refused.
 //
 // The freshness gate needs both, and taking them separately costs a second
 // round-trip on every uncached plan — for two numbers that are only meaningful

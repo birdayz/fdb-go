@@ -278,7 +278,7 @@ func (p *RecordQueryVectorIndexPlan) structuralKey() *structuralKey {
 		StructVal(p.k)
 }
 
-// EqualsWithoutChildren compares index name, prefix comparison shape, and
+// EqualsPlanWithoutChildren compares index name, prefix comparison shape, and
 // the query-vector / k / ef_search node-info.
 func (p *RecordQueryVectorIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryVectorIndexPlan)

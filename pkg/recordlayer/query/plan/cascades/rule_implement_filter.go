@@ -44,9 +44,9 @@ func NewImplementFilterRule() *ImplementFilterRule {
 	}
 }
 
-// Matcher returns the pattern.
 func (r *ImplementFilterRule) ConstraintDependencies() []any { return nil }
 
+// Matcher returns the pattern.
 func (r *ImplementFilterRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 // OnMatch fires on every LogicalFilterExpression. Walks the inner

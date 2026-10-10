@@ -661,11 +661,11 @@ func oracleAggRows(c *Case, q Query) ([]Row, error) {
 	return out, nil
 }
 
+type aggOverflow struct{}
+
 // errAggOverflow is foldAgg's sentinel for "SUM overflows int64 here", i.e.
 // the engine is REQUIRED to raise 22003 rather than return a row. It is a
 // distinct value (not an error) because it flows through the row slot.
-type aggOverflow struct{}
-
 var errAggOverflow = aggOverflow{}
 
 // AggResultOverflows reports whether the oracle's expected result for this

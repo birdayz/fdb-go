@@ -277,11 +277,11 @@ func (g *guardiann) selectReplicas(ref guardiannVectorRef, distanceToPrimary flo
 	return out, nil
 }
 
-// countAssignments counts per-cluster additions of an assignment.
 type assignmentCounts struct {
 	primary, underrep, replicated map[tuple.UUID]int
 }
 
+// countAssignments counts per-cluster additions of an assignment.
 func countAssignments(a *orderedAssignments) assignmentCounts {
 	c := assignmentCounts{primary: map[tuple.UUID]int{}, underrep: map[tuple.UUID]int{}, replicated: map[tuple.UUID]int{}}
 	a.each(func(k tuple.UUID, v guardiannVectorRef) {

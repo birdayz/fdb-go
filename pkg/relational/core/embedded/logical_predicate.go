@@ -8048,10 +8048,7 @@ func resolveProjectionTypes(op logical.LogicalOperator, md *recordlayer.RecordMe
 	return kinds
 }
 
-// existsSubqueryPlanner implements expr.SubqueryPlanner. It builds
-// logical plans for EXISTS and scalar subqueries and collects the
-// (alias, plan) pairs that the LogicalFilter/LogicalProject need to
-// carry to the Cascades translator.
+// buildOuterScopeSources returns the outer query's FROM-scope sources, which a subquery may correlate to.
 func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, templateName string, cteScopes map[string]semantic.ScopeSource) []semantic.ScopeSource {
 	resolver := buildSelectScope(sq, md, templateName, cteScopes)
 	if resolver == nil {
@@ -8062,6 +8059,10 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, tem
 	return resolver.Scope().Sources()
 }
 
+// existsSubqueryPlanner implements expr.SubqueryPlanner. It builds
+// logical plans for EXISTS and scalar subqueries and collects the
+// (alias, plan) pairs that the LogicalFilter/LogicalProject need to
+// carry to the Cascades translator.
 type existsSubqueryPlanner struct {
 	bindings *bindingAllocator
 	md       *recordlayer.RecordMetaData

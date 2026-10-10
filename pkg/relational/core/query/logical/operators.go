@@ -585,9 +585,6 @@ func (d *LogicalDistinct) Explain(indent string) string {
 	return fmt.Sprintf("%sDistinct\n%s", indent, d.Input.Explain(indent+"  "))
 }
 
-// LogicalAggregate runs GROUP BY + aggregate functions on its child.
-// GroupKeys are the grouping-column expressions; Calls holds the
-// structured aggregate calls (see AggregateCall) with parallel Aliases.
 // GroupKey is one GROUP BY key in structured form (RFC-180 F-3): the display
 // text is a rendering for output naming and diagnostics, never re-parsed;
 // qualification and segments are parse-tree truth; Value is the resolved key
@@ -609,6 +606,9 @@ type GroupKey struct {
 	Value values.Value
 }
 
+// LogicalAggregate runs GROUP BY + aggregate functions on its child.
+// GroupKeys are the grouping-column expressions; Calls holds the
+// structured aggregate calls (see AggregateCall) with parallel Aliases.
 type LogicalAggregate struct {
 	Input     LogicalOperator
 	GroupKeys []GroupKey
@@ -876,11 +876,6 @@ func (k JoinKind) String() string {
 	}
 }
 
-// LogicalJoin combines two children. Empty OnText means "no ON
-// condition" (comma cross-join form — the outer WHERE provides the
-// predicate). OnPredicate is the optional structured form (used by
-// the catalog-aware walker); when non-nil, it takes precedence over
-// OnText for Cascades lowering.
 // BoundJoinPredicate retains ON provenance before existential folding. The
 // source identities describe the left-to-current frame, never later joins.
 type BoundJoinPredicate struct {
@@ -889,6 +884,11 @@ type BoundJoinPredicate struct {
 	VisibleBindings []values.CorrelationIdentifier
 }
 
+// LogicalJoin combines two children. Empty OnText means "no ON
+// condition" (comma cross-join form — the outer WHERE provides the
+// predicate). OnPredicate is the optional structured form (used by
+// the catalog-aware walker); when non-nil, it takes precedence over
+// OnText for Cascades lowering.
 type LogicalJoin struct {
 	BoundOn     *BoundJoinPredicate
 	Left        LogicalOperator

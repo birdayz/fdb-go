@@ -137,7 +137,7 @@ func (p *RecordQueryInsertPlan) structuralKey() *structuralKey {
 	return newStructuralKey().Str(p.targetRecordType).Type(p.GetTargetType())
 }
 
-// EqualsWithoutChildren compares targetRecordType + targetType.
+// EqualsPlanWithoutChildren compares targetRecordType + targetType.
 func (p *RecordQueryInsertPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryInsertPlan)
 	return ok && p.keyFor(p).Equal(o.keyFor(o))

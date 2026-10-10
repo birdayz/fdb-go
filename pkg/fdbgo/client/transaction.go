@@ -1364,12 +1364,10 @@ func conflictBufPoolFor(size int) *sync.Pool {
 	return nil
 }
 
-// SetReadSystemKeys allows reading \xff prefix system keys.
 func (tx *Transaction) stateSetReadSystemKeys() {
 	tx.readSystemKeys = true
 }
 
-// SetAccessSystemKeys allows reading AND writing \xff prefix system keys.
 func (tx *Transaction) stateSetAccessSystemKeys() {
 	tx.readSystemKeys = true
 	tx.writeSystemKeys = true
@@ -1487,7 +1485,6 @@ func (tx *Transaction) ownMutationLocked(typ MutationType, key, value []byte) Mu
 	return Mutation{Type: typ, Key: ownedKey, Value: ownedValue}
 }
 
-// Set writes a key-value pair.
 func (tx *Transaction) stateSet(key, value []byte) {
 	// The mutation and its write-conflict range must become visible to a
 	// concurrent Commit snapshot as ONE atomic unit — otherwise the snapshot
@@ -1503,7 +1500,6 @@ func (tx *Transaction) stateSet(key, value []byte) {
 	}
 }
 
-// Clear deletes a key.
 // consumeNextWriteNoConflict resets the one-shot NEXT_WRITE_NO_WRITE_CONFLICT_RANGE
 // flag without adding a conflict range. C++ RYW set/clear/atomicOp consume the flag
 // (getAndResetWriteConflictDisabled) at the TOP, before any size-based no-op return
@@ -1542,9 +1538,6 @@ func (tx *Transaction) stateClear(key []byte) {
 	}
 }
 
-// ClearRange deletes all keys in [begin, end).
-// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_clear_range_impl.
-// Zero-width ranges (begin == end) are silently ignored, matching C++.
 func (tx *Transaction) stateClearRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
@@ -1575,7 +1568,6 @@ func (tx *Transaction) stateClearRange(begin, end []byte) error {
 	return nil
 }
 
-// Atomic performs an atomic mutation.
 func (tx *Transaction) stateAtomic(op MutationType, key, operand []byte) {
 	// Min→MinV2 / And→AndV2 op-code upgrade (C++ RYW::atomicOp,
 	// ReadYourWrites.actor.cpp:2243-2248): apiVersionAtLeast(510) upgrades the
@@ -2249,10 +2241,6 @@ func (tx *Transaction) endTxSpan() {
 	}
 }
 
-// SetSpanParent injects a parent trace context (FDBTransactionOptions::SPAN_PARENT,
-// NativeAPI.actor.cpp:7126): a 33-byte IncludeVersion-serialized SpanContext. The
-// transaction's span becomes a child of it (inherit traceID + flags, fresh spanID),
-// and the linkage persists across retries (regenerateSpan honors spanParent).
 func (tx *Transaction) stateSetSpanParent(b []byte) error {
 	parent, err := parseSpanParent(b)
 	if err != nil {
@@ -2292,8 +2280,6 @@ type watchActivation struct {
 	abandoned bool
 }
 
-// WatchActivation returns this incarnation's activation, lazily creating it on first use (a fresh handle
-// before any Watch/commit has nil watchAct). Race-safe via CAS so two concurrent Watch() calls share one.
 func (tx *Transaction) stateWatchActivation() *watchActivation {
 	if act := tx.watchAct.Load(); act != nil {
 		return act
@@ -2389,14 +2375,10 @@ func (tx *Transaction) newWatchCtx(parent context.Context) (context.Context, con
 	return ctx, scoped
 }
 
-// GetCommittedVersion returns the version at which this transaction committed.
 func (tx *Transaction) stateGetCommittedVersion() (int64, error) {
 	return tx.committedVersion, nil
 }
 
-// GetVersionstamp returns the 10-byte versionstamp from the committed transaction.
-// Format: [version 8 bytes big-endian][txnBatchId 2 bytes big-endian].
-// Must be called after a successful Commit.
 func (tx *Transaction) stateGetVersionstamp(inc *readIncarnation) ([]byte, error) {
 	// C++ checks deferredError before RYW's captured resetPromise.
 	if e := tx.deferredErr.Load(); e != nil {
@@ -2671,7 +2653,6 @@ func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
 	return rv, nil
 }
 
-// SetReadVersion sets the read version manually.
 func (tx *Transaction) stateSetReadVersion(version int64) {
 	tx.readVersionMu.Lock()
 	tx.readVersion = version
@@ -2687,25 +2668,6 @@ func (tx *Transaction) stateSetReadVersion(version int64) {
 	tx.readVersionMu.Unlock()
 }
 
-// ReadVersionInstant reports when this transaction's current read version was
-// obtained from the cluster, i.e. when FDB's 5-second MVCC window opened for it.
-// ok is false when no read version is held, or when the version was supplied by
-// SetReadVersion (whose window opened at an instant this client never observed).
-//
-// It exists so a layer above can budget against the window that actually applies.
-// Anchoring such a budget on "when I started working" is wrong in both directions:
-// a transaction that idles before its first read has not yet opened a window, and
-// a retried transaction opened a fresh one. Only the GRV instant tracks it.
-//
-// Callers MUST honour ok rather than treating a zero time as an anchor.
-//
-// The hasReadVersion term is the whole reset discipline, deliberately. Every path
-// that drops the read version (reset on the OnError retry, postCommitReset on
-// commit-reuse) retires the instant through this one gate, so a new reset path
-// cannot forget to clear it. Explicit clears were tried at those sites and removed:
-// they were redundant with the gate, and two mechanisms covering one rule means
-// neither is individually detectable by a mutation — the tests kept passing with
-// either one broken, which is worse than having only one.
 func (tx *Transaction) stateReadVersionInstant() (time.Time, bool) {
 	tx.readVersionMu.Lock()
 	defer tx.readVersionMu.Unlock()
@@ -2715,10 +2677,6 @@ func (tx *Transaction) stateReadVersionInstant() (time.Time, bool) {
 	return tx.readVersionInstant, true
 }
 
-// SetTimeout sets a timeout in milliseconds for this transaction.
-// The timeout is an overall budget from creation time (or last user Reset),
-// NOT per-retry. OnError retries share the same deadline.
-// A value of 0 disables the timeout. Matches C++ FDB_TR_OPTION_TIMEOUT.
 func (tx *Transaction) stateSetTimeout(ms int64) {
 	// doOnMainThreadVoid skips an option on a poisoned transaction; RYW setOptionImpl
 	// throws invalid_option_value outside [0, INT_MAX] (extractIntOption) before applying.
@@ -2744,10 +2702,6 @@ func (tx *Transaction) stateSetTimeout(ms int64) {
 	tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano())
 }
 
-// SetRetryLimit limits the number of retries in OnError.
-// A value of 0 means "don't retry at all" (first error escapes).
-// A value of -1 means "unlimited" (default behavior).
-// Matches C++ FDB_TR_OPTION_RETRY_LIMIT.
 func (tx *Transaction) stateSetRetryLimit(retries int64) {
 	if retries < 0 {
 		tx.hasRetryLimit = false
@@ -2772,11 +2726,6 @@ const (
 	sizeofKeyRangeRef = 24
 )
 
-// GetApproximateSize returns the approximate size of the transaction's mutations
-// and conflict ranges in bytes. Matches C++ ReadYourWritesTransaction accounting:
-// each mutation includes sizeof(MutationRef), each conflict range includes
-// sizeof(KeyRangeRef). For set/atomic with write conflicts, C++ also adds the
-// key length again for the auto-generated write conflict range.
 func (tx *Transaction) stateGetApproximateSize() (int64, error) {
 	// C++ gates getApproximateSize on the deferred error and NOTHING else
 	// (ThreadSafeTransaction.cpp:715-721: checkDeferredError, then the plain
@@ -3174,47 +3123,31 @@ func (tx *Transaction) makeSelfConflictingLocked() KeyRange {
 	return wcr
 }
 
-// SetNextWriteNoWriteConflictRange causes the next mutation to NOT add a write
-// conflict range. Auto-resets after one mutation. Matches C++
-// FDB_TR_OPTION_NEXT_WRITE_NO_WRITE_CONFLICT_RANGE.
 func (tx *Transaction) stateSetNextWriteNoWriteConflictRange() {
 	tx.nextWriteNoConflict = true
 }
 
-// SetPriority sets the transaction priority for GRV requests.
 func (tx *Transaction) stateSetPriority(p TransactionPriority) {
 	tx.priority = p
 }
 
-// SetCausalReadRisky sets the causal-read-risky flag.
-// When set, the read version may not reflect the latest committed writes.
 func (tx *Transaction) stateSetCausalReadRisky(v bool) {
 	tx.causalReadRisky = v
 }
 
-// SetUseGrvCache opts this transaction in to serving its read version from the
-// database's GRV cache (USE_GRV_CACHE, 1101). Off by default — a default
-// transaction issues a fresh proxy GRV, matching libfdb_c. RFC-104.
 func (tx *Transaction) stateSetUseGrvCache() {
 	tx.useGrvCache = true
 }
 
-// SetSkipGrvCache forces this transaction to bypass the GRV cache even if
-// SetUseGrvCache was also set (SKIP_GRV_CACHE, 1102 — skip wins). RFC-104.
 func (tx *Transaction) stateSetSkipGrvCache() {
 	tx.skipGrvCache = true
 }
 
-// SetLockAware makes reads and the commit lock-aware, and lifts a read-only
-// state left by SetReadLockAware (C++ LOCK_AWARE, NativeAPI.actor.cpp:7071-7079).
 func (tx *Transaction) stateSetLockAware() {
 	tx.lockAware = true
 	tx.readOnly = false
 }
 
-// SetReadLockAware makes reads lock-aware and, unless SetLockAware came first,
-// makes the transaction read-only: a commit with writes fails 2023 (C++
-// READ_LOCK_AWARE, NativeAPI.actor.cpp:7082-7091; checked at :6810).
 func (tx *Transaction) stateSetReadLockAware() {
 	tx.readLockAware = true
 	if !tx.lockAware {
@@ -3222,22 +3155,14 @@ func (tx *Transaction) stateSetReadLockAware() {
 	}
 }
 
-// LockAware reports whether the commit is lock-aware (sets FLAG_IS_LOCK_AWARE,
-// bypassing the locked-database check). Mirrors SetLockAware.
 func (tx *Transaction) stateLockAware() bool {
 	return tx.lockAware
 }
 
-// ReadLockAware reports whether reads bypass the locked-database check.
-// Mirrors SetReadLockAware.
 func (tx *Transaction) stateReadLockAware() bool {
 	return tx.readLockAware
 }
 
-// SetSizeLimit sets the maximum transaction size in bytes; a larger commit
-// fails 2101. Outside [32, 10_000_000] the limit is not applied and 2006 becomes
-// the deferred error every later op returns until reset, as libfdb_c's
-// extractIntOption throw lands in deferredError (NativeAPI.actor.cpp:7067-7069).
 func (tx *Transaction) stateSetSizeLimit(limit int64) {
 	if limit < 32 || limit > transactionSizeLimit {
 		tx.deferredErr.CompareAndSwap(nil, &wire.FDBError{Code: ErrInvalidOptionValue})
@@ -3246,22 +3171,10 @@ func (tx *Transaction) stateSetSizeLimit(limit int64) {
 	tx.sizeLimit = limit
 }
 
-// SetMaxRetryDelay caps the exponential backoff between retries.
-// Value in milliseconds. Matches C++ FDB_TR_OPTION_MAX_RETRY_DELAY.
 func (tx *Transaction) stateSetMaxRetryDelay(ms int64) {
 	tx.maxRetryDelay = time.Duration(ms) * time.Millisecond
 }
 
-// SetReadYourWritesDisable disables RYW for regular (non-snapshot) reads.
-// When set, Get/GetRange always read from the server, ignoring uncommitted writes.
-// Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
-//
-// libfdb_c forbids setting this option after any read or write: RYW setOptionImpl
-// throws client_invalid_operation BEFORE assigning the option
-// (ReadYourWrites.actor.cpp:2534-2542), so the option does NOT take effect; the throw
-// lands in deferredError (the option call itself succeeds) and every subsequent op
-// returns 2000 until reset (RFC-059). Match both halves: record the deferred error
-// AND leave rywDisabled unset. A clean (pre-op) disable applies normally.
 func (tx *Transaction) stateSetReadYourWritesDisable() {
 	if tx.hadRead.Load() || !tx.ryw.isEmpty() {
 		// CAS: first deferred error wins (the E2 contract above; C++
@@ -3272,16 +3185,10 @@ func (tx *Transaction) stateSetReadYourWritesDisable() {
 	tx.rywDisabled = true
 }
 
-// SetWriteConflictsDisabled disables write conflict ranges for all subsequent
-// mutations. Use for insert-only batch writes where keys are guaranteed unique
-// and all atomic operations commute (ADD, MAX, MIN). Significantly reduces
-// commit request size and eliminates conflict buffer allocations.
 func (tx *Transaction) stateSetWriteConflictsDisabled() {
 	tx.writeConflictsDisabled = true
 }
 
-// EnsureMutationCapacity pre-sizes the mutations and writeConflicts slices
-// to avoid growth allocations during batch writes. Call before a large batch.
 func (tx *Transaction) stateEnsureMutationCapacity(n int) {
 	tx.conflictMu.Lock()
 	if cap(tx.mutations) < n {
@@ -3297,48 +3204,26 @@ func (tx *Transaction) stateEnsureMutationCapacity(n int) {
 	tx.conflictMu.Unlock()
 }
 
-// SetSnapshotRYWDisable decrements the snapshot-RYW enable count (stored as the
-// disabled-oriented inverse, so it increments here). Matches FDB_TR_OPTION_SNAPSHOT_RYW_DISABLE
-// (libfdb_c does enabledCount--). When the net count is > 0 (more disables than enables),
-// Snapshot.Get/GetRange/GetKey read from the server, bypassing the RYW cache.
 func (tx *Transaction) stateSetSnapshotRYWDisable() {
 	tx.snapshotRYWDisableCount++
 }
 
-// SetSnapshotRYWEnable re-enables RYW for snapshot reads, undoing one prior
-// SetSnapshotRYWDisable. Matches FDB_TR_OPTION_SNAPSHOT_RYW_ENABLE (libfdb_c does
-// enabledCount++). The option is a counter, not a toggle: two disables require two enables to
-// re-enable, and an enable from the default pushes the count negative (still enabled).
 func (tx *Transaction) stateSetSnapshotRYWEnable() {
 	tx.snapshotRYWDisableCount--
 }
 
-// SnapshotRYWDisableCount reports the net snapshot-RYW-disable count (> 0 means snapshot reads
-// bypass the RYW cache). Read-only accessor used to verify database-level option propagation.
 func (tx *Transaction) stateSnapshotRYWDisableCount() int { return tx.snapshotRYWDisableCount }
 
-// SetSnapshotRYWDisableCount SETS the snapshot-RYW disable counter to n (vs the ++/-- of
-// SetSnapshotRYWDisable/Enable). It seeds the per-tx counter to a database default. Setting (not
-// incrementing) is idempotent under the retry replay of applyTxDefaults — matching libfdb_c, whose
-// reset() re-seeds snapshotRywEnabled = db->snapshotRywEnabled each attempt rather than accumulating.
 func (tx *Transaction) stateSetSnapshotRYWDisableCount(n int) { tx.snapshotRYWDisableCount = n }
 
-// BypassUnreadable reports whether FDB_TR_OPTION_BYPASS_UNREADABLE is set. Read-only accessor used
-// to verify database-level option propagation.
 func (tx *Transaction) stateBypassUnreadable() bool { return tx.ryw.getBypassUnreadable() }
 
-// CausalReadRisky reports whether the GRV causal-read-risky flag is set. Read-only accessor used to
-// verify database-level option propagation.
 func (tx *Transaction) stateCausalReadRisky() bool { return tx.causalReadRisky }
 
-// SetTenantId sets the tenant for this transaction. All operations will
-// be scoped to the tenant's key space. Use NoTenantID (-1) for no tenant.
 func (tx *Transaction) stateSetTenantId(id int64) {
 	tx.tenantId = id
 }
 
-// TenantId returns the current tenant ID for this transaction.
-// Returns NoTenantID (-1) if no tenant is set.
 func (tx *Transaction) stateTenantId() int64 {
 	return tx.tenantId
 }
@@ -3351,13 +3236,6 @@ const (
 	maxTransactionTagLength = 255
 )
 
-// SetTag adds a tag to this transaction for tag-based throttling, matching
-// FDBTransactionOptions::TAG (NativeAPI.actor.cpp:7115-7118).
-//
-// Check order follows TagSet::addTag (TagThrottle.actor.cpp:35-39) exactly:
-// length is validated first, then the count — and the count is checked BEFORE
-// the duplicate test, so adding a duplicate to an already-full set still fails
-// with too_many_tags rather than silently succeeding.
 func (tx *Transaction) stateSetTag(tag string) error {
 	if len(tag) > maxTransactionTagLength {
 		return &wire.FDBError{Code: 2110} // tag_too_long
@@ -3374,12 +3252,6 @@ func (tx *Transaction) stateSetTag(tag string) error {
 	return nil
 }
 
-// SetAutoThrottleTag adds a tag that is additionally eligible for ratekeeper
-// auto-throttling, matching FDBTransactionOptions::AUTO_THROTTLE_TAG
-// (NativeAPI.actor.cpp:7120-7124): the tag goes into BOTH the transaction tag
-// set and the read tag set. The transaction set drives the GRV request and the
-// commit tagSet; the read set is what C++ samples onto per-storage-server read
-// requests.
 func (tx *Transaction) stateSetAutoThrottleTag(tag string) error {
 	if err := tx.stateSetTag(tag); err != nil {
 		return err
@@ -3396,11 +3268,8 @@ func (tx *Transaction) stateSetAutoThrottleTag(tag string) error {
 	return nil
 }
 
-// Tags returns the transaction tag set in insertion order. Insertion order is
-// the wire order for the commit tagSet, so tests can assert it directly.
 func (tx *Transaction) stateTags() []string { return append([]string(nil), tx.tags...) }
 
-// ReadTags returns the auto-throttle (read) tag subset in insertion order.
 func (tx *Transaction) stateReadTags() []string { return append([]string(nil), tx.readTags...) }
 
 // encodeTagSet serializes tags the way TagSet's dynamic_size_traits does
@@ -3424,9 +3293,6 @@ func encodeTagSet(tags []string) []byte {
 	return out
 }
 
-// GetTagThrottledDuration returns the total time this transaction was delayed
-// by proxy tag throttling across all GRV requests. Matches C++
-// Transaction::getTagThrottledDuration() (NativeAPI.actor.cpp:7594).
 func (tx *Transaction) stateGetTagThrottledDuration() float64 {
 	return tx.proxyTagThrottledDuration
 }
@@ -3449,10 +3315,6 @@ func (tx *Transaction) grvFlags() uint32 {
 	return flags
 }
 
-// AddReadConflictRange adds an explicit read conflict range [begin, end).
-// If any key in this range is modified by another transaction between
-// this transaction's read version and commit, the commit will fail.
-// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_add_conflict_range.
 func (tx *Transaction) stateAddReadConflictRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
@@ -3497,16 +3359,10 @@ func (tx *Transaction) stateAddReadConflictRange(begin, end []byte) error {
 	return nil
 }
 
-// AddReadConflictKey adds a read conflict on a single key. Like AddReadConflictRange it is filtered
-// through the RYW write-map (C++ addReadConflictRange over [key, keyAfter(key)) → updateConflictMap,
-// ReadYourWrites.actor.cpp:1986): a self-written independent key adds no conflict; rywDisabled adds
-// the full single-key conflict directly (:1979). Identical to the Get-path helper, so delegate.
 func (tx *Transaction) stateAddReadConflictKey(key []byte) {
 	tx.addReadConflictForKeyRYW(key)
 }
 
-// AddWriteConflictRange adds an explicit write conflict range [begin, end).
-// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_add_conflict_range.
 func (tx *Transaction) stateAddWriteConflictRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
@@ -3534,16 +3390,10 @@ func (tx *Transaction) stateAddWriteConflictRange(begin, end []byte) error {
 	return nil
 }
 
-// AddWriteConflictKey adds a write conflict on a single key.
 func (tx *Transaction) stateAddWriteConflictKey(key []byte) {
 	tx.addWriteConflictForKey(key)
 }
 
-// reset clears transaction state for retry, preserving retryCount, backoff,
-// timeout, and retryLimit. Matches C++ TransactionState::reset() which
-// re-applies options. The deadline is re-computed from timeout so each
-// retry gets a fresh timeout window (matches C++ where set_option is
-// re-applied on reset, restarting the timer).
 // postCommitReset clears mutation buffers and conflict ranges after a
 // successful commit, preserving Go's auto-reuse behavior. C++ RYW API >=410
 // does not reset here (ReadYourWrites.actor.cpp:1383-1387,1405-1410).
@@ -3805,12 +3655,6 @@ func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 	return delay
 }
 
-// SetBypassUnreadable mirrors FDB_TR_OPTION_BYPASS_UNREADABLE
-// (ReadYourWrites.actor.cpp:2611-2613): reads of keys with pending
-// versionstamped writes return the write-map value with the placeholder
-// bytes as written instead of failing with accessed_unreadable (1036);
-// SVK's unmodified-unreadable candidate range reads through to storage.
-// RFC-098.
 func (tx *Transaction) stateSetBypassUnreadable(v bool) {
 	tx.ryw.setBypassUnreadable(v)
 }

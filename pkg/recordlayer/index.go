@@ -131,8 +131,6 @@ const (
 // Matches Java's Index predicate concept for sparse/filtered indexes.
 type IndexPredicate func(msg proto.Message) bool
 
-// Index represents a secondary index definition.
-// Matches Java's com.apple.foundationdb.record.metadata.Index.
 // CreatesDuplicates reports whether the index's root key expression fans out —
 // a single record can produce multiple index entries (e.g. an index over a
 // repeated/collection field). Ports Java's
@@ -171,6 +169,8 @@ func (i *Index) CreatesDuplicates() bool {
 	}
 }
 
+// Index represents a secondary index definition.
+// Matches Java's com.apple.foundationdb.record.metadata.Index.
 type Index struct {
 	Name           string
 	Type           string

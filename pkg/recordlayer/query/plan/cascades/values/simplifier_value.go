@@ -345,10 +345,7 @@ func composeFieldOverConstructor(v Value) Value {
 	return nil
 }
 
-// composeFieldOverField implements Java's ComposeFieldValueOverFieldValueRule:
-// field(field(v, path1), path2) is a nested field access. In Go's single-step
-// model this doesn't apply directly (FieldValue has one Field, not a path).
-// But when Child is another FieldValue accessing the same base, we can flatten.
+// tryCastConstant folds a CAST of cv to target, or returns nil when the cast fails.
 func tryCastConstant(cv *ConstantValue, target Type) (out *ConstantValue) {
 	cast := NewCastValue(cv, target)
 	result, err := cast.Evaluate(nil)

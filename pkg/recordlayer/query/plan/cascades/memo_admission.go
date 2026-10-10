@@ -181,10 +181,6 @@ func checkedStoredRelationType(handle values.ExactTypeHandle) (values.ExactTypeH
 	return exact, nil
 }
 
-// admitMemoExpression is the closed root registry required before an open
-// RelationalExpression method may be invoked. Each case checks typed nil before
-// the common GetResultValue path. Embedded or foreign implementations hit the
-// default and have no method called at all.
 // admitMemoRegistry answers ONLY the closed-manifest question: is this a
 // concrete expression type the repository knows, and is it non-nil as that type?
 //

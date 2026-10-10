@@ -177,7 +177,7 @@ func (c *ConstantValue) Type() Type {
 	return WithNullability(c.Typ, c.Value == nil)
 }
 
-// FieldValue references a column by name on a base value. In the full
+// fieldValue references a column by name on a base value. In the full
 // Java model, FieldValue always has a child value (typically a
 // QuantifiedObjectValue correlated to a quantifier) and a FieldPath
 // (multi-step for nested access). In Go, Child is optional for backward

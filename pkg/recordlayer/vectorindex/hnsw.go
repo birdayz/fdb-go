@@ -1725,18 +1725,6 @@ type parsedNode struct {
 	additional []byte
 }
 
-// hnswStorage handles FDB storage of HNSW graph nodes.
-// Supports two storage formats:
-//   - COMPACT (default): (layer, pk) → (nodeKind, vectorTuple, neighborsTuple)
-//   - INLINING (layers > 0 when UseInlining=true): (layer, pk, neighborPK) → neighborVector
-//
-// Wire-compatible with Java's CompactStorageAdapter and InliningStorageAdapter.
-//
-// Subspace layout:
-//
-//	Sub(0) — data: compact or inlining KVs
-//	Sub(1) — access info: () -> (entryPointLayer, entryPointPK, entryPointVectorTuple)
-//
 // errHNSWNotPresent marks a genuine "this node/layer is absent" result, as opposed
 // to a transient FDB failure (transaction_too_old, timeout) encountered while reading.
 // Graph callers MUST distinguish the two: an absent node is skipped (the graph simply
@@ -1759,6 +1747,17 @@ func hnswFatal(err error) error {
 	return err
 }
 
+// hnswStorage handles FDB storage of HNSW graph nodes.
+// Supports two storage formats:
+//   - COMPACT (default): (layer, pk) → (nodeKind, vectorTuple, neighborsTuple)
+//   - INLINING (layers > 0 when UseInlining=true): (layer, pk, neighborPK) → neighborVector
+//
+// Wire-compatible with Java's CompactStorageAdapter and InliningStorageAdapter.
+//
+// Subspace layout:
+//
+//	Sub(0) — data: compact or inlining KVs
+//	Sub(1) — access info: () -> (entryPointLayer, entryPointPK, entryPointVectorTuple)
 type hnswStorage struct {
 	dataSubspace    subspace.Subspace
 	accessSubspace  subspace.Subspace

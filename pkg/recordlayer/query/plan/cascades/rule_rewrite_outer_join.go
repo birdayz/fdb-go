@@ -58,11 +58,11 @@ func NewRewriteOuterJoinRule() *RewriteOuterJoinRule {
 	}
 }
 
-// Matcher returns the pattern.
 var _ ExpressionRule = (*RewriteOuterJoinRule)(nil)
 
 func (r *RewriteOuterJoinRule) ConstraintDependencies() []any { return nil }
 
+// Matcher returns the pattern.
 func (r *RewriteOuterJoinRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 // OnMatch rewrites a LEFT OUTER SelectExpression into the INNER + null-on-empty form.

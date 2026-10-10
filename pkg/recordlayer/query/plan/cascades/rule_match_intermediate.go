@@ -901,6 +901,14 @@ func mergeAliasMapsChecked(left, right *AliasMap) (*AliasMap, bool) {
 	return builder.Build(), true
 }
 
+// pendingSargable is a candidate placeholder binding collected during matching,
+// mapped once every placeholder has folded its comparisons.
+type pendingSargable struct {
+	ph  *predicates.Placeholder
+	cp  *predicates.ComparisonPredicate
+	rng *predicates.ComparisonRange
+}
+
 // matchSingleSourceAgainstSelect handles the subsumption case where a
 // single-source query Filter or pass-through Select is matched against a
 // candidate SelectExpression with Placeholder predicates. This is the core of
@@ -927,14 +935,6 @@ func mergeAliasMapsChecked(left, right *AliasMap) (*AliasMap, bool) {
 // Mirrors the predicate-mapping logic inside Java's
 // SelectExpression.subsumedBy, narrowed to the Filter-vs-Select
 // case that Go encounters alongside SelectMergeRule normalisation.
-// pendingSargable is a candidate placeholder binding collected during matching,
-// mapped once every placeholder has folded its comparisons.
-type pendingSargable struct {
-	ph  *predicates.Placeholder
-	cp  *predicates.ComparisonPredicate
-	rng *predicates.ComparisonRange
-}
-
 func matchSingleSourceAgainstSelect(
 	call *ExpressionRuleCall,
 	queryExpr expressions.RelationalExpression,

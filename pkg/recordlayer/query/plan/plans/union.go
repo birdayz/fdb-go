@@ -76,7 +76,7 @@ func (p *RecordQueryUnionPlan) structuralKey() *structuralKey {
 	return newStructuralKey()
 }
 
-// EqualsWithoutChildren is a constant-discriminated equality —
+// EqualsPlanWithoutChildren is a constant-discriminated equality —
 // union has no operator-specific node-info beyond its children.
 func (p *RecordQueryUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryUnionPlan)

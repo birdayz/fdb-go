@@ -736,6 +736,10 @@ func SPFreshDebugIntegrity(rtx *recordlayer.FDBRecordContext, store *recordlayer
 		len(pks), sampled, ok, missingEntry, targetStates, examples)
 }
 
+// spfreshSpecKey identifies a speculative centroid read by the exact
+// (cellID, fineID) key it was issued for.
+type spfreshSpecKey struct{ cellID, fineID int64 }
+
 // spfreshConsumeCentroidRead resolves a candidate centroid row from the
 // speculative snapshot burst when one was issued, adding the read conflict
 // key the lifecycle fence requires (snapshot + explicit conflict key is
@@ -743,10 +747,6 @@ func SPFreshDebugIntegrity(rtx *recordlayer.FDBRecordContext, store *recordlayer
 // read version, same data, same conflict surface). Candidates without a
 // burst future (forward children discovered mid-walk) fall back to the
 // direct serializable read.
-// spfreshSpecKey identifies a speculative centroid read by the exact
-// (cellID, fineID) key it was issued for.
-type spfreshSpecKey struct{ cellID, fineID int64 }
-
 func (m *spfreshIndexMaintainer) spfreshConsumeCentroidRead(storage *spfreshStorage, futs map[spfreshSpecKey]fdb.FutureByteSlice, cellID, fineID int64) (spfreshCentroidRow, error) {
 	fut, ok := futs[spfreshSpecKey{cellID, fineID}]
 	if !ok {

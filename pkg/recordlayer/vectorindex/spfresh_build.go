@@ -267,11 +267,6 @@ func (b *spfreshBuilder) stageInTx(rtx *recordlayer.FDBRecordContext, batch []sp
 	return nil
 }
 
-// finalize is §8 steps 4–6: wave A (per-cell fine k-means on the FULL staged
-// membership — the sampling floor doesn't move down a level — with sub-Lmin
-// fold, CENTROIDS_DONE), wave B (closure assignment across the completed
-// global table; postings + membership + ADD counters; staging cleared in the
-// closing tx, FINALIZED), and the generation flip.
 // spfreshBuildCellWorkers bounds the per-cell wave fan-out. The waves are
 // FDB-transaction + small-k-means work per INDEPENDENT cell (each cell owns
 // its cellfin task row, centroid rows, postings), so cells parallelize
@@ -340,6 +335,11 @@ func (b *spfreshBuilder) forEachCellParallel(fn func(cellID int64) error) error 
 	return firstErr
 }
 
+// finalize is §8 steps 4–6: wave A (per-cell fine k-means on the FULL staged
+// membership — the sampling floor doesn't move down a level — with sub-Lmin
+// fold, CENTROIDS_DONE), wave B (closure assignment across the completed
+// global table; postings + membership + ADD counters; staging cleared in the
+// closing tx, FINALIZED), and the generation flip.
 func (b *spfreshBuilder) finalize(ctx context.Context, seed int64) error {
 	fineIDs := make(map[int64][]int64)      // cellID -> fine ids
 	fineVecs := make(map[int64][][]float64) // cellID -> fine vectors

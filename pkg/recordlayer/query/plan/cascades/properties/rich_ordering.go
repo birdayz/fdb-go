@@ -432,7 +432,7 @@ func HasMultipleFixedBindings(bindings []OrderingBinding) bool {
 	return false
 }
 
-// FixedBinding returns the single fixed binding from the list.
+// SingleFixedBinding returns the single fixed binding from the list.
 // Panics if there isn't exactly one.
 func SingleFixedBinding(bindings []OrderingBinding) OrderingBinding {
 	for _, b := range bindings {

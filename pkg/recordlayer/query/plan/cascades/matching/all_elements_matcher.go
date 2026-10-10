@@ -7,6 +7,26 @@ package matching
 
 import "sync/atomic"
 
+// CollectionMatcher is the interface every collection-shaped matcher
+// implements — AllElementsMatcher / SomeElementsMatcher /
+// AtLeastElementsMatcher / ListMatcher. Mirrors Java's
+// `com.apple.foundationdb.record.query.plan.cascades.matching.structure.
+// CollectionMatcher`. Used by rule patterns that want to constrain
+// "this matcher must be one that matches a slice", as opposed to a
+// scalar Value or a Predicate.
+//
+// Rule authors typically use the concrete factories
+// (NewAllElementsMatcher, etc.) directly; the interface exists so
+// future combinators that compose collection matchers (e.g.
+// `combine(allElements, atLeastTwo)`) can take it as a parameter.
+type CollectionMatcher interface {
+	BindingMatcher
+	// isCollectionMatcher is a marker method — its only purpose is
+	// to confine the interface to the four concrete impls in this
+	// package. A bare `BindingMatcher` won't satisfy it.
+	isCollectionMatcher()
+}
+
 // AllElementsMatcher matches an []any input where EVERY element binds
 // the same downstream matcher. The downstream is invoked once per
 // element with the running partial bindings (AllOfMatcher convention),
@@ -36,26 +56,6 @@ import "sync/atomic"
 // `new(AllElementsMatcher)` calls receive distinct map-key identities
 // (no nonce field needed here — see AnyValue in matcher.go for the
 // zero-size-struct gotcha).
-// CollectionMatcher is the interface every collection-shaped matcher
-// implements — AllElementsMatcher / SomeElementsMatcher /
-// AtLeastElementsMatcher / ListMatcher. Mirrors Java's
-// `com.apple.foundationdb.record.query.plan.cascades.matching.structure.
-// CollectionMatcher`. Used by rule patterns that want to constrain
-// "this matcher must be one that matches a slice", as opposed to a
-// scalar Value or a Predicate.
-//
-// Rule authors typically use the concrete factories
-// (NewAllElementsMatcher, etc.) directly; the interface exists so
-// future combinators that compose collection matchers (e.g.
-// `combine(allElements, atLeastTwo)`) can take it as a parameter.
-type CollectionMatcher interface {
-	BindingMatcher
-	// isCollectionMatcher is a marker method — its only purpose is
-	// to confine the interface to the four concrete impls in this
-	// package. A bare `BindingMatcher` won't satisfy it.
-	isCollectionMatcher()
-}
-
 type AllElementsMatcher struct {
 	downstream BindingMatcher
 }

@@ -150,7 +150,7 @@ func (p *RecordQueryDistinctPlan) GetQuantifiers() []expressions.Quantifier {
 	return quantifierView(&p.innerQ)
 }
 
-// EqualsWithoutChildren — distinct plans carry the Streaming mode and the R3
+// structuralKey — distinct plans carry the Streaming mode and the R3
 // narrowing as operator-specific data. A streaming and a hash-set distinct dedup
 // to the same rows but are NOT execution-interchangeable (streaming assumes
 // ordered input), so they must not be conflated in the memo.

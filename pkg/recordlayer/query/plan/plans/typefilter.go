@@ -91,7 +91,7 @@ func (p *RecordQueryTypeFilterPlan) structuralKey() *structuralKey {
 	return newStructuralKey().Strs(p.recordTypes)
 }
 
-// EqualsWithoutChildren compares record-type sets.
+// EqualsPlanWithoutChildren compares record-type sets.
 func (p *RecordQueryTypeFilterPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool {
 	o, ok := other.(*RecordQueryTypeFilterPlan)
 	return ok && p.keyFor(p).Equal(o.keyFor(o))

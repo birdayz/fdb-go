@@ -1966,6 +1966,17 @@ func probeOuterBakedType(plan plans.RecordQueryPlan, outerAlias values.Correlati
 	return found, divergence
 }
 
+// legValueType is a raw leg's own type when the alias names one, else legType.
+func (b *ordinalJoinBuild) legValueType(id values.CorrelationIdentifier) values.Type {
+	if typ, raw := b.RawLegs[id]; raw {
+		return typ
+	}
+	if typ := b.legType(id); typ != nil {
+		return typ
+	}
+	return nil
+}
+
 // legType resolves the adapter's leg type for a leg alias.
 //
 // THE BAKED REFERENCES ARE THE AUTHORITY. LegTypes carries the types recovered
@@ -1984,16 +1995,6 @@ func probeOuterBakedType(plan plans.RecordQueryPlan, outerAlias values.Correlati
 // lifetime, so re-deciding per row would pay for the check on every row of
 // every join and still have nowhere to report it from (pairBinder has no error
 // return). Checked once at the boundary, this stays a plain accessor.
-func (b *ordinalJoinBuild) legValueType(id values.CorrelationIdentifier) values.Type {
-	if typ, raw := b.RawLegs[id]; raw {
-		return typ
-	}
-	if typ := b.legType(id); typ != nil {
-		return typ
-	}
-	return nil
-}
-
 func (b *ordinalJoinBuild) legType(id values.CorrelationIdentifier) *values.RecordType {
 	if exact := b.LegTypes[id]; exact != nil {
 		return exact
