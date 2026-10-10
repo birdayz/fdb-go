@@ -946,7 +946,7 @@ func TestDotRoundsProductsBeforeAccumulation(t *testing.T) {
 }
 
 // A decoded code estimates exactly as its stored bytes: DistanceCode is
-// Distance, and Finish over DotPair is Score, bit for bit.
+// Distance, Finish over Dot is Score, and the multi-sum Dots are Dot, bit for bit.
 func TestDecodeCodeEstimatesAsItsBytes(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(11))
@@ -968,7 +968,24 @@ func TestDecodeCodeEstimatesAsItsBytes(t *testing.T) {
 				if werr != nil || gerr != nil || !reflect.DeepEqual(gotData, wantData) {
 					t.Fatalf("metric %v exBits %d: DecodeCode %v, %v; Decode %v, %v", metric, exBits, gotData, gerr, wantData, werr)
 				}
-				d0, d1 := code.DotPair(q0, q1)
+				var others [3]*Code
+				var err error
+				for j := range others {
+					w := make([]float64, dims)
+					for i := range w {
+						w[i] = rng.NormFloat64() * 3
+					}
+					if _, others[j], err = q.DecodeCode(q.Encode(w), dims); err != nil {
+						t.Fatal(err)
+					}
+				}
+				d0, d1 := code.Dot(q0), code.Dot(q1)
+				if a, b, c, e := DotPairs(code, others[0], q0, q1); a != d0 || b != d1 || c != others[0].Dot(q0) || e != others[0].Dot(q1) {
+					t.Fatalf("metric %v exBits %d: DotPairs %v %v %v %v", metric, exBits, a, b, c, e)
+				}
+				if a, b, c, e := DotFour(code, others[0], others[1], others[2], q0); a != d0 || b != others[0].Dot(q0) || c != others[1].Dot(q0) || e != others[2].Dot(q0) {
+					t.Fatalf("metric %v exBits %d: DotFour %v %v %v %v", metric, exBits, a, b, c, e)
+				}
 				for i, pair := range []struct {
 					query []float64
 					dot   float64

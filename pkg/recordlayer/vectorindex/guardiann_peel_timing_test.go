@@ -21,8 +21,9 @@ import (
 // most 2.5 s at the admission edges (n = 2000 at d = 980, W = B; n = 1001 at
 // d = 2175) and at the acceptance fixtures' shapes (n = 2000 at d = 768,
 // n = 1001 at d = 2048), HALF precision, default KMeans knobs, Euclidean. The
-// admission ignores the metric and RaBitQ, so the two edges are also timed under
-// cosine and with RaBitQ-encoded primaries.
+// admission ignores the metric and RaBitQ, so W = B is also timed under cosine
+// and with RaBitQ (Euclidean and cosine), and at the edge of the knobs whose
+// restarts cost the most, I = 1, R = 31.
 //
 // Deliberate deviation from the design, which times the peel's wall clock under
 // the suite's concurrency: the budget is the process CPU the peel uses, GC
@@ -37,9 +38,9 @@ import (
 // floor(log2(n - 1)) refits, each fit run to all its iterations (no early
 // convergence) on all n vectors, a farthest-member sort of all n in every round
 // and each refit's assignment and score of all n. That bounds every admitted
-// input but for k-means reseeds (an empty or norm-less cluster), which add an
-// objective pass each. A miss is a Go performance defect in the peel, fixed in
-// Go; the bound B is never raised to meet it.
+// input but for k-means reseeds (an empty or norm-less cluster), which add k
+// objectives per vector each. A miss is a Go performance defect in the peel,
+// fixed in Go; the bound B is never raised to meet it.
 
 const peelTimeMargin = 2500 * time.Millisecond
 
@@ -92,18 +93,24 @@ func processCPU() time.Duration {
 
 func TestGuardiannPeelPerformanceCriterion(t *testing.T) {
 	shapes := []struct {
-		n, d   int
-		metric VectorMetric
-		raBitQ bool
+		n, d                 int
+		metric               VectorMetric
+		raBitQ               bool
+		iterations, restarts int
 	}{
-		{2000, 980, VectorMetricEuclidean, false},  // W = B
-		{1001, 2175, VectorMetricEuclidean, false}, // the first over-max size at its largest admitted d
-		{2000, 768, VectorMetricEuclidean, false},  // the d = 768 acceptance fixture
-		{1001, 2048, VectorMetricEuclidean, false}, // the d = 2048 acceptance fixture
-		{2000, 980, VectorMetricCosine, false},
-		{1001, 2175, VectorMetricCosine, false},
-		{2000, 980, VectorMetricEuclidean, true},
-		{1001, 2175, VectorMetricEuclidean, true},
+		{2000, 980, VectorMetricEuclidean, false, 8, 3},  // W = B
+		{1001, 2175, VectorMetricEuclidean, false, 8, 3}, // the first over-max size at its largest admitted d
+		{2000, 768, VectorMetricEuclidean, false, 8, 3},  // the d = 768 acceptance fixture
+		{1001, 2048, VectorMetricEuclidean, false, 8, 3}, // the d = 2048 acceptance fixture
+		{2000, 980, VectorMetricCosine, false, 8, 3},
+		{1001, 2175, VectorMetricCosine, false, 8, 3},
+		{2000, 980, VectorMetricEuclidean, true, 8, 3},
+		{1001, 2175, VectorMetricEuclidean, true, 8, 3},
+		{2000, 980, VectorMetricCosine, true, 8, 3},
+		{2000, 551, VectorMetricEuclidean, false, 1, 31}, // W = B at I = 1, R = 31
+		{2000, 551, VectorMetricCosine, false, 1, 31},
+		{2000, 551, VectorMetricEuclidean, true, 1, 31},
+		{2000, 551, VectorMetricCosine, true, 1, 31},
 	}
 	var worst time.Duration
 	for run := 0; run < 2; run++ {
@@ -111,6 +118,7 @@ func TestGuardiannPeelPerformanceCriterion(t *testing.T) {
 		for _, s := range shapes {
 			cfg := defaultGuardiannConfig(s.d)
 			cfg.metric, cfg.useRaBitQ = s.metric, s.raBitQ
+			cfg.kMeansMaxIterations, cfg.kMeansMaxRestarts = s.iterations, s.restarts
 			if !peelAdmitted(s.n, s.d, cfg.kMeansMaxIterations, cfg.kMeansMaxRestarts) {
 				t.Fatalf("shape n=%d d=%d is not admitted; the criterion times admitted shapes", s.n, s.d)
 			}
@@ -169,8 +177,8 @@ func TestGuardiannPeelPerformanceCriterion(t *testing.T) {
 					}
 				}
 				bound, boundCPU := time.Since(start), processCPU()-startCPU
-				t.Logf("n=%d d=%d metric=%v raBitQ=%t seed=%d: peel CPU %v wall %v (exit %d), worst case (%d refits) CPU %v wall %v",
-					s.n, s.d, s.metric, s.raBitQ, seed, peelCPU, peel, exit, refits, boundCPU, bound)
+				t.Logf("n=%d d=%d metric=%v raBitQ=%t I=%d R=%d seed=%d: peel CPU %v wall %v (exit %d), worst case (%d refits) CPU %v wall %v",
+					s.n, s.d, s.metric, s.raBitQ, s.iterations, s.restarts, seed, peelCPU, peel, exit, refits, boundCPU, bound)
 				worst = max(worst, peelCPU, boundCPU)
 			}
 		}

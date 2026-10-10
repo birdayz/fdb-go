@@ -103,7 +103,7 @@ func l2SquaredSequential(a, b []float64) float64 {
 
 // l2SquaredSequentialPair is l2SquaredSequential of v against c0 and c1: two
 // sums in their own order, interleaved so their add latencies overlap.
-// Not inlined: inlined, its accumulators spilled and it ran 1.8x slower.
+// Kept out of line: inlined into the assignment loop, its sums spill to memory.
 //
 //go:noinline
 func l2SquaredSequentialPair(v, c0, c1 []float64) (s0, s1 float64) {
@@ -118,6 +118,86 @@ func l2SquaredSequentialPair(v, c0, c1 []float64) (s0, s1 float64) {
 		s1 += d1 * d1
 	}
 	return s0, s1
+}
+
+// l2SquaredSequentialQuad is l2SquaredSequentialPair of v0 and of v1: four
+// interleaved sums.
+//
+//go:noinline
+func l2SquaredSequentialQuad(v0, v1, c0, c1 []float64) (s00, s01, s10, s11 float64) {
+	n := len(v0)
+	if len(v1) != n || len(c0) < n || len(c1) < n {
+		panic("l2SquaredSequentialQuad: lengths differ")
+	}
+	v1, c0, c1 = v1[:n], c0[:n], c1[:n]
+	for i, x := range v0 {
+		y := v1[i]
+		d00, d01 := x-c0[i], x-c1[i]
+		d10, d11 := y-c0[i], y-c1[i]
+		s00 += d00 * d00
+		s01 += d01 * d01
+		s10 += d10 * d10
+		s11 += d11 * d11
+	}
+	return s00, s01, s10, s11
+}
+
+// l2SquaredSequentialFour is (c - v)² summed for four vectors at once, which
+// rounds exactly as l2SquaredSequential(v, c).
+//
+//go:noinline
+func l2SquaredSequentialFour(c, v0, v1, v2, v3 []float64) (s0, s1, s2, s3 float64) {
+	n := len(c)
+	if len(v0) != n || len(v1) != n || len(v2) != n || len(v3) != n {
+		panic("l2SquaredSequentialFour: lengths differ")
+	}
+	v0, v1, v2, v3 = v0[:n], v1[:n], v2[:n], v3[:n]
+	for i, x := range c {
+		d0, d1, d2, d3 := x-v0[i], x-v1[i], x-v2[i], x-v3[i]
+		s0 += d0 * d0
+		s1 += d1 * d1
+		s2 += d2 * d2
+		s3 += d3 * d3
+	}
+	return s0, s1, s2, s3
+}
+
+// dotSequentialQuad is dotSequentialPair of v0 and of v1: four interleaved sums.
+//
+//go:noinline
+func dotSequentialQuad(v0, v1, c0, c1 []float64) (s00, s01, s10, s11 float64) {
+	n := len(v0)
+	if len(v1) != n || len(c0) < n || len(c1) < n {
+		panic("dotSequentialQuad: lengths differ")
+	}
+	v1, c0, c1 = v1[:n], c0[:n], c1[:n]
+	for i, x := range v0 {
+		y := v1[i]
+		s00 += x * c0[i]
+		s01 += x * c1[i]
+		s10 += y * c0[i]
+		s11 += y * c1[i]
+	}
+	return s00, s01, s10, s11
+}
+
+// dotSequentialFour is c·v summed for four vectors at once, which rounds
+// exactly as dotSequential(v, c).
+//
+//go:noinline
+func dotSequentialFour(c, v0, v1, v2, v3 []float64) (s0, s1, s2, s3 float64) {
+	n := len(c)
+	if len(v0) != n || len(v1) != n || len(v2) != n || len(v3) != n {
+		panic("dotSequentialFour: lengths differ")
+	}
+	v0, v1, v2, v3 = v0[:n], v1[:n], v2[:n], v3[:n]
+	for i, x := range c {
+		s0 += x * v0[i]
+		s1 += x * v1[i]
+		s2 += x * v2[i]
+		s3 += x * v3[i]
+	}
+	return s0, s1, s2, s3
 }
 
 func dotSequential(a, b []float64) float64 {
@@ -163,7 +243,7 @@ func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors 
 	case maxRestarts < 0:
 		return kMeansResult{}, &recordlayer.IllegalArgumentError{Message: "maxRestarts must be >= 0"}
 	}
-	a := kMeansAdapter{codec: codec}
+	l := newLloyd(kMeansAdapter{codec: codec}, vectors)
 	n := len(vectors)
 	dims := len(vectors[0].data)
 	if k == 1 {
@@ -172,26 +252,24 @@ func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors 
 			addInto(centroid, v.data)
 		}
 		scale(centroid, 1/float64(n))
-		if a.meaninglessNorm(centroid) {
-			index, err := farthestVectorIndex(a, vectors, [][]float64{centroid})
+		if l.a.meaninglessNorm(centroid) {
+			index, err := l.farthest([][]float64{centroid})
 			if err != nil {
 				return kMeansResult{}, err
 			}
 			copy(centroid, vectors[index].data)
 		} else {
-			a.renormalize(centroid)
+			l.a.renormalize(centroid)
 		}
 		res := kMeansResult{
 			centroids: []gVector{{data: centroid, typ: vectorcodec.TypeDouble}}, clusterSizes: []int{n},
 			assignment: make([]int, n), distances: make([]float64, n),
 		}
-		for i, v := range vectors {
-			var err error
-			res.distances[i], err = a.baseObjective(v, centroid)
-			if err != nil {
-				return kMeansResult{}, err
-			}
-			res.objective += res.distances[i]
+		if err := l.objectivesTo(centroid, res.distances); err != nil {
+			return kMeansResult{}, err
+		}
+		for _, d := range res.distances {
+			res.objective += d
 		}
 		return res, nil
 	}
@@ -199,10 +277,9 @@ func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors 
 	for c := range next {
 		next[c] = make([]float64, dims)
 	}
-	norms := a.cosineNorms(vectors, k)
 	var best *kMeansResult
 	for r := 0; r <= maxRestarts; r++ {
-		centroids, err := initKMeansPP(a, random, vectors, k)
+		centroids, toFirst, err := l.initKMeansPP(random, k)
 		if err != nil {
 			return kMeansResult{}, err
 		}
@@ -216,17 +293,18 @@ func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors 
 			for c := range next {
 				clear(next[c])
 			}
-			changed, err := assignmentStep(a, vectors, norms, centroids, assignment, projected, next, nil)
+			changed, err := l.assign(centroids, toFirst, assignment, projected, next, nil)
 			if err != nil {
 				return kMeansResult{}, err
 			}
+			toFirst = nil
 			copy(sizes, projected)
 			if changed == 0 && stopWhenStable {
 				break
 			}
 			for c := 0; c < k; c++ {
 				if sizes[c] == 0 {
-					index, err := farthestVectorIndex(a, vectors, centroids)
+					index, err := l.farthest(centroids)
 					if err != nil {
 						return kMeansResult{}, err
 					}
@@ -235,21 +313,21 @@ func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors 
 					continue
 				}
 				scale(next[c], 1/float64(sizes[c]))
-				if a.meaninglessNorm(next[c]) {
-					index, err := farthestVectorIndex(a, vectors, centroids)
+				if l.a.meaninglessNorm(next[c]) {
+					index, err := l.farthest(centroids)
 					if err != nil {
 						return kMeansResult{}, err
 					}
 					copy(next[c], vectors[index].data)
 				} else {
-					a.renormalize(next[c])
+					l.a.renormalize(next[c])
 				}
 			}
 			centroids, next = next, centroids
 		}
 		projected := make([]int, k)
 		cand := kMeansResult{distances: make([]float64, n)}
-		if _, err = assignmentStep(a, vectors, norms, centroids, assignment, projected, nil, cand.distances); err != nil {
+		if _, err = l.assign(centroids, nil, assignment, projected, nil, cand.distances); err != nil {
 			return kMeansResult{}, err
 		}
 		cand.clusterSizes, cand.assignment = projected, append([]int(nil), assignment...)
@@ -273,7 +351,7 @@ func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors 
 	return *best, nil
 }
 
-// Not inlined, as l2SquaredSequentialPair.
+// Kept out of line, as l2SquaredSequentialPair; the loop around it runs faster.
 //
 //go:noinline
 func addInto(dst, v []float64) {
@@ -292,67 +370,172 @@ func scale(v []float64, f float64) {
 	}
 }
 
-// cosineNorms is the vectors' squared norms when a k = 2 cosine fit can take
-// its objectives from them, else nil.
-func (a kMeansAdapter) cosineNorms(vectors []gVector, k int) []float64 {
-	if k != 2 || !a.plainCosine() {
-		return nil
-	}
-	norms := make([]float64, len(vectors))
-	for i, v := range vectors {
-		norms[i] = dotSequential(v.data, v.data)
-	}
-	return norms
+// objKind is how a vector's objective is computed: by a kernel, or else by
+// baseObjective.
+type objKind uint8
+
+const (
+	objGeneral objKind = iota
+	objL2              // l2SquaredSequential
+	objCosine          // javaMetricDistance's cosine, from the vector's squared norm
+	objCode            // the RaBitQ estimate, from the vector's decoded code
+)
+
+// lloyd is a fit's vectors with what their objectives reuse: each vector's
+// kind and, for plain cosine, its squared norm.
+type lloyd struct {
+	a       kMeansAdapter
+	vectors []gVector
+	kinds   []objKind
+	norms   []float64
+	scratch []float64
 }
 
-// assignmentStep assigns each vector to its nearest centroid, with next also
-// summing it into next[c] in vector order and with distances recording it.
-func assignmentStep(a kMeansAdapter, vectors []gVector, norms []float64, centroids [][]float64, assignment, projected []int,
+func newLloyd(a kMeansAdapter, vectors []gVector) *lloyd {
+	l := &lloyd{a: a, vectors: vectors, kinds: make([]objKind, len(vectors))}
+	if a.plainCosine() {
+		l.norms = make([]float64, len(vectors))
+	}
+	for i, v := range vectors {
+		switch {
+		case l.norms != nil:
+			l.kinds[i], l.norms[i] = objCosine, dotSequential(v.data, v.data)
+		case a.codec.quantizer != nil && v.typ == rabitq.TypeByte && v.code != nil:
+			l.kinds[i] = objCode
+		case a.sequentialL2(v):
+			l.kinds[i] = objL2
+		}
+	}
+	return l
+}
+
+// target is what objectives against one centroid share.
+type target struct {
+	c      []float64
+	norm   float64        // its squared norm, for cosine
+	scorer *rabitq.Scorer // its RaBitQ scorer
+}
+
+func (l *lloyd) target(c []float64) target {
+	t := target{c: c}
+	if l.norms != nil {
+		t.norm = dotSequential(c, c)
+	}
+	if l.a.codec.quantizer != nil {
+		t.scorer = l.a.codec.quantizer.NewScorer(c)
+	}
+	return t
+}
+
+// codeObjective is the objective of a code whose Dot with the scorer's query is dot.
+func (l *lloyd) codeObjective(sc *rabitq.Scorer, code *rabitq.Code, dot float64) (float64, error) {
+	return l.a.objectiveOf(l.a.codec.fromEstimate(sc.Finish(code, dot)))
+}
+
+// objective is baseObjective(vectors[i], t.c).
+func (l *lloyd) objective(i int, t target) (float64, error) {
+	v := l.vectors[i]
+	switch l.kinds[i] {
+	case objL2:
+		return l2SquaredSequential(v.data, t.c), nil
+	case objCosine:
+		return cosineFromDot(dotSequential(v.data, t.c), l.norms[i], t.norm), nil
+	case objCode:
+		return l.codeObjective(t.scorer, v.code, v.code.Dot(t.c))
+	}
+	return l.a.baseObjective(v, t.c)
+}
+
+// objectivesTo writes every vector's objective against c into out, four
+// vectors per kernel pass where their kinds allow.
+func (l *lloyd) objectivesTo(c []float64, out []float64) error {
+	t := l.target(c)
+	vs := l.vectors
+	for i := 0; i < len(vs); {
+		kind := l.kinds[i]
+		if kind == objGeneral || i+4 > len(vs) || l.kinds[i+1] != kind || l.kinds[i+2] != kind || l.kinds[i+3] != kind {
+			var err error
+			if out[i], err = l.objective(i, t); err != nil {
+				return err
+			}
+			i++
+			continue
+		}
+		v, o := vs[i:i+4], out[i:i+4]
+		switch kind {
+		case objL2:
+			o[0], o[1], o[2], o[3] = l2SquaredSequentialFour(c, v[0].data, v[1].data, v[2].data, v[3].data)
+		case objCosine:
+			d0, d1, d2, d3 := dotSequentialFour(c, v[0].data, v[1].data, v[2].data, v[3].data)
+			for j, d := range [4]float64{d0, d1, d2, d3} {
+				o[j] = cosineFromDot(d, l.norms[i+j], t.norm)
+			}
+		case objCode:
+			d0, d1, d2, d3 := rabitq.DotFour(v[0].code, v[1].code, v[2].code, v[3].code, c)
+			for j, d := range [4]float64{d0, d1, d2, d3} {
+				var err error
+				if o[j], err = l.codeObjective(t.scorer, v[j].code, d); err != nil {
+					return err
+				}
+			}
+		}
+		i += 4
+	}
+	return nil
+}
+
+// assign assigns each vector to its nearest centroid, with next also summing
+// it into next[c] in vector order and with distances recording it. toFirst,
+// when set, holds the vectors' objectives against centroids[0].
+func (l *lloyd) assign(centroids [][]float64, toFirst []float64, assignment, projected []int,
 	next [][]float64, distances []float64,
 ) (int, error) {
-	var nb0, nb1 float64
-	var sc0, sc1 *rabitq.Scorer
-	switch {
-	case norms != nil:
-		nb0, nb1 = dotSequential(centroids[0], centroids[0]), dotSequential(centroids[1], centroids[1])
-	case len(centroids) == 2 && a.codec.quantizer != nil:
-		sc0, sc1 = a.codec.quantizer.NewScorer(centroids[0]), a.codec.quantizer.NewScorer(centroids[1])
+	k := len(centroids)
+	targets := make([]target, k)
+	for c := range centroids {
+		targets[c] = l.target(centroids[c])
+	}
+	var toSecond []float64
+	if toFirst != nil && k == 2 {
+		if cap(l.scratch) < len(l.vectors) {
+			l.scratch = make([]float64, len(l.vectors))
+		}
+		toSecond = l.scratch[:len(l.vectors)]
+		if err := l.objectivesTo(centroids[1], toSecond); err != nil {
+			return 0, err
+		}
 	}
 	changed := 0
-	for i, v := range vectors {
-		bestC := 0
-		var bestScore, s0, s1 float64
-		pair := true
-		switch {
-		case norms != nil:
-			d0, d1 := dotSequentialPair(v.data, centroids[0], centroids[1])
-			s0, s1 = cosineFromDot(d0, norms[i], nb0), cosineFromDot(d1, norms[i], nb1)
-		case sc0 != nil && v.typ == rabitq.TypeByte && v.code != nil:
-			d0, d1 := v.code.DotPair(centroids[0], centroids[1])
-			var err error
-			if s0, err = a.objectiveOf(a.codec.estimated(sc0.Finish(v.code, d0))); err != nil {
-				return 0, err
-			}
-			if s1, err = a.objectiveOf(a.codec.estimated(sc1.Finish(v.code, d1))); err != nil {
-				return 0, err
-			}
-		case len(centroids) == 2 && a.sequentialL2(v):
-			s0, s1 = l2SquaredSequentialPair(v.data, centroids[0], centroids[1])
-		default:
-			pair = false
+	apply := func(i int, bestC int, bestScore float64) {
+		if assignment[i] != bestC {
+			assignment[i] = bestC
+			changed++
 		}
-		if pair {
-			bestScore = s0
-			if s1 < s0 {
-				bestScore, bestC = s1, 1
-			}
+		projected[bestC]++
+		if next != nil {
+			addInto(next[bestC], l.vectors[i].data)
+		}
+		if distances != nil {
+			distances[i] = bestScore
+		}
+	}
+	nearer := func(i int, s0, s1 float64) {
+		if s1 < s0 {
+			apply(i, 1, s1)
 		} else {
-			var err error
-			if bestScore, err = a.baseObjective(v, centroids[0]); err != nil {
+			apply(i, 0, s0)
+		}
+	}
+	vs := l.vectors
+	for i := 0; i < len(vs); {
+		if k != 2 {
+			bestC := 0
+			bestScore, err := l.objective(i, targets[0])
+			if err != nil {
 				return 0, err
 			}
-			for c := 1; c < len(centroids); c++ {
-				s, err := a.baseObjective(v, centroids[c])
+			for c := 1; c < k; c++ {
+				s, err := l.objective(i, targets[c])
 				if err != nil {
 					return 0, err
 				}
@@ -360,37 +543,81 @@ func assignmentStep(a kMeansAdapter, vectors []gVector, norms []float64, centroi
 					bestScore, bestC = s, c
 				}
 			}
+			apply(i, bestC, bestScore)
+			i++
+			continue
 		}
-		if assignment[i] != bestC {
-			assignment[i] = bestC
-			changed++
+		if toSecond != nil {
+			nearer(i, toFirst[i], toSecond[i])
+			i++
+			continue
 		}
-		projected[bestC]++
-		if next != nil {
-			addInto(next[bestC], v.data)
+		kind := l.kinds[i]
+		c0, c1 := centroids[0], centroids[1]
+		if kind != objGeneral && i+1 < len(vs) && l.kinds[i+1] == kind {
+			// Two vectors against both centroids: four sums per kernel pass.
+			var s [4]float64
+			switch kind {
+			case objL2:
+				s[0], s[1], s[2], s[3] = l2SquaredSequentialQuad(vs[i].data, vs[i+1].data, c0, c1)
+			case objCosine:
+				d00, d01, d10, d11 := dotSequentialQuad(vs[i].data, vs[i+1].data, c0, c1)
+				s[0], s[1] = cosineFromDot(d00, l.norms[i], targets[0].norm), cosineFromDot(d01, l.norms[i], targets[1].norm)
+				s[2], s[3] = cosineFromDot(d10, l.norms[i+1], targets[0].norm), cosineFromDot(d11, l.norms[i+1], targets[1].norm)
+			case objCode:
+				d00, d01, d10, d11 := rabitq.DotPairs(vs[i].code, vs[i+1].code, c0, c1)
+				for j, d := range [4]float64{d00, d01, d10, d11} {
+					var err error
+					code := vs[i+j/2].code
+					if s[j], err = l.codeObjective(targets[j%2].scorer, code, d); err != nil {
+						return 0, err
+					}
+				}
+			}
+			nearer(i, s[0], s[1])
+			nearer(i+1, s[2], s[3])
+			i += 2
+			continue
 		}
-		if distances != nil {
-			distances[i] = bestScore
+		var s0, s1 float64
+		switch kind {
+		case objL2:
+			s0, s1 = l2SquaredSequentialPair(vs[i].data, c0, c1)
+		case objCosine:
+			d0, d1 := dotSequentialPair(vs[i].data, c0, c1)
+			s0, s1 = cosineFromDot(d0, l.norms[i], targets[0].norm), cosineFromDot(d1, l.norms[i], targets[1].norm)
+		default:
+			var err error
+			if s0, err = l.objective(i, targets[0]); err != nil {
+				return 0, err
+			}
+			if s1, err = l.objective(i, targets[1]); err != nil {
+				return 0, err
+			}
 		}
+		nearer(i, s0, s1)
+		i++
 	}
 	return changed, nil
 }
 
-func initKMeansPP(a kMeansAdapter, random *splittableRandom, vectors []gVector, k int) ([][]float64, error) {
+// initKMeansPP is k-means++ seeding. It also returns the vectors' objectives
+// against the first centroid when they are still exact (k = 2).
+func (l *lloyd) initKMeansPP(random *splittableRandom, k int) ([][]float64, []float64, error) {
+	vectors := l.vectors
 	n := len(vectors)
 	centroids := make([][]float64, 0, k)
 	latest := append([]float64(nil), vectors[random.nextInt(n)].data...)
 	centroids = append(centroids, latest)
 	weights := make([]float64, n)
-	total := 0.0
-	for i, v := range vectors {
-		var err error
-		weights[i], err = a.baseObjective(v, latest)
-		if err != nil {
-			return nil, err
-		}
-		total += weights[i]
+	if err := l.objectivesTo(latest, weights); err != nil {
+		return nil, nil, err
 	}
+	total := 0.0
+	for _, w := range weights {
+		total += w
+	}
+	var latestObjectives []float64
 	for len(centroids) < k {
 		var chosen int
 		if total == 0 {
@@ -410,12 +637,14 @@ func initKMeansPP(a kMeansAdapter, random *splittableRandom, vectors []gVector, 
 		latest = append([]float64(nil), vectors[chosen].data...)
 		centroids = append(centroids, latest)
 		if len(centroids) < k {
+			if latestObjectives == nil {
+				latestObjectives = make([]float64, n)
+			}
+			if err := l.objectivesTo(latest, latestObjectives); err != nil {
+				return nil, nil, err
+			}
 			total = 0
-			for i, v := range vectors {
-				d, err := a.baseObjective(v, latest)
-				if err != nil {
-					return nil, err
-				}
+			for i, d := range latestObjectives {
 				if d < weights[i] {
 					weights[i] = d
 				}
@@ -423,22 +652,31 @@ func initKMeansPP(a kMeansAdapter, random *splittableRandom, vectors []gVector, 
 			}
 		}
 	}
-	return centroids, nil
+	if k != 2 {
+		weights = nil
+	}
+	return centroids, weights, nil
 }
 
-func farthestVectorIndex(a kMeansAdapter, vectors []gVector, centroids [][]float64) (int, error) {
-	best, bestIdx := -1.0, 0
-	for i, v := range vectors {
-		m := math.MaxFloat64
-		for _, c := range centroids {
-			o, err := a.baseObjective(v, c)
-			if err != nil {
-				return 0, err
-			}
-			if o < m {
-				m = o
+// farthest is the index of the vector farthest from its nearest centroid.
+func (l *lloyd) farthest(centroids [][]float64) (int, error) {
+	nearest := make([]float64, len(l.vectors))
+	for i := range nearest {
+		nearest[i] = math.MaxFloat64
+	}
+	objectives := make([]float64, len(l.vectors))
+	for _, centroid := range centroids {
+		if err := l.objectivesTo(centroid, objectives); err != nil {
+			return 0, err
+		}
+		for i, o := range objectives {
+			if o < nearest[i] {
+				nearest[i] = o
 			}
 		}
+	}
+	best, bestIdx := -1.0, 0
+	for i, m := range nearest {
 		if m > best {
 			best, bestIdx = m, i
 		}

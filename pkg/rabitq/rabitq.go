@@ -809,21 +809,40 @@ func finiteEstimate(metric Metric, fAddEx, gAdd, fRescaleEx, dotProduct float64)
 
 // Code is a stored code decoded once, so estimates against it skip the unpack.
 type Code struct {
-	fAddEx, fRescaleEx, cb float64
-	comps                  []int16
+	fAddEx, fRescaleEx float64
+	comps              []uint16
+	centred            *centredTable // each component value less the centre
+}
+
+// centredTable maps a component to float64(component) - cb, the factor Score
+// multiplies the query by; components have at most 9 bits.
+type centredTable [512]float64
+
+var centredTables [len(tightStart)]centredTable
+
+func init() {
+	for exBits := range centredTables {
+		cb := float64(int(1)<<exBits) - 0.5
+		for c := range centredTables[exBits] {
+			centredTables[exBits][c] = float64(c) - cb
+		}
+	}
 }
 
 // DecodeCode is Decode that also returns the code, from the same unpack.
 func (q *Quantizer) DecodeCode(storedBytes []byte, numDimensions int) ([]float64, *Code, error) {
+	if !ValidNumExBits(q.numExBits) {
+		return nil, nil, fmt.Errorf("rabitq: %d extra bits is not encodable", q.numExBits)
+	}
 	encoded, err := EncodedVectorFromBytes(storedBytes, numDimensions, q.numExBits)
 	if err != nil {
 		return nil, nil, err
 	}
-	comps := make([]int16, len(encoded.Encoded))
+	comps := make([]uint16, len(encoded.Encoded))
 	for i, c := range encoded.Encoded {
-		comps[i] = int16(c) //nolint:gosec // components have at most 9 bits
+		comps[i] = uint16(c) //nolint:gosec // components have at most 9 bits
 	}
-	code := &Code{fAddEx: encoded.FAddEx, fRescaleEx: encoded.FRescaleEx, cb: float64(int(1)<<q.numExBits) - 0.5, comps: comps}
+	code := &Code{fAddEx: encoded.FAddEx, fRescaleEx: encoded.FRescaleEx, comps: comps, centred: &centredTables[q.numExBits]}
 	return reconstruct(encoded, q.numExBits), code, nil
 }
 
@@ -833,31 +852,62 @@ func (q *Quantizer) DistanceCode(query []float64, code *Code) (float64, error) {
 	if q.metric == MetricCosine && (!(gAdd > 0.0) || math.IsInf(gAdd, 0) || math.IsNaN(gAdd)) {
 		return 0, fmt.Errorf("rabitq: distance estimate is not finite: %v", math.NaN())
 	}
-	var dotProduct float64
-	for i := 0; i < len(code.comps) && i < len(query); i++ {
-		dotProduct += query[i] * (float64(code.comps[i]) - code.cb)
-	}
-	return finiteEstimate(q.metric, code.fAddEx, gAdd, code.fRescaleEx, dotProduct)
+	return finiteEstimate(q.metric, code.fAddEx, gAdd, code.fRescaleEx, code.Dot(query))
 }
 
-// DotPair is the sums Score accumulates for queries q0 and q1: two sequential
-// sums, interleaved; not inlined, so its accumulators stay in registers.
+// Dot is the sum Score accumulates for the query q.
+func (c *Code) Dot(q []float64) float64 {
+	t := c.centred
+	var d float64
+	for i := 0; i < len(c.comps) && i < len(q); i++ {
+		d += q[i] * t[c.comps[i]&511]
+	}
+	return d
+}
+
+// DotPairs is Dot of codes c0 and c1, of one length, with queries q0 and q1,
+// each at least that long: four interleaved sums, not inlined so that they
+// stay in registers.
 //
 //go:noinline
-func (c *Code) DotPair(q0, q1 []float64) (d0, d1 float64) {
-	if len(q0) < len(c.comps) || len(q1) < len(c.comps) {
-		panic("rabitq: DotPair query shorter than code")
+func DotPairs(c0, c1 *Code, q0, q1 []float64) (d00, d01, d10, d11 float64) {
+	n := len(c0.comps)
+	if len(c1.comps) != n || len(q0) < n || len(q1) < n {
+		panic("rabitq: DotPairs lengths differ")
 	}
-	q0, q1 = q0[:len(c.comps)], q1[:len(c.comps)]
-	for i, k := range c.comps {
-		x := float64(k) - c.cb
-		d0 += q0[i] * x
-		d1 += q1[i] * x
+	t0, t1 := c0.centred, c1.centred
+	k1, q0, q1 := c1.comps[:n], q0[:n], q1[:n]
+	for i, k := range c0.comps {
+		x, y := t0[k&511], t1[k1[i]&511]
+		d00 += q0[i] * x
+		d01 += q1[i] * x
+		d10 += q0[i] * y
+		d11 += q1[i] * y
 	}
-	return d0, d1
+	return d00, d01, d10, d11
 }
 
-// Finish is Score of the code given its DotPair sum for this scorer's query.
+// DotFour is Dot of four codes of one length with q, at least that long.
+//
+//go:noinline
+func DotFour(c0, c1, c2, c3 *Code, q []float64) (d0, d1, d2, d3 float64) {
+	n := len(c0.comps)
+	if len(c1.comps) != n || len(c2.comps) != n || len(c3.comps) != n || len(q) < n {
+		panic("rabitq: DotFour lengths differ")
+	}
+	t0, t1, t2, t3 := c0.centred, c1.centred, c2.centred, c3.centred
+	k1, k2, k3, q := c1.comps[:n], c2.comps[:n], c3.comps[:n], q[:n]
+	for i, k := range c0.comps {
+		x := q[i]
+		d0 += x * t0[k&511]
+		d1 += x * t1[k1[i]&511]
+		d2 += x * t2[k2[i]&511]
+		d3 += x * t3[k3[i]&511]
+	}
+	return d0, d1, d2, d3
+}
+
+// Finish is Score of the code given its Dot sum for this scorer's query.
 func (s *Scorer) Finish(code *Code, dot float64) (float64, error) {
 	if s.metric == MetricCosine && (!(s.gAdd > 0.0) || math.IsInf(s.gAdd, 0) || math.IsNaN(s.gAdd)) {
 		return 0, fmt.Errorf("rabitq: distance estimate is not finite: %v", math.NaN())

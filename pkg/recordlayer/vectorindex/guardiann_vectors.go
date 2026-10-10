@@ -116,9 +116,9 @@ func (c *guardiannVectorCodec) distance(a, b gVector) (float64, error) {
 	}
 	switch {
 	case a.typ != rabitq.TypeByte && b.typ == rabitq.TypeByte:
-		return c.estimated(c.estimate(a.data, b))
+		return c.fromEstimate(c.estimate(a.data, b))
 	case a.typ == rabitq.TypeByte && b.typ != rabitq.TypeByte:
-		return c.estimated(c.estimate(b.data, a))
+		return c.fromEstimate(c.estimate(b.data, a))
 	}
 	d := javaMetricDistance(a.data, b.data, c.config.metric)
 	if math.IsNaN(d) || math.IsInf(d, 0) {
@@ -135,9 +135,9 @@ func (c *guardiannVectorCodec) estimate(query []float64, v gVector) (float64, er
 	return c.quantizer.Distance(query, v.encoded, c.config.numDimensions)
 }
 
-// estimated is the distance of a RaBitQ estimate d, which is squared for the
+// fromEstimate is the distance of a RaBitQ estimate d, which is squared for the
 // Euclidean metrics.
-func (c *guardiannVectorCodec) estimated(d float64, err error) (float64, error) {
+func (c *guardiannVectorCodec) fromEstimate(d float64, err error) (float64, error) {
 	if err == nil {
 		switch c.config.metric {
 		case VectorMetricEuclidean:
