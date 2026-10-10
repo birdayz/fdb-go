@@ -32,6 +32,8 @@ func TestGuardiannPeelAdmission(t *testing.T) {
 		{1001, 2048, 8, 3, true},  // the d = 2048 fixture shape
 		{2000, 768, 8, 3, true},   // 768-dimensional embeddings at the hard cap
 		{2000, 768, 16, 3, false}, // twice the iterations doubles W: the knob factor
+		{2000, 490, 16, 3, true},  // W = B at twice the iterations
+		{2000, 500, 16, 3, false}, // the iteration term refuses what the pass term admits
 		{2000, 4096, 1, 0, false}, // smaller knobs never enlarge admission: the floor
 		{2000, 551, 1, 31, true},  // 32 single-iteration restarts: 128 passes, f = 16/9
 		{2000, 552, 1, 31, false}, // the pass term refuses what the iteration term admits

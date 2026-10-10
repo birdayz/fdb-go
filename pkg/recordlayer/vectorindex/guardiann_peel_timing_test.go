@@ -18,9 +18,10 @@ import (
 // criterion"): an admitted peel that outlasts FDB's 5 s transaction window
 // fails with 1007 on every attempt, so the WHOLE peel — the candidate fit,
 // every refit, the sorts, the assignment passes and the scoring — must take at
-// most 2.5 s at the admission edges (n = 2000 at d = 980, W = B; n = 1001 at
-// d = 2175) and at the acceptance fixtures' shapes (n = 2000 at d = 768,
-// n = 1001 at d = 2048), HALF precision, default KMeans knobs, Euclidean. The
+// most 2.5 s at the admission edges of the default hard cap (n = 2000 at
+// d = 980, W = B; n = 1001 at d = 2175) and at the acceptance fixtures' shapes
+// (n = 2000 at d = 768, n = 1001 at d = 2048), HALF precision, default KMeans
+// knobs, Euclidean. The
 // admission ignores the metric and RaBitQ, so W = B is also timed under cosine
 // and with RaBitQ (Euclidean and cosine), and at the edge of the knobs whose
 // restarts cost the most, I = 1, R = 31.

@@ -818,16 +818,15 @@ type Code struct {
 // multiplies the query by; components have at most 9 bits.
 type centredTable [512]float64
 
-var centredTables [len(tightStart)]centredTable
-
-func init() {
-	for exBits := range centredTables {
+var centredTables = func() (t [len(tightStart)]centredTable) {
+	for exBits := range t {
 		cb := float64(int(1)<<exBits) - 0.5
-		for c := range centredTables[exBits] {
-			centredTables[exBits][c] = float64(c) - cb
+		for c := range t[exBits] {
+			t[exBits][c] = float64(c) - cb
 		}
 	}
-}
+	return t
+}()
 
 // DecodeCode is Decode that also returns the code, from the same unpack.
 func (q *Quantizer) DecodeCode(storedBytes []byte, numDimensions int) ([]float64, *Code, error) {
