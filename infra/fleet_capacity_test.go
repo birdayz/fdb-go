@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -387,14 +388,20 @@ func TestMatrixEntriesSizesOrRefuses(t *testing.T) {
 }
 
 // TestSelfHostedJobsReapLeakedContainersFirst pins that every job on the pool
-// reaps an earlier job's leftover containers before it does any work: a
-// timed-out job's FDB C++ build container outlived it and OOM-killed the next
-// job's tests, and a job without this step inherits such a leak unseen.
+// removes an earlier job's leftover containers before doing any work; a job
+// without the step inherits such a leak unseen.
 func TestSelfHostedJobsReapLeakedContainersFirst(t *testing.T) {
 	t.Parallel()
-	paths, err := filepath.Glob("../.github/workflows/*.yml")
-	if err != nil || len(paths) == 0 {
-		t.Fatalf("glob workflows: %v (found %d)", err, len(paths))
+	var paths []string
+	for _, ext := range []string{"yml", "yaml"} {
+		m, err := filepath.Glob("../.github/workflows/*." + ext)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, m...)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no workflow files found: the check would pass over nothing")
 	}
 	checked := 0
 	for _, p := range paths {
@@ -408,6 +415,7 @@ func TestSelfHostedJobsReapLeakedContainersFirst(t *testing.T) {
 				Steps  []struct {
 					Uses string `yaml:"uses"`
 					Run  string `yaml:"run"`
+					If   string `yaml:"if"`
 				} `yaml:"steps"`
 			} `yaml:"jobs"`
 		}
@@ -415,7 +423,14 @@ func TestSelfHostedJobsReapLeakedContainersFirst(t *testing.T) {
 			t.Fatalf("parse %s: %v", p, err)
 		}
 		for name, job := range wf.Jobs {
-			if !usesLabel(&job.RunsOn, runnerLabel) {
+			// Undecidable placement fails rather than passing as "not on the pool".
+			if job.RunsOn.Kind == yaml.MappingNode || strings.Contains(job.RunsOn.Value, "${{") ||
+				slices.ContainsFunc(job.RunsOn.Content, func(c *yaml.Node) bool { return strings.Contains(c.Value, "${{") }) {
+				t.Errorf("%s: job %q has a runs-on this check cannot place; extend it",
+					filepath.Base(p), name)
+				continue
+			}
+			if !usesLabel(&job.RunsOn, runnerLabel) && !usesLabel(&job.RunsOn, "self-hosted") {
 				continue
 			}
 			checked++
@@ -424,9 +439,10 @@ func TestSelfHostedJobsReapLeakedContainersFirst(t *testing.T) {
 			for i < len(job.Steps) && strings.HasPrefix(job.Steps[i].Uses, "actions/checkout@") {
 				i++
 			}
-			if i >= len(job.Steps) || strings.TrimSpace(job.Steps[i].Run) != "infra/reap-leaked-containers.sh" {
-				t.Errorf("%s: job %q runs on %s but its first step after checkout is not "+
-					"`run: infra/reap-leaked-containers.sh`", filepath.Base(p), name, runnerLabel)
+			if i >= len(job.Steps) || job.Steps[i].If != "" ||
+				strings.TrimSpace(job.Steps[i].Run) != "infra/reap-leaked-containers.sh" {
+				t.Errorf("%s: job %q runs self-hosted but its first step after checkout is not "+
+					"an unconditional `run: infra/reap-leaked-containers.sh`", filepath.Base(p), name)
 			}
 		}
 	}

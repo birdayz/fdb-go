@@ -1,11 +1,6 @@
 #!/bin/bash
-# Tests infra/reap-leaked-containers.sh against stubbed `docker`, `pgrep`, `ps`
-# and `free`, so it needs no daemon and no runner.
-#
-# The incident: a job timed out mid FDB C++ build; its runner killed Bazel, and
-# the build container ran on into the next job, which the kernel OOM-killed.
-# The cases pin both directions: the orphan goes, and neither the job's own
-# containers nor the persistent bazel-remote cache are touched.
+# Drives infra/reap-leaked-containers.sh against stubbed docker, pgrep and ps:
+# an earlier job's orphans go; bazel-remote and live jobs' containers stay.
 #
 # Run: bash infra/reap_leaked_containers_test.sh
 set -uo pipefail
@@ -23,52 +18,55 @@ bad() {
   fail=1
 }
 
-# `docker` stub over $REAPTEST_STATE/containers, one "id started policy name image"
-# line per running container; `rm` records the removal instead of performing one.
+# The stubs accept only the production invocations, so a changed call fails here.
+# containers: "id started name image [policy]"; an absent policy is Docker's "".
 cat >"$BIN/docker" <<'STUB'
 #!/bin/bash
 c="$REAPTEST_STATE/containers"
-case "$1" in
-  ps) [ -s "$c" ] && awk '{ print $1 }' "$c" ;;
-  inspect) awk -v id="${!#}" '$1 == id { print $2, $3, $4, $5 }' "$c" ;;
-  rm) echo "${!#}" >>"$REAPTEST_STATE/removed" ;;
+case "$*" in
+  "ps --format {{.ID}}") awk '{ print $1 }' "$c" ;;
+  "inspect -f {{.State.StartedAt}} {{.Name}} {{.Config.Image}} {{.HostConfig.RestartPolicy.Name}} "*)
+    awk -v id="${!#}" '$1 == id { print $2, $3, $4, $5 }' "$c" ;;
+  "rm -fv "*) echo "${!#}" >>"$REAPTEST_STATE/removed" ;;
+  *) echo "unexpected: docker $*" >&2; exit 2 ;;
 esac
-exit 0
 STUB
+# workers: "pid etimes" lines; an empty etimes is an unreadable age.
 cat >"$BIN/pgrep" <<'STUB'
 #!/bin/bash
-[ -f "$REAPTEST_STATE/worker" ] && echo 4242
-exit 0
+[ "$*" = "-x Runner.Worker" ] || { echo "unexpected: pgrep $*" >&2; exit 2; }
+awk '{ print $1 }' "$REAPTEST_STATE/workers"
 STUB
 cat >"$BIN/ps" <<'STUB'
 #!/bin/bash
-[ -s "$REAPTEST_STATE/etimes" ] && cat "$REAPTEST_STATE/etimes"
-exit 0
-STUB
-cat >"$BIN/free" <<'STUB'
-#!/bin/bash
-echo "Mem: 7745 6600 200 36 900 1100"
+[ "$1 $2 $3" = "-o etimes= -p" ] || { echo "unexpected: ps $*" >&2; exit 2; }
+awk -v pid="$4" '$1 == pid { print $2 }' "$REAPTEST_STATE/workers"
 STUB
 chmod +x "$BIN"/*
 
 ago() { date -u -d "@$(($(date -u +%s) - $1))" +%Y-%m-%dT%H:%M:%S.000000000Z; }
 
-# One case. $1 name; $2 worker elapsed seconds ("" = no worker, "unreadable");
-# $3 the removals expected, space-separated; $4 optional string the output must
-# contain. The fixture is the containers file the caller wrote.
+# One case. $1 name; $2 the workers' etimes, space-separated ("" = no worker,
+# "-" = one whose age is unreadable); $3 the removals expected; $4 optional
+# string the output must contain.
 run_case() {
-  rm -f "$STATE/removed" "$STATE/worker" "$STATE/etimes"
-  case "$2" in
-  "") ;;
-  unreadable) touch "$STATE/worker" ;;
-  *)
-    touch "$STATE/worker"
-    echo "$2" >"$STATE/etimes"
-    ;;
-  esac
+  rm -f "$STATE/removed"
+  : >"$STATE/workers"
+  pid=4242
+  for et in $2; do
+    [ "$et" = - ] && et=
+    echo "$pid $et" >>"$STATE/workers"
+    pid=$((pid + 1))
+  done
   REAPTEST_STATE="$STATE" PATH="$BIN:$PATH" bash "$SCRIPT" >"$STATE/out" 2>&1
+  rc=$?
   got=$(sort "$STATE/removed" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
-  if [ "$got" = "$3" ]; then ok "$1 (removed: ${got:-none})"; else bad "$1: removed '${got}', want '$3'"; fi
+  if [ "$rc" -eq 0 ] && [ "$got" = "$3" ]; then
+    ok "$1 (removed: ${got:-none})"
+  else
+    bad "$1: exit $rc, removed '$got', want exit 0 and '$3'"
+    sed 's/^/       /' "$STATE/out"
+  fi
   if [ -n "${4:-}" ]; then
     grep -q "$4" "$STATE/out" && ok "$1: says \"$4\"" || bad "$1: output does not contain \"$4\""
   fi
@@ -76,18 +74,19 @@ run_case() {
 
 echo "reap-leaked-containers:"
 cat >"$STATE/containers" <<EOF
-build $(ago 1800) no /quirky_build foundationdb/build@sha256:c6133f
-cache $(ago 120000) always /bazel-remote buchgr/bazel-remote-cache@sha256:8e17
-live $(ago 30) no /eager_fdb foundationdb/foundationdb:7.3.77
+build $(ago 1800) /quirky_build foundationdb/build@sha256:c6133f no
+ryuk $(ago 1800) /reaper_1a2b testcontainers/ryuk:0.13.0
+cache $(ago 120000) /bazel-remote buchgr/bazel-remote-cache@sha256:8e17 always
+live $(ago 30) /eager_fdb foundationdb/foundationdb:7.3.77 no
 EOF
-# The orphan goes; bazel-remote (older, restart=always) and the job's own FDB
-# container (newer than the worker) stay.
-run_case "orphan build, cache and live container" 60 "build" "removing quirky_build"
-# The same build container, started after the worker, is the job's own.
-run_case "build newer than the worker" 1900 ""
-# Fail closed, and say so: an unknown job start reaps nothing.
+# Orphans with policy "no" and "" go; bazel-remote and the job's own container stay.
+run_case "orphans, cache and live container" "60" "build ryuk" "removing quirky_build"
+run_case "orphans newer than the worker" "1900" ""
+# Two workers: the older job owns them, so the newer worker's start must not decide.
+run_case "older of two workers decides" "60 1900" ""
+# Fail closed, and say so.
 run_case "no worker visible" "" "" "reaping nothing"
-run_case "worker age unreadable" unreadable "" "age unreadable"
+run_case "worker age unreadable" "-" "" "age unreadable"
 
 if [ "$fail" -ne 0 ]; then
   echo "FAILURES"

@@ -92,8 +92,8 @@ go_test(
         "EQUIV_SEEDS": "",
         "EQUIV_WORKERS": "",
     },
-    # Measured on the 4 vCPU CI runner, run alone: 4.9-5.0 GB above the
-    # box's baseline at peak (FDB containers included), declared with headroom.
+    # Measured on the 7.6 GB CI runner, run alone: 4.9-5.0 GB above a baseline
+    # that includes the Bazel server (6.2-6.5 GB used at peak), with headroom.
     tags = [
         "resources:cpu:4",
         "resources:memory:5500",
