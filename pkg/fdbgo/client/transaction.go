@@ -56,6 +56,7 @@ const (
 	ErrInvertedRange             = 2005 // inverted_range (begin > end)
 	ErrRangeLimitsInvalid        = 2012 // range_limits_invalid (e.g. a row limit < -1)
 	ErrInvalidMutationType       = 2018 // invalid_mutation_type (a non-atomic op passed to Atomic())
+	ErrTenantNotFound            = 2131 // tenant_not_found
 )
 
 // Client constants. These mirror CLIENT_KNOBS in NativeAPI.actor.cpp.
@@ -3083,31 +3084,9 @@ func conflictRangesIntersect(writes, reads []KeyRange) bool {
 	return ok
 }
 
-// maybeMakeSelfConflicting adds an ephemeral \xFF/SC/<UID> self-conflict range (makeSelfConflictingLocked)
-// to a NON-tenant commit whose write and read conflict ranges don't already intersect — porting the C++
-// commitMutations guard `!causalWriteRisky && !intersects(...)` → makeSelfConflicting
-// (NativeAPI.actor.cpp:6858-6860). causalWriteRisky is a no-op option in this client, so the guard reduces
-// to the no-intersection check. With the range in BOTH sets, the commit_unknown_result dummy-transaction
-// barrier (commitDummyTransaction) synchronizes over that synthetic key instead of a real user key —
-// avoiding spurious not_committed (1020) for other clients reading a hot user key (finding #27).
-//
-// Scoped to NON-tenant transactions: the \xFF/SC/ key is a raw system key, and threading it through a
-// tenant transaction's commit (which scopes/validates conflict ranges to the tenant prefix) is a separate
-// subtlety — the tenant case is a documented follow-up. Non-tenant is the common case and the finding's
-// primary scenario. Callers (Commit) must NOT hold conflictMu — this takes it.
-// writeSnap is the FROZEN write-conflict snapshot that actually ships (writeConflictsSnap[:nWriteConflicts]).
-// The intersect decision uses it — NOT live tx.writeConflicts — so a Set racing this Commit after the
-// snapshot (excluded from the shipped writes AND the frozen `muts`) cannot flip the SC decision away from
-// what ships: otherwise a racing write intersecting a read range could make scAdded=false while the shipped
-// frozen writes carry NO intersecting range and NO \xFF/SC/ key, leaving the request non-self-conflicting
-// and breaking the commit_unknown_result barrier. Read side stays live — it matches the
-// live read conflicts the commit request ships, and a racing Get only over-conflicts (harmless).
-// Returns the injected \xFF/SC/ WRITE-conflict range and true when it added one, so Commit can ship it on
-// the SIZED snapshot (#28 P2b) rather than re-reading live tx.writeConflicts.
+// Only shipped conflicts may suppress the fence's synthetic key (NativeAPI.actor.cpp:6858).
+// Tenant marshalling prefixes that key in both commits. Caller must not hold conflictMu.
 func (tx *Transaction) maybeMakeSelfConflicting(writeSnap []KeyRange) (KeyRange, bool) {
-	if tx.tenantId != NoTenantID {
-		return KeyRange{}, false
-	}
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
 	if !conflictRangesIntersect(writeSnap, tx.readConflicts) {
@@ -3116,18 +3095,8 @@ func (tx *Transaction) maybeMakeSelfConflicting(writeSnap []KeyRange) (KeyRange,
 	return KeyRange{}, false
 }
 
-// makeSelfConflictingLocked appends an ephemeral \xFF/SC/<random 16-byte UID> single-key range to BOTH
-// the read and write conflict sets — porting C++ Transaction::makeSelfConflicting
-// (NativeAPI.actor.cpp:5952-5959), which push_backs the range UNCONDITIONALLY (it does NOT consult
-// writeConflictsDisabled / the next-write-no-conflict flag). A commit whose write/read conflict ranges
-// don't already intersect calls this so it always self-conflicts on a synthetic key: the
-// commit_unknown_result dummy-transaction barrier (commitDummyTransaction) then synchronizes over that
-// key rather than a real user key, avoiding spurious not_committed (1020) for concurrent readers of a
-// hot user key (finding #27). Only maybeMakeSelfConflicting calls this, and only on the NON-tenant path,
-// so the raw \xFF/SC/ key is committed verbatim (a non-tenant commit prepends no tenant prefix) and thus
-// matches the raw-access dummy's conflict key. the commit request builder exempts ONLY the
-// metadataVersion key from tenant prefixing — it would prefix this \xFF/SC/ key — which is one reason the
-// tenant case is a separate follow-up rather than a trivial gate flip. Caller MUST hold conflictMu.
+// A synthetic key avoids fencing on a hot user key (NativeAPI.actor.cpp:5952-5959).
+// It stays unprefixed until marshalling; caller must hold conflictMu.
 func (tx *Transaction) makeSelfConflictingLocked() KeyRange {
 	sc := make([]byte, len(selfConflictPrefix)+16)
 	copy(sc, selfConflictPrefix)

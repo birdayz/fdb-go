@@ -99,12 +99,12 @@ func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLe
 
 // This private entry also serves direct barrier tests; live Commit captures the
 // same inputs before releasing its state lease.
-func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
+func (tx *Transaction) commitDummyTransaction(ctx context.Context) error {
 	lease := tx.enterState()
 	tx.conflictMu.Lock()
 	writeConflicts := tx.writeConflicts
 	tx.conflictMu.Unlock()
 	input := tx.captureCommit(nil, writeConflicts)
 	lease.release()
-	input.commitDummyTransaction(ctx)
+	return input.commitDummyTransaction(ctx)
 }
