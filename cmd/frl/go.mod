@@ -7,5 +7,5 @@ go 1.26
 // would split frl out of the root module again.
 retract (
 	v0.1.1 // Publishes the retraction only; contains no buildable frl.
-	[v0.0.0-0, v0.1.0] // Superseded by the root module fdb.dev: run go get fdb.dev/cmd/frl@none.
+	[v0.0.0-0, v0.1.1] // Superseded by the root module fdb.dev: run go get fdb.dev/cmd/frl@none.
 )
