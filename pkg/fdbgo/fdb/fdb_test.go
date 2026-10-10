@@ -1988,7 +1988,7 @@ func TestGetAPIVersion(t *testing.T) {
 }
 
 // TestMustAPIVersion_Panics verifies that MustAPIVersion panics when
-// called with an unsupported version.
+// called with a version other than the selected one.
 func TestMustAPIVersion_Panics(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)

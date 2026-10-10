@@ -40,6 +40,11 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   fails every later operation with 2006, not only the commit. `client.Transaction.SetLockAware` and
   `SetReadLockAware` take no argument.
 - `fdb.APIVersion` and `client.WithAPIVersion` accept 510-730 (`client.MinAPIVersion`-`client.MaxAPIVersion`) and refuse other versions with `api_version_not_supported` (2203), as libfdb_c 7.3.77; 731 and above were accepted, and a version below 510 was 2201. A different version after one is selected stays 2201.
+- `fdb.APIVersion` and `client.WithAPIVersion` refuse a version outside 510-730
+  (`client.MinAPIVersion`-`client.MaxAPIVersion`) with `api_version_not_supported` (2203), the
+  Apple Go binding's code; 730 is libfdb_c 7.3.77's maximum and 510 this client's floor. Before,
+  `fdb.APIVersion` accepted 731 and above and answered 2201 below 510, and `client.WithAPIVersion`
+  accepted any non-zero version. A different version after one is selected stays 2201.
 - SQL planning has no task budget by default, as in Java (was 150,000 tasks, 250,000 right-deep); the
   caller's context bounds it, and `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and
   `MAX_NUM_MATCHES_PER_RULE_CALL` opt into Java's caps (54F02 when exhausted).

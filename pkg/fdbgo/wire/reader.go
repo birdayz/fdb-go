@@ -580,6 +580,8 @@ var fdbErrorDescriptions = map[int]string{
 	2017: "used_during_commit",
 	2101: "transaction_too_large",
 	2200: "api_version_unset",
+	2201: "api_version_already_set",
+	2203: "api_version_not_supported",
 }
 
 // (wire.FDBError.Retryable() was removed in RFC-105: dead code — zero callers —

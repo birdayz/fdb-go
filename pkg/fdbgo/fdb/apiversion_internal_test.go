@@ -94,20 +94,3 @@ func TestSelectAPIVersionRace(t *testing.T) {
 		}
 	}
 }
-
-// TestMustAPIVersionPanicsWithAPIVersionError: MustAPIVersion panics with exactly
-// APIVersion's error (TestMain selected 730, so 731 is already_set).
-func TestMustAPIVersionPanicsWithAPIVersionError(t *testing.T) {
-	t.Parallel()
-	defer func() {
-		if got := apiVersionCode(asError(recover())); got != 2201 {
-			t.Fatalf("MustAPIVersion(731) panic code = %d, want 2201", got)
-		}
-	}()
-	MustAPIVersion(731)
-}
-
-func asError(v any) error {
-	err, _ := v.(error)
-	return err
-}

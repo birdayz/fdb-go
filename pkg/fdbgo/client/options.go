@@ -115,9 +115,9 @@ func WithTracer(t oteltrace.Tracer) Option {
 	return func(o *openOptions) { o.tracer = t }
 }
 
-// The API version range this client implements. MaxAPIVersion is libfdb_c 7.3's
-// FDB_API_VERSION; versions below MinAPIVersion predate the apiVersionAtLeast
-// gates this client models, so they are refused like libfdb_c refuses pre-13.
+// The API version range this client accepts. MaxAPIVersion is libfdb_c 7.3's
+// FDB_API_VERSION; below MinAPIVersion would need semantics this client does not
+// model. 510-699 run with 7.x semantics apart from the 510/520 gates.
 const (
 	MinAPIVersion = 510
 	MaxAPIVersion = 730
@@ -125,7 +125,7 @@ const (
 
 // WithAPIVersion records the selected FDB API version; required — OpenDatabase
 // rejects an unset version (2200) or one outside [MinAPIVersion, MaxAPIVersion]
-// (api_version_not_supported, 2203), mirroring fdb_select_api_version. Gates
+// (api_version_not_supported, 2203), the Apple Go binding's answer. Gates
 // version-dependent wire behaviour, e.g. the Min→MinV2/And→AndV2 atomic upgrade
 // at >=510.
 func WithAPIVersion(v int) Option {
