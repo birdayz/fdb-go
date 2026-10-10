@@ -27,12 +27,17 @@ fi
 docker ps --format '{{.ID}}' 2>/dev/null | while read -r id; do
   # Policy last: an empty one (API-created containers) would otherwise shift the fields.
   read -r started name image policy < <(docker inspect -f '{{.State.StartedAt}} {{.Name}} {{.Config.Image}} {{.HostConfig.RestartPolicy.Name}}' "$id" 2>/dev/null) || continue
-  # Persistent infra (bazel-remote) runs under a restart policy; job containers never do.
+  # Persistent infra runs under a restart policy; job containers never do. The name
+  # guard keeps the shared cache even if it is ever recreated without one.
   case "$policy" in '' | no) ;; *) continue ;; esac
+  [ "$name" != /bazel-remote ] || continue
   sepoch=$(date -u -d "$started" +%s 2>/dev/null) || continue
   [ "$sepoch" -lt "$oldest" ] || continue
   echo "::warning::removing ${name#/} ($image), left running $((now - sepoch))s by an earlier job"
   # -v: an orphan's anonymous volumes would otherwise be stranded.
   docker rm -fv "$id" >/dev/null 2>&1 || echo "::warning::could not remove $id"
 done
+
+# Leaks this cannot remove (orphaned action processes) still show as low memory here.
+free -m 2>/dev/null | awk '/^Mem:/ { print "after reaping: " $3 " MB used, " $7 " MB available" }'
 exit 0

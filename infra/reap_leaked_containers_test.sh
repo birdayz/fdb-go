@@ -42,6 +42,11 @@ cat >"$BIN/ps" <<'STUB'
 [ "$1 $2 $3" = "-o etimes= -p" ] || { echo "unexpected: ps $*" >&2; exit 2; }
 awk -v pid="$4" '$1 == pid { print $2 }' "$REAPTEST_STATE/workers"
 STUB
+cat >"$BIN/free" <<'STUB'
+#!/bin/bash
+[ "$*" = "-m" ] || { echo "unexpected: free $*" >&2; exit 2; }
+echo "Mem: 7745 1600 4300 36 1800 6100"
+STUB
 chmod +x "$BIN"/*
 
 ago() { date -u -d "@$(($(date -u +%s) - $1))" +%Y-%m-%dT%H:%M:%S.000000000Z; }
@@ -76,14 +81,17 @@ echo "reap-leaked-containers:"
 cat >"$STATE/containers" <<EOF
 build $(ago 1800) /quirky_build foundationdb/build@sha256:c6133f no
 ryuk $(ago 1800) /reaper_1a2b testcontainers/ryuk:0.13.0
-cache $(ago 120000) /bazel-remote buchgr/bazel-remote-cache@sha256:8e17 always
+cache $(ago 120000) /bazel-remote buchgr/bazel-remote-cache@sha256:8e17 no
+infra $(ago 120000) /node_exporter prom/node-exporter:v1.8.2 unless-stopped
 live $(ago 30) /eager_fdb foundationdb/foundationdb:7.3.77 no
 EOF
-# Orphans with policy "no" and "" go; bazel-remote and the job's own container stay.
-run_case "orphans, cache and live container" "60" "build ryuk" "removing quirky_build"
+# Orphans with policy "no" and "" go; restart-policy infra, bazel-remote (even
+# without a policy) and the job's own container stay.
+run_case "orphans, infra, cache and live container" "60" "build ryuk" "6100 MB available"
 run_case "orphans newer than the worker" "1900" ""
 # Two workers: the older job owns them, so the newer worker's start must not decide.
 run_case "older of two workers decides" "60 1900" ""
+run_case "older of two workers decides, listed first" "1900 60" ""
 # Fail closed, and say so.
 run_case "no worker visible" "" "" "reaping nothing"
 run_case "worker age unreadable" "-" "" "age unreadable"
