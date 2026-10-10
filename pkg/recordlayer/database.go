@@ -674,6 +674,10 @@ type FDBRecordContext struct {
 	// transaction built by NewFDBRecordContext.
 	database *FDBDatabase
 
+	// configure is how the opener configured tx; a child transaction run on
+	// this context's behalf is configured the same way (Java's newRunner).
+	configure TransactionConfigurer
+
 	// env is the DST Tier-0 environment inherited from the FDBDatabase (Clock + Randomness +
 	// Buggify). Nil means production; read it through Env() which is nil-safe. Persisted-byte
 	// sites (store header LastUpdateTime, lock-state timestamp, heartbeats, nonces) route
@@ -806,6 +810,35 @@ func (d *FDBDatabase) NewRecordContext(tx fdb.WritableTransaction) *FDBRecordCon
 	rc.SetTimer(d.Timer())
 	rc.database = d
 	return rc
+}
+
+// TransactionConfigurer sets options on a new transaction, the part of Java's
+// FDBRecordContextConfig an opener chooses (timeout, tags).
+type TransactionConfigurer func(fdb.TransactionOptions) error
+
+// Configure applies f to this context's transaction and records it, so a child
+// transaction run for this context inherits it, as Java's
+// FDBRecordContext.newRunner runs contexts with the same config.
+func (rc *FDBRecordContext) Configure(f TransactionConfigurer) error {
+	if f == nil {
+		return nil
+	}
+	if err := f(rc.tx.Options()); err != nil {
+		return err
+	}
+	rc.configure = f
+	return nil
+}
+
+// runChild is parentContext.newRunner().run: a fresh transaction of the same
+// database, configured as this context was, that commits on its own.
+func (rc *FDBRecordContext) runChild(ctx context.Context, fn func(*FDBRecordContext) (any, error)) (any, error) {
+	return rc.database.Run(ctx, func(child *FDBRecordContext) (any, error) {
+		if err := child.Configure(rc.configure); err != nil {
+			return nil, err
+		}
+		return fn(child)
+	})
 }
 
 // GetDatabase is the database that opened this context, Java's

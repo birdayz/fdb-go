@@ -101,7 +101,7 @@ func ResolveWithMetadata(rctx *FDBRecordContext, r LocatableResolver, name strin
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	out, err := db.Run(ctx, func(child *FDBRecordContext) (any, error) {
+	out, err := rctx.runChild(ctx, func(child *FDBRecordContext) (any, error) {
 		return readOrCreate(child, r, name)
 	})
 	if err != nil {

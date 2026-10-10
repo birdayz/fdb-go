@@ -46,7 +46,7 @@ import (
 // methods, and TestIntegration_Stats_FleetCollectIsReadableByTheConnection is
 // what proves the two agree.
 func (c *EmbeddedConnection) statisticsLocation(ctx context.Context) (recordlayer.StatisticsSubspace, subspace.Subspace, error) {
-	storeSubspace, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, c.sess.DB, c.sess.DBPath, c.sess.Schema)
+	storeSubspace, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
 	if err != nil {
 		return recordlayer.StatisticsSubspace{}, nil, err
 	}
@@ -609,9 +609,9 @@ func (e *noClusterVersionError) Error() string {
 // seeded clock for the wall clock, unreplayably, and only when tags happen to
 // be configured. A parameter is visible at every call site.
 //
-// Why it matters at all: beginTransaction's comment calls itself "the single
-// transaction-creation seam in the SQL layer", and statistics work does not go
-// through it — collection opens its own transaction per batch. Untagged, the
+// Why it matters at all: statement transactions are tagged by
+// configureTransaction, and statistics work does not go through it —
+// collection opens its own transaction per batch. Untagged, the
 // heaviest job in the system escapes the cluster's ratekeeper.
 func (c *EmbeddedConnection) statisticsTags() []string {
 	tags, _ := c.Options().Get(api.OptTransactionTags).([]string)
