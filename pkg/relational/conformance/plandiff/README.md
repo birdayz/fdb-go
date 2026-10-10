@@ -18,7 +18,7 @@ comparison the moment the Go runner has a real implementation.
 
 ## Adding a corpus entry
 
-`SeedRunCorpus` (in `corpus.go`) is the result-set diff corpus. Each entry
+`SeedRunCorpus` (in `seedcorpus/corpus.go`, a testonly package) is the result-set diff corpus. Each entry
 is a `RunQuery` with:
 
 ```go

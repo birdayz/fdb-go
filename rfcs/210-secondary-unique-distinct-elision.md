@@ -313,7 +313,7 @@ category of change this RFC is before any of the finer reading matters. Every
 `DISTINCT` entry in the cross-engine corpus is marked
 `DivergenceJavaErrorsGoCorrect` — Java throws `UnableToPlanException`, Go
 answers — and the corpus says so in the section header
-(`pkg/relational/conformance/plandiff/corpus.go:15548-15549`: *"Java's Cascades
+(`pkg/relational/conformance/plandiff/seedcorpus/corpus.go:15548-15549`: *"Java's Cascades
 planner can't plan DISTINCT (TODO #42)"*), with the same finding recorded at
 `:289-292` where the shape was first deferred out of the shared corpus.
 

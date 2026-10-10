@@ -7,7 +7,7 @@ package conformance_test
 // duplicate-column layout, the qualified-star/table-row findFirst quirks, and
 // the exact 42702 message text. It makes NO assertions; it prints each
 // shape's outcome so it can be diffed against Go's corpus entries (see
-// plandiff/corpus.go's dup_from_alias_* entries) whenever either engine's
+// plandiff/seedcorpus/corpus.go's dup_from_alias_* entries) whenever either engine's
 // handling of duplicate aliases changes.
 
 import (

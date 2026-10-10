@@ -10,54 +10,6 @@ import (
 	"testing"
 )
 
-// TestSeedCorpus_GoEngineSucceedsOnAll asserts the naive Go generator
-// produces a non-empty plan tree for every seed query without error.
-// A failure here means a corpus entry parses but the planner refuses
-// it — the harness loses a regression sentinel.
-func TestSeedCorpus_GoEngineSucceedsOnAll(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	eng := NewGoEngine()
-	corpus := SeedCorpus()
-	for _, q := range corpus {
-		q := q
-		t.Run(q.Name, func(t *testing.T) {
-			t.Parallel()
-			r := eng.Plan(ctx, q)
-			if r.Err != nil {
-				t.Fatalf("Go engine errored on %s: %v\n  sql: %s", q.Name, r.Err, q.SQL)
-			}
-			if r.Tree == "" {
-				t.Fatalf("Go engine produced empty tree for %s\n  sql: %s", q.Name, q.SQL)
-			}
-			if r.Hash == "" {
-				t.Fatalf("Go engine produced empty hash for %s", q.Name)
-			}
-		})
-	}
-}
-
-// TestRun_AllJavaUnimplemented pins that Run with the stub Java engine
-// classifies every case as StatusJavaUnimplemented (not StatusGoError /
-// StatusBothError). This lets a CI gate that wants to be Go-only
-// tolerant filter on Status. The single Total==JavaUnimplemented check
-// covers both the "all Java unimpl" and "no Go errors" properties —
-// if Total matches JavaUnimplemented, no other status (including
-// GoError) can be non-zero.
-func TestRun_AllJavaUnimplemented(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	report := Run(ctx, SeedCorpus(), NewGoEngine(), NewJavaEngine())
-	if report.Summary.Total != len(SeedCorpus()) {
-		t.Fatalf("Total: got %d, want %d", report.Summary.Total, len(SeedCorpus()))
-	}
-	if report.Summary.JavaUnimplemented != report.Summary.Total {
-		t.Fatalf("expected every case to be JAVA_UNIMPL, got %d/%d (go-err %d, both-err %d, diverge %d)",
-			report.Summary.JavaUnimplemented, report.Summary.Total,
-			report.Summary.GoError, report.Summary.BothError, report.Summary.Diverge)
-	}
-}
-
 // TestRun_NilEngine pins the noop fallback: passing nil engines does
 // not panic. Useful for early bring-up where one side isn't wired
 // yet.

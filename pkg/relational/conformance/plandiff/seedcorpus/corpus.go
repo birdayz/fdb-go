@@ -7,51 +7,17 @@
 // Copyright 2025 Apple Inc. and the FoundationDB project authors
 // Licensed under the Apache License, Version 2.0; translated to Go and modified.
 
-package plandiff
+// Package seedcorpus holds the hand-written conformance corpora. Its Bazel
+// library is testonly so no production binary can link 18k lines of test data.
+package seedcorpus
 
 import (
 	"math"
 	"strconv"
 	"strings"
-)
 
-// SeedRunCorpus is the runSql parallel of SeedCorpus: a small set of
-// (schema, setup-DMLs, SELECT) cases for the result-set diff harness.
-// The conformance test runs each entry through BOTH engines (Java
-// fdb-relational + Go embedded) and asserts byte-equivalent results.
-//
-// Java is the spec. The harness asserts:
-//   - If Java succeeds: Go must also succeed AND produce byte-equal
-//     column metadata and row values.
-//   - If Java errors: Go must also error AND produce a byte-equal
-//     core error message (Go's `api.Error.Message` ==
-//     Java's `JavaError.Message`).
-//
-// The test author DOES NOT predict the error message. Whatever Java
-// emits is the ground truth — Go must match. This catches both silent
-// acceptance on one side AND Go's-message-drift-from-Java's at every
-// query, without requiring per-entry expected-text annotations.
-//
-// Adding a new entry: just append {Name, SchemaTemplate, SetupSqls,
-// Query}. No baseline RowSet, no expected-error-text. The harness
-// figures out what Java does and pins Go to match it.
-//
-// Each entry's SetupSqls must produce deterministic state — SELECTs
-// without ORDER BY can't be added until we trust both engines'
-// row-order semantics match. Today every entry orders by primary key.
-type RunQuery struct {
-	Name           string
-	SetupSqls      []string
-	Query          string
-	SchemaTemplate string
-	// Divergence, when non-nil, marks this entry as a known
-	// cross-engine divergence rather than a parity assertion. The
-	// harness asserts Go's behaviour against the embedded
-	// expectation but does NOT pin Java's actual behaviour — Java
-	// may evolve (upstream fix), regress, or stay buggy without
-	// breaking our test surface. See `divergence.go`.
-	Divergence *Divergence
-}
+	"fdb.dev/pkg/relational/conformance/plandiff"
+)
 
 // SeedRunCorpus returns the baseline RunQuery set. Add entries that
 // exercise distinct primitive types or row-shape edge cases (NULL
@@ -62,8 +28,8 @@ type RunQuery struct {
 //   - Type names: BIGINT / STRING / BOOLEAN / DOUBLE / BYTES.
 //   - Anonymous projections (constant exprs, COUNT(*)) get synthetic
 //     column names "_0", "_1", ... in declaration order.
-func SeedRunCorpus() []RunQuery {
-	return []RunQuery{
+func SeedRunCorpus() []plandiff.RunQuery {
+	return []plandiff.RunQuery{
 		{
 			Name:           "single_row_bigint",
 			SchemaTemplate: "CREATE TABLE T1 (id BIGINT, PRIMARY KEY (id))",
@@ -875,9 +841,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_SUR (id BIGINT, name STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_SUR VALUES (1, 'abc')"},
 			Query:          "SELECT UPPER(name) FROM T_SUR WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER('abc')='ABC'. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"ABC"},
 				},
@@ -896,9 +862,9 @@ func SeedRunCorpus() []RunQuery {
 			SetupSqls:      []string{"INSERT INTO T_SUW VALUES (1, 'abc')"},
 			Query: "WITH cte AS (SELECT id, name FROM T_SUW) " +
 				"SELECT name FROM cte WHERE UPPER(name) = 'ABC'",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER('abc')='ABC' in the CTE WHERE and returns the matching row. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"abc"},
 				},
@@ -913,9 +879,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_SSR (id BIGINT, name STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_SSR VALUES (1, 'abcdef')"},
 			Query:          "SELECT SUBSTRING(name, 1, 3) FROM T_SSR WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "SUBSTRING is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTRING('abcdef',1,3)='abc' (1-based). Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"abc"},
 				},
@@ -931,9 +897,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_ABS (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_ABS VALUES (1, -5)"},
 			Query:          "SELECT ABS(v) FROM T_ABS WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(-5)=5. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(5)},
 				},
@@ -946,9 +912,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_POW (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_POW VALUES (1, 3)"},
 			Query:          "SELECT POWER(v, 2) FROM T_POW WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "POWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates POWER(3,2)=9. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(9)},
 				},
@@ -962,9 +928,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_FLR (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_FLR VALUES (1, 3.7)"},
 			Query:          "SELECT FLOOR(v) FROM T_FLR WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "FLOOR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates FLOOR(3.7)=3. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(3)},
 				},
@@ -2123,9 +2089,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_UA VALUES (2, 200)",
 			},
 			Query: "SELECT id FROM T_UA WHERE val = 100 UNION ALL SELECT id FROM T_UA WHERE val = 200 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java intermittently fails to apply outer ORDER BY on UNION ALL — sometimes returns interleaved branch order, sometimes correctly sorted. Go's behaviour is deterministic and SQL-correct. Same bug as union_all_two_branches_disjoint_where.",
-				Direction: DivergenceJavaIntermittentGoCorrect,
+				Direction: plandiff.DivergenceJavaIntermittentGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)}, {float64(2)},
 				},
@@ -3397,9 +3363,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_PKI VALUES (0, 2, 1), (0, 3, 0), (1, 4, 1), (1, 3, 0), (2, 0, 1), (2, 3, 7), (3, 3, 1), (4, 1, 1)",
 			},
 			Query: "SELECT COUNT(*) FROM T_PKI WHERE b = 1 AND pk2 = 3",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java intersects the (b, pk1) and (pk2) covering scans on the comparison key (pk1) alone — pk2 is equality-bound in one leg, and isCompatibleComparisonKey subtracts the union of the legs' equality-bound values from the primary key — so it counts every pk2 = 3 record (4). Only (3, 3) satisfies b = 1 AND pk2 = 3; Go compares on (pk1, pk2), the order both legs deliver, and answers 1.",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
+				Direction: plandiff.DivergenceJavaWrongRowsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)},
 				},
@@ -4211,9 +4177,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UO1 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UO1 VALUES (1, 10), (2, 20), (3, 30)"},
 			Query:          "SELECT id FROM T_UO1 WHERE v < 20 UNION ALL SELECT id FROM T_UO1 WHERE v >= 20 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java intermittently fails to apply outer ORDER BY on UNION ALL — sometimes returns interleaved branch order, sometimes correctly sorted. Go's behaviour is deterministic and SQL-correct.",
-				Direction: DivergenceJavaIntermittentGoCorrect,
+				Direction: plandiff.DivergenceJavaIntermittentGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)}, {float64(2)}, {float64(3)},
 				},
@@ -4224,9 +4190,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UO2 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UO2 VALUES (1, 10), (2, 20), (3, 30)"},
 			Query:          "SELECT id, v FROM T_UO2 WHERE v < 20 UNION ALL SELECT id, v FROM T_UO2 WHERE v >= 20 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Same Java intermittent UNION-ALL ORDER BY bug as union_all_two_branches_disjoint_where; multi-col projection variant.",
-				Direction: DivergenceJavaIntermittentGoCorrect,
+				Direction: plandiff.DivergenceJavaIntermittentGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(10)}, {float64(2), float64(20)}, {float64(3), float64(30)},
 				},
@@ -4624,9 +4590,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_CD VALUES (1, 'x', 10), (2, 'x', 10), (3, 'y', 20), (4, 'y', 20)",
 			},
 			Query: "SELECT DISTINCT a, b FROM T_CD",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java's compound-DISTINCT pipeline drops the dedup step on column tuples and returns all rows. Go correctly de-duplicates by the (a,b) tuple.",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
+				Direction: plandiff.DivergenceJavaWrongRowsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"x", float64(10)}, {"y", float64(20)},
 				},
@@ -4641,9 +4607,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_CDD VALUES (1, 10), (2, 10), (3, 20), (4, 20), (5, 30)",
 			},
 			Query: "SELECT count(*) FROM (SELECT DISTINCT c FROM T_CDD) AS d",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Same Java DISTINCT bug as #42, surfaced through a derived table — Java fails to push DISTINCT and returns full row count (5); Go correctly returns 3 ({10,20,30}).",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
+				Direction: plandiff.DivergenceJavaWrongRowsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(3)},
 				},
@@ -4771,9 +4737,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_E7B (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_E7B VALUES (1, 0.0), (2, -0.0), (3, 1.5), (4, -1.5)"},
 			Query:          "SELECT id, v FROM T_E7B WHERE v >= 0.0 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java drops the -0.0 row from `v >= 0.0` despite IEEE 754 saying -0.0 == +0.0; Go correctly keeps it.",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
+				Direction: plandiff.DivergenceJavaWrongRowsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(0)},
 					{float64(2), math.Copysign(0, -1)},
@@ -4792,9 +4758,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_P53 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_P53 VALUES (1, 9007199254740993), (2, 9007199254740992)"},
 			Query:          "SELECT id FROM T_P53 WHERE v = 9007199254740992.0 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java promotes the BIGINT column to DOUBLE (lossy above 2^53), so v=2^53+1 wrongly matches the 2^53 literal; Go narrows the constant exactly and matches only v=2^53.",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
+				Direction: plandiff.DivergenceJavaWrongRowsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(2)},
 				},
@@ -13714,9 +13680,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_01 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT id, (SELECT MAX(v) FROM T_SS_01) FROM T_SS_01 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery in SELECT list — Go-only standard-SQL feature; Java's parser rejects with `syntax error` at the inner `(SELECT`. Pins Go's broadcast of MAX(v)=30 to every outer row.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(30)},
 					{float64(2), float64(30)},
@@ -13731,9 +13697,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_02 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT id FROM T_SS_02 WHERE v = (SELECT MAX(v) FROM T_SS_02)",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery as WHERE RHS — Java's parser rejects (Go-only). Go finds id=3 (the row with v=MAX(v)).",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(3)},
 				},
@@ -13746,9 +13712,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_03 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT id FROM T_SS_03 WHERE v > (SELECT MIN(v) FROM T_SS_03) ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery as WHERE inequality RHS — Java rejects (Go-only). Go returns rows strictly greater than MIN(v)=10.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(2)}, {float64(3)},
 				},
@@ -13761,9 +13727,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_04 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT id, v - (SELECT MIN(v) FROM T_SS_04) FROM T_SS_04 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery as arithmetic operand — Java rejects (Go-only). Go computes v - MIN(v) per outer row.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(0)},
 					{float64(2), float64(10)},
@@ -13778,9 +13744,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_05 VALUES (1, 10)",
 			},
 			Query: "SELECT id, (SELECT v FROM T_SS_05 WHERE id = 999) FROM T_SS_05 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Zero-row inner subquery → NULL (SQL-standard); Java rejects the syntax. Pins Go's NULL pass-through.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), nil},
 				},
@@ -13793,9 +13759,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_06 VALUES (1, 'alice'), (2, 'bob')",
 			},
 			Query: "SELECT id, (SELECT name FROM T_SS_06 WHERE id = 1) FROM T_SS_06 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "STRING-returning scalar subquery — Java rejects. Pins Go's string pass-through (broadcast 'alice' to every outer row).",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), "alice"},
 					{float64(2), "alice"},
@@ -13809,9 +13775,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_07 VALUES (1, TRUE), (2, FALSE)",
 			},
 			Query: "SELECT id, (SELECT flag FROM T_SS_07 WHERE id = 1) FROM T_SS_07 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "BOOLEAN-returning scalar subquery — Java rejects. Pins Go's boolean pass-through (TRUE from id=1 broadcast to all rows).",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), true},
 					{float64(2), true},
@@ -13825,9 +13791,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_08 VALUES (1, 9.5), (2, 7.25)",
 			},
 			Query: "SELECT (SELECT score FROM T_SS_08 WHERE id = 1) + 0.5 FROM T_SS_08 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "DOUBLE-returning scalar subquery in arithmetic — Java rejects. Pins Go's DOUBLE pass-through (9.5 + 0.5 = 10.0).",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(10)},
 				},
@@ -13840,9 +13806,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_09 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT id, CASE WHEN id = 1 THEN (SELECT MAX(v) FROM T_SS_09) ELSE 0 END FROM T_SS_09 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery in CASE branch — Java rejects. Go evaluates only the matching arm; row 1 returns MAX(v)=30, others return ELSE 0.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(30)},
 					{float64(2), float64(0)},
@@ -13857,9 +13823,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_10 VALUES (1, 10)",
 			},
 			Query: "SELECT id, COALESCE((SELECT v FROM T_SS_10 WHERE id = 999), 0) FROM T_SS_10 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "COALESCE wrapping a zero-row scalar subquery — Java rejects. Go returns 0 (the COALESCE default).",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(0)},
 				},
@@ -13872,9 +13838,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_11 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
 			},
 			Query: "SELECT id FROM T_SS_11 WHERE v BETWEEN (SELECT MIN(v) FROM T_SS_11) AND (SELECT MAX(v) FROM T_SS_11) ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Two scalar subqueries inside BETWEEN — Java rejects. Go pre-evaluates both bounds and matches all four rows (every v is between MIN and MAX).",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)}, {float64(2)}, {float64(3)}, {float64(4)},
 				},
@@ -13887,9 +13853,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_12 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT (SELECT MAX(v) FROM T_SS_12) - (SELECT MIN(v) FROM T_SS_12) FROM T_SS_12 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Two scalar subqueries in arithmetic — Java rejects. Both subqueries pre-evaluate and cache independently; result is MAX - MIN = 30 - 10 = 20.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(20)},
 				},
@@ -13902,9 +13868,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_13 VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30), (4, 'b', 40)",
 			},
 			Query: "SELECT g, SUM(v) FROM T_SS_13 GROUP BY g HAVING SUM(v) > (SELECT MAX(v) / 2 FROM T_SS_13) ORDER BY g",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery in HAVING — Java rejects. Go threshold = MAX(v)/2 = 20; both groups (a:30, b:70) qualify.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"a", float64(30)},
 					{"b", float64(70)},
@@ -13918,9 +13884,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_15 VALUES (1, 10), (2, NULL)",
 			},
 			Query: "SELECT id FROM T_SS_15 WHERE id = 2 AND (SELECT v FROM T_SS_15 WHERE id = 2) IS NULL",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery in IS NULL — Java rejects. Inner returns NULL on the matched row; predicate is TRUE; Go returns id=2.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(2)},
 				},
@@ -13934,9 +13900,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_16B VALUES ('limit', 15)",
 			},
 			Query: "SELECT id FROM T_SS_16A WHERE v > (SELECT n FROM T_SS_16B WHERE k = 'limit') ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery from a different table — Java rejects. Go's config-table threshold filters the data table; only id=2 (v=20 > 15) matches.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(2)},
 				},
@@ -13949,9 +13915,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_19 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT (SELECT MAX(x) FROM (SELECT v AS x FROM T_SS_19) AS s) FROM T_SS_19 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Nested scalar subquery over a derived table — Java rejects. Go returns MAX(x)=30 from the inner derived table.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(30)},
 				},
@@ -13964,9 +13930,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_20 VALUES (1, 10), (2, 20), (3, 30), (4, 40)",
 			},
 			Query: "WITH high AS (SELECT v FROM T_SS_20 WHERE v > 25) SELECT id, (SELECT MIN(v) FROM high) FROM T_SS_20 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery against a CTE — Java rejects. Go pulls MIN(v)=30 from the high CTE (rows v>25 are 30 and 40).",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(30)},
 				},
@@ -13981,9 +13947,9 @@ func SeedRunCorpus() []RunQuery {
 				"UPDATE T_SS_21A SET v = (SELECT n FROM T_SS_21B WHERE k = 'mul')",
 			},
 			Query: "SELECT id, v FROM T_SS_21A ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "UPDATE SET RHS = scalar subquery — Java rejects the UPDATE at parse time (Go-only). Go applies the broadcast: every row's v becomes 100.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(100)},
 					{float64(2), float64(100)},
@@ -14000,9 +13966,9 @@ func SeedRunCorpus() []RunQuery {
 				"DELETE FROM T_SS_22A WHERE v > (SELECT n FROM T_SS_22B WHERE k = 'thr')",
 			},
 			Query: "SELECT id, v FROM T_SS_22A ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "DELETE WHERE RHS = scalar subquery — Java rejects the DELETE at parse time (Go-only). Go deletes rows above threshold=25; survivors are (1,10) and (2,20).",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(10)},
 					{float64(2), float64(20)},
@@ -14016,9 +13982,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_23 VALUES (1, 10), (2, NULL)",
 			},
 			Query: "SELECT id, v + (SELECT v FROM T_SS_23 WHERE id = 2) FROM T_SS_23 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery returning NULL in arithmetic — Java rejects. Go's three-valued arithmetic propagates NULL: every outer row's v + NULL is NULL.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), nil},
 					{float64(2), nil},
@@ -14032,9 +13998,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_24 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT id, (SELECT COUNT(*) FROM T_SS_24) FROM T_SS_24 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery wrapping COUNT(*) — Java rejects. Go broadcasts the row count (3) to every outer row.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(3)},
 					{float64(2), float64(3)},
@@ -14049,9 +14015,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_25 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT id FROM T_SS_25 WHERE v = (SELECT MIN(v) FROM T_SS_25) OR v = (SELECT MAX(v) FROM T_SS_25) ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subqueries in both arms of OR — Java rejects. Go pre-evaluates both; rows matching MIN (id=1) or MAX (id=3) qualify.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)}, {float64(3)},
 				},
@@ -14064,9 +14030,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_26 VALUES (1, 30), (2, 10), (3, 20)",
 			},
 			Query: "SELECT id FROM T_SS_26 WHERE v = (SELECT MAX(v) FROM T_SS_26)",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery resolved through a secondary index — Java rejects. Go's index suffix satisfies MAX(v)=30; outer WHERE finds id=1.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)},
 				},
@@ -14079,9 +14045,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_27 VALUES (1, 10), (2, 20)",
 			},
 			Query: "SELECT id + (SELECT COUNT(*) FROM T_SS_27 WHERE id = 999) FROM T_SS_27 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "COUNT(*) over a zero-row filter inside scalar subquery — Java rejects. Go returns 0 (not NULL) so id + 0 = id.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)}, {float64(2)},
 				},
@@ -14094,9 +14060,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SS_28 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT id FROM T_SS_28 WHERE v <> (SELECT MIN(v) FROM T_SS_28) ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Scalar subquery as <> RHS — Java rejects. Go excludes rows whose v equals MIN(v)=10; survivors are id=2 and id=3.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(2)}, {float64(3)},
 				},
@@ -14146,9 +14112,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_NL_03_B VALUES (10, 10), (11, NULL), (12, 30)",
 			},
 			Query: "SELECT a.id, b.id FROM T_NL_03_A a, T_NL_03_B b WHERE a.k = b.k ORDER BY a.id, b.id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java Cascades planner throws UnableToPlanException for comma-join on a non-PK column; Go correctly plans the nested-loop join and applies SQL-3VL NULL-key non-match.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(10)},
 					{float64(3), float64(12)},
@@ -14264,9 +14230,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_NL_13 VALUES (1, NULL), (2, 10)",
 			},
 			Query: "SELECT v FROM T_NL_13 WHERE id = 1 UNION ALL SELECT v FROM T_NL_13 WHERE id = 2 ORDER BY v",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java Cascades planner throws UnableToPlanException for UNION-ALL with outer ORDER BY on a non-PK column; Go correctly plans and emits NULLS-FIRST default ASC ordering.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil},
 					{float64(10)},
@@ -14409,9 +14375,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_ND_04 VALUES (1, 10), (2, 20), (3, 20), (4, 30)",
 			},
 			Query: "SELECT sub.n FROM (SELECT DISTINCT n FROM T_ND_04 WHERE n >= 20) AS sub ORDER BY sub.n",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java's Cascades planner can't plan DISTINCT inside a derived table (same upstream bug as TODO #42 compound DISTINCT). Go correctly deduplicates.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(20)}, {float64(30)},
 				},
@@ -14433,9 +14399,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_MT_02 VALUES (1, 5), (2, 10)",
 			},
 			Query: "SELECT id FROM T_MT_02 WHERE n IN ('5', 'ten')",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:          "Both engines reject a STRING IN list against a BIGINT probe with 22000, the IN's promotion of its probe (Java INCOMPATIBLE_TYPE).",
-				Direction:       DivergenceBothErrorMessagesDrift,
+				Direction:       plandiff.DivergenceBothErrorMessagesDrift,
 				GoErrorContains: "cannot be promoted to the type of the variable",
 			},
 		},
@@ -14455,9 +14421,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SJ_02 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT x.id, y.id FROM T_SJ_02 AS x JOIN T_SJ_02 AS y ON x.v < y.v ORDER BY x.id, y.id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java Cascades planner can't plan non-equi JOIN (< predicate on ON clause); Go's nested-loop join handles it correctly.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(2)},
 					{float64(1), float64(3)},
@@ -14583,9 +14549,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_CS_24 VALUES (100, 10, 5), (101, 10, 15), (102, 20, 25)",
 			},
 			Query: "SELECT id FROM T_CS_23 a WHERE EXISTS (SELECT cat FROM T_CS_24 b WHERE b.cat = a.cat GROUP BY cat) ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java's Cascades planner throws UnableToPlanException on GROUP BY inside a correlated EXISTS subquery; Go handles it correctly.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)},
 					{float64(2)},
@@ -14599,9 +14565,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_CS_25 VALUES (1, 1), (2, 1), (3, 2), (4, 2), (5, 2)",
 			},
 			Query: "SELECT grp, COUNT(*) FROM T_CS_25 GROUP BY grp HAVING COUNT(*) > 2 ORDER BY grp",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java's Cascades planner throws UnableToPlanException on HAVING COUNT(*) > N; Go handles it correctly.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(2), float64(3)},
 				},
@@ -14793,9 +14759,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AES_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      nil,
 			Query:          "SELECT COALESCE(SUM(v), 0) FROM T_AES_02",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java returns zero rows for COALESCE(SUM, 0) on empty table instead of producing the implicit aggregate row [0]. Go correctly produces the row per SQL spec.",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
+				Direction: plandiff.DivergenceJavaWrongRowsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(0)},
 				},
@@ -14808,9 +14774,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_AES_03 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT CASE WHEN COUNT(*) > 2 THEN 'many' ELSE 'few' END FROM T_AES_03",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java's IllegalStateException 'unable to eval an aggregation function with eval()' — upstream can't handle CASE wrapping aggregate. Go correctly evaluates post-aggregation.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"many"},
 				},
@@ -14833,9 +14799,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_BCA_01 VALUES (1, 10), (2, 20)",
 			},
 			Query: "SELECT id, COUNT(*) FROM T_BCA_01",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:          "Both engines reject bare column with aggregate (42803) but error messages differ: Java references internal planner expression; Go uses SQL-spec wording.",
-				Direction:       DivergenceBothErrorMessagesDrift,
+				Direction:       plandiff.DivergenceBothErrorMessagesDrift,
 				GoErrorContains: "must appear in the GROUP BY clause",
 			},
 		},
@@ -14856,9 +14822,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_GBN_01 VALUES (1, 'a', 1), (2, 'a', 2), (3, NULL, 3), (4, NULL, 4)",
 			},
 			Query: "SELECT g, COUNT(*) FROM T_GBN_01 GROUP BY g ORDER BY g",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java rejects all GROUP BY forms with UnableToPlanException (TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil, float64(2)},
 					{"a", float64(2)},
@@ -15244,9 +15210,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_GBY_01 VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40), (5, 3, 50)",
 			},
 			Query: "SELECT grp, SUM(v) FROM T_GBY_01 GROUP BY grp ORDER BY grp",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly groups and aggregates per SQL spec.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(30)},
 					{float64(2), float64(70)},
@@ -15261,9 +15227,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_GBY_02 VALUES (1, 1, 1, 10), (2, 1, 1, 20), (3, 1, 2, 30), (4, 2, 1, 40)",
 			},
 			Query: "SELECT a, b, COUNT(*) FROM T_GBY_02 GROUP BY a, b ORDER BY a, b",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly groups by multiple keys per SQL spec.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(1), float64(2)},
 					{float64(1), float64(2), float64(1)},
@@ -15278,9 +15244,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_GBY_03 VALUES (1, 1, 10), (2, NULL, 20), (3, NULL, 30), (4, 1, 40)",
 			},
 			Query: "SELECT grp, SUM(v) FROM T_GBY_03 GROUP BY grp ORDER BY grp",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil, float64(50)},
 					{float64(1), float64(50)},
@@ -15294,9 +15260,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_GBY_04 VALUES (1, 1, 10), (2, 1, 20), (3, 1, 30)",
 			},
 			Query: "SELECT grp, COUNT(*), SUM(v) FROM T_GBY_04 GROUP BY grp ORDER BY grp",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly aggregates the single group per SQL spec.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(3), float64(60)},
 				},
@@ -15307,9 +15273,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_GBY_05 (id BIGINT, grp BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      nil,
 			Query:          "SELECT grp, COUNT(*) FROM T_GBY_05 GROUP BY grp ORDER BY grp",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:         "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly returns zero groups for empty table per SQL spec.",
-				Direction:      DivergenceJavaErrorsGoCorrect,
+				Direction:      plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{},
 			},
 		},
@@ -15369,9 +15335,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SF_07 VALUES (1, 'hello'), (2, 'World'), (3, 'FOO')",
 			},
 			Query: "SELECT id, UPPER(name) FROM T_SF_07 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER over each row. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), "HELLO"},
 					{float64(2), "WORLD"},
@@ -15386,9 +15352,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_SF_08 VALUES (1, 'HELLO'), (2, 'World'), (3, 'foo')",
 			},
 			Query: "SELECT id, LOWER(name) FROM T_SF_08 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER over each row. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), "hello"},
 					{float64(2), "world"},
@@ -15479,9 +15445,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_CTE2_01 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "WITH t AS (SELECT id, v FROM T_CTE2_01 WHERE v > 10) SELECT id, v FROM t ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java visitor-level bug: isTopLevel() false for CTE outer SELECT due to CTE scope fragment push. Genuine subquery ORDER BY restriction doesn't apply here.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(2), float64(20)},
 					{float64(3), float64(30)},
@@ -15587,9 +15553,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_DST_01 VALUES (1, 10), (2, 10), (3, 20), (4, 20), (5, 30)",
 			},
 			Query: "SELECT DISTINCT v FROM T_DST_01 ORDER BY v",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42). Go correctly deduplicates.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(10)}, {float64(20)}, {float64(30)},
 				},
@@ -15602,9 +15568,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_DST_02 VALUES (1, 1, 10), (2, 1, 10), (3, 1, 20), (4, 2, 10)",
 			},
 			Query: "SELECT DISTINCT a, b FROM T_DST_02 ORDER BY a, b",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42). Go correctly deduplicates multi-column.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(10)}, {float64(1), float64(20)}, {float64(2), float64(10)},
 				},
@@ -15617,9 +15583,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_DST_03 VALUES (1, 42), (2, 42), (3, 42)",
 			},
 			Query: "SELECT DISTINCT v FROM T_DST_03 ORDER BY v",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42).",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(42)},
 				},
@@ -15632,9 +15598,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_DST_04 VALUES (1, 10), (2, 20), (3, 30)",
 			},
 			Query: "SELECT DISTINCT v FROM T_DST_04 ORDER BY v",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42).",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(10)}, {float64(20)}, {float64(30)},
 				},
@@ -15647,9 +15613,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_DST_05 VALUES (1, 10), (2, NULL), (3, 10), (4, NULL), (5, 20)",
 			},
 			Query: "SELECT DISTINCT v FROM T_DST_05 ORDER BY v",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42). Go correctly deduplicates including NULL.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil}, {float64(10)}, {float64(20)},
 				},
@@ -15662,9 +15628,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_DST_06 VALUES (1, 10), (2, 10), (3, 20), (4, 20), (5, 30)",
 			},
 			Query: "SELECT COUNT(DISTINCT v) FROM T_DST_06",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:          "Both reject COUNT(DISTINCT) but Java throws NPE (ALL() returns null for DISTINCT token), Go gives clean rejection.",
-				Direction:       DivergenceBothErrorMessagesDrift,
+				Direction:       plandiff.DivergenceBothErrorMessagesDrift,
 				GoErrorContains: "DISTINCT aggregate COUNT is not supported",
 			},
 		},
@@ -15673,9 +15639,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_DST_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      nil,
 			Query:          "SELECT DISTINCT v FROM T_DST_07 ORDER BY v",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:         "Java Cascades planner can't plan DISTINCT (TODO #42).",
-				Direction:      DivergenceJavaErrorsGoCorrect,
+				Direction:      plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{},
 			},
 		},
@@ -15718,9 +15684,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_JN2_08 VALUES (100, 1), (101, 1), (102, 2)",
 			},
 			Query: "SELECT a.id, b.id FROM T_JN2_07 a, T_JN2_08 b WHERE b.fk = a.id ORDER BY a.id, b.id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java UnableToPlanException when ORDER BY references columns from multiple joined tables. Go correctly executes nested-loop join.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(100)},
 					{float64(1), float64(101)},
@@ -16143,9 +16109,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_01 (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_01 VALUES (1, 'foo', 'bar')"},
 			Query:          "SELECT CONCAT(a, b) FROM T_CSL_01 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "CONCAT is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates CONCAT('foo','bar')='foobar'. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"foobar"},
 				},
@@ -16157,9 +16123,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_02 (id BIGINT, a STRING, b STRING, c STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_02 VALUES (1, 'x', 'y', 'z')"},
 			Query:          "SELECT CONCAT(a, b, c) FROM T_CSL_02 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "CONCAT is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates CONCAT('x','y','z')='xyz'. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"xyz"},
 				},
@@ -16171,9 +16137,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_03 (id BIGINT, a STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_03 VALUES (1, 'foo')"},
 			Query:          "SELECT CONCAT(a, NULL) FROM T_CSL_03 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "CONCAT is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates CONCAT('foo',NULL)='foo' (MySQL/Postgres NULL-skip semantics). Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"foo"},
 				},
@@ -16185,9 +16151,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_04 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_04 VALUES (1, 'hello')"},
 			Query:          "SELECT LENGTH(s) FROM T_CSL_04 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "LENGTH is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LENGTH('hello')=5 (rune count). Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(5)},
 				},
@@ -16199,9 +16165,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_05 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_05 VALUES (1, '')"},
 			Query:          "SELECT LENGTH(s) FROM T_CSL_05 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "LENGTH is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LENGTH('')=0. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(0)},
 				},
@@ -16213,9 +16179,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_06 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_06 VALUES (1, NULL)"},
 			Query:          "SELECT LENGTH(s) FROM T_CSL_06 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "LENGTH is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LENGTH(NULL)=NULL. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil},
 				},
@@ -16227,9 +16193,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_07 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_07 VALUES (1, 'abcdef')"},
 			Query:          "SELECT SUBSTR(s, 3) FROM T_CSL_07 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "SUBSTR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTR('abcdef',3)='cdef' (1-based, to end). Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"cdef"},
 				},
@@ -16241,9 +16207,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_08 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_08 VALUES (1, 'abcdef')"},
 			Query:          "SELECT SUBSTR(s, 2, 3) FROM T_CSL_08 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "SUBSTR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTR('abcdef',2,3)='bcd' (1-based start, length 3). Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"bcd"},
 				},
@@ -16255,9 +16221,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_09 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_09 VALUES (1, 'hello')"},
 			Query:          "SELECT SUBSTR(s, 1, 2) FROM T_CSL_09 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "SUBSTR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTR('hello',1,2)='he' (1-based boundary). Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"he"},
 				},
@@ -16269,9 +16235,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_CSL_10 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_CSL_10 VALUES (1, '')"},
 			Query:          "SELECT SUBSTR(s, 1, 1) FROM T_CSL_10 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "SUBSTR is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates SUBSTR('',1,1)='' (empty input → empty string). Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{""},
 				},
@@ -16285,9 +16251,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_01 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_01 VALUES (1, 'HELLO')"},
 			Query:          "SELECT LOWER(s) FROM T_UCL_01 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER('HELLO')='hello'. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"hello"},
 				},
@@ -16299,9 +16265,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_02 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_02 VALUES (1, NULL)"},
 			Query:          "SELECT LOWER(s) FROM T_UCL_02 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER(NULL)=NULL. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil},
 				},
@@ -16313,9 +16279,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_03 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_03 VALUES (1, 'hello')"},
 			Query:          "SELECT id FROM T_UCL_03 WHERE UPPER(s) = 'HELLO'",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER('hello')='HELLO' in WHERE and returns the matching row. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)},
 				},
@@ -16327,9 +16293,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_04 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_04 VALUES (1, 'WORLD')"},
 			Query:          "SELECT id FROM T_UCL_04 WHERE LOWER(s) = 'world'",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER('WORLD')='world' in WHERE and returns the matching row. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)},
 				},
@@ -16340,9 +16306,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_05 (id BIGINT, a STRING, b STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_05 VALUES (1, 'foo', 'bar')"},
 			Query:          "SELECT UPPER(CONCAT(a, b)) FROM T_UCL_05 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "UPPER/CONCAT are Go-only read-side scalar functions (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects the nested call, while Go evaluates UPPER(CONCAT('foo','bar')) = 'FOOBAR'. Wire-neutral (read-side only).",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"FOOBAR"},
 				},
@@ -16354,9 +16320,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_06 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_06 VALUES (1, 'TEST')"},
 			Query:          "SELECT CASE WHEN LOWER(s) = 'test' THEN 1 ELSE 0 END FROM T_UCL_06 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER('TEST')='test' so the CASE yields 1. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)},
 				},
@@ -16368,9 +16334,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_07 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_07 VALUES (1, '')"},
 			Query:          "SELECT UPPER(s) FROM T_UCL_07 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER('')=''. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{""},
 				},
@@ -16382,9 +16348,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_08 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_08 VALUES (1, 'HeLLo WoRLd')"},
 			Query:          "SELECT LOWER(s) FROM T_UCL_08 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER('HeLLo WoRLd')='hello world'. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{"hello world"},
 				},
@@ -16396,9 +16362,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_09 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_09 VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
 			Query:          "SELECT id, UPPER(s) FROM T_UCL_09 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "UPPER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates UPPER over each row. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), "A"},
 					{float64(2), "B"},
@@ -16412,9 +16378,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_UCL_10 (id BIGINT, s STRING, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_UCL_10 VALUES (1, 'APPLE'), (2, 'BANANA')"},
 			Query:          "SELECT id FROM T_UCL_10 WHERE LOWER(s) > 'apple' ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "LOWER is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates LOWER(s)>'apple' — only 'banana' qualifies. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(2)},
 				},
@@ -16430,9 +16396,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_01 VALUES (1, 5)"},
 			Query:          "SELECT ABS(v) FROM T_AMM_01 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(5)=5. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(5)},
 				},
@@ -16444,9 +16410,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_02 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_02 VALUES (1, -5)"},
 			Query:          "SELECT ABS(v) FROM T_AMM_02 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(-5)=5. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(5)},
 				},
@@ -16458,9 +16424,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_03 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_03 VALUES (1, 0)"},
 			Query:          "SELECT ABS(v) FROM T_AMM_03 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(0)=0. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(0)},
 				},
@@ -16472,9 +16438,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_04 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_04 VALUES (1, NULL)"},
 			Query:          "SELECT ABS(v) FROM T_AMM_04 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(NULL)=NULL. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil},
 				},
@@ -16486,9 +16452,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_05 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_05 VALUES (1, -10), (2, 5)"},
 			Query:          "SELECT id FROM T_AMM_05 WHERE ABS(v) > 7 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(v)>7 — only ABS(-10)=10 qualifies. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)},
 				},
@@ -16501,9 +16467,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_06 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_06 VALUES (1, 17)"},
 			Query:          "SELECT MOD(v, 5) FROM T_AMM_06 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "MOD is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates MOD(17,5)=2. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(2)},
 				},
@@ -16515,10 +16481,10 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_07 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_07 VALUES (1, 0)"},
 			Query:          "SELECT MOD(v, 3) FROM T_AMM_07 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				// Zero DIVIDEND, not zero divisor: MOD(0,3)=0, no 22012.
 				Reason:    "MOD is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates MOD(0,3)=0 (zero dividend, divisor 3 — no division-by-zero). Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(0)},
 				},
@@ -16530,9 +16496,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_08 (id BIGINT, v DOUBLE, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_08 VALUES (1, -3.14)"},
 			Query:          "SELECT ABS(v) FROM T_AMM_08 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(-3.14)=3.14 on the DOUBLE column. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(3.14)},
 				},
@@ -16544,9 +16510,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_09 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_09 VALUES (1, -7)"},
 			Query:          "SELECT ABS(v) + 1 FROM T_AMM_09 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "ABS is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates ABS(-7)+1=8. Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(8)},
 				},
@@ -16558,9 +16524,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_AMM_10 (id BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_AMM_10 VALUES (1, 17, 5)"},
 			Query:          "SELECT MOD(x, y) FROM T_AMM_10 WHERE id = 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "MOD is a Go-only read-side scalar function (RFC-087); Java's BuiltInFunctionCatalog has no entry so Java rejects, while Go evaluates MOD(17,5)=2 (column divisor). Wire-neutral.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(2)},
 				},
@@ -17045,9 +17011,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_AE_04 VALUES (1, NULL), (2, NULL)",
 			},
 			Query: "SELECT COALESCE(MIN(v), -1) FROM T_AE_04",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java IllegalStateException 'unable to eval an aggregation function with eval()' — can't handle COALESCE wrapping aggregate. Go correctly evaluates post-aggregation.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(-1)},
 				},
@@ -17070,9 +17036,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_CSE_01 VALUES (1, 1), (2, 2), (3, 3)",
 			},
 			Query: "SELECT id, CASE v WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END FROM T_CSE_01 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java's visitCaseExpressionFunctionCall is a no-op (visitChildren) that always falls through to ELSE. Go correctly evaluates simple CASE.",
-				Direction: DivergenceJavaWrongRowsGoCorrect,
+				Direction: plandiff.DivergenceJavaWrongRowsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), "one"},
 					{float64(2), "two"},
@@ -17560,9 +17526,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_CTE_11 VALUES (1, 5), (2, 15), (3, 25), (4, 35)",
 			},
 			Query: "WITH t AS (SELECT id, v FROM T_CTE_11) SELECT id FROM t WHERE v > 20 ORDER BY id",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java rejects ORDER BY on CTE outer SELECT with 'order by is not supported in subquery' — isTopLevel() misclassifies CTE outer as subquery. Go correctly handles it.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(3)},
 					{float64(4)},
@@ -18098,12 +18064,12 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_DUP_EIP (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_EIQ (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_EIP VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_EIQ VALUES (5), (7), (9)"},
 			Query:          "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIP)",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason: "ORDER ONLY — identical six-row multiset on both engines, and the query has no ORDER BY. " +
 					"The two nestings of the unconstrained comma join tie on cost and each engine breaks the tie " +
 					"with its own plan hash; see dup_from_alias_shadowing_exists, and the live pin beside its sibling " +
 					"shapes in conformance/dup_alias_exists_order_probe_test.go.",
-				Direction: DivergenceUnorderedRowOrderDiffers,
+				Direction: plandiff.DivergenceUnorderedRowOrderDiffers,
 				GoExpectedRows: [][]any{
 					{float64(5)}, {float64(5)}, {float64(7)}, {float64(7)}, {float64(9)}, {float64(9)},
 				},
@@ -18121,7 +18087,7 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_DUP_SHP (id BIGINT, v BIGINT, PRIMARY KEY (id)) CREATE TABLE T_DUP_SHQ (qid BIGINT, PRIMARY KEY (qid))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_SHP VALUES (1, 10), (2, 20)", "INSERT INTO T_DUP_SHQ VALUES (5), (7), (9)"},
 			Query:          "SELECT a.qid FROM T_DUP_SHP AS a, T_DUP_SHQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_SHP AS a WHERE a.id = 1)",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason: "ORDER ONLY — identical six-row multiset on both engines, and the query has no ORDER BY. " +
 					"Go's cost model ties on the two nestings of the unconstrained comma join and breaks the tie " +
 					"with an identifier-sensitive hash. So does JAVA — its ImplementNestedLoopJoinRule matches both " +
@@ -18130,7 +18096,7 @@ func SeedRunCorpus() []RunQuery {
 					"deviates from FROM order in 10 (RFC-235 section 18). The plain comma join over these tables " +
 					"diverges the same way. Pinned live against the JVM, beside its sibling shapes, by " +
 					"conformance/dup_alias_exists_order_probe_test.go.",
-				Direction: DivergenceUnorderedRowOrderDiffers,
+				Direction: plandiff.DivergenceUnorderedRowOrderDiffers,
 				GoExpectedRows: [][]any{
 					{float64(5)}, {float64(5)}, {float64(7)}, {float64(7)}, {float64(9)}, {float64(9)},
 				},
@@ -18176,9 +18142,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_DUP_H (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_DUP_H VALUES (1)"},
 			Query:          "SELECT * FROM nosuch_dup AS a, T_DUP_H AS a",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:          "Both engines reject the undefined table; cosmetic message wording differs. The dup-alias check skips undefined-table pairs so 42F01 is not masked as 42702.",
-				Direction:       DivergenceBothErrorMessagesDrift,
+				Direction:       plandiff.DivergenceBothErrorMessagesDrift,
 				GoErrorContains: "Unknown table NOSUCH_DUP",
 			},
 		},
@@ -18210,9 +18176,9 @@ func SeedRunCorpus() []RunQuery {
 			SchemaTemplate: "CREATE TABLE T_OBP_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_OBP_01 VALUES (2, 20), (1, 10)"},
 			Query:          "SELECT * FROM T_OBP_01 ORDER BY 1",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:         "Java cannot plan this literal sort expression; Go's positional-ordering extension resolves position 1 against the expanded star.",
-				Direction:      DivergenceJavaErrorsGoCorrect,
+				Direction:      plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{{float64(1), float64(10)}, {float64(2), float64(20)}},
 			},
 		},
@@ -18225,9 +18191,9 @@ func SeedRunCorpus() []RunQuery {
 				" CREATE TABLE T_DUP_GB (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{"INSERT INTO T_DUP_GA VALUES (1)", "INSERT INTO T_DUP_GB VALUES (2)"},
 			Query:     `SELECT a."COUNT(*)" FROM (SELECT COUNT(*) FROM T_DUP_GA) AS a, (SELECT COUNT(*) FROM T_DUP_GB) AS a`,
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:          "Both engines reject the generated aggregate spelling as a non-existing column. RFC-256 makes an unaliased aggregate output anonymous in Go as it is in Java; only diagnostic wording differs.",
-				Direction:       DivergenceBothErrorMessagesDrift,
+				Direction:       plandiff.DivergenceBothErrorMessagesDrift,
 				GoErrorContains: "Attempting to query non existing column A.COUNT(*)",
 			},
 		},
@@ -18353,9 +18319,9 @@ func SeedRunCorpus() []RunQuery {
 				"INSERT INTO T_XCJ_L VALUES (5), (7), (9)",
 			},
 			Query: "SELECT a.v FROM T_XCJ_K AS a, T_XCJ_L AS a ORDER BY a.v DESC",
-			Divergence: &Divergence{
+			Divergence: &plandiff.Divergence{
 				Reason:    "Java cannot plan ORDER BY over the FIRST duplicate-alias leg's unique column ('Cascades planner could not plan query', live-verified 4.12.11.0 — the second-leg form answers there); Go binds the sort key per-attribute and orders correctly. Go exceeds Java on the read side.",
-				Direction: DivergenceJavaErrorsGoCorrect,
+				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(20)},
 					{float64(20)},
@@ -18397,8 +18363,8 @@ func iv8Rows() string {
 // together. Removing a corpus entry is fine — the hash recomputes —
 // but think twice before removing one whose Status is currently
 // AGREE; that's a regression sentinel.
-func SeedCorpus() []Query {
-	return []Query{
+func SeedCorpus() []plandiff.Query {
+	return []plandiff.Query{
 		// --- Bare scans ----------------------------------------------------
 		{
 			Name: "select_star_one_table",

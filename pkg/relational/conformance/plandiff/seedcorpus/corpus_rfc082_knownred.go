@@ -4,7 +4,7 @@
 // Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
 // Licensed under the Apache License, Version 2.0; translated to Go and modified.
 
-package plandiff
+package seedcorpus
 
 // rfc082KnownRed is the regression-LOCK: corpus entries whose Go vs Java
 // cross-engine behaviour is a KNOWN, currently-unfixed divergence — NOT

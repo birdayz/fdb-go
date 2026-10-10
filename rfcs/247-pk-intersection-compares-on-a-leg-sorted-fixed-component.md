@@ -282,7 +282,7 @@ enumeration).
   `64a737edd` vs the implementation: 2955 entries, 2955 identical, 0 shape
   flips. Population: that corpus holds no composite-primary-key intersection
   whose legs fix a component unevenly — the `T_PKI` shapes live in the
-  cross-engine `SeedRunCorpus` (`plandiff/corpus.go`), not in the EXPLAIN
+  cross-engine `SeedRunCorpus` (`plandiff/seedcorpus/corpus.go`), not in the EXPLAIN
   baseline — so this green says the directed gate declined none of the
   corpus's EXISTING primary-key intersections (every pk-intersection
   candidate now passes through it), not that it exercised the widening.

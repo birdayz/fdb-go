@@ -34,6 +34,7 @@ import (
 	"sync"
 
 	"fdb.dev/pkg/relational/conformance/plandiff"
+	"fdb.dev/pkg/relational/conformance/plandiff/seedcorpus"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -219,11 +220,11 @@ var _ = Describe("RunSql Harness", func() {
 		// The corpus is driven in PARALLEL across a small pool of freshly-spawned
 		// Java servers + Go runners (see the fan-out below) — fresh servers, not
 		// the suite-shared one, to avoid pollution from prior conformance specs.
-		corpus := plandiff.SeedRunCorpus()
+		corpus := seedcorpus.SeedRunCorpus()
 		// Apply RFC-082 cross-engine divergence annotations (Go-only extensions,
 		// tracked Go capability gaps, and both-reject message-drift) so the
 		// harness asserts Go's documented behaviour without pinning Java's.
-		plandiff.ApplyRFC082Divergences(corpus)
+		seedcorpus.ApplyRFC082Divergences(corpus)
 
 		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
 		defer os.Remove(clusterFilePath)
@@ -313,7 +314,7 @@ var _ = Describe("RunSql Harness", func() {
 				continue
 			}
 			ok, detail := entryConforms(javaResult, goResult)
-			known := plandiff.IsKnownRed(rq.Name)
+			known := seedcorpus.IsKnownRed(rq.Name)
 			if !ok && !known {
 				regressions = append(regressions, fmt.Sprintf("%s: %s", rq.Name, detail))
 			} else if ok && known {

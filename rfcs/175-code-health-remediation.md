@@ -106,7 +106,7 @@ item's acceptance criterion in §5 is "the grep returns zero."
   reasoning is load-bearing keeps the reasoning sentence.
 - **B2 — shift-tags in code comments.** Explicitly banned by CLAUDE.md ("Never put shift tags
   in code comments"), yet present in **29 files** under `pkg/`, worst offender
-  `pkg/relational/conformance/plandiff/corpus.go` (24 tags). Named examples:
+  `pkg/relational/conformance/plandiff/seedcorpus/corpus.go` (24 tags). Named examples:
   `core/query/expr/expr.go:30` "(swingshift-47 seed)", `core/query/semantic/identifier.go:15`,
   `core/embedded/select_parser.go:808` and :1074 ("Pre-dayshift-40 Go emitted 0A000" — a
   git-history fact encoded as a comment). Sweep to zero; where the tag anchors a real WHY,
