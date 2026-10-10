@@ -54,9 +54,11 @@ the maintainer chooses to cut `vX.Y.Z`:
 2. **Checks on the merged cut commit.** Every CI job is green, and `MODULE.bazel` / `go.mod` pins
    are current. If the release changes the wire format or the Java target (v0.2.0 does: Java
    4.14.2.0 and the HNSW layout), the Compatibility block says so and the Java conformance,
-   cross-client differential and full-lane (`just test-full`) CI jobs pass.
+   cross-client differential CI jobs pass, and `just test-full` passes on that commit (the CI `ci`
+   job skips the stress and manual targets).
 3. **Dry run** on that commit: `gh workflow run frl-release.yml --ref master -f version=vX.Y.Z`
-   and wait for success. It builds, smoke-tests and previews the notes; a dispatch never publishes.
+   and wait for success; check that the run's commit (`gh run view <id> --json headSha`) is the cut
+   commit. It builds, smoke-tests and previews the notes; a dispatch never publishes.
 4. **Tag** the cut commit by SHA:
    `git fetch origin && git tag -a vX.Y.Z -m vX.Y.Z <sha> && git push origin vX.Y.Z`.
    `frl-release.yml` publishes the GitHub release; do not create it by hand. For v0.2.0, continue
@@ -77,30 +79,30 @@ No tag is cut automatically by CI or by this document.
 
 v0.1.0 shipped `frl` as the nested module `fdb.dev/cmd/frl` (tag `cmd/frl/v0.1.0`). As the longer
 module path it wins `go install fdb.dev/cmd/frl@latest` over the root module until every version
-of it is retracted. Commit `5854ae2a9e2001b3c5a1724fc6e21b433152a0ab` (branch `release/cmd-frl-v0.1.1-retract`) holds the
-retraction: a `cmd/frl/go.mod` retracting v0.1.1 and everything up to v0.1.0. It must never merge
+of it is retracted. Commit `948f2d3b69e0aa7fe85d2b25552b63a114384d7d` (branch `release/cmd-frl-v0.1.1-retract`) holds the
+retraction: a `cmd/frl/go.mod` retracting every version up to and including v0.1.1. It must never merge
 into master.
 
-1. Before step 4, the fdb.dev stub for `cmd/frl` is live (`website.yml` deploys it when the
+1. Before item 3, the fdb.dev stub for `cmd/frl` is live (`website.yml` deploys it when the
    release-prep change reaches master): `GOPROXY=direct go list -m -versions fdb.dev/cmd/frl`
    prints `fdb.dev/cmd/frl v0.1.0`. Without the stub the proxy cannot fetch the new tag.
-2. After step 4, wait until `GOPROXY=https://proxy.golang.org go list -m fdb.dev@latest` prints
+2. After checklist step 4, wait until `GOPROXY=https://proxy.golang.org go list -m fdb.dev@latest` prints
    `fdb.dev v0.2.0`. Retracting earlier makes `@latest` fall back to root v0.1.0, which does not
    contain `cmd/frl`.
 3. Tag the reviewed commit, then delete the branch so nobody merges it:
 
    ```sh
    git fetch origin
-   git tag -a cmd/frl/v0.1.1 -m "Retract the nested frl module" 5854ae2a9e2001b3c5a1724fc6e21b433152a0ab
+   git tag -a cmd/frl/v0.1.1 -m "Retract the nested frl module" 948f2d3b69e0aa7fe85d2b25552b63a114384d7d
    git push origin cmd/frl/v0.1.1
    git push origin --delete release/cmd-frl-v0.1.1-retract
    ```
 
    No workflow runs for this tag. Do not create a GitHub release for it: `install.sh` would offer
    it as the newest release.
-4. In a clean environment (step 5's `export`), make the proxy fetch the tag, then check:
+4. In a clean environment (checklist step 5's `export`), make the proxy fetch the tag, then check:
 
    ```sh
    go list -m -retracted fdb.dev/cmd/frl@v0.1.1   # fdb.dev/cmd/frl v0.1.1 (retracted)
-   go install fdb.dev/cmd/frl@latest && go version -m "$GOBIN/frl" | grep -w mod   # mod fdb.dev v0.2.0 ...
+   go install fdb.dev/cmd/frl@latest && go version -m "$GOBIN/frl" | awk '$1=="mod"'   # mod fdb.dev v0.2.0 ...
    ```

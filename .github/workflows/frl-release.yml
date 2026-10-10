@@ -139,7 +139,8 @@ jobs:
           TAG: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          scripts/release-notes.sh --check "$TAG" > "$RUNNER_TEMP/notes.md"
+          scripts/release-notes.sh --check "$TAG" > "$RUNNER_TEMP/notes.md" ||
+            { echo "::error::no release notes for $TAG (see the message above)"; exit 1; }
           tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/notes.md"
 
       - name: Publish release

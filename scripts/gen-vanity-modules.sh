@@ -41,7 +41,7 @@ retired=(cmd/frl)
 			-not -path './website/themes/*' \
 			-not -path './bazel-*' |
 			sed 's|^\./||; s|/go\.mod$||' |
-			grep -v '^go\.mod$' || true
+			{ grep -v '^go\.mod$' || [[ $? -eq 1 ]]; }
 		printf '%s\n' "${retired[@]}"
 	} |
 		LC_ALL=C sort -u |

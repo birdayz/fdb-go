@@ -22,7 +22,7 @@ notes="docs/release-notes/${tag}.md"
 if [[ -f "$notes" ]]; then
 	cat "$notes"
 	printf '\n---\n\n'
-elif $check && [[ "$tag" == *.0 ]]; then
+elif $check && [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.0$ ]]; then
 	echo "release-notes.sh: minor release $tag needs $notes" >&2
 	exit 1
 fi
