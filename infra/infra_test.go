@@ -120,6 +120,13 @@ func TestOrphanFDBSweepScript(t *testing.T) {
 	runShellSuite(t, "orphan_fdb_sweep_test.sh")
 }
 
+// TestReapLeakedContainersScript drives the job-start reaper: an earlier job's
+// orphan goes; bazel-remote and the job's own containers stay.
+func TestReapLeakedContainersScript(t *testing.T) {
+	t.Parallel()
+	runShellSuite(t, "reap_leaked_containers_test.sh")
+}
+
 func runShellSuite(t *testing.T, script string) {
 	t.Helper()
 	// The suites resolve the repo from their own path (dirname $0/..), which holds both in
