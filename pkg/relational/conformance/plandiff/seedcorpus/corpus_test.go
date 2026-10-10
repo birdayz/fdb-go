@@ -16,26 +16,29 @@ import (
 // available. Empty value means "skip integration tests".
 var goSQLClusterFilePath string
 
-func TestMain(m *testing.M) {
+func TestMain(m *testing.M) { os.Exit(runTests(m)) }
+
+// runTests returns the exit code so its deferred cleanup runs before os.Exit.
+func runTests(m *testing.M) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
 		// No Docker — run non-FDB tests only.
-		os.Exit(m.Run())
+		return m.Run()
 	}
 	defer container.Terminate(context.Background()) //nolint:errcheck
 
 	path, err := container.ClusterFilePath(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ClusterFilePath: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer os.Remove(path)
 	goSQLClusterFilePath = path
 
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 // TestSeedCorpus_GoEngineSucceedsOnAll asserts the naive Go generator

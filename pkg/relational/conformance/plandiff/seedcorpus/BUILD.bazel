@@ -15,8 +15,7 @@ go_library(
 
 go_test(
     name = "seedcorpus_test",
-    # Drives every SeedRunCorpus entry through FDB; same budget as plandiff_test,
-    # whose runner smoke test this was before the corpus moved.
+    # Drives every SeedRunCorpus entry through FDB; same budget as plandiff_test.
     timeout = "long",
     srcs = ["corpus_test.go"],
     embed = [":seedcorpus"],

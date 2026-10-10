@@ -18,8 +18,8 @@ comparison the moment the Go runner has a real implementation.
 
 ## Adding a corpus entry
 
-`SeedRunCorpus` (in `seedcorpus/corpus.go`, a testonly package) is the result-set diff corpus. Each entry
-is a `RunQuery` with:
+`SeedRunCorpus` (in `seedcorpus/corpus.go`, a testonly package) is the
+result-set diff corpus. Each entry is a `RunQuery` with:
 
 ```go
 {
@@ -100,6 +100,7 @@ bazelisk test //conformance:conformance_test \
 
 # Pure unit tests (no FDB / Java needed):
 bazelisk test //pkg/relational/conformance/plandiff:plandiff_test \
+  //pkg/relational/conformance/plandiff/seedcorpus:seedcorpus_test \
   --test_output=streamed
 ```
 

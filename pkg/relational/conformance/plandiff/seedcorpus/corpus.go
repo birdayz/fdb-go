@@ -792,7 +792,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			//
 			// `ExpectErrorMessage` requires the core error string to
 			// match VERBATIM on both sides — Java's
-			// `JavaError.Message` and Go's `api.Error.Message` —
+			// `plandiff.JavaError.Message` and Go's `api.Error.Message` —
 			// proving alignment at the message level. Per-entry
 			// isolation (fresh Java server spawned just for this
 			// entry) prevents pollution from prior negative entries.
@@ -18515,7 +18515,7 @@ func SeedCorpus() []plandiff.Query {
 		// (ExpressionVisitor.visitInPredicate asserts
 		// `inList().queryExpressionBody() == null`). Re-adding it would also
 		// turn into a spurious Go-only divergence the moment SeedCorpus runs
-		// against live Java via NewJavaEngineHTTP.
+		// against live Java via plandiff.NewJavaEngineHTTP.
 		{
 			Name: "select_with_exists_subquery",
 			SQL:  "SELECT id FROM orders WHERE EXISTS (SELECT 1 FROM users WHERE users.id = orders.customer)",
