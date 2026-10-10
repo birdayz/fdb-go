@@ -66,18 +66,26 @@ const (
 	peelMassBelowTwo
 )
 
-// peelAdmitted is the peel's admission: its work W = floor(log2(n - 1)) * n *
-// d * max(I * (R + 1), 32) / 32 is at most B. The knob factor is floored at the
-// default's 32, so smaller KMeans knobs never enlarge admission. W is a pure
+// peelAdmitted is the peel's admission: its work W = floor(log2(n - 1)) *
+// max(n, peelMinPriced) * max(d, peelMinPriced) * f is at most B. The knob factor f is a fit's
+// KMeans work relative to the default knobs' (I = 8, R = 3), floored at 1 so no
+// knobs enlarge admission: the larger of its iterations, I * (R + 1) / 32, and
+// its objective passes per vector, (R + 1) * (2I + 2) / 72, since every
+// restart's seeding and final assignment cost passes at any I. W is a pure
 // function of the task's input.
 func peelAdmitted(n, d, iterations, restarts int) bool {
 	if n < 2 {
 		return false
 	}
-	knob := math.Max(float64(iterations)*float64(restarts+1), 32)
-	w := math.Floor(math.Log2(float64(n-1))) * float64(n) * float64(d) * knob / 32
+	runs, it := float64(restarts+1), float64(iterations)
+	knob := math.Max(math.Max(it*runs/32, runs*(2*it+2)/72), 1)
+	w := math.Floor(math.Log2(float64(n-1))) * float64(max(n, peelMinPriced)) * float64(max(d, peelMinPriced)) * knob
 	return w <= peelWorkBound
 }
+
+// peelMinPriced is the least n and d the admission prices: below it the fixed
+// cost of a pass (per vector) or of a restart (per fit), not n * d, dominates.
+const peelMinPriced = 128
 
 // unsplittable is the rule's entry. It returns the peel's selected candidate,
 // or nil after a terminal reconcile.
@@ -145,21 +153,10 @@ func (g *guardiann) peelSplit(peel *splittableRandom, current guardiannCluster, 
 		removed += removedNow
 		mass -= removedNow
 		if floor := 1<<(r+1) - 1; removed < floor {
-			type far struct {
-				index    int
-				distance float64
+			members, err := g.peelFarthest(primaries, inMass, centroids[other])
+			if err != nil {
+				return nil, peelNotRun, err
 			}
-			var members []far
-			for i, in := range inMass {
-				if in {
-					d, err := g.distance(primaries[i].vector, centroids[other])
-					if err != nil {
-						return nil, peelNotRun, err
-					}
-					members = append(members, far{i, d})
-				}
-			}
-			sort.SliceStable(members, func(a, b int) bool { return members[a].distance > members[b].distance })
 			for _, m := range members[:min(floor-removed, len(members))] {
 				inMass[m.index] = false
 				mass--
@@ -179,33 +176,64 @@ func (g *guardiann) peelSplit(peel *splittableRandom, current guardiannCluster, 
 		if err != nil {
 			return nil, peelNotRun, err
 		}
-		next := make([]int, n)
-		for i, p := range primaries {
-			d0, err := g.distance(p.vector, refit.centroids[0])
-			if err != nil {
-				return nil, peelNotRun, err
-			}
-			d1, err := g.distance(p.vector, refit.centroids[1])
-			if err != nil {
-				return nil, peelNotRun, err
-			}
-			if d1 < d0 {
-				next[i] = 1
-			}
-		}
-		cand := &repartitioningCandidate{
-			cls: c12.cls, primaries: primaries,
-			kMeans: kMeansResult{centroids: refit.centroids, assignment: next},
-		}
-		result, err := g.scoreCandidate([]guardiannCluster{current}, cand)
+		cand, result, err := g.peelCandidate(current, c12, refit.centroids)
 		if err != nil {
 			return nil, peelNotRun, err
 		}
 		if result.decision != decisionInvalidCandidate {
 			return cand, peelSelected, nil
 		}
-		assignment, centroids = next, refit.centroids
+		assignment, centroids = cand.kMeans.assignment, refit.centroids
 	}
+}
+
+// peelMember is a member of the peel's mass and its distance from a centroid.
+type peelMember struct {
+	index    int
+	distance float64
+}
+
+// peelFarthest is the members of the mass, farthest from c first.
+func (g *guardiann) peelFarthest(primaries []guardiannVectorRef, inMass []bool, c gVector) ([]peelMember, error) {
+	var members []peelMember
+	for i, in := range inMass {
+		if in {
+			d, err := g.distance(primaries[i].vector, c)
+			if err != nil {
+				return nil, err
+			}
+			members = append(members, peelMember{i, d})
+		}
+	}
+	sort.SliceStable(members, func(a, b int) bool { return members[a].distance > members[b].distance })
+	return members, nil
+}
+
+// peelCandidate assigns every primary to the nearer refit centroid and scores
+// that partition against the current one.
+func (g *guardiann) peelCandidate(current guardiannCluster, c12 *repartitioningCandidate, centroids []gVector,
+) (*repartitioningCandidate, evaluationResult, error) {
+	primaries := c12.primaries
+	next := make([]int, len(primaries))
+	for i, p := range primaries {
+		d0, err := g.distance(p.vector, centroids[0])
+		if err != nil {
+			return nil, evaluationResult{}, err
+		}
+		d1, err := g.distance(p.vector, centroids[1])
+		if err != nil {
+			return nil, evaluationResult{}, err
+		}
+		if d1 < d0 {
+			next[i] = 1
+		}
+	}
+	cand := &repartitioningCandidate{
+		cls: c12.cls, primaries: primaries,
+		kMeans: kMeansResult{centroids: centroids, assignment: next},
+	}
+	result, err := g.scoreCandidate([]guardiannCluster{current}, cand)
+	return cand, result, err
 }
 
 // reconcileUnsplittable is step 2: the target is reconciled in place and keeps
