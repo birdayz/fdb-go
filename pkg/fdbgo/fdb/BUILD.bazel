@@ -36,6 +36,7 @@ go_test(
     name = "fdb_test",
     timeout = "long",
     srcs = [
+        "apiversion_internal_test.go",
         "approxsize_deferred_test.go",
         "body_error_chain_fdb_test.go",
         "conflictrange_workload_test.go",

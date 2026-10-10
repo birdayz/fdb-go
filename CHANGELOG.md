@@ -39,6 +39,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   2023 unless `SetLockAware` is also set, and `SetSizeLimit` outside [32, 10,000,000] (0 included)
   fails every later operation with 2006, not only the commit. `client.Transaction.SetLockAware` and
   `SetReadLockAware` take no argument.
+- `fdb.APIVersion` and `client.WithAPIVersion` accept 510-730 (`client.MinAPIVersion`-`client.MaxAPIVersion`) and refuse other versions with `api_version_not_supported` (2203), as libfdb_c 7.3.77; 731 and above were accepted, and a version below 510 was 2201. A different version after one is selected stays 2201.
 - SQL planning has no task budget by default, as in Java (was 150,000 tasks, 250,000 right-deep); the
   caller's context bounds it, and `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and
   `MAX_NUM_MATCHES_PER_RULE_CALL` opt into Java's caps (54F02 when exhausted).

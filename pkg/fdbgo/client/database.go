@@ -834,6 +834,18 @@ func OpenDatabase(ctx context.Context, clusterFilePath string, opts ...Option) (
 	return OpenDatabaseFromConfig(ctx, cf, opts...)
 }
 
+// checkAPIVersion validates a WithAPIVersion value: unset is api_version_unset
+// (2200), outside [MinAPIVersion, MaxAPIVersion] api_version_not_supported (2203).
+func checkAPIVersion(v int) error {
+	if v == 0 {
+		return &wire.FDBError{Code: 2200} // api_version_unset
+	}
+	if v < MinAPIVersion || v > MaxAPIVersion {
+		return &wire.FDBError{Code: 2203} // api_version_not_supported
+	}
+	return nil
+}
+
 // OpenDatabaseFromConfig creates and bootstraps a Database from a ClusterFile.
 // See WithDialFunc / WithTLSConfig for options.
 func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option) (*Database, error) {
@@ -842,8 +854,8 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 	// Mandatory-set API version (RFC-149): C++ cannot open a DB without
 	// fdb_select_api_version, so "unset" never occurs there. Reject an unset
 	// version here so the apiVersionAtLeast gate can never silently no-op.
-	if o.apiVersion == 0 {
-		return nil, &wire.FDBError{Code: 2200} // api_version_unset
+	if err := checkAPIVersion(o.apiVersion); err != nil {
+		return nil, err
 	}
 
 	// Resolve transport security (WithTLSConfig > ":tls"+FDB_TLS_* > plaintext).

@@ -1962,8 +1962,9 @@ func TestAPIVersion_AlreadySetDifferentVersion(t *testing.T) {
 	g.Expect(fdbErr.Code).To(Equal(2201))
 }
 
-// TestAPIVersion_TooLow verifies that calling APIVersion with a version
-// below the minimum (510) returns error code 2201.
+// TestAPIVersion_TooLow verifies that calling APIVersion with a version below
+// the minimum (510) once 730 is selected returns api_version_already_set (2201):
+// the already-set check precedes the range check, as in the Apple binding.
 func TestAPIVersion_TooLow(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)

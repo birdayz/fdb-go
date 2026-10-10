@@ -1622,7 +1622,7 @@ func (tx *Transaction) stateAtomic(op MutationType, key, operand []byte) {
 	// user offset; libfdb_c widens both to the unified 4-byte offset the commit proxy reads (parsed as the
 	// trailing int32, ReadYourWrites.actor.cpp:2196/2283 → Atomic.h:258-264) by appending \x00\x00 (key,
 	// zero-extending the 2-byte offset) / \x00\x00\x00\x00 (value, a literal offset-0). The Go client
-	// accepts apiVersion >= 510 (database.go:32), so 510-519 is reachable; without this a Go app at that
+	// accepts apiVersion >= MinAPIVersion (510), so 510-519 is reachable; without this a Go app at that
 	// version writes versionstamp bytes libfdb_c would not — a wire divergence. Done here (the RYW::atomicOp
 	// analog) BEFORE the versionstampKeyRange transform + buffering below, so the suffixed key/operand flow
 	// through identically to C++. apiVersionAtLeast(520) → no-op, so the modern path is byte-unchanged.
