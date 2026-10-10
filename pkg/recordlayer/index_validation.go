@@ -45,6 +45,9 @@ type IndexValidationEntry struct {
 // orphaned entries (index entry exists but no corresponding record).
 // Matches Java's StandardIndexMaintainer.validateEntries().
 func (store *FDBRecordStore) ValidateIndex(ctx context.Context, index *Index) (*IndexValidationResult, error) {
+	if err := store.checkIndexCollation(index); err != nil {
+		return nil, err
+	}
 	result := &IndexValidationResult{}
 
 	// Phase 1: Scan all records and compute expected index entries

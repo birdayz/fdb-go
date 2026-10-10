@@ -227,6 +227,28 @@ class MetaDataProtoSteps extends ConformanceBase {
         return out;
     }
 
+    /** Evaluate literal collation expressions using the actual JRE/ICU provider. */
+    @ConformanceStep("evaluateCollationKeyJava")
+    public Map<String, Object> evaluateCollationKeyJava(byte[] expression) throws InvalidProtocolBufferException {
+        final var proto = com.apple.foundationdb.record.expressions.RecordKeyExpressionProto.KeyExpression.parseFrom(expression);
+        final List<List<Integer>> packed = new ArrayList<>();
+        final var collate = (com.apple.foundationdb.record.metadata.expressions.CollateFunctionKeyExpression)KeyExpression.fromProto(proto);
+        for (final var key : collate.evaluate(null)) {
+            final List<Integer> bytes = new ArrayList<>();
+            for (final byte b : key.toTuple().pack()) {
+                bytes.add(b & 0xff);
+            }
+            packed.add(bytes);
+        }
+        return Map.of("packed", packed,
+                "javaVersion", System.getProperty("java.version"),
+                "runtimeVersion", System.getProperty("java.runtime.version"),
+                "javaVendor", System.getProperty("java.vendor"),
+                "localeProviders", System.getProperty("java.locale.providers", "default"),
+                "registry", collate.getCollatorRegistry().getClass().getName(),
+                "icuVersion", com.ibm.icu.util.VersionInfo.ICU_VERSION.toString());
+    }
+
     /**
      * Java's KeyExpression.fromProto over a serialized KeyExpression parsed
      * PARTIALLY, so a proto2 required child may be absent as it can be in

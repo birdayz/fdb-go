@@ -208,7 +208,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		// which builds every maintainer in that same constructor: an index whose
 		// maintainer cannot be built is one whose entries cannot be cleared, and
 		// discovering that before the clear is the whole point.
-		maintainer, mErr := store.getIndexMaintainer(idx)
+		maintainer, mErr := store.getIndexMaintainerForRawAccess(idx)
 		if mErr != nil {
 			return mErr
 		}
@@ -276,7 +276,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 
 	// Delete index entries via each maintainer.
 	for _, action := range actions {
-		maintainer, mErr := store.getIndexMaintainer(action.index)
+		maintainer, mErr := store.getIndexMaintainerForRawAccess(action.index)
 		if mErr != nil {
 			return mErr
 		}

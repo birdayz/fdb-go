@@ -13,19 +13,13 @@ import (
 	"golang.org/x/text/collate"
 	"golang.org/x/text/language"
 	"google.golang.org/protobuf/proto"
+
+	"fdb.dev/gen"
 )
 
 // Collation function names matching Java's CollateFunctionKeyExpressionFactory.
-// Both JRE and ICU variants are registered since Go uses golang.org/x/text/collate
-// (CLDR-based, similar to ICU).
-//
-// NOTE: Collation key bytes are NOT wire-compatible with Java's. Java uses
-// java.text.CollationKey.toByteArray() (JRE) or com.ibm.icu.text.CollationKey.toByteArray()
-// (ICU), whose binary formats are Java/ICU-version-specific. Go's collation keys
-// use golang.org/x/text's CLDR-based format. This means:
-// - Go can read/write its own collated indexes correctly
-// - Go preserves collated index definitions during metadata round-trip
-// - Go CANNOT share collated indexes with Java (different sort key bytes)
+// Both names use golang.org/x/text/collate, not Java's JRE/ICU key formats.
+// Persisting or querying those keys requires StoreBuilder.SetGoOnlyCollation.
 const (
 	CollateFuncJRE = "collate_jre"
 	CollateFuncICU = "collate_icu"
@@ -59,6 +53,129 @@ func init() {
 	spec := FunctionSpec{Evaluator: eval, MinArguments: 1, MaxArguments: 3, ColumnSize: 1, NullIsNonUnique: true}
 	registerCoreFunction(CollateFuncJRE, spec)
 	registerCoreFunction(CollateFuncICU, spec)
+}
+
+// collationFunctionIn is the name of the first collate_jre / collate_icu
+// function in expr, or "" when it has none.
+func collationFunctionIn(expr KeyExpression) string {
+	switch e := expr.(type) {
+	case *FunctionKeyExpression:
+		if e.name == CollateFuncJRE || e.name == CollateFuncICU {
+			return e.name
+		}
+		return collationFunctionIn(e.arguments)
+	case *CardinalityFunctionKeyExpression:
+		return collationFunctionIn(e.arguments)
+	case *CompositeKeyExpression:
+		return firstCollationFunctionIn(e.expressions)
+	case *ListKeyExpression:
+		return firstCollationFunctionIn(e.children)
+	case *NestingKeyExpression:
+		return collationFunctionIn(e.child)
+	case *GroupingKeyExpression:
+		return collationFunctionIn(e.wholeKey)
+	case *KeyWithValueExpression:
+		return collationFunctionIn(e.innerKey)
+	case *SplitKeyExpression:
+		return collationFunctionIn(e.joined)
+	case *DimensionsKeyExpression:
+		return collationFunctionIn(e.WholeKey)
+	default:
+		return ""
+	}
+}
+
+func firstCollationFunctionIn(exprs []KeyExpression) string {
+	for _, child := range exprs {
+		if fn := collationFunctionIn(child); fn != "" {
+			return fn
+		}
+	}
+	return ""
+}
+
+// Collated index bounds and entries are provider-specific, even at equal strengths.
+func (store *FDBRecordStore) checkIndexCollation(index *Index) error {
+	if store.goOnlyCollation {
+		return nil
+	}
+	if fn := collationFunctionIn(index.RootExpression); fn != "" {
+		return &GoOnlyCollationError{Function: fn, IndexName: index.Name}
+	}
+	return nil
+}
+
+// A collated primary key files the record under a key Java would not compute.
+func (store *FDBRecordStore) checkPrimaryKeyCollation(recordType *RecordType) error {
+	if store.goOnlyCollation {
+		return nil
+	}
+	if fn := collationFunctionIn(recordType.PrimaryKey); fn != "" {
+		return &GoOnlyCollationError{Function: fn, RecordTypeName: recordType.Name}
+	}
+	return nil
+}
+
+func (store *FDBRecordStore) checkRecordCountCollation(countKey KeyExpression) error {
+	if !store.goOnlyCollation {
+		if fn := collationFunctionIn(countKey); fn != "" {
+			return &GoOnlyCollationError{Function: fn, RecordCountKey: true}
+		}
+	}
+	return nil
+}
+
+// Preflight before record mutations: discovering an incompatible index afterward
+// would leave a partial write in a transaction the caller could still commit.
+func (store *FDBRecordStore) checkRecordWriteCollation(countChanges bool, types ...*RecordType) error {
+	if store.goOnlyCollation {
+		return nil
+	}
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return err
+	}
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+	return store.checkRecordWriteCollationLocked(countChanges, types...)
+}
+
+func (store *FDBRecordStore) checkRecordWriteCollationLocked(countChanges bool, types ...*RecordType) error {
+	if store.goOnlyCollation {
+		return nil
+	}
+	if countChanges && (store.storeHeader == nil || store.storeHeader.GetRecordCountState() != gen.DataStoreInfo_DISABLED) {
+		if err := store.checkRecordCountCollation(store.metaData.GetRecordCountKey()); err != nil {
+			return err
+		}
+	}
+	check := func(index *Index) error {
+		if err := store.checkIndexCollation(index); err != nil {
+			maintain, stateErr := store.shouldMaintainIndex(index.Name)
+			if stateErr != nil {
+				return stateErr
+			}
+			if maintain {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, rt := range types {
+		if rt == nil {
+			continue
+		}
+		for _, index := range store.metaData.GetIndexesForRecordType(rt.Name) {
+			if err := check(index); err != nil {
+				return err
+			}
+		}
+	}
+	for _, index := range store.metaData.GetUniversalIndexes() {
+		if err := check(index); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // makeCollateEvaluator creates a FunctionEvaluator for collation functions.

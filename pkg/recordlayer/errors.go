@@ -156,6 +156,7 @@ func (*IndexVersionTooNewError) javaMetaDataException()           {}
 func (*IndexNotFoundError) javaMetaDataException()                {}
 func (*MetaDataVersionMustIncreaseError) javaMetaDataException()  {}
 func (*RecordTypeKeyTypeError) javaMetaDataException()            {}
+func (*GoOnlyCollationError) javaMetaDataException()              {}
 
 // IsMetaDataException reports whether err's outermost Java exception is a
 // MetaDataException, as Java's `re instanceof MetaDataException` tests the
@@ -274,6 +275,33 @@ func (*UnknownIndexTypeError) JavaRecordCoreException() {}
 // MetaDataException; in Go the identity fields need their own struct, so the
 // relationship Java gets from inheritance is spelled out here.
 func (e *UnknownIndexTypeError) Unwrap() error {
+	return &MetaDataError{Message: e.Error()}
+}
+
+// GoOnlyCollationError rejects provider-specific collation keys without explicit
+// Go-only opt-in. It unwraps to MetaDataError; Java has no equivalent refusal.
+type GoOnlyCollationError struct {
+	Function       string
+	IndexName      string // the refused index, or "" for a primary key
+	RecordTypeName string // the record type whose primary key is refused
+	RecordCountKey bool   // the legacy record-count expression is refused
+}
+
+func (e *GoOnlyCollationError) Error() string {
+	subject := fmt.Sprintf("index %q", e.IndexName)
+	if e.RecordCountKey {
+		subject = "record count key"
+	} else if e.IndexName == "" {
+		subject = fmt.Sprintf("primary key of record type %q", e.RecordTypeName)
+	}
+	return fmt.Sprintf("%s uses %s, whose Go collation keys are not the bytes Java writes; "+
+		"only a store no Java process opens may use it, opened with StoreBuilder.SetGoOnlyCollation(true)",
+		subject, e.Function)
+}
+
+func (*GoOnlyCollationError) JavaRecordCoreException() {}
+
+func (e *GoOnlyCollationError) Unwrap() error {
 	return &MetaDataError{Message: e.Error()}
 }
 
