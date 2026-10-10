@@ -2223,16 +2223,16 @@ byte-level assertions that every narrower integer width collapses to one key,
 that a string key reaches the bytes rather than the type name, and that a bytes
 key keeps tuple type code `0x01` rather than being folded into a string.
 
-### VECTOR index metadata validation: Go validates a plain HNSW index's metric but not its other options, dimension count or structure, Java has `VectorIndexValidator` (OPEN — RFC-257 WS-D)
+### VECTOR index metadata validation: Go validates a plain index's options but not a plain HNSW index's dimension count or any index's structure, Java has `VectorIndexValidator` (OPEN — RFC-257 WS-D)
 
 This entry replaces the current section of the same subject (cur.md:2194, "(OPEN — owner decision)"), whose "Go:" paragraph is stale.
 
 **Java:** `VectorIndexMaintainerFactory.VectorIndexValidator.validate`
 (`indexes/VectorIndexMaintainerFactory.java:96-111`) runs when the metadata is built.
 It does three things. It runs the base `IndexValidator.validate`. It runs
-`validateStructure()` (`:132`): the root must be a `KeyWithValueExpression`, must
-not contain a grouping expression, and must have at least one column after the split
-point, and the index must not be unique. It then calls `VectorIndexHelper.validate(index)`
+`validateStructure()` (`:132-151`): the root must not contain a grouping expression,
+the index must not be unique, the root must not contain a version column, the root
+must be a `KeyWithValueExpression`, and the root must not fan out. It then calls `VectorIndexHelper.validate(index)`
 (`VectorIndexHelper.java:47`), which delegates to the engine the index's
 `vectorEngine` option selects. Any `IllegalArgumentException` from that call is
 rethrown as `MetaDataException("incorrect index options")`. The dimension count is
@@ -2250,9 +2250,8 @@ declared one. The maintainer now reads options the way Java does (see below).
 (`vector_index_validation.go:30`). `validateIndex` calls it after
 `validateSlidingWindowIndex` for a windowed index, as Java's
 `SlidingWindowIndexValidator` ends with the delegate, and after `validateIndexType`
-for a plain VECTOR index (`index_validator.go:452-471`). For a plain HNSW index it
-checks the engine, alias conflicts and the metric only (below). A binary that does not
-link `vectorindex` still builds a plain index and refuses it at use.
+for a plain VECTOR index (`index_validator.go:453-479`). A binary that does not link
+`vectorindex` still builds a plain index and refuses it at use.
 
 `validateVectorIndexOptionsAtBuild` dispatches on the engine (`VectorEngineOf`):
 - GuardiANN goes through `parseGuardiannConfig`.
@@ -2308,20 +2307,15 @@ encodes is refused where Java constructs it" (`conformance/vector_index_conforma
 The refusal is an `IllegalArgumentError`, Java's class. Guava's `checkArgument` gives
 no message in Java; Go's message names the range.
 
-For a PLAIN HNSW index the metric is Java's at build (`Metric::valueOf`, the four
-constants' names only); the lower-case Go names `cosine`, `inner_product` and
-`euclidean` are refused as in Java. Its maintainer still accepts one form the windowed
-validator refuses (`goForms`, `hnsw_options.go:122-141`): 128 dimensions when none are
-given. Java's structure half is not ported.
+A PLAIN index's options are read at build as a windowed index's are, so its metric is
+Java's (`Metric::valueOf`, the four constants' names only: the lower-case Go names
+`cosine`, `inner_product` and `euclidean` are refused) and its `Config` bounds are
+refused at build. A plain HNSW index still accepts one form the windowed validator
+refuses (`defaultDims`, `hnsw_options.go:122-141`): 128 dimensions when none are given.
+Java's structure half is not ported.
 
 **What is open:**
-- A plain HNSW index's other options (numeric parse, `Config`'s checks) are refused by
-  its maintainer, not at build. Running them at build was measured in the fast lane:
-  three fixtures carry configurations Java's `Config` refuses —
-  `vector_index_test.go:2396` (m above mMax, asserted at use),
-  `TestVectorDDL_PartitionedIndexShape` (`CONNECTIVITY = 24` above the default mMax 16)
-  and `TestVectorIndexSQLOptionsStoreJavasOptions` (`ef_construction = 64`).
-- The dimension count: Go builds plain vector indexes without `hnswNumDimensions`,
+- The dimension count: Go builds plain HNSW indexes without `hnswNumDimensions`,
   which Java requires.
 - The structure half, wider still: test sites build vector indexes on roots that are
   not `KeyWithValueExpression`, which Java refuses outright.

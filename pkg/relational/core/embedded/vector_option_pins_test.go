@@ -31,8 +31,8 @@ func TestVectorIndexSQLOptionsStoreJavasOptions(t *testing.T) {
 	}{
 		{
 			"HNSW",
-			shared + ", connectivity = 8, ef_construction = 64, m_max = 12, m_max_0 = 24",
-			map[string]string{"hnswM": "8", "hnswEfConstruction": "64", "hnswMMax": "12", "hnswMMax0": "24"},
+			shared + ", connectivity = 8, ef_construction = 128, m_max = 12, m_max_0 = 24",
+			map[string]string{"hnswM": "8", "hnswEfConstruction": "128", "hnswMMax": "12", "hnswMMax0": "24"},
 		},
 		{
 			"GUARDIANN",

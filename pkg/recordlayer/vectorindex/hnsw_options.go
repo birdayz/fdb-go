@@ -119,10 +119,10 @@ type hnswOptions struct {
 // to specify the number of dimensions" (VectorIndexOptionsHelper.
 // getNumDimensions).
 //
-// goForms admits Go's one remaining convenience for a plain VECTOR index, 128
-// dimensions when none are given (DIVERGENCES.md, the VECTOR entry). The
-// windowed validator reads with it false.
-func readHNSWOptions(index *recordlayer.Index, goForms bool) (hnswOptions, error) {
+// defaultDims admits Go's one remaining convenience for a plain HNSW index, 128
+// dimensions when none are given (DIVERGENCES.md, the VECTOR entry). A windowed
+// index is read with it false.
+func readHNSWOptions(index *recordlayer.Index, defaultDims bool) (hnswOptions, error) {
 	o := hnswOptions{metric: "EUCLIDEAN_METRIC", raBitQNumExBits: 4}
 	name, err := hnswMetric(index)
 	if err != nil {
@@ -136,7 +136,7 @@ func readHNSWOptions(index *recordlayer.Index, goForms bool) (hnswOptions, error
 			return o, err
 		}
 		dims = int(n)
-	} else if !goForms {
+	} else if !defaultDims {
 		return o, &recordlayer.MetaDataError{Message: "need to specify the number of dimensions"}
 	}
 	c := DefaultHNSWConfig(dims)
@@ -238,8 +238,8 @@ func hnswConfigChecks(c HNSWConfig, useRaBitQ bool, raBitQNumExBits int) error {
 }
 
 // parseHNSWConfig is the configuration the VECTOR maintainer builds its graph
-// with: readHNSWOptions with Go's dimension default, and the RaBitQ quantizer when it is
-// enabled. Java's Config admits 1 to 15 extra bits and its RaBitQuantizer 1 to 8
+// with: readHNSWOptions with Go's dimension default, and the RaBitQ quantizer
+// when it is enabled. Java's Config admits 1 to 15 extra bits and its RaBitQuantizer 1 to 8
 // (RaBitQuantizer.java:76, TIGHT_START's length); Java constructs the quantizer
 // only when an operation first quantizes, so a count of 9 to 15 is refused
 // there (hnswGraph.raBitQuantizerAdmits), never here: the index is built, and

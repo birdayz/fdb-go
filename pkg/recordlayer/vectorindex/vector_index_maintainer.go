@@ -85,7 +85,8 @@ func newVectorIndexMaintainer(
 
 // HNSWConfigOf is the HNSW configuration a VECTOR index's options declare, as
 // the maintainer reads it (parseHNSWConfig): Java's
-// HnswVectorIndexEngine.parseConfig, with Go's dimension default for a plain VECTOR index.
+// HnswVectorIndexEngine.parseConfig, with Go's dimension default for a plain
+// HNSW index.
 func HNSWConfigOf(index *recordlayer.Index) (HNSWConfig, error) { return parseHNSWConfig(index) }
 
 // getSubspaceForPrefix returns the HNSW subspace scoped to the given prefix.

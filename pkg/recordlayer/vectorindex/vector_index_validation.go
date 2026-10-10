@@ -19,8 +19,8 @@ import (
 // refuses an option given under both its name and its alias (a MetaDataError,
 // VectorIndexOptionsHelper.validateNoAliasConflicts) and then parses the HNSW
 // configuration as HnswVectorIndexEngine.parseConfig does, Config's checks
-// included (readHNSWOptions, without Go's dimension default; a plain HNSW
-// index's metric only); any IllegalArgumentException
+// included (readHNSWOptions, Go's dimension default kept for a plain HNSW
+// index only); any IllegalArgumentException
 // of the parse, a NumberFormatException included, is rethrown as
 // MetaDataException("incorrect index options", cause), and a missing dimension
 // count is the parse's own MetaDataException. So the windowed index Go builds is
@@ -35,15 +35,10 @@ func validateVectorIndexOptionsAtBuild(idx *recordlayer.Index) error {
 	if err := hnswAliasConflict(idx); err != nil {
 		return err
 	}
-	switch {
-	case engine == VectorEngineGuardiann:
+	if engine == VectorEngineGuardiann {
 		_, err = parseGuardiannConfig(idx)
-	case !idx.HasRowNumberWindowPredicate():
-		// A plain HNSW index's other options reach only its maintainer: Go
-		// fixtures still carry configurations Java's Config refuses (DIVERGENCES.md).
-		_, err = hnswMetric(idx)
-	default:
-		_, err = readHNSWOptions(idx, false)
+	} else {
+		_, err = readHNSWOptions(idx, !idx.HasRowNumberWindowPredicate())
 	}
 	if err != nil {
 		var iae *recordlayer.IllegalArgumentError
