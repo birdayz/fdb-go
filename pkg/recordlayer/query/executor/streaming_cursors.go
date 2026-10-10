@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (AggregateCursor.java,
+// StreamGrouping.java, FlatMapPipelinedCursor.java,
+// NumericAggregationValue.java, and others),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2021 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package executor
 
 import (

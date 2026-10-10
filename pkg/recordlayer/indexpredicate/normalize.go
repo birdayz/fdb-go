@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (IndexPredicate.java,
+// QueryPredicate.java, ConstantPredicate.java, AndPredicate.java,
+// and others),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2023 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package indexpredicate classifies stored index predicates the way Java's
 // IndexPredicate.toPredicate constructors would (record.metadata.IndexPredicate).
 package indexpredicate

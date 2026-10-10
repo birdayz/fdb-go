@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (RelOpValue.java),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Code transcribed from RelOpValue.java (fdb-record-layer 4.14.2.0):
 // BinaryPhysicalOperator and UnaryPhysicalOperator, in declaration order, which
 // is the proto enum order (PlanSerialization.protoEnumBiMap). DO NOT EDIT by hand.

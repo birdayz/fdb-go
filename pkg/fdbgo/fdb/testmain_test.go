@@ -22,6 +22,9 @@ var (
 
 func TestMain(m *testing.M) {
 	fdb.MustAPIVersion(730)
+	if os.Getenv("FDBGO_LOOKUP_CHILD") != "" {
+		os.Exit(m.Run()) // File-selection subprocesses never connect to a cluster.
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

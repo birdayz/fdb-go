@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (
+// IndexOnlyAggregateValue.java, SemanticException.java),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package values
 
 // IndexOnlyAggregateOp enumerates the index-only aggregate operators

@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (
+// NormalizePredicatesRule.java, BooleanPredicateNormalizer.java,
+// MaterializedViewIndexGenerator.java, RecordQueryPlanner.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2019 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package cascades
 
 import (

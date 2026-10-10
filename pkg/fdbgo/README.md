@@ -1,6 +1,8 @@
 # Pure Go FoundationDB Client
 
-A native Go FDB client that speaks the FDB wire protocol directly — no cgo, no `libfdb_c`. Connects to FDB clusters over TCP, handles the full transaction lifecycle, and is wire-compatible with FDB 7.3.x.
+A native Go FoundationDB client — no cgo or `libfdb_c` dependency. It speaks the
+FDB 7.3 wire protocol, with **7.3.77** as the implementation and test reference.
+It is not a multi-version client; see the [cluster-upgrade guidance](../../docs/upgrade.md).
 
 ## Why
 
@@ -8,14 +10,20 @@ The official Go binding (`github.com/apple/foundationdb/bindings/go`) wraps `lib
 
 ## Status
 
-**Feature-complete.** Full Apple C binding API parity — zero stubs remaining (except `RebootWorker`, admin-only). Beats CGo on reads.
+**Pre-1.0; not declared production-ready.** This is an independent implementation,
+not a promise of complete Apple C binding API parity. Some options are unsupported
+and others are accepted without effect; consult the [option behavior matrix](fdb/OPTIONS.md)
+before migrating. In particular, authorization tokens, automatic idempotency,
+conflicting-key reporting and special-key-space operations have support boundaries.
+See [project status](../../STATUS.md) for validation scope and
+[compatibility](../../docs/compatibility.md) before choosing a deployment.
 
-Working and tested against real FDB 7.3.77:
+Implemented areas with tests against the FDB 7.3.77 reference include:
 - `Get`, `GetKey`, `GetRange` (multi-shard, all streaming modes), `GetEstimatedRangeSizeBytes`, `GetRangeSplitPoints`
 - `Set`, `Clear`, `ClearRange`, all 14 atomic mutation types
-- `Transact` with automatic retry (all retryable FDB error codes including `tag_throttled`, `cluster_version_changed`)
+- `Transact` with automatic retry for retryable FDB errors, including `tag_throttled` and `cluster_version_changed`
 - MVCC conflict detection, `OnError`, exponential backoff with configurable `MaxRetryDelay`
-- Coordinator bootstrap, GRV batching + caching (100ms TTL), storage server location discovery
+- Coordinator bootstrap, GRV batching, opt-in GRV cache (`USE_GRV_CACHE`, as in libfdb_c), storage server location discovery
 - Snapshot reads, Watch (long-poll), Versionstamp, Tenants (CRUD via system keys)
 - Transaction options: RYW disable, snapshot RYW disable, size limit, timeout, retry limit, lock-aware
 - `GetPipelined` for true request pipelining (no goroutine per Get)
@@ -106,7 +114,9 @@ Each FDB message type (request or reply) has a Go file with:
 - `MarshalFDB()` for requests — constructs the full wire message using vtable-derived offsets
 - `UnmarshalFDB()` / `UnmarshalFrom()` for replies — reads fields via `wire.Reader`
 
-All field offsets are derived from vtable constants in `vtables_generated.go`. **No hardcoded byte offsets.** If FDB changes a struct layout, regenerating the vtables is sufficient.
+Generated vtable constants describe the pinned FDB wire layout. Regeneration alone
+is not an upgrade guarantee: protocol changes can also require new types and
+behavior, followed by compatibility testing against the new reference.
 
 Shared write helpers (`WriteReplyPromise`, `WriteTenantInfo`, `writeKeySelectorRef`) encapsulate common nested struct patterns.
 
@@ -184,7 +194,7 @@ The key insight: **vtable constants are the only C++ build-time artifact**. Ever
 | Endpoint indices (method ordering in interfaces) | Very rare | Update `Endpoint*` constants in transaction.go |
 | Serialization logic changes (conditional branches) | Very rare | Update MarshalFDB method logic |
 
-### What does NOT change
+### Structures in the pinned protocol
 
 - The FlatBuffers wire format itself (vtable + soffset + RelativeOffset)
 - The FakeRoot wrapping pattern
@@ -193,43 +203,24 @@ The key insight: **vtable constants are the only C++ build-time artifact**. Ever
 - ReplyPromise structure
 - TCP framing and checksum format
 
+These describe the pinned reference, not a guarantee that future FDB releases
+retain them. Cross-version support needs source review and executable validation.
+
 ## Testing
 
 ```sh
-# All tests (uses Bazel, includes testcontainer tests against real FDB)
-just test
-
-# Specific test
-bazelisk test //pkg/fdbgo/client:client_test --test_arg="-test.run=TestSetGet" \
-  --test_arg="-test.v" --test_output=streamed --strategy=TestRunner=local
+just test       # fast lane: unit + bounded integration tests
+just test-full  # all Bazel targets, including heavy client and differential suites
 ```
 
-Client tests run against real FDB 7.3.77 via testcontainers-go (Docker required). 78 C binding port tests (96% of C test suite) + 30 correctness tests + 6 fault injection tests + 15 interop tests (Go↔CGo) + benchmarks. Line coverage: **72.4%** (client), **78.8%** (record layer). Binding stress: 200+ seeds × 1000 ops validated (0 failures). `just coverage` generates HTML report with per-package coverage.
+FDB-backed tests use testcontainers-go (Docker required). Use results for the exact
+commit and lane rather than historical test counts or coverage percentages.
+The fast lane excludes heavy client, differential and stress targets; see
+[STATUS.md](../../STATUS.md) for scope. No fresh full-suite pass is asserted here.
 
 ## Benchmarks
 
-```sh
-# Pure Go vs CGo (libfdb_c) — full Get path comparison
-bazelisk run //pkg/fdbgo/client:client_test -- \
-  -test.run='^$' \
-  -test.bench='BenchmarkGetValue' \
-  -test.benchtime=10s \
-  -test.benchmem \
-  -test.count=3
-```
-
-Both benchmarks read the same 100-byte key from FDB testcontainers. Measures the full path: GRV + locate + read + parse.
-
-**Baseline** (Ryzen 9 3900X, FDB 7.3.77 testcontainer, 2026-04-12):
-
-| Benchmark | ns/op | B/op | allocs/op |
-|---|---|---|---|
-| `BenchmarkGet/Go/100B` | 58,000 | 1,785 | 18 |
-| `BenchmarkGet/CGo/100B` | 205,000 | ~400 | 14 |
-| `BenchmarkSet/Go/100B` | 1,005,000 | 1,919 | 20 |
-| `BenchmarkSet/CGo/100B` | 1,007,000 | 180 | 9 |
-
-**Reads: Go beats CGo by 3.5x.** Writes: parity (1.00x). The 18 allocs/op on Get is the structural floor — top allocators: ReadFrame payload (9%), PrepareReply channel (13% with pool miss), conflict range buffer (6%), transaction struct (5%). All already pooled or minimal. Frame buffer pooling investigated (dayshift-6c) — no improvement because body shares backing array with payload, pooling requires an extra copy.
+The Go-vs-libfdb_c benchmarks live in [`bench/`](bench/bench_test.go); methodology and reproduction instructions are in [`bench/PERFORMANCE.md`](bench/PERFORMANCE.md). Earlier published speedup and write-parity claims were withdrawn: they do not describe the current default client behavior.
 
 ## Fault injection
 
@@ -291,9 +282,12 @@ When `OnError` receives error 1021, the transaction MAY have committed on the se
 
 This achieves the same safety as C++ `NativeAPI::makeSelfConflicting()`. Additionally, `commitDummyTransaction` runs a synchronization barrier before returning `commit_unknown_result` — a separate transaction that conflicts with the original, confirming it's no longer in-flight at the commit proxy. Both mechanisms combined match C++ exactly. Verified by `TestCommitUnknownResult_NoDoubleApply`: atomic ADD 5 to a counter, kill the reply, verify counter=15 (not 20).
 
-## Known divergences from C++ (audited 2026-04-12)
+## Historical C++ comparison (audited 2026-04-12)
 
-Systematic audit against `foundationdb/fdbclient/NativeAPI.actor.cpp`, `ReadYourWritesTransaction.actor.cpp`, and `Atomic.h`. All correctness bugs were fixed; these are intentional or architectural differences:
+This table records an earlier source audit, not a current exhaustive divergence
+inventory or a claim that all correctness bugs are fixed. Consult the current
+[option matrix](fdb/OPTIONS.md), [project status](../../STATUS.md) and client
+source/tests when evaluating behavior.
 
 | Area | C++ behavior | Go behavior | Impact |
 |---|---|---|---|

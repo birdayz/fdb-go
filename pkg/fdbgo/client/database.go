@@ -819,6 +819,10 @@ func (d *Database) HedgeEnabled() bool {
 // The provided ctx is used for the initial bootstrap (coordinator connection).
 // Background goroutines use an internal context cancelled by Close().
 func OpenDatabase(ctx context.Context, clusterFilePath string, opts ...Option) (*Database, error) {
+	clusterFilePath, err := LookupClusterFileName(clusterFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve cluster file: %w", err)
+	}
 	cf, err := ParseClusterFile(clusterFilePath)
 	if err != nil {
 		return nil, err

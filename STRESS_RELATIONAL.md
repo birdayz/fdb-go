@@ -1,4 +1,8 @@
-# SQL Stress Test Report
+# SQL Stress Test Report (historical)
+
+> These are historical measurements, not a current passing run or a readiness
+> statement. In particular, the wrong-row-count result below is not explained away
+> by its occurrence under Docker load. See [STATUS.md](STATUS.md).
 
 Harness: `pkg/relational/sqldriver/stress/stress_test.go`
 Schema: `orders` (10K/100K rows, PK `id`, indexes on `customer_id`, `status`, `amount`) + `customers` (1K/10K rows, PK `id`, index on `tier`).
@@ -83,7 +87,12 @@ WHERE predicates on cross-joins (`FROM a, b WHERE ...`) are merged into the `Sel
 
 ### Intermittent FDB range exhaustion under Docker load
 
-When both 10K and 100K tests run concurrently against the same Docker FDB container, the range iterator occasionally reports premature exhaustion (returns `more=false` mid-scan). This causes `COUNT(*)` to undercount and `ORDER BY` scans to truncate. The same queries pass when run in isolation or when the container is less loaded. This is a Docker/FDB interaction issue, not a code bug.
+This historical run observed premature range exhaustion, undercounted `COUNT(*)`
+and truncated `ORDER BY` scans under concurrent load. Passing in isolation does not
+establish a root cause or excuse a wrong answer. The former assertion that this
+was “not a code bug” is withdrawn: this report does not prove where the defect was
+or whether a later revision fixed it. Do not treat these results as a current
+passing stress run; use [STATUS.md](STATUS.md) and results for the exact tested commit.
 
 ### Correlated EXISTS at 100K
 

@@ -3,6 +3,7 @@ package infra
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -303,5 +304,222 @@ func TestFleetGoMatchesGoMod(t *testing.T) {
 			"go_version AND go_sha256 together — a version bumped without its checksum fails "+
 			"provisioning at fetch-verified.sh, which is the loud outcome; a checksum left "+
 			"matching a stale version is the quiet one.", fleet, repo)
+	}
+}
+
+func TestPRCIThirdPartyNoticesFreshness(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		On   map[string]yaml.Node `yaml:"on"`
+		Jobs map[string]struct {
+			If              string `yaml:"if"`
+			ContinueOnError bool   `yaml:"continue-on-error"`
+			Steps           []struct {
+				Name, Uses, Run string
+				If              string            `yaml:"if"`
+				ContinueOnError bool              `yaml:"continue-on-error"`
+				With            map[string]string `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := workflow.On["pull_request"]; !ok {
+		t.Fatal("notice freshness must run on pull requests, not only release tags")
+	}
+	job, ok := workflow.Jobs["ci"]
+	if !ok || job.If != "" || job.ContinueOnError {
+		t.Fatal("notice freshness must be in the required CI job")
+	}
+	var check string
+	goReady := false
+	for _, step := range job.Steps {
+		if strings.HasPrefix(step.Uses, "actions/setup-go@") {
+			goReady = step.With["go-version-file"] == "go.mod" && step.If == "" && !step.ContinueOnError
+		}
+		if step.Name == "Verify third-party notices are current" {
+			if !goReady || step.If != "" || step.ContinueOnError || check != "" {
+				t.Fatal("notice freshness must run once, after setup-go from go.mod, without an optional condition")
+			}
+			check = step.Run
+		}
+	}
+	if check == "" {
+		t.Fatal("PR CI has no third-party notice freshness check")
+	}
+	for _, tc := range []struct {
+		name           string
+		fail, generate bool
+	}{
+		{"current", false, true},
+		{"stale", true, true},
+		{"staged_regeneration", true, true},
+		{"missing", true, false},
+		{"untracked", true, false},
+		{"empty", true, false},
+		{"generator_failure", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			run := func(script string) ([]byte, error) {
+				cmd := exec.Command("bash", "-euo", "pipefail", "-c", script)
+				cmd.Dir = root
+				cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "CASE="+tc.name)
+				return cmd.CombinedOutput()
+			}
+			setup := `
+git init -q
+if [ "$CASE" != missing ] && [ "$CASE" != untracked ]; then
+  case "$CASE" in
+    stale|staged_regeneration) printf 'stale notice\n' > THIRD_PARTY_NOTICES.txt ;;
+    empty) : > THIRD_PARTY_NOTICES.txt ;;
+    *) printf 'current notice\n' > THIRD_PARTY_NOTICES.txt ;;
+  esac
+  git add THIRD_PARTY_NOTICES.txt
+fi
+git -c user.name=fixture -c user.email=fixture@example.invalid -c core.hooksPath=/dev/null commit -qm fixture --allow-empty
+if [ "$CASE" = untracked ] || [ "$CASE" = staged_regeneration ]; then
+  printf 'current notice\n' > THIRD_PARTY_NOTICES.txt
+fi
+if [ "$CASE" = staged_regeneration ]; then git add THIRD_PARTY_NOTICES.txt; fi
+`
+			if out, err := run(setup); err != nil {
+				t.Fatalf("notice fixture: %v\n%s", err, out)
+			}
+			// Exercise the workflow's shell, stubbing only metadata generation.
+			harness := `
+python3() {
+  [ "$*" = scripts/update-third-party-notices.py ] || return 91
+  printf 'generated\n' > generator-called
+  [ "$CASE" != generator_failure ] || return 92
+  printf 'current notice\n' > THIRD_PARTY_NOTICES.txt
+}
+`
+			out, err := run(harness + check)
+			if (err != nil) != tc.fail {
+				t.Fatalf("notice check %s: exit=%v, want failure=%v\n%s", tc.name, err, tc.fail, out)
+			}
+			_, err = os.Stat(filepath.Join(root, "generator-called"))
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if (err == nil) != tc.generate {
+				t.Fatalf("notice check %s: generator called=%v, want %v", tc.name, err == nil, tc.generate)
+			}
+		})
+	}
+}
+
+func TestFRLReleaseLegalNotices(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("../.github/workflows/frl-release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var build, smoke string
+	for _, step := range workflow.Jobs["release"].Steps {
+		switch step.Name {
+		case "Cross-compile static binaries":
+			build = step.Run
+		case "Smoke test (extract, run, verify checksum path)":
+			smoke = step.Run
+		}
+	}
+	loop := regexp.MustCompile(`(?s)for target in ([^;]+); do\n(.*?)\ndone`).FindStringSubmatch(build)
+	if loop == nil || smoke == "" {
+		t.Fatal("release packaging loop or smoke check is missing")
+	}
+	targets := strings.Fields(loop[1])
+	if strings.Join(targets, " ") != "linux/amd64 linux/arm64 darwin/amd64 darwin/arm64" {
+		t.Fatalf("review legal-notice coverage for release targets %v", targets)
+	}
+	// Exercise the shipped packaging shell with fixture binaries, not a compiler.
+	compile := `  go build -trimpath -ldflags='-s -w' -o "$out/frl" .`
+	if strings.Count(loop[0], compile) != 1 {
+		t.Fatal("expected one cross-compile command in the packaging loop")
+	}
+	packaging := strings.Replace(loop[0], compile, "  : # fixture binary already exists", 1)
+	for _, damage := range []string{"none", "missing", "empty", "altered"} {
+		t.Run(damage, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			cli := filepath.Join(root, "cmd", "frl")
+			dist := filepath.Join(cli, "dist")
+			notices := []string{"LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt"}
+			for _, name := range notices {
+				if err := os.WriteFile(filepath.Join(root, name), []byte("fixture "+name+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, target := range targets {
+				dir := filepath.Join(dist, strings.ReplaceAll(target, "/", "_"))
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "frl"), []byte("#!/bin/sh\necho v0.0.0\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run := func(dir, script string) ([]byte, error) {
+				cmd := exec.Command("bash", "-euo", "pipefail", "-c", script)
+				cmd.Dir = dir
+				cmd.Env = append(os.Environ(), "VERSION=v0.0.0")
+				return cmd.CombinedOutput()
+			}
+			if out, err := run(cli, packaging); err != nil {
+				t.Fatalf("package release: %v\n%s", err, out)
+			}
+			for _, target := range targets {
+				archive := "frl_v0.0.0_" + strings.ReplaceAll(target, "/", "_") + ".tar.gz"
+				for _, name := range notices {
+					out, err := run(dist, "tar -xOzf "+archive+" "+name)
+					if err != nil || string(out) != "fixture "+name+"\n" {
+						t.Fatalf("%s must carry exact %s: %v\n%s", archive, name, err, out)
+					}
+				}
+			}
+			if damage != "none" {
+				path := filepath.Join(dist, "darwin_arm64", "THIRD_PARTY_NOTICES.txt")
+				files := "frl LICENSE NOTICE THIRD_PARTY_NOTICES.txt"
+				if damage == "missing" {
+					files = "frl LICENSE NOTICE"
+				} else {
+					content := []byte{}
+					if damage == "altered" {
+						content = []byte("wrong notice\n")
+					}
+					if err := os.WriteFile(path, content, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if out, err := run(dist, "tar -C darwin_arm64 -czf frl_v0.0.0_darwin_arm64.tar.gz "+files); err != nil {
+					t.Fatalf("damage fixture: %v\n%s", err, out)
+				}
+			}
+			if out, err := run(dist, "sha256sum frl_*.tar.gz > checksums.txt"); err != nil {
+				t.Fatalf("checksum fixtures: %v\n%s", err, out)
+			}
+			out, err := run(dist, smoke)
+			if (err != nil) != (damage != "none") {
+				t.Fatalf("smoke check for %s notice: %v\n%s", damage, err, out)
+			}
+		})
 	}
 }

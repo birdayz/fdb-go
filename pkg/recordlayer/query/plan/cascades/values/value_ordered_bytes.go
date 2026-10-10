@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (ToOrderedBytesValue.java,
+// FromOrderedBytesValue.java, TupleOrdering.java, Key.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2024 Apple Inc. and the FoundationDB project authors
+// Copyright 2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package values
 
 import (

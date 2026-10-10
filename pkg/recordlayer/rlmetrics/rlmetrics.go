@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (StoreTimer.java,
+// FDBStoreTimer.java, MetricRegistryStoreTimer.java, RelationalServer.java,
+// and others),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package rlmetrics exposes a record-layer StoreTimer (the Go port of Java's
 // FDBStoreTimer) in the Prometheus text exposition format, ready to scrape —
 // with zero dependencies.

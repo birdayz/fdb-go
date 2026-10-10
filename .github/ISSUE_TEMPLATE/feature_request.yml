@@ -1,0 +1,27 @@
+name: Feature request
+description: Describe a use case or improvement.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. Please keep examples free of private data.
+        A request does not imply a delivery commitment.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Use case
+      description: What are you trying to do, and what prevents it today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Requested behavior
+      description: Include an example of how you would use it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and compatibility
+      description: Workarounds considered, or reference behavior in FoundationDB or the Java Record Layer.

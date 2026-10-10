@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (EmptyValue.java,
+// RecordType.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package values
 
 // EmptyValue represents an empty record (zero fields). Mirrors Java's

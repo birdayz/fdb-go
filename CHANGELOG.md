@@ -155,6 +155,8 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - A version index is never a covering scan, as in Java 4.14.2.0: `ORDER BY` a column with ties returns them in primary-key order through the plain index.
 - A `COALESCE` folds while planning only when its first argument is NULL or a BOOLEAN literal, as in Java 4.14.2.0, so its other arguments are evaluated as written: `WHERE COALESCE(1, 1/0) = 1` raises 22012 (it answered every row).
 
+- Runnable SQL/typed-store quickstarts check errors; default cluster lookup follows C++ precedence and routine SQL warm-up logs only at Debug.
+
 ## [v0.1.0] - 2026-08-26
 
 ### Added

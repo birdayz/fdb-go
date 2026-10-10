@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (AndOrValue.java,
+// BooleanValue.java, AndPredicate.java, OrPredicate.java),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package values
 
 // AndOrOp identifies the boolean connector. Mirrors Java's

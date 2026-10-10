@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (
+// RelationalKeyspaceProvider.java, RelationalPlanCache.java,
+// RecordLayerEngine.java),
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package sqldriver implements a database/sql driver for the
 // FoundationDB Record Layer relational (SQL) layer.
 //
@@ -56,11 +62,6 @@ const DriverName = "fdbsql"
 
 // defaultClusterFileEnv is the environment variable FDB checks for cluster file path.
 const defaultClusterFileEnv = "FDB_CLUSTER_FILE"
-
-// defaultClusterFilePath is FDB's conventional cluster-file location, used when
-// neither the DSN nor FDB_CLUSTER_FILE specifies one. It mirrors the path the
-// pure-Go client's OpenDefault uses, and is the standard default for libfdb_c too.
-const defaultClusterFilePath = "/etc/foundationdb/fdb.cluster"
 
 // fdbDBCache caches FDB database handles by cluster-file path so repeated
 // sql.Open calls against the same cluster don't leak FDB connections.
@@ -282,16 +283,9 @@ func (c *Connector) initialize(ctx context.Context) error {
 	if cached, ok := fdbDBCache.Load(cacheKey); ok {
 		c.fdbDB = cached.(*recordlayer.FDBDatabase)
 	} else {
-		// Open through the build-tag-selectable seam (RFC-109): the default build
-		// uses the pure-Go client; -tags libfdbc swaps in Apple's libfdb_c with no
-		// source change here. fdbclient.Open needs an explicit path, so an empty
-		// cluster file falls back to FDB's default location — matching the prior
-		// OpenDefault() branch — and works the same for both backends.
-		openPath := clusterFile
-		if openPath == "" {
-			openPath = defaultClusterFilePath
-		}
-		rawDB, err := fdbclient.Open(openPath)
+		// Leave an empty path for the selected backend's default lookup, including
+		// a present-but-empty environment variable and a local fdb.cluster.
+		rawDB, err := fdbclient.Open(clusterFile)
 		if err != nil {
 			return api.WrapError(api.ErrCodeInternalError, "open FDB database", err)
 		}

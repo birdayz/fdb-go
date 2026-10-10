@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (WindowedValue.java,
+// RankValue.java, RowNumberValue.java),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package values
 
 // WindowedValue is the base shape for all SQL window-function values

@@ -1,3 +1,7 @@
+// Portions derived from FoundationDB Record Layer (IndexTest.java),
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package sqltest
 
 // RFC-202 S4: the __ROW_VERSION pseudo-field's query-read surface over BASE

@@ -1,7 +1,7 @@
 # RFC: Production-readiness assessment — pure-Go FoundationDB client (`pkg/fdbgo`)
 
-> **AUTHORITY: `road-to-prod.md`.** This is a POINT-IN-TIME AUDIT, not current status. Where it and
-> `road-to-prod.md` disagree, that page wins. Read this one for its *method* and its findings' shape;
+> **Historical audit; current authority: [STATUS.md](../STATUS.md).** This is a
+> POINT-IN-TIME AUDIT, not current status. Read it for its method and historical findings;
 > do not cite its punch-list as open work. **Both of its P0 gaps are CLOSED in code** — cluster-file
 > re-watch (`pkg/fdbgo/client/database.go:614` re-reads the file when the coordinator set rotates)
 > and `SetTimeout` bounding an in-flight read (RFC-112 threaded the deadline into the RPC wait

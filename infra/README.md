@@ -121,6 +121,44 @@ the apt baseline. `fdb_version` is pinned to **7.3.77** to match `MODULE.bazel` 
 testcontainers default (so the host `libfdb_c` the differential harness links is the same
 FDB the tests run against).
 
+## Runner job trust boundary
+
+Fresh provisioning bakes `runner-job-guard.sh` into `/usr/local/bin/runner-job-guard.sh`
+as `root:root` mode `0755`. Both the classic runner's systemd drop-in and the scale-set
+supervisor set `ACTIONS_RUNNER_HOOK_JOB_STARTED` to that path before starting. The payload
+is part of reviewed `cloud-init.yaml`, never downloaded from a branch or copied from a
+job checkout; `TestCloudInitInstallsRunnerJobGuard` checks it against the standalone
+script and exercises both provisioning branches with fixture commands.
+
+The hook refuses other repositories, fork PR/review events, and **all** PR
+`issue_comment` events (those payloads do not identify the head repository). It does
+not reject ordinary issues or their comments, and is not a blanket agent-job ban.
+`claude.yml` separately uses GitHub-hosted runners. Forks get `hosted-smoke.yml`; a
+maintainer can push a reviewed fork commit to a repository branch for the heavy suite.
+
+`cloud-init` is `PER_INSTANCE`, and `user_data` is pinned by `ignore_changes`: this
+change does not update existing runners. Deploy from reviewed infrastructure inputs by
+replacing one idle runner at a time; verify its hook file and service environment before
+returning it to the pool. The hook is an admission check, not a sandbox for admitted
+jobs: the runner account still has Docker and passwordless sudo.
+
+## Third-party notice freshness
+
+PR CI and the CLI release workflow run `python3 scripts/update-third-party-notices.py`
+from the repository root, after setup-go selects `go.mod`'s exact toolchain (currently
+Go 1.26.9). The generator uses the root `go.mod`/`go.sum` and `go list -mod=readonly
+-deps` for `./cmd/frl`, not a build or test. Its validated target inputs are
+`linux/amd64`, `linux/arm64`, `darwin/amd64`, and `darwin/arm64`, with `CGO_ENABLED=0`;
+it pins `GOTOOLCHAIN` from `go.mod` and clears ambient `GOFLAGS` and `GOEXPERIMENT`.
+Python 3.9+ and access to the Go module/toolchain downloads are required.
+
+Regenerate after dependency, toolchain, or release-target changes, review the texts,
+and commit `THIRD_PARTY_NOTICES.txt`. CI requires that file to be tracked and nonempty,
+then compares regeneration against `HEAD`; the infra regression executes that check
+against current, stale, missing, untracked, empty, staged, and generator-failure fixtures.
+This file-based inventory is not a licensing audit; source comments and nonstandard
+notice locations still need review.
+
 ## Self-healing (cloud-init)
 
 - **`runner-watchdog`** (every 10 min): restarts `WATCH_UNIT` when it is **not active**.

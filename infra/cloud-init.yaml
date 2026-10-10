@@ -39,10 +39,7 @@ write_files:
     content: |
       vm.swappiness=10
 
-  # runner is created with useradd + `usermod -aG docker` and nothing else, so it had no
-  # sudo — while workflows shell out to `sudo apt-get install` (claude.yml's unzip step).
-  # Passwordless because a job step cannot answer a prompt; docker group membership is
-  # already root-equivalent here, so this grants nothing the account did not have.
+  # Jobs cannot answer sudo prompts; docker group membership is already root-equivalent.
   - path: /etc/sudoers.d/runner
     permissions: "0440"
     content: |
@@ -51,6 +48,44 @@ write_files:
   - path: /etc/docker/daemon.json
     content: |
       {"data-root": "/mnt/ci-data/docker", "default-address-pools": [{"base": "172.17.0.0/12", "size": 24}, {"base": "192.168.0.0/16", "size": 24}]}
+
+  # Baked policy, never copied from a job checkout. Keep in sync with runner-job-guard.sh.
+  - path: /usr/local/bin/runner-job-guard.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # Host-side job hook: a PR can edit its workflow, but not this baked policy.
+      # Reject foreign repositories, fork PR events, and all PR issue_comments
+      # (those payloads lack the head repository). Ordinary issue events are allowed.
+      # Keep the cloud-init.yaml payload identical; TestCloudInitInstallsRunnerJobGuard pins it.
+      set -euo pipefail
+
+      REPO="birdayz/fdb-go"
+
+      if [ "$${GITHUB_REPOSITORY:-}" != "$REPO" ]; then
+        echo "runner-job-guard: refusing job for repository '$${GITHUB_REPOSITORY:-unset}'" >&2
+        exit 1
+      fi
+
+      case "$${GITHUB_EVENT_NAME:-}" in
+      pull_request | pull_request_target | pull_request_review | pull_request_review_comment)
+        head=$(jq -r '.pull_request.head.repo.full_name // empty' "$${GITHUB_EVENT_PATH:?}")
+        if [ "$head" != "$REPO" ]; then
+          echo "runner-job-guard: refusing $${GITHUB_EVENT_NAME} from fork '$${head:-unknown}' on a self-hosted runner" >&2
+          exit 1
+        fi
+        ;;
+      issue_comment)
+        # A PR issue_comment does not identify the head repository; fail closed.
+        is_pr=$(jq -r '.issue | if type == "object" then has("pull_request") else error("missing issue object") end' "$${GITHUB_EVENT_PATH:?}")
+        if [ "$is_pr" != false ]; then
+          echo "runner-job-guard: refusing issue_comment on a pull request on a self-hosted runner" >&2
+          exit 1
+        fi
+        ;;
+      esac
+      exit 0
 
   # Supply-chain gate (RFC-108 §1): download an artifact and ABORT provisioning if its
   # SHA-256 doesn't match the pin. Every tool fetch below goes through this, so a
@@ -431,6 +466,7 @@ write_files:
       [Service]
       Type=simple
       User=runner
+      Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/bin/runner-job-guard.sh
       RuntimeDirectory=bazelscaleset
       ExecStart=/usr/local/bin/bazelscaleset-run.sh
       Restart=always
@@ -517,10 +553,7 @@ runcmd:
   - useradd -m -s /bin/bash runner
   - usermod -aG docker runner
 
-  # Bazel output base on the CI volume (RFC-115 §7): symlink the runner's bazel cache to
-  # /mnt/ci-data/bazel so all build outputs — incl. the wire-oracle's bazel-out tar — land
-  # on the 100GB volume, not the root disk. (Bazel's --output_user_root defaults to
-  # ~/.cache/bazel, so the symlink is sufficient; no flag needed.)
+  # Keep Bazel outputs on the CI volume, not the root disk (RFC-115 §7).
   - install -d -o runner -g runner /mnt/ci-data/bazel /home/runner/.cache
   - ln -sfn /mnt/ci-data/bazel /home/runner/.cache/bazel
   - chown -h runner:runner /home/runner/.cache/bazel
@@ -543,8 +576,7 @@ runcmd:
   # --ephemeral (opt-in) also needs a token-refresh service to run continuously; follow-up.
   - |
     set -eu
-    # Extract the stock actions/runner BINARIES (both modes need them: classic registers
-    # this dir; bazelscaleset clones it per its own runner dir). Pinned + checksummed.
+    # Both modes use these pinned binaries; scale-set slots clone this directory.
     RUNNER_DIR="/home/runner/actions-runner"
     mkdir -p "$RUNNER_DIR"
     /usr/local/bin/fetch-verified.sh "https://github.com/actions/runner/releases/download/v${runner_version}/actions-runner-linux-x64-${runner_version}.tar.gz" "${runner_sha256}" "$RUNNER_DIR/runner.tar.gz"
@@ -552,44 +584,28 @@ runcmd:
     rm "$RUNNER_DIR/runner.tar.gz"
     chown -R runner:runner "$RUNNER_DIR"
     systemctl daemon-reload
-    # Runner-owned bazel caches. BOTH modes need these: /etc/bazel.bazelrc points
-    # disk_cache/repository_cache at them unconditionally, so a classic runner without
-    # them dies with "ERROR: [unix_jni.cc] /mnt/ci-data/bazel-disk-cache (Permission
-    # denied)" on its first bazel invocation (measured, 2026-08-01 drain fleet).
-    # vulndb-mirror: cmd/vulnscan's local vuln.go.dev mirror (per-advisory fetches
-    # get the fleet 403-rate-limited). Root-owned volume root means the runner
-    # cannot mkdir this itself; absent, the scan fails closed. infra/README.md.
+    # Both modes need writable caches and vulnscan's mirror; the volume root is root-owned.
     install -d -o runner -g runner /mnt/ci-data/bazelwork /mnt/ci-data/bazel-disk-cache /mnt/ci-data/bazel-repo-cache /mnt/ci-data/vulndb-mirror
     RUNNER_MODE="${runner_mode}"
     if [ "$RUNNER_MODE" = "classic" ]; then
-      # Register-and-listen: one durable registration per box, so the runner list stays the
-      # size of the fleet (the scale set never unregistered its JIT runners: 1907 offline
-      # registrations against 5 slots). --disableupdate pins the reviewed version/SHA; --work
-      # puts job workspaces on the 100 GB volume, not the root disk it exists to avoid.
+      # One durable registration per box; pin updates and keep workspaces on the volume.
       install -d -o runner -g runner /mnt/ci-data/runner-work
       su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name ${runner_name} --labels ${runner_labels} --work /mnt/ci-data/runner-work --replace --disableupdate %{ if runner_ephemeral }--ephemeral%{ endif }"
-      # The runner service is not a login shell: it takes PATH from this file, so
-      # /etc/profile.d/go.sh does not reach it and Go has to be added here explicitly.
+      # Services are not login shells: Go must reach the runner through .path.
       printf '%s\n' "/usr/local/go/bin:/home/runner/go/bin:$(cat /etc/environment | sed -n 's/^PATH="\(.*\)"$/\1/p')" > "$RUNNER_DIR/.path"
       chown runner:runner "$RUNNER_DIR/.path"
       ( cd "$RUNNER_DIR" && ./svc.sh install runner )
-      # Resolve the unit svc.sh just wrote (its name embeds repo + runner name) BEFORE
-      # starting it: the gate binding and the watchdog config both need the name.
+      # Bind the gate and hook before starting the dynamically named runner service.
       RUNNER_UNIT=$(systemctl list-unit-files --no-legend 'actions.runner.*.service' | awk '{print $1}' | head -1)
       [ -n "$RUNNER_UNIT" ] || { echo "::error::classic runner service unit not found after svc.sh install"; exit 1; }
       printf 'WATCH_UNIT=%s\nWATCH_DEFER_WHILE_WORKER=1\n' "$RUNNER_UNIT" > /etc/runner-watchdog.conf
-      # A box whose CI volume did not come back must leave the pool, not serve from it.
-      # svc.sh's unit depends on nothing but network-online.target, so without this the
-      # listener comes up beside a masked Docker and fails every job it claims. Requires=
-      # also means the watchdog's restart re-runs the gate instead of routing around it.
+      # Requires= makes watchdog restarts re-run the volume gate rather than bypass it.
       install -d "/etc/systemd/system/$RUNNER_UNIT.d"
-      printf '[Unit]\nRequires=ci-docker-gate.service\nAfter=ci-docker-gate.service\n\n[Service]\nOOMPolicy=continue\nKillMode=process\n' \
+      printf '[Unit]\nRequires=ci-docker-gate.service\nAfter=ci-docker-gate.service\n\n[Service]\nEnvironment=ACTIONS_RUNNER_HOOK_JOB_STARTED=/usr/local/bin/runner-job-guard.sh\nOOMPolicy=continue\nKillMode=process\n' \
         > "/etc/systemd/system/$RUNNER_UNIT.d/ci-docker-gate.conf"
       systemctl daemon-reload
       ( cd "$RUNNER_DIR" && ./svc.sh start )
-      # The supervisor unit ships in write_files on every box regardless of mode. Here it
-      # must never run: enforce that the same way worker mode does, or a repurposed box
-      # keeps a second claimant on this fleet's jobs.
+      # Do not leave a second job claimant on a repurposed box.
       systemctl disable --now bazelscaleset.service 2>/dev/null || true
       rm -f /etc/systemd/system/bazelscaleset.service
       rm -rf /etc/systemd/system/bazelscaleset.service.d

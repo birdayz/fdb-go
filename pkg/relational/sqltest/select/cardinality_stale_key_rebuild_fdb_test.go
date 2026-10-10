@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (
+// FDBRecordStoreUniqueIndexTest.java),
+// Copyright 2015-2020 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package sqltest
 
 // CQ-90 — the on-disk migration for the CQ-89 cardinality key change, proven

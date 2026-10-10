@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (ArithmeticValue.java,
+// RelationalException.java),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package functions holds SQL-value operations that don't need
 // connection/session state: checked integer arithmetic, numeric +
 // bitwise operators with SQL semantics, type-coercion helpers used

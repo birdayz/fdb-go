@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (RTree.java, ChildSlot.java,
+// NodeHelpers.java, ByNodeStorageAdapter.java, and others),
+// Copyright 2015-2023 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package rtree
 
 import (

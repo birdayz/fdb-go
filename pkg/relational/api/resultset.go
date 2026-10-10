@@ -1,3 +1,8 @@
+// Portions derived from FoundationDB Record Layer (RelationalResultSet.java,
+// RelationalResultSetMetaData.java),
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 //go:generate go run go.uber.org/mock/mockgen -source=$GOFILE -destination=mocks_$GOFILE -package=api
 
 package api

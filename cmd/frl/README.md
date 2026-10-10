@@ -110,6 +110,23 @@ frl tx read-version [-o json]                # current GRV (cluster smoke check)
 frl version [--short] [-o json]              # binary + Go toolchain version
 ```
 
+## Local development database
+
+`frl fdb up` starts a throwaway, single-node FoundationDB container, initializes
+it, and activates a context. Progress goes to stderr; stdout is the cluster-file
+path. Use `frl fdb down` to remove the container.
+
+The container uses Docker bridge networking with its port published on
+`127.0.0.1` only, and advertises that same address and port to host clients. This
+avoids Docker Desktop's opt-in host networking and container IPs that a macOS
+host cannot route to. A local Docker socket is required; remote Docker endpoints
+and clients in other containers are not supported by this helper. Use distinct
+`--name`, `--context`, and `--port` values for multiple instances.
+
+This database has no authentication. Loopback publication is not an isolation
+boundary against local users or other containers on the Docker bridge. Use a
+current Docker release and do not use this setup for production or sensitive data.
+
 ## Flags (shared surface)
 
 ```

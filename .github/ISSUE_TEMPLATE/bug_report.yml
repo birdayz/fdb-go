@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a reproducible problem.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For security concerns, follow SECURITY.md instead of posting a public issue.
+        Remove credentials and private data from all examples and logs.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Commit/version, OS and architecture, FDB version, client backend, and Docker version/context type if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Exact commands or code. For SQL, include the schema, sample data, and query.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized errors or logs and whether the problem is repeatable.
+    validations:
+      required: true

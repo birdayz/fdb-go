@@ -1,3 +1,10 @@
+// Portions derived from FoundationDB Record Layer (Transaction.java,
+// FDBRecordContext.java, SchemaTemplate.java),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2024 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 //go:generate go run go.uber.org/mock/mockgen -source=$GOFILE -destination=mocks_$GOFILE -package=api
 
 package api

@@ -1,3 +1,9 @@
+// Portions derived from FoundationDB Record Layer (Type.java,
+// SemanticAnalyzer.java),
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 // Package rowdiff is the RFC-182 generative row-soundness differential
 // harness: seeded random (schema, data, query) cases executed through the
 // full production path (sqldriver → Cascades → executor → real FDB), rows

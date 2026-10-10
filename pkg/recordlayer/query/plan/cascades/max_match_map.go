@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (MaxMatchMap.java,
+// MaxMatchMapSimplificationRuleSet.java, ExpandRecordRule.java,
+// RecordConstructorValue.java, and others),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2024 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package cascades
 
 import (

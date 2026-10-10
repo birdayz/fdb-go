@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (
+// MaterializedViewIndexGenerator.java, ValueToKeyExpressionVisitor.java,
+// IndexSpec.java, FieldKeyExpression.java, and others),
+// Copyright 2015-2018 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2025 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package ddl
 
 // The aggregate arm of the materialized-view index generator — the aggregate

@@ -30,7 +30,7 @@ message Context {
   string name = 1;
 
   // Path to an FDB cluster file. Empty → use FDB's default lookup
-  // (FDB_CLUSTER_FILE env var, then /etc/foundationdb/fdb.cluster).
+  // (present FDB_CLUSTER_FILE, local fdb.cluster, then the platform default).
   string cluster_file = 2;
 
   // KeySpace path of the record store to operate on (e.g. "/myapp/prod/orders").

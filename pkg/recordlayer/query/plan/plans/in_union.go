@@ -1,3 +1,11 @@
+// Portions derived from FoundationDB Record Layer (RecordQueryInUnionPlan.java,
+// RecordQueryInUnionOnValuesPlan.java, InComparandSource.java,
+// RelationalExpression.java),
+// Copyright 2015-2022 Apple Inc. and the FoundationDB project authors
+// Copyright 2015-2026 Apple Inc. and the FoundationDB project authors
+// Copyright 2021 Apple Inc. and the FoundationDB project authors
+// Licensed under the Apache License, Version 2.0; translated to Go and modified.
+
 package plans
 
 import (

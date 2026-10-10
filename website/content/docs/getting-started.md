@@ -1,57 +1,91 @@
 ---
-title: Getting Started
+title: Getting started
+description: "Build fdb-go from source and run its SQL and record-store examples against a disposable local FoundationDB cluster."
 weight: 1
 ---
 
-## Install
+Use a source checkout for this walkthrough. The website describes the development
+tree; the older v0.1.0 release does not match these APIs and storage behavior.
+
+## Prerequisites
+
+- Git and the Go toolchain required by [`go.mod`](https://github.com/birdayz/fdb-go/blob/master/go.mod).
+- Docker running locally, for the disposable single-node FoundationDB cluster.
+- A shell that supports the commands below, such as Bash or Zsh.
+
+The default backend is pure Go: you do not need cgo or a local `libfdb_c`
+installation. You do need a running FoundationDB server.
+
+## Check out the source
 
 ```sh
-go get fdb.dev/pkg/fdbgo/fdb
+git clone https://github.com/birdayz/fdb-go.git
+cd fdb-go
+git rev-parse HEAD
 ```
 
-The default build is the pure-Go client. No cgo, no C library, just a static binary. You only need a reachable FDB cluster and its cluster file.
+Record that commit hash with your results. For repeatable evaluation, check out
+a specific reviewed commit rather than following a moving branch.
 
-## Connect and run a transaction
+## Run the SQL example
 
-```go
-import "fdb.dev/pkg/fdbgo/fdb"
-
-fdb.MustAPIVersion(730)
-db, err := fdb.OpenDatabase("/etc/foundationdb/fdb.cluster")
-if err != nil {
-	log.Fatal(err)
-}
-
-db.Transact(func(tx fdb.WritableTransaction) (any, error) {
-	tx.Set(fdb.Key("greeting"), []byte("hello"))
-	return tx.Get(fdb.Key("greeting")).MustGet(), nil
-})
-```
-
-The `fdb` package mirrors Apple's Go binding, so existing FoundationDB code ports with minimal changes.
-
-## The frl CLI
-
-`frl` is the operator CLI: it can run a local FoundationDB, open a SQL shell, and inspect record stores. Install it as a single static binary:
+**Use a disposable cluster.** The SQL example recreates `/FRL/QUICKSTART` and
+its schema template. Do not point it at a store you need to keep.
 
 ```sh
-curl -fsSL https://fdb.dev/install.sh | sh
+go build -o frl ./cmd/frl
+FDB_CLUSTER_FILE="$(./frl fdb up)" && export FDB_CLUSTER_FILE
+go run ./example/sql
 ```
 
-The installer verifies the release checksum, installs to `~/.local/bin` (no sudo), and upgrades in place on re-run; `--uninstall` removes it. Prefer the Go toolchain? `go install fdb.dev/cmd/frl@latest` builds the identical version from source.
+`frl fdb up` starts and configures the local cluster and prints the cluster-file
+path. Exporting it lets the example connect to that cluster. The
+[SQL example source](https://github.com/birdayz/fdb-go/tree/master/example/sql)
+contains the complete setup, parameterized writes, queries, and error handling.
+The [repository quickstart](https://github.com/birdayz/fdb-go#getting-started)
+is the corresponding source-level guide.
 
-No cluster yet? This is the fastest path to one (Docker is the only prerequisite):
+## Try the Record Layer
+
+With the same disposable cluster running:
 
 ```sh
-frl fdb up      # start single-node FoundationDB in Docker
-frl sql         # interactive SQL shell against it
-frl fdb down    # remove it
+go run ./example
 ```
 
-{{< callout type="info" >}}
-  Record Layer and SQL apps can build with `CGO_ENABLED=1 go build -tags libfdbc` to run on Apple's libfdb_c client instead of the pure-Go one. Both read and write byte-identical records against the same cluster, so you can switch the tag and keep sharing data.
-{{< /callout >}}
+The [record-store example](https://github.com/birdayz/fdb-go/blob/master/example/getting_started.go)
+shows metadata setup and saving and loading records. It overwrites
+its demo order with ID 1001; use only the disposable cluster from this walkthrough.
 
-## Next
+## Clean up
 
-For structured records and SQL on top of the client, see the [Record Layer and SQL guides](https://github.com/birdayz/fdb-go) in the repository. Before depending on it in production, read [Maturity & Status](/docs/maturity/).
+When finished, remove the local cluster:
+
+```sh
+./frl fdb down
+```
+
+This is a local development setup, not a production deployment recipe. If startup
+fails, check Docker availability and the CLI's error output; do not substitute a
+container-internal address into a host-side cluster file.
+
+## Use the client on its own
+
+For key-value transactions without the Record Layer or SQL engine, import
+`fdb.dev/pkg/fdbgo/fdb`. See the [client connection example](https://github.com/birdayz/fdb-go#fdb-client)
+and [client API notes](https://github.com/birdayz/fdb-go/blob/master/pkg/fdbgo/README.md).
+Transaction callbacks can be retried; avoid external side effects inside them and
+return read errors to the transaction wrapper.
+
+## Before using existing data
+
+Read [status and compatibility](/docs/maturity/), the
+[compatibility boundaries](https://github.com/birdayz/fdb-go/blob/master/docs/compatibility.md),
+and [upgrade guidance](https://github.com/birdayz/fdb-go/blob/master/docs/upgrade.md).
+Go and Java interoperability depends on the exact formats and features used.
+
+Record Layer and SQL builds can select Apple's C client with the `libfdbc` build
+tag and cgo enabled. Direct users of `pkg/fdbgo/fdb` always use the pure-Go client.
+See [backend selection](https://github.com/birdayz/fdb-go#fdb-client) for the build
+requirements; changing the client backend does not remove higher-layer
+compatibility boundaries.

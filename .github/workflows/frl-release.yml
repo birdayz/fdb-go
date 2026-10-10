@@ -52,6 +52,14 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Verify third-party notices are current
+        run: |
+          set -euo pipefail
+          git ls-files --error-unmatch THIRD_PARTY_NOTICES.txt
+          test -s THIRD_PARTY_NOTICES.txt
+          python3 scripts/update-third-party-notices.py
+          git diff --exit-code -- THIRD_PARTY_NOTICES.txt
+
       - name: Cross-compile static binaries
         working-directory: cmd/frl
         env:
@@ -87,8 +95,8 @@ jobs:
             mkdir -p "$out"
             echo "building $GOOS/$GOARCH"
             go build -trimpath -ldflags='-s -w' -o "$out/frl" .
-            cp ../../LICENSE ../../NOTICE "$out/"
-            tar -C "$out" -czf "dist/frl_${VERSION}_${GOOS}_${GOARCH}.tar.gz" frl LICENSE NOTICE
+            cp ../../LICENSE ../../NOTICE ../../THIRD_PARTY_NOTICES.txt "$out/"
+            tar -C "$out" -czf "dist/frl_${VERSION}_${GOOS}_${GOARCH}.tar.gz" frl LICENSE NOTICE THIRD_PARTY_NOTICES.txt
           done
 
           (cd dist && sha256sum frl_*.tar.gz > checksums.txt && cat checksums.txt)
@@ -99,6 +107,15 @@ jobs:
           set -euo pipefail
           # Exactly what install.sh does: verify the checksum, extract, run.
           sha256sum --check --ignore-missing checksums.txt
+          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+            out="smoke/$target"
+            mkdir -p "$out"
+            tar -xzf "frl_${VERSION}_${target}.tar.gz" -C "$out" LICENSE NOTICE THIRD_PARTY_NOTICES.txt
+            for notice in LICENSE NOTICE THIRD_PARTY_NOTICES.txt; do
+              test -s "$out/$notice"
+              cmp "../../../$notice" "$out/$notice"
+            done
+          done
           mkdir -p smoke && tar -xzf "frl_${VERSION}_linux_amd64.tar.gz" -C smoke frl
           got="$(./smoke/frl version --short)"
           [[ "$got" == "$VERSION" ]] || { echo "::error::smoke version $got != $VERSION"; exit 1; }

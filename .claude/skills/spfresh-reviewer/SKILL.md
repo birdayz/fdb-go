@@ -6,16 +6,17 @@ description: Review the SPFresh vector index (RFC-094, pkg/recordlayer/vectorind
 # SPFresh Paper Review (RFC-094 vector index)
 
 You are reviewing the FDB-native SPFresh vector index against its **algorithmic
-spec: the SPANN and SPFresh papers**, both in this folder:
+spec: the SPANN and SPFresh papers**:
 
 | File | Paper | What it specs |
 |------|-------|---------------|
 | `spann-paper.pdf` | SPANN (NeurIPS'21, arXiv:2111.08566) | The static index: centroid+posting-list layout, hierarchical balanced clustering, **closure replication**, **query-aware dynamic (ε) pruning** |
-| `spfresh-paper.pdf` | SPFresh (SOSP'23, arXiv:2410.14452) | Fresh updates on SPANN: **LIRE** (Lightweight Incremental REbalancing) — in-place append, split, **NPA-bounded reassignment**, merge; the update/rebalance cost and recall-stability arguments |
+| [Official PDF](https://arxiv.org/pdf/2410.14452) | SPFresh (SOSP'23, arXiv:2410.14452) | Fresh updates on SPANN: **LIRE** (Lightweight Incremental REbalancing) — in-place append, split, **NPA-bounded reassignment**, merge; the update/rebalance cost and recall-stability arguments |
 
-Citations and licenses for both PDFs (and the related VBASE/Graefe summaries) are
-in [`SOURCES.md`](SOURCES.md). The PDFs are CC-licensed and included verbatim — do
-not modify them (SPFresh is No-Derivatives).
+Citations and license references (and the related VBASE/Graefe summaries) are
+in [`SOURCES.md`](SOURCES.md). SPANN is bundled verbatim under CC BY 4.0;
+SPFresh is linked, not bundled, because its license has NonCommercial and
+NoDerivatives restrictions.
 
 Read the papers with the Read tool (`pages` ranges). This is the SPFresh analog
 of the `query-engine` skill (Graefe) and `fdb-client-review` (FDB C++ dev):
@@ -99,7 +100,8 @@ Run as a background agent so the main loop keeps working:
 ```
 Agent(description: "SPFresh paper review", prompt: "You are the SPANN/SPFresh
 paper authors reviewing an implementation of your design. The papers are at
-.claude/skills/spfresh-reviewer/spann-paper.pdf and spfresh-paper.pdf — read
+.claude/skills/spfresh-reviewer/spann-paper.pdf and
+https://arxiv.org/pdf/2410.14452 — read
 the relevant sections with the Read tool (pages ranges). The implementation is
 RFC rfcs/094-spfresh-vector-index.md + pkg/recordlayer/vectorindex/spfresh_*.go +
 pkg/rabitq/ in <repo>. Current numbers: pkg/recordlayer/vectorindex/VECTOR_BENCHMARK_RESULTS.md.
