@@ -267,7 +267,8 @@ jobs:
     # latent IPAddress variant-marshal wire bug — real, but pre-existing — fixed in this
     # RFC §7.) Active fuzzing is not a gate; `just verify` runs a fuzz smoke.
     runs-on: hetzner-fdb-vm
-    timeout-minutes: 20
+    # A cold C++ oracle build takes ~14 min at -j3 before the tests; later runs hit the disk cache.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v5

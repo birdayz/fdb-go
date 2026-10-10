@@ -34,24 +34,10 @@ func TestFDB_LargeScanContinuationProbe(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 
 	const N = 3000
-	// insert in batches of 300 multi-row VALUES.
-	for base := 1; base <= N; base += 300 {
-		var b []byte
-		b = append(b, "INSERT INTO t (id, a) VALUES "...)
-		for i := 0; i < 300; i++ {
-			id := base + i
-			if id > N {
-				break
-			}
-			if i > 0 {
-				b = append(b, ',')
-			}
-			b = append(b, fmt.Sprintf("(%d,%d)", id, id*2)...)
-		}
-		if _, err := db.ExecContext(ctx, string(b)); err != nil {
-			t.Fatalf("insert batch base=%d: %v", base, err)
-		}
-	}
+	// Bound seed transactions without reducing the continuation workload.
+	testkit.MwjoInsertRange(t, db, ctx, "t (id, a)", 1, N, func(id int) string {
+		return fmt.Sprintf("(%d,%d)", id, id*2)
+	})
 
 	t.Run("count_exact", func(t *testing.T) {
 		var n int

@@ -240,7 +240,7 @@ func (db *database) installProxySet(newInfo *DBInfo) bool {
 	db.observeProxyInstall()
 	db.dbInfo.Store(newInfo)
 
-	// Broadcast proxy change to in-flight commits. Close the old channel
+	// Broadcast proxy change to in-flight commits and GRVs. Close the old channel
 	// to wake all waiters, create a fresh one for the next change.
 	db.proxiesChangedMu.Lock()
 	close(db.proxiesChanged)
@@ -250,8 +250,8 @@ func (db *database) installProxySet(newInfo *DBInfo) bool {
 }
 
 // waitProxiesChanged returns a channel that is closed when the proxy list
-// changes. Each change creates a fresh channel. Used by commit to detect
-// mid-commit proxy changes (C++ onProxiesChanged).
+// changes. Each change creates a fresh channel for commit and GRV waiters
+// (C++ onProxiesChanged).
 func (db *database) waitProxiesChanged() <-chan struct{} {
 	db.proxiesChangedMu.Lock()
 	defer db.proxiesChangedMu.Unlock()
@@ -275,9 +275,8 @@ func (db *database) handleConnError(addr string) {
 // ticks on every event (the rate signal, like logRetryEvent's counter), but the Warn
 // is edge-triggered on the alive→failed transition so a flapping or down peer hit by
 // the ~18 retry arms doesn't melt the log (the storm-hygiene rule logRetryEvent
-// follows; one Warn per failure episode, re-armed by markAlive). Every failure path
-// routes here — handleConnError (after pool eviction) and the GRV proxy-timeout path
-// (sendGRVRequest) — so none is invisible.
+// follows; one Warn per failure episode, re-armed by markAlive). Report transport
+// failures here, not valid replies or slow responses from a healthy proxy.
 func (db *database) recordConnFailure(addr string) {
 	newlyFailed := db.failMon.markFailed(addr)
 	db.metrics.countConnectionFailure()

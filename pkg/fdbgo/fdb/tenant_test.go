@@ -69,25 +69,17 @@ func TestTenant_CreateTransaction_AppliesDatabaseDefaults(t *testing.T) {
 	}
 	defer db.Options().SetTransactionTimeout(0)
 
-	is1031 := func(err error) bool {
-		fe, ok := err.(fdb.Error)
-		return ok && fe.Code == 1031 // transaction_timed_out
+	tr, err := tenant.CreateTransaction()
+	if err != nil {
+		t.Fatalf("tenant.CreateTransaction: %v", err)
 	}
-	var timedOut bool
-	for i := 0; i < 100; i++ {
-		tr, err := tenant.CreateTransaction()
-		if err != nil {
-			t.Fatalf("tenant.CreateTransaction: %v", err)
-		}
-		_, rerr := tr.Get(fdb.Key("k")).Get()
-		cerr := tr.Commit().Get()
-		if is1031(rerr) || is1031(cerr) {
-			timedOut = true
-			break
-		}
-	}
-	if !timedOut {
-		t.Fatal("tenant CreateTransaction did not inherit the 1ms database timeout (1031 expected) — applyTxDefaults not applied")
+	defer tr.Cancel()
+	// Expire the inherited deadline before reading; an RPC need not take 1ms.
+	time.Sleep(5 * time.Millisecond)
+	_, err = tr.Get(fdb.Key("k")).Get()
+	var fe fdb.Error
+	if !errors.As(err, &fe) || fe.Code != 1031 {
+		t.Fatalf("tenant CreateTransaction did not inherit timeout: got %v, want FDB 1031", err)
 	}
 }
 
@@ -170,35 +162,14 @@ func TestTenant_Transact_AppliesDatabaseDefaults(t *testing.T) {
 	}
 	defer db.Options().SetTransactionTimeout(0)
 
-	// The inherited 1ms timeout normally surfaces as transaction_timed_out (1031),
-	// but under heavy parallel coverage load a degraded connection can surface the
-	// same blown 1ms deadline as a raw context.DeadlineExceeded from the timeout-
-	// bounded read ctx rather than a clean wire 1031 — and a bare `err.(fdb.Error)`
-	// type assertion misses both a wrapped 1031 and the DeadlineExceeded form, so all
-	// 100 iterations could fail to match and flake the test red (nightly coverage).
-	// Use errors.As + errors.Is; both forms prove the timeout was inherited. If it
-	// were NOT inherited the read would simply succeed (no error), so neither branch
-	// can pass spuriously.
-	inheritedTimeout := func(err error) bool {
-		var fe fdb.Error
-		if errors.As(err, &fe) && fe.Code == 1031 { // transaction_timed_out
-			return true
-		}
-		return errors.Is(err, context.DeadlineExceeded)
-	}
-	var timedOut bool
-	for i := 0; i < 100; i++ {
-		_, err := tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
-			tr.Get(fdb.Key("k")).MustGet() // GRV round-trip (>1ms) trips the inherited timeout
-			return nil, nil
-		})
-		if inheritedTimeout(err) {
-			timedOut = true
-			break
-		}
-	}
-	if !timedOut {
-		t.Fatal("tenant.Transact did not inherit the 1ms database timeout (1031 expected) — TransactCtx applyTxDefaults not applied")
+	_, err = tenant.Transact(func(tr fdb.WritableTransaction) (any, error) {
+		// Deadline expiration must not depend on network latency.
+		time.Sleep(5 * time.Millisecond)
+		return tr.Get(fdb.Key("k")).MustGet(), nil
+	})
+	var fe fdb.Error
+	if !errors.As(err, &fe) || fe.Code != 1031 {
+		t.Fatalf("tenant.Transact did not inherit timeout: got %v, want FDB 1031", err)
 	}
 }
 

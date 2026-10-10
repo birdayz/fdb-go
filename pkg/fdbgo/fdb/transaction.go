@@ -1,6 +1,7 @@
 package fdb
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"time"
@@ -51,7 +52,8 @@ func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 	// Try pipelined path first: send the request synchronously (no goroutine),
 	// return a future backed by the reply channel. This enables true pipelining —
 	// N Gets send N frames immediately, then N future.Get() calls collect responses.
-	val, pending, err := inner.GetPipelined(ctx, key.FDBKey())
+	k := key.FDBKey()
+	val, pending, err := inner.GetPipelined(ctx, k)
 	if err != nil {
 		// GetPipelined failed before any request was in flight — either
 		// ErrNeedFullRYW (the key has pending atomics needing a server read +
@@ -68,8 +70,9 @@ func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 		// A genuinely terminal error (e.g.
 		// key_outside_legal_range) re-fails identically in inner.Get — nothing is
 		// masked, and the illegal frame was already rejected before send.
+		k = bytes.Clone(k)
 		return newFutureByteSlice(func() ([]byte, error) {
-			v, gerr := inner.Get(ctx, key.FDBKey())
+			v, gerr := inner.Get(ctx, k)
 			return v, convertError(gerr)
 		})
 	}
@@ -85,10 +88,11 @@ func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 func (tr Transaction) GetKey(sel Selectable) FutureKey {
 	inner, ctx := tr.t.inner, tr.t.ctx
 	ks := sel.FDBKeySelector()
+	key := bytes.Clone(ks.Key.FDBKey())
 	// OrEqual values in our KeySelector match the C++ wire convention
 	// (same as Apple Go binding). Pass directly — no inversion needed.
 	return newFutureKey(func() (Key, error) {
-		k, err := inner.GetKey(ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
+		k, err := inner.GetKey(ctx, key, ks.OrEqual, int32(ks.Offset))
 		return Key(k), convertError(err)
 	})
 }
@@ -165,18 +169,18 @@ func (tr Transaction) GetApproximateSize() FutureInt64 {
 
 // GetEstimatedRangeSizeBytes returns an estimate of the byte size of the key range.
 func (tr Transaction) GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64 {
+	begin, end := cloneRangeKeys(r)
 	return newFutureInt64(func() (int64, error) {
-		begin, end := r.FDBRangeKeys()
-		v, err := tr.t.inner.GetEstimatedRangeSizeBytes(tr.t.ctx, begin.FDBKey(), end.FDBKey())
+		v, err := tr.t.inner.GetEstimatedRangeSizeBytes(tr.t.ctx, begin, end)
 		return v, convertError(err)
 	})
 }
 
 // GetRangeSplitPoints suggests split points for the given key range.
 func (tr Transaction) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureKeyArray {
+	begin, end := cloneRangeKeys(r)
 	return newFutureKeyArray(func() ([]Key, error) {
-		begin, end := r.FDBRangeKeys()
-		points, err := tr.t.inner.GetRangeSplitPoints(tr.t.ctx, begin.FDBKey(), end.FDBKey(), chunkSize)
+		points, err := tr.t.inner.GetRangeSplitPoints(tr.t.ctx, begin, end, chunkSize)
 		if err != nil {
 			return nil, convertError(err)
 		}
@@ -388,7 +392,7 @@ func (tr Transaction) AddWriteConflictKey(key KeyConvertible) error {
 // given key changes. The watch is a long-poll to the storage server.
 func (tr Transaction) Watch(key KeyConvertible) FutureNil {
 	inner, ctx := tr.t.inner, tr.t.ctx
-	k := key.FDBKey()
+	k := bytes.Clone(key.FDBKey())
 	// Capture the watched value AND the read version at the transaction's read
 	// version SYNCHRONOUSLY, before returning the future. The watch fires when the
 	// storage server sees a value different from this one, so both must be pinned
@@ -457,8 +461,9 @@ func (tr Transaction) ListTenants() ([]Key, error) {
 // hold the given key. Uses the location cache, querying the cluster on miss.
 func (tr Transaction) LocalityGetAddressesForKey(key KeyConvertible) FutureStringSlice {
 	inner, ctx := tr.t.inner, tr.t.ctx
+	k := bytes.Clone(key.FDBKey())
 	return newFutureStringSlice(func() ([]string, error) {
-		addrs, err := inner.GetAddressesForKey(ctx, key.FDBKey())
+		addrs, err := inner.GetAddressesForKey(ctx, k)
 		if err != nil {
 			return nil, convertError(err)
 		}

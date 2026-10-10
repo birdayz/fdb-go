@@ -86,67 +86,24 @@ func newTestDatabase(t *testing.T, ctx context.Context, cf *ClusterFile, dialFn 
 	return db
 }
 
-// TestCommitUnknownResult_NoDoubleApply verifies that the self-conflicting
-// mechanism prevents double-apply of non-idempotent operations.
-//
-// Uses atomic ADD: counter starts at 10, we ADD 5. If the commit succeeds
-// on the server but the client retries, a naive retry would ADD 5 again
-// (counter=20). The self-conflicting mechanism should cause the retry to
-// conflict, and the final Transact outcome should show counter=15.
-//
-// NOTE: commit_unknown_result + self-conflicting only prevents the IMMEDIATE
-// retry from double-applying. After the self-conflicting retry fails with
-// 1020, Transact retries AGAIN with a clean transaction. For atomic ADD,
-// this third attempt WILL add 5 again (counter=20). This matches the C++
-// client behavior — non-idempotent operations need application-level
-// idempotency tokens for true exactly-once semantics.
-//
-// What this test DOES prove: the fault injection works, the server commits
-// survive client-side connection death, and the self-conflicting mechanism
-// fires (the retry gets 1020, not a second successful commit).
+// TestCommitUnknownResult_NoDoubleApply drops one commit reply but lets the
+// uncertainty barrier finish (NativeAPI.actor.cpp:6730-6772). It does not retry
+// the ADD: application-level exactly-once retries require idempotency tokens.
 func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
-	if err != nil {
-		t.Fatalf("start FDB container: %v", err)
-	}
-	defer container.Terminate(ctx)
-
-	connStr, err := container.ClusterFile(ctx)
-	if err != nil {
-		t.Fatalf("get cluster file: %v", err)
-	}
-	cf, err := ParseClusterString(connStr)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	_, internalReader, _ := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
-	internalBytes, _ := io.ReadAll(internalReader)
-	internalStr := string(internalBytes)
-	if idx := strings.Index(internalStr, cf.Description); idx >= 0 {
-		internalStr = internalStr[idx:]
-	}
-	internalCF, _ := ParseClusterString(strings.TrimSpace(internalStr))
-
-	connectCF := &ClusterFile{
-		Description:  internalCF.Description,
-		ID:           internalCF.ID,
-		Coordinators: cf.Coordinators,
-	}
-
-	fd := &faultDialer{}
-	db := newTestDatabase(t, ctx, connectCF, fd.dial)
+	sd := newSimDialer()
+	db := newTestDatabase(t, ctx, sharedClusterFile, sd.dial)
 	defer db.Close()
+	key := []byte(t.Name() + "_counter")
 
 	// Seed counter = 10.
 	var counterBuf [8]byte
 	binary.LittleEndian.PutUint64(counterBuf[:], 10)
-	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte(t.Name()+"_counter"), counterBuf[:])
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, counterBuf[:])
 		return nil, nil
 	})
 	if err != nil {
@@ -154,68 +111,68 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	}
 	t.Log("seeded fault_counter=10")
 
-	// Manual commit with fault: ADD 5, then kill connection.
+	// Drop exactly one commit reply: the next one, which belongs to the commit
+	// below. Nothing else commits on this Database in between.
+	var dropped atomic.Int64
+	sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
+		if isCommitReplyBody(body) && dropped.CompareAndSwap(0, 1) {
+			return nil, true
+		}
+		return body, false
+	})
+	sd.armAll()
+	completedBefore := db.Metrics().TransactionsCommitCompleted
+
 	tx := db.CreateTransaction()
-	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
-	if err != nil {
-		t.Fatalf("GRV: %v", err)
-	}
-	tx.SetReadVersion(rv)
-
 	binary.LittleEndian.PutUint64(counterBuf[:], 5)
-	tx.Atomic(MutAddValue, []byte(t.Name()+"_counter"), counterBuf[:])
+	tx.Atomic(MutAddValue, key, counterBuf[:])
 
-	// Arm fault BEFORE commit — reply will be killed.
-	fd.arm()
-
-	err = tx.Commit(ctx)
-	t.Logf("commit with fault: %v", err)
-	if err == nil {
-		t.Fatal("commit should have failed (connection killed)")
+	// The admitted commit outlives ctx; Close must unblock a broken barrier
+	// before the failure path waits for its goroutine.
+	const commitBound = DefaultRPCTimeout + 25*time.Second
+	commitDone := make(chan error, 1)
+	go func() { commitDone <- tx.Commit(ctx) }()
+	select {
+	case err = <-commitDone:
+	case <-time.After(commitBound):
+		db.Close()
+		select {
+		case err = <-commitDone:
+			t.Fatalf("Commit did not return within %v of one lost reply (dropped=%d); after Database.Close it returned %v",
+				commitBound, dropped.Load(), err)
+		case <-time.After(10 * time.Second):
+			t.Fatalf("Commit did not return within %v of one lost reply (dropped=%d), nor within 10s of Database.Close",
+				commitBound, dropped.Load())
+		}
 	}
-	// A mid-commit connection teardown MUST surface commit_unknown_result (1021,
-	// MAYBE_COMMITTED): C++ commits with AtMostOnce::True, so a teardown becomes
-	// request_maybe_delivered (LoadBalance.actor.h:369-370), which tryCommit maps
-	// to commit_unknown_result handling (NativeAPI.actor.cpp:6937). It must NEVER
-	// be the read-path teardown code (1030, retried by the read loops) nor an
-	// uncoded transport error — either would let a retry double-apply a commit
-	// whose fate is unknown without the self-conflict barrier.
+	t.Logf("commit with lost reply: %v", err)
+	if n := dropped.Load(); n != 1 {
+		t.Fatalf("dropped %d commit replies, want exactly 1 (commit err: %v)", n, err)
+	}
+	if err == nil {
+		t.Fatal("commit should have failed (its reply was dropped)")
+	}
+	// An uncertain commit must not escape as a read-path error that permits
+	// retries without fencing (LoadBalance.actor.h:828-829).
 	var commitFDBErr *wire.FDBError
 	if !errors.As(err, &commitFDBErr) || commitFDBErr.Code != ErrCommitUnknownResult {
-		t.Fatalf("DIVERGENCE: mid-commit teardown must surface commit_unknown_result (1021), got %v", err)
+		t.Fatalf("DIVERGENCE: a lost commit reply must surface commit_unknown_result (1021), got %v", err)
+	}
+	if got := db.Metrics().TransactionsCommitCompleted - completedBefore; got != 1 {
+		t.Errorf("commits completed during the failed Commit = %d, want 1 (the barrier's dummy): "+
+			"1021 must not be returned before the uncertainty barrier commits", got)
 	}
 
-	// Disarm and clear connection pool to force reconnect.
-	fd.disarm()
-	db.db.connMu.Lock()
-	for k := range db.db.connPool {
-		delete(db.db.connPool, k)
-	}
-	db.db.connMu.Unlock()
-
-	// Re-bootstrap to get fresh topology.
-	db.db.refreshTopology()
-	db.db.grvCache.invalidate() // Stale cache from pre-fault connections.
-
-	// Read the counter. It should be 15 (10 + 5, applied once by server).
+	// Read the counter.
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.Get(ctx, []byte(t.Name()+"_counter"))
+		return tx.Get(ctx, key)
 	})
 	if err != nil {
 		t.Fatalf("verify Get: %v", err)
 	}
 	val := binary.LittleEndian.Uint64(result.([]byte))
 	t.Logf("fault_counter = %d", val)
-	// commit_unknown_result (1021) is, by the FDB contract, genuinely
-	// nondeterministic: when the connection dies during commit the transaction
-	// MAY or MAY NOT have been durably applied by the server. The fault here kills
-	// the reply (killReads) AFTER the commit request was written, so the server
-	// usually commits before the connection teardown (counter 15) — but
-	// occasionally the teardown aborts the in-flight commit first (counter 10).
-	// BOTH are correct outcomes. The invariant this test actually guards is
-	// no-DOUBLE-apply: the ADD must never be applied more than once (counter must
-	// never reach 20). Asserting an exact 15 was a false determinism assumption
-	// and made the test flaky.
+	// Either original outcome is legal for 1021; applying the ADD twice is not.
 	switch val {
 	case 10:
 		t.Logf("commit_unknown_result: ADD was not applied (counter stayed 10) — valid outcome")
@@ -733,8 +690,9 @@ func TestCommitDummyTransaction(t *testing.T) {
 
 	// commitDummyTransaction should complete without error — the dummy
 	// transaction commits a conflict-only transaction (no mutations).
-	tx.commitDummyTransaction(ctx)
-	// If we get here without panic/hang, the dummy worked.
+	if err := tx.commitDummyTransaction(ctx); err != nil {
+		t.Fatalf("dummy barrier: %v", err)
+	}
 	t.Log("commitDummyTransaction completed successfully")
 }
 
@@ -751,8 +709,9 @@ func TestCommitDummyTransaction_NoWriteConflicts(t *testing.T) {
 
 	// Read-only transaction — no write conflicts.
 	tx := db.CreateTransaction()
-	tx.commitDummyTransaction(ctx)
-	// Should return immediately (no-op).
+	if err := tx.commitDummyTransaction(ctx); err != nil {
+		t.Fatalf("read-only dummy barrier: %v", err)
+	}
 	t.Log("commitDummyTransaction no-op for read-only transaction")
 }
 

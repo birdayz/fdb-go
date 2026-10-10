@@ -13,6 +13,7 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "infra_test",
     srcs = [
+        "fdb_cpp_build_test.go",
         "fleet_capacity_test.go",
         "infra_test.go",
         "render_test.go",
@@ -36,6 +37,9 @@ go_test(
         "runner-job-guard.sh",
         "//:go.mod",
         "//:justfile",
+        "//cmd/fdb-diff-oracle:BUILD.bazel",
+        "//cmd/fdb-schema-extract:BUILD.bazel",
+        "//cmd/fdb-schema-extract:fdb_cpp_build.bzl",
     ],
     deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
 )

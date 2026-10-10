@@ -1,6 +1,7 @@
 package fdb
 
 import (
+	"bytes"
 	"math"
 
 	"fdb.dev/pkg/fdbgo/client"
@@ -37,11 +38,28 @@ type goRangeResult struct {
 }
 
 func newRangeResult(tx *transaction, r Range, options RangeOptions) RangeResult {
-	return goRangeResult{tx: tx, r: r, options: options}
+	return goRangeResult{tx: tx, r: cloneRange(r), options: options}
 }
 
 func newSnapshotRangeResult(tx *transaction, r Range, options RangeOptions) RangeResult {
-	return goRangeResult{tx: tx, r: r, options: options, snapshot: true}
+	return goRangeResult{tx: tx, r: cloneRange(r), options: options, snapshot: true}
+}
+
+func cloneRangeKeys(r ExactRange) ([]byte, []byte) {
+	begin, end := r.FDBRangeKeys()
+	return bytes.Clone(begin.FDBKey()), bytes.Clone(end.FDBKey())
+}
+
+func cloneRange(r Range) Range {
+	if exact, ok := r.(ExactRange); ok {
+		begin, end := cloneRangeKeys(exact)
+		return KeyRange{Begin: Key(begin), End: Key(end)}
+	}
+	begin, end := r.FDBRangeKeySelectors()
+	b, e := begin.FDBKeySelector(), end.FDBKeySelector()
+	b.Key = Key(bytes.Clone(b.Key.FDBKey()))
+	e.Key = Key(bytes.Clone(e.Key.FDBKey()))
+	return SelectorRange{Begin: b, End: e}
 }
 
 // keyAfter returns the smallest key strictly greater than k — a fresh copy of

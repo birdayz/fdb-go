@@ -696,19 +696,20 @@ func grvBatcherIndex(flags uint32) int {
 	}
 }
 
-// grvBatcher batches concurrent GetReadVersion calls for a single priority.
-// C++: DatabaseContext::VersionBatcher + readVersionBatcher actor.
-//
-// Each priority level (BATCH, DEFAULT, SYSTEM_IMMEDIATE) has its own batcher,
-// so requests at different priorities never mix — matching C++ behavior.
+// grvBatcher batches GetReadVersion calls with identical priority and option
+// flags, matching C++ DatabaseContext::VersionBatcher and readVersionBatcher.
 //
 // Methods receive *database as argument — no stored back-pointer.
 type grvBatcher struct {
-	mu        sync.Mutex
-	pending   []grvRequest
-	batchTime time.Duration
-	timer     *time.Timer
-	priority  uint32 // fixed priority bits for this batcher
+	mu         sync.Mutex
+	pending    []grvRequest
+	inFlight   int
+	batchTime  time.Duration
+	timer      *time.Timer
+	timerSeq   uint64 // rejects callbacks from an already dispatched batch
+	priority   uint32 // fixed priority bits for this batcher
+	extraFlags uint32 // immutable option bits; variants never share a queue
+	variants   map[uint32]*grvBatcher
 
 	refreshOnce sync.Once
 	// refresherStarted is a deterministic test seam (RFC-104): true once the
@@ -726,7 +727,6 @@ type grvBatcher struct {
 
 type grvRequest struct {
 	reply chan grvResult
-	flags uint32 // GRV Flags from the requesting transaction
 	// spanContext is the requesting transaction's span. flush() folds the batch's
 	// span contexts into the readVersionBatcher span (batchGRVSpanContext) to stamp
 	// the GetReadVersionRequest — 1:1 with C++ addLink (NativeAPI.actor.cpp:7345).
@@ -846,14 +846,16 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 	}
 
 	// Slow path: batch request to proxy.
-	req := grvRequest{reply: make(chan grvResult, 1), flags: flags, spanContext: span, tags: tags}
+	req := grvRequest{reply: make(chan grvResult, 1), spanContext: span, tags: tags}
 
-	b.mu.Lock()
-	b.pending = append(b.pending, req)
-	if len(b.pending) == 1 {
-		b.timer = time.AfterFunc(b.batchTime, func() { b.flush(db) })
+	b = b.forFlags(flags)
+	if batch := b.admit(req, func(seq uint64) {
+		if batch := b.timerBatch(seq); batch != nil {
+			b.flush(db, batch)
+		}
+	}); batch != nil {
+		go b.flush(db, batch)
 	}
-	b.mu.Unlock()
 
 	select {
 	case result := <-req.reply:
@@ -863,27 +865,83 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 	}
 }
 
-// flush sends the batched GRV request and updates the cache.
-//
-// Lock is held only to pop the pending slice; the RPC executes without
-// holding mu, so new requests can queue (and start a new timer) while
-// the RPC is in flight.
-func (b *grvBatcher) flush(db *database) {
-	// Pop the pending batch under a closure-scoped lock (RFC-110: a panic in any
-	// b.mu-holding region must unwind the lock, else later GRV requests blocking
-	// on b.mu.Lock() deadlock).
-	batch := func() []grvRequest {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		p := b.pending
-		b.pending = nil
-		return p
-	}()
+const (
+	grvMaxBatchSize = 1000
+	grvBatchTimeout = 5 * time.Millisecond
+)
 
-	if len(batch) == 0 {
-		return
+// NativeAPI.actor.cpp indexes versionBatcher by full flags, not just priority:
+// a causal-risky request must never weaken an ordinary request in the same batch.
+func (b *grvBatcher) forFlags(flags uint32) *grvBatcher {
+	extra := flags &^ grvPriorityMask
+	if extra == b.extraFlags {
+		return b
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if child := b.variants[extra]; child != nil {
+		return child
+	}
+	if b.variants == nil {
+		b.variants = make(map[uint32]*grvBatcher)
+	}
+	child := &grvBatcher{priority: b.priority, extraFlags: extra}
+	b.variants[extra] = child
+	return child
+}
 
+func (b *grvBatcher) admit(req grvRequest, onTimer func(uint64)) []grvRequest {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pending = append(b.pending, req)
+	// Unlike Flow, dispatch idle requests immediately to avoid coarse Go timers.
+	// Each RPC still follows its members' read calls (api-c.rst:613).
+	if len(b.pending) == grvMaxBatchSize || len(b.pending) == 1 && b.inFlight == 0 {
+		return b.detachLocked()
+	}
+	if len(b.pending) == 1 {
+		seq := b.timerSeq
+		b.timer = time.AfterFunc(b.batchTime, func() { onTimer(seq) })
+	}
+	return nil
+}
+
+func (b *grvBatcher) detachLocked() []grvRequest {
+	batch := b.pending
+	b.pending = nil
+	b.inFlight++
+	b.timerSeq++
+	if b.timer != nil {
+		b.timer.Stop()
+		b.timer = nil
+	}
+	return batch
+}
+
+func (b *grvBatcher) timerBatch(seq uint64) []grvRequest {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if seq != b.timerSeq || len(b.pending) == 0 {
+		return nil
+	}
+	return b.detachLocked()
+}
+
+func (b *grvBatcher) finishBatch() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.inFlight--
+}
+
+func (b *grvBatcher) observeLatency(elapsed time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// C++ readVersionBatcher starts at zero and imposes no lower bound.
+	b.batchTime = min(time.Duration(0.1*float64(elapsed)/2+0.9*float64(b.batchTime)), grvBatchTimeout)
+}
+
+// flush sends a detached batch without holding mu, allowing overlapping RPCs.
+func (b *grvBatcher) flush(db *database, batch []grvRequest) {
 	// RFC-110: once the batch is popped, b.pending no longer references
 	// it — a panic anywhere below (sendGRVRequest decode, applyGRVReply, the
 	// adaptive-window math) would orphan it, and every waiter blocked on its
@@ -895,25 +953,23 @@ func (b *grvBatcher) flush(db *database) {
 	// queued request arms a fresh timer; the log is rate-limited, the metric
 	// counts every occurrence.
 	defer b.recoverFlush(db, batch)
+	retired := false
+	retire := func() {
+		if !retired {
+			b.finishBatch()
+			retired = true
+		}
+	}
+	defer retire() // retire before the panic backstop publishes errors
 
-	// Bound the GRV request. C++ cancels the actor when callers drop
-	// the future. Our equivalent: context with timeout. If all callers
-	// have given up (their ctx expired), this ensures the batcher
-	// goroutine doesn't hang forever.
-	batchCtx, batchCancel := context.WithTimeout(db.ctx, CoordinatorTimeout)
-	defer batchCancel()
-
-	// Each batcher has a fixed priority. OR all option flags (bits 0-23)
-	// from requests in this batch. Collect the per-tx span contexts so the
-	// GetReadVersionRequest carries the readVersionBatcher span (C++
+	// Collect per-tx span contexts so GetReadVersionRequest carries the
+	// readVersionBatcher span (C++
 	// NativeAPI.actor.cpp:7345 addLink + :7385 getConsistentReadVersion child).
-	var optionBits uint32
 	spans := make([]types.SpanContext, len(batch))
 	for i, r := range batch {
-		optionBits |= r.flags &^ grvPriorityMask
 		spans[i] = r.spanContext
 	}
-	flags := b.priority | optionBits
+	flags := b.priority | b.extraFlags
 
 	// The generation is captured with the request time, BEFORE dispatch: a
 	// reply may install its version only if no invalidation happened while it
@@ -922,7 +978,8 @@ func (b *grvBatcher) flush(db *database) {
 	// by a reply it was meant to retire.
 	tok := db.grvCache.token()
 	requestTime := time.Now()
-	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
+	// Callers cancel their own waits; only Close cancels the shared recovery.
+	version, locked, rkDefault, rkBatch, tagThrottleInfoEntries, _, attemptEpoch, err := b.sendGRVRequest(db, db.ctx, flags, uint32(len(batch)), batchGRVSpanContext(spans), aggregateBatchTags(batch))
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
@@ -951,21 +1008,10 @@ func (b *grvBatcher) flush(db *database) {
 		// batch-window queueing. Go's is the cleaner RPC-latency SLI. Cache hits
 		// never reach here (they return before the flush — C++ parity, as above).
 		db.metrics.observeGRVLatency(elapsed)
+		b.observeLatency(elapsed)
 	}
 
-	// Adaptive batch window (closure-scoped lock: a panic here unwinds b.mu).
-	func() {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		b.batchTime = time.Duration(0.1*float64(elapsed)/2 + 0.9*float64(b.batchTime))
-		if b.batchTime < 100*time.Microsecond {
-			b.batchTime = 100 * time.Microsecond
-		}
-		if b.batchTime > 5*time.Millisecond { // C++ GRV_BATCH_TIMEOUT = 5ms
-			b.batchTime = 5 * time.Millisecond
-		}
-	}()
-
+	retire() // a waiter can start its next transaction as soon as it receives
 	result := grvResult{version: version, locked: locked, instant: requestTime, err: err}
 	for _, req := range batch {
 		req.reply <- result
@@ -1238,7 +1284,9 @@ const (
 func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext, tags []types.TransactionTagCount) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []types.TransactionTagThrottle, proxyTagThrottledDuration float64, attemptEpoch int64, err error) {
 	var backoff time.Duration
 
+retry:
 	for {
+		proxiesChanged := db.waitProxiesChanged()
 		// Re-read the proxy list each cycle — topology may have refreshed — and
 		// take the epoch FROM THAT SAME LOAD. A retry can cross a cluster
 		// handoff, and a token minted once at dispatch would then describe a
@@ -1261,7 +1309,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				timer.Stop()
 				backoff = 0
 				continue
-			case <-db.waitProxiesChanged():
+			case <-proxiesChanged:
 				timer.Stop()
 				backoff = 0
 				continue
@@ -1291,18 +1339,20 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				continue
 			}
 
-			resp, rpcErr := waitReply(replyCh, ctx, DefaultRPCTimeout)
-			if rpcErr != nil {
+			// A throttled proxy may hold a GRV indefinitely. Like NativeAPI's
+			// getConsistentReadVersion, retry only on transport or topology change.
+			var resp transport.Response
+			select {
+			case resp = <-replyCh:
+			case <-proxiesChanged:
 				replyHandle.Cancel()
 				replyHandle.Release()
-				if ctx.Err() != nil {
-					return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
-				}
-				// RFC-114: a GRV proxy that stops replying (TCP may stay open) is a
-				// real endpoint failure — route through the observability sink so it
-				// counts + Warns like any other conn failure, not a silent markFailed.
-				db.recordConnFailure(proxy.Address)
-				continue
+				backoff = 0
+				continue retry
+			case <-ctx.Done():
+				replyHandle.Cancel()
+				replyHandle.Release()
+				return 0, false, false, false, nil, 0, attemptEpoch, ctx.Err()
 			}
 			replyHandle.Release()
 			if resp.Err != nil {
@@ -1313,16 +1363,6 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			// monitor is keyed by ADDRESS, and a well-formed frame proves the
 			// address is reachable whatever the reply says.
 			//
-			// This briefly sat below the disposition check, on the reasoning that a
-			// broken_promise is the proxy dying. That was wrong in a way worth
-			// recording: an address already marked failed by the GRV-timeout arm
-			// above would then never be cleared by an in-band 1100 -- the continue
-			// skips past here -- so a healthy co-located role stays excluded and
-			// recovery waiters are never signalled. It also bought nothing: the
-			// alive->failed churn that produced a backoff spin came from the arm
-			// calling handleConnError, which is gone; markAlive is transition-gated
-			// and cannot close the shared recovered channel unless something first
-			// marked the address failed.
 			db.failMon.markAlive(proxy.Address)
 			v, lk, rkD, rkB, tti, ptd, perr := parseGetReadVersionReply(resp.Body)
 			// An IN-BAND maybeDelivered error is not this proxy's answer, it is
@@ -1374,7 +1414,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 		case <-db.failMon.waitForRecovery():
 			timer.Stop()
 			backoff = 0
-		case <-db.waitProxiesChanged():
+		case <-proxiesChanged:
 			timer.Stop()
 			backoff = 0
 		case <-ctx.Done():

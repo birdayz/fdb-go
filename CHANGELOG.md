@@ -29,6 +29,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
 
 ### Changed
+- Tenant commits fence uncertain delivery in the tenant's keyspace before returning `commit_unknown_result`, preventing a late commit after error 1021.
 - The Cascades planner plans about 2x faster with the same plans: memo deduplication rejects
   candidates on group signatures before comparing them, reuses published correlation snapshots
   instead of recomputing them, and allocates less (a 150,000-task planning run: 41 s to 17 s,

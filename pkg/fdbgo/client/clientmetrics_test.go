@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -270,7 +271,9 @@ func TestFDB_Metrics_DummyCommitCounted(t *testing.T) {
 	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set(key, []byte("uncommitted"))
 		tx.addReadConflictForKey(key)
-		tx.commitDummyTransaction(ctx) // the barrier commits a real (conflict-only) txn
+		if err := tx.commitDummyTransaction(ctx); err != nil {
+			return nil, err
+		}
 		return nil, errAbortRegression // abort the outer txn
 	}); err != errAbortRegression {
 		t.Fatalf("expected abort sentinel, got %v", err)
@@ -337,8 +340,11 @@ func TestFDB_Metrics_DummyRetriesCounted(t *testing.T) {
 		dummy := db.CreateTransaction()
 		dummy.Set(key, []byte("never-committed"))
 		dummy.addReadConflictForKey(key)
-		dummy.commitDummyTransaction(runCtx)
+		err := dummy.commitDummyTransaction(runCtx)
 		runCancel()
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("dummy barrier: %v", err)
+		}
 
 		if db.Metrics().TransactionsNotCommitted > base.TransactionsNotCommitted {
 			break // a dummy retry was counted

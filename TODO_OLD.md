@@ -773,49 +773,16 @@ this item, and `road-to-prod.md`'s client-side operational list, still asserting
   `reset()→cancelWatches()` path — cleanup.
 
 
-### [~] fdbgo/client: `makeSelfConflicting` (`\xFF/SC/<uuid>` synthetic conflict range at commit) — NON-tenant LANDED; tenant + idempotency-id add remain
+### [~] fdbgo/client: `makeSelfConflicting` — tenant and non-tenant complete; automatic-idempotency add remains
 
-**STATUS (landed):** The primary `makeSelfConflicting` port is DONE for **non-tenant** transactions
-(`transaction.go` `maybeMakeSelfConflicting` — the `!intersects(write, read)` gate → `makeSelfConflictingLocked`,
-placed after the read-only fast path + size check exactly as C++ commitMutations). The dummy-barrier key
-picker (`intersectConflictRanges`) and the guard now share one C++-faithful sorted-merge `intersectRanges`
-(1:1 with `intersects`, `NativeAPI.actor.cpp:6211` — O(n log n), not the old O(w·r) scan). Revert-proven by
-`self_conflict_test.go` (wire-level: SC in both vectors for a non-tenant write-only commit; gated OFF for a
-tenant commit; gated OFF when real ranges already intersect). **REMAINING:** (1) the **tenant** case —
-`buildCommitTransactionRequest` prefixes the `\xFF/SC/` key with the tenant prefix (only `metadataVersion`
-is exempt), so a faithful tenant port must either exempt the SC key or scope it inside the tenant keyspace;
-skipped for now (gate: `tenantId == NoTenantID`) because the first attempt broke `TestDifferential_Tenant*`.
-(2) the SECOND, idempotency-id-based `\xFF/SC/<idempotencyId>` add at `:6850-6856` (automatic-idempotency
-feature — distinct, gate on `tr.idempotencyId`).
+Synthetic conflict ranges now cover tenant and non-tenant commits. The uncertain-delivery fence
+uses the original tenant and prefixes its intersecting conflict key exactly once, matching
+`NativeAPI.actor.cpp:6306-6344, 6730-6750, 6858-6860`. `self_conflict_test.go` pins the wire ranges;
+`tenant_fence_test.go` withholds a real commit, fences it, then delivers it after 1021 and verifies
+that it cannot change the tenant's data. Fence failures propagate instead of reporting an unfenced 1021.
 
-C++ `Transaction::commitMutations` adds a synthetic self-conflict range to a commit whose write
-and read conflict ranges don't already intersect: `if (!causalWriteRisky &&
-!intersects(write_conflict_ranges, read_conflict_ranges)) makeSelfConflicting()`
-(`NativeAPI.actor.cpp:6858-6860`), where `makeSelfConflicting()` (`:5952`) pushes a single
-`\xFF/SC/<deterministicRandom()->randomUniqueID()>` range into BOTH read and write conflict sets.
-(There is a SECOND, idempotency-id-based `\xFF/SC/<idempotencyId>` add at `:6850-6856` for the
-automatic-idempotency feature — distinct, gate on `tr.idempotencyId`.) Go has neither: a write-only
-commit (read conflicts empty → no intersection) ships WITHOUT the synthetic range, and
-`commitDummyTransaction`'s `intersectConflictRanges` (`commitpath.go:250-265`) falls back to
-`writes[0].Begin` — a real user key — where C++'s dummy uses the synthetic key
-(`NativeAPI.actor.cpp:6744-6750`).
-
-**Two effects:** (a) Go's commit-request conflict-range vector diverges from libfdb_c for the same
-write-only transaction (request-frame semantic difference — not persisted bytes, but affects the
-resolver); (b) Go's commit_unknown_result dummy conflicts on a real user key, so a concurrent writer
-of that key can false-conflict the dummy, where C++'s synthetic UUID key never collides with real
-traffic. PARTIALLY mitigated today: Go's `OnError(1021/1039)` copies writeConflicts→readConflicts on
-the RETRY (`transaction.go:1850`), so the retry is self-conflicting via a different mechanism — but
-the original commit's wire shape and the dummy's key choice still diverge.
-
-**Why a dedicated RFC, not a grind fix:** the commit_unknown_result ↔ makeSelfConflicting ↔
-commitDummyTransaction interaction is subtle (each attempt mints a FRESH random UID, so it is NOT
-simple retry-idempotency), it touches the commit path + wire shape, and it can't be cleanly
-differential-tested at the data plane (conflict ranges go to the resolver, not storage — a
-fault-injection test that triggers commit_unknown_result is needed). Port `makeSelfConflicting` +
-the `intersects(write, read)` gate faithfully under FDB-C-dev DESIGN review; pin with a Go-side
-commit-request unit test (write-only commit includes a `\xFF/SC/` range in both sets) + a
-SimTransport commit_unknown_result behavioral test.
+**Remaining:** the separate automatic-idempotency `\xFF/SC/<idempotencyId>` range at
+`NativeAPI.actor.cpp:6850-6856`, gated on `tr.idempotencyId`.
 
 
 ### [ ] fdbgo/client: transaction-level options are PRESERVED across `onError` retry; C++ resets them to DB defaults — needs its own RFC (found by the quality-grind options audit, 2026-06-19)

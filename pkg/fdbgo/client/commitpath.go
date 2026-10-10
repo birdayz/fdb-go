@@ -77,11 +77,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 		case <-noProxyChanged:
 		case <-ctx.Done():
 		}
-		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
-		if !input.isDummy {
-			input.commitDummyTransaction(ctx)
-		}
-		return result, commitErr
+		return result, input.unknownResult(ctx)
 	}
 	result.epoch = commitEpoch
 
@@ -89,11 +85,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	if err != nil {
 		input.db.handleDialError(ctx, proxy.Address)
 		input.db.kickTopology()
-		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
-		if !input.isDummy {
-			input.commitDummyTransaction(ctx)
-		}
-		return result, commitErr
+		return result, input.unknownResult(ctx)
 	}
 
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
@@ -116,11 +108,7 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 		replyHandle.Cancel()
 		input.db.handleConnError(proxy.Address)
 		input.db.kickTopology()
-		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
-		if !input.isDummy {
-			input.commitDummyTransaction(ctx)
-		}
-		return result, commitErr
+		return result, input.unknownResult(ctx)
 	}
 	// body is copied into WriteFrame's own buffer — safe to return to pool.
 	marshalBufPool.Put(poolBuf)
@@ -129,20 +117,12 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	resp, err := waitReplyOrProxiesChanged(replyCh, ctx, DefaultRPCTimeout, proxiesChanged)
 	if err != nil {
 		replyHandle.Cancel()
-		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
-		if !input.isDummy {
-			input.commitDummyTransaction(ctx)
-		}
-		return result, commitErr
+		return result, input.unknownResult(ctx)
 	}
 	if resp.Err != nil {
 		input.db.handleConnError(proxy.Address)
 		input.db.kickTopology()
-		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
-		if !input.isDummy {
-			input.commitDummyTransaction(ctx)
-		}
-		return result, commitErr
+		return result, input.unknownResult(ctx)
 	}
 
 	outcome, commitErr := parseCommitOutcome(resp.Body)
@@ -186,36 +166,36 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	if commitErr != nil && !input.isDummy {
 		var fdbErr *wire.FDBError
 		if errors.As(commitErr, &fdbErr) && (fdbErr.Code == ErrCommitUnknownResult || fdbErr.Code == ErrClusterVersionChanged) {
-			input.commitDummyTransaction(ctx)
+			if err := input.commitDummyTransaction(ctx); err != nil {
+				return result, err
+			}
 		}
 	}
 	return result, commitErr
 }
 
-// commitDummyTransaction runs a dummy transaction as a synchronization barrier.
-// Matches C++ NativeAPI.actor.cpp:commitDummyTransaction (line 6306), called
-// from tryCommit (line 6750) after commit_unknown_result.
-//
-// Purpose: after commit_unknown_result, we don't know if the original commit
-// landed. The dummy transaction conflicts with the original (shares a conflict
-// key). When the dummy commits successfully, we know the original is no longer
-// in-flight at the commit proxy — either it committed or was discarded.
-// This is defense-in-depth on top of OnError's self-conflicting mechanism.
-//
-// The dummy uses the first write conflict key from the original transaction.
-// OnError will later copy write→read conflicts, so this key will be in both
-// the read and write conflict sets of the retry, ensuring detection.
-func (input *commitInput) commitDummyTransaction(ctx context.Context) {
+// C++ tryCommit lets a failed fence escape instead of reporting an unfenced 1021
+// (NativeAPI.actor.cpp:6749-6750).
+func (input *commitInput) unknownResult(ctx context.Context) error {
+	if !input.isDummy {
+		if err := input.commitDummyTransaction(ctx); err != nil {
+			return err
+		}
+	}
+	return &wire.FDBError{Code: ErrCommitUnknownResult}
+}
+
+// commitDummyTransaction prevents the uncertain original from committing later.
+// Only a successful fence or tenant_not_found proves that (NativeAPI.actor.cpp:6306-6344).
+func (input *commitInput) commitDummyTransaction(ctx context.Context) error {
 	writeConflicts := input.writeConflicts
 	readConflicts := input.readConflicts
 	if len(writeConflicts) == 0 {
-		return // no write conflicts → read-only, nothing to synchronize
+		return nil // no write conflicts → read-only, nothing to synchronize
 	}
 
-	// C++ (NativeAPI.actor.cpp:6744) picks a key from the intersection of
-	// write and read conflict ranges to minimize false conflicts. If no
-	// intersection exists (shouldn't happen since makeSelfConflicting adds
-	// a shared range), fall back to the first write conflict key.
+	// Captured ranges are unprefixed: the same-tenant dummy's marshal applies
+	// the prefix once, matching C++ TenantPrefixPrepended::False (:6322).
 	key := intersectConflictRanges(writeConflicts, readConflicts)
 
 	// Retry loop matching C++ commitDummyTransaction's catch/onError pattern.
@@ -230,20 +210,24 @@ func (input *commitInput) commitDummyTransaction(ctx context.Context) {
 	backoff := defaultBackoff
 	dummyRetries := 0
 	for {
-		if ctx.Err() != nil {
-			return // caller gave up, don't block forever
+		if err := ctx.Err(); err != nil {
+			return err // cancelled: C++ cancels the fence actor; never an unfenced 1021
 		}
 
+		// A raw dummy on an unprefixed tenant key fences nothing. C++ retains
+		// the original tenant and uses RAW_ACCESS only without one (:6309-6322).
 		dummy := &Transaction{
 			db:           input.db,
-			txOptions:    txOptions{tenantId: NoTenantID}, // dummy uses raw access
+			txOptions:    txOptions{tenantId: input.tenantID},
 			creationTime: time.Now(),
 			isDummy:      true, // prevents recursive commitDummyTransaction
 		}
-		// C++ sets RAW_ACCESS, CAUSAL_WRITE_RISKY, LOCK_AWARE on the dummy.
-		dummy.writeSystemKeys = true // RAW_ACCESS equivalent
-		dummy.readSystemKeys = true  // RAW_ACCESS equivalent
-		dummy.causalReadRisky = true // CAUSAL_WRITE_RISKY — faster GRV for dummy
+		if input.tenantID == NoTenantID {
+			dummy.writeSystemKeys = true // RAW_ACCESS equivalent
+			dummy.readSystemKeys = true  // RAW_ACCESS equivalent
+		}
+		// C++ tryCommit requests a risky GRV when no read version exists (:6577).
+		dummy.causalReadRisky = true
 		dummy.lockAware = true
 
 		// C++ commitDummyTransaction (NativeAPI.actor.cpp:6328-6330) adds ONLY a
@@ -265,23 +249,29 @@ func (input *commitInput) commitDummyTransaction(ctx context.Context) {
 		// Use uppercase Commit() which calls ensureReadVersion() before
 		// sending the request. Without a read version, ReadSnapshot=0
 		// is sent to FDB which crashes the server.
-		if err := dummy.Commit(ctx); err != nil {
-			var fdbErr *wire.FDBError
-			if errors.As(err, &fdbErr) && onErrorRetryable(fdbErr.Code) {
-				// Count the dummy's retries like C++: its errors route
-				// through tr.onError (NativeAPI.actor.cpp:6341), which ticks
-				// the same per-code counters as any transaction. RFC-097.
-				dummyRetries++
-				input.db.countRetryAndLog(ctx, fdbErr.Code, dummyRetries)
-				if backoffSleep(ctx, dummyRetryBackoff(backoff, rand.Float64())) != nil {
-					return // ctx cancelled — caller gave up
-				}
-				backoff = min(backoff*2, maxBackoff)
-				continue
-			}
-			return // non-retryable error, give up
+		err := dummy.Commit(ctx)
+		if err == nil {
+			return nil // dummy committed — the original is no longer in flight
 		}
-		return // dummy committed successfully — original is no longer in-flight
+		var fdbErr *wire.FDBError
+		if !errors.As(err, &fdbErr) {
+			return err
+		}
+		if fdbErr.Code == ErrTenantNotFound {
+			return nil // the tenant is gone, so the original cannot commit either
+		}
+		if !onErrorRetryable(fdbErr.Code) {
+			return err
+		}
+		// Count the dummy's retries like C++: its errors route
+		// through tr.onError (NativeAPI.actor.cpp:6341), which ticks
+		// the same per-code counters as any transaction. RFC-097.
+		dummyRetries++
+		input.db.countRetryAndLog(ctx, fdbErr.Code, dummyRetries)
+		if err := backoffSleep(ctx, dummyRetryBackoff(backoff, rand.Float64())); err != nil {
+			return err
+		}
+		backoff = min(backoff*2, maxBackoff)
 	}
 }
 
@@ -335,9 +325,8 @@ func onErrorRetryable(code int) bool {
 // singleKeyRange(intersects(write_conflict_ranges, read_conflict_ranges).get().begin).
 // Uses the shared O(n log n) sorted-merge (intersectRanges), so it picks the SAME
 // overlap begin C++ would. Falls back to writes[0].Begin when the sets are disjoint:
-// C++ relies on makeSelfConflicting having guaranteed a non-empty intersection, but
-// Go's tenant commit path skips makeSelfConflicting, so the fallback keeps the barrier
-// well-defined there rather than panicking on an empty intersection.
+// C++ relies on makeSelfConflicting having guaranteed a non-empty intersection, which
+// Commit also guarantees; only a direct barrier call on hand-built ranges can reach it.
 func intersectConflictRanges(writes, reads []KeyRange) []byte {
 	if kr, ok := intersectRanges(writes, reads); ok {
 		return kr.Begin
