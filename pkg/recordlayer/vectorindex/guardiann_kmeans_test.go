@@ -3,6 +3,7 @@ package vectorindex
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
@@ -159,5 +160,36 @@ func TestKMeansFitPreconditionsAreJavas(t *testing.T) {
 				t.Fatalf("err = %v, want IllegalArgumentError %q", err, c.want)
 			}
 		})
+	}
+}
+
+// Running past convergence repeats the converged step, so it changes no result:
+// the peel's worst-case timing runs every iteration and still fits what the peel fits.
+func TestKMeansLloydPastConvergenceIsTheFit(t *testing.T) {
+	t.Parallel()
+	data := &splittableRandom{seed: 5, gamma: goldenGamma}
+	vectors := make([]gVector, 200)
+	for i := range vectors {
+		v := make([]float64, 17)
+		for j := range v {
+			v[j] = float64(i%4)*3 + data.nextDouble()
+		}
+		vectors[i] = gVector{data: v, typ: 2}
+	}
+	for _, metric := range []VectorMetric{VectorMetricEuclidean, VectorMetricCosine} {
+		codec := &guardiannVectorCodec{config: guardiannConfig{metric: metric}}
+		for k := 2; k <= 3; k++ {
+			stable, err := kMeansLloyd(&splittableRandom{seed: 11, gamma: goldenGamma}, codec, vectors, k, 8, 3, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			full, err := kMeansLloyd(&splittableRandom{seed: 11, gamma: goldenGamma}, codec, vectors, k, 8, 3, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(stable, full) {
+				t.Errorf("metric %v k=%d: a fit run past convergence differs: %v vs %v", metric, k, full.objective, stable.objective)
+			}
+		}
 	}
 }

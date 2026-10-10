@@ -32,9 +32,11 @@ import (
 //
 // Two measurements per shape and seed: the peel over the tight-core-plus-50-
 // outliers generator, and its worst case, the candidate fit plus
-// floor(log2(n - 1)) full refits on all n vectors, which bounds every input
-// the admission lets through. A miss is a Go performance defect in the peel,
-// fixed in Go; the bound B is never raised to meet it.
+// floor(log2(n - 1)) refits, each fit run to all its iterations (no early
+// convergence) on all n vectors and each refit's round also sorting, assigning
+// and scoring all n, which bounds every input the admission lets through. A
+// miss is a Go performance defect in the peel, fixed in Go; the bound B is
+// never raised to meet it.
 
 const peelTimeMargin = 2500 * time.Millisecond
 
@@ -116,17 +118,27 @@ func TestGuardiannPeelPerformanceCriterion(t *testing.T) {
 				}
 				peel, peelCPU := time.Since(start), processCPU()-startCPU
 
-				// The worst case the admission allows: every refit runs, each
-				// on all n vectors.
+				// The worst case the admission allows.
 				vectors := make([]gVector, len(primaries))
+				inMass := make([]bool, len(primaries))
 				for i, p := range primaries {
-					vectors[i] = p.vector
+					vectors[i], inMass[i] = p.vector, true
 				}
 				refits := int(math.Floor(math.Log2(float64(s.n - 1))))
 				start, startCPU = time.Now(), processCPU()
 				random := newSplittableRandomForUUID(tuple.UUID{byte(seed), 2})
 				for r := 0; r <= refits; r++ { // the candidate fit, then the refits
-					if _, err := kMeansFit(random.split(), g.codec, vectors, 2, cfg.kMeansMaxIterations, cfg.kMeansMaxRestarts); err != nil {
+					fit, err := kMeansLloyd(random.split(), g.codec, vectors, 2, cfg.kMeansMaxIterations, cfg.kMeansMaxRestarts, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if r == 0 {
+						continue
+					}
+					if _, err := g.peelFarthest(primaries, inMass, fit.centroids[1]); err != nil {
+						t.Fatal(err)
+					}
+					if _, _, err := g.peelCandidate(current, c12, fit.centroids); err != nil {
 						t.Fatal(err)
 					}
 				}

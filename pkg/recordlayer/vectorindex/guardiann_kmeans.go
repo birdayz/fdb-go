@@ -30,7 +30,7 @@ type kMeansResult struct {
 type kMeansAdapter struct{ codec *guardiannVectorCodec }
 
 func (a kMeansAdapter) baseObjective(v gVector, c []float64) (float64, error) {
-	if a.codec.config.metric == VectorMetricCosine || a.codec.quantizer != nil && v.typ == rabitq.TypeByte {
+	if !a.sequentialL2(v) {
 		d, err := a.codec.distance(v, gVector{data: c, typ: vectorcodec.TypeDouble})
 		if a.codec.config.metric != VectorMetricCosine {
 			d *= d
@@ -38,6 +38,11 @@ func (a kMeansAdapter) baseObjective(v gVector, c []float64) (float64, error) {
 		return d, err
 	}
 	return l2SquaredSequential(v.data, c), nil
+}
+
+// sequentialL2 is whether v's objective is l2SquaredSequential.
+func (a kMeansAdapter) sequentialL2(v gVector) bool {
+	return a.codec.config.metric != VectorMetricCosine && (a.codec.quantizer == nil || v.typ != rabitq.TypeByte)
 }
 
 // javaMetricDistance is MetricDefinition.distance over the scalar backend:
@@ -82,6 +87,20 @@ func l2SquaredSequential(a, b []float64) float64 {
 	return s
 }
 
+// l2SquaredSequentialPair is l2SquaredSequential of v against c0 and c1. Each
+// sum keeps its own order, so both are bit-identical to the single calls, and
+// the two independent chains overlap their add latency.
+func l2SquaredSequentialPair(v, c0, c1 []float64) (s0, s1 float64) {
+	c0, c1 = c0[:len(v)], c1[:len(v)]
+	for i, x := range v {
+		d0 := x - c0[i]
+		d1 := x - c1[i]
+		s0 += d0 * d0
+		s1 += d1 * d1
+	}
+	return s0, s1
+}
+
 func dotSequential(a, b []float64) float64 {
 	s := 0.0
 	for i := range a {
@@ -93,6 +112,12 @@ func dotSequential(a, b []float64) float64 {
 // kMeansFit is KMeans.fit with lambda 0 (GuardiANN's call): k-means++
 // initialisation, Lloyd iterations, and the best of maxRestarts+1 runs.
 func kMeansFit(random *splittableRandom, codec *guardiannVectorCodec, vectors []gVector, k, maxIterations, maxRestarts int) (kMeansResult, error) {
+	return kMeansLloyd(random, codec, vectors, k, maxIterations, maxRestarts, true)
+}
+
+// kMeansLloyd is kMeansFit; without stopWhenStable every restart runs all
+// maxIterations, the cost the peel's admission bounds.
+func kMeansLloyd(random *splittableRandom, codec *guardiannVectorCodec, vectors []gVector, k, maxIterations, maxRestarts int, stopWhenStable bool) (kMeansResult, error) {
 	switch {
 	case k < 1:
 		return kMeansResult{}, &recordlayer.IllegalArgumentError{Message: "k must be >= 1"}
@@ -135,10 +160,6 @@ func kMeansFit(random *splittableRandom, codec *guardiannVectorCodec, vectors []
 		}
 		return res, nil
 	}
-	order := make([]int, n)
-	for i := range order {
-		order[i] = i
-	}
 	next := make([][]float64, k)
 	for c := range next {
 		next[c] = make([]float64, dims)
@@ -156,21 +177,16 @@ func kMeansFit(random *splittableRandom, codec *guardiannVectorCodec, vectors []
 		sizes := make([]int, k)
 		for iteration := 0; iteration < maxIterations; iteration++ {
 			projected := make([]int, k)
-			changed, err := assignmentStep(a, vectors, centroids, order, assignment, projected)
+			for c := range next {
+				clear(next[c])
+			}
+			changed, err := assignmentStep(a, vectors, centroids, assignment, projected, next, nil)
 			if err != nil {
 				return kMeansResult{}, err
 			}
 			copy(sizes, projected)
-			if changed == 0 {
+			if changed == 0 && stopWhenStable {
 				break
-			}
-			for c := range next {
-				for i := range next[c] {
-					next[c][i] = 0
-				}
-			}
-			for i, v := range vectors {
-				addInto(next[assignment[i]], v.data)
 			}
 			for c := 0; c < k; c++ {
 				if sizes[c] == 0 {
@@ -196,20 +212,14 @@ func kMeansFit(random *splittableRandom, codec *guardiannVectorCodec, vectors []
 			centroids, next = next, centroids
 		}
 		projected := make([]int, k)
-		if _, err = assignmentStep(a, vectors, centroids, order, assignment, projected); err != nil {
+		cand := kMeansResult{distances: make([]float64, n)}
+		if _, err = assignmentStep(a, vectors, centroids, assignment, projected, nil, cand.distances); err != nil {
 			return kMeansResult{}, err
 		}
 		copy(sizes, projected)
-		cand := kMeansResult{
-			clusterSizes: append([]int(nil), sizes...), assignment: append([]int(nil), assignment...),
-			distances: make([]float64, n),
-		}
-		for i, v := range vectors {
-			cand.distances[i], err = a.baseObjective(v, centroids[assignment[i]])
-			if err != nil {
-				return kMeansResult{}, err
-			}
-			cand.objective += cand.distances[i]
+		cand.clusterSizes, cand.assignment = append([]int(nil), sizes...), append([]int(nil), assignment...)
+		for _, d := range cand.distances {
+			cand.objective += d
 		}
 		for _, c := range centroids {
 			cand.centroids = append(cand.centroids, gVector{data: append([]float64(nil), c...), typ: vectorcodec.TypeDouble})
@@ -229,6 +239,7 @@ func kMeansFit(random *splittableRandom, codec *guardiannVectorCodec, vectors []
 }
 
 func addInto(dst, v []float64) {
+	v = v[:len(dst)]
 	for i := range dst {
 		dst[i] += v[i]
 	}
@@ -240,21 +251,35 @@ func scale(v []float64, f float64) {
 	}
 }
 
-func assignmentStep(a kMeansAdapter, vectors []gVector, centroids [][]float64, order, assignment, projected []int) (int, error) {
+// assignmentStep assigns each vector to its nearest centroid. With next it also
+// sums each vector into next[c] in vector order, the update's sums read while
+// the vector is hot; with distances it records each vector's objective.
+func assignmentStep(a kMeansAdapter, vectors []gVector, centroids [][]float64, assignment, projected []int,
+	next [][]float64, distances []float64,
+) (int, error) {
 	changed := 0
-	for _, i := range order {
+	for i, v := range vectors {
 		bestC := 0
-		bestScore, err := a.baseObjective(vectors[i], centroids[0])
-		if err != nil {
-			return 0, err
-		}
-		for c := 1; c < len(centroids); c++ {
-			s, err := a.baseObjective(vectors[i], centroids[c])
-			if err != nil {
+		var bestScore float64
+		if len(centroids) == 2 && a.sequentialL2(v) {
+			s0, s1 := l2SquaredSequentialPair(v.data, centroids[0], centroids[1])
+			bestScore = s0
+			if s1 < s0 {
+				bestScore, bestC = s1, 1
+			}
+		} else {
+			var err error
+			if bestScore, err = a.baseObjective(v, centroids[0]); err != nil {
 				return 0, err
 			}
-			if s < bestScore {
-				bestScore, bestC = s, c
+			for c := 1; c < len(centroids); c++ {
+				s, err := a.baseObjective(v, centroids[c])
+				if err != nil {
+					return 0, err
+				}
+				if s < bestScore {
+					bestScore, bestC = s, c
+				}
 			}
 		}
 		if assignment[i] != bestC {
@@ -262,6 +287,12 @@ func assignmentStep(a kMeansAdapter, vectors []gVector, centroids [][]float64, o
 			changed++
 		}
 		projected[bestC]++
+		if next != nil {
+			addInto(next[bestC], v.data)
+		}
+		if distances != nil {
+			distances[i] = bestScore
+		}
 	}
 	return changed, nil
 }
