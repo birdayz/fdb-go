@@ -359,20 +359,58 @@ func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockR
 // Handles both unsplit (suffix 0) and split (suffixes 1, 2, ...) records
 // via SplitHelper, matching Java's FDBRecordStore.loadRecordAsync().
 func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecord[proto.Message], error) {
-	startTime := time.Now()
-	recordsSubspace := store.recordsSubspace
+	return store.LoadRecordAsync(primaryKey, nil).Get()
+}
 
+// LoadRecordAsync sends the record's reads now, like Java's loadRecordAsync;
+// Get finishes the load. A non-nil scanState is charged the loaded bytes.
+func (store *FDBRecordStore) LoadRecordAsync(primaryKey tuple.Tuple, scanState *ScanLimiterState) PendingRead[*FDBStoredRecord[proto.Message]] {
+	issueStart := time.Now()
+	load := &recordLoad{
+		store: store, tx: store.context.Transaction(), primaryKey: primaryKey, scanState: scanState,
+		split: store.metaData.IsSplitLongRecords(),
+	}
+	load.first = startLoadWithSplit(load.tx, store.recordsSubspace, primaryKey, load.split, store.omitUnsplitRecordSuffix(), false)
+	if store.metaData.IsStoreRecordVersions() {
+		load.version = store.loadRecordVersionAsync(primaryKey, false)
+	}
+	load.issueCost = time.Since(issueStart)
+	return NewPendingRead(load.finish, load.ready)
+}
+
+// recordLoad is one issued LoadRecordAsync; split and omitSuffix are fixed at issue.
+type recordLoad struct {
+	store      *FDBRecordStore
+	tx         fdb.ReadTransaction
+	primaryKey tuple.Tuple
+	scanState  *ScanLimiterState
+	split      bool
+	first      pendingRecordLoad
+	version    PendingRead[*FDBRecordVersion]
+	issueCost  time.Duration
+}
+
+// A missing unsplit value of a splitting store still needs the chunk reads.
+func (l *recordLoad) ready() bool {
+	if !l.first.value.IsReady() || (l.version != nil && !l.version.IsReady()) {
+		return false
+	}
+	value, err := l.first.value.Get()
+	return err != nil || value != nil || !l.split
+}
+
+// The load timer counts the caller's issue and wait, not time queued behind earlier rows.
+func (l *recordLoad) finish() (*FDBStoredRecord[proto.Message], error) {
+	waitStart := time.Now()
+	store, primaryKey := l.store, l.primaryKey
 	var sizeInfo sizeInfo
-	value, err := loadWithSplit(
-		store.context.Transaction(),
-		recordsSubspace,
-		primaryKey,
-		store.metaData.IsSplitLongRecords(),
-		store.omitUnsplitRecordSuffix(),
-		&sizeInfo,
-	)
+	value, err := l.first.finish(&sizeInfo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load record %v: %w", primaryKey, err)
+	}
+	// Java charges every completed load, found or not (FDBRecordStore.loadTypedRecord).
+	if l.scanState != nil {
+		l.scanState.AddBytesScanned(int64(sizeInfo.KeySize + sizeInfo.ValueSize))
 	}
 	if value == nil {
 		return nil, nil // Record not found
@@ -398,15 +436,15 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 
 	// Load version if versioning is enabled.
 	// Matches Java's loadTypedRecord which eagerly loads the version.
-	if store.metaData.IsStoreRecordVersions() {
-		ver, err := store.LoadRecordVersion(primaryKey, false)
+	if l.version != nil {
+		ver, err := l.version.Get()
 		if err != nil {
 			return nil, fmt.Errorf("load record version for %v: %w", primaryKey, err)
 		}
 		stored.Version = ver
 	}
 
-	store.context.Timer().RecordSince(EventLoadRecord, startTime)
+	store.context.Timer().Record(EventLoadRecord, (l.issueCost + time.Since(waitStart)).Nanoseconds())
 
 	return stored, nil
 }
@@ -585,7 +623,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 
 // SaveRecordsPipelined saves records in order as SaveRecordWithOptions would
 // one at a time, but sends the existing-record reads of each window of
-// defaultPipelineSize records together: Java's INSERT pipelines its saves
+// DefaultPipelineSize records together: Java's INSERT pipelines its saves
 // (RecordQueryAbstractDataModificationPlan mapPipelined, at
 // FDBRecordStore.DEFAULT_PIPELINE_SIZE). The first failing record stops the save
 // and is the one reported; the reads already sent for the rest of its window
@@ -596,8 +634,8 @@ func (store *FDBRecordStore) SaveRecordsPipelined(
 ) ([]*FDBStoredRecord[proto.Message], error) {
 	saved := make([]*FDBStoredRecord[proto.Message], 0, len(records))
 	tx := store.context.Transaction()
-	for start := 0; start < len(records); start += defaultPipelineSize {
-		window := records[start:min(start+defaultPipelineSize, len(records))]
+	for start := 0; start < len(records); start += DefaultPipelineSize {
+		window := records[start:min(start+DefaultPipelineSize, len(records))]
 		loads := store.startExistingRecordLoads(tx, window)
 		for i, record := range window {
 			stored, err := store.saveRecordInternal(record, existenceCheck, false, &loads[i])
