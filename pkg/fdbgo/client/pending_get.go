@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 
@@ -105,7 +106,8 @@ func (p *PendingGet) releaseWireLocked() {
 func (p *PendingGet) completeLocked(value []byte, err error) {
 	p.releaseWireLocked()
 	p.done = true
-	p.memoVal = value
+	// The cache retains the reply; this future owns a separate, mutable memo.
+	p.memoVal = bytes.Clone(value)
 	p.memoErr = p.tx.trackReadErrorGen(err, p.gen)
 	if p.cancel != nil {
 		p.cancel()
@@ -166,6 +168,9 @@ func (p *PendingGet) readReply(response transport.Response) ([]byte, error, bool
 func (p *PendingGet) resolveReply(ctx context.Context, response transport.Response) ([]byte, error) {
 	value, err, retry := p.readReply(response)
 	if !retry {
+		if err == nil && !p.tx.rywDisabled {
+			p.tx.ryw.cachePointResult(p.key, value)
+		}
 		return value, err
 	}
 	if response.Err != nil {
@@ -181,5 +186,8 @@ func (p *PendingGet) resolveFull(ctx context.Context) ([]byte, error) {
 	if err := p.tx.readEntryError(ctx); err != nil {
 		return nil, err
 	}
-	return p.tx.getValue(ctx, p.key)
+	if p.tx.rywDisabled {
+		return p.tx.getValue(ctx, p.key)
+	}
+	return p.tx.ryw.getSnapshot(ctx, p.key, p.tx.getValue)
 }

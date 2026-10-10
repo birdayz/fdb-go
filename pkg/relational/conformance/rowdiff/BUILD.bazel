@@ -106,7 +106,7 @@ go_test(
     ],
     embed = [":rowdiff"],
     tags = [
-        "resources:cpu:6",
+        "resources:cpu:10",
         "test-full",
     ],
     deps = [

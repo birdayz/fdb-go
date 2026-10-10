@@ -81,7 +81,7 @@ go_test(
     ],
     embed = [":yamsql"],
     tags = [
-        "resources:cpu:3",
+        "resources:cpu:5",
         "resources:memory:700",
     ],
     deps = [

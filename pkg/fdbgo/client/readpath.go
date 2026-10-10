@@ -128,6 +128,9 @@ func keySelectorIsBackward(orEqual bool, offset int32) bool {
 func (tx *Transaction) getKey(parentCtx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return nil, err
+	}
 	if sp := tx.startOpSpan("fdbgo.getKey"); sp != nil { // RFC-115 §4 Layer 2 (C++ NAPI:getKey)
 		defer sp.End()
 	}
@@ -157,7 +160,7 @@ func (tx *Transaction) getKeyImpl(ctx context.Context, selectorKey []byte, orEqu
 		// key may be updated by a partial resolution from the previous iteration.
 		if bytes.Equal(selectorKey, allKeysEnd) {
 			if offset > 0 {
-				return allKeysEnd, nil
+				return bytes.Clone(allKeysEnd), nil
 			}
 			orEqual = false // C++: k.orEqual = false
 		} else if len(selectorKey) == 0 && offset <= 0 {
@@ -378,6 +381,9 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 func (tx *Transaction) getValue(parentCtx context.Context, key []byte) ([]byte, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return nil, err
+	}
 	if sp := tx.startOpSpan("fdbgo.getValue"); sp != nil { // RFC-115 §4 Layer 2 (C++ NAPI:getValue)
 		defer sp.End()
 	}
@@ -583,6 +589,9 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 func (tx *Transaction) getRange(parentCtx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return nil, false, err
+	}
 	if sp := tx.startOpSpan("fdbgo.getRange"); sp != nil { // RFC-115 §4 Layer 2 (C++ NAPI:getRange)
 		defer sp.End()
 	}

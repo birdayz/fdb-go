@@ -376,11 +376,10 @@ func (db Database) Transact(f func(WritableTransaction) (any, error)) (any, erro
 	return db.TransactCtx(db.d.ctx, f)
 }
 
-// TransactCtx is Transact bounded by ctx (RFC-090 / fdb.CtxTransactor): ctx bounds the
-// retry loop, backoff, and reads. The dispatched commit and its commit_unknown_result
-// idempotency barrier run on a detached context (in client.Database.Transact), so the
-// caller's ctx never cancels an in-flight commit — which is already bounded by the
-// per-RPC timeout.
+// TransactCtx uses ctx to bound the retry loop, backoff, and reads (RFC-090).
+// After dispatch, the commit and its uncertainty barrier outlive ctx. If the
+// commit outcome is uncertain, the caller can wait until recovery or Database.Close
+// even after its deadline. Unlike libfdb_c, cancellation does not release that wait.
 func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
 	var body bodyRun
 	result, err := db.d.inner.Transact(ctx, func(tx *client.Transaction) (any, error) {

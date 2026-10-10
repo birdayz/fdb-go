@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -62,7 +63,7 @@ const (
 	NoTenantID           int64 = -1
 	UnlimitedBytes       int32 = 0x7FFFFFFF
 	DefaultRPCTimeout          = 5 * time.Second
-	CoordinatorTimeout         = 30 * time.Second // OpenDatabaseCoordRequest + GRV batch context
+	CoordinatorTimeout         = 30 * time.Second // OpenDatabaseCoordRequest
 	BootstrapMaxBackoff        = 5 * time.Second  // bootstrap retry backoff cap
 	MaxWrongShardRetries       = 50               // C++ is unbounded (relies on tx 5s timeout); 50×10ms = 500ms, generous safety margin
 )
@@ -260,7 +261,7 @@ type txOptions struct {
 	// always read from the server. Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
 	rywDisabled bool
 
-	// snapshotRYWDisableCount: snapshot reads bypass the RYW cache iff this is > 0.
+	// snapshotRYWDisableCount: snapshot reads bypass the write overlay iff this is > 0.
 	// Matches FDB_TR_OPTION_SNAPSHOT_RYW_{ENABLE,DISABLE}, which libfdb_c models as an
 	// integer counter (ReadYourWrites.actor.cpp): ENABLE does enabledCount++, DISABLE does
 	// enabledCount--, and a snapshot read bypasses RYW iff enabledCount <= 0. We store the
@@ -414,7 +415,7 @@ type Transaction struct {
 	readConflicts       []KeyRange
 	writeConflicts      []KeyRange
 	singleKeyClearCount int
-	conflictBuf         []byte       // batch-allocated backing store for conflict range keys
+	conflictBuf         []byte       // backing store for conflict keys and mutation operands
 	conflictBufOwner    *conflictBuf // pool handle, avoids alloc on Put
 
 	// Retry-loop state — owned by the Run/OnError driver goroutine (never
@@ -504,8 +505,8 @@ type Transaction struct {
 	// every read funnels through, which GetReadVersion and Commit do NOT). Together with a
 	// non-empty write map it is the Go analog of C++'s
 	// `reading.getFutureCount() > 0 || !cache.empty()` — the signal that
-	// SetReadYourWritesDisable must poison. A serverCache check alone is insufficient: the
-	// facade's Get uses GetPipelined, which does not populate serverCache (RFC-059).
+	// SetReadYourWritesDisable must poison. A serverCache check alone misses reads
+	// still in flight, before their replies populate the cache.
 	//
 	// atomic.Bool: pipelined reads (e.g. loadRecordStoreState issuing a Get + a
 	// Snapshot().GetRange together) resolve their futures on separate goroutines,
@@ -593,30 +594,31 @@ type Snapshot struct {
 }
 
 // Get reads a key without adding a read conflict range.
-// Snapshot reads go through the RYW cache unless snapshot RYW is net-disabled
-// (snapshotRYWDisableCount > 0).
+// Snapshot reads retain the storage cache; pending writes are included unless
+// snapshot RYW is net-disabled (snapshotRYWDisableCount > 0).
 func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 	ctx, cancel := s.tx.opContext(ctx)
 	defer cancel()
-	// Snapshot reads are tracked in C++ ryw->reading exactly like regular reads
-	// (reading.add runs for Snapshot::True too) — a failed snapshot read poisons
-	// a later Commit the same way.
-	if err := s.tx.ensureReadVersion(ctx); err != nil {
+	if err := s.tx.checkReadState(ctx); err != nil {
 		return nil, s.tx.trackReadOperation(ctx, err)
 	}
 	// Same system key check as regular Get.
 	if bytes.Compare(key, s.tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
 		return nil, &wire.FDBError{Code: 2004}
 	}
-	// Mirror C++ ReadYourWrites.actor.cpp:400-402: readYourWritesDisabled is checked FIRST (read
-	// through, for ALL reads incl. snapshot), then the snapshot-RYW counter. Both map to a
-	// storage read here (a snapshot read adds no conflict either way).
-	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
+	s.tx.hadRead.Store(true)
+	// Disabling snapshot RYW ignores writes, not the snapshot cache. Only
+	// disabling all RYW selects NativeAPI read-through (C++ RYW :400-403).
+	if s.tx.rywDisabled {
 		v, err := s.tx.getValue(ctx, key)
 		return v, s.tx.trackReadOperation(ctx, err)
 	}
+	if s.tx.snapshotRYWDisableCount > 0 {
+		v, err := s.tx.ryw.getSnapshot(ctx, key, s.tx.getValue)
+		return bytes.Clone(v), s.tx.trackReadOperation(ctx, err)
+	}
 	v, err := s.tx.ryw.get(ctx, key, s.tx.getValue)
-	return v, s.tx.trackReadOperation(ctx, err)
+	return bytes.Clone(v), s.tx.trackReadOperation(ctx, err)
 }
 
 // GetKey resolves a key selector without adding a read conflict range.
@@ -627,7 +629,7 @@ func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	ctx, cancel := s.tx.opContext(ctx)
 	defer cancel()
-	if err := s.tx.ensureReadVersion(ctx); err != nil {
+	if err := s.tx.checkReadState(ctx); err != nil {
 		return nil, s.tx.trackReadOperation(ctx, err)
 	}
 	// Eager validation — NOT tracked (C++ returns before a read future
@@ -635,15 +637,21 @@ func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool,
 	if bytes.Compare(selectorKey, s.tx.maxReadKey()) > 0 {
 		return nil, &wire.FDBError{Code: 2004}
 	}
-	// includeWrites mirrors C++ :400-402: consult the RYW write map only when readYourWrites is
-	// NOT disabled AND snapshot RYW is net-enabled (count <= 0).
-	k, err := s.tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, s.tx.maxReadKey(), !s.tx.rywDisabled && s.tx.snapshotRYWDisableCount <= 0, s.tx.getRange)
+	s.tx.hadRead.Store(true)
+	if s.tx.rywDisabled {
+		k, err := s.tx.getKey(ctx, selectorKey, orEqual, offset)
+		if bytes.Compare(k, s.tx.maxReadKey()) > 0 {
+			k = s.tx.maxReadKey()
+		}
+		return k, s.tx.trackReadOperation(ctx, err)
+	}
+	k, err := s.tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, s.tx.maxReadKey(), s.tx.snapshotRYWDisableCount <= 0, s.tx.getRange)
 	return k, s.tx.trackReadOperation(ctx, err)
 }
 
 // GetRange reads a range without adding a read conflict range.
-// Snapshot reads go through the RYW cache unless snapshot RYW is net-disabled
-// (snapshotRYWDisableCount > 0).
+// Snapshot reads retain the storage cache; pending writes are included unless
+// snapshot RYW is net-disabled (snapshotRYWDisableCount > 0).
 func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	return s.getRangeDir(ctx, begin, end, limit, ByteLimitUnlimited, false)
 }
@@ -658,7 +666,7 @@ func (s *Snapshot) GetRangeWithByteTarget(ctx context.Context, begin, end []byte
 func (s *Snapshot) getRangeDir(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
 	ctx, cancel := s.tx.opContext(ctx)
 	defer cancel()
-	if err := s.tx.ensureReadVersion(ctx); err != nil {
+	if err := s.tx.checkReadState(ctx); err != nil {
 		return nil, false, s.tx.trackReadOperation(ctx, err)
 	}
 	maxKey := s.tx.maxReadKey()
@@ -672,17 +680,25 @@ func (s *Snapshot) getRangeDir(ctx context.Context, begin, end []byte, limit, by
 	if err != nil {
 		return nil, false, err
 	}
-	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
+	if bytes.Compare(begin, end) >= 0 {
+		return nil, false, nil
+	}
+	s.tx.hadRead.Store(true)
+	if s.tx.rywDisabled {
 		kvs, more, err := s.tx.getRange(ctx, begin, end, limit, byteTarget, reverse)
 		return kvs, more, s.tx.trackReadOperation(ctx, err)
 	}
+	if s.tx.snapshotRYWDisableCount > 0 {
+		kvs, more, err := s.tx.ryw.getSnapshotRange(ctx, begin, end, limit, byteTarget, reverse, s.tx.getRange)
+		return cloneReadKVs(kvs), more, s.tx.trackReadOperation(ctx, err)
+	}
 	kvs, more, err := s.tx.ryw.getRange(ctx, begin, end, limit, byteTarget, reverse, s.tx.getRange)
-	return kvs, more, s.tx.trackReadOperation(ctx, err)
+	return cloneReadKVs(kvs), more, s.tx.trackReadOperation(ctx, err)
 }
 
 // GetRangeReverse reads a range in reverse without adding a read conflict range.
-// Snapshot reads go through the RYW cache unless snapshot RYW is net-disabled
-// (snapshotRYWDisableCount > 0).
+// Snapshot reads retain the storage cache; pending writes are included unless
+// snapshot RYW is net-disabled (snapshotRYWDisableCount > 0).
 func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	return s.getRangeDir(ctx, begin, end, limit, ByteLimitUnlimited, true)
 }
@@ -695,9 +711,9 @@ func (s *Snapshot) GetReadVersion(ctx context.Context) (int64, error) {
 // checkCancelled returns transaction_cancelled (1025) if the transaction has been cancelled.
 // C++ cancel() does resetPromise.sendError(transaction_cancelled) (ReadYourWrites.actor.cpp:2730)
 // and EVERY RYW op races resetPromise, so a cancelled txn resolves every op with 1025. This is
-// the Go analogue of that per-op resetPromise check: reads route through ensureReadVersion (which
-// calls this), and ops that bypass ensureReadVersion (metrics, OnError, GetVersionstamp, Commit)
-// call it directly at entry. Apps branch on err.Code == 1025 (RFC-068), so the code must match.
+// the Go analogue of that per-op resetPromise check: read admission calls this
+// without acquiring a read version; other operations call it directly at entry.
+// Apps branch on err.Code == 1025 (RFC-068), so the code must match.
 func (tx *Transaction) checkCancelled() error {
 	tx.readErrMu.Lock()
 	var cause error
@@ -756,6 +772,21 @@ func isTrackableReadError(err error) bool {
 	return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
+// Local RYW reads still observe deferred errors and reset/timeout, but do not
+// enter NativeAPI's GRV path unless their answer needs database state.
+func (tx *Transaction) checkReadState(ctx context.Context) error {
+	if err := tx.readEntryError(ctx); err != nil {
+		return err
+	}
+	if err := tx.checkCancelled(); err != nil {
+		return err
+	}
+	if txState(tx.state.Load()) != txStateActive {
+		return fmt.Errorf("transaction not active")
+	}
+	return tx.checkTimeout(ctx)
+}
+
 func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 	ctx, release := tx.opContext(ctx)
 	defer release()
@@ -771,23 +802,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
-	if err := tx.readEntryError(ctx); err != nil {
-		return 0, err
-	}
-	if err := tx.checkCancelled(); err != nil {
-		return 0, err
-	}
-	if txState(tx.state.Load()) != txStateActive {
-		return 0, fmt.Errorf("transaction not active")
-	}
-	// Bound the GRV by the SetTimeout deadline too: the GRV is the first read RPC
-	// every transaction issues, and a hung-but-alive GRV proxy must not run past
-	// the timeout (RFC-112; the C++ analog is RYWImpl::getReadVersion's
-	// `choose { getReadVersion() | resetPromise }`, ReadYourWrites.actor.cpp:1537).
-	// Interruption is classified against the captured incarnation by mapReadError.
-	// Deferred failure was captured by opContext at the outer entry, before
-	// RYW/resetPromise dispatch. Nested GRV work must not sample later poison.
-	if err := tx.checkTimeout(ctx); err != nil {
+	if err := tx.checkReadState(ctx); err != nil {
 		return 0, err
 	}
 	if tx.beforeReadVersionLock != nil {
@@ -876,15 +891,14 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64
 func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	ctx, cancel := tx.opContext(ctx)
 	defer cancel()
-	// GRV failures are tracked: in C++ the read version is acquired INSIDE the
-	// read future that reading.add records, so a failed GRV poisons commit too.
-	if err := tx.ensureReadVersion(ctx); err != nil {
+	if err := tx.checkReadState(ctx); err != nil {
 		return nil, tx.trackReadOperation(ctx, err)
 	}
 	// C++ RYW::getValue: if (key >= getMaxReadKey() && key != metadataVersionKey)
 	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
 		return nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
+	tx.hadRead.Store(true)
 	// Special keys (\xff\xff prefix) don't add read conflicts — C++ resolves
 	// them internally without going through the resolver conflict map. The conflict
 	// is routed through the RYW filter so a read served by a local independent write
@@ -897,7 +911,7 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return v, tx.trackReadOperation(ctx, err)
 	}
 	v, err := tx.ryw.get(ctx, key, tx.getValue)
-	return v, tx.trackReadOperation(ctx, err)
+	return bytes.Clone(v), tx.trackReadOperation(ctx, err)
 }
 
 // GetPipelined sends a GetValue request and returns a PendingGet that can be
@@ -919,65 +933,38 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			opCancel()
 		}
 	}()
-	if err := tx.ensureReadVersion(ctx); err != nil {
-		return nil, nil, err
+	if err := tx.checkReadState(ctx); err != nil {
+		return nil, nil, tx.trackReadOperation(ctx, err)
 	}
-	tx.hadRead.Store(true) // a read was issued; this path does NOT populate serverCache (RFC-059)
 	// Legal key range check BEFORE sending — matches Transaction.Get. The illegal
 	// key must be rejected at enqueue, not after the frame is on the wire. RFC-010 #3.
 	// C++ RYW::getValue: if (key >= getMaxReadKey() && key != metadataVersionKey)
 	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
 		return nil, nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
+	tx.hadRead.Store(true)
 	// Routed through the RYW filter (RFC-121 D2) — a read served by a local independent
 	// write adds no read-conflict, matching libfdb_c updateConflictMap.
 	if !isSpecialKey(key) {
 		tx.addReadConflictForKeyRYW(key)
 	}
 
-	// Check RYW cache.
-	tx.ryw.mu.Lock()
-	// Unreadable gate (RFC-098) — mirrors rywCache.get(): a sticky-unreadable
-	// entry (versionstamped op anywhere in its history, even if a later plain
-	// Set resolved the value) or a key inside an SVK candidate stamp range
-	// throws 1036 BEFORE any cache hit or server send. Without this, the
-	// pipelined path returned the folded value (sticky case) or read through
-	// to storage (SVK range case) — both silent wrong answers vs libfdb_c.
-	// Under BYPASS_UNREADABLE a resolved entry's value IS the bypass answer
-	// (returned below); unresolved chains take ErrNeedFullRYW into ryw.get(),
-	// which owns the bypass resolution.
-	if !tx.ryw.bypassUnreadable {
-		if entry, ok := tx.ryw.writes[string(key)]; (ok && entry.unreadable) || tx.ryw.isUnreadableLocked(key) {
-			tx.ryw.mu.Unlock()
-			// Tracked: in C++ this 1036 is thrown from inside the read future
-			// (RYWIterator), so it lands in ryw->reading and poisons commit.
-			// The transient locate/send failures below are NOT tracked — the
-			// caller re-drives them through the full read path, which records
-			// its own final outcome (one C++ read future = GetPipelined +
-			// Resolve/re-drive together).
-			return nil, nil, tx.trackReadOperation(ctx, &wire.FDBError{Code: ErrAccessedUnreadable})
-		}
-	}
-	if entry, ok := tx.ryw.writes[string(key)]; ok {
-		if !entry.hasAtomics {
-			if entry.absent {
-				// Phantom (matched CompareAndClear): an is_kv slot for getKey but ABSENT for
-				// a point read — like a cleared key (RFC-058).
-				tx.ryw.mu.Unlock()
-				return nil, nil, nil
-			}
-			v := entry.value
-			tx.ryw.mu.Unlock()
-			return v, nil, nil
-		}
-		// Has atomics — need full ryw.get() to merge server value with atomics.
+	if !tx.rywDisabled {
+		tx.ryw.mu.Lock()
+		value, known, readErr := tx.ryw.localPointLocked(key)
+		entry := tx.ryw.writes[string(key)]
 		tx.ryw.mu.Unlock()
-		return nil, nil, ErrNeedFullRYW
+		if known {
+			return bytes.Clone(value), nil, tx.trackReadOperation(ctx, readErr)
+		}
+		if entry.hasAtomics {
+			return nil, nil, ErrNeedFullRYW
+		}
 	}
-	isClr := tx.ryw.isClearedLocked(key)
-	tx.ryw.mu.Unlock()
-	if isClr {
-		return nil, nil, nil
+
+	// GRV belongs to the remote read future, so its failure poisons Commit too.
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return nil, nil, tx.trackReadOperation(ctx, err)
 	}
 
 	// Retain the captured incarnation through locate, send and deferred Resolve.
@@ -1086,7 +1073,7 @@ type PendingGet struct {
 func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	ctx, cancel := tx.opContext(ctx)
 	defer cancel()
-	if err := tx.ensureReadVersion(ctx); err != nil {
+	if err := tx.checkReadState(ctx); err != nil {
 		return nil, tx.trackReadOperation(ctx, err)
 	}
 	// C++ RYW::getKey: if (key.getKey() > getMaxReadKey()) → key_outside_legal_range
@@ -1094,6 +1081,7 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 	if bytes.Compare(selectorKey, tx.maxReadKey()) > 0 {
 		return nil, &wire.FDBError{Code: 2004}
 	}
+	tx.hadRead.Store(true)
 	// Resolve the selector. When RYW is enabled, resolve against the MERGED view
 	// (pending writes + snapshot cache) — matching C++ resolveKeySelectorFromCache
 	// (RFC-056). When RYW is disabled, the whole RYW layer is bypassed → storage only.
@@ -1292,19 +1280,38 @@ var metadataVersionKeyEndBytes = []byte("\xff/metadataVersion\x00")
 // (:2226-2229) rejects any other operand — and any non-SVV op — with client_invalid_operation.
 var metadataVersionRequiredValue = []byte("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
 
-// conflictBufPool reuses backing buffers for conflict range keys (both read
-// and write). Each transaction needs ~200 conflict keys for a 50-record batch,
-// totaling ~20KB. Without pooling, the buffer grows 4K→8K→16K→32K
-// per transaction, creating intermediate garbage at each step.
-// Stores *conflictBuf to avoid interface boxing allocation (SA6002).
+const (
+	smallConflictBufSize = 512
+	bulkConflictBufSize  = 32768
+)
+
+// Small transactions avoid a 32 KiB cold allocation; batches promote directly
+// to the large pool instead of growing through intermediate buffers.
+var smallConflictBufPool = sync.Pool{
+	New: func() any {
+		return &conflictBuf{b: make([]byte, 0, smallConflictBufSize)}
+	},
+}
+
 var conflictBufPool = sync.Pool{
 	New: func() any {
-		return &conflictBuf{b: make([]byte, 0, 32768)}
+		return &conflictBuf{b: make([]byte, 0, bulkConflictBufSize)}
 	},
 }
 
 type conflictBuf struct {
 	b []byte
+}
+
+// Arenas over 32 KiB are not pooled: large values must not inflate later transactions.
+func conflictBufPoolFor(size int) *sync.Pool {
+	if size <= smallConflictBufSize {
+		return &smallConflictBufPool
+	}
+	if size <= bulkConflictBufSize {
+		return &conflictBufPool
+	}
+	return nil
 }
 
 // SetReadSystemKeys allows reading \xff prefix system keys.
@@ -1350,7 +1357,7 @@ func (tx *Transaction) GetRangeWithByteTarget(ctx context.Context, begin, end []
 func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
 	ctx, cancel := tx.opContext(ctx)
 	defer cancel()
-	if err := tx.ensureReadVersion(ctx); err != nil {
+	if err := tx.checkReadState(ctx); err != nil {
 		return nil, false, tx.trackReadOperation(ctx, err)
 	}
 	// C++ RYW::getRange: if (begin > maxKey || end > maxKey) → key_outside_legal_range
@@ -1371,12 +1378,17 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 		return nil, false, err
 	}
 
+	if bytes.Compare(begin, end) >= 0 {
+		return nil, false, nil
+	}
+	tx.hadRead.Store(true)
 	var kvs []KeyValue
 	var more bool
 	if tx.rywDisabled {
 		kvs, more, err = tx.getRange(ctx, begin, end, limit, byteTarget, reverse)
 	} else {
 		kvs, more, err = tx.ryw.getRange(ctx, begin, end, limit, byteTarget, reverse, tx.getRange)
+		kvs = cloneReadKVs(kvs)
 	}
 	if err != nil {
 		// C++ adds the read-conflict only in the read's SUCCESS branch
@@ -1406,6 +1418,25 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	return kvs, more, nil
 }
 
+// ownMutationLocked takes ownership before the caller can reuse its buffers,
+// matching ThreadSafeTransaction::set/clear/atomicOp. Caller holds conflictMu.
+func (tx *Transaction) ownMutationLocked(typ MutationType, key, value []byte) Mutation {
+	if len(key)+len(value) == 0 {
+		return Mutation{Type: typ, Key: bytes.Clone(key), Value: bytes.Clone(value)}
+	}
+	buf := tx.conflictBufAlloc(len(key) + len(value))
+	var ownedKey, ownedValue []byte
+	if key != nil {
+		ownedKey = buf[:len(key):len(key)]
+		copy(ownedKey, key)
+	}
+	if value != nil {
+		ownedValue = buf[len(key):len(buf):len(buf)]
+		copy(ownedValue, value)
+	}
+	return Mutation{Type: typ, Key: ownedKey, Value: ownedValue}
+}
+
 // Set writes a key-value pair.
 func (tx *Transaction) stateSet(key, value []byte) {
 	// The mutation and its write-conflict range must become visible to a
@@ -1414,11 +1445,7 @@ func (tx *Transaction) stateSet(key, value []byte) {
 	// transaction that read the key would not be conflicted (a missed conflict,
 	// not just a spurious one). Hold conflictMu across both appends.
 	tx.conflictMu.Lock()
-	tx.mutations = append(tx.mutations, Mutation{
-		Type:  MutSetValue,
-		Key:   key,
-		Value: value,
-	})
+	tx.mutations = append(tx.mutations, tx.ownMutationLocked(MutSetValue, key, value))
 	tx.addWriteConflictForKeyLocked(key)
 	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
@@ -1456,11 +1483,7 @@ func (tx *Transaction) stateClear(key []byte) {
 	copy(end, key)
 	end[len(key)] = 0
 	tx.conflictMu.Lock()
-	tx.mutations = append(tx.mutations, Mutation{
-		Type:  MutClearRange,
-		Key:   key,
-		Value: end,
-	})
+	tx.mutations = append(tx.mutations, tx.ownMutationLocked(MutClearRange, key, end))
 	tx.singleKeyClearCount++ // C++ charges this mutation sizeof(KeyRangeRef), not MutationRef (RYW:2431)
 	tx.addWriteConflictLocked(key, end)
 	tx.conflictMu.Unlock()
@@ -1493,11 +1516,7 @@ func (tx *Transaction) stateClearRange(begin, end []byte) error {
 		return nil
 	}
 	tx.conflictMu.Lock()
-	tx.mutations = append(tx.mutations, Mutation{
-		Type:  MutClearRange,
-		Key:   begin,
-		Value: end,
-	})
+	tx.mutations = append(tx.mutations, tx.ownMutationLocked(MutClearRange, begin, end))
 	tx.addWriteConflictLocked(begin, end)
 	tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
@@ -1618,11 +1637,7 @@ func (tx *Transaction) stateAtomic(op MutationType, key, operand []byte) {
 		}
 	}
 	tx.conflictMu.Lock()
-	tx.mutations = append(tx.mutations, Mutation{
-		Type:  op,
-		Key:   mutKey,
-		Value: operand,
-	})
+	tx.mutations = append(tx.mutations, tx.ownMutationLocked(op, mutKey, operand))
 	// Atomic ops add a write conflict range but NOT a read conflict range —
 	// EXCEPT SetVersionstampedKey. Its key carries an incomplete versionstamp
 	// (the 10-byte stamp is filled in server-side at commit), so a conflict range
@@ -1981,9 +1996,10 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 	// (RFC-093) so a cancel during the commit-path read version aborts promptly —
 	// a GRV is a cancellable read, matching C++ NativeAPI.actor.cpp (the GRV future
 	// is cancelled uniformly with the commit). Here we WithoutCancel so a late
-	// caller-ctx cancel can neither yank an in-flight commit (already bounded by the
-	// per-RPC timeout) nor make the barrier no-op on a cancelled ctx
-	// (commitpath.go's `if ctx.Err()!=nil {return}`). For callers passing
+	// caller-ctx cancel can neither yank an in-flight commit nor make the barrier
+	// no-op on a cancelled ctx (commitpath.go's `if ctx.Err()!=nil {return}`).
+	// The caller waits for recovery or Database.Close, without a deadline.
+	// For callers passing
 	// context.Background() (nothing to strip), WithoutCancel is observably inert.
 	// Captured together, both BEFORE dispatch: the instant this version's MVCC
 	// window opened, and the cache generation it is entitled to publish
@@ -2782,6 +2798,11 @@ func (tx *Transaction) GetLocations(parentCtx context.Context, begin, end []byte
 		return nil, err
 	}
 	locs, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, limit, false, tx.tenantId, tx.currentSpan())
+	for i := range locs {
+		locs[i].Servers = slices.Clone(locs[i].Servers)
+		locs[i].ShardBegin = bytes.Clone(locs[i].ShardBegin)
+		locs[i].ShardEnd = bytes.Clone(locs[i].ShardEnd)
+	}
 	return locs, tx.mapReadError(ctx, err)
 }
 
@@ -2917,20 +2938,25 @@ func (tx *Transaction) addReadConflicts(ranges [][2][]byte) {
 	tx.conflictMu.Unlock()
 }
 
-// conflictBufAlloc reserves n bytes from the shared conflict buffer.
+// conflictBufAlloc reserves n bytes for conflict keys or mutation operands.
 // Must be called with conflictMu held.
 func (tx *Transaction) conflictBufAlloc(n int) []byte {
 	if cap(tx.conflictBuf)-len(tx.conflictBuf) < n {
 		reused := false
-		// Try reusing a pooled buffer when starting fresh (avoids 4K→8K→16K→32K growth).
-		if len(tx.conflictBuf) == 0 {
-			cb := conflictBufPool.Get().(*conflictBuf)
-			if cap(cb.b) >= n {
-				tx.conflictBuf = cb.b[:0]
-				tx.conflictBufOwner = cb
-				reused = true
-			} else {
-				conflictBufPool.Put(cb) // too small, return it
+		if len(tx.conflictBuf) == 0 || cap(tx.conflictBuf) <= smallConflictBufSize {
+			need := len(tx.conflictBuf) + n
+			if pool := conflictBufPoolFor(need); pool != nil {
+				cb := pool.Get().(*conflictBuf)
+				if cap(cb.b) >= need {
+					buf := cb.b[:len(tx.conflictBuf)]
+					copy(buf, tx.conflictBuf)
+					// Existing ranges/mutations may alias the old array: do not pool it.
+					tx.conflictBuf = buf
+					tx.conflictBufOwner = cb
+					reused = true
+				} else if returnPool := conflictBufPoolFor(cap(cb.b)); returnPool != nil {
+					returnPool.Put(cb)
+				}
 			}
 		}
 		if !reused {
@@ -3507,17 +3533,17 @@ func (tx *Transaction) postCommitResetFields() {
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
 	tx.singleKeyClearCount = 0 // cleared with mutations (GetApproximateSize accounting)
-	// Return conflict buffer to pool for reuse by next transaction.
-	if tx.conflictBufOwner != nil {
-		tx.conflictBufOwner.b = tx.conflictBuf[:0]
-		conflictBufPool.Put(tx.conflictBufOwner)
-		tx.conflictBufOwner = nil
-		tx.conflictBuf = nil
-	} else if cap(tx.conflictBuf) > 0 {
-		// Buffer was allocated outside pool (growth path) — wrap and return.
-		conflictBufPool.Put(&conflictBuf{b: tx.conflictBuf[:0]})
-		tx.conflictBuf = nil
+	// Do not keep arenas over 32 KiB alive in unrelated transactions.
+	if pool := conflictBufPoolFor(cap(tx.conflictBuf)); pool != nil && cap(tx.conflictBuf) > 0 {
+		cb := tx.conflictBufOwner
+		if cb == nil {
+			cb = &conflictBuf{}
+		}
+		cb.b = tx.conflictBuf[:0]
+		pool.Put(cb)
 	}
+	tx.conflictBufOwner = nil
+	tx.conflictBuf = nil
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)

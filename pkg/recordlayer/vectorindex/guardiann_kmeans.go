@@ -69,10 +69,55 @@ func (a kMeansAdapter) meaninglessNorm(v []float64) bool {
 }
 
 func l2SquaredSequential(a, b []float64) float64 {
+	if len(a) > 0 {
+		_ = b[len(a)-1]
+	}
+	b = b[:len(a)]
 	s := 0.0
+	for len(a) >= 4 {
+		// One accumulator preserves Java's order; explicit rounding forbids FMA.
+		d := a[0] - b[0]
+		s += float64(d * d)
+		d = a[1] - b[1]
+		s += float64(d * d)
+		d = a[2] - b[2]
+		s += float64(d * d)
+		d = a[3] - b[3]
+		s += float64(d * d)
+		a, b = a[4:], b[4:]
+	}
 	for i := range a {
 		d := a[i] - b[i]
-		s += d * d
+		s += float64(d * d)
+	}
+	return s
+}
+
+// A truncated losing score is only for strict comparisons, never an objective.
+// Even a later NaN cannot make a squared-L2 sum win after reaching the bound.
+func l2SquaredUntil(a, b []float64, bound float64) float64 {
+	if len(a) > 0 {
+		_ = b[len(a)-1]
+	}
+	b = b[:len(a)]
+	s := 0.0
+	for len(a) >= 4 {
+		d := a[0] - b[0]
+		s += float64(d * d)
+		d = a[1] - b[1]
+		s += float64(d * d)
+		d = a[2] - b[2]
+		s += float64(d * d)
+		d = a[3] - b[3]
+		s += float64(d * d)
+		if s >= bound {
+			return s
+		}
+		a, b = a[4:], b[4:]
+	}
+	for i := range a {
+		d := a[i] - b[i]
+		s += float64(d * d)
 	}
 	return s
 }
@@ -80,7 +125,7 @@ func l2SquaredSequential(a, b []float64) float64 {
 func dotSequential(a, b []float64) float64 {
 	s := 0.0
 	for i := range a {
-		s += a[i] * b[i]
+		s += float64(a[i] * b[i])
 	}
 	return s
 }
@@ -149,14 +194,17 @@ func kMeansFit(random *splittableRandom, codec *guardiannVectorCodec, vectors []
 			assignment[i] = -1
 		}
 		sizes := make([]int, k)
+		distances := make([]float64, n)
+		converged := false
 		for iteration := 0; iteration < maxIterations; iteration++ {
 			projected := make([]int, k)
-			changed, err := assignmentStep(a, vectors, centroids, order, assignment, projected)
+			changed, err := assignmentStep(a, vectors, centroids, order, assignment, projected, distances)
 			if err != nil {
 				return kMeansResult{}, err
 			}
 			copy(sizes, projected)
 			if changed == 0 {
+				converged = true
 				break
 			}
 			for c := range next {
@@ -190,21 +238,21 @@ func kMeansFit(random *splittableRandom, codec *guardiannVectorCodec, vectors []
 			}
 			centroids, next = next, centroids
 		}
-		projected := make([]int, k)
-		if _, err = assignmentStep(a, vectors, centroids, order, assignment, projected); err != nil {
-			return kMeansResult{}, err
-		}
-		copy(sizes, projected)
-		cand := kMeansResult{
-			clusterSizes: append([]int(nil), sizes...), assignment: append([]int(nil), assignment...),
-			distances: make([]float64, n),
-		}
-		for i, v := range vectors {
-			cand.distances[i], err = a.baseObjective(v, centroids[assignment[i]])
-			if err != nil {
+		// With lambda zero, convergence leaves the final assignment unchanged.
+		// At the iteration cap the centroids changed, so reassignment is necessary.
+		if !converged {
+			projected := make([]int, k)
+			if _, err = assignmentStep(a, vectors, centroids, order, assignment, projected, distances); err != nil {
 				return kMeansResult{}, err
 			}
-			cand.objective += cand.distances[i]
+			copy(sizes, projected)
+		}
+		cand := kMeansResult{
+			clusterSizes: append([]int(nil), sizes...), assignment: append([]int(nil), assignment...),
+			distances: distances,
+		}
+		for _, distance := range distances {
+			cand.objective += distance
 		}
 		for _, c := range centroids {
 			cand.centroids = append(cand.centroids, gVector{data: append([]float64(nil), c...), typ: vectorcodec.TypeDouble})
@@ -224,6 +272,17 @@ func kMeansFit(random *splittableRandom, codec *guardiannVectorCodec, vectors []
 }
 
 func addInto(dst, v []float64) {
+	if len(dst) > 0 {
+		_ = v[len(dst)-1]
+	}
+	v = v[:len(dst)]
+	for len(dst) >= 4 {
+		dst[0] += v[0]
+		dst[1] += v[1]
+		dst[2] += v[2]
+		dst[3] += v[3]
+		dst, v = dst[4:], v[4:]
+	}
 	for i := range dst {
 		dst[i] += v[i]
 	}
@@ -235,7 +294,7 @@ func scale(v []float64, f float64) {
 	}
 }
 
-func assignmentStep(a kMeansAdapter, vectors []gVector, centroids [][]float64, order, assignment, projected []int) (int, error) {
+func assignmentStep(a kMeansAdapter, vectors []gVector, centroids [][]float64, order, assignment, projected []int, distances []float64) (int, error) {
 	changed := 0
 	for _, i := range order {
 		bestC := 0
@@ -243,10 +302,16 @@ func assignmentStep(a kMeansAdapter, vectors []gVector, centroids [][]float64, o
 		if err != nil {
 			return 0, err
 		}
+		plainEuclidean := a.codec.config.metric == VectorMetricEuclidean && !(a.codec.quantizer != nil && vectors[i].typ == rabitq.TypeByte)
 		for c := 1; c < len(centroids); c++ {
-			s, err := a.baseObjective(vectors[i], centroids[c])
-			if err != nil {
-				return 0, err
+			var s float64
+			if plainEuclidean {
+				s = l2SquaredUntil(vectors[i].data, centroids[c], bestScore)
+			} else {
+				s, err = a.baseObjective(vectors[i], centroids[c])
+				if err != nil {
+					return 0, err
+				}
 			}
 			if s < bestScore {
 				bestScore, bestC = s, c
@@ -257,6 +322,7 @@ func assignmentStep(a kMeansAdapter, vectors []gVector, centroids [][]float64, o
 			changed++
 		}
 		projected[bestC]++
+		distances[i] = bestScore
 	}
 	return changed, nil
 }

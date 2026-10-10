@@ -334,10 +334,34 @@ func (sc *snapshotCache) getKey(key []byte) ([]byte, bool) {
 	return nil, true // key is in known range but doesn't exist at server
 }
 
-// copyKVs makes a shallow copy of the KV slice. The Key/Value byte slices
-// alias the caller's backing arrays. This is safe because FDB response
-// buffers are not pooled — once parsed, the byte slices are stable for the
-// lifetime of the transaction.
+// cloneReadKVs separates public results from immutable RYW/cache storage.
+func cloneReadKVs(kvs []KeyValue) []KeyValue {
+	if len(kvs) == 0 {
+		return kvs
+	}
+	size := 0
+	for _, kv := range kvs {
+		size += len(kv.Key) + len(kv.Value)
+	}
+	arena := make([]byte, size)
+	clone := func(src []byte) []byte {
+		if src == nil {
+			return nil
+		}
+		dst := arena[:len(src):len(src)]
+		copy(dst, src)
+		arena = arena[len(src):]
+		return dst
+	}
+	out := make([]KeyValue, len(kvs))
+	for i, kv := range kvs {
+		out[i] = KeyValue{Key: clone(kv.Key), Value: clone(kv.Value)}
+	}
+	return out
+}
+
+// copyKVs retains immutable internal bytes. Public read boundaries copy them
+// before handing results to callers, and FDB response buffers are not pooled.
 func copyKVs(kvs []KeyValue) []KeyValue {
 	if len(kvs) == 0 {
 		return nil

@@ -674,40 +674,67 @@ func TestReadIncarnation_ReadVersionCannotAcquireReplacement(t *testing.T) {
 
 func TestReadIncarnation_ReadCannotUseReplacementWrites(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
-	defer cancel()
-	db := openTestDB(t, ctx)
-	defer db.Close()
-	tx := db.CreateTransaction()
-	defer tx.Cancel()
-	key := []byte(t.Name())
-	tx.Set(key, []byte("old"))
-	parked := make(chan struct{})
-	release, releaseIt := releaseGate(t)
-	defer releaseIt()
-	tx.afterReadVersion = func() { close(parked); <-release }
-	type result struct {
-		value []byte
-		err   error
-	}
-	done := make(chan result, 1)
-	go func() { value, err := tx.Get(ctx, key); done <- result{value, err} }()
-	waitReadParked(t, ctx, parked, "read before RYW lookup")
-	resetDone := retireParkedRead(t, ctx, tx)
-	releaseIt()
-	waitReadParked(t, ctx, resetDone, "reset drain")
-	tx.Set(key, []byte("replacement"))
-	select {
-	case got := <-done:
-		if fdbCodeOf(got.err) != 1025 {
-			t.Fatalf("old read=(%q, %v); want 1025", got.value, got.err)
-		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	tx.afterReadVersion = nil
-	if got, err := tx.Get(ctx, key); err != nil || string(got) != "replacement" {
-		t.Fatalf("new read=(%q, %v), want replacement", got, err)
+	for _, mode := range []string{"public_storage_read", "borrowed_local_read"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
+			defer cancel()
+			db := openTestDB(t, ctx)
+			defer db.Close()
+			tx := db.CreateTransaction()
+			defer tx.Cancel()
+			key := []byte(t.Name())
+			local := mode == "borrowed_local_read"
+			if local {
+				tx.Set(key, []byte("old"))
+			} else if _, err := db.Transact(ctx, func(seed *Transaction) (any, error) {
+				seed.Set(key, []byte("old"))
+				return nil, nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			parked := make(chan struct{})
+			release, releaseIt := releaseGate(t)
+			defer releaseIt()
+			park := func() { close(parked); <-release }
+			if !local {
+				tx.afterReadVersion = park
+			}
+			type result struct {
+				value []byte
+				err   error
+			}
+			done := make(chan result, 1)
+			go func() {
+				readCtx := ctx
+				if local {
+					// Local reads have no GRV seam; park a borrowed operation at
+					// entry. The storage arm separately covers public admission.
+					operation, releaseOperation := tx.opContext(ctx)
+					defer releaseOperation()
+					readCtx = &errObservationContext{Context: operation, before: park}
+				}
+				value, err := tx.Get(readCtx, key)
+				done <- result{value, err}
+			}()
+			waitReadParked(t, ctx, parked, "read before value lookup")
+			resetDone := retireParkedRead(t, ctx, tx)
+			releaseIt()
+			waitReadParked(t, ctx, resetDone, "reset drain")
+			tx.Set(key, []byte("replacement"))
+			select {
+			case got := <-done:
+				if got.value != nil || fdbCodeOf(got.err) != 1025 {
+					t.Fatalf("old read=(%q, %v); want nil, 1025", got.value, got.err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			tx.afterReadVersion = nil
+			if got, err := tx.Get(ctx, key); err != nil || string(got) != "replacement" {
+				t.Fatalf("new read=(%q, %v), want replacement", got, err)
+			}
+		})
 	}
 }
 
