@@ -9,14 +9,9 @@ import (
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
 )
 
-// READ_LOCK_AWARE and SIZE_LIMIT option semantics vs libfdb_c 7.3.77.
-//
-// READ_LOCK_AWARE sets options.readOnly unless LOCK_AWARE came first, and LOCK_AWARE clears
-// it (NativeAPI.actor.cpp:7071-7091); a commit carrying a mutation or write-conflict range then
-// fails transaction_read_only, 2023 (:6810-6811). SIZE_LIMIT outside [32, 1e7] throws
-// invalid_option_value (2006) from extractIntOption (:7067-7069) into deferredError, so the option
-// call succeeds and every later op fails until reset. Go used to commit READ_LOCK_AWARE writes,
-// and to treat SIZE_LIMIT 0 as "no limit" and report other bad values only at commit.
+// READ_LOCK_AWARE makes a commit with writes fail 2023 unless LOCK_AWARE is also set
+// (NativeAPI.actor.cpp:7071-7091, :6810); SIZE_LIMIT outside [32, 1e7] becomes the deferred
+// error 2006 for every later op (:7067-7069). Each case must return libfdb_c's code.
 
 type optionFenceCase struct {
 	name string

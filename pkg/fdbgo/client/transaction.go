@@ -242,19 +242,16 @@ type txOptions struct {
 	useGrvCache  bool
 	skipGrvCache bool
 
-	// lockAware: if true, lock_aware is set on both reads and commits.
-	// readLockAware: if true, lock_aware is set on reads only (not commits).
-	// readOnly: a commit carrying writes fails transaction_read_only (2023); set by
-	// READ_LOCK_AWARE unless LOCK_AWARE came first, cleared by LOCK_AWARE
-	// (NativeAPI.actor.cpp:7071-7091).
-	// C++: req.options.lockAware = tr->options.lockAware || tr->options.readLockAware
-	//      tr.lock_aware = tr->options.lockAware  (commit path — no readLockAware)
+	// C++ options.lockAware is lockAware || readLockAware here: both make reads and
+	// the GRV lock-aware, and readOnly (READ_LOCK_AWARE without a prior LOCK_AWARE,
+	// cleared by LOCK_AWARE) fails a commit with writes 2023 before the wire, so only
+	// lockAware reaches the commit flag (NativeAPI.actor.cpp:7071-7091, :6810, :6878).
 	lockAware     bool
 	readLockAware bool
 	readOnly      bool
 
-	// sizeLimit: if > 0, enforced before commit. Matches C++ FDB_TR_OPTION_SIZE_LIMIT;
-	// always in [32, 10_000_000] once a db applies its defaults (stateSetSizeLimit).
+	// sizeLimit: if > 0, enforced before commit (C++ FDB_TR_OPTION_SIZE_LIMIT). In
+	// [32, 10_000_000] on db transactions; 0 only on the fence dummy and bare test txns.
 	sizeLimit int64
 
 	// writeConflictsDisabled: when true, ALL mutations skip adding write conflict
@@ -471,7 +468,8 @@ type Transaction struct {
 	// RYW::atomicOp's throw, ReadYourWrites.actor.cpp:2235; recorded store-if-unset
 	// under conflictMu, linearized with the preceding-mutation scan — see Atomic()) and
 	// SetReadYourWritesDisable after a read/write (2000 — RYW setOptionImpl's throw,
-	// :2534-2542; the option is NOT applied, matching the C++ throw-before-assign).
+	// :2534-2542; the option is NOT applied, matching the C++ throw-before-assign), and
+	// SetSizeLimit out of [32, 1e7], including a DB default (2006, extractIntOption).
 	// (readErr is a DIFFERENT C++ mechanism — ryw->reading, the read-future ledger —
 	// and lives under readErrMu, which also guards readGen + pendingReads.)
 	deferredErr atomic.Pointer[wire.FDBError]

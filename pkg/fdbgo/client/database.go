@@ -1107,7 +1107,7 @@ func (d *Database) SetDefaultAccessSystemKeys() {
 // NOT clamp (NativeAPI.actor.cpp:2092-2102 / :2139).
 func (d *Database) SetMaxWatches(n int64) error {
 	if n < 0 || n > absoluteMaxWatches {
-		return &wire.FDBError{Code: 2006} // invalid_option_value; cap unchanged
+		return &wire.FDBError{Code: ErrInvalidOptionValue} // cap unchanged
 	}
 	d.db.maxWatches.Store(n)
 	return nil

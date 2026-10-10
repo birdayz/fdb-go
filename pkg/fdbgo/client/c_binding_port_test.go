@@ -2508,7 +2508,7 @@ func TestSnapshotRYWDisable_CPort(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestSizeLimitTooSmall_CPort verifies that a size limit below the minimum
-// (32) causes error 2006 (invalid_option_value) at commit time.
+// (32) poisons the transaction, so the commit fails 2006 (invalid_option_value).
 // Ported from unit_tests.cpp line 811
 // https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L811
 func TestSizeLimitTooSmall_CPort(t *testing.T) {
@@ -2533,7 +2533,7 @@ func TestSizeLimitTooSmall_CPort(t *testing.T) {
 }
 
 // TestSizeLimitTooLarge_CPort verifies that a size limit above the maximum
-// (10,000,000) causes error 2006 (invalid_option_value) at commit time.
+// (10,000,000) poisons the transaction, so the commit fails 2006 (invalid_option_value).
 // Ported from unit_tests.cpp line 823
 // https://github.com/apple/foundationdb/blob/7.3.77/bindings/c/test/unit/unit_tests.cpp#L823
 func TestSizeLimitTooLarge_CPort(t *testing.T) {

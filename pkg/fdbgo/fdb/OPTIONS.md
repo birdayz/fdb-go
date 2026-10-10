@@ -55,7 +55,7 @@ C++ references are into the FoundationDB 7.3.77 source: `T::setOption` =
 | `SetAccessSystemKeys` | **honored** (+tenant guard) | RYW:2557 read+write system keys; T:7161 `raw_access`, throws on tenant | n/a | tenant guard mirrors `hasTenant`==false |
 | `SetReadSystemKeys` | **honored** (+tenant guard) | RYW:2564 read system keys | n/a | |
 | `SetLockAware` | **honored** | T:7071 `lockAware`, clears `readOnly` | n/a | |
-| `SetReadLockAware` | **honored** | T:7082 `lockAware` read-only | n/a | unless `SetLockAware` came first, a commit with writes fails 2023 (T:6810) |
+| `SetReadLockAware` | **honored** | T:7082 `lockAware` read-only | n/a | unless `SetLockAware` is also set, a commit with writes fails 2023 (T:6810) |
 | `SetSnapshotRywEnable` | **honored** (counter) | RYW:2591 `snapshotRYWEnabled++` | n/a | true counter, matches C |
 | `SetSnapshotRywDisable` | **honored** (counter) | RYW:2596 `snapshotRYWEnabled--` | n/a | |
 | `SetUseGrvCache` | **honored** | T:7145 `USE_GRV_CACHE` | n/a | Go GRV cache is opt-in |
@@ -98,7 +98,7 @@ C++ references are into the FoundationDB 7.3.77 source: `T::setOption` =
 | `SetTransactionTimeout` | **honored** (tx default) | DB:2156 default → per-tx timeout | n/a | applied to each tx |
 | `SetTransactionRetryLimit` | **honored** (tx default) | DB default | n/a | |
 | `SetTransactionMaxRetryDelay` | **honored** (tx default) | DB default | n/a | |
-| `SetTransactionSizeLimit` | **honored** (tx default) | DB default | n/a | |
+| `SetTransactionSizeLimit` | **honored** (tx default) | DB default | n/a | <= 0 is unset (10 MB); 1-31 or > 10,000,000 fails each txn's ops with 2006 (C++ undefined) |
 | `SetReadSystemKeys` | **honored** (tx default) | DB default → READ_SYSTEM_KEYS | n/a | |
 | `SetTransactionReportConflictingKeys` | **`UnsupportedOptionError`** | DB default twin | **UNSAFE** | mirrors the tx option |
 | `SetTransactionAutomaticIdempotency` | **`UnsupportedOptionError`** | DB default twin | **UNSAFE** | |
