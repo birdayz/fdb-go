@@ -207,8 +207,8 @@ func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 // This matters because the failure monitor is keyed by ADDRESS: a stuck failure
 // excludes every role co-located there and leaves recovery waiters asleep.
 //
-// It starts from a FAILED address, the state the GRV-timeout arm leaves behind
-// (it marks the address failed and deliberately keeps the pooled connection).
+// It starts from a FAILED address with a pooled connection, so a valid reply
+// must clear the stale failure without relying on a redial.
 //
 // The failure monitor is keyed by ADDRESS, not by role. A well-formed frame
 // therefore proves the ADDRESS is reachable whatever the reply says, and the

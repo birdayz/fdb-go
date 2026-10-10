@@ -157,6 +157,7 @@ go_test(
     ],
     tags = [
         "conformance_java",
+        "resources:cpu:2",
         "resources:memory:500",
     ],
     deps = [
@@ -410,7 +411,7 @@ go_test(
     ],
     tags = [
         "conformance_java",
-        "resources:cpu:5",
+        "resources:cpu:13",
         "resources:memory:500",
     ],
     deps = [
@@ -515,6 +516,7 @@ go_test(
     data = [":conformance_server"],
     tags = [
         "conformance_java",
+        "resources:cpu:3",
         "resources:memory:500",
     ],
     deps = [
@@ -674,6 +676,7 @@ go_test(
     ),
     tags = [
         "conformance_java",
+        "resources:cpu:2",
         "resources:memory:500",
     ],
     deps = [

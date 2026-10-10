@@ -50,15 +50,15 @@ that is **wrong and a regression**:
   (not 1021) and runs **no** dummy barrier; the dummy barrier exists only for a genuine
   `commit_unknown_result` from a degraded commit RPC. So "ctx-cancel is handled idempotently"
   was based on C++ behavior that does not exist.
-- A dispatched commit is **already bounded** independent of `ctx` by `DefaultRPCTimeout = 5s`
-  (`transaction.go:52`, applied in `commitpath.go:71`). Not cancelling it on `ctx` costs at
-  most ≤5s past the deadline for one in-flight commit to resolve to a *known* outcome.
+- A dispatched commit RPC has a `DefaultRPCTimeout = 5s` reply timeout, but its uncertainty
+  barrier can retry indefinitely. There is **no bound past the caller's deadline**: recovery
+  or `Database.Close` must end the wait.
 
 **Decision (Option B):** `ctx` bounds the retry-loop check, `OnError` backoff, and reads/GRV.
 The dispatched commit RPC **and** `commitDummyTransaction` run on `context.WithoutCancel(ctx)`
-(Go 1.26) so a dispatched commit always resolves to a known outcome with the barrier intact.
-This matches libfdb_c's invariant ("a dispatched commit resolves; the barrier protects the
-retry").
+(Go 1.26) so caller cancellation cannot bypass the uncertainty barrier before error 1021.
+The synchronous caller wait is a Go divergence: libfdb_c can release its caller with 1031 or
+1025 while a dispatched commit's outcome remains uncertain.
 
 ## Fix
 

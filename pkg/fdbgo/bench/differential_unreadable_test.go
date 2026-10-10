@@ -14,7 +14,7 @@ import (
 // accessed_unreadable (1036) differential vs libfdb_c — RFC-098. Reading a key whose
 // value depends on a pending versionstamp throws 1036 through every read-path arm of
 // the C++ dispatch (ReadYourWrites.actor.cpp:397-406): regular and snapshot reads
-// throw; RYW-disabled reads keep storage semantics; BYPASS_UNREADABLE returns the
+// throw; RYW-disabled reads keep storage semantics; BYPASS_UNREADABLE point reads return the
 // write-map operand as written (placeholder + 4-byte offset suffix included,
 // RYWIterator.cpp:433-449). SetVersionstampedKey marks the ENTIRE candidate stamp
 // range unreadable (ReadYourWrites.actor.cpp:2271), so reads of DIFFERENT keys in
@@ -41,6 +41,63 @@ func unreadableSVKKey(prefix []byte) []byte {
 	key := append(append([]byte(nil), prefix...), make([]byte, 14)...)
 	binary.LittleEndian.PutUint32(key[len(key)-4:], uint32(len(prefix)))
 	return key
+}
+
+func TestDifferential_BypassUnreadableIsPointOnly(t *testing.T) {
+	t.Parallel()
+	for _, snapshot := range []bool{false, true} {
+		for _, overwrite := range []bool{false, true} {
+			for _, read := range []string{"key", "range", "reverse"} {
+				t.Run(fmt.Sprintf("snapshot=%t/overwrite=%t/%s", snapshot, overwrite, read), func(t *testing.T) {
+					t.Parallel()
+					key := []byte(t.Name())
+					end := append(bytes.Clone(key), 0)
+					goCode := goErrCode(func(tx gofdb.Transaction) error {
+						if err := tx.Options().SetBypassUnreadable(); err != nil {
+							return err
+						}
+						tx.SetVersionstampedValue(gofdb.Key(key), unreadableSVVOperand())
+						if overwrite {
+							tx.Set(gofdb.Key(key), []byte("plain"))
+						}
+						var reader gofdb.ReadTransaction = tx
+						if snapshot {
+							reader = tx.Snapshot()
+						}
+						if read == "key" {
+							_, err := reader.GetKey(gofdb.FirstGreaterOrEqual(gofdb.Key(key))).Get()
+							return err
+						}
+						_, err := reader.GetRange(gofdb.KeyRange{Begin: gofdb.Key(key), End: gofdb.Key(end)}, gofdb.RangeOptions{Reverse: read == "reverse"}).GetSliceWithError()
+						return err
+					})
+					cCode := cgoErrCode(func(tx cgofdb.Transaction) error {
+						if err := tx.Options().SetBypassUnreadable(); err != nil {
+							return err
+						}
+						tx.SetVersionstampedValue(cgofdb.Key(key), unreadableSVVOperand())
+						if overwrite {
+							tx.Set(cgofdb.Key(key), []byte("plain"))
+						}
+						var reader cgofdb.ReadTransaction = tx
+						if snapshot {
+							reader = tx.Snapshot()
+						}
+						if read == "key" {
+							_, err := reader.GetKey(cgofdb.FirstGreaterOrEqual(cgofdb.Key(key))).Get()
+							return err
+						}
+						_, err := reader.GetRange(cgofdb.KeyRange{Begin: cgofdb.Key(key), End: cgofdb.Key(end)}, cgofdb.RangeOptions{Reverse: read == "reverse"}).GetSliceWithError()
+						return err
+					})
+					// Only GetValueReq enables iterator bypass (C++ RYW :98-99).
+					if goCode != 1036 || cCode != 1036 {
+						t.Fatalf("unreadable range/selector: go=%d cgo=%d, want both 1036", goCode, cCode)
+					}
+				})
+			}
+		}
+	}
 }
 
 func TestDifferential_Unreadable(t *testing.T) {
@@ -346,4 +403,136 @@ func TestDifferential_Unreadable(t *testing.T) {
 			t.Fatalf("commit after swallowed 1036 reads (reading poisoning): go=%d cgo=%d, want both %d", goCode, cCode, errAccessedUnreadable)
 		}
 	})
+}
+
+// Small maps to C mode 1 (Go binding transaction.go:288), whose byte target is
+// 256 (fdb_c.cpp:1002). Cold prefixes stop on byte exhaustion or unknown gaps.
+func TestDifferential_ColdPrefixByteLimitBeforeUnreadable(t *testing.T) {
+	t.Parallel()
+	for _, reverse := range []bool{false, true} {
+		for _, snapshot := range []bool{false, true} {
+			for _, bypass := range []bool{false, true} {
+				for _, scenario := range []string{"oversized", "budget_one_beyond", "ample_bytes"} {
+					t.Run(fmt.Sprintf("reverse=%t/snapshot=%t/bypass=%t/%s", reverse, snapshot, bypass, scenario), func(t *testing.T) {
+						t.Parallel()
+						prefix := fmt.Sprintf("diff_coldbyte_%d_%t_%t_%t_%s/", os.Getpid(), reverse, snapshot, bypass, scenario)
+						begin, end, stamp := prefix+"a", prefix+"~", prefix+"m"
+						firstKey := begin
+						if reverse {
+							firstKey = prefix + "z"
+						}
+						valueSize := 512
+						switch scenario {
+						case "budget_one_beyond":
+							// RYW consumes 255 bytes, but storage's larger per-row
+							// overhead can truncate before the unknown gap to the SVV.
+							valueSize = 255 - 8 - len(firstKey)
+						case "ample_bytes":
+							valueSize = 1
+						}
+						if valueSize <= 0 {
+							t.Fatalf("key length %d leaves no value budget", len(firstKey))
+						}
+						value := bytes.Repeat([]byte{'v'}, valueSize)
+						if _, err := goClient.Transact(func(txw gofdb.WritableTransaction) (any, error) {
+							tx := txw.(gofdb.Transaction)
+							if err := tx.Options().SetTimeout(30000); err != nil {
+								return nil, err
+							}
+							tx.ClearRange(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)})
+							tx.Set(gofdb.Key(firstKey), value)
+							return nil, nil
+						}); err != nil {
+							t.Fatalf("seed cold storage row: %v", err)
+						}
+
+						type pageResult struct {
+							firstAdvanced bool
+							key, value    []byte
+							firstErr      error
+							nextErr       error
+						}
+						cResult := func() pageResult {
+							tx, err := cgoClient.CreateTransaction()
+							if err != nil {
+								t.Fatal(err)
+							}
+							defer tx.Cancel()
+							if err := tx.Options().SetTimeout(30000); err != nil {
+								t.Fatal(err)
+							}
+							if bypass {
+								if err := tx.Options().SetBypassUnreadable(); err != nil {
+									t.Fatal(err)
+								}
+							}
+							tx.SetVersionstampedValue(cgofdb.Key(stamp), unreadableSVVOperand())
+							var reader cgofdb.ReadTransaction = tx
+							if snapshot {
+								reader = tx.Snapshot()
+							}
+							it := reader.GetRange(cgofdb.KeyRange{Begin: cgofdb.Key(begin), End: cgofdb.Key(end)}, cgofdb.RangeOptions{Mode: cgofdb.StreamingModeSmall, Reverse: reverse}).Iterator()
+							r := pageResult{firstAdvanced: it.Advance()}
+							if r.firstAdvanced {
+								kv, err := it.Get()
+								r.key, r.value, r.firstErr = kv.Key, kv.Value, err
+								// Apple's Advance returns true on an error; Get surfaces it.
+								if err == nil && it.Advance() {
+									_, r.nextErr = it.Get()
+								}
+							}
+							return r
+						}()
+						goResult := func() pageResult {
+							tx, err := goClient.CreateTransaction()
+							if err != nil {
+								t.Fatal(err)
+							}
+							defer tx.Cancel()
+							if err := tx.Options().SetTimeout(30000); err != nil {
+								t.Fatal(err)
+							}
+							if bypass {
+								if err := tx.Options().SetBypassUnreadable(); err != nil {
+									t.Fatal(err)
+								}
+							}
+							tx.SetVersionstampedValue(gofdb.Key(stamp), unreadableSVVOperand())
+							var reader gofdb.ReadTransaction = tx
+							if snapshot {
+								reader = tx.Snapshot()
+							}
+							it := reader.GetRange(gofdb.KeyRange{Begin: gofdb.Key(begin), End: gofdb.Key(end)}, gofdb.RangeOptions{Mode: gofdb.StreamingModeSmall, Reverse: reverse}).Iterator()
+							r := pageResult{firstAdvanced: it.Advance()}
+							kv, err := it.Get()
+							r.key, r.value, r.firstErr = kv.Key, kv.Value, err
+							if r.firstAdvanced && err == nil {
+								// Go's Advance returns false on error; Get still reports it.
+								it.Advance()
+								_, r.nextErr = it.Get()
+							}
+							return r
+						}()
+						for _, result := range []struct {
+							name string
+							pageResult
+						}{{"cgo", cResult}, {"go", goResult}} {
+							if scenario == "ample_bytes" {
+								if code := fdbErrorCode(result.firstErr); code != 1036 || len(result.key) != 0 || len(result.value) != 0 {
+									t.Errorf("%s first page with ample budget: key=%q error=%v (code=%d), want no row and accessed_unreadable (1036)", result.name, result.key, result.firstErr, code)
+								}
+								continue
+							}
+							if !result.firstAdvanced || result.firstErr != nil || !bytes.Equal(result.key, []byte(firstKey)) || !bytes.Equal(result.value, value) {
+								t.Errorf("%s first page: advanced=%t key=%q valueLen=%d error=%v, want cold row %q with its %d-byte value", result.name, result.firstAdvanced, result.key, len(result.value), result.firstErr, firstKey, valueSize)
+							}
+							if code := fdbErrorCode(result.nextErr); code != 1036 {
+								t.Errorf("%s next page: error=%v (code=%d), want accessed_unreadable (1036)", result.name, result.nextErr, code)
+							}
+						}
+					})
+				}
+			}
+		}
+	}
 }

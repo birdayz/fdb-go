@@ -11,8 +11,8 @@ import (
 //
 // It also demonstrates the closure-scoped-lock PATTERN flush uses:
 // a panic inside a `Lock(); defer Unlock()` closure unwinds the mutex. NOTE this
-// is the pattern, not flush's own locked lines — flush's two b.mu regions
-// (pop + adaptive-window arithmetic, grv.go) contain no code that can panic, so
+// is the pattern, not the batcher's own locked lines — its b.mu regions
+// (admission, detachment and adaptive-window arithmetic) contain no code that can panic, so
 // the deadlock is a defense-in-depth guarantee for future edits, asserted here at
 // the pattern level rather than by driving flush (which would need a real GRV
 // round / network to reach those lines).

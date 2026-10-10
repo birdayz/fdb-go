@@ -896,9 +896,9 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, opts ...Option
 			maxSize: 600_000,
 		},
 		grvBatchers: [3]*grvBatcher{
-			grvBatcherBatch:           {batchTime: 1 * time.Millisecond, priority: grvPriorityBatch},
-			grvBatcherDefault:         {batchTime: 1 * time.Millisecond, priority: grvPriorityDefault},
-			grvBatcherSystemImmediate: {batchTime: 1 * time.Millisecond, priority: grvPrioritySystemImmediate},
+			grvBatcherBatch:           {priority: grvPriorityBatch},
+			grvBatcherDefault:         {priority: grvPriorityDefault},
+			grvBatcherSystemImmediate: {priority: grvPrioritySystemImmediate},
 		},
 	}
 

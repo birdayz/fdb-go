@@ -57,9 +57,8 @@ func waitReply(replyCh <-chan transport.Response, ctx context.Context, timeout t
 		return resp, nil
 	case <-timer.C:
 		putTimer(timer)
-		// Internal reply timeout — NOT a caller deadline. The read paths
-		// re-send on this; GRV treats it as a proxy failure and fails over to
-		// the next proxy. It must never escape as a terminal error.
+		// Internal reply timeout, not a caller deadline. Storage-read paths
+		// re-send on this; it must never escape as a terminal error.
 		return transport.Response{}, errReplyTimeout
 	case <-ctx.Done():
 		putTimer(timer)

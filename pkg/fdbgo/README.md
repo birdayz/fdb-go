@@ -280,7 +280,7 @@ When `OnError` receives error 1021, the transaction MAY have committed on the se
 4. Since the ORIGINAL commit wrote to those ranges, the check fails → `not_committed` (1020)
 5. The retry does NOT apply mutations — no double-apply
 
-This achieves the same safety as C++ `NativeAPI::makeSelfConflicting()`. Additionally, `commitDummyTransaction` runs a synchronization barrier before returning `commit_unknown_result` — a separate transaction that conflicts with the original, confirming it's no longer in-flight at the commit proxy. Both mechanisms combined match C++ exactly. Verified by `TestCommitUnknownResult_NoDoubleApply`: atomic ADD 5 to a counter, kill the reply, verify counter=15 (not 20).
+This achieves the same safety as C++ `NativeAPI::makeSelfConflicting()`. Additionally, `commitDummyTransaction` runs a synchronization barrier before returning `commit_unknown_result` — a separate transaction that conflicts with the original, confirming it's no longer in-flight at the commit proxy. Both mechanisms combined match C++ exactly. `TestCommitUnknownResult_NoDoubleApply` drops one atomic-ADD commit reply, checks that the barrier completes before error 1021 returns, and accepts counter 10 or 15 (not 20). It does not exercise `OnError` retries or prove application-level exactly-once behavior.
 
 ## Historical C++ comparison (audited 2026-04-12)
 

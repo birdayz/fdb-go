@@ -960,27 +960,16 @@ func TestDatabaseTransactionTimeout(t *testing.T) {
 		t.Fatalf("SetTransactionTimeout: %v", err)
 	}
 
-	// Run transactions until one times out. With 1ms timeout, it should
-	// happen almost immediately (the GRV round-trip alone takes >1ms).
-	var timedOut bool
-	for i := 0; i < 100; i++ {
-		_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
-			return tr.Get(fdb.Key(t.Name() + "_key")).MustGet(), nil
-		})
-		if err != nil {
-			fdbErr, ok := err.(fdb.Error)
-			if ok && fdbErr.Code == 1031 { // transaction_timed_out
-				timedOut = true
-				break
-			}
-		}
+	defer db.Options().SetTransactionTimeout(0)
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
+		// Expire the deadline independently of how quickly the RPC completes.
+		time.Sleep(5 * time.Millisecond)
+		return tr.Get(fdb.Key(t.Name() + "_key")).MustGet(), nil
+	})
+	var fe fdb.Error
+	if !errors.As(err, &fe) || fe.Code != 1031 {
+		t.Fatalf("database timeout: got %v, want FDB 1031", err)
 	}
-	if !timedOut {
-		t.Fatal("expected transaction_timed_out (1031) with 1ms database timeout")
-	}
-
-	// Reset timeout (disable).
-	db.Options().SetTransactionTimeout(0)
 }
 
 // TestCreateTransaction_AppliesDatabaseDefaults verifies a MANUALLY-created
@@ -999,29 +988,16 @@ func TestCreateTransaction_AppliesDatabaseDefaults(t *testing.T) {
 	}
 	defer db.Options().SetTransactionTimeout(0)
 
-	is1031 := func(err error) bool {
-		fe, ok := err.(fdb.Error)
-		return ok && fe.Code == 1031 // transaction_timed_out
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
 	}
-	var timedOut bool
-	for i := 0; i < 100; i++ {
-		tr, err := db.CreateTransaction()
-		if err != nil {
-			t.Fatalf("CreateTransaction: %v", err)
-		}
-		// Read forces a GRV round-trip (>1ms); the inherited 1ms timeout then trips
-		// on the read or the commit — the same path db.Transact's auto-commit takes
-		// in TestDatabaseTransactionTimeout. Without applyTxDefaults in
-		// CreateTransaction the manual tx has no timeout and never trips.
-		_, rerr := tr.Get(fdb.Key(t.Name() + "_key")).Get()
-		cerr := tr.Commit().Get()
-		if is1031(rerr) || is1031(cerr) {
-			timedOut = true
-			break
-		}
-	}
-	if !timedOut {
-		t.Fatal("manual CreateTransaction did not inherit the 1ms database timeout (1031 expected) — applyTxDefaults not applied")
+	defer tr.Cancel()
+	time.Sleep(5 * time.Millisecond)
+	_, err = tr.Get(fdb.Key(t.Name() + "_key")).Get()
+	var fe fdb.Error
+	if !errors.As(err, &fe) || fe.Code != 1031 {
+		t.Fatalf("manual CreateTransaction did not inherit timeout: got %v, want FDB 1031", err)
 	}
 }
 
@@ -1038,26 +1014,17 @@ func TestCreateTransaction_ResetPreservesDatabaseDefaults(t *testing.T) {
 	}
 	defer db.Options().SetTransactionTimeout(0)
 
-	is1031 := func(err error) bool {
-		fe, ok := err.(fdb.Error)
-		return ok && fe.Code == 1031 // transaction_timed_out
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
 	}
-	var timedOut bool
-	for i := 0; i < 100; i++ {
-		tr, err := db.CreateTransaction()
-		if err != nil {
-			t.Fatalf("CreateTransaction: %v", err)
-		}
-		tr.Reset() // fresh inner — the 1ms DB timeout must survive the reset
-		_, rerr := tr.Get(fdb.Key(t.Name() + "_key")).Get()
-		cerr := tr.Commit().Get()
-		if is1031(rerr) || is1031(cerr) {
-			timedOut = true
-			break
-		}
-	}
-	if !timedOut {
-		t.Fatal("DB timeout lost after Reset (1031 expected) — applyTxDefaults not re-applied on Reset")
+	defer tr.Cancel()
+	tr.Reset()
+	time.Sleep(5 * time.Millisecond)
+	_, err = tr.Get(fdb.Key(t.Name() + "_key")).Get()
+	var fe fdb.Error
+	if !errors.As(err, &fe) || fe.Code != 1031 {
+		t.Fatalf("database timeout lost after Reset: got %v, want FDB 1031", err)
 	}
 }
 
@@ -1080,8 +1047,8 @@ func TestCreateTransaction_ResetDropsUserOptions(t *testing.T) {
 	}
 	tr.Reset()
 
-	// A normal write+commit on the reset tx must SUCCEED: the user 1ms timeout was
-	// dropped. If it had survived Reset, the >1ms GRV/commit would return 1031.
+	// If Reset kept the timeout, it must expire before even a local operation.
+	time.Sleep(5 * time.Millisecond)
 	tr.Set(fdb.Key(t.Name()+"_key"), []byte("v"))
 	if err := tr.Commit().Get(); err != nil {
 		t.Fatalf("commit after Reset returned %v — user-set 1ms timeout survived Reset (should be dropped, C++ reset() clears persistentOptions)", err)

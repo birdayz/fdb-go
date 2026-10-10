@@ -227,11 +227,17 @@ func TestReadVersionInstant_ClearedOnCommitReuse(t *testing.T) {
 	tx := db.CreateTransaction()
 	defer tx.Cancel()
 	tx.Set([]byte(t.Name()), []byte("v"))
-	if _, err := tx.Get(ctx, []byte(t.Name())); err != nil {
-		t.Fatalf("get: %v", err)
+	if value, err := tx.Get(ctx, []byte(t.Name())); err != nil || string(value) != "v" {
+		t.Fatalf("local Get=%q, %v; want v", value, err)
 	}
-	if _, ok := tx.ReadVersionInstant(); !ok {
-		t.Fatal("ReadVersionInstant ok=false before commit; the read should have stamped it")
+	if _, ok := tx.ReadVersionInstant(); ok {
+		t.Fatal("a local RYW read opened the MVCC window")
+	}
+	if rv, err := tx.GetReadVersion(ctx); err != nil || rv <= 0 {
+		t.Fatalf("GetReadVersion=%d, %v; want a positive read version", rv, err)
+	}
+	if inst, ok := tx.ReadVersionInstant(); !ok || inst.IsZero() {
+		t.Fatal("explicit GRV did not stamp the MVCC window before commit")
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)

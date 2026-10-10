@@ -35,7 +35,7 @@ type rywCache struct {
 
 	// unreadableRanges: sorted, non-overlapping SVK candidate-stamp ranges (RFC-098).
 	// Contract: a read REACHING a range throws accessed_unreadable (1036) unless
-	// BYPASS_UNREADABLE; a bypassed read of a position with no local entry reads
+	// it is a BYPASS_UNREADABLE point read; a bypassed point with no local entry reads
 	// through to storage (the range is UNMODIFIED); Clear/ClearRange SUBTRACT their
 	// span. Pending writes inside a range are KEPT — a deliberate divergence from
 	// C++'s span-wipe; rationale + observability analysis in RFC-098 ("the SVK
@@ -53,7 +53,7 @@ type rywCache struct {
 	unreadableKeys []string
 
 	// bypassUnreadable mirrors FDB_TR_OPTION_BYPASS_UNREADABLE
-	// (ReadYourWrites.actor.cpp:2611-2613, applied per read at :98): reads of
+	// (ReadYourWrites.actor.cpp:2611-2613, applied only to points at :98): point reads of
 	// unreadable keys return the write-map value with the versionstamp placeholder
 	// bytes as written instead of throwing 1036; SVK's unmodified-unreadable range
 	// reads through to storage. Set under mu.
@@ -325,8 +325,8 @@ func (c *rywCache) materializeCommit() []Mutation {
 	return out
 }
 
-// coalesceCommitMutations replays a validated mutation snapshot through a throwaway RYW write map and
-// materializes it, yielding the coalesced commit vector libfdb_c ships (RFC-172 / #28). Working from the
+// coalesceCommitMutations coalesces a validated mutation snapshot, using an ordered-Set specialization
+// or a throwaway RYW write map, yielding the vector libfdb_c ships (RFC-172 / #28). Working from the
 // SNAPSHOT rather than the live tx.ryw keeps the shipped set byte-identical to the set Commit just
 // validated: the write map is a pure function of the op-log — the site-B/C value-fold and the
 // coalesceOverAtomics chain-fold use only LOCAL write state, never DB reads — so the replay reproduces
@@ -334,6 +334,9 @@ func (c *rywCache) materializeCommit() []Mutation {
 // snapshot) is simply absent and can never ship unvalidated. Single-key clears are stored in the op-log as
 // MutClearRange(k, k+\x00), so clearRange reproduces the original clear().
 func coalesceCommitMutations(muts []Mutation) []Mutation {
+	if out, ok := coalescePlainSetMutations(muts); ok {
+		return out
+	}
 	var wm rywCache
 	for _, m := range muts {
 		switch m.Type {
@@ -346,6 +349,37 @@ func coalesceCommitMutations(muts []Mutation) []Mutation {
 		}
 	}
 	return wm.materializeCommit()
+}
+
+// Ordered Sets need only last-write-wins, not replay (C++ WriteMap.cpp:125-137).
+// Operands remain owned by the leased snapshot until captureCommit copies them.
+func coalescePlainSetMutations(muts []Mutation) ([]Mutation, bool) {
+	unique := 0
+	for i, m := range muts {
+		if m.Type != MutSetValue {
+			return nil, false
+		}
+		if i == 0 {
+			unique++
+			continue
+		}
+		switch bytes.Compare(muts[i-1].Key, m.Key) {
+		case 1:
+			return nil, false
+		case -1:
+			unique++
+		}
+	}
+	out := make([]Mutation, 0, unique)
+	for _, m := range muts {
+		n := len(out)
+		if n > 0 && bytes.Equal(out[n-1].Key, m.Key) {
+			out[n-1] = m
+		} else {
+			out = append(out, m)
+		}
+	}
+	return out, true
 }
 
 // mutationsHaveVersionstamp reports whether the op-log carries any SetVersionstamped{Key,Value}. Those ops
@@ -503,136 +537,104 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 	c.writes[k] = entry
 }
 
-// get intercepts a single-key read and merges with pending writes.
-func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx context.Context, key []byte) ([]byte, error)) ([]byte, error) {
-	c.mu.Lock()
-	k := string(key)
-	entry, ok := c.writes[k]
-	// Unreadable gate (RFC-098): a read of a key with a pending versionstamped op
-	// (sticky entry flag) or inside an SVK candidate stamp range throws
-	// accessed_unreadable, before any server read — C++ RYWIterator type()/kv()
-	// throw at RYWIterator.cpp:45-46/:75-76 — unless BYPASS_UNREADABLE is set.
-	if !c.bypassUnreadable && ((ok && entry.unreadable) || c.isUnreadableLocked(key)) {
-		c.mu.Unlock()
-		return nil, &wire.FDBError{Code: ErrAccessedUnreadable}
+// localPointLocked evaluates the merged point view without changing the write
+// map's dependence or unreadability (C++ RYWIterator::kv).
+func (c *rywCache) localPointLocked(key []byte) ([]byte, bool, error) {
+	entry, written := c.writes[string(key)]
+	if !c.bypassUnreadable && ((written && entry.unreadable) || c.isUnreadableLocked(key)) {
+		return nil, true, &wire.FDBError{Code: ErrAccessedUnreadable}
 	}
-	if ok {
-		if entry.hasAtomics {
-			// Copy atomics list, unlock for server call.
-			atomics := make([]rywMutation, len(entry.atomics))
-			copy(atomics, entry.atomics)
-			c.mu.Unlock()
-
-			if chainHasVersionstamp(atomics) {
-				// Reachable only under bypassUnreadable (gated above). Resolve the chain
-				// treating versionstamped ops as plain sets of their operand as written —
-				// placeholder bytes unfilled (C++ kv() under bypass: coalesceUnder returns
-				// the SVV/SVK mutation like an independent SetValue, RYWIterator.cpp:433-449).
-				// Transient: do NOT cache — the entry must stay unresolved for commit, and a
-				// later non-bypass read must still throw.
-				if isUnresolvedVersionstamp(atomics[0].typ) {
-					// INDEPENDENT chain: the bottom op is the versionstamped overwrite,
-					// so the storage value can never contribute (resolveAtomicsBypass
-					// replaces the base at the first versionstamped op). C++ serves this
-					// entirely from the write map — an independent unreadable entry is
-					// is_kv() under bypass (RYWIterator.cpp:74-84) — with NO storage
-					// read: issuing one added latency and let a storage error surface
-					// (and poison commit) on a path libfdb_c never reads.
-					val, cleared := resolveAtomicsBypass(nil, atomics)
-					if cleared {
-						return nil, nil
-					}
-					return val, nil
-				}
-				// DEPENDENT chain (RMW bottom, e.g. Add before the stamp): C++ reads
-				// storage under bypass too — is_kv() is false for a dependent entry,
-				// so the read actor falls through to the storage get + op fold.
-				base, err := serverGet(ctx, key)
-				if err != nil {
-					return nil, err
-				}
-				val, cleared := resolveAtomicsBypass(base, atomics)
-				if cleared {
-					return nil, nil
-				}
-				return val, nil
+	if written {
+		if !entry.hasAtomics {
+			if entry.absent {
+				return nil, true, nil
 			}
-
-			base, err := serverGet(ctx, key)
-			if err != nil {
-				return nil, err
-			}
-			base, cleared, unresolved := resolveAtomics(base, atomics)
-			// Re-lock to cache result.
-			c.mu.Lock()
-			if c.writes == nil {
-				c.writes = make(map[string]rywEntry)
-			}
-			if unresolved {
-				// Unreachable: a versionstamped chain is handled above (bypass) or thrown
-				// at the gate (!bypass). Defensive: surface the unreadable error rather
-				// than the old absent approximation.
-				c.mu.Unlock()
-				return nil, &wire.FDBError{Code: ErrAccessedUnreadable}
-			}
-			if cleared {
-				// Site E: a standalone CompareAndClear matched its DB base. C++ keeps this
-				// as a DEPENDENT_WRITE phantom (is_kv slot, no value), NOT a cleared range.
-				// Cache it as absent+dependent (RFC-058) so getKey counts the slot and the
-				// conflict map still records the DB read — don't move it to the cleared list.
-				c.writes[k] = rywEntry{absent: true, dependent: true}
-				c.mu.Unlock()
-				return nil, nil
-			}
-			if base == nil {
-				// Defensive: a resolved non-clear chain always normalizes nil→[]byte{}
-				// (present-empty) inside resolveAtomics, so this is unreachable unless a
-				// future op leaves nil. Treat as absent without caching.
-				c.mu.Unlock()
-				return nil, nil
-			}
-			// Site E: a resolved standalone atomic is a DEPENDENT_WRITE (it read the DB
-			// base). Preserve that op-type for conflict filtering.
-			c.writes[k] = rywEntry{value: base, dependent: true}
-			c.mu.Unlock()
-			return base, nil
+			return entry.value, true, nil
 		}
-		if entry.absent {
-			// Phantom (matched CompareAndClear): an is_kv slot for getKey but ABSENT for a
-			// point read — do NOT treat its nil value as present-empty.
-			c.mu.Unlock()
+		base, known := c.serverCache.getKey(key)
+		if !known && !(len(entry.atomics) > 0 && isUnresolvedVersionstamp(entry.atomics[0].typ)) {
+			return nil, false, nil
+		}
+		value, err := resolvePointAtomics(base, entry.atomics, c.bypassUnreadable)
+		return value, true, err
+	}
+	if c.isClearedLocked(key) {
+		return nil, true, nil
+	}
+	value, known := c.serverCache.getKey(key)
+	return value, known, nil
+}
+
+// resolvePointAtomics is RYWIterator::kv for a pending atomic stack over a known
+// storage base (nil = absent).
+func resolvePointAtomics(base []byte, atomics []rywMutation, bypassUnreadable bool) ([]byte, error) {
+	if bypassUnreadable {
+		value, cleared := resolveAtomicsBypass(base, atomics)
+		if cleared {
 			return nil, nil
 		}
-		val := entry.value
-		c.mu.Unlock()
-		return val, nil
+		return value, nil
 	}
-	isClr := c.isClearedLocked(key)
-	if isClr {
-		c.mu.Unlock()
+	value, cleared, unreadable := resolveAtomics(base, atomics)
+	if unreadable {
+		return nil, &wire.FDBError{Code: ErrAccessedUnreadable}
+	}
+	if cleared {
 		return nil, nil
 	}
-	// Check snapshot cache for prior server read.
-	if val, known := c.serverCache.getKey(key); known {
-		c.mu.Unlock()
-		return val, nil
-	}
-	c.mu.Unlock()
+	return value, nil
+}
 
-	val, err := serverGet(ctx, key)
-	if err != nil {
-		return nil, err
-	}
-	// Cache the server result.
+// get intercepts a single-key read and merges with pending writes.
+//
+// A dependent read resolves the atomic stack it was issued against: C++ re-skips
+// the read's own RYWIterator after the storage wait (ReadYourWrites.actor.cpp:127),
+// and that iterator's write-map version is unaffected by later writes
+// (WriteMap.h:158-160). Operands are copied because the stack outlives the lock.
+func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx context.Context, key []byte) ([]byte, error)) ([]byte, error) {
 	c.mu.Lock()
-	keyAfter := append(append([]byte(nil), key...), 0)
-	var kvs []KeyValue
-	if val != nil {
-		kvs = []KeyValue{{Key: append([]byte(nil), key...), Value: val}}
+	value, known, err := c.localPointLocked(key)
+	var atomics []rywMutation
+	if entry, written := c.writes[string(key)]; !known && written && entry.hasAtomics {
+		atomics = make([]rywMutation, len(entry.atomics))
+		for i, m := range entry.atomics {
+			atomics[i] = rywMutation{typ: m.typ, param: bytes.Clone(m.param)}
+		}
 	}
-	c.serverCache.insert(key, keyAfter, kvs)
+	bypassUnreadable := c.bypassUnreadable
 	c.mu.Unlock()
-	return val, nil
+	if known {
+		return value, err
+	}
+	base, err := c.getSnapshot(ctx, key, serverGet)
+	if err != nil || atomics == nil {
+		return base, err
+	}
+	return resolvePointAtomics(base, atomics, bypassUnreadable)
+}
+
+func (c *rywCache) getSnapshot(ctx context.Context, key []byte, serverGet func(context.Context, []byte) ([]byte, error)) ([]byte, error) {
+	c.mu.Lock()
+	value, known := c.serverCache.getKey(key)
+	c.mu.Unlock()
+	if known {
+		return value, nil
+	}
+	value, err := serverGet(ctx, key)
+	if err == nil {
+		c.cachePointResult(key, value)
+	}
+	return value, err
+}
+
+func (c *rywCache) cachePointResult(key, value []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var rows []KeyValue
+	if value != nil {
+		rows = []KeyValue{{Key: bytes.Clone(key), Value: value}}
+	}
+	c.serverCache.insert(key, append(bytes.Clone(key), 0), rows)
 }
 
 // getRange intercepts a range read and merges with pending writes/clears.
@@ -642,14 +644,8 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 // we advance the scan range and re-fetch instead of returning more=false.
 // This matches the spirit of C++'s RYWIterator which handles unknown ranges
 // by issuing server reads and continuing iteration.
-// byteTarget is the read's per-fetch BYTE target (ByteLimitUnlimited when its streaming mode
-// has none). It is forwarded ONLY on the no-local-writes fast path, which goes straight to
-// storage and is therefore the server path proper. The merge loop below deliberately fetches
-// with ByteLimitUnlimited: its row-only helpers (applyLimitAndDirection, computeMore,
-// limitReached, cacheWalkBudget) decide what a read RETURNS, not merely how it is divided, so
-// byte accounting there is read-your-writes correctness rather than batching and is staged
-// separately. C++ keeps the two apart the same way — ReadYourWrites.actor.cpp implements
-// forward and reverse merges as separate functions with their own byte-limit early exits.
+// Byte limits apply to the merged rows as well as each storage request; reaching
+// either limit must stop before the next unreadable segment (C++ RYW :685-686).
 func (c *rywCache) getRange(
 	ctx context.Context,
 	begin, end []byte,
@@ -659,20 +655,26 @@ func (c *rywCache) getRange(
 	serverGetRange func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error),
 ) ([]KeyValue, bool, error) {
 	c.mu.Lock()
+	if rows, more, known, err := c.localRangeLocked(begin, end, limit, byteTarget, reverse, true); known {
+		c.mu.Unlock()
+		return rows, more, err
+	}
 	// Unreadable reach cap (RFC-098): truncate the scan window at the first
 	// (forward) / last (reverse) unreadable position; iteration that would
 	// CROSS the cap throws accessed_unreadable, results before it emit
 	// normally (C++ reach semantics, ReadYourWrites.actor.cpp:685 vs :692).
 	// Computed BEFORE the fast-path branch: an SVK candidate range can cover
 	// spans with no local write entries at all.
-	var unreadableCap []byte
-	if !c.bypassUnreadable {
-		unreadableCap = c.unreadableScanCapLocked(begin, end, reverse)
-	}
+	unreadableCap := c.unreadableScanCapLocked(begin, end, reverse)
 	hasWrites := c.hasWritesInRangeLocked(begin, end)
 	hasClears := c.hasClearsInRangeLocked(begin, end)
+	var view *rywWriteSpan
+	if hasWrites || hasClears {
+		view = c.captureWriteSpanLocked(begin, end)
+	}
 	c.mu.Unlock()
 
+	requestedBegin, requestedEnd := begin, end
 	if unreadableCap != nil {
 		if reverse {
 			begin = unreadableCap
@@ -694,25 +696,45 @@ func (c *rywCache) getRange(
 		c.mu.Unlock()
 		if fullyKnown {
 			kvs := applyLimitAndDirection(cachedKVs, limit, reverse)
-			if reached(len(kvs)) {
+			kvs, remainingBytes := applyRangeByteLimit(kvs, byteTarget)
+			bytesReached := byteTarget > 0 && remainingBytes <= 0
+			if !bytesReached && reached(len(kvs)) {
 				return nil, false, &wire.FDBError{Code: ErrAccessedUnreadable}
 			}
-			return kvs, computeMore(cachedKVs, limit) || limitReached(limit, len(kvs)) || unreadableCap != nil, nil
+			return kvs, bytesReached || computeMore(cachedKVs, limit) || limitReached(limit, len(kvs)) || unreadableCap != nil, nil
 		}
 		kvs, more, err := serverGetRange(ctx, begin, end, limit, byteTarget, reverse)
 		if err != nil {
 			return nil, false, err
 		}
 		c.cacheServerResult(begin, end, kvs, more, reverse)
-		if !more && reached(len(kvs)) {
+		cut, remainingBytes := applyRangeByteLimit(kvs, byteTarget)
+		bytesReached := byteTarget > 0 && remainingBytes <= 0
+		if byteTarget > 0 && more && !bytesReached && c.replyEdgeKnown(begin, end, kvs, reverse) {
+			// Re-walk storage only, within the issue-time cap: the read was issued
+			// with no writes in range, and later writes must not join it.
+			if rows, rowsMore, known, err := c.localRange(begin, end, limit, byteTarget, reverse, false); known {
+				if err != nil {
+					return nil, false, err
+				}
+				if !rowsMore && reached(len(rows)) {
+					return nil, false, &wire.FDBError{Code: ErrAccessedUnreadable}
+				}
+				return rows, rowsMore || unreadableCap != nil, nil
+			}
+		}
+		if !more && !bytesReached && reached(len(cut)) {
 			return nil, false, &wire.FDBError{Code: ErrAccessedUnreadable}
 		}
-		return kvs, more || unreadableCap != nil, nil
+		// A byte-limited page ends like the cache re-walk, which reports a filled row limit.
+		limitStop := byteTarget > 0 && limitReached(limit, len(cut))
+		return cut, more || bytesReached || limitStop || unreadableCap != nil, nil
 	}
 
 	// Slow path: iterative fetch + merge. Loop until we either fill
 	// the limit or the server is exhausted for the remaining range.
 	var result []KeyValue
+	remainingBytes := byteTarget
 	remaining := limit
 	if remaining <= 0 {
 		remaining = math.MaxInt // C++ ROW_LIMIT_UNLIMITED: 0 or negative = no limit
@@ -731,9 +753,14 @@ func (c *rywCache) getRange(
 			}
 		}
 
-		serverKVs, serverMore, err := c.fetchOrCached(ctx, curBegin, curEnd, fetchLimit, ByteLimitUnlimited, reverse, serverGetRange)
+		serverKVs, serverMore, err := c.fetchOrCached(ctx, curBegin, curEnd, fetchLimit, remainingBytes, reverse, serverGetRange)
 		if err != nil {
 			return nil, false, err
+		}
+		if byteTarget > 0 {
+			if rows, more, known, err := c.localRangeInSpan(view, requestedBegin, requestedEnd, limit, byteTarget, reverse); known {
+				return rows, more, err
+			}
 		}
 
 		// Knowledge boundary: when serverMore=true, we only know the DB
@@ -746,23 +773,19 @@ func (c *rywCache) getRange(
 			boundary = serverKVs[len(serverKVs)-1].Key
 		}
 
-		batch := c.mergeBatch(serverKVs, curBegin, curEnd, boundary, reverse)
+		batch := c.mergeBatchInSpan(view, serverKVs, curBegin, curEnd, boundary, reverse)
 
 		take := len(batch)
 		if take > remaining {
 			take = remaining
 		}
-		result = append(result, batch[:take]...)
-		remaining -= take
+		batch, remainingBytes = applyRangeByteLimit(batch[:take], remainingBytes)
+		result = append(result, batch...)
+		remaining -= len(batch)
 
-		if remaining <= 0 {
-			// Limit reached (remaining hit 0 ⟺ exactly `limit` rows consumed). FDB forces
-			// more=true whenever the row limit was the stop reason — limits.isReached()
-			// (ReadYourWrites.actor.cpp:799) — even when no further data exists. Previously
-			// this returned `take < len(batch) || serverMore || unreadableCap != nil`, which
-			// was FALSE at the exactly-limit==total boundary (take==len(batch), no serverMore),
-			// diverging from libfdb_c and over-conflicting via rangeConflictExtent (which keys
-			// off `more`: a false more=false widens the read-conflict to the full [begin,end)).
+		if remaining <= 0 || (byteTarget > 0 && remainingBytes <= 0) {
+			// C++ reports more whenever a limit stopped iteration, including an
+			// exactly-filled final page; do not reach the unreadable cap below.
 			return result, true, nil
 		}
 
@@ -777,6 +800,9 @@ func (c *rywCache) getRange(
 			return result, false, nil
 		}
 
+		if byteTarget > 0 && len(result) > 0 {
+			return result, true, nil // C++ soft byte stop before the next unknown span.
+		}
 		// Server had more data, but we still need results.
 		// Advance the scan range past the last fetched server key.
 		if len(serverKVs) == 0 {
@@ -797,6 +823,205 @@ func (c *rywCache) getRange(
 		return nil, false, &wire.FDBError{Code: ErrAccessedUnreadable}
 	}
 	return result, false, nil
+}
+
+func (c *rywCache) getSnapshotRange(
+	ctx context.Context,
+	begin, end []byte,
+	limit, byteTarget int,
+	reverse bool,
+	serverGetRange func(context.Context, []byte, []byte, int, int, bool) ([]KeyValue, bool, error),
+) ([]KeyValue, bool, error) {
+	rows, more, known, err := c.localRange(begin, end, limit, byteTarget, reverse, false)
+	if known {
+		return rows, more, err
+	}
+	rows, more, err = serverGetRange(ctx, begin, end, limit, byteTarget, reverse)
+	if err == nil {
+		c.cacheServerResult(begin, end, rows, more, reverse)
+		cut, remainingBytes := applyRangeByteLimit(rows, byteTarget)
+		bytesReached := byteTarget > 0 && remainingBytes <= 0
+		if byteTarget > 0 && more && !bytesReached && c.replyEdgeKnown(begin, end, rows, reverse) {
+			if rows, more, known, err := c.localRange(begin, end, limit, byteTarget, reverse, false); known {
+				return rows, more, err
+			}
+		}
+		return cut, more || bytesReached || (byteTarget > 0 && limitReached(limit, len(cut))), nil
+	}
+	return rows, more, err
+}
+
+// replyEdgeKnown reports whether a more=true storage reply is followed by cached
+// state, so only the snapshot-cache walk can tell where the page ends.
+func (c *rywCache) replyEdgeKnown(begin, end []byte, kvs []KeyValue, reverse bool) bool {
+	if len(kvs) == 0 {
+		return true
+	}
+	last := kvs[len(kvs)-1].Key
+	if (!reverse && isKeyAfter(end, last)) || (reverse && bytes.Equal(last, begin)) {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.serverCache.knownPast(last, reverse)
+}
+
+// rywWriteSpan is the write-map state over one read's range as of its issue: C++
+// iterates a WriteMap version later writes do not change (WriteMap.h:158-160).
+type rywWriteSpan struct {
+	writes           map[string]rywEntry
+	sortedKeys       []string
+	cleared          []rywRange
+	unreadableRanges []rywRange
+	unreadableKeys   []string
+	bypassUnreadable bool
+}
+
+// captureWriteSpanLocked copies the write-map state intersecting [begin, end).
+// Atomic stacks are cloned because coalesceOverAtomics folds into the top in place.
+func (c *rywCache) captureWriteSpanLocked(begin, end []byte) *rywWriteSpan {
+	c.ensureSortedLocked()
+	i := sort.SearchStrings(c.sortedKeys, string(begin))
+	j := sort.SearchStrings(c.sortedKeys, string(end))
+	s := &rywWriteSpan{
+		writes:           make(map[string]rywEntry, j-i),
+		sortedKeys:       append(make([]string, 0, j-i), c.sortedKeys[i:j]...),
+		cleared:          overlappingRanges(c.cleared, begin, end),
+		unreadableRanges: overlappingRanges(c.unreadableRanges, begin, end),
+		bypassUnreadable: c.bypassUnreadable,
+	}
+	for _, k := range s.sortedKeys {
+		e := c.writes[k]
+		if e.hasAtomics {
+			e.atomics = append([]rywMutation(nil), e.atomics...)
+		}
+		s.writes[k] = e
+	}
+	ui := sort.SearchStrings(c.unreadableKeys, string(begin))
+	uj := sort.SearchStrings(c.unreadableKeys, string(end))
+	s.unreadableKeys = append([]string(nil), c.unreadableKeys[ui:uj]...)
+	return s
+}
+
+// overlappingRanges returns the sorted, non-overlapping ranges intersecting [begin, end), unclipped.
+func overlappingRanges(ranges []rywRange, begin, end []byte) []rywRange {
+	lo := sort.Search(len(ranges), func(i int) bool { return bytes.Compare(ranges[i].end, begin) > 0 })
+	hi := sort.Search(len(ranges), func(i int) bool { return bytes.Compare(ranges[i].begin, end) >= 0 })
+	if lo >= hi {
+		return nil
+	}
+	return append([]rywRange(nil), ranges[lo:hi]...)
+}
+
+// swapWriteSpanLocked exchanges the live write-map fields with s; a second call
+// restores them. The snapshot cache stays live: it only holds storage state.
+func (c *rywCache) swapWriteSpanLocked(s *rywWriteSpan) {
+	c.writes, s.writes = s.writes, c.writes
+	c.sortedKeys, s.sortedKeys = s.sortedKeys, c.sortedKeys
+	c.cleared, s.cleared = s.cleared, c.cleared
+	c.unreadableRanges, s.unreadableRanges = s.unreadableRanges, c.unreadableRanges
+	c.unreadableKeys, s.unreadableKeys = s.unreadableKeys, c.unreadableKeys
+	c.bypassUnreadable, s.bypassUnreadable = s.bypassUnreadable, c.bypassUnreadable
+}
+
+// localRangeInSpan walks [begin, end) against the issue-time write span; the walk
+// never leaves the span, so write-map state outside it cannot change the rows.
+func (c *rywCache) localRangeInSpan(s *rywWriteSpan, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.swapWriteSpanLocked(s)
+	defer c.swapWriteSpanLocked(s)
+	return c.localRangeLocked(begin, end, limit, byteTarget, reverse, true)
+}
+
+// mergeBatchInSpan is mergeBatch against the issue-time write span. Resolved atomics
+// fold into the span only, never into the live write map.
+func (c *rywCache) mergeBatchInSpan(s *rywWriteSpan, serverKVs []KeyValue, rangeBegin, rangeEnd, boundary []byte, reverse bool) []KeyValue {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.swapWriteSpanLocked(s)
+	defer c.swapWriteSpanLocked(s)
+	return c.mergeBatchLocked(serverKVs, rangeBegin, rangeEnd, boundary, reverse)
+}
+
+// applyRangeByteLimit includes the row that exhausts the budget, guaranteeing
+// progress even when one row is larger than the requested page.
+func applyRangeByteLimit(rows []KeyValue, remaining int) ([]KeyValue, int) {
+	if remaining > 0 {
+		for i, row := range rows {
+			remaining -= 8 + len(row.Key) + len(row.Value)
+			if remaining <= 0 {
+				return rows[:i+1], remaining
+			}
+		}
+	}
+	return rows, remaining
+}
+
+// A storage reply's more flag can be true even when its known span covers the
+// requested endpoint. Re-walk the cached iterator to determine RYW completion.
+func (c *rywCache) localRange(begin, end []byte, limit, byteTarget int, reverse, includeWrites bool) ([]KeyValue, bool, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.localRangeLocked(begin, end, limit, byteTarget, reverse, includeWrites)
+}
+
+// localRangeLocked follows C++ getRangeValue's merged iterator before any
+// NativeAPI read. A byte-limited page can end at unknown state after any row.
+func (c *rywCache) localRangeLocked(begin, end []byte, limit, byteTarget int, reverse, includeWrites bool) ([]KeyValue, bool, bool, error) {
+	if bytes.Compare(begin, end) >= 0 {
+		return nil, false, true, nil
+	}
+	cur := c.newSegCursor(end, includeWrites)
+	if reverse {
+		cur.seek(c.prevBoundaryLocked(end, end, includeWrites))
+	} else {
+		cur.seek(begin)
+	}
+	var rows []KeyValue
+	remainingBytes := byteTarget
+	for cur.valid() && bytes.Compare(cur.end, begin) > 0 {
+		switch cur.typ {
+		case segUnknown:
+			if byteTarget > 0 && len(rows) > 0 {
+				return rows, true, true, nil
+			}
+			return nil, false, false, nil
+		case segUnreadable:
+			return nil, false, true, &wire.FDBError{Code: ErrAccessedUnreadable}
+		case segKV:
+			value := c.segmentValueLocked(cur.begin, includeWrites)
+			rows = append(rows, KeyValue{Key: bytes.Clone(cur.begin), Value: value})
+			if byteTarget > 0 {
+				// NativeAPI GetRangeLimits::decrement charges eight bytes per row
+				// in addition to the key and value, including present-empty values.
+				remainingBytes -= 8 + len(cur.begin) + len(value)
+			}
+			if (limit > 0 && len(rows) >= limit) || (byteTarget > 0 && remainingBytes <= 0) {
+				return rows, true, true, nil
+			}
+		}
+		if reverse {
+			cur.prev()
+		} else {
+			cur.next()
+		}
+	}
+	return rows, false, true, nil
+}
+
+// segmentValueLocked is RYWIterator::kv for a segment already classified segKV.
+// Resolve against cached storage without rewriting dependent/unreadable flags.
+func (c *rywCache) segmentValueLocked(key []byte, includeWrites bool) []byte {
+	base, _ := c.serverCache.getKey(key)
+	if entry, ok := c.writes[string(key)]; includeWrites && ok {
+		if !entry.hasAtomics {
+			return entry.value
+		}
+		value, _, _ := resolveAtomics(base, entry.atomics)
+		return value
+	}
+	return base
 }
 
 // fetchOrCached checks the snapshot cache before making a server call.
@@ -937,7 +1162,15 @@ func (c *rywCache) mergeBatch(
 ) []KeyValue {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.mergeBatchLocked(serverKVs, rangeBegin, rangeEnd, boundary, reverse)
+}
 
+func (c *rywCache) mergeBatchLocked(
+	serverKVs []KeyValue,
+	rangeBegin, rangeEnd []byte,
+	boundary []byte,
+	reverse bool,
+) []KeyValue {
 	c.ensureSortedLocked()
 
 	// Phase 1: Filter server results — remove cleared keys.
@@ -1021,21 +1254,8 @@ func (c *rywCache) mergeBatch(
 			base, cleared, unresolved := resolveAtomics(base, entry.atomics)
 			// Cache resolved value.
 			if unresolved {
-				// Unresolved versionstamped op in the chain: unreadable client-side
-				// (the stamp is assigned at commit). Under !bypass this entry is
-				// excluded from the scan window by unreadableScanCapLocked (a scan
-				// reaching it errors before the merge), so this branch is live only
-				// under BYPASS_UNREADABLE: emit the chain resolved with versionstamped
-				// ops as plain sets of their operand as written (RFC-098; C++ kv()
-				// under bypass, RYWIterator.cpp:433-449). Never cache — the entry
-				// must stay unresolved for commit, and a later non-bypass read must
-				// still throw. !bypass fallback keeps the old absent-shadowing
-				// (defensive; unreachable).
-				if c.bypassUnreadable {
-					if val, clr := resolveAtomicsBypass(base, entry.atomics); !clr {
-						writeKVs = append(writeKVs, KeyValue{Key: []byte(k), Value: val})
-					}
-				}
+				// Unreadable entries are outside the capped scan window. Never
+				// expose their operands: BYPASS_UNREADABLE applies only to points.
 				if atomicCleared == nil {
 					atomicCleared = make(map[string]bool)
 				}
@@ -1810,17 +2030,6 @@ func (c *rywCache) lastUnreadableInLocked(begin, end []byte) []byte {
 	return end
 }
 
-// chainHasVersionstamp reports whether an unresolved atomic chain contains a
-// versionstamped op (the condition that makes the entry unreadable).
-func chainHasVersionstamp(atomics []rywMutation) bool {
-	for _, m := range atomics {
-		if isUnresolvedVersionstamp(m.typ) {
-			return true
-		}
-	}
-	return false
-}
-
 // resolveAtomicsBypass resolves a chain CONTAINING versionstamped ops for a
 // BYPASS_UNREADABLE read: each versionstamped op applies as a plain Set of its
 // operand exactly as written — placeholder bytes unfilled, trailing 4-byte
@@ -1923,6 +2132,13 @@ func (c *rywCache) setBypassUnreadable(v bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.bypassUnreadable = v
+}
+
+// getBypassUnreadable reads the option under mu: a range read swaps it with its write span.
+func (c *rywCache) getBypassUnreadable() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bypassUnreadable
 }
 
 // hasModificationsInRange reports whether the write map holds ANY set, atomic,

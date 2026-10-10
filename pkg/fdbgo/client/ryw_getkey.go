@@ -60,8 +60,8 @@ const (
 	// entry flag, an unresolved versionstamp chain) or lies inside an SVK
 	// candidate stamp range (RFC-098). C++ RYWIterator type()/kv() THROW
 	// accessed_unreadable when the walk reaches such a segment
-	// (RYWIterator.cpp:45-46/:75-76) unless BYPASS_UNREADABLE is set — the
-	// resolution aborts with 1036 (keySelResult.stoppedUnreadable).
+	// (RYWIterator.cpp:45-46/:75-76). BYPASS_UNREADABLE applies only to
+	// point reads; selector/range resolution still aborts with 1036.
 	segUnreadable
 )
 
@@ -77,15 +77,13 @@ func (c *rywCache) segTypeAtLocked(p []byte, includeWrites bool) rywSegType {
 		// classifies it segUnreadable; getKeyRYW surfaces 1036). Checked before
 		// every other classification, like C++'s type() throw at the top.
 		// The entry flag is the single source of truth: atomic() sets it for
-		// every versionstamped op, so a chainHasVersionstamp re-check would be
+		// every versionstamped op, so checking the chain again would be
 		// dead code (same gate shape as rywCache.get and GetPipelined).
-		if !c.bypassUnreadable {
-			if entry, ok := c.writes[string(p)]; ok && entry.unreadable {
-				return segUnreadable
-			}
-			if c.isUnreadableLocked(p) {
-				return segUnreadable
-			}
+		if entry, ok := c.writes[string(p)]; ok && entry.unreadable {
+			return segUnreadable
+		}
+		if c.isUnreadableLocked(p) {
+			return segUnreadable
 		}
 		if entry, ok := c.writes[string(p)]; ok {
 			// p is a pending write key (single-key segment [p, p+\x00)). getKey classifies
@@ -108,15 +106,7 @@ func (c *rywCache) segTypeAtLocked(p []byte, includeWrites bool) rywSegType {
 			}
 			_, cleared, unresolved := resolveAtomics(base, entry.atomics)
 			if unresolved {
-				// Versionstamp in the chain. !bypass is classified segUnreadable by
-				// the gate above; this branch is live only under BYPASS_UNREADABLE:
-				// the bypass value (operand as written) is a present key → is_kv,
-				// unless the chain bypass-resolves to cleared (a CAC after the
-				// stamp) → phantom. RFC-098.
-				if _, clr := resolveAtomicsBypass(base, entry.atomics); clr {
-					return segPhantom
-				}
-				return segKV
+				return segUnreadable
 			}
 			if cleared {
 				// DEPENDENT_WRITE over a known base, cleared by a matched CompareAndClear:

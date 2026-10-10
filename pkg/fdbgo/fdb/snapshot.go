@@ -1,5 +1,7 @@
 package fdb
 
+import "bytes"
+
 type snapshot struct {
 	tx *transaction
 }
@@ -12,8 +14,9 @@ type Snapshot struct {
 
 func (sn Snapshot) Get(key KeyConvertible) FutureByteSlice {
 	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
+	k := bytes.Clone(key.FDBKey())
 	return newFutureByteSlice(func() ([]byte, error) {
-		v, err := inner.Snapshot().Get(ctx, key.FDBKey())
+		v, err := inner.Snapshot().Get(ctx, k)
 		return v, convertError(err)
 	})
 }
@@ -21,9 +24,10 @@ func (sn Snapshot) Get(key KeyConvertible) FutureByteSlice {
 func (sn Snapshot) GetKey(sel Selectable) FutureKey {
 	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
 	ks := sel.FDBKeySelector()
+	key := bytes.Clone(ks.Key.FDBKey())
 	// OrEqual values match the wire convention. Pass directly.
 	return newFutureKey(func() (Key, error) {
-		k, err := inner.Snapshot().GetKey(ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
+		k, err := inner.Snapshot().GetKey(ctx, key, ks.OrEqual, int32(ks.Offset))
 		return Key(k), convertError(err)
 	})
 }
@@ -49,17 +53,17 @@ func (sn Snapshot) Snapshot() ReadTransaction {
 }
 
 func (sn Snapshot) GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64 {
+	begin, end := cloneRangeKeys(r)
 	return newFutureInt64(func() (int64, error) {
-		begin, end := r.FDBRangeKeys()
-		v, err := sn.s.tx.inner.GetEstimatedRangeSizeBytes(sn.s.tx.ctx, begin.FDBKey(), end.FDBKey())
+		v, err := sn.s.tx.inner.GetEstimatedRangeSizeBytes(sn.s.tx.ctx, begin, end)
 		return v, convertError(err)
 	})
 }
 
 func (sn Snapshot) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureKeyArray {
+	begin, end := cloneRangeKeys(r)
 	return newFutureKeyArray(func() ([]Key, error) {
-		begin, end := r.FDBRangeKeys()
-		points, err := sn.s.tx.inner.GetRangeSplitPoints(sn.s.tx.ctx, begin.FDBKey(), end.FDBKey(), chunkSize)
+		points, err := sn.s.tx.inner.GetRangeSplitPoints(sn.s.tx.ctx, begin, end, chunkSize)
 		if err != nil {
 			return nil, convertError(err)
 		}

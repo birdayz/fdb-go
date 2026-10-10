@@ -144,18 +144,11 @@ func TestFDB_TimeBudgetCeiling_StreamingShapesPaginateComplete(t *testing.T) {
 	// a 2000-row table pushed this well past 10s, which is too slow for
 	// the suite.
 	const n = 400
-	var b strings.Builder
-	b.WriteString("INSERT INTO flat VALUES ")
-	for i := 0; i < n; i++ {
-		if i > 0 {
-			b.WriteString(",")
-		}
+	// Bound seed transactions before applying the 1ms query budget.
+	testkit.MwjoInsertRange(t, db, ctx, "flat", 0, n-1, func(i int) string {
 		// Reverse val so ORDER BY val actually reorders the rows.
-		fmt.Fprintf(&b, "(%d,%d)", i, n-i)
-	}
-	if _, err := db.ExecContext(ctx, b.String()); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+		return fmt.Sprintf("(%d,%d)", i, n-i)
+	})
 
 	const millis = 1
 
