@@ -1176,7 +1176,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
     says), the 900,000-byte write limit and 4,000 ms transaction time limit,
     which end a range early (`hadTransactionReachedLimits`). Pinned by the
     throttle tests and `online_indexer_txn_limits_test.go`.
-  - ICU: declared in DIVERGENCES ("Collation keys are not ICU's"); no byte
+  - ICU: declared in DIVERGENCES ("Record Layer collation — explicit Go-only keys"); no byte
     baseline, since matching ICU 78.3 sort keys means porting ICU collation.
 - [x] Lucene backend: out of scope for this migration PR (#786), owner decision;
   tracked as a separate follow-up PR (section 7).
