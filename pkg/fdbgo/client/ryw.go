@@ -839,11 +839,6 @@ func (c *rywCache) getSnapshotRange(
 	rows, more, err = serverGetRange(ctx, begin, end, limit, byteTarget, reverse)
 	if err == nil {
 		c.cacheServerResult(begin, end, rows, more, reverse)
-		if byteTarget > 0 {
-			if rows, more, known, err := c.localRange(begin, end, limit, byteTarget, reverse, false); known {
-				return rows, more, err
-			}
-		}
 		cut, remainingBytes := applyRangeByteLimit(rows, byteTarget)
 		bytesReached := byteTarget > 0 && remainingBytes <= 0
 		if byteTarget > 0 && more && !bytesReached && c.replyEdgeKnown(begin, end, rows, reverse) {

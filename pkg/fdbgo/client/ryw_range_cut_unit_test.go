@@ -116,22 +116,25 @@ func TestRYWNoWritesByteCutMatchesRewalk(t *testing.T) {
 // A byte-limited page with no local writes must not pay per-row work beyond the
 // storage reply copy: storage stopping short of the target is the common case.
 func TestRYWNoWritesBytePageAllocsIndependentOfRows(t *testing.T) {
-	measure := func(n int) float64 {
-		reply := cutRows(n)
-		var c rywCache
-		serve := func(context.Context, []byte, []byte, int, int, bool) ([]KeyValue, bool, error) {
-			return reply, true, nil
-		}
-		ctx := context.Background()
-		return testing.AllocsPerRun(20, func() {
-			c.reset()
-			if _, _, err := c.getRange(ctx, []byte("cut/"), []byte("cut0"), 0, 100*n*26, false, serve); err != nil {
-				t.Fatal(err)
+	type read func(*rywCache, context.Context, []byte, []byte, int, int, bool, func(context.Context, []byte, []byte, int, int, bool) ([]KeyValue, bool, error)) ([]KeyValue, bool, error)
+	for name, read := range map[string]read{"getRange": (*rywCache).getRange, "getSnapshotRange": (*rywCache).getSnapshotRange} {
+		measure := func(n int) float64 {
+			reply := cutRows(n)
+			var c rywCache
+			serve := func(context.Context, []byte, []byte, int, int, bool) ([]KeyValue, bool, error) {
+				return reply, true, nil
 			}
-		})
-	}
-	small, large := measure(10), measure(1000)
-	if large > small+2 {
-		t.Fatalf("NOWRITES_BYTE_ALLOCS: %v allocs for a 1000-row page vs %v for 10 rows; the cut must not re-walk row by row", large, small)
+			ctx := context.Background()
+			return testing.AllocsPerRun(20, func() {
+				c.reset()
+				if _, _, err := read(&c, ctx, []byte("cut/"), []byte("cut0"), 0, 100*n*26, false, serve); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+		small, large := measure(10), measure(1000)
+		if large > small+2 {
+			t.Fatalf("NOWRITES_BYTE_ALLOCS %s: %v allocs for a 1000-row page vs %v for 10 rows; the cut must not re-walk row by row", name, large, small)
+		}
 	}
 }
