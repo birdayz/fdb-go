@@ -155,6 +155,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - A version index is never a covering scan, as in Java 4.14.2.0: `ORDER BY` a column with ties returns them in primary-key order through the plain index.
 - A `COALESCE` folds while planning only when its first argument is NULL or a BOOLEAN literal, as in Java 4.14.2.0, so its other arguments are evaluated as written: `WHERE COALESCE(1, 1/0) = 1` raises 22012 (it answered every row).
 
+- **Breaking (storage):** the default TEXT tokenizer lowercases a word-final capital sigma to `ς` and drops a word with no letter or digit in the Basic Multilingual Plane, as Java's `DefaultTextTokenizer` does; rebuild Go-written TEXT indexes over Greek or supplementary-plane text.
 - Runnable SQL/typed-store quickstarts check errors; default cluster lookup follows C++ precedence and routine SQL warm-up logs only at Debug.
 
 ## [v0.1.0] - 2026-08-26
