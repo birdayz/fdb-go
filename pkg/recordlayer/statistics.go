@@ -191,13 +191,11 @@ type CollectOptions struct {
 	//
 	// This, not BatchSize, is what keeps a transaction inside FDB's 5s limit.
 	// BatchSize bounds ROWS, and a row is not a fixed number of bytes.
+	// TimeLimit uses ScanLimiterState.Elapsed, so simulations use their own clock.
 	TimeLimit time.Duration
 	// ScannedBytesLimit bounds how many bytes ONE scan transaction reads before
 	// it stops and hands back a continuation. Zero means
 	// DefaultCollectScannedBytesLimit.
-	//
-	// TimeLimit uses ScanLimiterState.Elapsed, so a simulated collection reads
-	// its simulation clock rather than the wall clock.
 	ScannedBytesLimit int64
 	// Tags are FDB transaction tags applied to EVERY transaction this collection
 	// opens — each scan batch and the replacing write.
@@ -863,7 +861,7 @@ func ReadStatisticsAtWithRefusal(
 		return StoreStatistics{}, StatisticsReadAbsent, readVersion, nil
 	}
 	// Header and entries are written atomically; a count mismatch identifies
-	// an incomplete stored set, which must not be reported as absent.
+	// an inconsistent stored set, which must not be reported as absent.
 	if int64(len(out.PerType)) != headerTypeCount {
 		return StoreStatistics{}, StatisticsReadCountMismatch, readVersion, nil
 	}

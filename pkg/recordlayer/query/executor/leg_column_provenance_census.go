@@ -10,8 +10,9 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// Leg-column provenance distinguishes textual matches from identity- and owner-based
-// alternatives, so a name-channel migration cannot silently change row selection.
+// Leg-column provenance compares textual matches with identity- and owner-based
+// alternatives when LegIdentityCensusEnabled enables the diagnostic counters.
+
 const legColumnProvenanceWitnessCap = 128
 
 type legColumnProvenanceCounters struct {

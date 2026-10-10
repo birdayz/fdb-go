@@ -393,9 +393,8 @@ func bakeGatheredGroupValue(
 		// `qualified` still tracks BOTH, and carrying the dotted arm in it is what
 		// makes the resolver SAFE. It gates the ENTIRE bare namespace of
 		// slotInGatheredSeed — the element arm and the bare-leg scan alike.
-		// Dropping the flag on the
-		// dotted arm would send `A.K` into that namespace, where the element-first
-		// fallback answers with the ELEMENT whenever the two share a leaf name. A
+		// Dropping the flag on the dotted arm would send `A.K` into that namespace,
+		// where the element-first fallback answers whenever the two share a leaf name. A
 		// dotted reference is not a bare one whether or not its qualifier resolves;
 		// that is the whole content of the flag.
 		//

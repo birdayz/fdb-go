@@ -107,7 +107,7 @@ type grvCache struct {
 
 	lastProxyContact atomic.Int64 // UnixNano
 	// Like C++'s opt-in GRV cache, this cache does not carry lock state;
-	// transaction.ensureReadVersion checks locks only on fresh-GRV replies.
+	// Transaction.readVersionForOperation checks locks only on fresh-GRV replies.
 }
 
 // grvCacheEntry is the cache's published state. Immutable once published —
@@ -1300,8 +1300,8 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				db.handleReadConnError(proxy.Address, resp.Err)
 				continue
 			}
-			// A well-formed frame proves address reachability even when the GRV role
-			// returns broken_promise; clear address failure before retrying that role.
+			// A well-formed frame proves address reachability; clear failures before
+			// classifying its reply so a retry on another proxy cannot skip the update.
 			db.failMon.markAlive(proxy.Address)
 			v, lk, rkD, rkB, tti, ptd, perr := parseGetReadVersionReply(resp.Body)
 			// GRV is not at-most-once: C++ basicLoadBalance retries in-band 1100/1030

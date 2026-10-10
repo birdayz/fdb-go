@@ -6106,9 +6106,8 @@ func seedElementSlots(sel *expressions.SelectExpression) (*values.RecordConstruc
 	return rc, slots, true
 }
 
-// unnestSeedElementSlots returns the gathered seed's element slots, keyed by upper
-// field name, for baking existential element correlations alongside leg references.
-// It returns nil for a non-windowed or non-explode seed.
+// unnestSeedElementSlots maps upper-case element names to result slots for
+// existential correlation baking; seeds without an eligible Explode return nil.
 func unnestSeedElementSlots(unnestExpr expressions.RelationalExpression) map[string]int {
 	sel, ok := unnestExpr.(*expressions.SelectExpression)
 	if !ok {

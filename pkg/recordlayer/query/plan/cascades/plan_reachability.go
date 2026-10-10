@@ -381,11 +381,8 @@ func (c *ReachabilityCollector) Report(maxSamples int) string {
 	return b.String()
 }
 
-// Reset clears the tally so one caller can measure several runs separately.
-//
-// It serves a long-lived collector, NOT undoing another caller's
-// accumulation: collectors are per-caller, so a Reset never zeroes someone
-// else's live measurement.
+// Reset clears the tally between measurements. Callers sharing a collector
+// must not reset it while another caller's measurement is still in progress.
 func (c *ReachabilityCollector) Reset() {
 	if c == nil {
 		return

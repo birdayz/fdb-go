@@ -133,8 +133,8 @@ func (db *database) followForward(old *ClusterFile, fwd string) bool {
 	return true
 }
 
-// installProxySet publishes proxies and their cluster epoch together so requests
-// cannot pair a proxy with another cluster's epoch. It returns true on publication.
+// installProxySet completes pending coordinator handoffs and publishes proxies under installMu.
+// Coherence rule: DBInfo.Epoch must not exceed the fence epoch, or commits can lose their durable floor.
 func (db *database) installProxySet(newInfo *DBInfo) bool {
 	// The whole load-derive-bump-store sequence, not each step: see installMu.
 	// Two concurrent installers that interleave here publish an epoch the fence

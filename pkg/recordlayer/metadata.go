@@ -1119,7 +1119,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// Positions computed on a copy would leave the caller's object with nil
 	// positions while entries are written with the primary key deduped, so the
 	// scan decodes `pk=[]` where Java produces `pk=[1]`. Only this comment holds
-	// the order; the TODO.md entry "RecordMetaDataBuilder.Build does six jobs in
+	// the order; the TODO_OLD.md entry "RecordMetaDataBuilder.Build does six jobs in
 	// one frame" (which names this site) is for expressing it as call order.
 	//
 	// SINGLE-TYPE INDEXES ONLY. Java's loop is over

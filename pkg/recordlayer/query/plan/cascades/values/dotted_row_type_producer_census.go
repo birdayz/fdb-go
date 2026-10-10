@@ -210,8 +210,9 @@ func formatDottedRowTypeProducerCensus(c dottedRowTypeCounters) string {
 //     and the total floor would still pass by three orders of magnitude.
 //
 // ALARM DIRECTION ON Dotted: COLLAPSE, because the expected value is non-zero,
-// so a floor rather than a hard zero guards it. A return to zero means either the corpus stopped reaching the dotted path or the
-// discriminator broke, and in both cases §1.1's placement decision has quietly
+// so a floor rather than a hard zero guards it. A return to zero means either
+// the corpus stopped reaching the dotted path or the discriminator broke;
+// in both cases §1.1's placement decision has quietly
 // lost the evidence it rests on while the build stays green.
 //
 // If a later change makes zero legitimate again — the dotted `LEG.COL` row

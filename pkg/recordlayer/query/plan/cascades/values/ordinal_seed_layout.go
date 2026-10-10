@@ -121,11 +121,8 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[CorrelationIdentifie
 // answers the different question "how many legs TILE this row, and what shape is
 // each".
 //
-// It has no production consumer. The run list is kept because the question it answers is not derivable from the map — finalization
-// replaces a box run's entry with a narrower sub-window, after which the map no
-// longer states which windows tile the row — so a future consumer would have to
-// rebuild exactly this. A caller returning here should say why the map cannot
-// serve it.
+// The run list preserves tiling that finalization's narrower map entries lose;
+// it has no production consumer.
 func OrdinalSeedLegLayout(rc *RecordConstructorValue) (map[CorrelationIdentifier]OrdinalSeedLegWindow, *RecordType, []OrdinalSeedLegWindow) {
 	return ordinalSeedLegWindows(rc, true)
 }
@@ -410,12 +407,8 @@ func finalizeSeedWindows(windows map[CorrelationIdentifier]OrdinalSeedLegWindow,
 			// can notice, because a window filed under the zero key is
 			// indistinguishable from a window nobody filed.
 			//
-			// NewRecordTypeLeg's doc states this hazard about its own construction
-			// ("a leg whose identity is the zero CorrelationIdentifier — which every
-			// reader then fails to bind, silently ... deleting `Alias:` from two
-			// producers left the whole suite green"). The compile-time half of that
-			// defence is the positional constructor; this is the runtime half, at the
-			// one place where two such legs become one.
+			// NewRecordTypeLeg requires an explicit identity argument; this runtime
+			// check also rejects zero identities supplied through literals or callers.
 			//
 			// LOUD, not skip-this-leg: a seed missing a sub-window is a seed whose
 			// qualified reads resolve to the wrong slots, so the honest answer is no
