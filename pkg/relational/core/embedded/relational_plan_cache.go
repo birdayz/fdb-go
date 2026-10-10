@@ -34,11 +34,9 @@ type queryPlanCache interface {
 //
 //   - primary: the schema template's name; entries expire after the TTL
 //     without access (Caffeine expireAfterAccess);
-//   - secondary: the query key, Java's QueryCacheKey: metadata version,
-//     planner options, index states, temporary functions and normalized SQL.
-//     Store-specific collected statistics additionally scope database/schema;
-//   - tertiary: the plan's equivalence, Java's PhysicalPlanEquivalence: types,
-//     equal-input aliases, and exact values consumed by specialized planning.
+//   - secondary: Java's QueryCacheKey (metadata version, options, index states,
+//     temporary functions, literal-stripped SQL; collected statistics add scope);
+//   - tertiary: Java's PhysicalPlanEquivalence, one entry per binding constraint.
 //
 // Secondary and tertiary entries expire the TTL after they were written
 // (expireAfterWrite); expiry is lazy, on access. The sizes and TTLs are the
@@ -167,11 +165,10 @@ func (c *RelationalPlanCache) lookup(template string, key cacheKey, bindings que
 }
 
 func (c *RelationalPlanCache) store(template string, key cacheKey, bindings queryBindings, entry *planCacheEntry) {
+	stored := newCacheEntry(bindings, entry)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	constraint := bindings.constraint()
-	stored := &planCacheEntry{plan: entry.plan, scalarSubs: entry.scalarSubs, outputLabels: slices.Clone(entry.outputLabels), constraint: constraint}
-	c.stages(template, key, false).put(constraint.key(), stored, c.now())
+	c.stages(template, key, false).put(stored.constraint.key(), stored, c.now())
 }
 
 func (c *RelationalPlanCache) numEntries() int {
@@ -297,7 +294,15 @@ func (s *planCacheStage[K, V]) clear() {
 // Java's StableSelectorCostModel chooses the smallest plan hash when multiple
 // cached specializations admit the current bindings.
 func cachePlanPrecedes(candidate, current *planCacheEntry) bool {
-	return current == nil || plans.PlanHash(candidate.plan) < plans.PlanHash(current.plan)
+	return current == nil || candidate.planHash < current.planHash
+}
+
+// newCacheEntry snapshots the binding constraint and plan hash at store time.
+func newCacheEntry(bindings queryBindings, entry *planCacheEntry) *planCacheEntry {
+	return &planCacheEntry{
+		plan: entry.plan, scalarSubs: entry.scalarSubs, outputLabels: slices.Clone(entry.outputLabels),
+		constraint: bindings.constraint(), planHash: plans.PlanHash(entry.plan),
+	}
 }
 
 func (c *PlanCache) lookup(_ string, key cacheKey, bindings queryBindings) (*planCacheEntry, bool) {
@@ -305,9 +310,9 @@ func (c *PlanCache) lookup(_ string, key cacheKey, bindings queryBindings) (*pla
 	defer c.mu.Unlock()
 	var best *list.Element
 	var entry *planCacheEntry
-	for el := c.ll.Front(); el != nil; el = el.Next() {
+	for _, el := range c.items[key] {
 		item := el.Value.(*lruItem)
-		if item.key.scope == key.scope && item.key.sql == key.sql && item.entry.constraint.accepts(bindings) && cachePlanPrecedes(item.entry, entry) {
+		if item.entry.constraint.accepts(bindings) && cachePlanPrecedes(item.entry, entry) {
 			best, entry = el, item.entry
 		}
 	}
@@ -321,21 +326,27 @@ func (c *PlanCache) lookup(_ string, key cacheKey, bindings queryBindings) (*pla
 }
 
 func (c *PlanCache) store(_ string, key cacheKey, bindings queryBindings, entry *planCacheEntry) {
+	stored := newCacheEntry(bindings, entry)
+	variant := stored.constraint.key()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	constraint := bindings.constraint()
-	key.equivalence = constraint.key()
-	stored := &planCacheEntry{plan: entry.plan, scalarSubs: entry.scalarSubs, outputLabels: slices.Clone(entry.outputLabels), constraint: constraint}
-	if el, ok := c.items[key]; ok {
+	variants := c.items[key]
+	if el, ok := variants[variant]; ok {
 		el.Value.(*lruItem).entry = stored
 		c.ll.MoveToBack(el)
 		return
 	}
-	c.items[key] = c.ll.PushBack(&lruItem{key: key, entry: stored})
+	if variants == nil {
+		variants = make(map[string]*list.Element, 1)
+		c.items[key] = variants
+	}
+	variants[variant] = c.ll.PushBack(&lruItem{key: key, variant: variant, entry: stored})
 	for c.ll.Len() > c.maxSize {
-		oldest := c.ll.Front()
-		delete(c.items, oldest.Value.(*lruItem).key)
-		c.ll.Remove(oldest)
+		oldest := c.ll.Remove(c.ll.Front()).(*lruItem)
+		delete(c.items[oldest.key], oldest.variant)
+		if len(c.items[oldest.key]) == 0 {
+			delete(c.items, oldest.key)
+		}
 	}
 }
 

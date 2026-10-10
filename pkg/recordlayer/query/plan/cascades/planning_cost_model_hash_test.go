@@ -153,10 +153,8 @@ func TestCostModel_PlanHashMintedAliasBlind(t *testing.T) {
 	}
 }
 
-// TestCostModel_PlanHashContentSensitive pins the other half of alias
-// blindness: real content (comparison type, constant type) changes the hash,
-// while a constant's VALUE does not, so a literal and the statement-pool
-// reference standing for it break cost ties identically.
+// TestCostModel_PlanHashContentSensitive: a comparison change moves the hash, a
+// constant does not, as in Java's planHash(VC0) tie-break over SQL literals.
 func TestCostModel_PlanHashContentSensitive(t *testing.T) {
 	t.Parallel()
 	build := func(cmp predicates.Comparison) plans.RecordQueryPlan {
@@ -182,7 +180,7 @@ func TestCostModel_PlanHashContentSensitive(t *testing.T) {
 	if stablePlanHash(build(predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: long(1)})) == one {
 		t.Fatal("stablePlanHash is content-blind: a different comparison hashed equal")
 	}
-	if stablePlanHash(build(eq(&values.ConstantValue{Value: "1", Typ: values.NotNullString}))) == one {
-		t.Fatal("stablePlanHash ignores a constant's type")
+	if stablePlanHash(build(eq(&values.ConstantValue{Value: "1", Typ: values.NotNullString}))) != one {
+		t.Fatal("Java's planHash(VC0) hashes every ConstantObjectValue alike, whatever its type")
 	}
 }

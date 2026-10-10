@@ -17,8 +17,9 @@ type constantKey struct {
 	constantID string
 }
 
-func (s *stubConstantDeref) DereferenceConstant(alias CorrelationIdentifier, constantID string) any {
-	return s.values[constantKey{alias: alias, constantID: constantID}]
+func (s *stubConstantDeref) DereferenceConstant(alias CorrelationIdentifier, constantID string) (any, bool) {
+	value, present := s.values[constantKey{alias: alias, constantID: constantID}]
+	return value, present
 }
 
 func TestConstantObjectValue_LeafShape(t *testing.T) {
@@ -51,18 +52,15 @@ func TestConstantObjectValue_NilTypeFallsBackToUnknown(t *testing.T) {
 	}
 }
 
-func TestConstantObjectValue_EvaluateNoDereferReturnsNil(t *testing.T) {
+func TestConstantObjectValue_EvaluateNoDereferFails(t *testing.T) {
 	t.Parallel()
-	v := NewConstantObjectValue(NamedCorrelationIdentifier("a"), "c1", NotNullLong)
-	got, errEv0 := v.Evaluate(nil)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("Evaluate without ConstantDeref = %v, want nil", got)
-	}
-	got, errEv1 := v.Evaluate("not a deref")
-	require.NoError(t, errEv1)
-	if got != nil {
-		t.Fatalf("Evaluate with non-ConstantDeref = %v, want nil", got)
+	for _, typ := range []Type{NotNullLong, NullableLong} {
+		v := NewConstantObjectValue(NamedCorrelationIdentifier("a"), "c1", typ)
+		for _, context := range []any{"not a deref", &RowEvalContext{}} {
+			if got, err := v.Evaluate(context); err == nil {
+				t.Fatalf("Evaluate(%T) = %v without a constant pool, want error", context, got)
+			}
+		}
 	}
 }
 
@@ -82,12 +80,12 @@ func TestConstantObjectValue_EvaluateLooksUpBinding(t *testing.T) {
 
 func TestConstantObjectValue_EvaluateMissingBinding(t *testing.T) {
 	t.Parallel()
-	v := NewConstantObjectValue(NamedCorrelationIdentifier("a"), "c1", NotNullLong)
-	stub := &stubConstantDeref{values: map[constantKey]any{}}
-	got, errEv0 := v.Evaluate(stub)
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("Evaluate missing binding = %v, want nil", got)
+	for _, typ := range []Type{NotNullLong, NullableLong} {
+		v := NewConstantObjectValue(NamedCorrelationIdentifier("a"), "c1", typ)
+		stub := &stubConstantDeref{values: map[constantKey]any{}}
+		if got, err := v.Evaluate(stub); err == nil {
+			t.Fatalf("Evaluate missing binding = %v, want error", got)
+		}
 	}
 }
 
@@ -201,13 +199,13 @@ func TestConstantObjectValue_PromoteNilReturnsNil(t *testing.T) {
 	}
 }
 
-func TestConstantObjectValue_PromoteNoDerefReturnsNil(t *testing.T) {
+func TestConstantObjectValue_NonNullableNullFails(t *testing.T) {
 	t.Parallel()
-	v := NewConstantObjectValue(NamedCorrelationIdentifier("a"), "c1", NullableLong)
-	got, errEv0 := v.Evaluate("not a deref")
-	require.NoError(t, errEv0)
-	if got != nil {
-		t.Fatalf("Evaluate = %v, want nil", got)
+	alias := NamedCorrelationIdentifier("a")
+	v := NewConstantObjectValue(alias, "c1", NotNullLong)
+	stub := &stubConstantDeref{values: map[constantKey]any{{alias: alias, constantID: "c1"}: nil}}
+	if got, err := v.Evaluate(stub); err == nil {
+		t.Fatalf("Evaluate NULL with NOT NULL type = %v, want error", got)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/parser"
 )
 
@@ -21,7 +22,7 @@ func TestQueryBindingsEquivalence(t *testing.T) {
 		for i, arg := range args {
 			named[i] = driver.NamedValue{Ordinal: i + 1, Value: arg}
 		}
-		_, releaseParams, err := bindStatementParameters(root, named)
+		releaseParams, err := bindStatementParameters(root, named)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -49,6 +50,7 @@ func TestQueryBindingsEquivalence(t *testing.T) {
 		{"coalesce repeat", "SELECT id FROM t WHERE COALESCE(? / ?, ?) IS NULL", "SELECT id FROM t WHERE COALESCE(? / ?, ?) IS NULL", []any{int64(1), int64(0), int64(5)}, []any{int64(1), int64(0), int64(5)}, true},
 		{"equal partition", "SELECT ? + ? FROM t", "SELECT ? + ? FROM t", []any{int64(1), int64(1)}, []any{int64(2), int64(2)}, true},
 		{"unequal partition", "SELECT ? + ? FROM t", "SELECT ? + ? FROM t", []any{int64(1), int64(1)}, []any{int64(1), int64(2)}, false},
+		{"distinct values assume nothing", "SELECT ? + ? FROM t", "SELECT ? + ? FROM t", []any{int64(1), int64(2)}, []any{int64(1), int64(1)}, true},
 		{"limit values", "SELECT id FROM t LIMIT ?", "SELECT id FROM t LIMIT ?", []any{int64(1)}, []any{int64(2)}, false},
 		{"in array expansion", "SELECT id FROM t WHERE id IN ?", "SELECT id FROM t WHERE id IN ?", []any{[]int64{1, 2}}, []any{[]int64{2, 3}}, false},
 		{"in list values", "SELECT id FROM t WHERE id IN (1,2)", "SELECT id FROM t WHERE id IN (2,3)", nil, nil, false},
@@ -57,8 +59,10 @@ func TestQueryBindingsEquivalence(t *testing.T) {
 		{"quoted identity", "SELECT id FROM \"a\" WHERE id=1", "SELECT id FROM \"A\" WHERE id=2", nil, nil, false},
 	} {
 		a, b := normalize(pair.first, pair.firstArgs...), normalize(pair.second, pair.secondArgs...)
-		if same := a.text == b.text && a.equivalence == b.equivalence; same != pair.share {
-			t.Errorf("%s: share=%v, want %v; text %q / %q equivalence %q / %q", pair.name, same, pair.share, a.text, b.text, a.equivalence, b.equivalence)
+		// A plan cached for the first binding serves the second iff its key text
+		// matches and its recorded constraint accepts the second pool.
+		if same := a.text == b.text && a.constraint().accepts(b); same != pair.share {
+			t.Errorf("%s: share=%v, want %v; text %q / %q", pair.name, same, pair.share, a.text, b.text)
 		}
 	}
 }
@@ -74,7 +78,7 @@ func TestQueryBindingsDuplicateConstraintsAreImplications(t *testing.T) {
 		var first *cascadesPlan
 		for _, args := range [][2]int64{{1, 2}, {3, 3}, {4, 5}} {
 			q := parseQuery(t, "SELECT ? + ? FROM orders")
-			_, release, err := bindStatementParameters(q, []driver.NamedValue{
+			release, err := bindStatementParameters(q, []driver.NamedValue{
 				{Ordinal: 1, Value: args[0]}, {Ordinal: 2, Value: args[1]},
 			})
 			if err != nil {
@@ -134,7 +138,7 @@ func TestQueryBindingConstraintChecksOnlyRequiredEqualities(t *testing.T) {
 func TestQueryBindingsRestoresParameterScope(t *testing.T) {
 	t.Parallel()
 	q := parseQuery(t, "SELECT ? FROM orders")
-	_, releaseParams, err := bindStatementParameters(q, []driver.NamedValue{{Ordinal: 1, Value: int64(7)}})
+	releaseParams, err := bindStatementParameters(q, []driver.NamedValue{{Ordinal: 1, Value: int64(7)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,6 +252,49 @@ func TestQueryBindingsPinsCrossTypeComparand(t *testing.T) {
 		}
 		if got := logger.events[i].Cache; got != step.want {
 			t.Fatalf("%s: cache %v, want %v (%s)", step.sql, got, step.want, plan.Explain())
+		}
+	}
+}
+
+// A plan reused for another binding must be the plan fresh planning produces
+// for that binding, and a value-specialized plan must not be reused at all.
+func TestQueryBindingsReusedPlanMatchesFreshPlan(t *testing.T) {
+	t.Parallel()
+	const schema = "CREATE TABLE T (id BIGINT, v BIGINT, d DOUBLE, s STRING, PRIMARY KEY(id)) " +
+		"CREATE INDEX i_v ON T(v) CREATE INDEX i_d ON T(d) CREATE INDEX i_s ON T(s)"
+	for _, tc := range []struct {
+		first, second string
+		reuse         bool
+	}{
+		{"SELECT id FROM T WHERE v = 10", "SELECT id FROM T WHERE v = 30", true},
+		{"SELECT id + 1 FROM T WHERE v > 5 ORDER BY id", "SELECT id + 2 FROM T WHERE v > 7 ORDER BY id", true},
+		{"SELECT id FROM T WHERE s = 'x'", "SELECT id FROM T WHERE s = 'y'", true},
+		{"SELECT id FROM T WHERE NOT (v > 3)", "SELECT id FROM T WHERE NOT (v > 5)", true},
+		{"SELECT COUNT(1) FROM T GROUP BY v", "SELECT COUNT(2) FROM T GROUP BY v", true},
+		{"SELECT a.id FROM T a JOIN T b ON a.v = b.v WHERE b.id = 1", "SELECT a.id FROM T a JOIN T b ON a.v = b.v WHERE b.id = 3", true},
+		{"SELECT id FROM T WHERE d > 2", "SELECT id FROM T WHERE d > 0", false},
+		{"SELECT id FROM T WHERE d = 2.5", "SELECT id FROM T WHERE d = -0.0", false},
+		{"SELECT id FROM T WHERE v IN (1, 2)", "SELECT id FROM T WHERE v IN (2, 3)", false},
+		{"SELECT id FROM T ORDER BY id LIMIT 1", "SELECT id FROM T ORDER BY id LIMIT 2", false},
+	} {
+		logger := &captureLogger{}
+		cached, md := newLoggingGenerator(t, schema, logger)
+		fresh, freshMD := newLoggingGenerator(t, schema, &captureLogger{})
+		plan := func(g *cascadesGenerator, md *recordlayer.RecordMetaData, sql string) string {
+			t.Helper()
+			p, err := g.planSelectCascades(context.Background(), parseQuery(t, sql), md, true, statementOptions{})
+			if err != nil {
+				t.Fatalf("%s: %v", sql, err)
+			}
+			return p.Explain()
+		}
+		plan(cached, md, tc.first)
+		reused := plan(cached, md, tc.second)
+		if hit := logger.events[1].Cache == PlanCacheHit; hit != tc.reuse {
+			t.Errorf("%s after %s: hit=%v, want %v", tc.second, tc.first, hit, tc.reuse)
+		}
+		if want := plan(fresh, freshMD, tc.second); reused != want {
+			t.Errorf("%s after %s:\n  reused %s\n  fresh  %s", tc.second, tc.first, reused, want)
 		}
 	}
 }

@@ -91,7 +91,8 @@ func TestConstantPoolSurvivesDerivedContexts(t *testing.T) {
 	}
 	other := EmptyEvaluationContext().WithConstants(alias, map[string]any{"0": int64(9)})
 	got, err := ref.Evaluate(other.RowContext())
-	if err != nil || got != int64(9) || base.DereferenceConstant(alias, "0") != int64(7) {
+	original, present := base.DereferenceConstant(alias, "0")
+	if err != nil || got != int64(9) || !present || original != int64(7) {
 		t.Fatalf("shared reference coupled execution pools: %v, %v", got, err)
 	}
 }

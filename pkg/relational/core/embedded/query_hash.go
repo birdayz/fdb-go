@@ -48,9 +48,8 @@ const planCacheScopeDelim = "\x01"
 //
 // The companion query text is planCacheText(q), rendered from the tokens.
 //
-// normalizeQueryBindings extracts reusable literals into runtime references.
-// Literal-dependent index proofs retain exact bindings, not unconstrained
-// references (see requiresLiteralIndexProof and cascades/value_equivalence.go).
+// normalizeQueryBindings extracts reusable literals into runtime references;
+// literal-dependent index proofs keep exact bindings (requiresLiteralIndexProof).
 //
 // plannerOpts is the resolved planner-option signature (plannerOptions.
 // cacheKeyPart): a plan built with PLAN_RIGHT_DEEP or a disabled rule set is

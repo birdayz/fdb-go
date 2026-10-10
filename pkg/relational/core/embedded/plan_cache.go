@@ -7,7 +7,6 @@ package embedded
 
 import (
 	"container/list"
-	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -34,19 +33,17 @@ type PlanCache struct {
 	// anyway — a plain Mutex, not an RWMutex.
 	mu      sync.Mutex
 	ll      *list.List // values are *lruItem; front = LRU, back = MRU
-	items   map[cacheKey]*list.Element
+	items   map[cacheKey]map[string]*list.Element
 	maxSize int
 	hits    atomic.Int64
 	misses  atomic.Int64
 }
 
-// cacheKey is the map key: a COMPARABLE struct of the verbatim scope and the
-// key text. Using a struct (not scope+delim+sql concatenated into one string)
-// avoids copying the text a second time on every warm hit.
+// cacheKey is the statement key: a COMPARABLE struct of the verbatim scope and
+// the literal-stripped text, so a lookup visits only that statement's variants.
 type cacheKey struct {
-	scope       string
-	sql         string
-	equivalence string
+	scope string
+	sql   string
 }
 
 type planCacheEntry struct {
@@ -54,97 +51,41 @@ type planCacheEntry struct {
 	scalarSubs   []PlannedScalarSubquery
 	outputLabels []string
 	constraint   queryBindingConstraint
+	planHash     uint64
 }
 
-// lruItem is the value stored in each list element. It carries its own key
-// so eviction (which starts from the list front) can delete the matching
-// map entry in O(1).
+// lruItem carries its statement key and constraint variant, so eviction from
+// the list front deletes the matching map entry in O(1).
 type lruItem struct {
-	key   cacheKey
-	entry *planCacheEntry
+	key     cacheKey
+	variant string
+	entry   *planCacheEntry
 }
 
-// NewPlanCache creates a plan cache with the given maximum number of entries.
-// If maxSize <= 0, it defaults to 256.
+// NewPlanCache creates a plan cache with the given maximum number of plans.
 func NewPlanCache(maxSize int) *PlanCache {
 	if maxSize <= 0 {
 		maxSize = 256
 	}
 	return &PlanCache{
 		ll:      list.New(),
-		items:   make(map[cacheKey]*list.Element, maxSize),
+		items:   make(map[cacheKey]map[string]*list.Element, maxSize),
 		maxSize: maxSize,
 	}
 }
 
-// Get looks up a cached plan. `scope` (schema identity + metadata version)
-// is used VERBATIM — it must NOT be normalized, because schema names are
-// case-sensitive and folding them would collide case-distinct schemas
-// (`s` vs `S`) into one key, returning a plan built for the wrong schema.
-// `sql` is the caller's key text (planCacheText of the statement). Returns the plan, scalar subquery
-// bindings, and true on a cache hit; nil, nil, false on miss.
+// Get looks up a literal-free statement's plan.
 func (c *PlanCache) Get(scope, sql string) (plans.RecordQueryPlan, []PlannedScalarSubquery, bool) {
-	plan, subs, _, ok := c.GetWithOutputLabels(scope, sql)
-	return plan, subs, ok
-}
-
-// GetWithOutputLabels is Get plus the top-level SQL output-label contract.
-// Labels are cached beside the physical plan because they deliberately differ
-// from its deduplicated protobuf field names and must survive a warm cache hit.
-func (c *PlanCache) GetWithOutputLabels(scope, sql string) (plans.RecordQueryPlan, []PlannedScalarSubquery, []string, bool) {
-	key := cacheKey{scope: scope, sql: sql}
-
-	c.mu.Lock()
-	el, ok := c.items[key]
+	entry, ok := c.lookup("", cacheKey{scope: scope, sql: sql}, queryBindings{})
 	if !ok {
-		c.mu.Unlock()
-		c.misses.Add(1)
-		return nil, nil, nil, false
+		return nil, nil, false
 	}
-	c.ll.MoveToBack(el)
-	entry := el.Value.(*lruItem).entry
-	c.mu.Unlock()
-
-	c.hits.Add(1)
-	return entry.plan, entry.scalarSubs, slices.Clone(entry.outputLabels), true
+	return entry.plan, entry.scalarSubs, true
 }
 
-// Put stores a plan keyed by (verbatim scope, key text) — see Get for
-// why the scope must not be normalized. If the cache is at capacity, the
-// least recently used entry is evicted.
+// Put stores a literal-free statement's plan.
 func (c *PlanCache) Put(scope, sql string, plan plans.RecordQueryPlan, subs []PlannedScalarSubquery) {
-	c.PutWithOutputLabels(scope, sql, plan, subs, nil)
-}
-
-// PutWithOutputLabels is Put plus the top-level SQL output-label contract.
-func (c *PlanCache) PutWithOutputLabels(scope, sql string, plan plans.RecordQueryPlan, subs []PlannedScalarSubquery, outputLabels []string) {
-	key := cacheKey{scope: scope, sql: sql}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if el, exists := c.items[key]; exists {
-		// Update in place and promote. Size is unchanged, so no eviction.
-		el.Value.(*lruItem).entry = &planCacheEntry{plan: plan, scalarSubs: subs, outputLabels: slices.Clone(outputLabels)}
-		c.ll.MoveToBack(el)
-		return
-	}
-
-	el := c.ll.PushBack(&lruItem{
-		key:   key,
-		entry: &planCacheEntry{plan: plan, scalarSubs: subs, outputLabels: slices.Clone(outputLabels)},
-	})
-	c.items[key] = el
-
-	// Evict the least recently used entries until back within capacity.
-	for c.ll.Len() > c.maxSize {
-		oldest := c.ll.Front()
-		if oldest == nil {
-			break
-		}
-		c.ll.Remove(oldest)
-		delete(c.items, oldest.Value.(*lruItem).key)
-	}
+	c.store("", cacheKey{scope: scope, sql: sql}, queryBindings{}, &planCacheEntry{plan: plan, scalarSubs: subs})
 }
 
 // Invalidate clears all cached entries. Must be called when schema
@@ -153,7 +94,7 @@ func (c *PlanCache) Invalidate() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ll.Init()
-	c.items = make(map[cacheKey]*list.Element, c.maxSize)
+	c.items = make(map[cacheKey]map[string]*list.Element, c.maxSize)
 }
 
 // Stats returns the cumulative hit and miss counts.

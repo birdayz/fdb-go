@@ -153,7 +153,7 @@ func bindHarnessParameters(root antlr.Tree, params []driver.NamedValue) (func(),
 	if len(params) == 0 {
 		return func() {}, nil
 	}
-	_, release, err := bindStatementParameters(root, params)
+	release, err := bindStatementParameters(root, params)
 	return release, err
 }
 

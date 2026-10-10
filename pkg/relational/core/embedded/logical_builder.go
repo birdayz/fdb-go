@@ -9,8 +9,10 @@ import (
 	"sort"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"github.com/antlr4-go/antlr/v4"
 )
@@ -873,6 +875,17 @@ func aggOperandCanonicalText(ctx antlr.Tree) string {
 	var b strings.Builder
 	var walk func(t antlr.Tree)
 	walk = func(t antlr.Tree) {
+		// A literal planned as a pool reference names it, so a reused plan's
+		// operand text matches fresh planning of another value.
+		switch n := t.(type) {
+		case antlrgen.IConstantContext, *antlrgen.PreparedStatementParameterContext:
+			if bound, ok := expr.BoundParameter(n.(antlr.ParserRuleContext).GetStart()); ok {
+				if ref, isRef := bound.(*values.ConstantObjectValue); isRef {
+					b.WriteString("@" + ref.ConstantID)
+					return
+				}
+			}
+		}
 		if tn, ok := t.(antlr.TerminalNode); ok {
 			sym := tn.GetSymbol()
 			if sym == nil || sym.GetTokenType() == antlr.TokenEOF {

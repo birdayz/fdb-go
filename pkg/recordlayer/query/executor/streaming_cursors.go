@@ -195,8 +195,8 @@ func newAggregateCursorWithOutputType(
 		// statement clock a RowEvalContext carries — a bare frontier row
 		// would drift per row.
 		needsRowCtx: hasBindingContext(evalCtx) ||
-			valuesDependOnStatementClock(groupingKeys) ||
-			aggregateOperandsDependOnStatementClock(aggregates),
+			valuesNeedStatementContext(groupingKeys...) ||
+			aggregatesNeedStatementContext(aggregates),
 		inputEdges:    inputEdges,
 		joinLegSpans:  legSpans,
 		joinWindowsOK: windowsOK,
@@ -510,7 +510,11 @@ func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) (any
 		if row.Positional.Layout != nil {
 			return frontierRowContext(row.Positional, c.evalCtx, true, c.inputEdges...)
 		}
-		return &values.RowEvalContext{Positional: row.Positional, Clock: c.evalCtx}, nil
+		rc := &values.RowEvalContext{Positional: row.Positional, Clock: c.evalCtx}
+		if c.evalCtx != nil {
+			rc.Binder = c.evalCtx
+		}
+		return rc, nil
 	}
 	if c.flatFrontierInput {
 		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx, c.inputEdges...)

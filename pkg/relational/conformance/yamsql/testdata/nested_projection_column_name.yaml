@@ -96,7 +96,7 @@ tests:
   # that actually declares `n`, and the flat column from the OTHER leg must keep
   # its own bare name and its own value.
   - query: SELECT n.sk, v FROM t1 JOIN t2 ON t2.v > 0 ORDER BY id
-    plan_contains: "Map(InMemorySort([_current._2#2 ASC], NestedLoopJoin(INNER, PredicatesFilter(Scan(T2), [1 preds]), Scan(T1))), {SK: _current.SK#0, V: _current.V#1})"
+    plan_contains: "Map(InMemorySort([_current._2#2 ASC], NestedLoopJoin(INNER, Scan(T1), PredicatesFilter(Scan(T2), [1 preds]))), {SK: _current.SK#0, V: _current.V#1})"
     columns: [SK, V]
     rows:
       - [10, 7]

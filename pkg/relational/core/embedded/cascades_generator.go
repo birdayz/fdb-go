@@ -65,8 +65,7 @@ type cascadesGenerator struct {
 	cache queryPlanCache
 	// INSERT keeps concrete bindings; SELECT and cached DML extract runtime
 	// constants and constrain only the assumptions used by their cached plan.
-	args     []driver.NamedValue
-	paramKey string
+	args []driver.NamedValue
 }
 
 func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
@@ -134,11 +133,10 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			}
 		}
 	}
-	paramKey, release, err := bindStatementParameters(root, g.args)
+	release, err := bindStatementParameters(root, g.args)
 	if err != nil {
 		return nil, err
 	}
-	g.paramKey = paramKey
 	g.c.releaseParams = append(g.c.releaseParams, release)
 
 	stmts := root.Statements()
@@ -957,7 +955,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// INSERT…SELECT spelling — whose OPTIONS the grammar attaches to the inner SELECT, not
 	// insertStatement.queryOptions — cannot silently bypass DRY RUN and commit.
 	dryRun := so.dryRun
-	bindings := queryBindings{text: planCacheText(dml), equivalence: g.paramKey}
+	bindings := queryBindings{text: planCacheText(dml)}
 	if dml.InsertStatement() == nil {
 		var releaseBindings func()
 		bindings, releaseBindings, err = normalizeQueryBindings(dml, md)

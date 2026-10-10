@@ -2551,11 +2551,11 @@ func (r *RowEvalContext) BindParameter(ordinal int, name string) (any, bool) {
 }
 
 // DereferenceConstant preserves constant pools through row-context adapters.
-func (r *RowEvalContext) DereferenceConstant(alias CorrelationIdentifier, constantID string) any {
+func (r *RowEvalContext) DereferenceConstant(alias CorrelationIdentifier, constantID string) (any, bool) {
 	if binder, ok := r.Binder.(ConstantDeref); ok {
 		return binder.DereferenceConstant(alias, constantID)
 	}
-	return nil
+	return nil, false
 }
 
 func (r *RowEvalContext) GetCorrelationBinding(id CorrelationIdentifier) (any, bool) {
@@ -2792,6 +2792,19 @@ type StatementClock interface {
 // must be wrapped in a clock-bearing RowEvalContext: evaluating such a
 // value against a bare OrdinalRow falls back to per-row time.Now() and
 // drifts across the rows of one statement, which SQL forbids.
+// ReadsConstantPool reports whether v dereferences a statement constant pool,
+// which only a RowEvalContext with the statement binder can resolve.
+func ReadsConstantPool(v Value) bool {
+	found := false
+	WalkValue(v, func(n Value) bool {
+		if _, ok := n.(*ConstantObjectValue); ok {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
 func DependsOnStatementClock(v Value) bool {
 	if v == nil {
 		return false

@@ -7767,7 +7767,7 @@ func aggregateOperandReferencesColumn(a *logical.LogicalAggregate) bool {
 		if op == nil {
 			continue
 		}
-		if _, isConst := op.(*values.ConstantValue); isConst {
+		if _, isConst := op.(*values.ConstantValue); isConst || isPoolReference(op) {
 			continue
 		}
 		return true
@@ -10075,4 +10075,10 @@ func findUnsafeFuncInPredicate(p predicates.QueryPredicate) string {
 		return true
 	})
 	return found
+}
+
+// A statement-pool reference stands for a literal, so it reads no column.
+func isPoolReference(v values.Value) bool {
+	_, ok := v.(*values.ConstantObjectValue)
+	return ok
 }
