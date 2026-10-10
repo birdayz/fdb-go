@@ -1214,8 +1214,8 @@ var _ = Describe("GuardiANN target oracle", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 		defer cancel()
 		// The shapes the admission bound of ws-d-design admits at its largest dimensions
-		// (W = floor(log2(n - 1)) * n * d * max(iterations * (restarts + 1), 32) / 32
-		// <= B at the default KMeans knobs 8 and 3), and the shapes just beyond it. B is
+		// (W = floor(log2(n - 1)) * n * d <= B at the default KMeans knobs 8 and 3,
+		// whose knob factor is 1), and the shapes just beyond it. B is
 		// 1.96 * 10^7, a WORK bound chosen for coverage, not derived from any measured
 		// rate (every run moved the worst observed rate, so a time-derived B moved with
 		// it): the first over-max size n = 1001 is admitted up to d = 2175 and the
