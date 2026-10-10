@@ -690,8 +690,9 @@ func TestCommitDummyTransaction(t *testing.T) {
 
 	// commitDummyTransaction should complete without error — the dummy
 	// transaction commits a conflict-only transaction (no mutations).
-	tx.commitDummyTransaction(ctx)
-	// If we get here without panic/hang, the dummy worked.
+	if err := tx.commitDummyTransaction(ctx); err != nil {
+		t.Fatalf("dummy barrier: %v", err)
+	}
 	t.Log("commitDummyTransaction completed successfully")
 }
 
@@ -708,8 +709,9 @@ func TestCommitDummyTransaction_NoWriteConflicts(t *testing.T) {
 
 	// Read-only transaction — no write conflicts.
 	tx := db.CreateTransaction()
-	tx.commitDummyTransaction(ctx)
-	// Should return immediately (no-op).
+	if err := tx.commitDummyTransaction(ctx); err != nil {
+		t.Fatalf("read-only dummy barrier: %v", err)
+	}
 	t.Log("commitDummyTransaction no-op for read-only transaction")
 }
 

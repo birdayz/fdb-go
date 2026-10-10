@@ -36,6 +36,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
   `hosted-smoke.yml` workflow is retired; its secret scan, Bazel-anchor check and fresh-clone
   `go build ./...` moved into `ci.yml`'s `go install lane` job, and the wire-type oracle runs as
   `bazelisk test //cmd/fdb-diff-oracle:fdb-diff-oracle_test`.
+- Tenant commits fence uncertain delivery in the tenant's keyspace, preventing a late commit after error 1021; all commits propagate a failed fence's error instead of returning an unfenced `commit_unknown_result`.
 - **Breaking:** `client.Transaction.SetLockAware` and `SetReadLockAware` take no argument; like the C options they only set.
 - **Breaking:** as in `libfdb_c`, a `SetReadLockAware` transaction fails a commit with writes with
   2023 unless `SetLockAware` is also set, and `SetSizeLimit` outside [32, 10,000,000] (0 included)
