@@ -16,7 +16,7 @@ NUM_OPS="${2:-100}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Find the stacktester binary (built by Bazel or go build).
+# Find the stacktester binary (built by Bazel, or copied next to this script).
 TESTER="${SCRIPT_DIR}/fdb-stacktester"
 if [ ! -x "$TESTER" ]; then
     TESTER="$(bazelisk info bazel-bin 2>/dev/null)/cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester"

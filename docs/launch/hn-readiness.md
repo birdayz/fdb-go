@@ -61,7 +61,7 @@ legal/security, performance, operations, and a simulated HN thread. Owner and st
 | Sev | Item | Owner |
 |---|---|---|
 | B | Comments that argue with earlier versions of themselves (36 files, some on public API) | open |
-| H | Census debt counters in production packages; 18k-line `corpus.go` as non-test code; 66 misattached doc comments; fresh-clone `go build ./...` fails (cgo `fdb_c.h`, a build-tag mismatch) | open |
+| H | Census debt counters in production packages; 18k-line `corpus.go` as non-test code; 66 misattached doc comments; fresh-clone `go vet`/`go test ./...` fail to compile (untagged test files import the cgo bindings; `go build ./...` is fixed and hosted-smoke gated) | open |
 | M | gomock mocks compiled into every sqldriver binary; demo protos in the global registry; 121-module graph; 59 MB hello-world | open (with D5) |
 
 ### Operations
