@@ -2,14 +2,16 @@ package client
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
-// commitInput owns every reset-sensitive byte used after commit dispatch.
-// Neither the wire wait nor the uncertain-delivery barrier reads the handle.
+// commitInput owns the vectors and borrows the operand slab used after commit
+// dispatch; neither the wire wait nor the uncertain-delivery barrier reads the handle.
 type commitInput struct {
+	slab           *conflictBuf // borrowed operand storage; see release
 	db             *database
 	muts           []Mutation
 	readConflicts  []KeyRange
@@ -30,50 +32,45 @@ type commitOutcome struct {
 	epoch   int64
 }
 
-// captureCommit runs under the caller's execution lease. One byte arena owns
-// mutation operands and conflict boundaries, including pooled conflict buffers.
+// captureCommit runs under the caller's execution lease. Operands stay in the
+// borrowed slab or in heap buffers nothing rewrites; vectors, which a retry refills, are copied.
 func (tx *Transaction) captureCommit(muts []Mutation, writeConflicts []KeyRange) *commitInput {
+	return tx.captureCommitVectors(muts, false, writeConflicts)
+}
+
+// captureCommitVectors takes muts as is when the caller owns that vector.
+func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts []KeyRange) *commitInput {
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
+	if !mutsOwned {
+		muts = slices.Clone(muts)
+	}
 	input := &commitInput{
 		db: tx.db, tenantID: tx.tenantId, lockAware: tx.lockAware, isDummy: tx.isDummy,
 		span: tx.currentSpan(), tags: append([]string(nil), tx.tags...),
-		muts: make([]Mutation, len(muts)), readConflicts: make([]KeyRange, len(tx.readConflicts)),
-		writeConflicts: make([]KeyRange, len(writeConflicts)),
+		muts: muts, readConflicts: slices.Clone(tx.readConflicts),
+		writeConflicts: slices.Clone(writeConflicts),
 	}
 	tx.readVersionMu.Lock()
 	input.readVersion, input.metricStart = tx.readVersion, tx.metricStart
 	tx.readVersionMu.Unlock()
-	size := 0
-	for _, m := range muts {
-		size += len(m.Key) + len(m.Value)
-	}
-	for _, kr := range tx.readConflicts {
-		size += len(kr.Begin) + len(kr.End)
-	}
-	for _, kr := range writeConflicts {
-		size += len(kr.Begin) + len(kr.End)
-	}
-	arena := make([]byte, size)
-	copyBytes := func(src []byte) []byte {
-		if src == nil {
-			return nil
+	if len(tx.conflictBuf) > 0 {
+		if tx.conflictBufOwner == nil {
+			// Reset checks the borrow on the handle; an ownerless slab would look free.
+			tx.conflictBufOwner = &conflictBuf{}
 		}
-		dst := arena[:len(src):len(src)]
-		copy(dst, src)
-		arena = arena[len(src):]
-		return dst
-	}
-	for i, m := range muts {
-		input.muts[i] = Mutation{Type: m.Type, Key: copyBytes(m.Key), Value: copyBytes(m.Value)}
-	}
-	for i, kr := range tx.readConflicts {
-		input.readConflicts[i] = KeyRange{Begin: copyBytes(kr.Begin), End: copyBytes(kr.End)}
-	}
-	for i, kr := range writeConflicts {
-		input.writeConflicts[i] = KeyRange{Begin: copyBytes(kr.Begin), End: copyBytes(kr.End)}
+		tx.conflictBufOwner.borrows.Add(1)
+		input.slab = tx.conflictBufOwner
 	}
 	return input
+}
+
+// release ends the borrow once nothing reads the captured bytes. Idempotent.
+func (input *commitInput) release() {
+	if input.slab != nil {
+		input.slab.borrows.Add(-1)
+		input.slab = nil
+	}
 }
 
 // publishCommit does not reinterpret the detached operation's outcome. A stale
@@ -105,6 +102,7 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 	writeConflicts := tx.writeConflicts
 	tx.conflictMu.Unlock()
 	input := tx.captureCommit(nil, writeConflicts)
+	defer input.release()
 	lease.release()
 	input.commitDummyTransaction(ctx)
 }

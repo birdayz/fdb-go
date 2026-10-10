@@ -1301,6 +1301,32 @@ var conflictBufPool = sync.Pool{
 
 type conflictBuf struct {
 	b []byte
+	// Captured commits still reading this slab; while nonzero the transaction
+	// may neither reuse it in place nor return it to the pool.
+	borrows atomic.Int32
+}
+
+// dropConflictBufLocked drops the slab, pooling it unless it is over 32 KiB
+// or an in-flight commit still reads it. Reports whether it was pooled.
+func (tx *Transaction) dropConflictBufLocked() (pooled bool) {
+	if pool := conflictBufPoolFor(cap(tx.conflictBuf)); pool != nil && cap(tx.conflictBuf) > 0 && !tx.conflictBufBorrowedLocked() {
+		cb := tx.conflictBufOwner
+		if cb == nil {
+			cb = &conflictBuf{}
+		}
+		cb.b = tx.conflictBuf[:0]
+		pool.Put(cb)
+		pooled = true
+	}
+	tx.conflictBufOwner = nil
+	tx.conflictBuf = nil
+	return pooled
+}
+
+// conflictBufBorrowedLocked runs under conflictMu, which captureCommit also
+// holds to borrow, so a zero count cannot become nonzero before the caller acts.
+func (tx *Transaction) conflictBufBorrowedLocked() bool {
+	return tx.conflictBufOwner != nil && tx.conflictBufOwner.borrows.Load() != 0
 }
 
 // Arenas over 32 KiB are not pooled: large values must not inflate later transactions.
@@ -2013,13 +2039,16 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 	if tx.db != nil {
 		commitTok = tx.db.grvCache.token()
 	}
-	input := tx.captureCommit(shipMuts, shipConflicts)
+	input := tx.captureCommitVectors(shipMuts, coalesced, shipConflicts)
+	defer input.release() // a panicking commit must not pin the slab forever
 	input.versionstamp = completion
 	if err := tx.readEntryError(ctx); err != nil {
 		return err
 	}
 	op.lease.release()
 	result, err := input.commit(context.WithoutCancel(ctx))
+	// Before publishCommit's reset, so the slab can return to the pool.
+	input.release()
 	if err != nil {
 		return err
 	}
@@ -2901,7 +2930,7 @@ func (tx *Transaction) addReadConflictForKey(key []byte) {
 	copy(buf, key)
 	copy(buf[n:], key)
 	buf[2*n] = 0 // explicit zero — pooled buffer may have stale data
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:n:n], End: buf[n : n+n+1]})
 	tx.conflictMu.Unlock()
 }
 
@@ -2912,7 +2941,7 @@ func (tx *Transaction) addReadConflict(begin, end []byte) {
 	nb := len(begin)
 	copy(buf, begin)
 	copy(buf[nb:], end)
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb], End: buf[nb:]})
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb:nb], End: buf[nb:]})
 	tx.conflictMu.Unlock()
 }
 
@@ -2933,7 +2962,7 @@ func (tx *Transaction) addReadConflicts(ranges [][2][]byte) {
 		nb := len(begin)
 		copy(buf, begin)
 		copy(buf[nb:], end)
-		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb], End: buf[nb:]})
+		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb:nb], End: buf[nb:]})
 	}
 	tx.conflictMu.Unlock()
 }
@@ -2971,7 +3000,8 @@ func (tx *Transaction) conflictBufAlloc(n int) []byte {
 	}
 	start := len(tx.conflictBuf)
 	tx.conflictBuf = tx.conflictBuf[:start+n]
-	return tx.conflictBuf[start : start+n]
+	// Capped: a borrowed commit reads neighbouring bytes an append could clobber.
+	return tx.conflictBuf[start : start+n : start+n]
 }
 
 // addWriteConflictForKey adds a write conflict range [key, key\x00). Takes
@@ -3004,7 +3034,7 @@ func (tx *Transaction) addWriteConflictForKeyLocked(key []byte) {
 	copy(buf, key)
 	copy(buf[n:], key)
 	buf[2*n] = 0 // explicit zero — pooled buffer may have stale data
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
+	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n:n], End: buf[n : n+n+1]})
 }
 
 // addWriteConflict adds a write conflict range [begin, end). Takes conflictMu
@@ -3030,7 +3060,7 @@ func (tx *Transaction) addWriteConflictLocked(begin, end []byte) {
 	nb := len(begin)
 	copy(buf, begin)
 	copy(buf[nb:], end)
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:nb], End: buf[nb:]})
+	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:nb:nb], End: buf[nb:]})
 }
 
 // selfConflictPrefix is C++ makeSelfConflicting's key prefix "\xFF/SC/" (NativeAPI.actor.cpp:5953).
@@ -3137,11 +3167,11 @@ func (tx *Transaction) makeSelfConflictingLocked() KeyRange {
 	rb := tx.conflictBufAlloc(len(sc) + len(end))
 	copy(rb, sc)
 	copy(rb[len(sc):], end)
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: rb[:len(sc)], End: rb[len(sc):]})
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: rb[:len(sc):len(sc)], End: rb[len(sc):]})
 	wb := tx.conflictBufAlloc(len(sc) + len(end))
 	copy(wb, sc)
 	copy(wb[len(sc):], end)
-	wcr := KeyRange{Begin: wb[:len(sc)], End: wb[len(sc):]}
+	wcr := KeyRange{Begin: wb[:len(sc):len(sc)], End: wb[len(sc):]}
 	tx.writeConflicts = append(tx.writeConflicts, wcr)
 	return wcr
 }
@@ -3533,17 +3563,7 @@ func (tx *Transaction) postCommitResetFields() {
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
 	tx.singleKeyClearCount = 0 // cleared with mutations (GetApproximateSize accounting)
-	// Do not keep arenas over 32 KiB alive in unrelated transactions.
-	if pool := conflictBufPoolFor(cap(tx.conflictBuf)); pool != nil && cap(tx.conflictBuf) > 0 {
-		cb := tx.conflictBufOwner
-		if cb == nil {
-			cb = &conflictBuf{}
-		}
-		cb.b = tx.conflictBuf[:0]
-		pool.Put(cb)
-	}
-	tx.conflictBufOwner = nil
-	tx.conflictBuf = nil
+	tx.dropConflictBufLocked()
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)
@@ -3615,8 +3635,13 @@ func (tx *Transaction) resetFields(userReset bool) {
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
-	tx.singleKeyClearCount = 0          // cleared with mutations (GetApproximateSize accounting)
-	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
+	tx.singleKeyClearCount = 0 // cleared with mutations (GetApproximateSize accounting)
+	if tx.conflictBufBorrowedLocked() {
+		// A captured commit still reads it: leave it to that commit and the GC.
+		tx.conflictBuf, tx.conflictBufOwner = nil, nil
+	} else {
+		tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
+	}
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)

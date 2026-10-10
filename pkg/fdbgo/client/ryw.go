@@ -352,7 +352,7 @@ func coalesceCommitMutations(muts []Mutation) []Mutation {
 }
 
 // Ordered Sets need only last-write-wins, not replay (C++ WriteMap.cpp:125-137).
-// Operands remain owned by the leased snapshot until captureCommit copies them.
+// Operands stay in the transaction's slab, which captureCommit borrows.
 func coalescePlainSetMutations(muts []Mutation) ([]Mutation, bool) {
 	unique := 0
 	for i, m := range muts {
@@ -438,6 +438,7 @@ func coalesceWriteConflicts(in []KeyRange) []KeyRange {
 // hammers an unrelated key ships uncoalesced — safe (no wrong bytes, no dropped op), identical to pre-#28
 // and the rywDisabled path (FDB-C-dev delta ACK: non-blocking). Extracted from Commit as a PURE function so
 // the ship-decision is unit-testable / revert-provable outside Commit's inline flow.
+// A coalesced shipMuts is always a fresh vector: captureCommitVectors keeps it uncopied.
 func coalesceCommitVectors(rawMuts []Mutation, rawConflicts []KeyRange, rywDisabled bool) (shipMuts []Mutation, sizeConflicts []KeyRange, coalesced bool) {
 	if rywDisabled || mutationsHaveVersionstamp(rawMuts) {
 		return rawMuts, rawConflicts, false
