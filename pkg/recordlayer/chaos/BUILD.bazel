@@ -30,6 +30,7 @@ go_library(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/vectorcodec",
         "//pkg/recordlayer/vectorindex",
         "@org_golang_google_protobuf//proto",
     ],

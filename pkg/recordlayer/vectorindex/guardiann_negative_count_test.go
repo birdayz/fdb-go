@@ -22,7 +22,7 @@ var _ = Describe("GuardiANN negative task count", func() {
 		ctx := context.Background()
 		root := specSubspace()
 		builder := baseBuilder()
-		index := recordlayer.NewVectorIndex("Order$negative_count", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		index := recordlayer.NewVectorIndex("Order$negative_count", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		index.Options[recordlayer.IndexOptionVectorEngine] = "GUARDIANN"
 		index.Options[recordlayer.IndexOptionGuardiannPrimaryClusterMin] = "3"
 		index.Options[recordlayer.IndexOptionGuardiannPrimaryClusterMax] = "12"
@@ -38,7 +38,7 @@ var _ = Describe("GuardiANN negative task count", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 13; i++ {
-				if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(1)}); err != nil {
+				if _, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(1)}, "price")); err != nil {
 					return nil, err
 				}
 			}

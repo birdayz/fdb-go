@@ -8,6 +8,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 )
 
 // verifyVectorIndexes checks VECTOR (HNSW) indexes by verifying:
@@ -57,8 +58,11 @@ func verifyVectorIndexes(ctx context.Context, store *recordlayer.FDBRecordStore,
 			}
 
 			for _, values := range tuples {
-				vec := valuesToFloat64(values)
-				if vec == nil {
+				vec, ok := modelVector(idx, values)
+				if ok && vec == nil {
+					continue // a null vector is not indexed
+				}
+				if !ok {
 					violations = append(violations, Violation{
 						Invariant:  "vector_index_convert_error",
 						PrimaryKey: rec.PrimaryKey,
@@ -181,4 +185,25 @@ func valuesToFloat64(values []any) []float64 {
 		}
 	}
 	return vec
+}
+
+// modelVector is the vector the index holds for one evaluated key, read as
+// Java's maintainer reads it: value column 0 as serialized vector bytes; ok
+// is false when that read fails, and a nil vector with ok is not indexed.
+func modelVector(idx *recordlayer.Index, values []any) ([]float64, bool) {
+	split := 0
+	if kwv, isKWV := idx.RootExpression.(*recordlayer.KeyWithValueExpression); isKWV {
+		split = kwv.SplitPoint()
+	}
+	if len(values) <= split {
+		return nil, false
+	}
+	switch v := values[split].(type) {
+	case nil:
+		return nil, true
+	case []byte:
+		vec, err := vectorcodec.Deserialize(v)
+		return vec, err == nil
+	}
+	return nil, false
 }

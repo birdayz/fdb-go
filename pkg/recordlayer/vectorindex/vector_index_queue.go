@@ -74,13 +74,16 @@ func (m *vectorIndexMaintainer) UpdateFromQueue(data *anypb.Any) error {
 // applyIndexEntry is shared by ordinary writes and replay. The serialized primary
 // key is complete; trimming and graph locking happen only when applying it.
 func (m *vectorIndexMaintainer) applyIndexEntry(entry recordlayer.EvaluatedIndexEntry, remove bool) error {
-	prefix, vector, decodeErr := m.splitPrefixAndVector(entry)
-	if !remove && decodeErr != nil {
-		return fmt.Errorf("vector index %q: decode vector for new record: %w", m.Index().Name, decodeErr)
+	// Java reads the vector before an insert and a remove alike, so a remove
+	// fails where the read does.
+	vector, vectorType, err := entryVector(entry)
+	if err != nil {
+		return fmt.Errorf("vector index %q: read vector: %w", m.Index().Name, err)
 	}
-	if decodeErr == nil && vector == nil {
+	if vector == nil {
 		return nil
 	}
+	prefix := entry.Key()
 	trimmed, err := m.Index().TrimPrimaryKey(entry.PrimaryKey())
 	if err != nil {
 		action := "insert"
@@ -90,12 +93,12 @@ func (m *vectorIndexMaintainer) applyIndexEntry(entry recordlayer.EvaluatedIndex
 		return fmt.Errorf("trim primary key for vector index %q %s: %w", m.Index().Name, action, err)
 	}
 	if m.engine == VectorEngineGuardiann {
-		return m.applyGuardiannEntry(prefix, trimmed, gVector{data: vector, typ: vectorTypeOfEntry(entry)}, remove)
+		return m.applyGuardiannEntry(prefix, trimmed, gVector{data: vector, typ: vectorType}, remove)
 	}
 	return m.withPrefixWriteLock(prefix, func(graph *hnswGraph) error {
 		if remove {
 			return graph.Delete(m.Transaction(), trimmed)
 		}
-		return graph.insertTyped(m.Transaction(), trimmed, vector, vectorTypeOfEntry(entry))
+		return graph.insertTyped(m.Transaction(), trimmed, vector, vectorType)
 	})
 }

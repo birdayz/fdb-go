@@ -21,14 +21,14 @@ import (
 var _ = Describe("HNSW operation-local node cache", func() {
 	It("does not let a snapshot search's nodes serve a later insert", func() {
 		ctx := context.Background()
-		index := recordlayer.NewVectorIndex("hnsw_oplocal", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		index := recordlayer.NewVectorIndex("hnsw_oplocal", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseBuilder()
 		builder.AddIndex("Order", index)
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 		ks := specSubspace()
 		save := func(store *recordlayer.FDBRecordStore, id int64, x, y int32) {
-			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(x), Quantity: proto.Int32(y)})
+			_, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(x), Quantity: proto.Int32(y)}, "price", "quantity"))
 			Expect(err).NotTo(HaveOccurred())
 		}
 		_, err = sharedDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {

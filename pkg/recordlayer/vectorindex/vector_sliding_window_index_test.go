@@ -25,7 +25,7 @@ import (
 // that reused one field for two roles could not tell window movement apart from
 // vector movement.
 func newWindowedVectorIndex(name string, size int32, dir gen.RowNumberWindowPredicate_Direction, partitionFields ...string) *recordlayer.Index {
-	idx := recordlayer.NewVectorIndex(name, recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 0), 2)
+	idx := recordlayer.NewVectorIndex(name, recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 	rn := &gen.RowNumberWindowPredicate{
 		OrderingField: []string{"price"},
 		Size:          proto.Int32(size),
@@ -46,7 +46,7 @@ func newWindowedVectorIndex(name string, size int32, dir gen.RowNumberWindowPred
 // KeyWithValue expression).
 func newPartitionedWindowedVectorIndex(name string, size int32, dir gen.RowNumberWindowPredicate_Direction, partitionField string) *recordlayer.Index {
 	idx := recordlayer.NewVectorIndex(name,
-		recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field(partitionField), recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 1), 2)
+		recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field(partitionField), recordlayer.Field("vector_data")), 1), 2)
 	rn := &gen.RowNumberWindowPredicate{
 		OrderingField:   []string{"price"},
 		Size:            proto.Int32(size),
@@ -160,10 +160,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, o := range []struct{ id, price int64 }{{1, 10}, {2, 20}} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId: proto.Int64(o.id), Price: proto.Int32(int32(o.price)),
 					CoordX: proto.Int64(o.id), CoordY: proto.Int64(o.id),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -233,10 +233,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 
 			// Insert prices 50, 40, 30 — fills the window.
 			for i, price := range []int32{50, 40, 30} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{1, 2, 3}))
@@ -248,10 +248,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(boundary).To(Equal(tuple.Tuple{int64(50), int64(1)}))
 
 			// A BETTER entry (price 20) evicts the worst (price 50, PK 1).
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(4), Price: proto.Int32(20),
 				CoordX: proto.Int64(9), CoordY: proto.Int64(9),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{2, 3, 4}))
 
@@ -267,10 +267,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 
 			// A WORSE entry (price 100) never reaches the delegate, but is
 			// still tracked in the entry list.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(5), Price: proto.Int32(100),
 				CoordX: proto.Int64(11), CoordY: proto.Int64(11),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{2, 3, 4}))
 			keys, _ = readSlidingWindowEntries(tx, sw, nil)
@@ -303,10 +303,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{30, 40, 50} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{1, 2, 3}))
@@ -319,10 +319,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(boundary).To(Equal(tuple.Tuple{int64(30), int64(1)}))
 
 			// A larger price evicts the smallest.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(4), Price: proto.Int32(60),
 				CoordX: proto.Int64(9), CoordY: proto.Int64(9),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{2, 3, 4}))
 			count, boundary = readSlidingWindowMeta(tx, sw, nil)
@@ -330,10 +330,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(boundary).To(Equal(tuple.Tuple{int64(40), int64(2)}))
 
 			// A smaller price is tracked but never indexed.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(5), Price: proto.Int32(1),
 				CoordX: proto.Int64(11), CoordY: proto.Int64(11),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{2, 3, 4}))
 			keys, _ := readSlidingWindowEntries(tx, sw, nil)
@@ -391,10 +391,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for i, price := range dirCase.prices {
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(withVector(&gen.Order{
 						OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 						CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
-					})
+					}, "coord_x", "coord_y"))
 					Expect(err).NotTo(HaveOccurred())
 				}
 				Expect(searchPKs(store, idx, nil)).To(Equal(dirCase.inWindow))
@@ -437,10 +437,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{10, 20, 30} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{1, 2}))
@@ -479,10 +479,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(10),
 				CoordX: proto.Int64(1), CoordY: proto.Int64(1),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 
 			deleted, err := store.DeleteRecord(tuple.Tuple{int64(1)})
@@ -527,12 +527,12 @@ var _ = Describe("SlidingWindowIndex", func() {
 			}{
 				{1, 7, 10}, {2, 7, 20}, {3, 7, 30}, {4, 8, 15}, {5, 8, 25},
 			} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
 					CoordX:   proto.Int64(o.id), CoordY: proto.Int64(o.id),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -587,12 +587,12 @@ var _ = Describe("SlidingWindowIndex", func() {
 			for _, o := range []struct{ id, qty, price int64 }{
 				{1, 7, 10}, {2, 7, 20}, {3, 8, 15},
 			} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
 					CoordX:   proto.Int64(o.id), CoordY: proto.Int64(o.id),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -627,7 +627,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		// index shape that failed the earlier gate would have proved nothing
 		// about it.
 		idx := recordlayer.NewVectorIndex("sw_dw_unpart",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 1), 2)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 2)
 		Expect(idx.SetPredicateProto(&gen.Predicate{
 			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
 				OrderingField: []string{"price"},
@@ -646,10 +646,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(1), Quantity: proto.Int32(7), Price: proto.Int32(10),
 				CoordX: proto.Int64(1), CoordY: proto.Int64(1),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 
 			derr := store.DeleteRecordsWhere(tuple.Tuple{int64(7)})
@@ -705,7 +705,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		// boundaries that mis-promote on the next delete. Java asks the
 		// structural question instead: matchesSatisfyingQuery(partitionKey).
 		idx := recordlayer.NewVectorIndex("sw_dw_mismatch",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 1), 2)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 2)
 		Expect(idx.SetPredicateProto(&gen.Predicate{
 			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
 				OrderingField:   []string{"order_id"},
@@ -728,12 +728,12 @@ var _ = Describe("SlidingWindowIndex", func() {
 			for _, o := range []struct{ id, qty, price int64 }{
 				{1, 7, 100}, {2, 7, 200}, {3, 8, 100},
 			} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(withVector(&gen.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
 					CoordX:   proto.Int64(o.id), CoordY: proto.Int64(o.id),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(e).NotTo(HaveOccurred())
 			}
 
@@ -810,12 +810,12 @@ var _ = Describe("SlidingWindowIndex", func() {
 				for _, o := range []struct{ id, qty, price int64 }{
 					{1, 7, 10}, {2, 7, 20}, {3, 8, 15},
 				} {
-					_, e := store.SaveRecord(&gen.Order{
+					_, e := store.SaveRecord(withVector(&gen.Order{
 						OrderId:  proto.Int64(o.id),
 						Quantity: proto.Int32(int32(o.qty)),
 						Price:    proto.Int32(int32(o.price)),
 						CoordX:   proto.Int64(o.id), CoordY: proto.Int64(o.id),
-					})
+					}, "coord_x", "coord_y"))
 					Expect(e).NotTo(HaveOccurred())
 				}
 
@@ -922,7 +922,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		// columns the widths agree and the only thing that can refuse is the
 		// column-by-column check, which is the arm under test.
 		idx := recordlayer.NewVectorIndex("sw_dw_rtk_root",
-			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("quantity"), recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 2), 2)
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 2), 2)
 		Expect(idx.SetPredicateProto(&gen.Predicate{
 			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
 				OrderingField: []string{"order_id"},
@@ -949,12 +949,12 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for _, o := range []struct{ id, qty, price int64 }{{1, 7, 10}, {2, 8, 20}} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(withVector(&gen.Order{
 					OrderId:  proto.Int64(o.id),
 					Quantity: proto.Int32(int32(o.qty)),
 					Price:    proto.Int32(int32(o.price)),
 					CoordX:   proto.Int64(o.id), CoordY: proto.Int64(o.id),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(e).NotTo(HaveOccurred())
 			}
 
@@ -1004,10 +1004,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for i, price := range []int32{10, 20, 30} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(withVector(&gen.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(e).NotTo(HaveOccurred())
 			}
 			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{1}))
@@ -1076,10 +1076,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for i, price := range []int32{30, 20, 10} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(withVector(&gen.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(e).NotTo(HaveOccurred())
 			}
 			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{1}))
@@ -1119,10 +1119,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(serr).NotTo(HaveOccurred())
 
 			for i, price := range []int32{10, 20, 30} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(withVector(&gen.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(e).NotTo(HaveOccurred())
 			}
 
@@ -1142,10 +1142,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			// The store is usable afterwards: a fresh save fills the window
 			// again rather than evicting against a boundary that named a
 			// record delete-all removed.
-			_, e := store.SaveRecord(&gen.Order{
+			_, e := store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(9), Price: proto.Int32(5),
 				CoordX: proto.Int64(9), CoordY: proto.Int64(9),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(e).NotTo(HaveOccurred())
 			count, boundary = readSlidingWindowMeta(tx, sw, nil)
 			Expect(count).To(Equal(int64(1)))
@@ -1179,10 +1179,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(serr).NotTo(HaveOccurred())
 
-			_, e := store.SaveRecord(&gen.Order{
+			_, e := store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(10),
 				CoordX: proto.Int64(3), CoordY: proto.Int64(4),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(e).NotTo(HaveOccurred())
 
 			entries, cerr := recordlayer.AsList(ctx, store.ScanIndexByType(idx, recordlayer.IndexScanByDistance,
@@ -1210,10 +1210,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(10),
 				CoordX: proto.Int64(3), CoordY: proto.Int64(4),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Before the unwrap seam existed, this failed with
@@ -1265,7 +1265,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 									if tied {
 										price = 10
 									}
-									record, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(price), Quantity: proto.Int32(7), CoordX: proto.Int64(id), CoordY: proto.Int64(0)})
+									record, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(id), Price: proto.Int32(price), Quantity: proto.Int32(7), CoordX: proto.Int64(id), CoordY: proto.Int64(0)}, "coord_x", "coord_y"))
 									Expect(err).NotTo(HaveOccurred())
 									saved = append(saved, record)
 								}
@@ -1294,6 +1294,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 									order := refreshed.Record.(*gen.Order)
 									order.CoordX = proto.Int64(100 + order.GetOrderId())
 									order.CoordY = proto.Int64(99)
+									withVector(order, "coord_x", "coord_y")
 									record = &refreshed
 									timer.Reset()
 									if writeOnly {
@@ -1356,7 +1357,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 		_, err = sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
-			saved, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), CoordX: proto.Int64(0), CoordY: proto.Int64(0)})
+			saved, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), CoordX: proto.Int64(0), CoordY: proto.Int64(0)}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 			sw := slidingWindowSubspaceFor(store.Subspace(), idx)
 			meta := swPartitionSub(sw, nil).Sub(slidingWindowMetaSubspaceKey)
@@ -1395,10 +1396,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(store.GetIndexState(idx.Name)).To(Equal(recordlayer.IndexStateWriteOnly))
 
-			saved, err := store.SaveRecord(&gen.Order{
+			saved, err := store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(10),
 				CoordX: proto.Int64(0), CoordY: proto.Int64(0),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 
 			tx := rtx.Transaction()
@@ -1428,10 +1429,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			// window of 2 the next insert takes the window-full branch, compares
 			// against the boundary, and — being worse — never enters the graph,
 			// so the window silently holds one record instead of two.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(2), Price: proto.Int32(20),
 				CoordX: proto.Int64(1), CoordY: proto.Int64(1),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 
 			count, boundary = readSlidingWindowMeta(tx, sw, nil)
@@ -1467,10 +1468,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{10, 20, 30} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -1495,10 +1496,10 @@ var _ = Describe("SlidingWindowIndex", func() {
 
 			// And the rebuild really does refill the window.
 			for i, price := range []int32{10, 20, 30} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			count, boundary = readSlidingWindowMeta(tx, sw, nil)
@@ -1542,11 +1543,11 @@ var _ = Describe("SlidingWindowIndex", func() {
 			// Partition 1 holds two records in-window plus one in overflow, so
 			// the move also has to trigger a re-election on the way out.
 			for _, o := range []struct{ id, price int64 }{{1, 10}, {2, 20}, {3, 30}} {
-				_, e := store.SaveRecord(&gen.Order{
+				_, e := store.SaveRecord(withVector(&gen.Order{
 					OrderId: proto.Int64(o.id), Quantity: proto.Int32(1),
 					Price:  proto.Int32(int32(o.price)),
 					CoordX: proto.Int64(o.id), CoordY: proto.Int64(o.id),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(e).NotTo(HaveOccurred())
 			}
 
@@ -1567,11 +1568,11 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(graphPKs(1)).To(Equal([]int64{1, 2}))
 
 			// Move order 1 to partition 2, keeping its price.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(1), Quantity: proto.Int32(2),
 				Price:  proto.Int32(10),
 				CoordX: proto.Int64(1), CoordY: proto.Int64(1),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 
 			tx := rtx.Transaction()
@@ -1621,20 +1622,20 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for i, price := range []int32{10, 20, 30} {
-				_, err = store.SaveRecord(&gen.Order{
+				_, err = store.SaveRecord(withVector(&gen.Order{
 					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
 					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
-				})
+				}, "coord_x", "coord_y"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{1, 2}))
 
 			// Move PK 1 from the best position to the worst. It leaves the
 			// window; PK 3 (price 30) is re-elected in its place.
-			_, err = store.SaveRecord(&gen.Order{
+			_, err = store.SaveRecord(withVector(&gen.Order{
 				OrderId: proto.Int64(1), Price: proto.Int32(99),
 				CoordX: proto.Int64(0), CoordY: proto.Int64(0),
-			})
+			}, "coord_x", "coord_y"))
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{2, 3}))
@@ -1769,7 +1770,7 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		// an index the factory DECORATED, and the factory's search recurses
 		// through AND only. A window reachable solely under an OR is therefore
 		// never seen — see the spec below, which pins that Java accepts it too.
-		idx := recordlayer.NewVectorIndex("sw_or", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 0), 2)
+		idx := recordlayer.NewVectorIndex("sw_or", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		rn := func() *gen.Predicate {
 			return &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
 				OrderingField: []string{"price"},
@@ -1854,7 +1855,7 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		// AND(rowWindow, value) is a legal shape and the maintainer must honour
 		// BOTH: the per-record arm decides who is a candidate at all, the window
 		// decides which candidates are kept.
-		idx := recordlayer.NewVectorIndex("sw_and_value", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 0), 2)
+		idx := recordlayer.NewVectorIndex("sw_and_value", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		rn := &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
 			OrderingField: []string{"price"},
 			Size:          proto.Int32(2),

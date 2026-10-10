@@ -1,12 +1,14 @@
 package vectorindex
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
 )
 
-// TestTupleToVector pins the error contract for the VECTOR index write path
+// TestTupleToVector pins the error contract for the SPFresh index write path
 // (FDB C++ review of PR #272, finding C1): an absent/null vector is skipped, but a
 // NON-null but UNDECODABLE vector must return an ERROR — Java's RealVector.fromBytes
 // throws and fails the write. Pre-fix tupleToVector returned nil for an undecodable
@@ -74,4 +76,38 @@ func TestTupleToVector(t *testing.T) {
 			t.Fatalf("non-numeric element: want error, got (%v, nil)", v)
 		}
 	})
+}
+
+// TestEntryVector pins the HNSW and GuardiANN read, Java's updateIndexEntry:
+// value column 0 as bytes only (Tuple.getBytes), then RealVector.fromBytes.
+func TestEntryVector(t *testing.T) {
+	t.Parallel()
+	entry := func(value ...tuple.TupleElement) recordlayer.EvaluatedIndexEntry {
+		return recordlayer.NewEvaluatedIndexEntry(tuple.Tuple{}, tuple.Tuple(value), tuple.Tuple{int64(1)})
+	}
+	vec := serializeVector([]float64{1, 2})
+	var cce *recordlayer.ClassCastError
+	var oob *recordlayer.IndexOutOfBoundsError
+	for _, c := range []struct {
+		name  string
+		entry recordlayer.EvaluatedIndexEntry
+		check func(v []float64, err error) bool
+	}{
+		{"a bytes vector", entry(vec), func(v []float64, err error) bool { return err == nil && len(v) == 2 && v[1] == 2 }},
+		{"later value columns ignored", entry(vec, int64(7), vec), func(v []float64, err error) bool { return err == nil && len(v) == 2 }},
+		{"a null vector skips", entry(nil, int64(7)), func(v []float64, err error) bool { return err == nil && v == nil }},
+		{"a numeric column", entry(float64(1), float64(2)), func(_ []float64, err error) bool { return errors.As(err, &cce) }},
+		{"a numeric column before bytes", entry(int64(1), vec), func(_ []float64, err error) bool { return errors.As(err, &cce) }},
+		{"no value column", entry(), func(_ []float64, err error) bool { return errors.As(err, &oob) }},
+		{"empty bytes", entry([]byte{}), func(_ []float64, err error) bool { return errors.As(err, &oob) }},
+		{"type ordinal 4", entry([]byte{4, 0}), func(_ []float64, err error) bool { return errors.As(err, &oob) }},
+		{"a negative type ordinal", entry([]byte{0xff, 1, 2}), func(_ []float64, err error) bool { return errors.As(err, &oob) }},
+		{"a RaBitQ ordinal", entry([]byte{3, 0}), func(_ []float64, err error) bool { return err != nil && !errors.As(err, &oob) }},
+		{"a truncated payload", entry(append(serializeVector([]float64{1}), 0, 0, 0, 0, 0, 0, 0)), func(_ []float64, err error) bool { return err != nil }},
+	} {
+		v, _, err := entryVector(c.entry)
+		if !c.check(v, err) {
+			t.Errorf("%s: got (%v, %T %v)", c.name, v, err, err)
+		}
+	}
 }

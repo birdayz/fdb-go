@@ -136,28 +136,39 @@ func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswSto
 	return storage
 }
 
-// splitPrefixAndVector extracts the prefix (grouping key) and vector from an
-// index entry: entry.key is the prefix columns before the split point, and
-// entry.value the vector data after it.
-func (m *vectorIndexMaintainer) splitPrefixAndVector(entry recordlayer.EvaluatedIndexEntry) (prefix tuple.Tuple, vector []float64, err error) {
-	if len(entry.Value()) == 0 {
-		// Java reads value.getBytes(0), which throws for a root with no value column.
-		return entry.Key(), nil, fmt.Errorf("vector index %q: entry has no vector column after the split point", m.Index().Name)
+// entryVector is Java's updateIndexEntry read (VectorIndexMaintainer.java:
+// 357, :395): value column 0 as bytes (Tuple.getBytes), the rest ignored, then
+// RealVector.fromBytes. A nil vector (nil, 0, nil) is not indexed. It returns
+// the vector and its VectorType ordinal.
+func entryVector(entry recordlayer.EvaluatedIndexEntry) ([]float64, byte, error) {
+	value := entry.Value()
+	if len(value) == 0 {
+		return nil, 0, &recordlayer.IndexOutOfBoundsError{Message: "Index 0 out of bounds for length 0"}
 	}
-	vec, verr := tupleToVector(entry.Value())
-	return entry.Key(), vec, verr
-}
-
-// vectorTypeOfEntry is the VectorType ordinal of an entry's serialized vector;
-// a vector spelled as numeric tuple elements is DOUBLE.
-func vectorTypeOfEntry(entry recordlayer.EvaluatedIndexEntry) byte {
-	t := entry.Value()
-	if len(t) == 1 {
-		if b, ok := t[0].([]byte); ok && len(b) > 0 && b[0] <= vectorcodec.TypeDouble {
-			return b[0]
-		}
+	var b []byte
+	switch v := value[0].(type) {
+	case nil:
+		return nil, 0, nil
+	case []byte:
+		b = v
+	default:
+		return nil, 0, &recordlayer.ClassCastError{Message: fmt.Sprintf("vector index value column 0 is %T, not bytes", v)}
 	}
-	return vectorcodec.TypeDouble
+	if b == nil {
+		return nil, 0, nil
+	}
+	if len(b) == 0 {
+		return nil, 0, &recordlayer.IndexOutOfBoundsError{Message: "Index 0 out of bounds for length 0"}
+	}
+	// VectorType.values().get(ordinal), the ordinal a signed Java byte.
+	if ordinal := int8(b[0]); ordinal < 0 || ordinal > vectorcodec.TypeRaBitQ {
+		return nil, 0, &recordlayer.IndexOutOfBoundsError{Message: fmt.Sprintf("Index %d out of bounds for length 4", ordinal)}
+	}
+	vec, err := deserializeVector(b)
+	if err != nil {
+		return nil, 0, fmt.Errorf("vector index: undecodable serialized vector: %w", err)
+	}
+	return vec, b[0], nil
 }
 
 // Update handles insert/delete/update for the VECTOR index.
@@ -225,15 +236,13 @@ func (m *vectorIndexMaintainer) withPrefixWriteLock(prefix tuple.Tuple, fn func(
 	return fn(NewHNSWGraph(storage, m.hnswConfig))
 }
 
-// tupleToVector converts tuple elements to a float64 vector. Returns:
+// tupleToVector converts tuple elements to a float64 vector, for the Go-only
+// SPFresh index; HNSW and GuardiANN read Java's way (entryVector). Returns:
 //   - (nil, nil)   for an absent/null vector — an empty tuple or a null component —
 //     which the caller skips (matches Java, which skips a null vector field);
 //   - (nil, error) for a NON-null but UNDECODABLE vector (bad serialized bytes,
-//     non-numeric element). Java's RealVector.fromBytes throws here and fails the
-//     write; Go previously returned nil → the maintainer silently skipped it,
-//     saving the record UNINDEXED (a vector search would miss the row). Surfacing
-//     the error makes the write fail, matching Java and avoiding silent index
-//     incompleteness.
+//     non-numeric element), which fails the write rather than leaving the
+//     record unindexed.
 //   - (vec, nil)   for a valid vector.
 //
 // Handles both raw bytes (KeyWithValueExpression on a bytes field) and numeric

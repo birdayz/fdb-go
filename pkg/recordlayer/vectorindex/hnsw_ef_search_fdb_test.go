@@ -21,7 +21,7 @@ import (
 var _ = Describe("HNSW efSearch scan option", func() {
 	It("searches with the option as given", func() {
 		ctx := context.Background()
-		index := recordlayer.NewVectorIndex("hnsw_ef", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		index := recordlayer.NewVectorIndex("hnsw_ef", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder := baseBuilder()
 		builder.AddIndex("Order", index)
 		md, err := builder.Build()
@@ -31,7 +31,7 @@ var _ = Describe("HNSW efSearch scan option", func() {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(ks).Create()
 			Expect(err).NotTo(HaveOccurred())
 			for i := int64(1); i <= 8; i++ {
-				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(int32(i))})
+				_, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(int32(i))}, "price", "quantity"))
 				Expect(err).NotTo(HaveOccurred())
 			}
 			return nil, nil

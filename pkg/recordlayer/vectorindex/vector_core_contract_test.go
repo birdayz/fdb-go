@@ -64,7 +64,7 @@ var _ = Describe("vector indexes under core contracts", func() {
 	// sliding-window decorator, succeeds and requests no further merge.
 	It("explicitly merges HNSW and sliding HNSW without inventing deferred work", func() {
 		root := specSubspace()
-		plain := recordlayer.NewVectorIndex("vector", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		plain := recordlayer.NewVectorIndex("vector", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		windowed := newWindowedVectorIndex("windowed", 2, gen.RowNumberWindowPredicate_ASC)
 		builder := baseBuilder()
 		builder.AddIndex("Order", plain)
@@ -100,7 +100,7 @@ var _ = Describe("vector indexes under core contracts", func() {
 	// target is still merged (recordlayer's "attempts every target").
 	It("surfaces a failing GuardiANN merge and still merges the other target", func() {
 		root := specSubspace()
-		failing := recordlayer.NewVectorIndex("Order$merge_guardiann", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("price")), 1), 1)
+		failing := recordlayer.NewVectorIndex("Order$merge_guardiann", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1), 1)
 		failing.Options[recordlayer.IndexOptionVectorEngine] = "GUARDIANN"
 		failing.Options[recordlayer.IndexOptionGuardiannPrimaryClusterMin] = "3"
 		failing.Options[recordlayer.IndexOptionGuardiannPrimaryClusterMax] = "12"
@@ -119,7 +119,7 @@ var _ = Describe("vector indexes under core contracts", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 13; i++ {
-				if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(1)}); err != nil {
+				if _, err := store.SaveRecord(withVector(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(1)}, "price")); err != nil {
 					return nil, err
 				}
 			}
@@ -154,7 +154,7 @@ var _ = Describe("vector indexes under core contracts", func() {
 	Describe("the store's vector entry points", func() {
 		buildMetaData := func() *recordlayer.RecordMetaData {
 			builder := baseBuilder()
-			builder.AddIndex("Order", recordlayer.NewVectorIndex("original", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2))
+			builder.AddIndex("Order", recordlayer.NewVectorIndex("original", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2))
 			md, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 			return md

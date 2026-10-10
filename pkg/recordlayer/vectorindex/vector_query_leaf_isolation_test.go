@@ -120,10 +120,10 @@ func TestVectorQueryLeavesConsultIsolationLevel(t *testing.T) {
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 		index := recordlayer.NewIndex(indexName, recordlayer.Field("price"))
 		builder.AddIndex("Order", index)
-		// (price, quantity) as a 2-D vector: the same records carry both the
+		// (price, quantity) as a 2-D vector in vector_data: the same records carry both the
 		// value index and the kNN access path, so one seeded store serves
 		// every leaf and the concurrent write below moves a row in BOTH.
-		vecIndex := recordlayer.NewVectorIndex("Order$vec", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		vecIndex := recordlayer.NewVectorIndex("Order$vec", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
 		builder.AddIndex("Order", vecIndex)
 		// The SPFresh index over the same 2-D coordinates. A separate index
 		// type with a separate implementation of the BY_DISTANCE contract, so
@@ -176,9 +176,9 @@ func TestVectorQueryLeavesConsultIsolationLevel(t *testing.T) {
 						return nil, err
 					}
 					for i := int64(1); i <= 5; i++ {
-						if _, err := store.SaveRecord(&gen.Order{
+						if _, err := store.SaveRecord(withVector(&gen.Order{
 							OrderId: proto.Int64(i), Price: proto.Int32(int32(i)), Quantity: proto.Int32(int32(i)),
-						}); err != nil {
+						}, "price", "quantity")); err != nil {
 							return nil, err
 						}
 					}
@@ -217,9 +217,9 @@ func TestVectorQueryLeavesConsultIsolationLevel(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
-					_, err = store.SaveRecord(&gen.Order{
+					_, err = store.SaveRecord(withVector(&gen.Order{
 						OrderId: proto.Int64(3), Price: proto.Int32(3000), Quantity: proto.Int32(3000),
-					})
+					}, "price", "quantity"))
 					return nil, err
 				}); err != nil {
 					t.Fatalf("concurrent write: %v", err)
