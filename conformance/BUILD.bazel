@@ -48,10 +48,37 @@ java_binary(
     # and per-request latency grows past the 30s HTTP timeout. -Xmx2g
     # gives enough headroom for the full corpus without running into
     # GC stalls.
-    jvm_flags = ["-Xmx2g"],
+    # FDB Java's FDB_LIBRARY_PATH_FDB_C loads the pinned libfdb_c before its JNI
+    # library, which then binds to it by soname instead of searching the host.
+    data = select({
+        ":linux_aarch64": ["@libfdb_c_linux_aarch64//file"],
+        ":linux_x86_64": ["@libfdb_c_linux_x86_64//file"],
+        "//conditions:default": [],
+    }),
+    jvm_flags = ["-Xmx2g"] + select({
+        ":linux_aarch64": ["-DFDB_LIBRARY_PATH_FDB_C=$${JAVA_RUNFILES}/$(rlocationpath @libfdb_c_linux_aarch64//file)"],
+        ":linux_x86_64": ["-DFDB_LIBRARY_PATH_FDB_C=$${JAVA_RUNFILES}/$(rlocationpath @libfdb_c_linux_x86_64//file)"],
+        "//conditions:default": [],
+    }),
     main_class = "com.birdayz.conformance.ConformanceServer",
     visibility = ["//visibility:public"],
     runtime_deps = [":conformance_lib"],
+)
+
+config_setting(
+    name = "linux_x86_64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+config_setting(
+    name = "linux_aarch64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:aarch64",
+    ],
 )
 
 java_test(
