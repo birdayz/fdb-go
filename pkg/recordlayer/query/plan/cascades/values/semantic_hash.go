@@ -30,6 +30,20 @@ import (
 // (for relational EqualsWithoutChildren/HashCodeWithoutChildren, 040.2) and
 // cascades (memoEqual) can use it without an import cycle. Inert until those
 // call sites switch to it.
+// ConstantAgnosticHash hashes every constant by its type only, so a literal and
+// the statement-pool reference standing for it break cost ties alike.
+type ConstantAgnosticHash struct{ io.Writer }
+
+// SemanticHashCodeIn is SemanticHashCode in the mode of the enclosing hash h.
+func SemanticHashCodeIn(h io.Writer, v Value) uint64 {
+	if _, agnostic := h.(ConstantAgnosticHash); agnostic {
+		d := fnv64.New()
+		writeSemanticHash(ConstantAgnosticHash{d}, v)
+		return d.Sum64()
+	}
+	return SemanticHashCode(v)
+}
+
 func SemanticHashCode(v Value) uint64 {
 	h := fnv64.New()
 	writeSemanticHash(h, v)
@@ -73,6 +87,10 @@ func writeSemanticHash(h io.Writer, v Value) {
 	case *ObjectValue:
 		_, _ = io.WriteString(h, "obj")
 	case *ConstantObjectValue:
+		if _, agnostic := h.(ConstantAgnosticHash); agnostic {
+			_, _ = io.WriteString(h, "const:"+t.Type().String())
+			break
+		}
 		// alias excluded; ConstantID IS a discriminator (equality compares it).
 		_, _ = io.WriteString(h, "cov:"+t.ConstantID)
 	case *ExistsValue:
@@ -169,6 +187,10 @@ func writeSemanticHash(h io.Writer, v Value) {
 	// Value-bearing leaves: the literal MUST be in the hash (their
 	// EqualsWithoutChildren distinguishes different literals).
 	case *ConstantValue:
+		if _, agnostic := h.(ConstantAgnosticHash); agnostic {
+			_, _ = io.WriteString(h, "const:"+t.Type().String())
+			break
+		}
 		_, _ = fmt.Fprintf(h, "const:%T=%v", t.Value, t.Value)
 	case *BooleanValue:
 		if t.Value == nil {

@@ -1543,15 +1543,27 @@ func ValueSize(v Value) int {
 // Used by code that only acts on fully-foldable operands (e.g. range
 // enclosure's compile-time comparand).
 func IsConstantValue(v Value) bool {
+	return isConstantValue(v, false)
+}
+
+// IsConstantExpression also admits statement-pool references: row-independent,
+// but their value is known only at execution.
+func IsConstantExpression(v Value) bool {
+	return isConstantValue(v, true)
+}
+
+func isConstantValue(v Value, includeBindings bool) bool {
 	if v == nil {
 		return false
 	}
 	switch v.(type) {
 	case *ConstantValue, *NullValue, *BooleanValue:
 		return true
+	case *ConstantObjectValue:
+		return includeBindings
 	case *fieldValue, *quantifiedObjectValue, *AggregateValue, *ParameterValue,
 		*QuantifiedRecordValue, *ExistsValue, *ScalarSubqueryValue,
-		*ObjectValue, *UnmatchedAggregateValue, *ConstantObjectValue,
+		*ObjectValue, *UnmatchedAggregateValue,
 		*IndexEntryObjectValue, *ParameterObjectValue:
 		return false
 	}
@@ -1562,7 +1574,7 @@ func IsConstantValue(v Value) bool {
 		return false
 	}
 	for _, c := range children {
-		if !IsConstantValue(c) {
+		if !isConstantValue(c, includeBindings) {
 			return false
 		}
 	}

@@ -169,8 +169,9 @@ func (c *RelationalPlanCache) lookup(template string, key cacheKey, bindings que
 func (c *RelationalPlanCache) store(template string, key cacheKey, bindings queryBindings, entry *planCacheEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	stored := &planCacheEntry{plan: entry.plan, scalarSubs: entry.scalarSubs, outputLabels: slices.Clone(entry.outputLabels), constraint: bindings.constraint()}
-	c.stages(template, key, false).put(bindings.equivalence, stored, c.now())
+	constraint := bindings.constraint()
+	stored := &planCacheEntry{plan: entry.plan, scalarSubs: entry.scalarSubs, outputLabels: slices.Clone(entry.outputLabels), constraint: constraint}
+	c.stages(template, key, false).put(constraint.key(), stored, c.now())
 }
 
 func (c *RelationalPlanCache) numEntries() int {
@@ -322,8 +323,9 @@ func (c *PlanCache) lookup(_ string, key cacheKey, bindings queryBindings) (*pla
 func (c *PlanCache) store(_ string, key cacheKey, bindings queryBindings, entry *planCacheEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	key.equivalence = bindings.equivalence
-	stored := &planCacheEntry{plan: entry.plan, scalarSubs: entry.scalarSubs, outputLabels: slices.Clone(entry.outputLabels), constraint: bindings.constraint()}
+	constraint := bindings.constraint()
+	key.equivalence = constraint.key()
+	stored := &planCacheEntry{plan: entry.plan, scalarSubs: entry.scalarSubs, outputLabels: slices.Clone(entry.outputLabels), constraint: constraint}
 	if el, ok := c.items[key]; ok {
 		el.Value.(*lruItem).entry = stored
 		c.ll.MoveToBack(el)

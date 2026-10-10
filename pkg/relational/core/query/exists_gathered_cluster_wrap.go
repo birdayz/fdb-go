@@ -182,25 +182,8 @@ func rebaseLegRefsToBox(v values.Value, windows map[values.CorrelationIdentifier
 	return out, ok
 }
 
-// wrapRVFullyBaked reports whether the wrap's rebased RESULT VALUE is uniformly
-// build-evaluable. The wrap cursor builds positionally when ANY field is baked
-// and then evaluates EVERY field over the build context. That context carries the
-// per-leg Correlations plus the query's pre-evaluated ScalarSubqueries map
-// (evaluateOrdinalJoinRow threads it from the base EvaluationContext) — but NO
-// name channel and NO parameter Binder — so every node must be something that
-// context can evaluate. This is a WHITELIST with default DENY: a blacklist
-// missed two wrong-rows cases before (a lazy bare read, then a
-// ScalarSubqueryValue silently NULLing), so an unknown node kind now declines
-// the wrap (fail-open to the name model) instead of being presumed safe. Allowed:
-// baked (Resolved) FieldValues, the box's own QOV, literal/constant kinds, the
-// pure computation kinds over those that the certs exercise under build
-// (arithmetic, boolean ops, CASE, casts, scalar functions, IN-list/LIKE), and a
-// ScalarSubqueryValue whose result is REGISTERED for pre-evaluation
-// (scalarAliases) — an uncorrelated scalar is a per-query constant the executor
-// binds by alias, so it builds evaluable exactly like a ConstantValue. A scalar
-// NOT in the registered set (a mis-orchestration) declines rather than risk an
-// UnboundScalarSubqueryError at build. Everything else — parameters, aggregates,
-// windowed values, foreign QOVs, lazy reads — declines.
+// wrapRVFullyBaked rejects values that cannot evaluate over the positional build
+// context; joinBuildRowContext preserves constant pools and registered scalars.
 func wrapRVFullyBaked(v values.Value, boxBinding string, scalarAliases map[values.CorrelationIdentifier]struct{}) bool {
 	ok := true
 	values.WalkValue(v, func(n values.Value) bool {
@@ -228,7 +211,7 @@ func wrapRVFullyBaked(v values.Value, boxBinding string, scalarAliases map[value
 				return false
 			}
 			return true
-		case *values.ConstantValue, *values.NullValue, *values.BooleanValue:
+		case *values.ConstantValue, *values.ConstantObjectValue, *values.NullValue, *values.BooleanValue:
 			return true
 		case *values.ArithmeticValue, *values.AndOrValue, *values.NotValue,
 			*values.CastValue, *values.PromoteValue, *values.EvaluatesToValue,

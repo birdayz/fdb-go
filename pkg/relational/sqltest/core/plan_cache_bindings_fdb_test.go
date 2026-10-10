@@ -57,7 +57,7 @@ func TestFDB_PlanCacheBindingShapes(t *testing.T) {
 		{"secondary", "SELECT id FROM T WHERE v=?", []any{int64(10)}, []any{int64(30)}, []int64{1}, []int64{3}, true},
 		{"false then true", "SELECT id FROM T WHERE ? ORDER BY id", []any{false}, []any{true}, nil, []int64{1, 2, 3}, false},
 		{"contradiction then range", "SELECT id FROM T WHERE v>=? AND v<=? ORDER BY id", []any{int64(30), int64(10)}, []any{int64(10), int64(30)}, nil, []int64{1, 2, 3}, true},
-		{"case", "SELECT CASE WHEN ? THEN id ELSE -id END FROM T ORDER BY id", []any{true}, []any{false}, []int64{1, 2, 3}, []int64{-1, -2, -3}, false},
+		{"case", "SELECT CASE WHEN ? THEN id ELSE id * 10 END FROM T ORDER BY id", []any{true}, []any{false}, []int64{1, 2, 3}, []int64{10, 20, 30}, false},
 		{"coalesce error pruning", "SELECT id FROM T WHERE COALESCE(?, 1/0=1) ORDER BY id", []any{true}, []any{false}, []int64{1, 2, 3}, nil, false},
 		{"scalar subquery", "SELECT id FROM T WHERE v=(SELECT ? FROM T WHERE id=1)", []any{int64(10)}, []any{int64(30)}, []int64{1}, []int64{3}, true},
 		{"join", "SELECT a.id FROM T a JOIN T b ON a.v=b.v WHERE b.id=?", []any{int64(1)}, []any{int64(3)}, []int64{1}, []int64{3}, true},
@@ -132,8 +132,11 @@ func TestFDB_PlanCachePreservesRuntimePayloads(t *testing.T) {
 			}
 		}
 		wantHits := int64(1)
-		if _, isBoolean := pair[0].(bool); isBoolean {
+		switch pair[0].(type) {
+		case bool:
 			wantHits = 0 // Java constrains boolean evaluation, not only its type.
+		case float64:
+			wantHits = 0 // Float key proofs read signed zero and NaN.
 		}
 		if cache.Counts().TertiaryHit != before+wantHits {
 			t.Fatalf("payload %T hit delta=%d, want %d", pair[0], cache.Counts().TertiaryHit-before, wantHits)
@@ -176,7 +179,7 @@ func TestFDB_PlanCacheNumericPromotions(t *testing.T) {
 	ctx := context.Background()
 	db := testkit.SetupErrorDB(t, "/FRL/cache_binding_numeric", "cache_binding_numeric",
 		"CREATE TABLE T (id BIGINT,d DOUBLE,f FLOAT,PRIMARY KEY(id)) CREATE INDEX i_d ON T(d) CREATE INDEX i_f ON T(f)")
-	if _, err := db.ExecContext(ctx, "INSERT INTO T VALUES (1,1.0,1.0),(2,2.0,2.0),(3,3.0,3.0)"); err != nil {
+	if _, err := db.ExecContext(ctx, "INSERT INTO T VALUES (1,1.0,CAST(1.0 AS FLOAT)),(2,2.0,CAST(2.0 AS FLOAT)),(3,3.0,CAST(3.0 AS FLOAT))"); err != nil {
 		t.Fatal(err)
 	}
 	var cache *embedded.RelationalPlanCache
@@ -198,8 +201,16 @@ func TestFDB_PlanCacheNumericPromotions(t *testing.T) {
 		if got := cacheQueryIDs(t, conn, tc.query, tc.second); !reflect.DeepEqual(got, tc.wantSecond) {
 			t.Fatalf("%s second %v", tc.query, got)
 		}
+		// A float or cross-type comparand is rewritten from its value at plan
+		// time, so only the identical value may reuse that plan.
+		if cache.Counts().TertiaryHit != before {
+			t.Fatalf("%s reused a value-specialized plan for another value", tc.query)
+		}
+		if got := cacheQueryIDs(t, conn, tc.query, tc.first); !reflect.DeepEqual(got, tc.wantFirst) {
+			t.Fatalf("%s repeat %v", tc.query, got)
+		}
 		if cache.Counts().TertiaryHit != before+1 {
-			t.Fatalf("%s did not reuse its typed runtime comparand", tc.query)
+			t.Fatalf("%s did not reuse its plan for the identical value", tc.query)
 		}
 	}
 }

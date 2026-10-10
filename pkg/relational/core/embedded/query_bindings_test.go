@@ -225,3 +225,29 @@ func TestQueryBindingsConstrainsSparseIndexProof(t *testing.T) {
 		}
 	}
 }
+
+// A cross-type comparand is coerced from its value at plan time, so its plan
+// must not serve another value (`d > 2` once answered `d > 0`).
+func TestQueryBindingsPinsCrossTypeComparand(t *testing.T) {
+	t.Parallel()
+	logger := &captureLogger{}
+	g, md := newLoggingGenerator(t, "CREATE TABLE T (id BIGINT, d DOUBLE, PRIMARY KEY(id)) CREATE INDEX i_d ON T(d)", logger)
+	for i, step := range []struct {
+		sql  string
+		want PlanCacheEvent
+	}{
+		{"SELECT id FROM T WHERE d > 2", PlanCacheMiss},
+		{"SELECT id FROM T WHERE d > 0", PlanCacheMiss},
+		{"SELECT id FROM T WHERE d > 2", PlanCacheHit},
+		{"SELECT id FROM T WHERE id > 2", PlanCacheMiss},
+		{"SELECT id FROM T WHERE id > 0", PlanCacheHit},
+	} {
+		plan, err := g.planSelectCascades(context.Background(), parseQuery(t, step.sql), md, true, statementOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := logger.events[i].Cache; got != step.want {
+			t.Fatalf("%s: cache %v, want %v (%s)", step.sql, got, step.want, plan.Explain())
+		}
+	}
+}

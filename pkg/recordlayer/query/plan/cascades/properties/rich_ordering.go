@@ -1343,7 +1343,7 @@ func translateOrderingComparison(
 	}
 	if comparison.Operand == nil ||
 		comparison.ParameterName != "" ||
-		values.IsConstantValue(comparison.Operand) {
+		values.IsConstantExpression(comparison.Operand) {
 		return comparison, true
 	}
 	if _, isParameterValue := comparison.Operand.(*values.ParameterValue); isParameterValue {

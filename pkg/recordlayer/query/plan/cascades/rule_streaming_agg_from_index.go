@@ -193,7 +193,8 @@ func aggregatesCoveredByIndex(aggs []expressions.AggregateSpec, indexCols []stri
 		if a.Operand == nil {
 			continue
 		}
-		if _, isConst := a.Operand.(*values.ConstantValue); isConst {
+		switch a.Operand.(type) {
+		case *values.ConstantValue, *values.ConstantObjectValue:
 			continue // COUNT(*) / COUNT(1) — no field access needed
 		}
 		fv, ok := values.AsFieldValue(a.Operand)

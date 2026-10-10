@@ -10,6 +10,7 @@ package embedded
 import (
 	"strconv"
 	"strings"
+	"sync"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
@@ -28,6 +29,31 @@ type queryBindings struct {
 	equivalence string
 	constants   map[string]any
 	literals    []queryLiteralBinding
+	pins        *literalPins
+}
+
+// literalPins records runtime literals whose value planning consumed.
+type literalPins struct {
+	mu    sync.Mutex
+	exact map[int]bool
+}
+
+func (p *literalPins) pin(position int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.exact == nil {
+		p.exact = make(map[int]bool)
+	}
+	p.exact[position] = true
+}
+
+func (p *literalPins) has(position int) bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.exact[position]
 }
 
 type queryLiteralBinding struct {
@@ -47,11 +73,24 @@ type queryBindingConstraint struct {
 func (b queryBindings) constraint() queryBindingConstraint {
 	literals := append([]queryLiteralBinding(nil), b.literals...)
 	for i := range literals {
+		literals[i].exact = literals[i].exact || b.pins.has(i)
 		if !literals[i].exact {
 			literals[i].valueKey = ""
 		}
 	}
 	return queryBindingConstraint{identity: b.equivalence, literals: literals}
+}
+
+// key separates plans whose constraints differ, such as one per pinned value.
+func (c queryBindingConstraint) key() string {
+	var b strings.Builder
+	writeLengthPrefixed(&b, c.identity)
+	for _, l := range c.literals {
+		writeLengthPrefixed(&b, l.typeName)
+		writeLengthPrefixed(&b, l.valueKey)
+		writeLengthPrefixed(&b, strconv.Itoa(l.equalTo))
+	}
+	return b.String()
 }
 
 func (c queryBindingConstraint) accepts(b queryBindings) bool {
@@ -74,7 +113,7 @@ func (c queryBindingConstraint) accepts(b queryBindings) bool {
 }
 
 func normalizeQueryBindings(tree antlr.ParseTree, md *recordlayer.RecordMetaData) (queryBindings, func(), error) {
-	result := queryBindings{constants: make(map[string]any)}
+	result := queryBindings{constants: make(map[string]any), pins: &literalPins{}}
 	var text, equivalence strings.Builder
 	byValue := make(map[string]int)
 	type replacement struct {
@@ -82,7 +121,11 @@ func normalizeQueryBindings(tree antlr.ParseTree, md *recordlayer.RecordMetaData
 		value values.Value
 	}
 	var replaced []replacement
+	var refs []*values.ConstantObjectValue
 	release := func() {
+		for _, ref := range refs {
+			expr.ForgetSpecializable(ref)
+		}
 		for _, old := range replaced {
 			if old.value == nil {
 				expr.UnbindParameter(old.token)
@@ -105,7 +148,12 @@ func normalizeQueryBindings(tree antlr.ParseTree, md *recordlayer.RecordMetaData
 		literal := queryLiteralBinding{typeName: v.Type().String(), valueKey: exact.String(), equalTo: position}
 		// Java's EvaluatesToValue constraints distinguish TRUE/FALSE/NULL;
 		// predicate simplification may replace those bindings with literals.
-		if !runtime || v.Type().Code() == values.TypeCodeNull || v.Type().Code() == values.TypeCodeBoolean {
+		// Float key proofs (signed zero, NaN) read the comparand's value.
+		switch v.Type().Code() {
+		case values.TypeCodeNull, values.TypeCodeBoolean, values.TypeCodeFloat, values.TypeCodeDouble:
+			runtime = false
+		}
+		if !runtime {
 			literal.exact = true
 			result.literals = append(result.literals, literal)
 			equivalence.WriteByte('E')
@@ -125,7 +173,10 @@ func normalizeQueryBindings(tree antlr.ParseTree, md *recordlayer.RecordMetaData
 		writeLengthPrefixed(&equivalence, id)
 		old, _ := expr.BoundParameter(token)
 		replaced = append(replaced, replacement{token: token, value: old})
-		expr.BindParameter(token, values.NewConstantObjectValue(queryConstantsAlias, id, v.Type()))
+		ref := values.NewConstantObjectValue(queryConstantsAlias, id, v.Type())
+		refs = append(refs, ref)
+		pins := result.pins
+		expr.BindSpecializableParameter(token, ref, v, func() { pins.pin(position) })
 	}
 	var walk func(antlr.Tree, bool) error
 	walk = func(node antlr.Tree, runtime bool) error {
