@@ -1,76 +1,116 @@
-# HN launch readiness (2026-10-09)
+# HN launch readiness
 
 This plan comes from nine independent reviews: first look, Java parity, FDB client, public API, code health,
-legal/security, performance, operations, and a simulated HN thread. Owner and status per row.
-**B** = launch blocker. **H** = high. A blocker does not ship.
+legal/security, performance, operations, and a simulated HN thread.
+
+Verified against `origin/master` 7e69021d1 and the open PRs on 2026-10-11, after the merge wave. release-ws updates this file
+in batches as PRs land; other PRs should not edit it.
+
+- **Severity:** **B** = launch blocker: launch waits for it. **H** = high: fix before launch, or list
+  it as a known gap in `STATUS.md`. **M** = medium: may ship, stays tracked.
+- **Status:** `done` (with the PR, "settings" for a repository setting, or "owner"), `PR [#N] open`,
+  `in progress` (work exists, no PR), `not started`.
+- **Workstream** is the agent workstream doing the work. D rows are decided by the project owner.
+
+## Blocking launch
+
+- Owner decisions D2–D6 (§1).
+- Runner trust boundary on the live CI fleet: the guard is provisioned, the running boxes are not yet
+  re-rolled and checked (ci-health).
+- Every open H row fixed, or listed as a known gap in `STATUS.md` (release-ws).
+- Master CI green (the owner's feature freeze).
+- Release: the owner tags v0.2.0, then `cmd/frl/v0.1.1`, which retracts the nested
+  `fdb.dev/cmd/frl` module. The order matters: root v0.1.0 does not contain `cmd/frl`. Steps in
+  `RELEASE.md`; [#825] landed the notes, checklist and `cmd/frl` vanity stub (release-ws).
 
 ## 1. Owner decisions (cannot be delegated)
 
-| # | Decision | Notes |
-|---|---|---|
-| D1 | Credential rotation | Completed by the owner on 2026-10-09. Rotation and repository-history cleanup are separate operations. |
-| D2 | Git history: keep, strip binaries, or squash | 440 MiB pack; 55 MB `factory-migrate` binary. `v0.1.0` is already in the Go module proxy. Rewriting history does not remove copies in forks, caches or module proxies. |
-| D3 | Agent material in the public tree | `CLAUDE.md` ("ABSOLUTE PRIME DIRECTIVE"), `.claude/` (Graefe/Torvalds personas, 24/7 shifts), `shifts/`, 19 root `.md` files, and real people as reviewer names in RFCs, commits and tests. |
-| D4 | AI-assisted disclosure | The HN-thread simulation's top comment is commit forensics. Disclose first, in your own words, and point at the oracles: Java conformance, the libfdb_c differential, the binding tester. |
-| D5 | Shrink the public API (about 88% of 11.5k exported identifiers should be internal) | Planner, simfdb, dst, conformance, gomock mocks and test seams are importable. Hard to take back after launch. |
-| D6 | CI fleet capacity and security review | Review deployment configuration privately before launch, following SECURITY.md. |
+Each needs an answer before launch. D2–D5 change what ships.
 
-## 2. Blockers and highs, by workstream
+| # | Decision | Status | Notes |
+|---|---|---|---|
+| D1 | Credential rotation | done (owner) | Completed by the owner on 2026-10-09. Rotation and repository-history cleanup are separate operations. |
+| D2 | Git history: keep, strip binaries, or squash | not started | 440 MiB pack; 55 MB `factory-migrate` binary. `v0.1.0` is already in the Go module proxy. Rewriting history does not remove copies in forks, caches or module proxies. |
+| D3 | Agent material in the public tree | not started | Still in the tree: `CLAUDE.md` ("ABSOLUTE PRIME DIRECTIVE"), `AGENTS.md`, `.claude/` (Graefe/Torvalds personas, 24/7 shifts), `shifts/`, `TODO.md`, `TODO_OLD.md`, `TODO_client.md`, `TODO-production.md`, the historical `road-to-prod.md`, `PRODUCTION_READINESS.md`, `PORT.md`, `STRESS_RELATIONAL.md`, and this file. Real people as reviewer names in RFCs and commits; PR [#791] removes them from test names. |
+| D4 | AI-assisted disclosure | not started | The HN-thread simulation's top comment is commit forensics. Disclose first, in the owner's own words, and point at the oracles: Java conformance, the libfdb_c differential, the binding tester. |
+| D5 | Shrink the public API (about 88% of 11.5k exported identifiers should be internal) | in progress | Planner, simfdb, dst, conformance and test seams are importable. The gomock mocks moved ([#810]); the demo protos are moving (PR [#842]). Nothing else yet. Hard to take back after launch. |
+| D6 | CI fleet capacity and deployment security review | not started | Review deployment configuration privately before launch, following SECURITY.md. |
+
+## 2. Findings, by workstream
 
 ### Product correctness and performance
-| Sev | Item | Owner |
-|---|---|---|
-| B | ~1 ms per transaction from the GRV batch timer (Go netpoller rounding). Get 1.22 ms vs CGo 0.21 ms; whole stack inherits it. | fix-grv |
-| H | Tenant `commit_unknown_result` fence uses the unprefixed key, so a commit can land after 1021 is returned | fix-tenant-fence |
-| H | A GRV wait over 30 s returns a non-retryable `DeadlineExceeded` during recoveries | fix-grv |
-| H | Endpoint-not-found dropped; 5 s per-RPC timeouts libfdb_c lacks; commit ignores ctx and timeout; 38 KB per read-only transaction; lazy futures; APIVersion above 730 accepted | fix-clientmisc |
-| H | No real-cluster fault testing (recovery, kill, partition, coordinators); binding stress is only 1×100 | fix-faultsuite |
-| B (for SQL perf claims) | Plan-cache key includes literals and `?` values, so prepared statements always re-plan (3 ms per lookup) | fix-plancache |
-| H | Planning costs milliseconds; a 6-table join takes 5.6 s with no error; no wall-clock budget | fix-planbudget |
-| M | Serial index→record fetch and FlatMap (the N+1 question) | fix-fetchpipe |
-| H | Collated indexes silently diverge from Java bytes (data corruption when shared) | **done** (PR #790): default refusal, explicit Go-only opt-in and Java byte probes |
+
+| Sev | Item | Status | Workstream |
+|---|---|---|---|
+| B | ~1 ms per transaction from the GRV batch timer (Go netpoller rounding). Get 1.22 ms vs CGo 0.21 ms; whole stack inherits it. | done [#789]: idle batches dispatch without timer delay | perf-lead |
+| H | A GRV wait over 30 s returns a non-retryable `DeadlineExceeded` during recoveries | done [#789]: the batch waits on the database context; regression holds a GRV past 31 s | perf-lead |
+| H | Tenant `commit_unknown_result` fence uses the unprefixed key, so a commit can land after 1021 is returned | done [#800] | hn-client-ws |
+| H | Endpoint-not-found replies are dropped | PR [#835] open | hn-client-ws |
+| H | 5 s per-RPC timeouts that libfdb_c lacks | in progress: GRV replies done [#789]; commits and reads still time out | hn-client-ws |
+| H | Commit ignores ctx and timeout | not started | hn-client-ws |
+| H | 38 KB allocated per read-only transaction | not started: re-measure after [#789] | hn-client-ws |
+| H | Lazy futures | done [#840] | hn-client-ws |
+| H | `APIVersion` above 730 accepted | done [#823] | hn-client-ws |
+| H | No real-cluster fault testing (recovery, kill, partition, coordinators); binding stress is only 1×100 | in progress | hn-client-ws |
+| H | Plan-cache key includes literals and `?` values, so prepared statements always re-plan (3 ms per lookup). Becomes B if launch makes any SQL performance claim (§3 cuts them). | done [#792] | hn-sql-ws3 |
+| H | A 6-table join plans for 5.6 s with no error; no planner bound | done [#801] as Java parity: no caps by default, the caller's context deadline bounds planning; [#805] pins Java's own cost for this join | hn-sql-ws3 |
+| H | Planning costs milliseconds | not started | hn-sql-ws3 |
+| M | Serial index→record fetch (the N+1 question) | done [#798] | hn-sql-ws3 |
+| M | Serial FlatMap | in progress | hn-sql-ws3 |
+| H | Collated indexes silently diverge from Java bytes (data corruption when shared) | done [#790]: refuses Java-incompatible collation by default; Go-only opt-in | hn-compat-ws2 |
 
 ### First impression
-| Sev | Item | Owner |
-|---|---|---|
-| B | Every quickstart fails (domain registration, `NOT NULL`, DSN case, unconfigured docker FDB, swallowed errors, typed-store snippet) | fix-quickstart |
-| B | "2–4× faster" claims are false (pre-RFC-104 GRV cache; one-way netem labelled as RTT) | fix-perfclaims |
-| B | `go get` gives v0.1.0, 682 commits behind and storage-incompatible; `go install …/cmd/frl@latest` resolves to the stale nested module | release (after fixes): cut v0.2.0, retract `cmd/frl` v0.1.0 |
-| H | macOS: `frl fdb up` used `--network host` | **done** (PR #788): loopback-published bridge network |
-| H | Positioning: what it is, and the "unofficial / not Apple" disclaimer | fix-legal |
-| M | Library logs INFO to stderr on every open | fix-quickstart |
+
+| Sev | Item | Status | Workstream |
+|---|---|---|---|
+| B | Every quickstart fails (domain registration, `NOT NULL`, DSN case, unconfigured docker FDB, swallowed errors, typed-store snippet) | done [#808]: [#788] fixed the listed failures; [#808] chains the steps so a failed `frl fdb up` stops the demo | hn-health-ws2 |
+| B | "2–4× faster" claims are false (pre-RFC-104 GRV cache; one-way netem labelled as RTT) | done [#788]: claims removed, website check guards them | perf-lead |
+| B | `go get` gives v0.1.0, 682 commits behind and storage-incompatible; `go install …/cmd/frl@latest` resolves to the stale nested module | in progress: [#825] landed; retraction commit 948f2d3b6 is ready. Once master CI is green, the owner tags v0.2.0, then `cmd/frl/v0.1.1`, which retracts every nested `fdb.dev/cmd/frl` version | release-ws |
+| M | `frl fdb up` hangs silently on a nearly full host disk (FDB throttles to 0 TPS) | done [#814] | hn-health-ws2 |
+| H | macOS: `frl fdb up` used `--network host` | done [#788]: loopback-published bridge network | hn-health-ws2 |
+| H | Positioning: what it is, and the "unofficial / not Apple" disclaimer | done [#788]: README, website, NOTICE | release-ws |
+| M | Library logs INFO to stderr on every open | done [#788]: routine SQL warm-up logs at Debug | hn-sql-ws3 |
 
 ### Honesty of docs
-| Sev | Item | Owner |
-|---|---|---|
-| B | No single production-readiness answer. road-to-prod "CONFIRMED" rests on deleted nightlies, which were 0/30 green before deletion. | open: write STATUS.md, archive the rest |
-| B | Wire-compat headline without exceptions (collation, vector_spfresh/defaults, Lucene, spatial, synthetic types, SQL continuations, TEXT on non-Latin scripts, format-14 header upgrade, v0.1.0 SQL keyspace) | open: compatibility page |
-| H | 20 doc contradictions (4.12.11 vs 4.14.2.0, FDB 8.0 "not released", stale PORT.md "5% done", STRESS_RELATIONAL "COUNT undercount, not a bug", stale counts) | open |
-| H | No FDB cluster-upgrade story (single-protocol client) and no upgrade/downgrade guide | open: `docs/upgrade.md` + compatibility matrix |
+
+| Sev | Item | Status | Workstream |
+|---|---|---|---|
+| B | No single production-readiness answer. road-to-prod "CONFIRMED" rests on deleted nightlies, which were 0/30 green before deletion. | done [#788]: `STATUS.md`; road-to-prod, PRODUCTION_READINESS and PORT marked historical | release-ws |
+| B | Wire-compat headline without exceptions (collation, vector_spfresh/defaults, Lucene, spatial, synthetic types, SQL continuations, TEXT on non-Latin scripts, format-14 header upgrade, v0.1.0 SQL keyspace) | done [#788]: `docs/compatibility.md` lists all nine. Narrowing, not closing: done [#803] pins TEXT segmentation and [#804] refuses non-Java vector options; done [#809] refuses VECTOR structure faults and missing dimensions, [#815] reads column-0 vectors as bytes like Java, [#790] refuses collation | hn-compat-ws2 |
+| H | 20 doc contradictions (4.12.11 vs 4.14.2.0, FDB 8.0 "not released", stale PORT.md "5% done", STRESS_RELATIONAL "COUNT undercount, not a bug", stale counts) | done [#826]: [#788] fixed most; [#826] cites 4.14.2.0 in `DIVERGENCES.md`, `SQL_ANSI_CONFORMANCE.md` and `FEATURE_MATRIX.md` and marks what is still 4.12-pinned | hn-compat-ws2 |
+| H | No FDB cluster-upgrade story (single-protocol client) and no upgrade/downgrade guide | done [#788]: `docs/upgrade.md`, matrix in `docs/compatibility.md` | release-ws |
 
 ### Security and legal
-| Sev | Item | Owner |
-|---|---|---|
-| B | Runner trust boundaries | Require the job-started guard and contributor approval; verify provisioning preserves the guard. |
-| H | `claude.yml` on self-hosted runners with write tokens | **done** (PR #788): GitHub-hosted |
-| H | Tag/release protection; secret scanning; push protection; Dependabot; private vulnerability reporting | **done** (settings) |
-| H | Apache §4 headers on ~288 ported files; NOTICE; trademark wording; third-party notices; SECURITY.md link | fix-legal |
-| M | Deployment security review | Track deployment-specific findings privately, following SECURITY.md. |
+
+| Sev | Item | Status | Workstream |
+|---|---|---|---|
+| B | Runner trust boundaries: job-started guard, contributor approval, provisioning preserves the guard | in progress: [#788] installs the guard in both provisioning modes; settings require approval for all external contributors. The live runners predate it (`infra/README.md`: cloud-init is per-instance) and must be re-rolled and their hook checked | ci-health |
+| H | `claude.yml` on self-hosted runners with write tokens | done [#788]: GitHub-hosted | ci-health |
+| H | Tag/release protection; secret scanning; push protection; Dependabot; private vulnerability reporting | done (settings) | ci-health |
+| H | Apache §4 attribution on ported files; NOTICE; trademark wording; third-party notices; SECURITY.md link | done [#788]: headers in 732 files, `NOTICE`; PR CI checks that `THIRD_PARTY_NOTICES.txt` is current | release-ws |
 
 ### Code health (screenshot material)
-| Sev | Item | Owner |
-|---|---|---|
-| B | Comments that argue with earlier versions of themselves (36 files, some on public API) | open |
-| H | Census debt counters in production packages; 18k-line `corpus.go` as non-test code; 66 misattached doc comments; fresh-clone `go vet`/`go test ./...` fail to compile (untagged test files import the cgo bindings; `go build ./...` is fixed and hosted-smoke gated) | open |
-| M | gomock mocks compiled into every sqldriver binary; demo protos in the global registry; 121-module graph; 59 MB hello-world | open (with D5) |
+
+| Sev | Item | Status | Workstream |
+|---|---|---|---|
+| B | Comments that argue with earlier versions of themselves (36 files, some on public API) | done [#791] | hn-health-ws2 |
+| H | Fresh-clone `go build ./...` fails (cgo `fdb_c.h`, a build-tag mismatch) | done [#807]: CI's `go install lane` builds `./...`. `go test ./...` compiles: done [#833] | hn-health-ws2 |
+| H | 66 misattached doc comments | done [#791] fixes the API ones; done [#817] moves the rest | hn-health-ws2 |
+| H | Census debt counters in production packages (e.g. `executor/leg_column_provenance_census.go`) | done [#836] | hn-health-ws2 |
+| H | 18.6k-line `plandiff/corpus.go` compiled as non-test code | done [#831] | hn-health-ws2 |
+| M | gomock mocks compiled into every sqldriver binary | done [#810] | hn-health-ws2 |
+| M | Demo protos in the global registry | PR [#842] open | hn-health-ws2 |
+| M | 121-module graph; 59 MB hello-world | not started (with D5) | hn-health-ws2 |
 
 ### Operations
-| Sev | Item | Owner |
-|---|---|---|
-| H | Java conformance must gate merges | **done** (settings): required `Java conformance (Go vs Java 4.14.2.0)`; verified all six previous required checks and strictness preserved |
-| H | Unbounded default limits (retries, timeouts, statement memory/rows), not settable from the DSN | open |
-| H | No CONTRIBUTING / SUPPORT / issue templates; bus factor 1 | open |
-| M | `go 1.26.9` patch-level directive; v0.1.0 has no GitHub release | release |
+
+| Sev | Item | Status | Workstream |
+|---|---|---|---|
+| H | Java conformance must gate merges | done (settings): required `Java conformance (Go vs Java 4.14.2.0)`; all six previous required checks and strictness preserved | ci-health |
+| H | Limits (retries, timeouts, statement memory/rows) not settable from the DSN | done [#799]: DSN-settable timeouts and statement limits; no retry-limit parameter | hn-sql-ws3 |
+| H | Unbounded default limits | not started: [#799] keeps Java's unbounded defaults; decide or document | hn-sql-ws3 |
+| H | No CONTRIBUTING / SUPPORT / issue templates | done [#788]: `CONTRIBUTING.md`, `SUPPORT.md`, issue forms | release-ws |
+| M | `go 1.26.9` patch-level directive; root v0.1.0 has no GitHub release (only `cmd/frl/v0.1.0` does) | in progress: v0.2.0 gets a GitHub release ([#825]). `go 1.26.9` kept: `GOTOOLCHAIN=auto` fetches it | release-ws |
 
 ## 3. Launch framing (from the HN-thread simulation)
 
@@ -82,13 +122,48 @@ legal/security, performance, operations, and a simulated HN thread. Owner and st
 - the external oracles CI checks against.
 
 **Cut:**
-- speed claims, until re-measured with the harness in `/tmp/hn-perf` (to be committed);
+- speed claims, until re-measured with a committed harness;
 - feature laundry lists;
 - "in production".
 
 **Have ready:**
-- an architecture page;
-- a compatibility table;
-- an FDB 8.0 stance;
-- known gaps;
-- answers on the N+1/5 s question and on bus factor.
+
+| Item | Status | Workstream |
+|---|---|---|
+| Re-measured performance with a committed harness (`/tmp/hn-perf` is gone) | in progress: the Go/CGo harness landed ([#822]); re-measurement pending | perf-lead |
+| Architecture page | not started | release-ws |
+| Compatibility table and FDB 8.0 stance | done [#788]: `docs/compatibility.md` | hn-compat-ws2 |
+| Known gaps in one list (`STATUS.md` links out instead) | not started | release-ws |
+| Answer on the N+1 question | not started: [#798] landed; FlatMap still open | hn-sql-ws3 |
+| Answer on the 5 s per-RPC timeout question | not started: after the client timeout fixes | hn-client-ws |
+| Answer on bus factor | not started | owner |
+
+[#788]: https://github.com/birdayz/fdb-go/pull/788
+[#789]: https://github.com/birdayz/fdb-go/pull/789
+[#790]: https://github.com/birdayz/fdb-go/pull/790
+[#791]: https://github.com/birdayz/fdb-go/pull/791
+[#792]: https://github.com/birdayz/fdb-go/pull/792
+[#798]: https://github.com/birdayz/fdb-go/pull/798
+[#799]: https://github.com/birdayz/fdb-go/pull/799
+[#800]: https://github.com/birdayz/fdb-go/pull/800
+[#801]: https://github.com/birdayz/fdb-go/pull/801
+[#803]: https://github.com/birdayz/fdb-go/pull/803
+[#804]: https://github.com/birdayz/fdb-go/pull/804
+[#805]: https://github.com/birdayz/fdb-go/pull/805
+[#807]: https://github.com/birdayz/fdb-go/pull/807
+[#808]: https://github.com/birdayz/fdb-go/pull/808
+[#809]: https://github.com/birdayz/fdb-go/pull/809
+[#810]: https://github.com/birdayz/fdb-go/pull/810
+[#814]: https://github.com/birdayz/fdb-go/pull/814
+[#815]: https://github.com/birdayz/fdb-go/pull/815
+[#817]: https://github.com/birdayz/fdb-go/pull/817
+[#822]: https://github.com/birdayz/fdb-go/pull/822
+[#823]: https://github.com/birdayz/fdb-go/pull/823
+[#825]: https://github.com/birdayz/fdb-go/pull/825
+[#826]: https://github.com/birdayz/fdb-go/pull/826
+[#831]: https://github.com/birdayz/fdb-go/pull/831
+[#833]: https://github.com/birdayz/fdb-go/pull/833
+[#835]: https://github.com/birdayz/fdb-go/pull/835
+[#836]: https://github.com/birdayz/fdb-go/pull/836
+[#840]: https://github.com/birdayz/fdb-go/pull/840
+[#842]: https://github.com/birdayz/fdb-go/pull/842
