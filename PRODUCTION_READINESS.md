@@ -99,7 +99,6 @@ Actions:
 High-priority examples to review:
 
 - metadata builder lookup for unknown record types;
-- typed store scan type mismatches;
 - tuple/key-expression encoding of unsupported user values;
 - SQL value evaluation panics for type mismatch, invalid cast, overflow, and
   division by zero;

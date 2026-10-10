@@ -293,7 +293,7 @@ func (store *FDBRecordStore) OverrideLockSaveRecord(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
-	return store.saveRecordInternal(record, existenceCheck, true, nil)
+	return store.saveRecordInternal(record, existenceCheck, true, nil, nil)
 }
 
 // GetRecordMetaData returns the metadata associated with this store.

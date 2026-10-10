@@ -515,7 +515,7 @@ var _ = Describe("TypedStoreConformance", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("typed ScanRecords returns typed cursor", func() {
+	It("typed ScanRecords fails at the first record of another type", func() {
 		ctx := context.Background()
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -529,7 +529,7 @@ var _ = Describe("TypedStoreConformance", func() {
 			orderStore, err := GetTypedRecordStore[*gen.Order](baseStore, "Order")
 			Expect(err).NotTo(HaveOccurred())
 
-			// Save multiple orders + a customer (should be filtered out by typed scan)
+			// Orders 1-3, a customer at 100, an order at 200: one key space.
 			for i := int64(1); i <= 3; i++ {
 				_, err = orderStore.SaveRecord(&gen.Order{
 					OrderId: proto.Int64(i),
@@ -542,21 +542,32 @@ var _ = Describe("TypedStoreConformance", func() {
 				Name:       proto.String("Alice"),
 			})
 			Expect(err).NotTo(HaveOccurred())
+			_, err = orderStore.SaveRecord(&gen.Order{OrderId: proto.Int64(200)})
+			Expect(err).NotTo(HaveOccurred())
 
-			// Typed scan should return only orders, with correct type
+			// Java's typed scan reads every record through the typed serializer
+			// (FDBTypedRecordStore.java:200, FDBRecordStore.java:1465) and fails at
+			// the customer (TypedRecordSerializer.java:114).
 			cursor := orderStore.ScanRecords(nil, ForwardScan())
 			var orders []*gen.Order
-			for rec, scanErr := range Seq2(cursor, ctx) {
-				Expect(scanErr).NotTo(HaveOccurred())
-				// rec is *FDBStoredRecord[*gen.Order] — compile-time type safety
-				Expect(rec.Record).NotTo(BeNil())
-				Expect(rec.Record.OrderId).NotTo(BeNil())
+			var scanErr error
+			for rec, err := range Seq2(cursor, ctx) {
+				if err != nil {
+					scanErr = err
+					break
+				}
 				orders = append(orders, rec.Record)
 			}
-			Expect(orders).To(HaveLen(3), "typed scan should return exactly 3 orders, no customers")
+			Expect(orders).To(HaveLen(3), "the orders before the customer")
 			Expect(*orders[0].OrderId).To(Equal(int64(1)))
 			Expect(*orders[1].OrderId).To(Equal(int64(2)))
 			Expect(*orders[2].OrderId).To(Equal(int64(3)))
+			var deErr *RecordDeserializationError
+			Expect(errors.As(scanErr, &deErr)).To(BeTrue(), "scan error %v (%T), want a RecordDeserializationError", scanErr, scanErr)
+			Expect(deErr.PrimaryKey).To(Equal(tuple.Tuple{int64(100)}))
+			var serErr *RecordSerializationError
+			Expect(errors.As(scanErr, &serErr)).To(BeTrue())
+			Expect(serErr.Message).To(Equal("Specified union field was not set"))
 
 			return nil, nil
 		})

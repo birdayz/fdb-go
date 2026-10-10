@@ -86,7 +86,7 @@ var _ = Describe("SaveRecordsPipelined", func() {
 			Expect(log).To(Equal([]string{"send", "send", "send", "send"}))
 			Expect(loads[2].sent).To(BeFalse())
 			for i, record := range window {
-				_, err := s.saveRecordInternal(record, RecordExistenceCheckNone, false, &loads[i])
+				_, err := s.saveRecordInternal(record, RecordExistenceCheckNone, false, &loads[i], nil)
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(prices(s)).To(Equal([]int64{20, 30}))
