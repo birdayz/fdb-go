@@ -243,7 +243,7 @@ func (input *commitInput) commitDummyTransaction(ctx context.Context) {
 		// C++ sets RAW_ACCESS, CAUSAL_WRITE_RISKY, LOCK_AWARE on the dummy.
 		dummy.writeSystemKeys = true // RAW_ACCESS equivalent
 		dummy.readSystemKeys = true  // RAW_ACCESS equivalent
-		dummy.causalReadRisky = true // CAUSAL_WRITE_RISKY — faster GRV for dummy
+		dummy.causalReadRisky = true // redundant with Commit's risky GRV; harmless
 		dummy.lockAware = true
 
 		// C++ commitDummyTransaction (NativeAPI.actor.cpp:6328-6330) adds ONLY a
@@ -262,7 +262,7 @@ func (input *commitInput) commitDummyTransaction(ctx context.Context) {
 		dummy.addReadConflictForKey(key)
 		dummy.addWriteConflictForKey(key)
 
-		// Use uppercase Commit() which calls ensureReadVersion() before
+		// Use uppercase Commit() which fetches a read version before
 		// sending the request. Without a read version, ReadSnapshot=0
 		// is sent to FDB which crashes the server.
 		if err := dummy.Commit(ctx); err != nil {

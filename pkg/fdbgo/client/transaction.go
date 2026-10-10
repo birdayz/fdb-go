@@ -788,9 +788,14 @@ func (tx *Transaction) checkReadState(ctx context.Context) error {
 }
 
 func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
+	return tx.ensureReadVersionFlags(ctx, 0)
+}
+
+// ensureReadVersionFlags adds extraFlags to the read-version GRV, if it issues one.
+func (tx *Transaction) ensureReadVersionFlags(ctx context.Context, extraFlags uint32) error {
 	ctx, release := tx.opContext(ctx)
 	defer release()
-	if _, err := tx.readVersionForOperation(ctx); err != nil {
+	if _, err := tx.readVersionForOperation(ctx, extraFlags); err != nil {
 		return err
 	}
 	return tx.readEntryError(ctx)
@@ -799,7 +804,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 // readVersionForOperation returns the GRV captured by this operation, not a
 // later read of the mutable handle. C++ RYWImpl::getReadVersion returns the
 // value from its completed future even if the handle is subsequently reset.
-func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64, error) {
+func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraFlags uint32) (int64, error) {
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
 	if err := tx.checkReadState(ctx); err != nil {
@@ -827,7 +832,7 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64
 		tx.ensureTxSpan()
 	}
 	if !tx.hasReadVersion {
-		flags := tx.grvFlags()
+		flags := tx.grvFlags() | extraFlags
 		rv, locked, rvAt, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
 		if err != nil {
 			tx.readVersionMu.Unlock()
@@ -1977,10 +1982,9 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 	sc, scAdded := tx.maybeMakeSelfConflicting(writeConflictsSnap[:nWriteConflicts])
 	shipConflicts := finalizeShipConflicts(writeConflictsSnap[:nWriteConflicts], sc, scAdded, coalesced)
 
-	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a
-	// read version exists before commit, even for write-only transactions.
-	// Without this, ReadSnapshot=0 is sent which crashes the FDB server.
-	if err := tx.ensureReadVersion(ctx); err != nil {
+	// No read version yet means no reads, so no causal consistency: a risky GRV, as
+	// C++ tryCommit (NativeAPI.actor.cpp:6576-6578). ReadSnapshot=0 would crash the server.
+	if err := tx.ensureReadVersionFlags(ctx, grvFlagCausalReadRisky); err != nil {
 		return err
 	}
 
@@ -1992,7 +1996,7 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 	//
 	// RFC-090/093: detach ONLY the commit RPC + its commit_unknown_result
 	// idempotency barrier (commitDummyTransaction) from the caller ctx. The GRV
-	// above (ensureReadVersion, :1106) is deliberately left on the LIVE ctx
+	// above (ensureReadVersionFlags) is deliberately left on the LIVE ctx
 	// (RFC-093) so a cancel during the commit-path read version aborts promptly —
 	// a GRV is a cancellable read, matching C++ NativeAPI.actor.cpp (the GRV future
 	// is cancelled uniformly with the commit). Here we WithoutCancel so a late
@@ -2614,7 +2618,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
 	ctx, cancel := tx.opContext(ctx)
 	defer cancel()
-	rv, err := tx.readVersionForOperation(ctx)
+	rv, err := tx.readVersionForOperation(ctx, 0)
 	if err != nil {
 		return 0, err
 	}
