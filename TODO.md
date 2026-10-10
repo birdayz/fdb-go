@@ -897,6 +897,13 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   bijection by the aliases' result-value/predicate components (3.76M
   node-equal pairs, 3.73M negative; the cost is the pair count, ~10 us each,
   ~40% GC).
+  Launch finding "6-table join plans in 5.6 s with no error" (2026-10-10): the
+  6-table FK chain is Java 4.14.2.0 122839 tasks / 77.7 s (probe above), Go
+  then 134894 / 23.5 s, Go now 110701 / ~6 s. Same search space: Java's
+  PartitionSelectRule prunes are ported, plus Go's unconnected-lower-side
+  prune. No error is right: Java's planner budgets default to unbounded and
+  its SQL layer sets none; Go now matches, with opt-in MAX_TOTAL_TASK_COUNT /
+  MAX_TASK_QUEUE_SIZE / MAX_NUM_MATCHES_PER_RULE_CALL caps raising 54F02.
 - [x] Re-measure planner/executor stress against the actual merge-base with
   explicit SHAs and equal row populations; resolve regressions, not just timeouts.
   2026-10-06, `c116de63b` against the recorded merge-base `e48f5b49` (2 samples
