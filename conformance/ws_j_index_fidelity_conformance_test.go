@@ -1699,8 +1699,7 @@ var _ = Describe("WS-J Go-stored template planned by the target", func() {
 		Expect(err).NotTo(HaveOccurred(), "Go stores the template through its SQL driver")
 		defer func() { _, _ = sysDB.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS "+driverName) }()
 
-		// (b) The same Go-built metadata stored through Go's catalog LIBRARY at the
-		// Java-compatible (NULL, NULL, 0) subspace: the literal-width question.
+		// The library arm distinguishes metadata construction from driver persistence.
 		goTmpl, err := embedded.BuildSchemaTemplateFromDDLNamed(body, goName)
 		Expect(err).NotTo(HaveOccurred())
 		cat, err := catalog.OpenRecordLayerStoreCatalog()
@@ -1718,8 +1717,7 @@ var _ = Describe("WS-J Go-stored template planned by the target", func() {
 				"clusterFile": clusterFile, "templateName": goName,
 			}, &dropped)
 		}()
-		// (c) The same metadata with every INT literal rewritten to long_value, the
-		// width a Go build before the literal-carrier fix persisted.
+		// Widening INT literals supplies a negative control for Java's literal matching.
 		longName := "WSJ_LONG_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
 		longProto, err := goTmpl.Underlying().ToProto()
 		Expect(err).NotTo(HaveOccurred())

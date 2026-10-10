@@ -81,10 +81,8 @@ func DefaultCatalogSubspace() subspace.Subspace {
 	return subspace.Sub(nil, nil, int64(0))
 }
 
-// OpenRecordLayerStoreCatalog opens the catalog at the Java-compatible
-// (NULL, NULL, int64(0)) subspace. See [DefaultCatalogSubspace] for the
-// full byte-layout rationale — and for the caveat that the Go sqldriver
-// currently writes to a different (three-string) subspace.
+// OpenRecordLayerStoreCatalog uses the shared Java/Go catalog prefix.
+// See [DefaultCatalogSubspace] for the byte-layout rationale.
 func OpenRecordLayerStoreCatalog() (*RecordLayerStoreCatalog, error) {
 	return NewRecordLayerStoreCatalog(DefaultCatalogSubspace())
 }

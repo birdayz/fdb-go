@@ -23,7 +23,7 @@ import (
 )
 
 // Distinct names isolate the engines in the shared catalog while pinning
-// SchemaExistsBehavior.shouldWrite's SQLSTATE and message (Java:39-80).
+// SchemaExistsBehavior.shouldWrite's SQLSTATE and message (SchemaExistsBehavior.java:39-80).
 var _ = Describe("WS-J existence policies answer as the target", func() {
 	It("CREATE SCHEMA's precedence and saveSchema's four behaviours", func() {
 		ctx := context.Background()
