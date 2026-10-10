@@ -27,6 +27,7 @@ go_test(
         "differential_option_fences_test.go",
         "differential_ownership_test.go",
         "differential_pipelined_ryw_test.go",
+        "differential_range_issue_test.go",
         "differential_rangelimit_test.go",
         "differential_read_test.go",
         "differential_ryw_test.go",

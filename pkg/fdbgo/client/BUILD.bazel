@@ -25,6 +25,7 @@ go_library(
         "options.go",
         "panicbackstop.go",
         "pending_get.go",
+        "range_issue.go",
         "read_incarnation.go",
         "read_send.go",
         "readpath.go",
@@ -155,6 +156,20 @@ go_test(
     ],
     embed = [":client"],
     deps = ["//pkg/fdbgo/wire"],
+)
+
+# gazelle:exclude range_issue_fdb_test.go
+go_test(
+    name = "range_issue_fdb_test",
+    srcs = [
+        "range_issue_fdb_test.go",
+        "testmain_test.go",
+    ],
+    embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/wire",
+        "//pkg/testcontainers/foundationdb",
+    ],
 )
 
 go_test(

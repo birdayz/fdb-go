@@ -7,9 +7,10 @@ import (
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
 
-// A range read is LAZY: each fetch resolves against the read-your-writes view AS IT IS AT FETCH
-// TIME. These pin the consequence in the one ordering that can tell a lazy read from an eager
-// one — a write issued BETWEEN the GetRange() call and the consumption of its result.
+// Each fetch of a range read resolves against the read-your-writes view AS IT IS WHEN THAT FETCH
+// IS ISSUED: batch 1 at GetRange(), later batches when an iterator reaches them. These pin the
+// consequence in the one ordering that tells the batches apart — a write issued BETWEEN the
+// GetRange() call and the consumption of its result.
 //
 // The bug they exist for: SimFDB used to materialize the whole range at GetRange() call time
 // while registering the read conflict per batch at CONSUMPTION, filtered through the write map
@@ -307,10 +308,9 @@ func TestWriteBeforeGetRangeStillReads(t *testing.T) {
 	commitAfterConcurrentSet(t, db, tx, "e", 0)
 }
 
-// TestCancelBetweenGetRangeAndConsumptionFailsTheRead pins that the range read's cancellation
-// check happens where the READ does — at consumption — not at GetRange() call time. The client's
-// GetRange builds a handle and touches nothing; the 1025 comes from ensureReadVersion inside the
-// fetch. A sim that checked at call time would answer a read no real client answers.
+// TestCancelBetweenGetRangeAndConsumptionFailsTheRead pins that a Cancel after GetRange() fails
+// the issued read: its reply cannot beat a local cancel, and C++ fails the in-flight read
+// through resetPromise (ReadYourWrites.actor.cpp:391).
 func TestCancelBetweenGetRangeAndConsumptionFailsTheRead(t *testing.T) {
 	t.Parallel()
 	db := New(nil)

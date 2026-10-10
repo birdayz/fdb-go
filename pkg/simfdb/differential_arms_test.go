@@ -427,12 +427,12 @@ func TestDifferentialArm_ClearRangeExtent(t *testing.T) {
 //
 // That ordering is the whole point. TestDifferentialArm_LocalWriteThenRead always writes first,
 // so a backend that resolves the entire range at GetRange() call time answers identically to one
-// that resolves each batch at consumption — the buffer is already complete when the read is
-// issued either way. It takes a write BETWEEN issue and consumption to tell them apart, and the
-// difference is observable twice over: in the rows (a real client's RangeResult is lazy, so the
-// write shows up in whatever has not been fetched yet) and in the commit outcome (the read
-// conflict is filtered through the write map at consumption, so a read that answered from
-// storage must not have its span subtracted as locally-satisfied).
+// that resolves each batch later — the buffer is already complete when the read is issued either
+// way. It takes a write BETWEEN issue and consumption to tell them apart, and the difference is
+// observable twice over: in the rows (batch 1 is fetched at GetRange(), so the write shows up
+// only in later batches) and in the commit outcome (each batch's conflict is filtered through
+// the write map at that batch's issue, so a read that answered from storage must not have its
+// span subtracted as locally-satisfied).
 //
 // The record layer's scan-and-update cursors are exactly this shape, which is why the iterator
 // variants prefetch a variable number of rows before writing.

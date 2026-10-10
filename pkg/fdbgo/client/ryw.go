@@ -655,10 +655,36 @@ func (c *rywCache) getRange(
 	reverse bool,
 	serverGetRange func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error),
 ) ([]KeyValue, bool, error) {
+	return c.issueRange(begin, end, limit, byteTarget, reverse).run(ctx, serverGetRange)
+}
+
+// rywRangeRead is a range read past its RYW issue. C++ builds the read's
+// RYWIterator before its first wait (ReadYourWrites.actor.cpp:382) over a
+// WriteMap version later writes do not change (WriteMap.h:158), so the merge
+// and the read-conflict filter both use the write state captured here.
+type rywRangeRead struct {
+	c                 *rywCache
+	begin, end        []byte
+	limit, byteTarget int
+	reverse           bool
+	known             bool // answered from local state at issue
+	rows              []KeyValue
+	more              bool
+	err               error
+	unreadableCap     []byte
+	view              *rywWriteSpan // write state of [begin, end) at issue; nil = none
+}
+
+func (c *rywCache) issueRange(begin, end []byte, limit, byteTarget int, reverse bool) *rywRangeRead {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	r := &rywRangeRead{c: c, begin: begin, end: end, limit: limit, byteTarget: byteTarget, reverse: reverse}
+	if c.hasWritesInRangeLocked(begin, end) || c.hasClearsInRangeLocked(begin, end) {
+		r.view = c.captureWriteSpanLocked(begin, end)
+	}
 	if rows, more, known, err := c.localRangeLocked(begin, end, limit, byteTarget, reverse, true); known {
-		c.mu.Unlock()
-		return rows, more, err
+		r.known, r.rows, r.more, r.err = true, rows, more, err
+		return r
 	}
 	// Unreadable reach cap (RFC-098): truncate the scan window at the first
 	// (forward) / last (reverse) unreadable position; iteration that would
@@ -666,15 +692,36 @@ func (c *rywCache) getRange(
 	// normally (C++ reach semantics, ReadYourWrites.actor.cpp:685 vs :692).
 	// Computed BEFORE the fast-path branch: an SVK candidate range can cover
 	// spans with no local write entries at all.
-	unreadableCap := c.unreadableScanCapLocked(begin, end, reverse)
-	hasWrites := c.hasWritesInRangeLocked(begin, end)
-	hasClears := c.hasClearsInRangeLocked(begin, end)
-	var view *rywWriteSpan
-	if hasWrites || hasClears {
-		view = c.captureWriteSpanLocked(begin, end)
-	}
-	c.mu.Unlock()
+	r.unreadableCap = c.unreadableScanCapLocked(begin, end, reverse)
+	return r
+}
 
+// conflictRanges filters [begin, end) through the issue-time write state: C++
+// addConflictRange walks the read's own iterator (ReadYourWrites.actor.cpp:388).
+func (r *rywRangeRead) conflictRanges(begin, end []byte) [][2][]byte {
+	if bytes.Compare(begin, end) >= 0 {
+		return nil
+	}
+	if r.view == nil {
+		return [][2][]byte{{bytes.Clone(begin), bytes.Clone(end)}}
+	}
+	c := r.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.swapWriteSpanLocked(r.view)
+	defer c.swapWriteSpanLocked(r.view)
+	return c.conflictRangesLocked(begin, end)
+}
+
+func (r *rywRangeRead) run(
+	ctx context.Context,
+	serverGetRange func(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error),
+) ([]KeyValue, bool, error) {
+	if r.known {
+		return r.rows, r.more, r.err
+	}
+	c, begin, end, limit, byteTarget, reverse := r.c, r.begin, r.end, r.limit, r.byteTarget, r.reverse
+	unreadableCap, view := r.unreadableCap, r.view
 	requestedBegin, requestedEnd := begin, end
 	if unreadableCap != nil {
 		if reverse {
@@ -690,7 +737,7 @@ func (c *rywCache) getRange(
 		return unreadableCap != nil && (limit <= 0 || got < limit)
 	}
 
-	if !hasWrites && !hasClears {
+	if view == nil {
 		// Fast path: no local mutations. Check snapshot cache first.
 		c.mu.Lock()
 		cachedKVs, fullyKnown := c.serverCache.getRangeKVsLimited(begin, end, cacheWalkBudget(limit), reverse)

@@ -876,13 +876,12 @@ func (tx *simTxn) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResul
 	return tx.getRange(r, options, false)
 }
 
-// getRange returns a LAZY handle. Nothing is read here — not the rows, not the bounds, not even
-// the read version — exactly as the client's GetRange returns a bare goRangeResult{tx, r,
-// options} (fdb/range_result.go:39-45). All of it happens at consumption, in
-// resolveRangeForRead and rangeRows. See simRangeResult for why that ordering is the whole
-// point.
+// getRange fetches batch 1 at the call, as the client's GetRange does; later batches are
+// fetched at consumption. See simRangeResult.
 func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool) fdb.RangeResult {
-	return &simRangeResult{tx: tx, r: r, options: options, snapshot: snapshot}
+	rr := &simRangeResult{tx: tx, r: r, options: options, snapshot: snapshot}
+	rr.issueFirst()
+	return rr
 }
 
 // resolveRangeForRead turns a range request's selectors into the raw [begin, end) a fetch reads

@@ -890,6 +890,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 }
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
+	tx.db.metrics.getRangeRequests.Add(1) // C++ increaseCounterForRequest (NativeAPI.actor.cpp:5790-5792)
 	return sendRangeRPC(tx, ctx, begin, end, limit, byteTarget, reverse, servers, rangeRPCOps[KeyValue]{
 		endpoint: EndpointGetKeyValues,
 		build:    buildGetKeyValuesRequest,
@@ -976,6 +977,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end []byte
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			ops.putBuf(poolBuf)
+			markReadSent(ctx)
 			return inFlightRPC{
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
@@ -1341,6 +1343,10 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	if err := tx.db.tryAcquireWatch(); err != nil {
 		return nil, 0, types.SpanContext{}, nil, nil, err // too_many_watches (1032)
 	}
+	// The watch is in `reading` from here until setup ends (ReadYourWrites.actor.cpp:1290),
+	// and its read's conflict is classified against the write map as of this call (:382).
+	defer tx.leaveIssuedRead(tx.enterIssuedRead(ctx))
+	addConflict := tx.readConflictForKeyRYW(key)
 
 	// Mint THIS watch's own cancellable context HERE — right after the acquire and BEFORE the blocking
 	// GRV / value read below. Those reads RUN on watchCtx (below), so a Cancel()/reset() during
@@ -1379,9 +1385,6 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// incarnation's span on this watch (RFC-115 §4). Threaded through to sendWatch.
 	span := tx.currentSpan()
 
-	// C++ NativeAPI.actor.cpp watchValueMap: adds read conflict on watched key.
-	tx.stateAddReadConflictKey(key)
-
 	// Read current value so we can send it with the watch request.
 	// C++ getValueOrStandby in watchValue actor reads the value at the watch version.
 	// NOT tracked in readErr: the C++ watch actor reading.add's its `done`
@@ -1396,6 +1399,11 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 		tx.db.releaseWatch() // setup failed after the slot was reserved (C++ catch → decreaseWatchCounter)
 		watchCancel()        // cancel+deregister THIS watch's context
 		return value, readVersion, span, nil, nil, tx.watchSetupErr(err)
+	}
+	// Only a successful read adds its conflict (ReadYourWrites.actor.cpp:384-388). A failed watch
+	// read does not fail commit, so a conflict added before it would outlive it.
+	if addConflict {
+		tx.addReadConflictForKey(key)
 	}
 	// watchCtx/watchCancel were minted synchronously above (before this blocking read), so a
 	// Cancel/reset during setup cancels the very context the read (above) and WatchPoll hold; WatchPoll

@@ -20,6 +20,10 @@ type readIncarnation struct {
 	timerGen uint64
 	users    int
 	drained  chan struct{}
+	// issuedReads counts issued reads not yet complete; Commit waits for zero
+	// (issuedReadsDone closes then), as C++ commit waits on `reading`.
+	issuedReads     int
+	issuedReadsDone chan struct{}
 
 	versionstamp  *versionstampCompletion
 	versionstamps map[*versionstampCompletion]struct{}

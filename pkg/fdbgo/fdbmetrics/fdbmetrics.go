@@ -7,7 +7,7 @@
 //	http.Handle("/metrics", fdbmetrics.Handler(db))
 //
 // Deliberately NOT a prometheus.Collector: that would pull
-// github.com/prometheus/client_golang into the module for 18 monotonic
+// github.com/prometheus/client_golang into the module for 19 monotonic
 // counters and four latency summaries. A user who wants a Collector writes a
 // trivial one over db.Metrics():
 //
@@ -137,6 +137,11 @@ var counters = []counterDef{
 		"fdb_client_grv_in_band_maybe_delivered_total", "GRV replies carrying an in-band maybeDelivered error (1100/1030), taking basicLoadBalance's next-alternative arm; the rate at which GRV proxies die mid-reply. Go-only: no C++ TransactionMetrics counter.",
 		originGoOnly,
 		func(s client.ClientMetricsSnapshot) int64 { return s.GRVInBandMaybeDelivered },
+	},
+	{
+		"fdb_client_transaction_get_range_requests_total", "getKeyValues requests sent to storage servers (C++ GetRangeRequests).",
+		originCPPTwin,
+		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionGetRangeRequests },
 	},
 	{
 		"fdb_client_transaction_retries_total", "All OnError-sanctioned retries (Go aggregate; includes codes C++ retries without a counter).",

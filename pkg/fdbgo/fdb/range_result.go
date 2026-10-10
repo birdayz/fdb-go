@@ -35,14 +35,59 @@ type goRangeResult struct {
 	r        Range
 	options  RangeOptions
 	snapshot bool
+	first    *firstBatch
+}
+
+// firstBatch is batch 1 of a range read, issued by GetRange itself as Apple's
+// binding does (bindings/go/src/fdb/transaction.go:295-296); every Iterator and
+// GetSliceWithError of the RangeResult starts from it (range.go:173-176).
+type firstBatch struct {
+	begin, end []byte // the resolved range
+	limit      int    // the row budget batch 1 was issued with
+	pending    *client.PendingRange
+	err        error // a failure before any read was issued
 }
 
 func newRangeResult(tx *transaction, r Range, options RangeOptions) RangeResult {
-	return goRangeResult{tx: tx, r: cloneRange(r), options: options}
+	return startRangeResult(goRangeResult{tx: tx, r: cloneRange(r), options: options})
 }
 
 func newSnapshotRangeResult(tx *transaction, r Range, options RangeOptions) RangeResult {
-	return goRangeResult{tx: tx, r: cloneRange(r), options: options, snapshot: true}
+	return startRangeResult(goRangeResult{tx: tx, r: cloneRange(r), options: options, snapshot: true})
+}
+
+func startRangeResult(rr goRangeResult) goRangeResult {
+	f := &firstBatch{}
+	rr.first = f
+	begin, end, err := resolveRange(rr.tx, rr.r, rr.snapshot)
+	if err != nil {
+		f.err = convertError(err)
+		return rr
+	}
+	f.begin, f.end = begin, end
+	// ROW_LIMIT_UNLIMITED is -1; anything below is range_limits_invalid (2012), as in the client's
+	// getRangeDir and libfdb_c (RYW getRange isValid). EXACT with no limit is exact_mode_without_limits
+	// (2210), libfdb_c validate_and_update_parameters (bindings/c/fdb_c.cpp:996-998).
+	if rr.options.Limit < -1 {
+		f.err = Error{Code: client.ErrRangeLimitsInvalid}
+		return rr
+	}
+	if rr.options.Mode == StreamingModeExact && rr.options.Limit <= 0 {
+		f.err = Error{Code: 2210}
+		return rr
+	}
+	byteTarget, err := modeTargetBytes(rr.options.Mode, 1)
+	if err != nil {
+		f.err = err
+		return rr
+	}
+	f.limit = effectiveLimit(rr.options.Limit)
+	if rr.snapshot {
+		f.pending = rr.tx.inner.Snapshot().StartGetRange(rr.tx.ctx, begin, end, f.limit, byteTarget, rr.options.Reverse)
+	} else {
+		f.pending = rr.tx.inner.StartGetRange(rr.tx.ctx, begin, end, f.limit, byteTarget, rr.options.Reverse)
+	}
+	return rr
 }
 
 func cloneRangeKeys(r ExactRange) ([]byte, []byte) {
@@ -111,32 +156,34 @@ func (rr goRangeResult) doRange(begin, end []byte, limit, byteTarget int) ([]cli
 // For large ranges this can cause excessive memory usage. Prefer
 // Iterator() for streaming large result sets.
 func (rr goRangeResult) GetSliceWithError() ([]KeyValue, error) {
-	begin, end, err := resolveRange(rr.tx, rr.r, rr.snapshot)
+	f := rr.first
+	if f.err != nil {
+		return nil, f.err
+	}
+	kvs, more, err := f.pending.Get()
 	if err != nil {
 		return nil, convertError(err)
 	}
-	// EXACT with no row budget is exact_mode_without_limits(2210) on THIS surface too, not just on
-	// Iterator. It is tempting to reason that GetSlice cannot reach the check because it consumes
-	// the whole range and never needs the streaming mode — that reasoning is wrong, and it is wrong
-	// about the C client specifically: Apple's binding issues the FIRST batch's future eagerly
-	// inside getRange with the CALLER's mode (bindings/go/src/fdb/transaction.go:296), and
-	// GetSliceWithError's mode rewrite only reaches the batches it fetches itself. So the first
-	// fetch carries EXACT with no budget straight into validate_and_update_parameters.
-	// TestDifferential_ExactModeWithoutLimits measures it: libfdb_c raises 2210 from GetSlice for
-	// both spellings of "no budget" (Limit 0 and Limit -1); this client used to return every row.
-	//
-	// The spelling is "0 or -1" rather than the Iterator's "<= 0" because the two surfaces raise
-	// range_limits_invalid(2012) in different places: Iterator rejects Limit < -1 inline just above
-	// its own EXACT check, while here 2012 comes later, from getRangeDir. A "<= 0" test would
-	// answer 2210 for Limit -7, where libfdb_c answers 2012 — the C gate compares against
-	// ROW_LIMIT_UNLIMITED, so a limit below it is invalid rather than unlimited.
-	if rr.options.Mode == StreamingModeExact && (rr.options.Limit == 0 || rr.options.Limit == -1) {
-		return nil, Error{Code: 2210} // exact_mode_without_limits
-	}
-	limit := effectiveLimit(rr.options.Limit)
-	kvs, _, err := rr.doRangeWithLimit(begin, end, limit)
-	if err != nil {
-		return nil, convertError(err)
+	// Apple reads the rest in one more pass (range.go:139-153); an unlimited byte target
+	// lets the client drain it in as few requests as the server allows.
+	begin, end, remaining := f.begin, f.end, f.limit-len(kvs)
+	for more && remaining > 0 && len(kvs) > 0 {
+		last := kvs[len(kvs)-1].Key
+		if rr.options.Reverse {
+			end = append([]byte(nil), last...)
+		} else {
+			begin = keyAfter(last)
+		}
+		var rest []client.KeyValue
+		rest, more, err = rr.doRangeWithLimit(begin, end, remaining)
+		if err != nil {
+			return nil, convertError(err)
+		}
+		if len(rest) == 0 {
+			break
+		}
+		kvs = append(kvs, rest...)
+		remaining -= len(rest)
 	}
 	result := make([]KeyValue, len(kvs))
 	for i, kv := range kvs {
@@ -157,32 +204,18 @@ func (rr goRangeResult) GetSliceOrPanic() []KeyValue {
 // Iterator returns a RangeIterator for streaming through results.
 // The iterator fetches data in batches according to the StreamingMode.
 func (rr goRangeResult) Iterator() RangeIterator {
-	begin, end, err := resolveRange(rr.tx, rr.r, rr.snapshot)
-	if err != nil {
-		return &goRangeIterator{err: convertError(err)}
-	}
-	// ROW_LIMIT_UNLIMITED is -1; anything below is range_limits_invalid (2012), matching the
-	// GetSlice path (client getRangeDir) and libfdb_c (RYW getRange isValid). Reject here: the
-	// iterator's Advance bails on a non-positive row budget, so an unvalidated Limit<=-2 would
-	// otherwise return zero rows + nil — a silent wrong answer that also contradicts GetSlice.
-	if rr.options.Limit < -1 {
-		return &goRangeIterator{err: Error{Code: client.ErrRangeLimitsInvalid}}
-	}
-	// StreamingModeExact requires a row limit (or a byte target, which the pure-Go client doesn't
-	// support): EXACT with no limit is exact_mode_without_limits (2210), matching libfdb_c
-	// validate_and_update_parameters (bindings/c/fdb_c.cpp:996-998). GetSliceWithError raises the
-	// same code for the same input — measured, see the note there. Limit<=0 here means unlimited
-	// (0 or -1; a Limit < -1 already returned range_limits_invalid above).
-	if rr.options.Mode == StreamingModeExact && rr.options.Limit <= 0 {
-		return &goRangeIterator{err: Error{Code: 2210}} // exact_mode_without_limits
+	f := rr.first
+	if f.err != nil {
+		return &goRangeIterator{err: f.err}
 	}
 	return &goRangeIterator{
 		rr:        rr,
-		begin:     begin,
-		end:       end,
-		remaining: effectiveLimit(rr.options.Limit),
+		begin:     f.begin,
+		end:       f.end,
+		remaining: f.limit,
 		iteration: 1,
 		index:     -1,
+		first:     f.pending,
 	}
 }
 
@@ -199,7 +232,7 @@ func (rr goRangeResult) Iterator() RangeIterator {
 func EffectiveRowLimit(limit int) int { return effectiveLimit(limit) }
 
 // goRangeIterator yields key-value pairs one at a time from a range read.
-// Fetches data lazily in batches based on the StreamingMode.
+// Batch 1 is issued by GetRange; later batches are fetched by Advance, sized by the StreamingMode.
 // Call Advance() before each Get(). Get() is idempotent — it returns the
 // current element without advancing. Only Advance() moves forward.
 type goRangeIterator struct {
@@ -214,6 +247,7 @@ type goRangeIterator struct {
 	pos       int
 	index     int // position returned by Get(); set by Advance()
 	exhausted bool
+	first     *client.PendingRange // batch 1, issued by GetRange; nil once taken
 
 	// traceLog, when non-nil, is called after each batch fetch for debugging.
 	traceLog func(iteration, requested, returned int, more bool, err error)
@@ -269,15 +303,22 @@ func (ri *goRangeIterator) Advance() bool {
 	// iterationProgression[0] = 4096. Adding one here instead made the first fetch target 6144
 	// and made the table's first entry unreachable by any real scan, while the trace below —
 	// which logs the pre-increment value — still called that fetch iteration 1.
-	byteTarget, err := modeTargetBytes(ri.rr.options.Mode, ri.iteration)
-	if err != nil {
-		ri.err = err
-		return false
-	}
 	batch := ri.remaining
+	var kvs []client.KeyValue
+	var more bool
+	var err error
+	if ri.first != nil {
+		kvs, more, err = ri.first.Get()
+		ri.first = nil
+	} else {
+		var byteTarget int
+		if byteTarget, err = modeTargetBytes(ri.rr.options.Mode, ri.iteration); err != nil {
+			ri.err = err
+			return false
+		}
+		kvs, more, err = ri.rr.doRange(ri.begin, ri.end, batch, byteTarget)
+	}
 	ri.iteration++
-
-	kvs, more, err := ri.rr.doRange(ri.begin, ri.end, batch, byteTarget)
 
 	// Trace: log every batch for debugging premature exhaustion.
 	if ri.traceLog != nil {

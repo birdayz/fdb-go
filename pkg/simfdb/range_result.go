@@ -6,44 +6,94 @@ import (
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
 
-// simRangeResult is SimFDB's RangeResult: a LAZY handle over a range request, holding nothing
-// but the request itself — the same shape as the pure-Go client's goRangeResult
-// (fdb/range_result.go:32-37), which stores only {tx, r, options, snapshot} and does every bit
-// of its work at consumption.
+// simRangeResult is SimFDB's RangeResult. Like the pure-Go client's goRangeResult and Apple's
+// binding (bindings/go/src/fdb/transaction.go:295-296), GetRange fetches BATCH 1 at the call;
+// every later batch is fetched when an iterator reaches it.
 //
-// The laziness is load-bearing twice over, and both halves are about a write issued BETWEEN the
-// GetRange() call and the consumption of its result — the record layer's scan-and-update shape:
+// Both halves of that split are observable through a write issued between the GetRange() call
+// and the consumption of its result — the record layer's scan-and-update shape:
 //
-//   - ROWS. Each fetch resolves against the read-your-writes view AS IT IS AT FETCH TIME. A
-//     write landing mid-scan is therefore visible in every batch not yet fetched, and invisible
-//     in the ones already returned. Materializing the whole result at GetRange() time answers
-//     from a stale view and hides the write entirely.
+//   - ROWS. Each fetch resolves against the read-your-writes view AS IT IS WHEN THE FETCH IS
+//     ISSUED (C++ ReadYourWrites.actor.cpp:382). Batch 1 ignores a write made after GetRange();
+//     a later batch sees it.
 //   - CONFLICTS. Every batch takes its own read conflict range, clamped to what that batch
-//     returned (fdb/range_result.go:245-283) and filtered through the write map at consumption
-//     (addFilteredReadConflict). The filter SUBTRACTS spans the transaction's own buffer
-//     answered — which is only sound if the rows were actually resolved from that buffer. An
-//     eagerly-materialized result returns the STORED value while the filter subtracts the span
-//     as locally-satisfied: the read depended on storage and records no conflict for it, so a
-//     concurrent writer of that key does not abort the reader. That is a lost update certified
-//     by the simulator, which is worse than no simulator.
+//     returned and filtered through the write map at that batch's issue (addFilteredReadConflict;
+//     C++ :388). Batch 1's conflict counts even if the result is never consumed: commit waits
+//     for every issued read (:1359-1360).
 //
 // The batching itself is modelled, not incidental: the real backend fetches pages sized by the
 // streaming mode's per-fetch BYTE target (fdb.ModeTargetBytes), EVERY BATCH TAKES ITS OWN READ
-// CONFLICT RANGE, and a cursor
-// abandoned after one page has therefore conflicted over ONE PAGE. Registering the full extent
-// at GetRange() call time over-conflicts every early-abandoned scan — and the record layer's
-// cursors abandon constantly, at every continuation boundary. Batch boundaries are also where a
-// continuation lands, so a sim that batched differently would page differently from the client
-// it stands in for.
+// CONFLICT RANGE, and a cursor abandoned after one page has therefore conflicted over ONE PAGE.
+// Batch boundaries are also where a continuation lands, so a sim that batched differently would
+// page differently from the client it stands in for.
 //
-// GetSliceWithError is the exception and matches the client's: it asks for the whole budget in
-// one fetch (goRangeResult.GetSliceWithError calls doRangeWithLimit once), so it takes one
-// conflict over the full extent.
+// GetSliceWithError matches the client's: batch 1, then the rest in one unlimited-byte fetch,
+// each taking its own conflict.
 type simRangeResult struct {
 	tx       *simTxn
 	r        fdb.Range
 	options  fdb.RangeOptions
 	snapshot bool
+	first    *simFirstBatch
+}
+
+// simFirstBatch is batch 1, fetched by GetRange.
+type simFirstBatch struct {
+	begin, end []byte // the resolved range
+	limit      int
+	batch      []fdb.KeyValue
+	more       bool
+	err        error
+}
+
+func (r *simRangeResult) issueFirst() {
+	f := &simFirstBatch{}
+	r.first = f
+	begin, end, err := r.tx.resolveRangeForRead(r.r, r.snapshot)
+	if err != nil {
+		f.err = err
+		return
+	}
+	f.begin, f.end = begin, end
+	if err := validateRangeLimit(r.options); err != nil {
+		f.err = err
+		return
+	}
+	byteTarget, err := fdb.ModeTargetBytes(r.options.Mode, 1)
+	if err != nil {
+		f.err = err
+		return
+	}
+	f.limit = fdb.EffectiveRowLimit(r.options.Limit)
+	// The client's request-side row clamp (C++ transformRangeLimits, NativeAPI.actor.cpp:4223).
+	want := min(f.limit, replyByteLimit)
+	batch, more, capBegin, capEnd, err := r.tx.fetchRange(begin, end, want, byteTarget, r.options.Reverse)
+	if err != nil {
+		f.err = err
+		return
+	}
+	f.batch, f.more = batch, more
+	if !r.snapshot {
+		r.addConflict(capBegin, capEnd, batch, more)
+	}
+}
+
+// take returns a consumer's own copy of batch 1, as each Get of a range future copies. A
+// Cancel since GetRange fails it: the storage reply cannot have beaten a local cancel, and C++
+// fails the in-flight read through resetPromise (ReadYourWrites.actor.cpp:391).
+func (f *simFirstBatch) take(tx *simTxn) ([]fdb.KeyValue, error) {
+	if tx.cancelled.Load() {
+		return nil, fdb.Error{Code: 1025}
+	}
+	return f.rows(), nil
+}
+
+func (f *simFirstBatch) rows() []fdb.KeyValue {
+	out := make([]fdb.KeyValue, len(f.batch))
+	for i, kv := range f.batch {
+		out[i] = fdb.KeyValue{Key: bytes.Clone(kv.Key), Value: bytes.Clone(kv.Value)}
+	}
+	return out
 }
 
 // validateRangeLimit is the row-limit check the client applies on BOTH consumption paths. A row
@@ -84,27 +134,38 @@ func validateRangeLimit(options fdb.RangeOptions) error {
 }
 
 func (r *simRangeResult) GetSliceWithError() ([]fdb.KeyValue, error) {
-	// Bound resolution first, validation second — the client's order: GetSliceWithError calls
-	// resolveRange (which may issue conflict-taking GetKeys) before doRangeWithLimit reaches
-	// getRangeDir's limit check.
-	begin, end, err := r.tx.resolveRangeForRead(r.r, r.snapshot)
+	f := r.first
+	if f.err != nil {
+		return nil, f.err
+	}
+	kvs, err := f.take(r.tx)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateRangeLimit(r.options); err != nil {
-		return nil, err
-	}
-	// fetchRange, not rangeRows: the unreadable cap is a property of the FETCH, so it applies on
-	// both consumption surfaces and it narrows the window the conflict below is taken over.
-	kvs, more, begin, end, err := r.tx.fetchRange(begin, end, fdb.EffectiveRowLimit(r.options.Limit), fdb.ByteLimitUnlimited, r.options.Reverse)
-	if err != nil {
-		return nil, err
-	}
-	if !r.snapshot {
-		cb, ce := rangeConflictExtent(begin, end, kvs, more, r.options.Reverse)
-		if bytes.Compare(cb, ce) < 0 {
-			r.tx.addFilteredReadConflict(cb, ce)
+	more := f.more
+	begin, end, remaining := f.begin, f.end, f.limit-len(kvs)
+	for more && remaining > 0 && len(kvs) > 0 {
+		last := []byte(kvs[len(kvs)-1].Key)
+		if r.options.Reverse {
+			end = bytes.Clone(last)
+		} else {
+			begin = keyAfter(last)
 		}
+		// fetchRange, not rangeRows: the unreadable cap is a property of the FETCH, so it
+		// narrows the window the conflict below is taken over.
+		rest, restMore, capBegin, capEnd, err := r.tx.fetchRange(begin, end, remaining, fdb.ByteLimitUnlimited, r.options.Reverse)
+		if err != nil {
+			return nil, err
+		}
+		if !r.snapshot {
+			r.addConflict(capBegin, capEnd, rest, restMore)
+		}
+		if len(rest) == 0 {
+			break
+		}
+		kvs = append(kvs, rest...)
+		remaining -= len(rest)
+		more = restMore
 	}
 	return kvs, nil
 }
@@ -118,24 +179,18 @@ func (r *simRangeResult) GetSliceOrPanic() []fdb.KeyValue {
 }
 
 func (r *simRangeResult) Iterator() fdb.RangeIterator {
-	begin, end, err := r.tx.resolveRangeForRead(r.r, r.snapshot)
-	if err != nil {
-		return &rangeIter{err: err, idx: -1}
-	}
-	// Both option errors come from validateRangeLimit, for both surfaces. The Iterator used to
-	// carry its own inline EXACT check here as well; once GetSlice started raising 2210 too, that
-	// line became unreachable and was removed rather than left standing as a second guard that
-	// looks independent and is not.
-	if err := validateRangeLimit(r.options); err != nil {
-		return &rangeIter{err: err, idx: -1}
+	f := r.first
+	if f.err != nil {
+		return &rangeIter{err: f.err, idx: -1}
 	}
 	return &rangeIter{
 		rr:        r,
 		idx:       -1,
-		remaining: fdb.EffectiveRowLimit(r.options.Limit),
+		remaining: f.limit,
 		iteration: 1,
-		scanBegin: begin,
-		scanEnd:   end,
+		scanBegin: f.begin,
+		scanEnd:   f.end,
+		first:     f,
 	}
 }
 
@@ -164,6 +219,8 @@ type rangeIter struct {
 	// scanBegin/scanEnd are the bounds the NEXT batch is fetched over — the client's
 	// ri.begin/ri.end, which advance (forward) or retreat (reverse) past each returned batch.
 	scanBegin, scanEnd []byte
+	// first is batch 1, fetched by GetRange; nil once this iterator has taken it.
+	first *simFirstBatch
 
 	traceLog func(iteration, requested, returned int, more bool, err error)
 }
@@ -187,6 +244,20 @@ func (it *rangeIter) Advance() bool {
 // merged with the transaction's write buffer AS OF NOW, and record the conflict range that
 // fetch would have taken.
 func (it *rangeIter) fetchBatch() bool {
+	if f := it.first; f != nil {
+		it.first = nil
+		it.iteration++
+		if it.traceLog != nil {
+			it.traceLog(1, it.remaining, len(f.batch), f.more, nil)
+		}
+		rows, err := f.take(it.rr.tx)
+		if err != nil {
+			it.err = err
+			it.exhausted = true
+			return false
+		}
+		return it.takeBatch(rows, f.more)
+	}
 	// The division is BYTE-driven, exactly as it is in the client: the streaming mode supplies a
 	// per-fetch byte target (fdb.ModeTargetBytes, the single definition of the rule), the row
 	// budget passed down is just what is left of the caller's limit, and the truncation below
@@ -251,13 +322,22 @@ func (it *rangeIter) fetchBatch() bool {
 		}
 		return false
 	}
+	if !it.rr.snapshot {
+		it.addConflict(capBegin, capEnd, batch, more)
+	}
+	return it.takeBatch(batch, more)
+}
+
+// takeBatch makes a fetched, non-empty batch current and moves the scan bounds past it.
+func (it *rangeIter) takeBatch(batch []fdb.KeyValue, more bool) bool {
+	if len(batch) == 0 {
+		it.exhausted = true
+		return false
+	}
 	it.batch = batch
 	it.idx = 0
 	it.pos = 1
 	it.remaining -= len(batch)
-	if !it.rr.snapshot {
-		it.addConflict(capBegin, capEnd, batch, more)
-	}
 	// Advance the scan bounds past this batch, as the client's iterator does: forward reads
 	// resume after the last key returned, reverse reads resume before the lowest.
 	last := []byte(batch[len(batch)-1].Key)
@@ -336,9 +416,13 @@ func serverByteCut(batch []fdb.KeyValue, targetBytes int) int {
 // ACTUALLY read — the scan bounds as the unreadable cap narrowed them, not the requested ones —
 // clamped by the same rule the whole-read path uses.
 func (it *rangeIter) addConflict(begin, end []byte, batch []fdb.KeyValue, more bool) {
-	cb, ce := rangeConflictExtent(begin, end, batch, more, it.rr.options.Reverse)
+	it.rr.addConflict(begin, end, batch, more)
+}
+
+func (r *simRangeResult) addConflict(begin, end []byte, batch []fdb.KeyValue, more bool) {
+	cb, ce := rangeConflictExtent(begin, end, batch, more, r.options.Reverse)
 	if bytes.Compare(cb, ce) < 0 {
-		it.rr.tx.addFilteredReadConflict(cb, ce)
+		r.tx.addFilteredReadConflict(cb, ce)
 	}
 }
 
