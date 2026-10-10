@@ -37,20 +37,15 @@ import (
 // genuine additional step at execution time, so a per-node execution-overhead
 // discount is a coherent (if approximate) model there.
 //
-// This WAS applied to Cardinality throughout this file and in plan/plans/cost.go
-// (compounding once per physical node in a plan's depth), and it was NOT "small
-// enough not to dominate the cost comparison with structurally-different
-// alternatives" as this comment used to claim: measured directly, comparing a
-// materialized NestedLoopJoin (one extra Fetch/Filter-free inner) against a
-// re-scanning FlatMap whose inner carries one more wrapper node
-// (PredicatesFilter/DefaultOnEmpty) made the FlatMap's Cardinality ~10% cheaper
-// for IDENTICAL true selectivity — a swing bigger than the entire CPU term the
-// two shapes otherwise differ by, so it silently decided compareJoinOrdering by
-// tree shape instead of cost (the RFC-152 preserved-only regression). Confining
-// the multiplier to CPU makes two physical realizations of the same logical
-// join carry EXACTLY EQUAL Cardinality, so Cost.Less falls through to CPU —
-// which is where the real discriminator (materialize-once vs re-scan-per-row)
-// already lives.
+// Applied to Cardinality it compounds once per physical node in a plan's depth:
+// a re-scanning FlatMap whose inner carries one more wrapper node
+// (PredicatesFilter/DefaultOnEmpty) than a materialized NestedLoopJoin gets ~10%
+// lower Cardinality for IDENTICAL true selectivity — a swing bigger than the
+// entire CPU term the two shapes differ by, so compareJoinOrdering decides by
+// tree shape instead of cost (RFC-152). Confined to CPU, two physical
+// realizations of the same logical join carry EXACTLY EQUAL Cardinality, so
+// Cost.Less falls through to CPU — where the real discriminator
+// (materialize-once vs re-scan-per-row) lives.
 const PhysicalWrapperCostMultiplier = 0.9
 
 // FlatMapCost: a correlated dependent join re-runs the inner once per outer row.

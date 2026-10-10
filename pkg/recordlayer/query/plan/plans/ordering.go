@@ -32,65 +32,21 @@ import (
 //     ordering satisfaction and extraction-time sort elision can resolve
 //     through the SOURCE, and their HintOrdering inherits from it.
 //
-// WHY THE DELEGATOR BODIES DUPLICATE THE WRAPPERS' RATHER THAN DELEGATING
+// A delegator follows its child reference. Constructors accepting a quantifier
+// retain the live memo group; constructors using QuantifierOverPlan create a
+// singleton reference over the concrete child. Ordering must follow the actual
+// reference rather than assume either shape.
 //
-// Not mechanism: the two sides are byte-identical loops, both over
-// AllMembers(). The difference is the PROVENANCE of the reference each one
-// walks.
-//
-//   - A wrapper's quantifier ranges over a SHARED MEMO GROUP — the group the
-//     wrapper was built over, holding every alternative exploration has
-//     yielded into it. Walking its members asks "does any explored
-//     alternative provide an order?"
-//   - A plan's quantifier ranges over a FRESH SINGLETON: QuantifierOverPlan
-//     mints a new FinalOfAtStage reference per child, so the set holds
-//     exactly the one child plan that was put there. Walking its members asks
-//     "what order does MY concrete child produce?"
-//
-// Same loop, different set, different question. Collapsing them would make
-// one of the two questions unanswerable, which is why the memo keeps asking
-// the wrapper.
-//
-// UNREACHABLE TODAY — DELIBERATELY KEPT
-//
-// The 9 delegator HintOrdering bodies and the 9 OrderingSourceRef methods
-// below are WRITE-ONLY: nothing in production calls them. Every ordering
-// question the memo asks still goes to the physical wrapper. They are staging
-// for the wrapper deletion that would flip the caller over — and that
-// deletion is BLOCKED, by RFC-183 §11: four rules build compensating plans
-// they never memoize, so a plan's quantifier and its plan pointer are two
-// DIFFERENT facts (what the memo costs vs. what executes), and collapsing them
-// drops DefaultOnEmpty wrappers and residual filters silently. Until those
-// rules memoize, these bodies stay unreachable.
-//
-// The HintRichOrdering bodies are NOT write-only, and which of them is reached
-// is decided by memo residency, not by a list kept here: computeWrapperRichOrdering
-// (cascades/plan_properties.go) dispatches to the rich form of ANY memo
-// expression that implements it, and every plan with a rich form in this
-// package — those below and RecordQueryCoveringIndexPlan's, which
-// delegates to the index scan's — also implements physicalPlanExpression
-// (GetRecordQueryPlan). The PK scan, the index scan and the vector scan are
-// memoized bare by the data-access rule (cascades/abstract_data_access_rule.go,
-// RFC-184 W2); the aggregate plan is memoized directly (physical_wrapper.go,
-// IsPhysicalAggregateIndex); the covering scan and the fetch are memo
-// expressions of their own; and a plan the scanPlanExpression leaf wraps (a
-// TypeFilter over a scan) is reached through that leaf's delegation
-// (orderingSourceOfDataAccessPlan). Treat every rich body below as LIVE.
-//
-// They are kept rather than deleted because re-deriving them at deletion time
-// is where a transcription slip would land, and the parity tests in
-// cascades/plan_rich_ordering_parity_test.go are what hold them honest in the
-// meantime.
+// Bare plans can be memo expressions themselves (RFC-184 W2), so both plain and
+// rich hint methods are live dispatch surfaces. The parity tests in
+// cascades/plan_rich_ordering_parity_test.go check the rich derivations.
 //
 // WHICH PRODUCERS ASK THE ORDERING-CLAIM PREDICATE
 //
 // A producer's claim is that the PHYSICAL order it hands rows back in equals
 // the LOGICAL order the comparator imposes. For a FLOAT/DOUBLE coordinate those
 // two differ (values/ordering_claim.go), so a producer whose order comes from
-// FDB KEY layout has to ask. This is enumerated rather than counted, because a
-// count is what rots first — and because the sentence this replaces ("every
-// derivation routes through it") was false about two of them while they were
-// returning wrong rows.
+// FDB KEY layout has to ask:
 //
 //   - ASK, because their order IS the tuple-key order:
 //     RecordQueryScanPlan.HintOrdering (via PKScanOrdering),
@@ -426,10 +382,10 @@ func IndexColumnCouldBeFloat(
 // covers TWO physical prefixes and every column after it RESETS at the
 // boundary.
 //
-// Counting that as an equality claimed the suffix was globally ordered and let
-// the planner drop a required sort: over rows (-0.0, 9) and (+0.0, 1),
-// `WHERE v = 0 ORDER BY w` returned [9 1] unsorted, and `... LIMIT 1` returned
-// the wrong row entirely.
+// Counting that as an equality would claim the suffix is globally ordered and
+// let the planner drop a required sort: over rows (-0.0, 9) and (+0.0, 1),
+// `WHERE v = 0 ORDER BY w` would return [9 1] unsorted, and `... LIMIT 1` the
+// wrong row entirely.
 //
 // Such a range is treated like an inequality — it does not pin, so the prefix
 // stops there. A non-equality leading comparison already trims nothing, so `v`
@@ -503,11 +459,10 @@ func EqualityPinsSinglePhysicalKeyOnColumn(cr *predicates.ComparisonRange, colum
 		// below every number, so the coordinate is genuinely pinned and the
 		// suffix after it stays ordered.
 		//
-		// Treating this as "not provably nonzero" put a materialized sort back on
-		// every `<float> IS NULL … ORDER BY <pk>` — measured on rowdiff seed 224,
-		// 4 plans, and caught by the committed pure-planner ordering sweep, not
-		// by the targeted test. The widening this function guards is driven by a
-		// zero VALUE; a range with no value cannot trigger it.
+		// Treating this as "not provably nonzero" would put a materialized sort
+		// back on every `<float> IS NULL … ORDER BY <pk>`. The widening this
+		// function guards is driven by a zero VALUE; a range with no value cannot
+		// trigger it.
 		return true
 	}
 	if !values.IsConstantValue(cmp.Operand) {
@@ -596,8 +551,8 @@ func EqualityPinsSinglePhysicalKeyOnColumn(cr *predicates.ComparisonRange, colum
 //
 // Do NOT reason from tie-class vacuity here. The tempting alternative — "the
 // equality admits one logical value, so any permutation satisfies ORDER BY,
-// which settles ASC by itself" — is FALSE at this coordinate, and believing it
-// produced a wrong answer. It presumes one comparator. There are TWO, and they
+// which settles ASC by itself" — is FALSE at this coordinate. It presumes one
+// comparator. There are TWO, and they
 // disagree on signed zeros BY DESIGN: predicates.Comparison.Eval checks IEEE
 // equality, so -0.0 == +0.0 and both rows are admitted; values.CompareFloat64
 // (faithful to java.lang.Double.compare, and to FDB tuple order) ranks -0.0
@@ -610,9 +565,8 @@ func EqualityPinsSinglePhysicalKeyOnColumn(cr *predicates.ComparisonRange, colum
 // The consequence is that the claim is DIRECTIONAL, never FIXED. A caller that
 // records this coordinate as FIXED — order-free, hence satisfying any requested
 // direction — elides the sort on `WHERE z = 0.0 ORDER BY z DESC` and answers it
-// from a FORWARD scan. Measured, that returned the zero blocks ascending as
-// [7 9 1 3] where the correct answer is [3 1 9 7]. HintRichOrdering binds it
-// SORTED for that reason, and
+// from a FORWARD scan, returning the zero blocks ascending. HintRichOrdering
+// binds it SORTED for that reason, and
 // TestFDB_SignedZeroEqualityDoesNotOrderThePKSuffix/bound_column_descending
 // pins it; its ascending sibling stays green either way and proves nothing.
 //
@@ -655,8 +609,7 @@ func isZeroFloatEqualityRange(cr *predicates.ComparisonRange) bool {
 		//
 		// `WHERE v = ? ORDER BY w LIMIT 1` with ? bound to 0.0 otherwise loses
 		// its sort and returns the wrong row — and a bound parameter is the
-		// COMMON shape, far more common than the literal zero this function was
-		// originally written for.
+		// COMMON shape, far more common than a literal zero.
 		//
 		// Asymmetric with the SARGABILITY decision in match_candidate_index on
 		// purpose, and the asymmetry is the point: there, being conservative
@@ -687,8 +640,6 @@ func isZeroFloatEqualityRange(cr *predicates.ComparisonRange) bool {
 // the plan gates untyped — but it also swallows every untyped IN-join binding
 // over an INT column, which costs those plans their ordering claim and their
 // InJoin sorted-order optimisation for a signed zero that cannot exist there.
-// Measured: it turned four test targets red, including an InJoin that must
-// claim ascending order.
 //
 // The right discriminator is the INDEXED COLUMN's type — an int column has no
 // zero to widen regardless of what the comparand is — and that is not available
@@ -947,12 +898,8 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 // door to the ONE ordering-claim predicate (values.TypeTerminatesOrderingClaim),
 // so no two derivations can classify the same column differently.
 //
-// An earlier revision said "EVERY derivation in this file that turns a
-// key-column sequence into an ordering claim routes through them". It did not,
-// and the gap was not academic: the two AGGREGATE producers never asked, and
-// `SELECT d, SUM(a) FROM t GROUP BY d ORDER BY d` returned the negative-NaN
-// group FIRST on a real cluster. Which producer asks, and why the rest need
-// not, is enumerated in this file's header.
+// Which producers ask, and why the rest need not, is enumerated in this file's
+// header.
 //
 // The rule they enforce: an ordering claim TERMINATES at a coordinate whose
 // physical FDB key order is not its logical order. For FLOAT/DOUBLE that is
@@ -1127,28 +1074,18 @@ func (p *RecordQueryInMemorySortPlan) HintOrdering() properties.Ordering {
 	for i, sk := range sks {
 		if sk.ValueExpr == nil {
 			// ValueExpr is REQUIRED of every SortKey (see in_memory_sort.go),
-			// and the executor enforces that: a nil one is rejected as a
-			// malformed plan, loud, never a name read. An ADVERTISER that
-			// minted a lazy FieldValue from SortKey.Field instead was therefore
-			// MORE PERMISSIVE THAN THE EXECUTOR OF THE SAME STRUCT — it stated
-			// an ordering for a plan the cursor will refuse to run.
+			// and the executor rejects a nil one as a malformed plan, never a
+			// name read. Minting a lazy FieldValue from SortKey.Field here would
+			// advertise an ordering for a plan the cursor refuses to run, and
+			// in a second vocabulary: SortKey.Field is a DISPLAY rendering
+			// (ExplainValue's output, correlation and `#ordinal` included),
+			// which the match-domain identity (AccessorNamePath) declines, so
+			// the ordering would not compare with a baked one.
 			//
-			// It also stated it in a second vocabulary. SortKey.Field is a
-			// DISPLAY rendering: for anything but a bare column it is
-			// ExplainValue's output, correlation and `#ordinal` included. A
-			// lazy FieldValue carrying that string is declined by the
-			// match-domain identity (AccessorNamePath), because a rendered
-			// label is indistinguishable as a string from a real nested path.
-			// So the advertised ordering was not comparable with a baked one,
-			// which is what made satisfaction producer-dependent rather than
-			// merely untidy.
-			//
-			// UNKNOWN rather than a panic: HintOrdering is a property
-			// advertiser with no error channel, and the contract already has
-			// exactly one loud enforcement point — the executor, where an error
-			// can be returned and where the plan is actually rejected. An
-			// advertiser that under-claims costs a plan shape; one that
-			// over-claims is the bug being fixed here.
+			// UNKNOWN rather than a panic: HintOrdering has no error channel,
+			// and the executor is the one loud enforcement point. Under-claiming
+			// costs a plan shape; over-claiming advertises an ordering the plan
+			// does not provide.
 			return properties.Ordering{}
 		}
 		// The key's OWN Value is the identity, and the sort re-orders rows
@@ -1904,8 +1841,8 @@ func (p *RecordQueryIndexPlan) hintRichOrdering() *properties.RichOrdering {
 	// ORDER (reversed wholesale under a reverse scan), NOT that it admits one
 	// logical value: it admits two distinct sort values, so `ORDER BY` on it is
 	// satisfied only in the direction the scan runs. The loop below binds it
-	// accordingly; do not restate the vacuity argument here, it is refuted at
-	// EqualityBoundCoordinateClaimsOwnOrder.
+	// accordingly; EqualityBoundCoordinateClaimsOwnOrder explains why tie-class
+	// vacuity does not apply.
 	split := splitKeyOrder(comps, columnNames, TrimmedPKSuffix(p.injectiveKeyColumnNames(), pkColumnNames),
 		p.GetKeyComponentTypes(), p.GetFlowedType(), p.NestedKeyColumnPath)
 	tail := split.tail
@@ -2029,16 +1966,15 @@ func (p *RecordQueryVectorIndexPlan) HintRichOrdering() *properties.RichOrdering
 
 // HintRichOrdering: a predicate filter passes its input's rich ordering
 // through, bindings and all — Java's OrderingProperty.visitPredicatesFilterPlan
-// is orderingFromSingleChild. Before this the memo's computeWrapperRichOrdering
-// found no rich form on the filter and synthesised sorted-only bindings from
-// the plain HintOrdering, so a filter MEMBER's PropRichOrdering — the property
-// the in-union and in-join partition roll-ups read — dropped the FIXED
-// bindings of an equality-prefixed scan beneath it. Sort elision was never
-// affected: memberSatisfiesOrdering walks a filter as an orderingDelegator to
-// its source's rich form. Measured at RFC-248: no plan in the 2955-entry
-// EXPLAIN corpus changes with or without this method, so it closes a latent
-// divergence in the property, not a live plan; the plans-level pin is what
-// holds it. Same source-reference shape as the fetch below.
+// is orderingFromSingleChild. Without it the memo's computeWrapperRichOrdering
+// would synthesise sorted-only bindings from the plain HintOrdering, so a
+// filter MEMBER's PropRichOrdering — the property the in-union and in-join
+// partition roll-ups read — would drop the FIXED bindings of an
+// equality-prefixed scan beneath it. Sort elision does not depend on it:
+// memberSatisfiesOrdering walks a filter as an orderingDelegator to its
+// source's rich form. So it closes a latent divergence in the property (RFC-248)
+// rather than changing a plan; the plans-level pin holds it. Same
+// source-reference shape as the fetch below.
 func (p *RecordQueryPredicatesFilterPlan) HintRichOrdering() *properties.RichOrdering {
 	return richOrderingOf(p.OrderingSourceRef())
 }

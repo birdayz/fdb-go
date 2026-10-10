@@ -1119,15 +1119,6 @@ func (pv *predicateValue) Evaluate(evalCtx any) (any, error) {
 	}
 }
 
-// walkScalarFunction handles every generic scalar-call name registered in the
-// values-owned scalar-function catalog. Unknown function names decline with
-// UnsupportedExpressionShapeError so the logical-builder text
-// fallback catches them; this keeps the walker conservative until
-// the full scalar function catalogue ports.
-//
-// Args walk through the standard WalkExpression dispatch so nested
-// expressions (`UPPER(name)`, `LENGTH(CAST(x AS STRING))`) compose
-// without further plumbing.
 // unsupportedScalarFunctionRejection returns Java's encapsulation-time
 // rejection for a named scalar call the Cascades planner has no catalogue entry
 // for, or nil when the name is either supported or unknown to the catalogue
@@ -1142,6 +1133,15 @@ func unsupportedScalarFunctionRejection(name string) error {
 	return api.NewErrorf(api.ErrCodeUnsupportedQuery, "Unsupported operator %s", name)
 }
 
+// walkScalarFunction handles every generic scalar-call name registered in the
+// values-owned scalar-function catalog. Unknown function names decline with
+// UnsupportedExpressionShapeError so the logical-builder text
+// fallback catches them; this keeps the walker conservative until
+// the full scalar function catalogue ports.
+//
+// Args walk through the standard WalkExpression dispatch so nested
+// expressions (`UPPER(name)`, `LENGTH(CAST(x AS STRING))`) compose
+// without further plumbing.
 func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (values.Value, error) {
 	if s == nil {
 		return nil, fmt.Errorf("expr.walkScalarFunction: nil")
@@ -1752,9 +1752,6 @@ func primitiveTypeToValueType(pt antlrgen.IPrimitiveTypeContext) (values.Type, b
 	return values.TypeUnknown, false
 }
 
-// aggregateFunctionName reads which terminal is present on the
-// AggregateWindowedFunction context and returns the canonical
-// UPPER-case name.
 // ArrayAggOptions reads ARRAY_AGG's null treatment (default RESPECT) and
 // in-call LIMIT, a literal in [0, Integer.MAX_VALUE].
 func ArrayAggOptions(awf *antlrgen.AggregateWindowedFunctionContext) (ignoreNulls bool, limit int, err error) {
@@ -1772,6 +1769,9 @@ func ArrayAggOptions(awf *antlrgen.AggregateWindowedFunctionContext) (ignoreNull
 	return ignoreNulls, limit, nil
 }
 
+// aggregateFunctionName reads which terminal is present on the
+// AggregateWindowedFunction context and returns the canonical
+// UPPER-case name.
 func aggregateFunctionName(awf *antlrgen.AggregateWindowedFunctionContext) (string, bool) {
 	switch {
 	case awf.COUNT() != nil:
@@ -2671,17 +2671,16 @@ func singleChildDescendant[T antlr.Tree](tree antlr.Tree) (T, bool) {
 	return zero, false
 }
 
-// comparisonOpFromCtx reads the terminal tokens on a
-// ComparisonOperator context to identify the operator. Mirrors
-// the grammar:
-//
-//	= | > | < | >= | <= | <> | != | IS [NOT] DISTINCT FROM
-//
 // ComparisonOpFromCtx is the comparison a comparison operator names.
 func ComparisonOpFromCtx(op antlrgen.IComparisonOperatorContext) (predicates.ComparisonType, error) {
 	return comparisonOpFromCtx(op)
 }
 
+// comparisonOpFromCtx reads the terminal tokens on a
+// ComparisonOperator context to identify the operator. Mirrors
+// the grammar:
+//
+//	= | > | < | >= | <= | <> | != | IS [NOT] DISTINCT FROM
 func comparisonOpFromCtx(op antlrgen.IComparisonOperatorContext) (predicates.ComparisonType, error) {
 	if op == nil {
 		return predicates.ComparisonEquals, fmt.Errorf("comparisonOpFromCtx: nil operator")
@@ -2811,11 +2810,6 @@ func decodeStringLiteral(lit *antlrgen.StringLiteralContext) (string, error) {
 	return b.String(), nil
 }
 
-// stripStringLiteral removes the single-quote delimiters from a
-// STRING_LITERAL token's text and unescapes doubled quotes. Used
-// by the grammar-Predicate handlers that receive STRING_LITERAL
-// tokens directly (LikePredicate pattern) rather than going
-// through the ConstantExpressionAtom dispatch.
 // resolveDecimalText types one decimal literal token as Java's
 // ParseHelpers.parseDecimal does (ParseDecimal). An L suffix PINS the width:
 // `2L` is LONG, never re-narrowed; INT operands ride the int32-bounded
@@ -2832,6 +2826,11 @@ func (r *Resolver) resolveDecimalText(text string) (values.Value, error) {
 	return r.ResolveConstant(lit)
 }
 
+// stripStringLiteral removes the single-quote delimiters from a
+// STRING_LITERAL token's text and unescapes doubled quotes. Used
+// by the grammar-Predicate handlers that receive STRING_LITERAL
+// tokens directly (LikePredicate pattern) rather than going
+// through the ConstantExpressionAtom dispatch.
 func stripStringLiteral(text string) string {
 	if len(text) >= 2 && text[0] == '\'' && text[len(text)-1] == '\'' {
 		return strings.ReplaceAll(text[1:len(text)-1], "''", "'")

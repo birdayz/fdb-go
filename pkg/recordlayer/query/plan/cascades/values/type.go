@@ -430,16 +430,12 @@ type RecordType struct {
 	// quantifier's window). Empty for every non-clustered leg type; carries
 	// NO identity semantics — layout metadata only.
 	//
-	// "Equals/Hash ignore it" is what this line used to say, and HASH NAMED
-	// NOTHING: there is no Hash method on RecordType, on Type, or anywhere in
-	// this file. A reader verifying the claim would have found no such method and
-	// moved on, which is the most durable way for an unchecked claim to read as
-	// checked. The channels the memo ACTUALLY keys a record type on are
+	// Memo identity ignores it. The memo keys a record type on
 	// values.SemanticHashCode, values.SemanticEqualsUnderAliasMap and
 	// values.EqualsWithoutChildren (plus String(), which is not identity but is
 	// what EXPLAIN goldens diff on), pinned by
-	// executor.TestLegColumnOwner_TheLegTableReachesNoMemoIdentity — and the two
-	// memo sites that genuinely dispatch into Equals, pinned by
+	// executor.TestLegColumnOwner_TheLegTableReachesNoMemoIdentity; the two memo
+	// sites that dispatch into Equals are pinned by
 	// expressions.TestMemoExpressionIdentity_IgnoresTheLegTable.
 	Legs []RecordTypeLeg
 }
@@ -505,266 +501,25 @@ func (k LegKind) String() string {
 // RecordTypeLeg is one buried source's boundary within a clustered box leg's
 // flat ordinal concat (see RecordType.Legs).
 type RecordTypeLeg struct {
-	// Kind says whether this leg is a flat RUN of Width columns starting at
-	// Start, or a single NESTED slot at Start holding the leg's whole row.
-	//
-	// It is carried on the leg and not only on the seed window because the layout
-	// crosses two carriers: the planner's rebase authority reads
-	// OrdinalSeedLegWindow, and the executor's runtime binders read this table off
-	// the merged row type. A discriminator on one of the two is a discriminator
-	// the other has to infer.
-	//
-	// Excluded from identity exactly as the RecordType.Legs table that holds it
-	// already is — pinned by
-	// executor.TestLegColumnOwner_TheLegTableReachesNoMemoIdentity, over every
-	// channel the memo actually keys a record type on.
+	// Kind preserves the row layout across planner seed windows and runtime binders.
 	Kind LegKind
 
-	// Alias is the leg's IDENTITY: the CorrelationIdentifier of the quantifier
-	// whose row occupies [Start, Start+Width). It is the field every consumer
-	// asking "does this correlation name this leg?" must compare, through
-	// SameLeg — so that question has exactly one answer, arrived at the same way
-	// Java arrives at it (CorrelationIdentifier.equals is Objects.equals on the
-	// raw id; Java never case-folds an alias anywhere, and its runtime binding is
-	// keyed by the identifier object, not by text).
-	//
-	// It is SOURCED at construction, never re-minted from Name downstream: a
-	// re-mint is how a leg acquires a second spelling, and a second spelling is how
-	// a lookup silently binds the wrong row's slots.
-	//
-	// The producers split into two kinds, and the split is the honest statement of
-	// where this migration stands. Most CARRY the identifier: the executor's merges
-	// and rebases, the planner's leg-concat walk, the seed-window authority, and the
-	// translator's select-leg producer all thread the identifier their own
-	// quantifier or QuantifiedObjectValue already holds. A few MINT it at a
-	// documented TEXT BOUNDARY, because at those points no identifier exists to
-	// thread:
-	//
-	//   - the logical layer's buried-leg bounds (query.buriedLegBounds) records its
-	//     source's binding as a STRING. There is no quantifier to thread and the
-	//     absence is STRUCTURAL, not an omission: a buried non-rightmost leaf of a
-	//     clustered box has no quantifier at all — the box carries ONE, named by its
-	//     rightmost leaf (the sourceBinding convention, stated at
-	//     query.bakeLegType.bakeCorr). Only the seed rebake (CQ-53) creates
-	//     per-leaf quantifiers, and that is what removes this mint;
-	//   - the translator's whole-row leg (wholeRowLegFor) is reached holding a
-	//     select-level layout KEY, also a string. Here a quantifier IS nearby, and
-	//     threading it would be WRONG: these legs are consumed only by the
-	//     DOTTED-text arm, whose counterparty is a qualifier parsed out of a column
-	//     name, so a threaded correlation would be an identity no reader compares —
-	//     and if that quantifier is a machine mint, it would make Name and Alias
-	//     disagree on a leg whose readers still work in text. It retires with the
-	//     dotted channel, not before it.
-	//
-	// Both mint from the only spelling that exists and set Name to that same string,
-	// so neither can make the two channels disagree. That is not merely local to
-	// each producer: both spellings come from sourceAlias/sourceBinding, which
-	// upper-fold at a single chokepoint, and the seed-window authority's own
-	// identities are correlations minted from that same fold. Measured, the
-	// text-vs-identity census reports Name == Alias.Name() on EVERY leg any reader
-	// walks over the real-FDB sqldriver corpus — divergences zero, which is the
-	// claim that matters and the one that does not depend on the population.
-	//
-	// The POPULATION is a dated point measurement and is deliberately given as a
-	// range: three full-suite runs on 2026-08-06 reported 39169, 39889 and
-	// 35029 — a spread of roughly 14%, on an unchanged tree. It is not stable
-	// run to run and must not be quoted as a fixed number: the memo may explore
-	// a rule once or many times for one query depending on exploration order,
-	// and this site is sampled inside readers that rules drive. Quote the RANGE
-	// or quote nothing; a single sample from this site has been wrong every time
-	// anyone has written one down. (This line previously read "every one of the 3320 legs",
-	// a single sample from a much smaller corpus, stated as if it were a
-	// standing fact; it was an order of magnitude low and nothing caught it,
-	// because prose carrying a number carries no instrument.)
-	//
-	// The STANDING instrument is LegSiteTextVsIdentity in leg_identity_census.go,
-	// asserted every full sqldriver run: its divergence counters are held at zero
-	// unconditionally, and its population is floored (not pinned) in
-	// legIdentityFloors so that COLLAPSE fails while drift does not.
+	// Alias identifies the quantifier whose row occupies this leg.
+	// Compare it through SameLeg; reconstructing it from Name loses identity.
 	Alias CorrelationIdentifier
 
-	// Name is the leg's binding as TEXT, conventionally UPPER.
-	//
-	// It is NOT the identity — Alias is. TWO readers still decide with it, and
-	// naming exactly those two is what makes this field's retirement a checkable
-	// condition rather than an aspiration. Both are DOTTED-TEXT readers: the
-	// qualifier reaches them as text — sliced out of a column-name string
-	// ("A.ID"), or carried as a parse-tree segment — so there is no correlation
-	// on the reader's side to key an identity lookup WITH. Neither converts by
-	// rewriting its comparison:
-	//
-	//   - executor.rowSlotForLegColumn's dotted arm (`EqualFold(leg.Name, qual)`
-	//     in executor/ordinal_join.go). MEASURED ZERO over the real-FDB sqldriver
-	//     corpus, and this line is corrected rather than annotated because it is
-	//     the third distinct number it has carried. It said "FOUR times" while
-	//     listing THREE witnesses; it was corrected to "TWICE ... `C.CV` and
-	//     `I.QTY`"; both are now stale. The producer that reached the arm was
-	//     closed by RFC-212 §11.3's `unqualifiedScalarTitle`
-	//     (scalar_subquery_seed.go:205-214), so nothing drives it today and the
-	//     standing assertion in executor's leg-column provenance census
-	//     (leg_column_provenance_census.go:552-564) now holds the arm at a HARD
-	//     ZERO — with the alarm direction stated there as GROWTH, since a count
-	//     means the producer came back.
-	//
-	//     THE LESSON THIS LINE KEEPS RE-TEACHING: a prose number carries no
-	//     instrument, so it rots silently while the assertion two files over
-	//     stays correct. Read the census, not this sentence. The arm's SAFETY
-	//     does not rest on the zero anyway — a flat exact match runs first and
-	//     wins, and a manufactured qualifier naming no leg declines with no
-	//     leaf-only fallback, both pinned by unit tests in the executor package.
-	//     The READER is blocked at its PRODUCER, not at
-	//     the comparison: the qualifier is split out of a column name a producer
-	//     PACKED, and those producers are CQ-53's booked mints (the join rule's
-	//     `corr + "." + field` and the translator's merged-QOV twin). They delete
-	//     outright when the FlatMap inner binder gets Java's parent-chained
-	//     per-alias bindings, and this reader retires with them — producer-first.
-	//   - query.legWindowSlot, the translator's flat leg-window lookup (serving
-	//     both bakeFlatRefsAgainstColumns' re-split arm and the segment-carrying
-	//     caller). The dotted-leg qualifier census measures 102 calls over the
-	//     same corpus: 98 matched a leg whose stated Alias IS the qualifier, 4
-	//     matched nothing, and neither blocking class (MATCH-ALIAS-DIFFERS,
-	//     MATCH-NO-ALIAS) appeared. (Dated point measurement, 2026-08-06, STABLE
-	//     across two consecutive full-suite runs; was 106/98/8. The standing
-	//     instrument is values.AssertDottedLegQualifierCensus, which asserts the
-	//     two blocking classes at zero — that assertion, not the call count, is
-	//     the retirement condition.) CQ-52 converted this reader's COUNTERPARTY —
-	//     a qualifier now arrives as a parse-tree segment instead of a slice of a
-	//     rendered name — and that fixes a different defect: it decides
-	//     QUALIFICATION correctly (a quoted `"A.B"` is one leaf, not a reference
-	//     to leg A), but a segment is still text. Its re-split arm survives the
-	//     conversion for carriers that state no segments at all — including one
-	//     class that structurally cannot; the open question about those is
-	//     stated at the arm itself.
-	//
-	// The SEED-WINDOW map's KEYS were a third reader of this field and are GONE. That
-	// map is keyed by CorrelationIdentifier; finalizeSeedWindows files a
-	// sub-window under the buried leg's own identity and carries its Name as a
-	// LABEL for the merged leg table rather than as the address of anything. The
-	// conversion was measured first, per lookup, over the whole corpus — a DATED
-	// POINT MEASUREMENT, quoted as history: 1400 keyed reads, every one holding a
-	// correlation, the identity selecting the same window the fold did on every
-	// one, and the only two text-keyed readers unreachable by panic probe across
-	// the entire relational tree. The census that produced it retired with the
-	// namespace it measured; the STANDING instrument over those readers is
-	// seed_window_reader_census.go, which floors each one and hard-zeros the two
-	// declines that replaced the text lookups.
-	//
-	// Two further uses are not decisions and gate nothing. finalizeSeedWindows
-	// SKIPS a leg whose Name is empty — a test for the absence of a string, which
-	// selects no leg and resolves no reference — and CARRIES the Name into the
-	// merged leg table as that leg's display label. A label is what the dotted
-	// readers above match against; it is not itself a match.
-	//
-	// Every reader whose counterparty is a correlation goes through Alias — there
-	// are no exceptions left.
-	//
-	// CQ-52 HAS LANDED AND THIS FIELD SURVIVED IT. The contract this block used
-	// to state — "when the dotted channel's counterparty carries the parser's
-	// segments, those three readers go and this field goes with them" — was wrong
-	// in both halves. It counted FOUR consumers, but one was
-	// bakeDottedRefsToLegQOV's SINGLE-ForEach arm, since deleted as unreached,
-	// and another was that baker's MULTI-ForEach arm, which reads its own
-	// per-leg layout map and has never read this field. And segments alone were
-	// never sufficient: they decide whether a reference is qualified, not which
-	// quantifier the qualifier names.
-	//
-	// So the condition, restated against what is actually left: CQ-53's binder
-	// deletes the executor reader's producer; legWindowSlot converts when the
-	// resolver hands the baker the correlation it already held at mint time,
-	// rather than a segment; and this field goes when the last of the two does.
-	// Until then, a new comparison against Name is a regression, full stop.
-	//
-	// BOTH READERS SURVIVE, re-measured 2026-08-06 and STABLE across two
-	// consecutive full-suite runs, and the two are blocked for DIFFERENT reasons
-	// — which is why neither can be retired by finishing the other:
-	//
-	//   - The EXECUTOR reader is blocked at its PRODUCER, and the producer is
-	//     blocked on an executor widening. Its mint is the unnest-merge path's
-	//     `leg + "." + col` (query.rebaseUnnestOuterLegPredicate). That mint
-	//     cannot re-anchor by ordinal in isolation: it holds no layout parameter,
-	//     and every one of its surviving call sites reaches it over a merged row
-	//     built with qualified `LEG.COL` keys — so a positional bake against it
-	//     strands. Three of the five sit in an explicit `!seedWindowed` /
-	//     `!ordinalSeed` else-branch; the other two apply no seed test at all
-	//     (one is the else of the chained-unnest check, one the plain non-chained
-	//     merge), which makes them the name-keyed rebase's only domain rather
-	//     than an unconverted arm of a seed decision. The ordinal twin
-	//     already exists and is already selected wherever a windowed seed makes
-	//     it correct. Making those seeds ordinal is a scope gate coupled to the
-	//     executor's below-FOD hoist, the same binding-namespace widening the
-	//     bare-untyped-QOV residue needs. The NLJ path is a structural template
-	//     for the shape, not an exercised precedent: its ordinal re-anchor arm
-	//     measures ZERO over the whole real-FDB corpus (the leg-local bake census
-	//     reports its MergedReAnchor partition vacuous), so "as the NLJ path
-	//     already does" describes code that does not run.
-	//   - The TRANSLATOR reader (legWindowSlot) is blocked at the COMPARISON, not
-	//     at its counterparty. The counterparty conversion has already happened
-	//     for every parsed channel; a segment is still text, and this reader
-	//     holds no CorrelationIdentifier to key an identity lookup with. One of
-	//     its two key kinds names a TABLE rather than a quantifier
-	//     (matchViaTableName, measured 1), so the map cannot be re-keyed by
-	//     identity even in principle.
-	//
-	// The SPLIT population these bakers sit on is now instrumented
-	// (name_split_census.go) and reads SPLIT-QUALIFIED 0 at both arms over 11
-	// calls. Scope that to the TWO LEG BAKERS: the census's own header names four
-	// uninstrumented splitting siblings, so this is not a statement about
-	// re-splitting in Go. Within that scope it closes the question of whether a
-	// qualifier is still being MANUFACTURED from a rendered name at the bakers
-	// these two readers sit behind — it is not — without touching either
-	// blocker above, because manufacturing a qualifier and matching one against
-	// Name are different steps and only the first was ever a text-channel defect.
-	//
-	// Consumers whose counterparty is a correlation must use Alias. A comparison
-	// against Name is a text match dressed as an identity check, and text
-	// matching is what folds the deliberately case-DISJOINT alias namespaces
-	// together (user correlations are upper-folded at the semantic scope's
-	// registration chokepoint; UniqueCorrelationIdentifier mints the machine
-	// counter lowercase, so a quoted "q$5" must not be able to forge a
-	// planner-minted q$5 — see SameLeg).
+	// Name is the text label used by dotted-column binding and diagnostics.
+	// Correlation-based lookups must compare Alias with SameLeg instead.
 	Name string
 
 	Start int // its first slot within the carrying type
-	// Width is the leg's SLOT COUNT in the carrying type — not its column count,
-	// which is what this line used to say.
-	//
-	// The correction matters because every consumer already computes Start+Width
-	// as a slot RANGE into the carrying type's Fields (flat_map_cursor.go,
-	// executor/ordinal_join.go in three places, executor.go's concatLegPositionals,
-	// merged_leg_binding_census.go, the planner's leg-concat walk). For a
-	// LegKindFlatRun leg the two readings coincide and the old wording was
-	// harmless. For a LegKindNested leg they diverge: it occupies exactly ONE
-	// slot, so Width is 1 while the leg may have any number of columns, and every
-	// one of those range computations stays in-bounds and truthful only under the
-	// slot reading.
-	//
-	// The leg's COLUMN count is not lost. It is
-	// len(Fields[Start].FieldType.(*RecordType).Fields), and the seed window's Typ
-	// carries it directly. A consumer that wants the leg's columns must go through
-	// the type; under the kind discriminator each of them declines a nested leg
-	// rather than iterating it flat.
+	// Width counts slots in the carrying type: columns for a flat run,
+	// or one slot holding the whole row for a nested leg.
 	Width int
 }
 
-// NewRecordTypeLeg constructs a leg boundary: the quantifier identified by
-// `alias` owns slots [start, start+width) of the carrying type's flat concat,
-// `kind` says whether that range is a flat run of columns or a single slot
-// holding the leg's whole row, and `name` is that binding's text for the dotted
-// channel.
-//
-// It exists to make the IDENTITY and the KIND unforgettable. A composite literal
-// lets a producer state Name and omit Alias, and the result is not a compile
-// error but a leg whose identity is the zero CorrelationIdentifier — which every
-// reader then fails to bind, silently for a frontier-pinned reference (see
-// executor.buriedLegWindow's comment for the per-reference-kind disposition).
-// That is not hypothetical: deleting `Alias:` from two producers left the whole
-// suite green.
-//
-// The kind is here for exactly the same reason and it is the newer half of the
-// argument: an omitted kind is LegKindUnset, and a producer that omits it is a
-// producer that never decided. Both are POSITIONAL parameters so that omitting
-// either is a compile error rather than a silent zero — that, and not the
-// literal index, is what the parameter list buys.
+// NewRecordTypeLeg requires explicit kind and correlation identity so callers
+// cannot omit them as they could in a struct literal.
 func NewRecordTypeLeg(kind LegKind, alias CorrelationIdentifier, name string, start, width int) RecordTypeLeg {
 	return RecordTypeLeg{Kind: kind, Alias: alias, Name: name, Start: start, Width: width}
 }

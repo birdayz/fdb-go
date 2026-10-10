@@ -312,10 +312,6 @@ func isNullable(f protoreflect.FieldDescriptor) bool {
 // the index.
 const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 
-// protoFieldToSQL maps a proto field to the seed's string-valued column Type,
-// recognizing the special tuple_fields.UUID message as the scalar "UUID" type
-// (Java's DataType.Primitives.UUID) before falling back to the coarse
-// kind-based mapping. Every other MessageKind stays "RECORD".
 // columnForField builds the analyzer's view of ONE proto field. It is the
 // single place the array/nullable/UUID unwrapping happens, because a STRUCT
 // column's nested fields must get the identical treatment the table's own
@@ -431,6 +427,10 @@ func columnForField(f protoreflect.FieldDescriptor, enclosing []protoreflect.Ful
 	return col
 }
 
+// protoFieldToSQL maps a proto field to the seed's string-valued column Type,
+// recognizing the special tuple_fields.UUID message as the scalar "UUID" type
+// (Java's DataType.Primitives.UUID) before falling back to the coarse
+// kind-based mapping. Every other MessageKind stays "RECORD".
 func protoFieldToSQL(f protoreflect.FieldDescriptor) string {
 	if f.Kind() == protoreflect.MessageKind {
 		if msg := f.Message(); msg != nil && string(msg.FullName()) == uuidProtoMessageName {

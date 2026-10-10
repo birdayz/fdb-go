@@ -62,16 +62,11 @@ func (p *PlanPartition) GetExpressions() []expressions.RelationalExpression {
 // GetPlans returns the underlying RecordQueryPlans of the PHYSICAL members,
 // in GetExpressions order.
 //
-// It does NOT index-align with GetExpressions, and used to claim it did
-// ("plans[i] corresponds to exprs[i]"). It skips any non-physical member, so
-// one such member shifts every later index and silently pairs a plan with
-// the wrong expression. Callers that need the pairing must use
+// It does NOT index-align with GetExpressions: it skips any non-physical
+// member, so one such member shifts every later index and silently pairs a
+// plan with the wrong expression. Callers that need the pairing must use
 // GetPhysicalExpressions, which applies the identical filter — that pair IS
-// aligned by construction.
-//
-// The stale claim mattered: rule_implement_in_join.go seeds its reference
-// from GetExpressions and its plan from GetPlans, which is exactly the
-// mispairing this enables (RFC-183 §12).
+// aligned by construction (RFC-183 §12).
 func (p *PlanPartition) GetPlans() []plans.RecordQueryPlan {
 	exprs := p.GetExpressions()
 	result := make([]plans.RecordQueryPlan, 0, len(exprs))

@@ -3321,8 +3321,6 @@ func stableHashComparison(h hash.Hash64, c *predicates.Comparison) {
 	}
 }
 
-// costExprDepth returns the depth of a target operator, walking the concrete plan
-// tree for a physical expression and the logical memo otherwise.
 // javaExpressionDepth is a depth as Java's ExpressionDepthProperty states it:
 // a plan without the operator has it at Integer.MAX_VALUE, deeper than any
 // (ExpressionDepthProperty.java:107-113), so the depth rungs still rank a
@@ -3334,6 +3332,8 @@ func javaExpressionDepth(depth int) int {
 	return depth
 }
 
+// costExprDepth returns the depth of a target operator, walking the concrete plan
+// tree for a physical expression and the logical memo otherwise.
 func costExprDepth(e expressions.RelationalExpression, kind planMatchKind) int {
 	if ph, ok := e.(physicalPlanExpression); ok {
 		if plan := ph.GetRecordQueryPlan(); plan != nil {

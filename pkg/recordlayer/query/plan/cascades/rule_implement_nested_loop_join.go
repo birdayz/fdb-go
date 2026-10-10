@@ -1464,46 +1464,6 @@ func (r *ImplementNestedLoopJoinRule) yieldVerifiedOrderedJoin(
 	}
 }
 
-// buildCorrelatedFlatMapPlan constructs the correlated-FlatMap join plan —
-// the per-quantifier-property lowering shared by the 2-quantifier
-// leftDepsRight/rightDepsLeft branches (yieldGeneralFlatMap) and the
-// 3-quantifier existential arm's step-1 (the existential peel): the
-// inner leg re-executes per outer row with the outer bound under outerCorr;
-// a null-on-empty inner wraps in DefaultOnEmpty (Java's
-// planPartitionToPhysical); a strict-single inner wraps in the strict
-// FirstOrDefault.
-//
-// Returns the plan plus the outer and inner quantifiers the caller's FlatMap
-// wrapper must range over, and ok=false when the fail-closed buried-reference
-// verifier declines. The quantifiers are returned rather than built by the
-// caller because every compensating operator this helper adds (the join-pred
-// filter, the FirstOrDefault/DefaultOnEmpty wrap, the outer-pred filter) is
-// MEMOIZED here and its quantifier ADVANCES in lockstep with the plan — so the
-// memo costs the expression that actually executes. Building the quantifiers
-// outside, over the raw outerExpr/innerExpr, is exactly the RFC-183 §11/§12
-// defect: the plan pointer holds the compensated chain while the quantifier
-// holds the uncompensated input, which both under-prices the join by the
-// selectivity of the filters the memo cannot see and blocks the wrapper
-// deletion (collapsing to the quantifier would silently drop the
-// DefaultOnEmpty — wrong outer-join NULLs — and the residual filters).
-// translatePredicateLogicalSource retargets one logical source declaration in
-// a predicate list to the exact physical edge selected for that source. The
-// declaration is recovered from the predicates themselves rather than
-// fabricated from the physical plan: the whole defect this bridge closes is
-// that logical and physical root record identities can differ while their
-// resolved ordinal paths and leaf types agree.
-//
-// retainedWindows are the exact types the SELECTED plan retains as SOURCES
-// INSIDE this row under the same correlation. One alias legitimately denotes
-// two different objects there: the row itself, and a source the row retains
-// which happens to be spelled the same. A chained unnest is the standing case —
-// in `FROM t, t.arr AS x, x.sub AS y` the merged row is bound as Y while still
-// retaining Y's own scalar element, so `t.id > y` carries both `QOV(Y, row).ID`
-// and a bare `QOV(Y, INT)`. Exact type is part of QOV identity, so both bind at
-// runtime; only the ROW is the logical source this bridge retargets, and a
-// retained window must be left exactly as it is. Without that separation the
-// two readings looked like one alias with two irreconcilable types and the
-// whole join declined.
 // retainedWindowTypesAt returns the exact types of the sources a selected
 // plan's layout retains INSIDE its row under `alias`. They are the readings at
 // that correlation which are NOT the row, and they are what keeps a
@@ -1529,6 +1489,13 @@ func retainedWindowTypesAt(
 	return out
 }
 
+// translatePredicateLogicalSource retargets a logical source declaration recovered
+// from predicates to its selected physical edge: their root record identities may
+// differ even when ordinal paths and leaf types agree.
+//
+// retainedWindows identifies sources retained inside the row under the same alias.
+// For `FROM t, t.arr AS x, x.sub AS y`, QOV(Y, row).ID and QOV(Y, INT) are distinct:
+// retarget the row, but preserve the retained scalar element's exact type.
 func translatePredicateLogicalSource(
 	preds []predicates.QueryPredicate,
 	alias values.CorrelationIdentifier,
@@ -2191,6 +2158,28 @@ func translateCorrelatedComparisonRanges(
 	return normalized, true, nil
 }
 
+// buildCorrelatedFlatMapPlan constructs the correlated-FlatMap join plan —
+// the per-quantifier-property lowering shared by the 2-quantifier
+// leftDepsRight/rightDepsLeft branches (yieldGeneralFlatMap) and the
+// 3-quantifier existential arm's step-1 (the existential peel): the
+// inner leg re-executes per outer row with the outer bound under outerCorr;
+// a null-on-empty inner wraps in DefaultOnEmpty (Java's
+// planPartitionToPhysical); a strict-single inner wraps in the strict
+// FirstOrDefault.
+//
+// Returns the plan plus the outer and inner quantifiers the caller's FlatMap
+// wrapper must range over, and ok=false when the fail-closed buried-reference
+// verifier declines. The quantifiers are returned rather than built by the
+// caller because every compensating operator this helper adds (the join-pred
+// filter, the FirstOrDefault/DefaultOnEmpty wrap, the outer-pred filter) is
+// MEMOIZED here and its quantifier ADVANCES in lockstep with the plan — so the
+// memo costs the expression that actually executes. Building the quantifiers
+// outside, over the raw outerExpr/innerExpr, is exactly the RFC-183 §11/§12
+// defect: the plan pointer holds the compensated chain while the quantifier
+// holds the uncompensated input, which both under-prices the join by the
+// selectivity of the filters the memo cannot see and blocks the wrapper
+// deletion (collapsing to the quantifier would silently drop the
+// DefaultOnEmpty — wrong outer-join NULLs — and the residual filters).
 func buildCorrelatedFlatMapPlan(
 	call *ExpressionRuleCall,
 	preds []predicates.QueryPredicate,

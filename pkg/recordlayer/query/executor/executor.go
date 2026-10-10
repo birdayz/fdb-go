@@ -2328,14 +2328,9 @@ func primaryKeyDistinctKey(qr QueryResult) (string, error) {
 // and the in-memory total comparator, both of which make all NaNs equal. Raw
 // FDB tuple keys preserve NaN payloads, which is why a FLOAT/DOUBLE UNIQUE
 // index cannot prove logical DISTINCT even though signed-zero keys can remain
-// separate. The zero rule looks like it contradicts
-// cmpAny's IEEE `=`, and a previous revision canonicalized zero here for
-// exactly that reason. It cannot: Java's structured value equality preserves
-// the sign bit (Float.equals/Double.equals use floatToIntBits/doubleToLongBits),
-// and the tuple encoding preserves it too (Java asserts the two zero signs pack
-// distinctly and adjacently in TupleOrderingTest).
-// Canonicalizing only this encoder made the same query return different rows
-// depending on the plan:
+// separate. Unlike cmpAny's IEEE `=`, Java's structured value equality and
+// tuple encoding preserve the zero sign bit. Canonicalizing only this encoder
+// would make query results depend on the plan:
 //
 //   - The ORDERED dedup path (distinctStreamCursor) compares a row against the
 //     PREVIOUS one only, which is sound because equal keys are adjacent in
@@ -2712,10 +2707,6 @@ func buildIntersectionChildCursors(
 	return cursors, resume, nil
 }
 
-// intersectionCompKeyFunc builds a ComparisonKeyFunc that extracts a
-// tuple-encoded comparison key from a QueryResult. Uses the plan's
-// comparison-key values when available, falls back to PrimaryKey, then
-// to a string representation of the datum.
 // widenInt32 normalizes an intersection/union merge comparison-key element so the
 // FDB tuple layer can Pack it. The tuple layer has no int32 case — Pack panics on
 // it — and the index key encoding already widens int32 columns to int64
@@ -2759,6 +2750,8 @@ func compKeyEvalArg(qr QueryResult, edges ...values.QuantifiedObjectValue) (any,
 	return frontierRowContext(qr.Positional, nil, false, edges...)
 }
 
+// intersectionCompKeyFunc uses the plan's comparison-key values, then PrimaryKey,
+// then losslessly encoded positional content. A row with none of these is an error.
 func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
 	var programs comparisonKeyPrograms
 	return func(qr QueryResult) (tuple.Tuple, error) {
@@ -3361,15 +3354,6 @@ func nestedLoopJoinOutputSourceOrigins(
 	return origins, nil
 }
 
-// concatLegPositionals builds a leg-windowed merged PositionalRow by CONCATENATING
-// two leg rows' own Positionals (parallel construction). The merged Type carries
-// top-level Legs [outerAlias@[0,Wo),
-// innerAlias@[Wo,Wo+Wi)] so a qualified reference ("LA.K") binds its leg's window
-// (rowLegsBinder / legWindowBinder); a bare read reads its baked slot. Nested Legs (a leg
-// that is itself a merge) are preserved, the inner leg's shifted by Wo. Returns nil
-// when either leg lacks a Positional. This is the merge for a NON-build join
-// cursor (the nljCursor's build path OVERWRITES .Positional when a gated join
-// has an ordinal seed).
 // legFieldName names a leg's merged column: a bare-scalar UNNEST element (a
 // 1-field `_0` row — `t.arr AS X`) is renamed to its AS alias so a downstream
 // BARE read of the alias ("X") resolves to the element directly. Any other field
@@ -3381,6 +3365,15 @@ func legFieldName(fieldName, alias string, legWidth int) string {
 	return fieldName
 }
 
+// concatLegPositionals builds a leg-windowed merged PositionalRow by CONCATENATING
+// two leg rows' own Positionals (parallel construction). The merged Type carries
+// top-level Legs [outerAlias@[0,Wo),
+// innerAlias@[Wo,Wo+Wi)] so a qualified reference ("LA.K") binds its leg's window
+// (rowLegsBinder / legWindowBinder); a bare read reads its baked slot. Nested Legs (a leg
+// that is itself a merge) are preserved, the inner leg's shifted by Wo. Returns nil
+// when either leg lacks a Positional. This is the merge for a NON-build join
+// cursor (the nljCursor's build path OVERWRITES .Positional when a gated join
+// has an ordinal seed).
 func concatLegPositionals(outer, inner *PositionalRow, outerAlias, innerAlias values.CorrelationIdentifier) *PositionalRow {
 	if outer == nil || inner == nil || outer.Type == nil || inner.Type == nil {
 		return nil
@@ -3424,22 +3417,6 @@ func mergeRows(outer, inner QueryResult, outerAlias, innerAlias values.Correlati
 	}
 }
 
-// passesJoinPredicatesLegs evaluates a join's residual predicates against the
-// merged leg-windowed positional row, with the ordinal-build leg bindings.
-// legs nil (the non-build merged-row path)
-// resolves through the merged row's leg windows (spansFromMergedLegs below).
-// legs non-nil (an ordinal-build cursor) evaluates the predicates against a
-// RowEvalContext carrying the DIRECT per-leg bindings (the cursor's pre-built
-// twoLegBinder — predicates need no windows at build; legs are
-// PRE-adapted, one small binder per pair, never a map or a re-adaptation): a
-// lazy leg reference QOV(leg).col resolves leg-relative against the adapted leg
-// row (correct even for the second leg), a BAKED one by its baked ordinal, an
-// outer correlation via the binder's base, and a qualified read ("A.ID", a flat
-// FieldValue) resolves via the merged row's leg windows.
-// legs is the CONCRETE *twoLegBinder (not the CorrelationBinder interface) so
-// the cursor's `var pair *twoLegBinder` typed-nil passes as a genuine nil —
-// an interface-typed param would make a typed-nil non-nil and route the
-// non-build path through a nil binder.
 // spansFromMergedLegs derives the per-leg windows from a merged row's own leg
 // metadata (RecordType.Legs), for the non-build join-predicate path: each leg's
 // alias maps to its window [Start, Start+Width) with the sub-slice of fields as
@@ -3485,6 +3462,22 @@ func spansFromMergedLegs(pos *PositionalRow) []legSpan {
 	return spans
 }
 
+// passesJoinPredicatesLegs evaluates a join's residual predicates against the
+// merged leg-windowed positional row, with the ordinal-build leg bindings.
+// legs nil (the non-build merged-row path)
+// resolves through the merged row's leg windows (spansFromMergedLegs below).
+// legs non-nil (an ordinal-build cursor) evaluates the predicates against a
+// RowEvalContext carrying the DIRECT per-leg bindings (the cursor's pre-built
+// twoLegBinder — predicates need no windows at build; legs are
+// PRE-adapted, one small binder per pair, never a map or a re-adaptation): a
+// lazy leg reference QOV(leg).col resolves leg-relative against the adapted leg
+// row (correct even for the second leg), a BAKED one by its baked ordinal, an
+// outer correlation via the binder's base, and a qualified read ("A.ID", a flat
+// FieldValue) resolves via the merged row's leg windows.
+// legs is the CONCRETE *twoLegBinder (not the CorrelationBinder interface) so
+// the cursor's `var pair *twoLegBinder` typed-nil passes as a genuine nil —
+// an interface-typed param would make a typed-nil non-nil and route the
+// non-build path through a nil binder.
 func passesJoinPredicatesLegs(combined QueryResult, preds []predicates.QueryPredicate, evalCtx *EvaluationContext, legs *twoLegBinder) (bool, error) {
 	if len(preds) == 0 {
 		return true, nil
@@ -3665,14 +3658,9 @@ func isNumeric(v any) bool {
 // so the executor's emitted slot name and the translator's baked ordinal derive
 // from ONE rule.
 //
-// IT NO LONGER FOLDS, and the collision this comment used to describe is gone
-// with the fold. The old text said the authority ToUppers its rendered name,
-// so two aggregates differing only in a case-sensitive token (a string literal:
-// `COUNT(CASE WHEN s='x' …)` vs `…'X'…`) collapsed into ONE slot and
-// finalizeGroup wrote both under the same key — a latent silent-wrong, since
-// grouped CASE aggregation does not compute in this engine. The authority is
-// verbatim now (RFC-237 §8), so those two aggregates key apart and the latent
-// collision is closed rather than still pending.
+// The authority preserves case (RFC-237 §8): folding a case-sensitive token
+// such as the literal in `COUNT(CASE WHEN s='x' …)` would conflate it with
+// `…'X'…` and let finalizeGroup write distinct aggregates under one slot key.
 func aggResultName(agg expressions.AggregateSpec) string {
 	return expressions.AggregateResultColumnName(agg)
 }

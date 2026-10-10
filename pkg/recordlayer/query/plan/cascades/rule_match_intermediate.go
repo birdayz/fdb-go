@@ -1508,19 +1508,6 @@ func comparandIndependentOfSource(comparand values.Value, sourceAlias values.Cor
 	return !readsColumn
 }
 
-// valuesMatchColumn reports whether a query column operand and a candidate
-// placeholder value denote the same column. Column identity routes through the
-// match-domain name-path comparison (values.ColumnNamePathsEqual): the full
-// accessor path, not the leaf name, so a nested `addr.city` never binds a
-// same-leaf-named top-level `city` index. The comparison is
-// representation-agnostic — a resolver-baked query ref matches a lazy candidate
-// over the same column (the candidate is name-based by construction; the query
-// side may be baked) — and alias-invariant at the root, which is why the
-// alias-map bridge the pre-name-path design needed is unnecessary. The caller's
-// outer-correlation guard has already established both operands are over the
-// matched source. CardinalityValue is a transparent wrapper handled by the same
-// primitive; a complex non-column value (arithmetic, cast, …) that is not a
-// distance key matches only by exact structural equality.
 // expressionMatchesPlaceholder is Java's semanticEquals of a query expression
 // and a candidate key Value under the matched quantifiers' correspondence
 // (source alias to the candidate's base): an expression index key such as
@@ -1548,6 +1535,19 @@ func expressionMatchesPlaceholder(queryValue, placeholderValue values.Value, sou
 	return values.SemanticEqualsUnderAliasMap(queryValue, placeholderValue, aliases)
 }
 
+// valuesMatchColumn reports whether a query column operand and a candidate
+// placeholder value denote the same column. Column identity routes through the
+// match-domain name-path comparison (values.ColumnNamePathsEqual): the full
+// accessor path, not the leaf name, so a nested `addr.city` never binds a
+// same-leaf-named top-level `city` index. The comparison is
+// representation-agnostic — a resolver-baked query ref matches a lazy candidate
+// over the same column (the candidate is name-based by construction; the query
+// side may be baked) — and alias-invariant at the root, which is why the
+// alias-map bridge the pre-name-path design needed is unnecessary. The caller's
+// outer-correlation guard has already established both operands are over the
+// matched source. CardinalityValue is a transparent wrapper handled by the same
+// primitive; a complex non-column value (arithmetic, cast, …) that is not a
+// distance key matches only by exact structural equality.
 func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
 	if queryValue == nil || placeholderValue == nil {
 		return false

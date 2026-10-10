@@ -38,11 +38,10 @@ import (
 // dotted row. The integer is corpus-traffic dependent and both readings are
 // legitimate; the load-bearing fact is "not zero".
 //
-// AND THAT FACT IS NOW ASSERTED, by DottedRowTypeProducerFloor.Dotted. It was not,
-// for as long as the only floor was the total: plain runs ~230x dotted, so DOTTED
-// could return to zero with the total still three orders of magnitude clear, and
-// the refutation the placement decision below rests on would have evaporated
-// against a green build.
+// DottedRowTypeProducerFloor.Dotted asserts that fact. The total floor cannot:
+// plain runs ~230x dotted, so DOTTED could return to zero with the total still
+// three orders of magnitude clear, and the placement decision below would lose
+// its evidence against a green build.
 //
 // WHAT THAT SETTLES. It does not make the population unsafe — it relocates it.
 // The seed sites do not derive this row themselves; they build
@@ -51,13 +50,12 @@ import (
 // seed's row is size ONE and this method is it (RFC-212 §3.5), which makes
 // §3.4's every-producer precondition satisfiable by construction — PROVIDED the
 // population is attached HERE rather than at a seed-side derivation. RFC-212
-// §1.1 was restated on exactly this measurement: carry the leg table on the
-// constructor VALUE and propagate it through `Type()`.
+// §1.1 rests on this measurement: carry the leg table on the constructor VALUE
+// and propagate it through `Type()`.
 //
-// `Legs` IS populated in the tree now — `expressions.GetFlowedObjectType` calls
+// `Legs` IS populated — `expressions.GetFlowedObjectType` calls
 // `values.WithSeedTilingLegs` on every member's row — so the populated-vs-empty
-// pair this paragraph once said could not arise does arise, routinely. It is not
-// a conflict: the live guard adopts the populated table. What remains
+// pair arises routinely. It is not a conflict: the live guard adopts the populated table. What remains
 // load-bearing is the DISAGREEING-populated case, which is why the producer set
 // still has to be known: a second derivation site that states different
 // boundaries for this row makes the quantifier refuse its own members.
@@ -206,18 +204,13 @@ func formatDottedRowTypeProducerCensus(c dottedRowTypeCounters) string {
 //
 //   - Dotted floors the FINDING, and it is the reason this struct has two fields.
 //     The finding is "DOTTED is not zero" — that `RecordConstructorValue.Type()`
-//     IS a producer of the `LEG.COL`-shaped row, refuting the producer-set claim
-//     RFC-212 §3.4 originally asserted rather than measured, and relocating the
-//     leg-table population to this path (§1.1, §3.5). Derivations cannot watch
+//     IS a producer of the `LEG.COL`-shaped row, which places the leg-table
+//     population on this path (RFC-212 §1.1, §3.5). Derivations cannot watch
 //     that: plain outnumbers dotted about 230:1 (157699 to 681), so DOTTED could return to zero
-//     and the total floor would still pass by three orders of magnitude. The
-//     finding was live, load-bearing and unasserted; this is the assertion.
+//     and the total floor would still pass by three orders of magnitude.
 //
-// ALARM DIRECTION ON Dotted: COLLAPSE, and it is that way round precisely because
-// the expected value moved. The claim this census was built to test was DOTTED ==
-// 0; the measurement refuted it, so zero stopped being the steady state and a
-// floor — not a hard zero — is what a refuted zero turns into. A return to zero
-// now means either the corpus stopped reaching the dotted path or the
+// ALARM DIRECTION ON Dotted: COLLAPSE, because the expected value is non-zero,
+// so a floor rather than a hard zero guards it. A return to zero means either the corpus stopped reaching the dotted path or the
 // discriminator broke, and in both cases §1.1's placement decision has quietly
 // lost the evidence it rests on while the build stays green.
 //

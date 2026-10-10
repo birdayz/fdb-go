@@ -386,18 +386,14 @@ func bakeGatheredGroupValue(
 		}
 		qualified, col := false, strings.ToUpper(fv.DisplayName())
 		// corr is the reference's OWN correlation where it has one, and the zero
-		// identifier where the qualifier was sliced out of the NAME instead. Both
-		// arms used to produce a string and hand it to one lookup, which made them
-		// indistinguishable at the point of use; the leg window is now selected by
-		// the correlation, so only the arm that has one can select a leg.
+		// identifier where the qualifier was sliced out of the NAME instead. The
+		// leg window is selected by the correlation, so only the arm that has one
+		// can select a leg.
 		//
 		// `qualified` still tracks BOTH, and carrying the dotted arm in it is what
-		// makes the resolver SAFE rather than merely tidy. It gates ONE thing, and
-		// that is the correction: the ENTIRE bare namespace of slotInGatheredSeed —
-		// the element arm and the bare-leg scan alike. It used to be described as
-		// gating "two things", the bare-column fallback and the no-identifier
-		// decline, and that enumeration was the bug in prose: it omitted the element
-		// arm because the element arm was not in fact gated. Dropping the flag on the
+		// makes the resolver SAFE. It gates the ENTIRE bare namespace of
+		// slotInGatheredSeed — the element arm and the bare-leg scan alike.
+		// Dropping the flag on the
 		// dotted arm would send `A.K` into that namespace, where the element-first
 		// fallback answers with the ELEMENT whenever the two share a leaf name. A
 		// dotted reference is not a bare one whether or not its qualifier resolves;
@@ -447,14 +443,13 @@ func bakeGatheredGroupValue(
 // single distinguished field, NOT a layout window (rc-index↔slot is the substrate,
 // no drift) — and a bare LEG column resolves only when exactly one leg carries it.
 //
-// Element-first is a BARE-namespace rule. Describing it as the site's first step
-// full stop is what this doc used to do, and it read as a licence for the element
-// to answer a qualified reference it does not name.
+// Element-first is a BARE-namespace rule only: the element never answers a
+// qualified reference it does not name.
 func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow, elementSlots map[string]int, corr values.CorrelationIdentifier, col string, qualified bool) (int, bool) {
 	// A QUALIFIED read with NO correlation DECLINES here, before anything else.
 	// This is the flat-dotted arm (`FieldValue{Field:"A.K"}`), whose qualifier was
 	// sliced out of the NAME: there is no identifier to select a leg window with,
-	// so the leg lookup below cannot run. Falling through was a FAIL-OPEN — the
+	// so the leg lookup below cannot run. Falling through would FAIL OPEN — the
 	// element-first fallback would answer with the ELEMENT's slot whenever the
 	// element and the qualified leg column share a leaf name, so `A.K` silently
 	// read the element instead of A's K. The qualifier is not advisory; a read
@@ -491,11 +486,7 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 		//
 		// Neither refusal happens HERE. Failing this condition only leaves the
 		// block; the decline that answers for it is the `qualified` gate below,
-		// which owns every way a qualified read can fail to resolve. This comment
-		// used to claim the two kinds "DECLINE" at this point and that the arm
-		// above already declined a correlation-less qualified read "a few lines
-		// above" — the second half was true, the first was not, and the gap
-		// between them was a live wrong-column read.
+		// which owns every way a qualified read can fail to resolve.
 		if isLeg && w.Kind == values.LegKindFlatRun {
 			if idx, found := w.Typ.FieldIndexUnique(col); found {
 				return w.Offset + idx, true
@@ -505,21 +496,16 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 	// A QUALIFIED read that its own qualifier could not resolve DECLINES, and this
 	// is the GENERAL form of the rule the no-correlation arm states at the top of
 	// this function: a reference that names a source is answered BY that source or
-	// not at all. Three shapes fail the lookup above, and each used to FALL
-	// THROUGH into the element/bare arms below, where `U.V` silently read the
-	// ELEMENT's `V`. They are NOT equally reachable, and saying so is the point —
-	// an unqualified "three shapes reach here" was what this comment said, and a
-	// reachability claim nobody checked is how the original defect survived a
-	// reading:
+	// not at all; falling through into the element/bare arms below would let
+	// `U.V` silently read the ELEMENT's `V`. Three shapes fail the lookup above,
+	// and they are NOT equally reachable:
 	//
 	//   - LIVE — a correlation no window is filed under (an existential inner's
-	//     quantifier, say) — the same shape bakeUnnestElementRefOrdinal was
-	//     patched to dodge at the PRODUCER, which left the resolver still wrong
-	//     for every other producer;
+	//     quantifier, say) — the same shape bakeUnnestElementRefOrdinal dodges
+	//     at the PRODUCER; this gate covers every other producer;
 	//   - LIVE — a FLAT window that declares `col` TWICE, so FieldIndexUnique
-	//     picks nothing. That shape became reachable when the first-match
-	//     FieldIndex was deleted: a leg window's Typ is a leg-concat for a
-	//     clustered box run and may legitimately repeat a leaf name;
+	//     picks nothing: a leg window's Typ is a leg-concat for a clustered box
+	//     run and may legitimately repeat a leaf name;
 	//   - DEFENSIVE at THIS call site — a window whose Kind cannot be
 	//     flat-addressed (LegKindNested, LegKindUnset), per the block above. No
 	//     nested window can exist here at all: LegKindNested is stamped in exactly
@@ -544,9 +530,8 @@ func slotInGatheredSeed(windows map[values.CorrelationIdentifier]values.OrdinalS
 	// read could fall into.
 	//
 	// ONE gate, not one per arm. The arms below are the BARE namespace and nothing
-	// else; the bare-leg scan's own `!qualified` guard was removed with this gate's
-	// introduction, because two encodings of one rule is what let a reader assume
-	// the element arm carried the guard it did not.
+	// else, and carry no `!qualified` guard of their own: two encodings of one
+	// rule invite a reader to assume an arm carries a guard it does not.
 	//
 	// IT DOES NOT SWALLOW THE ELEMENT-QUALIFIED READ, and that is worth stating
 	// because `qualified` is set for ANY FieldValue over a QuantifiedObjectValue —

@@ -600,9 +600,7 @@ func planPhysicalDMLWithMetadata(
 	if err := validateScanTables(logicalOp, md); err != nil {
 		return nil, err
 	}
-	// LAST of the three, matching production's order. A first attempt put this
-	// first, directly beneath the comment arguing that the order of these guards
-	// is load-bearing -- read rather than measured.
+	// Preserve production's error precedence: target, source tables, then functions.
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
@@ -617,23 +615,8 @@ func planPhysicalDMLWithMetadata(
 		logicalOp = returning
 	}
 
-	// TranslateToCascadesWithError, the same call planDML makes. The subquery
-	// plans are dropped -- the corpus dump pins the OUTER plan's shape and there
-	// is no store to execute an unbound subquery against -- but the ERROR is not.
-	//
-	// Discarding it made this harness blind to every translation SQLSTATE, which
-	// is a bigger divergence than any single missing guard: a statement production
-	// rejects with a specific code planned here as if nothing were wrong, and
-	// explain-differ blessed the result.
-	//
-	// IT DOES NOT KILL THE SOURCE-TABLE SWEEP, though two earlier versions of this
-	// comment got the reason wrong in opposite directions. Translation DOES
-	// validate table existence -- translateScan raises ErrCodeUndefinedTable for a
-	// scan whose table has no catalog row type. What escapes is narrower: this
-	// harness DROPS the attached subquery plans, so a bad table reachable only
-	// through one of those is never translated here however faithfully the error
-	// is surfaced. That is the gap the sweep covers, and it is why the sweep is
-	// load-bearing on this path -- see its own doc.
+	// Preserve production translation errors. The source-table sweep is still
+	// needed for attached subqueries, whose plans this harness does not translate.
 	ref, _, transErr := query.TranslateToCascadesWithError(logicalOp, md)
 	if transErr != nil {
 		return nil, transErr

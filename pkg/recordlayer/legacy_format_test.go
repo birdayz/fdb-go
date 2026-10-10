@@ -496,7 +496,7 @@ var _ = Describe("Legacy format compatibility", func() {
 		})
 	})
 
-	Describe("regression: codex review findings", func() {
+	Describe("regression: legacy-format edge cases", func() {
 		// A format-<5 store with split_long_records enabled still stores
 		// records with suffixes (and may split them), but omitUnsplitRecordSuffix()
 		// returns true for format < 5. The scan cursors must NOT take the bare-key

@@ -5,35 +5,9 @@ import "fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 // Compile-time proof that every physical plan answers the cost and ordering
 // questions the memo asks (RFC-183 P5).
 //
-// What these assertions do NOT do is guard a runtime dispatch — though NOT for
-// the reason an earlier version of this comment gave.
-//
-// The dispatch does not gate on cascades.physicalPlanExpression. It gates on
-// the hint interfaces themselves: `e.(CostHinter)` (properties/cost.go:645)
-// and `e.(OrderingHinter)` (properties/ordering.go:145). Plans DO satisfy
-// those — that is what the assertions below assert — so the old claim that a
-// plan "would simply never be asked" because it lacks GetRecordQueryPlan was
-// wrong about the mechanism.
-//
-// The bodies are nevertheless unreachable today, for a different reason:
-// nothing ever presents a BARE plan as the expression being costed or ordered.
-// Every such receiver is still a physical wrapper. Measured, not assumed —
-// instrumenting both dispatch sites to count `*plans.*` receivers over the
-// full 2407-query corpus yields ZERO on each. A plan that failed to implement
-// CostHinter would therefore still not reach the pessimistic default arm; it
-// would just never be consulted.
-//
-// This distinction matters for the deletion: the day a bare plan is yielded in
-// place of a wrapper, these bodies go live all at once, and it will be the
-// hint interfaces that route to them — not any wrapper-shaped gate.
-//
-// What these assertions ARE is a COMPLETENESS check on the plan-side bodies,
-// which are staging for the wrapper deletion RFC-183 §11 defers. The bodies
-// are unreachable today (see ordering.go's header), so nothing at runtime
-// would notice a newly added plan type that answers no hint — it would go
-// missing silently and surface only when the deletion flips the caller over.
-// A build break here is the substitute for the runtime signal that does not
-// exist yet.
+// Cost and ordering dispatch through optional hint interfaces. Without these
+// assertions, a plan missing a hint could silently take the pessimistic-cost
+// or unknown-ordering fallback instead of failing at compile time.
 
 // CostedPlan is the pair of questions the cost model asks every physical plan:
 // what does it COST, and what does it PROVE about its own row count. They are

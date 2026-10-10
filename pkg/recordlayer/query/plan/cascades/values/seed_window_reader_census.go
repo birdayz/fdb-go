@@ -14,34 +14,17 @@ import (
 // The SEED-WINDOW READER census: a STANDING instrument over every keyed read of
 // an OrdinalSeedLegWindows map.
 //
-// It replaces a wider, one-shot predecessor. That one — the seed-window KEY
-// PROVENANCE census — existed to answer a question that is now settled: the map
-// used to be keyed by UPPER-FOLDED TEXT while each window carried a stated leg
-// IDENTITY, and every keyed read was therefore a place where a leg was selected
-// by text with an identifier sitting inside the thing selected. It measured, per
-// lookup, whether the identity would have selected the same window. Over the
-// whole real-FDB sqldriver corpus it reported 1400 lookups with every blocking
-// class empty (no TEXT-ONLY-HIT, no IDENTITY-ONLY-HIT, no DIVERGED), and the two
-// readers that held text and no identity reached ZERO and were unreachable by
-// panic probe across ./pkg/relational/... and ./pkg/recordlayer/query/... . That
-// is a DATED POINT MEASUREMENT, quoted here as history. The map is keyed by
-// CorrelationIdentifier now; the text namespace it measured does not exist, and
-// with it gone the predecessor's classes had nothing left to distinguish.
+// The map is keyed by CorrelationIdentifier. Every claim about its readers has
+// the shape "this class is EMPTY", and an unreached site prints that
+// identically to a site measured clean, so without floors a change that
+// silenced a reader would read GREEN.
 //
-// What did NOT go away is the reason the predecessor was load-bearing: it was
-// the only thing that could tell an exercised reader from a dark one. Every
-// claim the conversion rests on has the shape "this class is EMPTY", and an
-// unreached site prints that identically to a site measured clean. Deleting the
-// instrument along with the question it answered left five readers with nothing
-// asserting they still run — a future change that silenced one would read GREEN.
+// The census is therefore NARROW. Per read it records only whether a window
+// was found, plus the two DECLINE classes that are hard zeros, and it floors
+// each site's population. It keeps five readers, and two declines, from going
+// quiet.
 //
-// So this census is NARROW where its predecessor was broad. Per read it records
-// only whether a window was found, plus the two DECLINE classes that are hard
-// zeros, and it floors each site's population. It is not trying to license a
-// conversion; it is keeping five readers, and two declines, from going quiet.
-//
-// THE TWO HARD ZEROS are the new part, and each names what its own non-zero
-// re-arms:
+// THE TWO HARD ZEROS each name what their own non-zero re-arms:
 //
 //   - QUALIFIED-NO-IDENTITY (slotInGatheredSeed): a group-by reference that
 //     STATES a qualifier and carries no correlation — the flat-dotted spelling,
@@ -296,8 +279,7 @@ type SeedWindowReaderFloors struct {
 	// arm is correct, cross-agreement-pinned on both entries and unit-pinned on
 	// both arms, and no corpus query reaches it — a nested SUB-window is only
 	// selected by a reference to a leg buried INSIDE the merge. Gate (a)'s four
-	// mutation directions are therefore not writable, and the branch merged with
-	// that stated.
+	// mutation directions are therefore not yet writable.
 	//
 	// Without this assertion, activation day changes nothing visible. Whoever
 	// produces a query whose reference reaches a buried leg would see a green
@@ -305,15 +287,11 @@ type SeedWindowReaderFloors struct {
 	// BY DEFAULT rather than by decision. This is what turns that day into a red
 	// test with the hand-over in its failure message.
 	//
-	// THE ROUTE TO THAT DAY IS NOT THE ONE THIS COMMENT USED TO NAME. It said
-	// "typing the 94 bare-QOV result values", which was a plan that has since
-	// been REFUTED by measurement: the population is 102 and it is 100% typed
-	// already — every declined leg carries a real RecordType (arity 1-3 on the
-	// FlatMap legs, 1-4 counting the NestedLoopJoin-legged ones) — and typing
-	// could not convert one of them in any case, because the leg walk that
-	// consumed them refused on values.IsPositionalMergeRC, which needs a *RecordConstructorValue that no
-	// QuantifiedObjectValue is at any typing. `bare` there meant identity
-	// PASS-THROUGH, never untyped.
+	// Typing the bare-QOV result values does not reach that day: they are
+	// already typed — every declined leg carries a real RecordType — and the leg
+	// walk refuses on values.IsPositionalMergeRC, which needs a
+	// *RecordConstructorValue that no QuantifiedObjectValue is at any typing.
+	// `bare` there means identity PASS-THROUGH, not untyped.
 	//
 	// What would actually trip this tripwire is the SHAPE conversion: giving the
 	// declined leg an RC(_i: QOV(leg_i)) result value, so a reference can reach a

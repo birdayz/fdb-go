@@ -43,12 +43,7 @@ func Handler(src MetricsSource) http.Handler {
 }
 
 // counterOrigin records whether a counter has a C++ TransactionMetrics twin.
-//
-// The zero value is deliberately INVALID. A new counterDef that forgets to
-// declare its origin therefore fails the audit in fdbmetrics_test rather than
-// being silently classified -- the previous version of that audit iterated a
-// hardcoded list of five names, so a further Go-only counter was never
-// examined at all.
+// An unset origin fails the audit, so new counters cannot silently evade classification.
 type counterOrigin int
 
 const (
@@ -65,19 +60,8 @@ type counterDef struct {
 	get    func(s client.ClientMetricsSnapshot) int64
 }
 
-// counters uses the C++ TransactionMetrics names where one exists, snake_cased
-// with the conventional fdb_client prefix and Prometheus _total suffix.
-//
-// Of the 18 entries, 13 have a C++ twin. The other five are named on the same
-// convention without one, and each says so in its own help text:
-// grv_cache_hits, transaction_retries, connection_failures,
-// coordinator_changes, and grv_in_band_maybe_delivered (basicLoadBalance
-// absorbs that error and counts nothing).
-//
-// The claim was unqualified while four of these already existed. A first
-// attempt to qualify it enumerated "the GRV cache pair" -- there is one such
-// counter, and the phantom second made the arithmetic reach five while hiding
-// that transaction_retries had been left out.
+// counters follows C++ TransactionMetrics names where a twin exists.
+// Go-only counters identify that distinction in their help text.
 var counters = []counterDef{
 	{
 		"fdb_client_transactions_commit_started_total", "Commits sent (read-only fast-path commits excluded, matching C++).",

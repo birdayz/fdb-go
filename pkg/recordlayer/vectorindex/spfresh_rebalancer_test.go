@@ -514,7 +514,7 @@ var _ = Describe("SPFresh cold-start bootstrap (no bulk build)", func() {
 })
 
 // The bootstrap's fencing regressions, pinned.
-var _ = Describe("SPFresh bootstrap fencing (Torvalds 094.4)", func() {
+var _ = Describe("SPFresh bootstrap fencing (094.4)", func() {
 	ctx := context.Background()
 
 	mdAndBuilder := func(name string) (*recordlayer.RecordMetaData, func(*recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error), *recordlayer.Index) {
@@ -595,7 +595,7 @@ var _ = Describe("SPFresh bootstrap fencing (Torvalds 094.4)", func() {
 // surface: a SaveRecord whose vector evaluates NULL (unset fields) bootstraps
 // the generation WITHOUT minting a centroid (Update resolves-for-write before
 // skipping the nil vector).
-var _ = Describe("SPFresh bootstrap cache eviction (codex 094.4)", func() {
+var _ = Describe("SPFresh bootstrap cache eviction (094.4)", func() {
 	ctx := context.Background()
 
 	It("a query cached against the centroidless index sees the first real insert immediately", func() {
@@ -688,7 +688,7 @@ var _ = Describe("SPFresh bootstrap cache eviction (codex 094.4)", func() {
 	})
 })
 
-var _ = Describe("SPFresh cosine exact-match + build-vs-scan (codex 094.4 r2)", func() {
+var _ = Describe("SPFresh cosine exact-match + build-vs-scan (094.4)", func() {
 	ctx := context.Background()
 
 	It("a cosine query exactly at a centroid returns the match, not an estimator error", func() {
@@ -798,7 +798,7 @@ var _ = Describe("SPFresh cosine exact-match + build-vs-scan (codex 094.4 r2)", 
 // A zero-residual cosine query must RANK its posting (the
 // constant-tie workaround could evict the true match from the top-C cut by
 // pk tie-break before the exact re-rank).
-var _ = Describe("SPFresh cosine zero-residual ranking (codex 094.4 r3)", func() {
+var _ = Describe("SPFresh cosine zero-residual ranking (094.4)", func() {
 	ctx := context.Background()
 
 	It("ranks the exact match first within the zero-residual posting", func() {

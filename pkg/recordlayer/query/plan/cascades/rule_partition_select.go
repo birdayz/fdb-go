@@ -944,8 +944,6 @@ func computeIndependentQuantifiersPartitioning(
 	return partitions
 }
 
-// intersectAliases returns the intersection of two alias sets.
-// Returns nil if the intersection is empty.
 // splitRangesByLocalCorrelation undoes, for partitioning only, the merge
 // SelectExpression's predicate partitioning applies to comparisons on one
 // value (`o.k = 42 AND o.k = c.id` becomes a single sargable on o.k): each
@@ -1027,6 +1025,8 @@ func splitRangesByLocalCorrelation(
 	return out
 }
 
+// intersectAliases returns the intersection of two alias sets.
+// Returns nil if the intersection is empty.
 func intersectAliases(
 	a map[values.CorrelationIdentifier]struct{},
 	b map[values.CorrelationIdentifier]struct{},

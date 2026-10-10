@@ -1993,18 +1993,6 @@ func optInt64(opts *api.Options, name api.OptionName, fallback int64) int64 {
 	}
 }
 
-// executeProps builds the per-page ExecuteProperties for one fetchPage
-// from the connection's api.Options (RFC-106a). All of these are PER-PAGE
-// (a fresh cursor + transaction per page), matching Java's
-// ExecuteProperties.setScannedRecordsLimit / setScannedBytesLimit /
-// setTimeLimit. The statement-wide MAX_ROWS cap and the result-size byte
-// cap are NOT here — they are enforced across pages in paginatingRows.Next.
-//
-// Defaults are inert: with no options set, OptExecutionScannedRowsLimit
-// defaults to MaxInt32 and OptExecutionScannedBytesLimit to MaxInt64 — both
-// sentinels that mean "no limit", so the produced ScannedRecordsLimit /
-// ScannedBytesLimit are left 0 (the recordlayer "unlimited" value). This
-// keeps the no-option path identical to the pre-RFC behavior.
 // pageRowBudget returns the maximum number of rows the MAIN plan's current page
 // must produce given the active JDBC MAX_ROWS returned-row cap, or 0 when no cap
 // is active (unbounded page). Bounding the page cursor's ReturnedRowLimit to
@@ -2057,6 +2045,18 @@ func (r *paginatingRows) pageTimeLimit() time.Duration {
 	return limit
 }
 
+// executeProps builds the per-page ExecuteProperties for one fetchPage
+// from the connection's api.Options (RFC-106a). All of these are PER-PAGE
+// (a fresh cursor + transaction per page), matching Java's
+// ExecuteProperties.setScannedRecordsLimit / setScannedBytesLimit /
+// setTimeLimit. The statement-wide MAX_ROWS cap and the result-size byte
+// cap are NOT here — they are enforced across pages in paginatingRows.Next.
+//
+// Defaults are inert: with no options set, OptExecutionScannedRowsLimit
+// defaults to MaxInt32 and OptExecutionScannedBytesLimit to MaxInt64 — both
+// sentinels that mean "no limit", so the produced ScannedRecordsLimit /
+// ScannedBytesLimit are left 0 (the recordlayer "unlimited" value). This
+// keeps the no-option path identical to the pre-RFC behavior.
 func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	// Anchor the scan/time budget on the database's env clock. This path ALWAYS arms a time
 	// limit (txPageTimeLimit below), and that limit decides where a page ends and therefore
@@ -2124,15 +2124,6 @@ func (r *paginatingRows) executeProps() recordlayer.ExecuteProperties {
 	return props
 }
 
-// fetchPage opens a fresh FDB transaction, creates the cursor hierarchy
-// (or recreates it from the continuation), drains the cursor until it
-// stops, and buffers the results. Everything happens INSIDE DB.Run so
-// FDB reads are against a live transaction.
-//
-// This matches Java's architecture: each transaction creates a fresh
-// cursor hierarchy from the plan + continuation. The continuation
-// carries ALL intermediate state (aggregate accumulators, sort buffers)
-// serialized as protobuf. No cursor persists across transactions.
 // pageContinuationState decides, from a drained page's terminal continuation + NoNextReason, whether the
 // paginatingRows internal drain is (a) exhausted, (b) has a resumable byte continuation, or (c) must
 // surface ScanLimitReachedError (→ 54F01). It is the PAGINATING counterpart to errIfDrainTruncated
@@ -2232,6 +2223,15 @@ func materializeDriverValue(v any) any {
 	}
 }
 
+// fetchPage opens a fresh FDB transaction, creates the cursor hierarchy
+// (or recreates it from the continuation), drains the cursor until it
+// stops, and buffers the results. Everything happens INSIDE DB.Run so
+// FDB reads are against a live transaction.
+//
+// This matches Java's architecture: each transaction creates a fresh
+// cursor hierarchy from the plan + continuation. The continuation
+// carries ALL intermediate state (aggregate accumulators, sort buffers)
+// serialized as protobuf. No cursor persists across transactions.
 func (r *paginatingRows) fetchPage() error {
 	c := r.conn
 
@@ -2568,8 +2568,8 @@ func enumValuesAsNames(v any, t values.Type) any {
 // preflightTxBudget enforces the whole-transaction time budget before a page
 // runs (RFC-198 Decisions 5 and 6, interim state). The budget is anchored on
 // the CLIENT'S READ-VERSION INSTANT — when FDB's 5-second MVCC window actually
-// opened — never on statement start (the refuted proxy: a first statement need
-// not take a read version at all) and never on BeginTx (an idle transaction
+// opened — never on statement start (a statement need not take a read version)
+// and never on BeginTx (an idle transaction
 // has no window yet).
 //
 // Three arms:
@@ -3503,8 +3503,7 @@ func (d *metadataIndexDef) IndexPrimaryKeyComponentTypes() []values.Type {
 	// returns `unknown`. Without an overlap they agree and nothing changes; the
 	// affected shape is the overlap case alone.
 	//
-	// THE COST IS NOT PURELY A LOST OPTIMISATION, and an earlier revision of
-	// this comment said it was. `unknown` is `unknownPhysicalTypes`, i.e.
+	// The cost is not purely a lost optimization: `unknown` is `unknownPhysicalTypes`, i.e.
 	// `values.UnknownType` per column, and `values.TypeTerminatesOrderingClaim`
 	// answers FALSE for a type it cannot identify -- so a consumer that walks
 	// these types to decide where an ordering claim ends (rowdiff/ordering.go)
@@ -4824,11 +4823,6 @@ func recordTypeExistsFold(md *recordlayer.RecordMetaData, name string) bool {
 // session plans with its schema's template name (sessionTemplate). RFC-142.
 const defaultEmbeddedTemplate = "S"
 
-// sessionTemplate returns the name a table's qualifier must carry: the name of
-// the session schema's TEMPLATE (functions.ResolveTargetTablePath), read from
-// the same cached schema the plan's metadata comes from (cachedMetaData). With
-// no session schema, or none cached (an explain-only generator without
-// metadata), it is defaultEmbeddedTemplate.
 // planCacheKey is a statement's plan-cache query key, Java's QueryCacheKey
 // under the template's primary entry: the template version, the planner
 // options (the readable-index view included, read from this store before the
@@ -4850,6 +4844,11 @@ func (g *cascadesGenerator) planCacheKey(md *recordlayer.RecordMetaData, popts p
 	return cacheKey{scope: scope.String(), sql: text}, cacheable
 }
 
+// sessionTemplate returns the name a table's qualifier must carry: the name of
+// the session schema's TEMPLATE (functions.ResolveTargetTablePath), read from
+// the same cached schema the plan's metadata comes from (cachedMetaData). With
+// no session schema, or none cached (an explain-only generator without
+// metadata), it is defaultEmbeddedTemplate.
 func (g *cascadesGenerator) sessionTemplate() string {
 	if g.c != nil {
 		if tmpl := g.c.cachedSchemaTemplate(); tmpl != nil {
@@ -5541,9 +5540,7 @@ func (r *paginatingRows) env() *dst.Env {
 // (SELECT 1 FROM nosuchtable)` answers 0AF00 from the unsupported-shape check
 // with the walk or without it, and upgradeDMLWhereWithCatalog does INSTALL
 // EXISTS subqueries on its success path -- what it cannot install is one whose
-// inner build already failed. An earlier comment said it dropped them
-// unconditionally; that was wrong, and the conclusion it supported was right
-// for a different reason.
+// inner build already failed.
 func validateScanTables(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
 	if op == nil || md == nil {
 		return nil

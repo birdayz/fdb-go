@@ -31,14 +31,8 @@ import (
 // and joined only for DISPLAY (Identifier.java:61-63). Go's debt is every place
 // that joins and then re-splits.
 //
-// WHY INSTRUMENT BEFORE CONVERTING. Every conversion argument on this path has
-// so far been made against scratch figures and then refuted by the first real
-// measurement: the "110 → 3 → 0" progression turned out to be a population of
-// ELEVEN, and the leg-column provenance block's "calls 52, dotted hits 4" was low
-// by 50x on one number and HIGH by two on the one the decision rested on. So this
-// census does not argue for a conversion. It measures what each site does, and
-// the classes below are chosen so the measurement ANSWERS the conversion question
-// rather than motivating it.
+// The classes distinguish redundant text recovery from sites whose producers
+// must supply structured identity before text recovery can be removed.
 //
 // THE CLASSES ANSWER "WAS THE IDENTITY ALREADY IN HAND?". That is the whole
 // conversion-readiness question, and it is what separates a site that can be
@@ -80,10 +74,7 @@ import (
 // recorder (the EXISTS fold's sortKeyName and sortKeySourceValue) hoist the gate
 // above that computation for the same reason.
 //
-// An earlier revision of this line claimed production "never pays an atomic",
-// which was false in both directions: it does pay exactly one, and at the time
-// it was written it also paid the classification behind it. Counts are per
-// CALL, one call per resolution DECISION.
+// Counts are per call, one call per resolution decision.
 
 // QualifierRecoverySite is one of the four dark splitters named in
 // name_split_census.go's header. The parseColRef family contributes THREE sites

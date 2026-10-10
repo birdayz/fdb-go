@@ -335,18 +335,8 @@ func (r *Runner) Run(ctx context.Context, cand Candidate) Outcome {
 // tautology that passes for every engine, correct or not, and it looks
 // identical in the log to a real check — same counter, same green.
 //
-// The precondition is plan INEQUALITY and nothing more. An earlier version
-// also demanded the second plan be index-free, on the theory that disabling
-// index matching must remove every index scan. That is a proxy, and it is
-// refuted by the planner itself: MatchLeafRule is the sole seed of PartialMatch
-// objects (rule_match_leaf.go:76 is the only unconditional NewPartialMatch
-// call; MatchIntermediateRule and AdjustMatchRule both extend matches that
-// already exist), so disabling it does starve the whole match/data-access
-// pipeline — but the match pipeline is not the only thing that builds an index
-// scan. AggregateDataAccessRule, OrderedIndexScanRule and
-// StreamingAggFromIndexRule each read GetMatchCandidates() directly and
-// construct one WITHOUT ever touching a PartialMatch; they pass an empty
-// comparison prefix, so they emit full-range scans.
+// Plan inequality does not require an index-free alternative: aggregate and
+// ordering rules can construct index scans without MatchLeafRule.
 //
 // `GROUP BY` an indexed column is such a counterexample: with MatchLeafRule off
 // it still plans `IndexScan(IDX_A, [*] COVERING)` under the streaming aggregate.
@@ -545,12 +535,7 @@ func crossScalar(v any) string {
 	case string:
 		return "s:" + x
 	case int64:
-		// EXACT, never through float64. An earlier version rendered every
-		// number with %.9g, which has nine significant digits and therefore
-		// cannot tell two large int64s apart: 2^62 and 2^62+1 — and 2^62 IS in
-		// the committed corpus, it is one of rowdiff's boundary values — both
-		// collapse to "4.61168602e+18". A differential oracle that reports two
-		// different values as equal is worse than no oracle: it passes.
+		// Rendering through float64 would collapse distinct large integers.
 		return "n:" + strconv.FormatInt(x, 10)
 	case float32:
 		// FLOAT columns are captured at float32 width (queryRows); Java's JSON

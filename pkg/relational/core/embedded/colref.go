@@ -24,96 +24,52 @@ type colRef struct {
 // parseColRef splits a flat "TABLE.COL" string into a structured colRef.
 // Unqualified names produce colRef{"", "COL"}.
 //
-// The split ignores dots inside PARENTHESES, and that is a correctness fix
-// rather than a nicety. A derived aggregate name carries its own dots:
-// `I.SUM(I.AMOUNT)` is one qualifier and one derived column, but a plain
-// last-dot split cut it into table `I.SUM(I` and column `AMOUNT)` — and that
-// fragment was the RESULT-SET LABEL a user saw for
+// The split ignores dots inside parentheses: a derived aggregate name carries
+// its own dots, and `I.SUM(I.AMOUNT)` is one qualifier and one derived column,
+// not table `I.SUM(I` and column `AMOUNT)`. A wrong split surfaces as the
+// result-set label of
 //
 //	SELECT s.id, (SELECT SUM(x."Amount") FROM sales x WHERE …) FROM sales s
 //
-// A qualifier is never inside parentheses, so depth-0 is the only place a
+// A qualifier is never inside parentheses, so depth 0 is the only place a
 // split can be meant. This does not make the flat string a safe channel — a
 // delimited identifier may still contain a literal dot, which is why the
 // parse-tree triple (ColumnRef) exists and why callers that have it use it.
-// It stops this one from mangling names it has no business splitting.
 //
-// ONLY A MATCHED PAIR NESTS, and that qualification was learned by getting it
-// wrong in both directions. A single-pass depth counter treats an UNMATCHED
-// paren as structure, and which way it is wrong depends on which way it scans:
-// right-to-left, `D.A)B` — `"a)b"` is a legal column name — reads the `)` as an
-// opening nest and returns one unqualified name; left-to-right, `A(B.C` reads
-// the `(` the same way. Neither direction is sound. Matching the pairs FIRST
-// makes both strays inert and removes the choice.
+// Only a matched pair nests. A single-pass depth counter treats an unmatched
+// paren as structure in whichever direction it scans: right-to-left, `D.A)B`
+// (`"a)b"` is a legal column name) loses its qualifier; left-to-right, `A(B.C`
+// does. Matching the pairs first makes both strays inert.
 //
-// A QUOTE IS NOT STRUCTURE AT ALL — see the body for the measurement that
-// settled it. An intermediate version treated apostrophes as string-literal
-// delimiters, which fixed a literal containing a `)` and broke `Q'.Z'`, two
-// apostrophe-bearing identifiers either side of a real qualifier dot.
+// A quote is not structure at all; see the body.
 //
-// `A(B.C` splitting to `A(B` / `C` is a CHOICE and not a correctness claim:
+// `A(B.C` splitting to `A(B` / `C` is a choice, not a correctness claim:
 // quotes are stripped by the time a name arrives here, so a delimited
-// `"f(a.b"` is indistinguishable from a qualified reference and this now splits
-// one the old code kept whole. The same limit applies to a dot inside a
-// delimited identifier — `"a.b"` reads as `a.b`. That is why the parse-tree
-// triple (ColumnRef) exists and why callers holding one use it instead.
+// `"f(a.b"` is indistinguishable from a qualified reference. The same limit
+// applies to a dot inside a delimited identifier — `"a.b"` reads as `a.b`.
 func parseColRef(s string) colRef {
-	// A QUOTE IS NOT A DELIMITER HERE. An apostrophe in one of these flat names
-	// is far more often IDENTIFIER CONTENT than a string-literal boundary, and
-	// nothing local tells the two apart — so treating it as a boundary is a
-	// guess that costs more than it buys:
+	// A quote is not a delimiter here. An apostrophe in one of these flat names
+	// is far more often identifier content than a string-literal boundary, and
+	// nothing local tells the two apart:
 	//
 	//	Q'.Z'   -- derived alias `Q'`, column alias `Z'`
 	//
-	// Pairing those two apostrophes makes `'.Z'` a literal span, hides the
-	// qualifier dot inside it, and `Rows.Columns()` over joined derived tables
-	// reports `["Q'.Z'", "R'.Z'"]` where `["Z'", "Z'"]` is right. That is a
-	// REACHABLE regression through ordinary delimited identifiers.
+	// Pairing those apostrophes would make `'.Z'` a literal span and hide the
+	// qualifier dot, so `Rows.Columns()` over joined derived tables would report
+	// `["Q'.Z'", "R'.Z'"]` where `["Z'", "Z'"]` is right.
 	//
-	// The literal handling existed for the opposite shape — a MATCHED paren
-	// inside a string literal, `I.COUNT(CASE WHEN S=')' THEN X.Y END)`, where
-	// the literal's `)` closes the real `(` early and the inner dot lands at
-	// depth 0.
+	// Literal-bearing names do occur in production (`CAST('0.0' AS BIGINT)`,
+	// `COALESCE(NAME,'unknown')`), but an instrumented run over the planning
+	// corpus shows no production name whose split depends on a literal span.
+	// The cost is two shapes, both pinned as stated limits in
+	// colref_split_test.go and the yamsql corpus:
 	//
-	// LITERAL-BEARING NAMES DO OCCUR, and an earlier version of this comment
-	// said they do not. Re-measured against THIS algorithm over the planning
-	// corpus: 28,625 calls, 50 quote-bearing, 43 distinct, 35 of them
-	// production rather than test input — `CAST('0.0' AS BIGINT)`,
-	// `COALESCE(NAME,'unknown')`, `SUM(CASEWHENSTATUS='open'…)`. What IS true,
-	// and is the number the deletion rests on, is that old and new disagree on
-	// exactly FOUR inputs, every one of them a test row: three in
-	// colref_split_test.go (`Q'.Z'`, the `S=')'` row, `X.Y || '.'`) and the
-	// fourth, `R'.Z'`, in the yamsql corpus scenario that pins the SQL-visible
-	// side of the same shape. "All four are this package's own test rows" was
-	// the first phrasing and is wrong — the count survived the check, the
-	// locative did not.
+	//	I.COUNT(CASE WHEN S=')' THEN X.Y END) -- a literal with a MATCHED paren
+	//	X.Y || '.'                            -- a literal with a dot at depth 0
 	//
-	// ZERO PRODUCTION DECISIONS CHANGE, from the instrumented old-vs-new run
-	// over the planning corpus rather than from inspection: a disagreement
-	// requires a closed literal span to alter either paren matching or the last
-	// depth-0 dot, and no production name does that.
-	//
-	// Note the sharpest of those names: `CAST('0.0' AS BIGINT)` is the second
-	// limit's shape — a literal containing a dot — and it resolves only because
-	// CAST's parens enclose it. The limit is not remote; it is one missing pair
-	// of parentheses away.
-	//
-	// WHAT IT COSTS IS TWO SHAPES, NOT ONE, and both are pinned as stated
-	// limits. An earlier version of this comment said "only a literal
-	// containing a PAREN is affected" and that "a literal containing a DOT
-	// still resolves correctly, because the surrounding parens put that dot at
-	// depth 1" — which was written by describing the one row that happened to
-	// be pinned, where parens DO enclose, rather than by probing the rule:
-	//
-	//	I.COUNT(CASE WHEN S='.' THEN 1 END)  -- fine: the call's parens enclose
-	//	X.Y || '.'                           -- NOT fine: nothing encloses it,
-	//	                                     -- so the literal's dot is the last
-	//	                                     -- depth-0 dot and splits there
-	//
-	// And it over-claimed in the other direction too: `X.Y || ')'` is correct,
-	// because an UNMATCHED paren inside a literal is inert like any other stray.
-	// The cost is a literal containing a MATCHED paren, or a literal containing
-	// a dot at depth 0.
+	// A literal dot enclosed by parens (`I.COUNT(CASE WHEN S='.' THEN 1 END)`,
+	// `CAST('0.0' AS BIGINT)`) is fine, and so is an unmatched paren inside a
+	// literal (`X.Y || ')'`), which is inert like any other stray.
 	//
 	// Pass 1: MATCHED paren pairs. nest[i] is true for a paren that has a
 	// partner; a stray one stays false and is inert below.

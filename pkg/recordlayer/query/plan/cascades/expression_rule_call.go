@@ -155,20 +155,6 @@ func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) {
 	c.yieldedExps = append(c.yieldedExps, expr)
 }
 
-// MemoizeExpression finds or creates a Reference for a sub-expression.
-// When a Memo is present (running inside the Planner), this checks if
-// an existing Reference already holds a structurally-equivalent
-// expression and returns it — enabling cross-Reference sharing.
-// Without a Memo (standalone rule testing), falls back to
-// expressions.InitialOf(expr).
-//
-// The current call's Reference (the one the rule is yielding into) is
-// excluded from reuse to prevent self-referential cycles. This mirrors
-// Java's guard: `Verify.verify(existingReference != this.root)`.
-//
-// Rules should use this instead of expressions.InitialOf when creating
-// child References for yielded expressions. This is how the Cascades
-// planner avoids redundant exploration of shared sub-trees.
 // InsertReExploring STAGES an insert of expr into ref, to be applied through
 // the memo's scheduled insert (epoch re-arm + re-round when ref's exploration
 // already began) once the driver has checked Err. Rule code adding members to a
@@ -226,6 +212,20 @@ func (c *ExpressionRuleCall) StagedInsertCount() int {
 	return len(c.stagedInserts)
 }
 
+// MemoizeExpression finds or creates a Reference for a sub-expression.
+// When a Memo is present (running inside the Planner), this checks if
+// an existing Reference already holds a structurally-equivalent
+// expression and returns it — enabling cross-Reference sharing.
+// Without a Memo (standalone rule testing), falls back to
+// expressions.InitialOf(expr).
+//
+// The current call's Reference (the one the rule is yielding into) is
+// excluded from reuse to prevent self-referential cycles. This mirrors
+// Java's guard: `Verify.verify(existingReference != this.root)`.
+//
+// Rules should use this instead of expressions.InitialOf when creating
+// child References for yielded expressions. This is how the Cascades
+// planner avoids redundant exploration of shared sub-trees.
 func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpression) *expressions.Reference {
 	if c.memo != nil {
 		ref := c.memo.MemoizeExpression(expr)

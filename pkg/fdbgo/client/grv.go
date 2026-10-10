@@ -106,14 +106,8 @@ type grvCache struct {
 	fences atomic.Uint64
 
 	lastProxyContact atomic.Int64 // UnixNano
-	// No `locked` rides the cache: the cache is now opt-in (USE_GRV_CACHE,
-	// default off, RFC-104), so every DEFAULT transaction takes the fresh-GRV
-	// path and hits the real locked check at the consumption site
-	// (transaction.go ensureReadVersion). C++ fail-opens its cached path by
-	// contract (NativeAPI.actor.cpp:7514-7516 returns the version with zero
-	// lock inspection; lockAware appears only on the fresh fall-through, :7425),
-	// so an opted-in Go transaction does too. The RFC-096 lastLocked ride-along
-	// existed ONLY to compensate for the previous always-on cache and is gone.
+	// Like C++'s opt-in GRV cache, this cache does not carry lock state;
+	// transaction.ensureReadVersion checks locks only on fresh-GRV replies.
 }
 
 // grvCacheEntry is the cache's published state. Immutable once published —
@@ -486,9 +480,7 @@ func (c *grvCache) tryCache(priority uint32) (int64, time.Time, bool) {
 // Population is UNCONDITIONAL — it runs for every committing transaction
 // regardless of USE_GRV_CACHE (RFC-104); only cache READS are opt-in,
 // so a default transaction's commit can warm the cache for a later opted-in
-// reader. No lock state: the cached path fail-opens (RFC-104; the RFC-096
-// commit-must-not-extend-freshness divergence is reverted now that the cache is
-// no longer always-on + enforcement-carrying).
+// reader. The cached path does not check lock state, matching C++ (RFC-104).
 func (c *grvCache) update(tok cacheToken, at time.Time, v int64) {
 	// durable=true: a returned Commit is ground truth about the cluster, so
 	// this version may retire an older cached one even when its own install is
@@ -499,9 +491,8 @@ func (c *grvCache) update(tok cacheToken, at time.Time, v int64) {
 // updateFromGRV updates the cache from a real GRV reply: version + freshness,
 // monotonic on both (CAS for version, updateTime for lastTime). Unconditional —
 // runs for every GRV reply regardless of USE_GRV_CACHE (C++ extractReadVersion,
-// :7409, is not gated on the option). No lock state: the cached path fail-opens
-// (RFC-104; the RFC-096 lastLocked ride-along is removed — the per-transaction
-// locked check now lives only on the fresh-GRV consumption path).
+// :7409, is not gated on the option). Lock checks belong to fresh-GRV consumption,
+// not cache reads, matching C++ (RFC-104).
 func (c *grvCache) updateFromGRV(tok cacheToken, t time.Time, v int64) {
 	c.publish(tok, t, v)
 }
@@ -1309,52 +1300,16 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				db.handleReadConnError(proxy.Address, resp.Err)
 				continue
 			}
-			// ALIVE on frame receipt, before classifying the reply. The failure
-			// monitor is keyed by ADDRESS, and a well-formed frame proves the
-			// address is reachable whatever the reply says.
-			//
-			// This briefly sat below the disposition check, on the reasoning that a
-			// broken_promise is the proxy dying. That was wrong in a way worth
-			// recording: an address already marked failed by the GRV-timeout arm
-			// above would then never be cleared by an in-band 1100 -- the continue
-			// skips past here -- so a healthy co-located role stays excluded and
-			// recovery waiters are never signalled. It also bought nothing: the
-			// alive->failed churn that produced a backoff spin came from the arm
-			// calling handleConnError, which is gone; markAlive is transition-gated
-			// and cannot close the shared recovered channel unless something first
-			// marked the address failed.
+			// A well-formed frame proves address reachability even when the GRV role
+			// returns broken_promise; clear address failure before retrying that role.
 			db.failMon.markAlive(proxy.Address)
 			v, lk, rkD, rkB, tti, ptd, perr := parseGetReadVersionReply(resp.Body)
-			// An IN-BAND maybeDelivered error is not this proxy's answer, it is
-			// the proxy going away while answering: a dying GrvProxy replies
-			// broken_promise (1100) inside the ErrorOr rather than dropping the
-			// connection, so it lands here and never in the resp.Err arm above.
-			//
-			// C++ basicLoadBalance treats 1100 and 1030 as one class and, at
-			// AtMostOnce::False, moves to the next alternative
-			// (LoadBalance.actor.h:823-830). GRV is AtMostOnce::False
-			// (NativeAPI.actor.cpp:7258, in getConsistentReadVersion at :7231). Returning perr raw was the divergence:
-			// 1100 is retryable under NONE of the three Go predicates, so a GRV
-			// issued while a proxy was dying failed TERMINALLY where C++ just
-			// asks the next proxy. Exhausting them all falls through to the
-			// backoff below, which is C++'s behaviour too.
+			// GRV is not at-most-once: C++ basicLoadBalance retries in-band 1100/1030
+			// on the next alternative rather than returning them to the transaction.
 			if dispositionForReplyError(perr, false) == replyTryNextAlternative {
 				db.metrics.grvInBandMaybeDelivered.Add(1)
-				// NOTHING is touched here -- not the failure monitor, not the
-				// connection pool. basicLoadBalance does not either: its
-				// broken_promise arm just moves to the next alternative.
-				//
-				// An earlier version called handleConnError, which was actively
-				// harmful. The connection is demonstrably HEALTHY -- a well-formed
-				// reply just arrived on it -- and connPool is keyed by ADDRESS, so
-				// closing it for a dying GrvProxy co-located with a CommitProxy
-				// pushes an unrelated in-flight COMMIT into resp.Err and
-				// manufactures a commit_unknown_result. It also re-armed the
-				// one-Warn-per-episode latch every cycle and, via markAlive closing
-				// the shared recovered channel, let all three grvBatchers zero each
-				// other's exhaustion backoff -- a fast spin. And it bought nothing:
-				// this loop never consults the excluded set, so the marking steered
-				// no traffic.
+				// Preserve the healthy connection: another role at this address may
+				// have an in-flight commit whose result would be lost by closing it.
 				continue
 			}
 			return v, lk, rkD, rkB, tti, ptd, attemptEpoch, perr

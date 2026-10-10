@@ -48,69 +48,8 @@ import "strings"
 // Java is unsound in exactly this way and we deliberately diverge; see
 // DIVERGENCES.md.
 
-// TypeTerminatesOrderingClaim reports whether a column of type t ends an
-// ordering claim — i.e. whether its FDB tuple key order differs from the order
-// CompareFloat64/compareOrdered impose. True for FLOAT and DOUBLE.
-//
-// The predicate is deliberately POSITIVE ("prove it is a float") rather than
-// negative ("prove it is safe"). A type we cannot identify returns false, so an
-// unidentified column keeps whatever claim the producer would otherwise make.
-// That is a knowing trade: the alternative — treating every untyped column as
-// claim-terminating — silently deletes sort elimination everywhere a layout is
-// absent, including paths where the column is provably an integer. The
-// soundness that matters is enforced where the type system is actually
-// engaged, which on the SQL path is everywhere a column comes from a table.
-//
-// KNOWN CONSERVATISM, and it is a missed optimisation rather than a wrong
-// answer. The predicate is keyed on the TYPE alone, so it cannot see the scan
-// RANGE — and the two defects above are not reachable from every range.
-//
-// The recoverable case is a range with a FINITE LOWER BOUND. Both defects are
-// really about the NEGATIVE-NaN block, which packs below -Inf: it is the one
-// that is physically FIRST and logically LAST, and it is what splits the NaN
-// tie class across two disjoint ranges. A scan starting at a finite value can
-// never reach it. The positive block remains reachable — a range open at the
-// top runs past +Inf — but there it is harmless on both counts: positive NaN is
-// physically LAST and CompareFloat64 ranks NaN GREATEST, so the orders agree,
-// and with only one block in range the tie class is contiguous, so later
-// columns stay ordered within it. Over such a scan the claim could soundly
-// extend through the float column and on into the primary-key suffix; today it
-// terminates anyway and the query materialises a sort it does not need.
-//
-// Measured on rowdiff seed 3943842, and the measurement corrected the reasoning
-// once already — do not restate this as "a bounded range excludes NaN". That
-// seed reads `e BETWEEN 2.0 AND 5.0`, but only the LOWER bound is pushed into
-// the index; the upper stays a residual predicate, so the scanned range is
-// [2.0, +Inf] and does include the positive-NaN block. The finite LOWER bound
-// is what makes it sound, not the BETWEEN.
-//
-// Three sibling seeds look identical from the outside and are NOT this case:
-// 3943193 and 3944227 are zero-valued float EQUALITIES, which genuinely span
-// two signed-zero key blocks, and 3943308 is `d IS NOT NULL`, whose range
-// covers the whole non-null domain and so reaches the negative-NaN block.
-// Those three must keep their sort.
-//
-// The range-aware refinement is UNBUILT, deliberately, and if it is ever built
-// it goes HERE. Closing it needs the ComparisonRange threaded to this decision
-// — the same shape of fix as EqualityPinsSinglePhysicalKeyOnColumn, which
-// threads the COLUMN type to a decision that previously guessed from the
-// operand — and it must land as the ONE authority both consumers already ask,
-// never as a second copy in either. The planner asks it for sort elimination;
-// the rowdiff harness's ordering axis asks it to decide whether a scan provides
-// the order a sort re-imposes. A copy that knew about ranges in only one of them
-// would put the two derivations back out of step, which is the exact drift these
-// shared predicates exist to prevent.
-//
-// That is also why the harness UNDER-REPORTS by construction here, and why that
-// is correct rather than a gap in it. `d IS NOT NULL` and `e >= 2.0` plan the
-// identical shape — a float leading key under an inequality — so a type-only
-// predicate cannot separate the recoverable case from the unrecoverable one.
-// The detector inherits this conservatism instead of growing its own range-aware
-// rule, so `WHERE e >= 2.0 ORDER BY e, id` is recorded as a missed optimization
-// at the place the rule lives rather than kept alive as a nightly red.
-//
-// It is not built because, unlike the column-type fix, nothing about it is a
-// soundness defect: it buys latency, not correctness.
+// TypeTerminatesOrderingClaim returns true for FLOAT/DOUBLE because tuple NaN
+// ordering differs from logical ordering. It ignores scan bounds; unknown types return false.
 func TypeTerminatesOrderingClaim(t Type) bool {
 	if t == nil {
 		return false
@@ -195,24 +134,8 @@ func ColumnCouldBeFloat(layout Type, name string) bool {
 	return true
 }
 
-// ClaimableOrderingPrefix returns how many of names (resolved against layout,
-// in order) may be claimed as an ordering — the count of leading columns before
-// the first one that terminates the claim.
-//
-// This is the single entry point for producers that build an ordering key list
-// from a metadata column-NAME sequence. Asking it in one place is the point: a
-// producer that re-implements the predicate at its own call site is how two
-// derivations drift apart and classify the same column differently.
-//
-// It is NOT the only shape a producer comes in, and an earlier revision of this
-// comment claimed it was ("the single entry point for every producer"). That
-// was false, and the two producers it did not cover — the streaming aggregation
-// and the aggregate index, whose ordering is over GROUPS rather than rows —
-// were returning wrong rows on a real cluster while this file asserted they
-// could not. A producer holding already-typed key VALUES asks
-// TypeTerminatesOrderingClaim directly instead; the predicate is shared, the
-// entry point is not. plans/ordering.go's header enumerates which producer
-// asks which, and which need not ask at all.
+// ClaimableOrderingPrefix returns the leading name-resolved ordering prefix.
+// Producers with typed key values use ClaimableTypedKeyPrefix instead.
 func ClaimableOrderingPrefix(layout Type, names []string) int {
 	for i, name := range names {
 		if !ColumnCanExtendOrderingClaim(layout, name) {
