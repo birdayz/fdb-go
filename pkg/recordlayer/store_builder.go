@@ -42,6 +42,9 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 	if index == nil {
 		return fmt.Errorf("index must not be nil")
 	}
+	if err := store.checkIndexCollation(index); err != nil {
+		return err
+	}
 	startTime := time.Now()
 	defer func() { store.context.Timer().RecordSince(EventRebuildIndex, startTime) }()
 
@@ -589,6 +592,11 @@ func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.D
 	if !needRebuild {
 		return false, nil
 	}
+	if !store.isRecordCountDisabled() {
+		if err := store.checkRecordCountCollation(currentKey); err != nil {
+			return false, err
+		}
+	}
 
 	// Clear existing count data. Use PrefixRange to include the exact prefix
 	// key — ungrouped counts are stored at the subspace prefix itself.
@@ -636,6 +644,9 @@ func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.D
 // Uses direct SET (not atomic ADD) since we're writing from a clean state.
 // Matches Java's FDBRecordStore.addRebuildRecordCountsJob().
 func (store *FDBRecordStore) rebuildRecordCounts(countKey KeyExpression) error {
+	if err := store.checkRecordCountCollation(countKey); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	counts := make(map[string]int64)       // packed count key → count
 	keyMap := make(map[string]tuple.Tuple) // packed → tuple (for FDB writes)
@@ -1126,6 +1137,7 @@ type StoreBuilder struct {
 	formatVersion             *int32                       // nil = not pinned; see SetFormatVersion
 	maintenanceFilter         IndexMaintenanceFilter       // nil = IndexMaintenanceFilterNormal
 	serializer                *TransformedRecordSerializer // nil = write the bare union message
+	goOnlyCollation           bool                         // see SetGoOnlyCollation
 }
 
 // NewStoreBuilder creates a new store builder
@@ -1182,6 +1194,7 @@ func (b *StoreBuilder) copyBuilder() *StoreBuilder {
 		database:                  b.database,
 		maintenanceFilter:         b.maintenanceFilter,
 		serializer:                b.serializer,
+		goOnlyCollation:           b.goOnlyCollation,
 	}
 	if b.formatVersion != nil {
 		v := *b.formatVersion
@@ -1271,6 +1284,15 @@ func (b *StoreBuilder) GetIndexMaintenanceFilter() IndexMaintenanceFilter {
 	return b.maintenanceFilter
 }
 
+// SetGoOnlyCollation opts into x/text collation keys for a store never shared
+// with Java. Without it, collated index access and evaluation of collated primary
+// or record-count keys return GoOnlyCollationError. Metadata and raw record reads
+// remain available. This option is not persisted and does not migrate existing keys.
+func (b *StoreBuilder) SetGoOnlyCollation(goOnly bool) *StoreBuilder {
+	b.goOnlyCollation = goOnly
+	return b
+}
+
 // SetSkipPossiblyRebuild disables automatic index rebuild checks during Open/CreateOrOpen.
 // When set, the store will not call checkPossiblyRebuild even if the metadata version changed.
 // This is used by OnlineIndexer which manages index states independently.
@@ -1326,6 +1348,7 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		targetFormatVersion: b.effectiveFormatVersion(),
 		maintenanceFilter:   b.maintenanceFilter,
 		serializer:          b.serializer,
+		goOnlyCollation:     b.goOnlyCollation,
 	}
 	if b.assumeAllIndexesReadable {
 		store.indexStates = make(map[string]IndexState)

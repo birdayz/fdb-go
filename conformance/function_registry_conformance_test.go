@@ -24,8 +24,8 @@ import (
 
 // javaCoreKeyFunctions is the measured name set of the target's core registry
 // (the factories in com.apple.foundationdb.record.metadata.expressions). Go
-// also registers collate_icu, which the target's ICU module
-// (fdb-record-layer-icu, not on this JVM's classpath) registers: its
+// also registers collate_icu, which the target's separate ICU module
+// (now on the conformance JVM's classpath for collation byte probes) registers: its
 // CollateFunctionKeyExpressionICU extends CollateFunctionKeyExpression, so its
 // bounds, column size and null are collate_jre's, compared below.
 var javaCoreKeyFunctions = []string{

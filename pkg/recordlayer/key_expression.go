@@ -1100,7 +1100,7 @@ func createsDuplicatesRec(expr KeyExpression, unrecognized bool) bool {
 		// one entry per argument tuple. Go dispatches the same override by the
 		// registered function name, since the factory-built Java subclass is a
 		// plain FunctionKeyExpression here.
-		if isOrderFunctionName(e.name) || IsLongArithmeticFunction(e.name) {
+		if isOrderFunctionName(e.name) || IsLongArithmeticFunction(e.name) || e.name == CollateFuncJRE || e.name == CollateFuncICU {
 			return createsDuplicatesRec(e.arguments, unrecognized)
 		}
 		// Matches Java's FunctionKeyExpression.createsDuplicates() which returns true.

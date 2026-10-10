@@ -35,7 +35,7 @@ higher-level storage layout; it does not remove the exceptions below.
 | **Synthetic record types** | Joined and unnested record type declarations survive metadata load/save, but are not executable Go record types. Do not assume Go can query or maintain their synthetic indexes. Preserving a declaration is not implementing it. |
 | **Metadata preservation** | `RecordMetaData` preserves joined/unnested declarations, UDFs, views, stored queries and unknown proto fields on round-trip. This is not a blanket claim that UDFs or views are unsupported: SQL has its own implemented surface. Check the operation and the tested SQL corpus rather than inferring support from proto presence. |
 | **Vector indexes** | Java-compatible `vector` engines and the Go-only `vector_spfresh` type are distinct. SPFresh's layout is not readable by Java's vector maintainer. Link `pkg/recordlayer/vectorindex` for either type; an unlinked known type produces `IndexMaintainerNotLinkedError`. Persist explicit engine/options for shared deployments and use Java's canonical option names/values; Go also accepts some metric spellings Java does not. Do not infer matching configuration from the word “vector” alone. |
-| **Collation** | Go's `collate_jre` and `collate_icu` use `golang.org/x/text/collate`; Java uses JRE and ICU4J collation respectively. Their sort-key bytes are not an interoperability contract. Do not share collated key/index data between these implementations. See the collation section below. |
+| **Collation** | Go's `collate_jre` and `collate_icu` use `golang.org/x/text/collate`; Java uses JRE and ICU4J collation respectively. Store operations that use those incompatible keys fail by default with `GoOnlyCollationError`. `StoreBuilder.SetGoOnlyCollation(true)` is only for stores never shared with Java. See the collation section below. |
 | **TEXT / Unicode** | The index layout alone does not guarantee equivalent token keys. Go's default tokenizer uses `uniseg` word segmentation and Go Unicode normalization/casing; Java uses `BreakIterator.getWordInstance(Locale.ROOT)` and Java's Unicode implementation. Cross-language equivalence for arbitrary scripts and Unicode versions is not established. Validate tokenization for your language corpus before sharing a TEXT index. |
 | **Continuations** | Leaf and structural cursor framing has Java conformance coverage. SQL statement continuations are engine-private; Go rejects caller-supplied `api.OptContinuation`. Go streaming-aggregate accumulator payloads and in-memory-sort state are not Java-compatible, even where a protobuf message name is shared. Do not exchange these tokens between engines or assume stability across plan changes. |
 | **Store format** | An unpinned Go open can upgrade an older store to format 14 when its transaction commits. Java's default 7 is not its maximum: Java 4.14.2.0 can open 14 and 15. Older readers and downgrade paths must be checked separately. |
@@ -55,10 +55,26 @@ are separate code paths; tests cover them separately.
 
 ### Collation safety
 
-Go collation keys are not Java/ICU-compatible. Do not use Go collation for stores
-shared with Java writers, including collated indexes, primary keys, and count keys.
-This revision does not reject those operations by default. Evaluating a collation
-expression directly also produces Go-only bytes, not Java-compatible keys.
+Go collation keys are not Java/ICU-compatible. By default, stores return
+`GoOnlyCollationError` for collated index access, validation and rebuilding through
+the store/indexer APIs; single-record saves/deletes and batch saves that must
+maintain a collated index or count key; and collated primary-key evaluation.
+Disabled indexes do not require maintenance. Metadata round-trips, raw-key record
+reads and range clears remain available. Opening an evolved store can refuse when
+reconciling collated indexes or count keys, including enabling queued maintenance.
+
+Only stores that no Java process opens may opt in with
+`StoreBuilder.SetGoOnlyCollation(true)`. The option is not persisted, and it does
+not migrate existing keys. Online indexers inherit it through
+`OnlineIndexerBuilder.SetRecordStoreBuilder`. Direct expression evaluation and
+explicitly constructed low-level maintainers are outside the store guard and can
+produce Go-only bytes. The Go-only SPFresh bulk builder also uses those low-level
+maintainers; its index layout must never be shared with Java.
+
+The Java oracle pins sampled mismatches for both providers and reports the JVM
+runtime/vendor, locale-provider configuration, registry and ICU version. Matching
+locale and strength is not sufficient: JRE provider/rule versions and ICU's
+algorithm/data versions are part of the sort-key format.
 
 Treat any existing Go-collated store as Go-only. Switching a transport backend to
 libfdb_c does not switch the collation implementation. Java can read raw bytes,

@@ -116,6 +116,7 @@ maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
 maven.install(
     artifacts = [
         "org.foundationdb:fdb-record-layer-core:4.14.2.0",
+        "org.foundationdb:fdb-record-layer-icu:4.14.2.0",
         # fdb-relational-* artifacts power the Java side of the
         # plan-equivalence harness (RFC-022 §4.-1 Phase 2). Lowest
         # published version on Maven Central is 4.10.18.0; we run

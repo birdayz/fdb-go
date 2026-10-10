@@ -352,6 +352,9 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	if recordType.PrimaryKey == nil {
 		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
+	if err := store.checkPrimaryKeyCollation(recordType); err != nil {
+		return nil, err
+	}
 	// As saveRecordInternal: the record as every later load reads it, and
 	// the message the save serializes.
 	var writeRecord proto.Message

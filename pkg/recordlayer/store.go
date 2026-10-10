@@ -163,7 +163,10 @@ type FDBRecordStore struct {
 	maintenanceFilter IndexMaintenanceFilter
 	// serializer is the TransformedRecordSerializer records are written
 	// through; nil writes the bare union message (StoreBuilder.SetSerializer).
-	serializer         *TransformedRecordSerializer
+	serializer *TransformedRecordSerializer
+	// goOnlyCollation is StoreBuilder.SetGoOnlyCollation: the store may hold
+	// Go collation keys (GoOnlyCollationError).
+	goOnlyCollation    bool
 	context            *FDBRecordContext
 	metaData           *RecordMetaData
 	subspace           subspace.Subspace
@@ -282,6 +285,7 @@ func (store *FDBRecordStore) builderFrom(ctx *FDBRecordContext) *StoreBuilder {
 		storeStateCache:    store.storeStateCache,
 		maintenanceFilter:  store.maintenanceFilter,
 		serializer:         store.serializer,
+		goOnlyCollation:    store.goOnlyCollation,
 		formatVersion:      &formatVersion,
 	}
 }
@@ -457,6 +461,10 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 	// Then the lock, before any write (validateRecordUpdateAllowed inside the
 	// load's continuation, :1770-1771).
 	if err := store.validateRecordUpdateAllowed(); err != nil {
+		return false, err
+	}
+
+	if err := store.checkRecordWriteCollation(true, oldRecordType); err != nil {
 		return false, err
 	}
 
@@ -671,6 +679,9 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message) (saveTarget, er
 	if recordType.PrimaryKey == nil {
 		return saveTarget{}, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
+	if err := store.checkPrimaryKeyCollation(recordType); err != nil {
+		return saveTarget{}, err
+	}
 	// A closed enum field holding a number its enum does not declare is read by
 	// every later load, in both engines, as unset (proto_closed_enums.go), so
 	// the record is keyed, counted, indexed and written as that reading: an
@@ -808,6 +819,10 @@ func (store *FDBRecordStore) saveRecordInternal(
 		if err := store.validateRecordUpdateAllowed(); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := store.checkRecordWriteCollation(!oldRecordExists, recordType, cachedOldRT); err != nil {
+		return nil, err
 	}
 
 	// Serialize directly into union wire format (no UnionDescriptor allocation)
@@ -1407,6 +1422,14 @@ func (store *FDBRecordStore) loadRecordForIndexMaintenance(primaryKey tuple.Tupl
 // avoiding repeated allocation of maintainer + mutation objects.
 // Matches Java's FDBRecordStore.getIndexMaintainer() dispatch.
 func (store *FDBRecordStore) getIndexMaintainer(index *Index) (IndexMaintainer, error) {
+	if err := store.checkIndexCollation(index); err != nil {
+		return nil, err
+	}
+	return store.getIndexMaintainerForRawAccess(index)
+}
+
+// Range deletion uses stored tuple bytes without evaluating provider-specific keys.
+func (store *FDBRecordStore) getIndexMaintainerForRawAccess(index *Index) (IndexMaintainer, error) {
 	if cached, ok := store.maintainerCache.Load(index.Name); ok {
 		return cached.(IndexMaintainer), nil
 	}

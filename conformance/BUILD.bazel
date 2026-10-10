@@ -27,9 +27,11 @@ java_library(
         "@maven//:com_google_guava_guava",
         "@maven//:com_google_protobuf_protobuf_java",
         "@maven//:com_google_protobuf_protobuf_java_util",
+        "@maven//:com_ibm_icu_icu4j",
         "@maven//:org_foundationdb_fdb_extensions",
         "@maven//:org_foundationdb_fdb_java",
         "@maven//:org_foundationdb_fdb_record_layer_core",
+        "@maven//:org_foundationdb_fdb_record_layer_icu",
         # fdb-relational deps power the Java side of the
         # plan-equivalence harness (RFC-022 §4.-1 Phase 2) and the
         # Java↔Go SQL conformance harness Phase B. SqlPlanSteps wires
@@ -470,6 +472,7 @@ go_test(
         "boolean_expression_position_java_probe_test.go",
         "case_condition_typing_java_probe_test.go",
         "case_parenthesized_condition_java_probe_test.go",
+        "collation_key_java_probe_test.go",
         "comma_join_java_probe_test.go",
         "conformance_suite_test.go",
         "container_test.go",
