@@ -359,18 +359,36 @@ func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockR
 // Handles both unsplit (suffix 0) and split (suffixes 1, 2, ...) records
 // via SplitHelper, matching Java's FDBRecordStore.loadRecordAsync().
 func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecord[proto.Message], error) {
-	startTime := time.Now()
-	recordsSubspace := store.recordsSubspace
+	return store.LoadRecordAsync(primaryKey)()
+}
 
+// LoadRecordAsync sends the record's reads now and returns the call that waits
+// for them and finishes the load, the analog of Java's loadRecordAsync future.
+// The caller must keep using the store from one goroutine.
+func (store *FDBRecordStore) LoadRecordAsync(primaryKey tuple.Tuple) func() (*FDBStoredRecord[proto.Message], error) {
+	startTime := time.Now()
+	tx := store.context.Transaction()
+	recordsSubspace := store.recordsSubspace
+	split, omitSuffix := store.metaData.IsSplitLongRecords(), store.omitUnsplitRecordSuffix()
+	first := startLoadWithSplit(tx, recordsSubspace, primaryKey, split, omitSuffix, false)
+	var version func() (*FDBRecordVersion, error)
+	if store.metaData.IsStoreRecordVersions() {
+		version = store.loadRecordVersionAsync(primaryKey, false)
+	}
+	return func() (*FDBStoredRecord[proto.Message], error) {
+		return store.finishLoadRecord(tx, primaryKey, first, version, startTime)
+	}
+}
+
+func (store *FDBRecordStore) finishLoadRecord(
+	tx fdb.ReadTransaction,
+	primaryKey tuple.Tuple,
+	first pendingRecordLoad,
+	version func() (*FDBRecordVersion, error),
+	startTime time.Time,
+) (*FDBStoredRecord[proto.Message], error) {
 	var sizeInfo sizeInfo
-	value, err := loadWithSplit(
-		store.context.Transaction(),
-		recordsSubspace,
-		primaryKey,
-		store.metaData.IsSplitLongRecords(),
-		store.omitUnsplitRecordSuffix(),
-		&sizeInfo,
-	)
+	value, err := first.finish(&sizeInfo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load record %v: %w", primaryKey, err)
 	}
@@ -398,8 +416,8 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 
 	// Load version if versioning is enabled.
 	// Matches Java's loadTypedRecord which eagerly loads the version.
-	if store.metaData.IsStoreRecordVersions() {
-		ver, err := store.LoadRecordVersion(primaryKey, false)
+	if version != nil {
+		ver, err := version()
 		if err != nil {
 			return nil, fmt.Errorf("load record version for %v: %w", primaryKey, err)
 		}
@@ -585,7 +603,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 
 // SaveRecordsPipelined saves records in order as SaveRecordWithOptions would
 // one at a time, but sends the existing-record reads of each window of
-// defaultPipelineSize records together: Java's INSERT pipelines its saves
+// DefaultPipelineSize records together: Java's INSERT pipelines its saves
 // (RecordQueryAbstractDataModificationPlan mapPipelined, at
 // FDBRecordStore.DEFAULT_PIPELINE_SIZE). The first failing record stops the save
 // and is the one reported; the reads already sent for the rest of its window
@@ -596,8 +614,8 @@ func (store *FDBRecordStore) SaveRecordsPipelined(
 ) ([]*FDBStoredRecord[proto.Message], error) {
 	saved := make([]*FDBStoredRecord[proto.Message], 0, len(records))
 	tx := store.context.Transaction()
-	for start := 0; start < len(records); start += defaultPipelineSize {
-		window := records[start:min(start+defaultPipelineSize, len(records))]
+	for start := 0; start < len(records); start += DefaultPipelineSize {
+		window := records[start:min(start+DefaultPipelineSize, len(records))]
 		loads := store.startExistingRecordLoads(tx, window)
 		for i, record := range window {
 			stored, err := store.saveRecordInternal(record, existenceCheck, false, &loads[i])

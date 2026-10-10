@@ -500,6 +500,80 @@ func BenchmarkScanIndex(b *testing.B) {
 	}
 }
 
+// BenchmarkScanIndexRecords compares ordered serial fetching with the production
+// pipeline over the same committed records and index range.
+func BenchmarkScanIndexRecords(b *testing.B) {
+	ensureBenchDB(b)
+	ctx := context.Background()
+	md := benchMetaDataWithValueIndex(b)
+	ks := benchSubspace(b)
+	const count = 1000
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		rtx.Transaction().ClearRange(ks)
+		store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		for i := range count {
+			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i)), Price: proto.Int32(int32(i))}); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, pipeline := range []bool{false, true} {
+		name := "serial"
+		if pipeline {
+			name = "pipelined"
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+					if err != nil {
+						return nil, err
+					}
+					var cursor RecordCursor[*FDBIndexedRecord]
+					if pipeline {
+						cursor = store.ScanIndexRecords("price_idx", TupleRangeAll, nil, ForwardScan())
+					} else {
+						cursor = MapErrCursor(store.ScanIndex(md.GetIndex("price_idx"), TupleRangeAll, nil, ForwardScan()), func(entry *IndexEntry) (*FDBIndexedRecord, error) {
+							record, err := store.LoadRecord(entry.PrimaryKey())
+							return &FDBIndexedRecord{IndexEntry: entry, Record: record}, err
+						})
+					}
+					defer cursor.Close()
+					seen := 0
+					for {
+						row, err := cursor.OnNext(ctx)
+						if err != nil {
+							return nil, err
+						}
+						if !row.HasNext() {
+							break
+						}
+						if row.GetValue().Record == nil || row.GetValue().Record.PrimaryKey[0] != int64(seen) {
+							return nil, fmt.Errorf("unexpected record at position %d", seen)
+						}
+						seen++
+					}
+					if seen != count {
+						return nil, fmt.Errorf("fetched %d records, want %d", seen, count)
+					}
+					return nil, nil
+				})
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkSaveRecordWithMultipleIndexes measures saving an Order with VALUE +
 // COUNT + SUM indexes — the most expensive common write path.
 func BenchmarkSaveRecordWithMultipleIndexes(b *testing.B) {

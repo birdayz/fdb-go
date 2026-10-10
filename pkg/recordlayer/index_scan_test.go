@@ -922,6 +922,188 @@ var _ = Describe("IndexScanning", func() {
 	})
 
 	Describe("ScanIndexRecords", func() {
+		It("keeps a window of record reads in flight before waiting on the first", func() {
+			priceIndex := NewIndex("Order$price", Field("price"))
+			metaData := buildMetaWithIndex(priceIndex)
+			ks := specSubspace()
+			const count = 2*DefaultPipelineSize + 3
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				insertOrders(store, count)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				probe := newRecordFetchProbe(rtx.Transaction(), ks.Sub(RecordKey))
+				store, err := NewStoreBuilder().SetContext(sharedDB.NewRecordContext(probe)).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				records, err := AsList(ctx, store.ScanIndexRecords("Order$price", TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(records).To(HaveLen(count))
+				for i, rec := range records {
+					Expect(rec.Record.PrimaryKey).To(Equal(tuple.Tuple{int64(i + 1)}))
+				}
+				// Serial fetching waits after one issued read: one round trip per row.
+				Expect(probe.issuedAtWait).To(Equal(DefaultPipelineSize))
+				Expect(probe.maxOutstanding).To(Equal(DefaultPipelineSize))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("raises an orphan in index order although later records were already read", func() {
+			priceIndex := NewIndex("Order$price", Field("price"))
+			metaData := buildMetaWithIndex(priceIndex)
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				insertOrders(store, 6)
+				rtx.Transaction().ClearRange(ks.Sub(RecordKey, int64(3)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			var resume []byte
+			for attempt := 0; attempt < 2; attempt++ {
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					probe := newRecordFetchProbe(rtx.Transaction(), ks.Sub(RecordKey))
+					store, err := NewStoreBuilder().SetContext(sharedDB.NewRecordContext(probe)).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+					cursor := store.ScanIndexRecords("Order$price", TupleRangeAll, resume, ForwardScan())
+					defer cursor.Close()
+					want := int64(1)
+					if resume != nil {
+						want = 3
+					}
+					for ; want < 3; want++ {
+						r, err := cursor.OnNext(ctx)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(r.GetValue().Record.PrimaryKey).To(Equal(tuple.Tuple{want}))
+						resume, err = r.GetContinuation().ToBytes()
+						Expect(err).NotTo(HaveOccurred())
+					}
+					_, err = cursor.OnNext(ctx)
+					var storageErr *RecordCoreStorageError
+					Expect(errors.As(err, &storageErr)).To(BeTrue(), "%v", err)
+					Expect(storageErr.PrimaryKey).To(Equal(tuple.Tuple{int64(3)}))
+					Expect(probe.issued).To(HaveKey(int64(6)))
+					_, again := cursor.OnNext(ctx)
+					Expect(again).To(MatchError(err))
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+		})
+
+		It("pipelines split records and their versions", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.SetSplitLongRecords(true)
+			builder.SetStoreRecordVersions(true)
+			builder.AddIndex("Order", NewIndex("Order$price", Field("price")))
+			metaData, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			ks := specSubspace()
+			big := bytes.Repeat([]byte{7}, 250_000)
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 12; i++ {
+					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+					if i%4 == 0 {
+						order.VectorData = big
+					}
+					_, err := store.SaveRecord(order)
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				probe := newRecordFetchProbe(rtx.Transaction(), ks.Sub(RecordKey))
+				store, err := NewStoreBuilder().SetContext(sharedDB.NewRecordContext(probe)).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				records, err := AsList(ctx, store.ScanIndexRecords("Order$price", TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(records).To(HaveLen(12))
+				for i, rec := range records {
+					id := int64(i + 1)
+					Expect(rec.Record.PrimaryKey).To(Equal(tuple.Tuple{id}))
+					Expect(rec.Record.Version).NotTo(BeNil())
+					Expect(rec.Record.Split).To(Equal(id%4 == 0))
+					want, err := store.LoadRecord(tuple.Tuple{id})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(proto.Equal(rec.Record.Record, want.Record)).To(BeTrue())
+					Expect(rec.Record.Version).To(Equal(want.Version))
+				}
+				Expect(probe.issuedAtWait).To(Equal(DefaultPipelineSize))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("resumes prefetched index records in both directions without changing index continuation bytes", func() {
+			priceIndex := NewIndex("Order$price", Field("price"))
+			metaData := buildMetaWithIndex(priceIndex)
+			ks := specSubspace()
+			const count = 23
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				insertOrders(store, count)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			for _, reverse := range []bool{false, true} {
+				for _, pageSize := range []int{1, 3, 10, 11} {
+					var continuation []byte
+					var ids []int64
+					for len(ids) < count {
+						_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+							store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
+							Expect(err).NotTo(HaveOccurred())
+							scan := ForwardScan()
+							scan.Reverse = reverse
+							raw := store.ScanIndex(priceIndex, TupleRangeAll, continuation, scan)
+							defer raw.Close()
+							cursor := LimitRowsCursor(store.ScanIndexRecords("Order$price", TupleRangeAll, continuation, scan), pageSize)
+							defer cursor.Close()
+							for {
+								r, err := cursor.OnNext(ctx)
+								Expect(err).NotTo(HaveOccurred())
+								if !r.HasNext() {
+									continuation, err = r.GetContinuation().ToBytes()
+									Expect(err).NotTo(HaveOccurred())
+									break
+								}
+								entry, err := raw.OnNext(ctx)
+								Expect(err).NotTo(HaveOccurred())
+								expected, err := entry.GetContinuation().ToBytes()
+								Expect(err).NotTo(HaveOccurred())
+								actual, err := r.GetContinuation().ToBytes()
+								Expect(err).NotTo(HaveOccurred())
+								Expect(actual).To(Equal(expected))
+								ids = append(ids, r.GetValue().Record.PrimaryKey[0].(int64))
+							}
+							return nil, nil
+						})
+						Expect(err).NotTo(HaveOccurred())
+					}
+					Expect(ids).To(HaveLen(count))
+					for i, id := range ids {
+						want := int64(i + 1)
+						if reverse {
+							want = count - int64(i)
+						}
+						Expect(id).To(Equal(want))
+					}
+				}
+			}
+		})
+
 		It("returns full records via index lookup", func() {
 			priceIndex := NewIndex("Order$price", Field("price"))
 			metaData := buildMetaWithIndex(priceIndex)

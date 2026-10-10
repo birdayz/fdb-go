@@ -829,49 +829,38 @@ func (store *FDBRecordStore) ScanIndexRecords(
 	}
 
 	indexCursor := store.ScanIndex(index, scanRange, continuation, scanProperties)
-	return &indexRecordCursor{
-		inner: indexCursor,
-		store: store,
-	}
+	cursor := &indexRecordCursor{inner: indexCursor, store: store}
+	cursor.pipeline = MapPipelined(indexCursor, cursor.load, DefaultPipelineSize)
+	return cursor
 }
 
 // indexRecordCursor maps index entries to stored records by loading each record
 // via its primary key. An orphan entry (the record no longer exists) raises a
 // RecordCoreStorageError, matching Java's IndexOrphanBehavior.ERROR default.
 type indexRecordCursor struct {
-	inner RecordCursor[*IndexEntry]
-	store *FDBRecordStore
+	inner    RecordCursor[*IndexEntry]
+	store    *FDBRecordStore
+	pipeline RecordCursor[*FDBIndexedRecord]
 }
 
 func (c *indexRecordCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBIndexedRecord], error) {
-	// One index entry per call: the fetch either yields its record, exhausts, or
-	// raises on an orphan. No loop — orphans no longer skip-and-continue (that
-	// silently dropped rows); they abort with a typed error like Java's
-	// IndexOrphanBehavior.ERROR default.
-	if err := ctx.Err(); err != nil {
-		return RecordCursorResult[*FDBIndexedRecord]{}, err
-	}
-	result, err := c.inner.OnNext(ctx)
-	if err != nil {
-		return RecordCursorResult[*FDBIndexedRecord]{}, err
-	}
-	if !result.HasNext() {
-		return NewResultNoNext[*FDBIndexedRecord](
-			result.GetNoNextReason(),
-			result.GetContinuation(),
-		), nil
-	}
+	return c.pipeline.OnNext(ctx)
+}
 
-	entry := result.GetValue()
+func (c *indexRecordCursor) load(entry *IndexEntry) func() (*FDBIndexedRecord, error) {
+	pk := entry.PrimaryKey()
+	loaded := c.store.LoadRecordAsync(pk)
+	return func() (*FDBIndexedRecord, error) { return c.finish(entry, pk, loaded) }
+}
+
+func (c *indexRecordCursor) finish(entry *IndexEntry, pk tuple.Tuple, loaded func() (*FDBStoredRecord[proto.Message], error)) (*FDBIndexedRecord, error) {
 	indexName := ""
 	if entry.Index != nil {
 		indexName = entry.Index.Name
 	}
-	pk := entry.PrimaryKey()
-
-	rec, err := c.store.LoadRecord(pk)
+	rec, err := loaded()
 	if err != nil {
-		return RecordCursorResult[*FDBIndexedRecord]{}, fmt.Errorf("load record for index entry %v: %w", pk, err)
+		return nil, fmt.Errorf("load record for index entry %v: %w", pk, err)
 	}
 	if rec == nil {
 		// Orphan index entry — the record is gone but its index entry is not.
@@ -882,7 +871,7 @@ func (c *indexRecordCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDB
 		// same typed error Java throws. (The index scrubber, which repairs
 		// orphans, has its own SKIP/RETURN path in index_validation.go and does
 		// not come through here.)
-		return RecordCursorResult[*FDBIndexedRecord]{}, &RecordCoreStorageError{
+		return nil, &RecordCoreStorageError{
 			Message:    "record not found from index entry",
 			IndexName:  indexName,
 			PrimaryKey: pk,
@@ -890,17 +879,15 @@ func (c *indexRecordCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDB
 		}
 	}
 
-	return NewResultWithValue(&FDBIndexedRecord{
+	return &FDBIndexedRecord{
 		IndexEntry: entry,
 		Record:     rec,
-	}, result.GetContinuation()), nil
+	}, nil
 }
 
-func (c *indexRecordCursor) Close() error {
-	return c.inner.Close()
-}
+func (c *indexRecordCursor) Close() error { return c.pipeline.Close() }
 
-func (c *indexRecordCursor) IsClosed() bool { return c.inner.IsClosed() }
+func (c *indexRecordCursor) IsClosed() bool { return c.pipeline.IsClosed() }
 
 // byDistanceScanner is the BY_DISTANCE access-method contract every vector
 // index maintainer implements (RFC-094 §10): Low = (serialized query vector
