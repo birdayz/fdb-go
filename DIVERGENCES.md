@@ -8,7 +8,7 @@ are execution-layer, wire-format, or intentional architectural choices.
 
 Validated against a live Java **4.14.2.0** conformance run (the cross-engine corpus runs against
 live 4.14.2.0 in `just test-full` and PR CI's `conformance-java` job with a stale-annotation guard,
-and the suite is green). Entries below that say "measured on 4.12.11" record the previous pin;
+and the suite is green). Entries below that cite 4.12.11 record the previous pin;
 not every one has been re-measured on 4.14.2.0.
 
 ## Intentional Architectural Decisions (no functional difference)
@@ -905,7 +905,7 @@ These affect runtime behavior and wire compatibility, NOT plan selection.
 | Gap | Category | Blocked on |
 |---|---|---|
 | Plan proto serialization: no Go code builds or reads `PRecordQueryPlan` | Wire format | Plan serialization infrastructure |
-| Value proto serialization is partial: `SerializationContext.ValueToProto`/`ValueFromProto` (`cascades/values/plan_serialization.go`, used for macro-function metadata) cover 18 of the 55 `PValue` variants in `record_query_plan.proto`; the rest return "unsupported" | Wire format | Porting the remaining `PValue` variants |
+| Value proto serialization is partial: `SerializationContext.ValueToProto`/`ValueFromProto` (`cascades/values/plan_serialization.go`, used for macro-function metadata) cover 18 of the 60 typed `PValue` variants in `record_query_plan.proto` (61 in the oneof; `PTautologicalValue` also via `additional_values`); the rest return "unsupported" | Wire format | Porting the remaining `PValue` variants |
 | Comparison subclass types: `OpaqueEqualityComparison`, `MultiColumnComparison`, `InvertedFunctionComparison` | Index-specific | Niche index types not in core planner |
 
 ### Vector scan multi-partition fan-out — CLOSED (RFC-046, was TODO 9.5)

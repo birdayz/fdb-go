@@ -65,7 +65,7 @@ const (
 	// it is a different question from the version a new store is BORN at.
 	//
 	// Java keeps the two apart deliberately — getMaximumSupportedVersion()
-	// (FormatVersion.java:203) against getDefaultFormatVersion() (`:215-217`) —
+	// (FormatVersion.java:209) against getDefaultFormatVersion() (`:221-223`) —
 	// and Go had them fused into one constant, which made the default impossible
 	// to move without also moving the ceiling. Lowering a fused constant would
 	// have REJECTED every store this binary had already created at 14, so "just
