@@ -8,9 +8,11 @@ package conformance_test
 // own unit tests (divergence_holds_test.go, entry_conforms_test.go,
 // lifecycle_error_test.go, transient_fdb_error_test.go) and
 // java_facts_conformance_test.go call. A file of its own so the spec can run
-// in conformance_corpora_test while its callers stay in conformance_test.
+// in conformance_corpora_test and the Java-only probes of rfc257_parity_test
+// while its callers stay in conformance_test.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -258,6 +260,15 @@ func retryBudget(err error) int {
 	default:
 		return 0
 	}
+}
+
+// runJavaRetrying runs a Java-only fixture (template, setup, statement) under
+// rerunWhileRetryable, as the corpus runs do: a retryable FDB code or a
+// lifecycle failure reruns it on a fresh schema rather than being reported.
+func runJavaRetrying(ctx context.Context, rn plandiff.SetupRunner, schema string, setup []string, sql string) plandiff.RunResult {
+	run := func() plandiff.RunResult { return rn.RunWithSetup(ctx, schema, setup, sql) }
+	jr, _ := rerunWhileRetryable(run(), plandiff.RunResult{}, 0, run, func() plandiff.RunResult { return plandiff.RunResult{} })
+	return jr
 }
 
 // rerunWhileRetryable re-runs whichever side hit a retryable HARNESS error (a

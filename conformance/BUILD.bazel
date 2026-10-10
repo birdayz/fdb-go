@@ -324,6 +324,7 @@ go_test(
         "key_validation_conformance_test.go",
         "keyspace_domains_test.go",
         "null_standin_conformance_test.go",
+        "run_sql_helpers_test.go",
         "store_helpers_test.go",
         "subspace_key_identity_conformance_test.go",
     ],
