@@ -61,6 +61,11 @@ func TestFDBCppBuildFailureAndCleanup(t *testing.T) {
 		}
 		profiles[profile] = constants
 	}
+	// The default profile must fit a cpx32 runner (main.tf) under Bazel's 0.67 of RAM,
+	// and keep the -j3 width that finished a cold build inside the CI job.
+	if c := profiles["compact"]; c["CPUS"] != "3" || c["MEMORY_MB"] != "5120" {
+		t.Errorf("compact profile = %s CPUs / %s MB, want 3 / 5120 for the 4 vCPU / 8 GB CI runners", c["CPUS"], c["MEMORY_MB"])
+	}
 	commands := regexp.MustCompile(`(?s)fdb_cpp_build\(\s*name = "([^"]+)",.*?\n    cmd = """(.*?)"""`)
 	count := 0
 	for _, build := range []string{"../cmd/fdb-schema-extract/BUILD.bazel", "../cmd/fdb-diff-oracle/BUILD.bazel"} {

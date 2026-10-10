@@ -1,9 +1,11 @@
 """Local Docker C++ actions with scheduler-accounted, enforced resource bounds."""
 
-_COMPACT_CPUS = 1
-_COMPACT_MEMORY_MB = 4096
-_LARGE_CPUS = 2
-_LARGE_MEMORY_MB = 12288
+# Compact fits the 4 vCPU / 8 GB CI runners: a cold build at one CPU outran the 20-minute job.
+# It is the default because a non-default build flag re-roots every CI output directory.
+_COMPACT_CPUS = 3
+_COMPACT_MEMORY_MB = 5120
+_LARGE_CPUS = 4
+_LARGE_MEMORY_MB = 24576
 _BUILD_IMAGE = "foundationdb/build@sha256:c6133f7e7c2bde2130f712baf56f642ef3e6966bd4f9e4e6b83de14f2db3fd48"
 
 FDBCppResourcesInfo = provider(fields = ["value"])
