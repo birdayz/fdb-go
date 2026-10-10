@@ -113,7 +113,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - An explicit transaction no longer aborts (40001) because an index it did not scan changed state: planning and plan revalidation read index states without a read conflict, as in Java; a scanned index's state change still conflicts. `FDBRecordStore.GetAllIndexStates` conflicts on the whole index-state subspace, as Java's `getAllIndexStates`; `PeekIndexStates` reads without one.
 - A NaN equality on a float index or primary-key column (`d = CAST('NaN' AS DOUBLE)`, a bound NaN, `d IN (NaN, …)`) uses the index and returns every stored NaN (it used a full scan, and an IN-join over the index failed with "exact indexed NaN equivalence is unsupported"), including when later index columns are also bound (`d IN (NaN) AND g IN (1, 2)`), which are then checked per index entry. An ORDER BY over a later index column sorts.
 - `MIN`/`MAX` over DOUBLE and FLOAT return the NaN operand with its own bits, as Java's `Math.min`/`Math.max` (Go returned `0x7ff8000000000001`).
-- A statement re-run with a different bound value no longer reuses the plan built for the first: the plan-cache key renders BOOLEAN values (`true` and `false` shared one plan, so `… AND ?` bound `false` returned the rows of `true`), NaN payloads and signed zeros exactly.
+- Cached statements preserve each execution's BOOLEAN values, NaN payloads and signed zeros (`… AND ?` bound `false` previously returned the rows of `true`).
 - `CAST(… AS DATE)` reads every text `CAST(… AS TIMESTAMP)` reads (RFC 3339 with an offset included, surrounding whitespace trimmed), and both refuse a UTC year outside 0000-9999 (22F3H); the date-part functions trim too (`YEAR(' 2024-01-01')` is 2024, was 22023).
 - Driver parameters: a `*uuid.UUID` binds as UUID (a nil one as NULL; it panicked), `[N]byte` and named byte slices as BYTES, database/sql null wrappers by their payload (`sql.NullInt64` is LONG), and an array from its static element type (an empty `[]int` is the untyped empty array); a nested array or unsupported type is 22023 naming the parameter.
 - A SUM or COUNT aggregate index answers alone, as Java 4.14.2.0's does: a group whose rows were all deleted or moved away reads 0, a group whose values are all NULL has no SUM or `COUNT(col)` row, and a group whose last non-NULL value was removed reads SUM 0. The DDL no longer adds a `<index>__GROUP_COUNT` index beside a grouped SUM or `COUNT(col)` index, so Go-created metadata holds exactly the declared indexes; recreate schemas an earlier build created. An ungrouped SUM or COUNT index serves the ungrouped aggregate, and an index name ending in `__GROUP_COUNT` is accepted.
@@ -156,6 +156,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - A `COALESCE` folds while planning only when its first argument is NULL or a BOOLEAN literal, as in Java 4.14.2.0, so its other arguments are evaluated as written: `WHERE COALESCE(1, 1/0) = 1` raises 22012 (it answered every row).
 
 - Runnable SQL/typed-store quickstarts check errors; default cluster lookup follows C++ precedence and routine SQL warm-up logs only at Debug.
+- Scalar literals and prepared values reuse immutable SQL plans through per-execution constant pools and checked type, equality and specialization constraints.
 
 ## [v0.1.0] - 2026-08-26
 

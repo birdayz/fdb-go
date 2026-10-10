@@ -2180,6 +2180,8 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 			parts[i] = explainValueOrdinalsWithAliases(a, withOrdinals, aliases)
 		}
 		return cv.FuncName + "(" + strings.Join(parts, ", ") + ")"
+	case *ConstantObjectValue:
+		return "@" + cv.ConstantID
 	case *ParameterValue:
 		// Render with the same `?` sigil the grammar accepts:
 		// `?` for plain positional, `?N` once an ordinal is assigned,
@@ -2534,6 +2536,14 @@ func (r *RowEvalContext) BindParameter(ordinal int, name string) (any, bool) {
 		return nil, false
 	}
 	return r.Binder.BindParameter(ordinal, name)
+}
+
+// DereferenceConstant preserves constant pools through row-context adapters.
+func (r *RowEvalContext) DereferenceConstant(alias CorrelationIdentifier, constantID string) any {
+	if binder, ok := r.Binder.(ConstantDeref); ok {
+		return binder.DereferenceConstant(alias, constantID)
+	}
+	return nil
 }
 
 func (r *RowEvalContext) GetCorrelationBinding(id CorrelationIdentifier) (any, bool) {

@@ -19,20 +19,10 @@ import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 //
 // Ports Java's com.apple.foundationdb.record.query.plan.cascades.ValueEquivalence.
 //
-// NOT PORTED: Java's ConstantValueEquivalence (ValueEquivalence.java:351-395),
-// which lets a query constant match a candidate's literal and records a
-// QueryPlanConstraint that re-checks the constant when a cached plan is reused.
-// Go does not match a function-key index's stored literal at all today: candidate
-// construction declines every function key but CARDINALITY and the order
-// functions (key_expression_expansion.go, functionKeyToValue). When the
-// value-index expansion of RFC-257 WS-J section 3.5 lands, Go matches such a
-// literal by VALUE without a constraint, which is sound ONLY because the plan
-// cache keys on the literal text (embedded/query_hash.go, the NOTE above
-// planCacheScope): a different literal is a different cache entry. So only a
-// value whose concrete value is part of the cache key may match a stored literal;
-// a ParameterValue, whose `?` text is one key for every binding, never may. The
-// two sites point at each other; changing either without the other breaks the
-// invariant.
+// Runtime constant references cannot match a candidate's stored literal without
+// Java's ConstantValueEquivalence constraint. SQL's requiresLiteralIndexProof
+// keeps exact bindings for these schemas; unconstrained references never match
+// a stored literal by their current execution's value.
 type ValueEquivalence interface {
 	// IsDefinedEqual reports whether two values are axiomatically equal
 	// under this equivalence. Returns a ConstrainedBoolean that may

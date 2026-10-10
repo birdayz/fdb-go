@@ -142,8 +142,16 @@ func IsCountStar(agg AggregateSpec) bool {
 	if agg.Operand == nil {
 		return true
 	}
-	_, isConstant := agg.Operand.(*values.ConstantValue)
-	return isConstant
+	switch operand := agg.Operand.(type) {
+	case *values.ConstantValue:
+		return true
+	case *values.ConstantObjectValue:
+		// Reuse may change the payload, but a NOT NULL type constraint
+		// keeps every row countable without evaluating the pool reference.
+		return !operand.Type().IsNullable()
+	default:
+		return false
+	}
 }
 
 // GroupByExpression groups input rows by groupingKeys and computes

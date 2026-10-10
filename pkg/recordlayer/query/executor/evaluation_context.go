@@ -31,6 +31,7 @@ type EvaluationContext struct {
 	// QOV evaluation selects here by both correlation and flowed type first.
 	quantifiedBindings map[values.CorrelationIdentifier][]quantifiedRuntimeBinding
 	params             []any
+	constants          map[values.CorrelationIdentifier]map[string]any
 	scalarSubqueries   map[values.CorrelationIdentifier]any
 	// statementTime is the statement-stable CURRENT_TIMESTAMP-family
 	// instant, stamped ONCE at statement execution start (the SQL layer
@@ -128,6 +129,26 @@ func (ec *EvaluationContext) BindParameter(ordinal int, name string) (any, bool)
 		return ec.params[ordinal-1], true
 	}
 	return nil, false
+}
+
+// WithConstants installs an immutable pool in the constant namespace, separate
+// from row correlations even when a SQL alias has the same spelling.
+func (ec *EvaluationContext) WithConstants(alias values.CorrelationIdentifier, pool map[string]any) *EvaluationContext {
+	cp := *ec
+	cp.constants = make(map[values.CorrelationIdentifier]map[string]any, len(ec.constants)+1)
+	for key, value := range ec.constants {
+		cp.constants[key] = value
+	}
+	cp.constants[alias] = pool
+	return &cp
+}
+
+// DereferenceConstant resolves a constant pool installed with WithConstants.
+func (ec *EvaluationContext) DereferenceConstant(alias values.CorrelationIdentifier, constantID string) any {
+	if ec == nil {
+		return nil
+	}
+	return ec.constants[alias][constantID]
 }
 
 // RowContext returns a binding-only RowEvalContext — this context's parameter
@@ -347,7 +368,7 @@ func aggregateOperandsDependOnStatementClock(specs []expressions.AggregateSpec) 
 // bare ordinal row.
 func hasBindingContext(ec *EvaluationContext) bool {
 	return ec != nil && (len(ec.params) > 0 || len(ec.scalarSubqueries) > 0 ||
-		len(ec.bindings) > 0 || len(ec.quantifiedBindings) > 0)
+		len(ec.bindings) > 0 || len(ec.quantifiedBindings) > 0 || len(ec.constants) > 0)
 }
 
 // WithScalarSubqueries returns a copy with pre-evaluated scalar

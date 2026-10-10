@@ -129,9 +129,8 @@ func constantPayload(v values.Value) any {
 	return nil
 }
 
-// writeBindingKey renders a bound carrier exactly for the plan-cache key: a
-// cached plan carries its bound constants, so values that render alike would
-// share one plan and run the first one's constant. Each carrier is tagged;
+// writeBindingKey encodes exact specialization constraints and duplicate
+// literals before reusable values become runtime references. Each carrier is tagged;
 // floats are their bits (NaN payloads and -0.0 distinct); strings and bytes
 // are length-prefixed, so NULL, an empty STRING and an empty BYTES differ and no text can
 // imitate a delimiter; an array is its count, then its elements.
