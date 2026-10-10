@@ -11,6 +11,7 @@ package conformance_test
 // in conformance_corpora_test while its callers stay in conformance_test.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -258,6 +259,14 @@ func retryBudget(err error) int {
 	default:
 		return 0
 	}
+}
+
+// runJavaRetrying runs a Java-only statement under rerunWhileRetryable, as the
+// corpus runs do, so a retryable FDB code is re-run rather than reported.
+func runJavaRetrying(ctx context.Context, rn plandiff.SetupRunner, schema string, setup []string, sql string) plandiff.RunResult {
+	run := func() plandiff.RunResult { return rn.RunWithSetup(ctx, schema, setup, sql) }
+	jr, _ := rerunWhileRetryable(run(), plandiff.RunResult{}, 0, run, func() plandiff.RunResult { return plandiff.RunResult{} })
+	return jr
 }
 
 // rerunWhileRetryable re-runs whichever side hit a retryable HARNESS error (a

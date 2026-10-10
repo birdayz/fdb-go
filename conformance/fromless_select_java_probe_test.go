@@ -229,7 +229,7 @@ var _ = Describe("FromlessSelectJavaProbe", func() {
 		Expect(wantJava).To(HaveLen(len(probes)))
 		completed := 0
 		for _, p := range probes {
-			jr := javaRunner.RunWithSetup(ctx, schema, setup, p.sql)
+			jr := runJavaRetrying(ctx, javaRunner, schema, setup, p.sql)
 			gr := goRunner.RunWithSetup(ctx, schema, setup, p.sql)
 			fmt.Fprintf(GinkgoWriter, "FROMLESS-PROBE %s\n JAVA %s\n GO %s\n SQL %s\n", p.name, render(jr), render(gr), p.sql)
 			Expect(render(jr)).To(Equal(wantJava[p.name]), p.sql)

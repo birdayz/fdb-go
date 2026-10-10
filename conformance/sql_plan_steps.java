@@ -1311,7 +1311,7 @@ class SqlPlanSteps {
         ensureDriverRegistered(clusterFile);
         try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
              Statement st = sysConn.createStatement()) {
-            st.executeUpdate("CREATE SCHEMA TEMPLATE \"" + templateName + "\" " + schemaTemplateBody);
+            withFdbRetry(() -> st.executeUpdate("CREATE SCHEMA TEMPLATE \"" + templateName + "\" " + schemaTemplateBody));
         }
         JsonObject result = new JsonObject();
         result.addProperty("created", true);
@@ -1330,7 +1330,7 @@ class SqlPlanSteps {
         boolean dropped = false;
         try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
              Statement st = sysConn.createStatement()) {
-            st.executeUpdate("DROP SCHEMA TEMPLATE IF EXISTS \"" + templateName + "\"");
+            withFdbRetry(() -> st.executeUpdate("DROP SCHEMA TEMPLATE IF EXISTS \"" + templateName + "\""));
             dropped = true;
         } catch (SQLException e) {
             // fdb-relational 4.11.1.0 ignores `IF EXISTS` on DROP
