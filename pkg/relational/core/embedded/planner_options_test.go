@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/recordlayer"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
@@ -24,10 +25,12 @@ import (
 // store: everything from plannerOptionsFrom onward is the production code.
 func planWithOptions(t testing.TB, sql, schemaDDL string, opts *api.Options) (plans.RecordQueryPlan, int, error) {
 	t.Helper()
-	return planWithOptionsContext(context.Background(), t, sql, schemaDDL, opts)
+	return planWithOptionsDeadline(t, 0, sql, schemaDDL, opts)
 }
 
-func planWithOptionsContext(ctx context.Context, t testing.TB, sql, schemaDDL string, opts *api.Options) (plans.RecordQueryPlan, int, error) {
+// planWithOptionsDeadline arms a positive planTimeout only once setup is done,
+// so the deadline bounds the planner and nothing else.
+func planWithOptionsDeadline(t testing.TB, planTimeout time.Duration, sql, schemaDDL string, opts *api.Options) (plans.RecordQueryPlan, int, error) {
 	t.Helper()
 	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
 	if err != nil {
@@ -53,6 +56,12 @@ func planWithOptionsContext(ctx context.Context, t testing.TB, sql, schemaDDL st
 	}
 
 	planner := newCascadesPlanner(md, plannerOptionsFrom(opts), cascades.BatchAExpressionRules(), nil)
+	ctx := context.Background()
+	if planTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, planTimeout)
+		defer cancel()
+	}
 	best, tasks, planErr := planner.PlanWithContext(ctx, ref)
 	if planErr != nil {
 		return nil, tasks, planErr

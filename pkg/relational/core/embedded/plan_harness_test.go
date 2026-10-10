@@ -2848,7 +2848,7 @@ func TestPlanHarness_FixedFactorUnionAccessConverges(t *testing.T) {
 		{"unordered", ""},
 		{"ordered", " ORDER BY b, id"},
 		// The anti-EXISTS variant is not here: Java does not plan it within
-		// Go's 150,000-task budget either (FixedFactorUnionAccessJava, "single
+		// a 150,000-task budget either (FixedFactorUnionAccessJava, "single
 		// comparison at Go budget", with c = 4 for the ABS Java does not
 		// support), and since a type-filter leg's match
 		// climbs to the candidate root as in Java, neither does Go.
@@ -2930,7 +2930,7 @@ func TestPlanHarness_FixedFactorUnionJavaComparable(t *testing.T) {
 	// not plan this statement either: it ends in StackOverflowError, ordered and
 	// unordered (FixedFactorUnionScalarJava, conformance). Go planned it only
 	// while it dropped every full index scan under PRESERVE, a Go-only pruning
-	// F-7c removed. Both engines refuse the statement; the pin is Go's refusal.
+	// F-7c removed. Java refuses the statement; Go refuses it under the budget.
 	t.Run("unordered", func(t *testing.T) {
 		opts := api.NewOptionsBuilder().Set(api.OptMaxTotalTaskCount, 150_000).Build()
 		_, _, err := planPhysicalForTest(sql, schema, nil, false, nil, plannerOptionsFrom(opts))

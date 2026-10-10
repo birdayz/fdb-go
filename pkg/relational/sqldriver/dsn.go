@@ -9,6 +9,7 @@ package sqldriver
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 
@@ -116,7 +117,7 @@ var acceptedDSNParams = append([]string{
 	RestrictDDLToSessionDatabaseParam,
 	"schema",
 	TransactionTagsParam,
-}, planCacheDSNParams()...)
+}, append(planCacheDSNParams(), plannerBudgetDSNParams()...)...)
 
 // planCacheOptions are the engine plan cache's sizes and TTLs, which a DSN
 // sets by the lower-cased option name (`plan_cache_tertiary_max_entries=4`):
@@ -129,6 +130,22 @@ var planCacheOptions = []api.OptionName{
 	api.OptPlanCacheSecondaryTimeToLiveMillis,
 	api.OptPlanCacheTertiaryMaxEntries,
 	api.OptPlanCacheTertiaryTimeToLiveMillis,
+}
+
+// plannerBudgetOptions are Java's Cascades planner budgets, set by lower-cased
+// option name (`max_total_task_count=150000`); unset, planning is unbounded.
+var plannerBudgetOptions = []api.OptionName{
+	api.OptMaxTaskQueueSize,
+	api.OptMaxTotalTaskCount,
+	api.OptMaxNumMatchesPerRuleCall,
+}
+
+func plannerBudgetDSNParams() []string {
+	out := make([]string, len(plannerBudgetOptions))
+	for i, o := range plannerBudgetOptions {
+		out[i] = strings.ToLower(string(o))
+	}
+	return out
 }
 
 func planCacheDSNParams() []string {
@@ -202,7 +219,7 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 		}
 		opts = opts.With(api.OptTransactionTags, tags)
 	}
-	for _, name := range planCacheOptions {
+	for _, name := range slices.Concat(planCacheOptions, plannerBudgetOptions) {
 		raw, present := d.Options[strings.ToLower(string(name))]
 		if !present {
 			continue

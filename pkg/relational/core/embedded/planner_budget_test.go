@@ -25,10 +25,8 @@ const (
 func TestPlannerBudget_ChainJoin(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
 	start := time.Now()
-	_, canceledTasks, err := planWithOptionsContext(ctx, t, sixTableChainSQL, starJoinDDL, nil)
+	_, canceledTasks, err := planWithOptionsDeadline(t, 200*time.Millisecond, sixTableChainSQL, starJoinDDL, nil)
 	if !errors.Is(err, context.DeadlineExceeded) || canceledTasks == 0 {
 		t.Fatalf("200ms deadline: err=%v after %d tasks, want context.DeadlineExceeded from the task loop",
 			err, canceledTasks)

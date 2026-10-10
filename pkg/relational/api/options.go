@@ -106,8 +106,8 @@ const (
 	// default false — Java-identical (Options.Name.PLAN_RIGHT_DEEP, whose
 	// default is false and whose JOIN_RIGHT_DEEP_MASK reads unset ⇒ false).
 	// Setting it is an opt-in trade: bushy plans are excluded, so a wide star
-	// join that would otherwise exhaust the planner's task budget converges,
-	// at the cost of possibly missing the cheapest shape.
+	// join whose bushy search would run long converges quickly, at the cost of
+	// possibly missing the cheapest shape.
 	OptPlanRightDeep OptionName = "PLAN_RIGHT_DEEP"
 	// OptVectorIndexEnginePreference is Java's VECTOR_INDEX_ENGINE_PREFERENCE:
 	// which engine the planner favors when an HNSW and a GuardiANN index can

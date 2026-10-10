@@ -108,7 +108,7 @@ func (s Sweep) RunSeed(ctx context.Context, seed uint64, batch *Batch) ([]Outcom
 		_, _ = s.SetupDB.ExecContext(ctx, fmt.Sprintf("DROP SCHEMA TEMPLATE %s", tmpl))
 	}()
 
-	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", strings.ToUpper(s.DBPath), s.ClusterFile, strings.ToUpper(schema)))
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s&max_total_task_count=150000", strings.ToUpper(s.DBPath), s.ClusterFile, strings.ToUpper(schema)))
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}

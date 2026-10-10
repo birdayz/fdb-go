@@ -19,7 +19,8 @@ func TestConnectionOptions_UnknownParameterIsRefused(t *testing.T) {
 	_, err = dsn.ConnectionOptions()
 	var apiErr *api.Error
 	const want = "unknown DSN parameter dryrun, zz; accepted parameters are cluster_file, dry_run, " +
-		"isolation_level_snapshot, plan_cache_primary_max_entries, plan_cache_primary_time_to_live_millis, " +
+		"isolation_level_snapshot, max_num_matches_per_rule_call, max_task_queue_size, max_total_task_count, " +
+		"plan_cache_primary_max_entries, plan_cache_primary_time_to_live_millis, " +
 		"plan_cache_secondary_max_entries, plan_cache_secondary_time_to_live_millis, " +
 		"plan_cache_tertiary_max_entries, plan_cache_tertiary_time_to_live_millis, " +
 		"planner_statistics, restrict_ddl_to_session_database, schema, transaction_tags"
@@ -80,6 +81,34 @@ func TestConnectionOptions_PlanCacheParameters(t *testing.T) {
 		t.Fatalf("options %v", opts.AllEntries())
 	}
 	for _, bad := range []string{"plan_cache_secondary_max_entries=0", "plan_cache_primary_time_to_live_millis=x"} {
+		d, err := ParseDSN("fdbsql:///FRL/db?" + bad)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var apiErr *api.Error
+		if _, err := d.ConnectionOptions(); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter {
+			t.Errorf("%s: %v, want 22023", bad, err)
+		}
+	}
+}
+
+// Java's planner budgets are DSN parameters by lower-cased option name, checked
+// by the option's 0..MaxInt32 contract.
+func TestConnectionOptions_PlannerBudgetParameters(t *testing.T) {
+	t.Parallel()
+	dsn, err := ParseDSN("fdbsql:///FRL/db?max_total_task_count=150000&max_task_queue_size=7&max_num_matches_per_rule_call=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err := dsn.ConnectionOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Get(api.OptMaxTotalTaskCount) != 150000 || opts.Get(api.OptMaxTaskQueueSize) != 7 ||
+		opts.Get(api.OptMaxNumMatchesPerRuleCall) != 0 {
+		t.Fatalf("options %v", opts.AllEntries())
+	}
+	for _, bad := range []string{"max_total_task_count=-1", "max_task_queue_size=2147483648", "max_num_matches_per_rule_call=x"} {
 		d, err := ParseDSN("fdbsql:///FRL/db?" + bad)
 		if err != nil {
 			t.Fatal(err)

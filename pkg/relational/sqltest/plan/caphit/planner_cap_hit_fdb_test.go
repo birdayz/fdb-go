@@ -49,7 +49,9 @@ func capHitDB(t *testing.T, tag string) *sql.DB {
 func budgetConn(t *testing.T, db *sql.DB) *sql.Conn {
 	t.Helper()
 	return testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
-		ec.SetOptions(api.NewOptionsBuilder().Set(api.OptMaxTotalTaskCount, 2_000).Build())
+		if err := ec.SetOption(api.OptMaxTotalTaskCount, 2_000); err != nil {
+			t.Fatalf("SetOption: %v", err)
+		}
 	})
 }
 

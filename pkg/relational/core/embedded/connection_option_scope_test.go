@@ -3,6 +3,7 @@ package embedded
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
@@ -60,5 +61,34 @@ func TestPaginatingRows_OptionsCapturedAtExecution(t *testing.T) {
 	}
 	if got := rows.executeProps().ScannedRecordsLimit; got != 7 {
 		t.Fatalf("page scan limit %d, want the executed statement's 7", got)
+	}
+}
+
+// The planner budgets go through their 0..MaxInt32 contract and, once set,
+// reach the planner options.
+func TestSetOption_PlannerBudgetsValidated(t *testing.T) {
+	t.Parallel()
+	for _, name := range []api.OptionName{api.OptMaxTotalTaskCount, api.OptMaxTaskQueueSize, api.OptMaxNumMatchesPerRuleCall} {
+		c := &EmbeddedConnection{sess: &session.Session{Schema: "S", DefaultSchema: "S"}}
+		for _, bad := range []any{-1, math.MaxInt32 + 1} {
+			err := c.SetOption(name, bad)
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter {
+				t.Fatalf("SetOption(%s, %v) = %v, want 22023", name, bad, err)
+			}
+			if _, set := c.Options().AllEntries()[name]; set {
+				t.Fatalf("refused %s = %v was stored", name, bad)
+			}
+		}
+		if err := c.SetOption(name, 5); err != nil {
+			t.Fatalf("SetOption(%s, 5): %v", name, err)
+		}
+		po := plannerOptionsFrom(c.Options())
+		if got := map[api.OptionName]int{
+			api.OptMaxTotalTaskCount: po.maxTotalTaskCount, api.OptMaxTaskQueueSize: po.maxTaskQueueSize,
+			api.OptMaxNumMatchesPerRuleCall: po.maxNumMatchesPerRuleCall,
+		}[name]; got != 5 {
+			t.Fatalf("%s reached the planner as %d, want 5", name, got)
+		}
 	}
 }

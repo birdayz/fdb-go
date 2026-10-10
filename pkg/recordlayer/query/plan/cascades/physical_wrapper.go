@@ -298,12 +298,13 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 // to 52 physical finals, and a caller looping over them yields once per member
 // inside a SINGLE OnMatch. MaxNumMatchesPerRuleCall does not apply: its counter
 // counts BINDINGS produced by the matcher (unified_tasks.go:350, :461, :560),
-// and this loop produces none. The operative backstop is the much coarser
-// Planner.MaxTasks / MaxTaskQueueSize, which fails the WHOLE plan with
-// ErrPlannerCapHit rather than capping one rule's fan-out. Memoization keeps the
-// enumerated subtrees singly represented, so the fan-out is in parent
-// alternatives rather than in duplicated trees — but a caller adding a second
-// enumerated child multiplies, and nothing here will stop it.
+// and this loop produces none. The only backstop is the opt-in, coarser
+// Planner.MaxTasks / MaxTaskQueueSize (unbounded by default, as in Java), which
+// fails the WHOLE plan with ErrPlannerCapHit rather than capping one rule's
+// fan-out. Memoization keeps the enumerated subtrees singly represented, so the
+// fan-out is in parent alternatives rather than in duplicated trees — but a
+// caller adding a second enumerated child multiplies, and nothing here will
+// stop it.
 func physicalMembersForParentEnumeration(ref *expressions.Reference) []expressions.RelationalExpression {
 	if ref == nil {
 		return nil

@@ -214,6 +214,17 @@ func PlanPhysicalDMLForTestWithArgs(
 // popts carries the planner options this run plans under; every caller but
 // PlanQueryForTestWithDisabledRules passes plannerOptionsFrom(nil), the
 // Java-default configuration a query that sets no options gets.
+// harnessTaskBudget backstops the drivers that plan generated SQL through this
+// harness; connection planning stays unbounded, as in Java.
+const harnessTaskBudget = 150_000
+
+func harnessPlannerOptions(popts plannerOptions) plannerOptions {
+	if popts.maxTotalTaskCount == 0 {
+		popts.maxTotalTaskCount = harnessTaskBudget
+	}
+	return popts
+}
+
 func planPhysicalForTest(
 	sql, schemaDDL string,
 	stats properties.StatisticsProvider,
@@ -422,7 +433,7 @@ func planReferenceToPhysical(
 	// point but PlanQueryForTestWithDisabledRules. It still goes through
 	// newCascadesPlanner so the harness and the production paths cannot diverge
 	// in how a planner is built.
-	planner := newCascadesPlanner(md, popts, planningRules, stats)
+	planner := newCascadesPlanner(md, harnessPlannerOptions(popts), planningRules, stats)
 
 	// RFC-224: every Reference the extractor selects must resolve to a
 	// physical member, and property-retained multi-final groups must be
@@ -717,7 +728,7 @@ func PlanQueryWithMetadata(sql string, md *recordlayer.RecordMetaData, stats pro
 
 	// No connection here, so no api.Options: plan under the Java-default
 	// planner options via the shared construction site.
-	planner := newCascadesPlanner(md, plannerOptionsFrom(nil), cascades.BatchAExpressionRules(), stats)
+	planner := newCascadesPlanner(md, harnessPlannerOptions(plannerOptionsFrom(nil)), cascades.BatchAExpressionRules(), stats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	if planErr != nil {
@@ -880,7 +891,7 @@ func planRecordQueryAndSubqueriesWithOptions(
 		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
-	planner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
+	planner := newCascadesPlanner(md, harnessPlannerOptions(popts), cascades.BatchAExpressionRules(), stats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	if planErr != nil {
