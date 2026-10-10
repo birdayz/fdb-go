@@ -445,7 +445,7 @@ func (tx *embeddedTx) Rollback() error {
 // exists) or inside a new auto-commit transaction via fdbDB.Run.
 // In explicit-transaction mode, fn errors propagate without retry.
 func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
-	return c.runInCapturedTx(ctx, c.activeTx, fn)
+	return c.runInCapturedTx(ctx, c.activeTx, c.Options(), fn)
 }
 
 // runInCapturedTx executes fn inside tx when one was captured, or inside a new
@@ -461,7 +461,10 @@ func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.F
 // In explicit-transaction mode fn errors propagate WITHOUT retry: a retry
 // would have to re-run the whole transaction, and the driver does not hold the
 // statements the application has not issued yet.
-func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
+//
+// opts are the options of the statement the work belongs to; an auto-commit
+// transaction is configured from them (configureTransaction) on every attempt.
+func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx, opts *api.Options, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
 	if tx != nil {
 		if tx.terminated.Load() {
 			return nil, api.NewError(api.ErrCodeTransactionInactive,
@@ -469,7 +472,55 @@ func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx
 		}
 		return fn(tx.rctx)
 	}
-	return c.sess.DB.Run(ctx, fn)
+	return configuredRunner{c.sess.DB, opts}.Run(ctx, fn)
+}
+
+// transactionConfigurer applies the connection-scope transaction options to a
+// new FDB transaction, as Java's RecordLayerTransactionManager builds every
+// connection transaction's FDBRecordContextConfig from the connection options.
+// Every transaction the connection opens for its statements goes through it.
+func transactionConfigurer(opts *api.Options) recordlayer.TransactionConfigurer {
+	return func(o fdb.TransactionOptions) error {
+		// Tags reach the cluster's ratekeeper only if set before the first read.
+		if tags, ok := opts.Get(api.OptTransactionTags).([]string); ok {
+			for _, tag := range tags {
+				if err := o.SetTag(tag); err != nil {
+					return err
+				}
+			}
+		}
+		// FDBRecordContext: -1 (DEFAULT_TR_TIMEOUT_MILLIS) inherits the database's
+		// timeout, 0 disables it, and a positive value is the transaction's own.
+		if ms, ok := opts.Get(api.OptTransactionTimeout).(int64); ok && ms != -1 {
+			if err := o.SetTimeout(ms); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// configuredRunner is the database as a statement of the connection runs
+// auto-commit work in it: every attempt's transaction configured from opts.
+type configuredRunner struct {
+	db   *recordlayer.FDBDatabase
+	opts *api.Options
+}
+
+func (r configuredRunner) Run(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
+	return r.db.Run(ctx, configured(r.opts, fn))
+}
+
+// configured wraps a DB.Run body so each attempt's fresh transaction is
+// configured before the body reads.
+func configured(opts *api.Options, fn func(*recordlayer.FDBRecordContext) (any, error)) func(*recordlayer.FDBRecordContext) (any, error) {
+	configure := transactionConfigurer(opts)
+	return func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		if err := rctx.Configure(configure); err != nil {
+			return nil, err
+		}
+		return fn(rctx)
+	}
 }
 
 // cachedLoadSchema returns the api.Schema for (dbPath, schemaName).
@@ -918,17 +969,6 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 		return nil, err
 	}
 	fdbTx.Options().SetReadSystemKeys()
-	// Tag the transaction for the cluster's ratekeeper. This is the single
-	// transaction-creation seam in the SQL layer, so tagging here covers both
-	// explicit BeginTx transactions and autocommit statements.
-	if tags, ok := c.Options().Get(api.OptTransactionTags).([]string); ok {
-		for _, tag := range tags {
-			if err := fdbTx.Options().SetTag(tag); err != nil {
-				fdbTx.Cancel()
-				return nil, err
-			}
-		}
-	}
 	// NewRecordContext, not NewFDBRecordContext: it threads every piece of
 	// per-database state the record layer expects a context to inherit — the DST
 	// env AND the StoreTimer — so an explicit BeginTx transaction is instrumented
@@ -936,6 +976,10 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 	// FDBDatabase.Run and inherits the timer there). Naming the fields one by one
 	// here is what previously left this path running with env==nil.
 	rctx := c.sess.DB.NewRecordContext(fdbTx)
+	if err := rctx.Configure(transactionConfigurer(c.Options())); err != nil {
+		fdbTx.Cancel()
+		return nil, err
+	}
 	tx := &embeddedTx{conn: c, rctx: rctx}
 	c.activeTx = tx
 	return tx, nil

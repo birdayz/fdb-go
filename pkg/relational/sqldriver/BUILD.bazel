@@ -35,8 +35,10 @@ go_test(
         "connector_dsn_freeze_test.go",
         "driver_test.go",
         "dsn_ddl_scope_option_test.go",
+        "dsn_execution_test.go",
         "dsn_options_test.go",
         "dsn_tags_test.go",
+        "dsn_transaction_timeout_fdb_test.go",
         "embedded_fdb_errors_test.go",
         "execution_stats_fdb_test.go",
         "execution_stats_retry_test.go",
@@ -108,13 +110,23 @@ go_test(
     embed = [":sqldriver"],
 )
 
-# DSN unit tests: no FDB, so they run in the fast lane (`just test`), unlike
-# sqldriver_test, which is tagged test-full as a whole.
+# DSN tests: no Docker (SimFDB at most), so they run in the fast lane
+# (`just test`), unlike sqldriver_test, which is tagged test-full as a whole.
 go_test(
     name = "dsn_test",
-    srcs = ["dsn_options_test.go"],
+    srcs = [
+        "dsn_execution_test.go",
+        "dsn_options_test.go",
+    ],
     embed = [":sqldriver"],
-    deps = ["//pkg/relational/api"],
+    deps = [
+        "//pkg/dst",
+        "//pkg/fdbgo/fdb",
+        "//pkg/recordlayer",
+        "//pkg/relational/api",
+        "//pkg/relational/core/embedded",
+        "//pkg/simfdb",
+    ],
 )
 
 # The corpus the transaction-budget census reads as DATA rather than as code.

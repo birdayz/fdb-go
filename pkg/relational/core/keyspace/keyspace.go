@@ -158,10 +158,16 @@ func firstErr(err, otherwise error) error {
 	return otherwise
 }
 
+// Runner runs fn in an auto-commit transaction: an *recordlayer.FDBDatabase, or
+// a connection's runner that configures each transaction from its options.
+type Runner interface {
+	Run(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error)
+}
+
 // SchemaSubspaceIn is SchemaSubspace for a caller outside a transaction: a
 // resolved schema comes from the keyspace's cache, otherwise it is resolved
 // in a transaction of the database's.
-func (k *RelationalKeyspace) SchemaSubspaceIn(ctx context.Context, db *recordlayer.FDBDatabase, dbPath, schemaName string) (subspace.Subspace, error) {
+func (k *RelationalKeyspace) SchemaSubspaceIn(ctx context.Context, db Runner, dbPath, schemaName string) (subspace.Subspace, error) {
 	if ss, ok := k.resolved.Load(dbPath + "\x00" + schemaName); ok {
 		return ss.(subspace.Subspace), nil
 	}

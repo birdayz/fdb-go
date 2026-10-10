@@ -9,7 +9,6 @@ package sqldriver
 import (
 	"fmt"
 	"net/url"
-	"slices"
 	"sort"
 	"strings"
 
@@ -39,6 +38,7 @@ const (
 //
 //	fdbsql:///PATH                             — embedded, default cluster file
 //	fdbsql:///PATH?cluster_file=/path          — embedded, explicit cluster file
+//	fdbsql:///PATH?max_rows=100&dry_run=true   — connection options (acceptedDSNParams)
 //	fdbsql://HOST:PORT/PATH                    — remote (gRPC), NOT YET IMPLEMENTED
 //
 // The path component is the database path (Java's
@@ -109,48 +109,52 @@ const (
 
 // acceptedDSNParams is every query parameter the driver reads. cluster_file
 // and schema are read from the same map as the options.
-var acceptedDSNParams = append([]string{
+var acceptedDSNParams = append(append([]string{
 	"cluster_file",
-	DryRunParam,
-	IsolationLevelSnapshotParam,
-	PlannerStatisticsParam,
-	RestrictDDLToSessionDatabaseParam,
 	"schema",
 	TransactionTagsParam,
-}, append(planCacheDSNParams(), plannerBudgetDSNParams()...)...)
+}, dsnParams(boolDSNOptions)...), dsnParams(contractDSNOptions)...)
 
-// planCacheOptions are the engine plan cache's sizes and TTLs, which a DSN
-// sets by the lower-cased option name (`plan_cache_tertiary_max_entries=4`):
-// Java's FRL takes them as engine options (EmbeddedConfig sets them for the
-// yaml tests). The connector's shared plan cache is built from them.
-var planCacheOptions = []api.OptionName{
+// boolDSNOptions are the boolean connection options a DSN sets by the
+// lower-cased option name, parsed strictly (parseDSNBool): a misspelled value
+// must fail rather than read as Java's lenient Boolean.parseBoolean false.
+var boolDSNOptions = []api.OptionName{
+	api.OptDryRun,
+	api.OptIsolationLevelSnapshot,
+	api.OptPlannerStatistics,
+	api.OptRestrictDDLToSessionDatabase,
+	api.OptPlanRightDeep,
+	api.OptDisablePlannerRewriting,
+}
+
+// contractDSNOptions are the connection options a DSN sets by the lower-cased
+// option name (`max_rows=100`), converted and range-checked by the option's
+// contract as Java's Options.fromProperties does for connection Properties.
+// The engine plan cache's sizes and TTLs build the connector's shared plan
+// cache; the execution limits and planner knobs are connection defaults that a
+// Conn.Raw SetOption overrides until the connection returns to the pool.
+var contractDSNOptions = []api.OptionName{
 	api.OptPlanCachePrimaryMaxEntries,
 	api.OptPlanCachePrimaryTimeToLiveMillis,
 	api.OptPlanCacheSecondaryMaxEntries,
 	api.OptPlanCacheSecondaryTimeToLiveMillis,
 	api.OptPlanCacheTertiaryMaxEntries,
 	api.OptPlanCacheTertiaryTimeToLiveMillis,
-}
-
-// plannerBudgetOptions are Java's Cascades planner budgets, set by lower-cased
-// option name (`max_total_task_count=150000`); unset, planning is unbounded.
-var plannerBudgetOptions = []api.OptionName{
-	api.OptMaxTaskQueueSize,
+	api.OptMaxRows,
+	api.OptExecutionScannedRowsLimit,
+	api.OptExecutionScannedBytesLimit,
+	api.OptExecutionTimeLimit,
+	api.OptTransactionTimeout,
+	api.OptMaxStatementMemoryBytes,
+	api.OptDisabledPlannerRules,
 	api.OptMaxTotalTaskCount,
+	api.OptMaxTaskQueueSize,
 	api.OptMaxNumMatchesPerRuleCall,
 }
 
-func plannerBudgetDSNParams() []string {
-	out := make([]string, len(plannerBudgetOptions))
-	for i, o := range plannerBudgetOptions {
-		out[i] = strings.ToLower(string(o))
-	}
-	return out
-}
-
-func planCacheDSNParams() []string {
-	out := make([]string, len(planCacheOptions))
-	for i, o := range planCacheOptions {
+func dsnParams(options []api.OptionName) []string {
+	out := make([]string, len(options))
+	for i, o := range options {
 		out[i] = strings.ToLower(string(o))
 	}
 	return out
@@ -183,34 +187,15 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 			strings.Join(unknown, ", "), strings.Join(names, ", "))
 	}
 	opts := api.NoOptions()
-	for _, b := range []struct {
-		param  string
-		option api.OptionName
-	}{
-		{DryRunParam, api.OptDryRun},
-		{IsolationLevelSnapshotParam, api.OptIsolationLevelSnapshot},
-	} {
-		if raw, present := d.Options[b.param]; present {
-			v, err := parseDSNBool(b.param, raw)
+	for _, name := range boolDSNOptions {
+		param := strings.ToLower(string(name))
+		if raw, present := d.Options[param]; present {
+			v, err := parseDSNBool(param, raw)
 			if err != nil {
 				return nil, err
 			}
-			opts = opts.With(b.option, v)
+			opts = opts.With(name, v)
 		}
-	}
-	if raw, present := d.Options[RestrictDDLToSessionDatabaseParam]; present {
-		v, err := parseDSNBool(RestrictDDLToSessionDatabaseParam, raw)
-		if err != nil {
-			return nil, err
-		}
-		opts = opts.With(api.OptRestrictDDLToSessionDatabase, v)
-	}
-	if raw, present := d.Options[PlannerStatisticsParam]; present {
-		v, err := parseDSNBool(PlannerStatisticsParam, raw)
-		if err != nil {
-			return nil, err
-		}
-		opts = opts.With(api.OptPlannerStatistics, v)
 	}
 	if raw, present := d.Options[TransactionTagsParam]; present {
 		tags, err := parseDSNTags(raw)
@@ -219,8 +204,9 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 		}
 		opts = opts.With(api.OptTransactionTags, tags)
 	}
-	for _, name := range slices.Concat(planCacheOptions, plannerBudgetOptions) {
-		raw, present := d.Options[strings.ToLower(string(name))]
+	for _, name := range contractDSNOptions {
+		param := strings.ToLower(string(name))
+		raw, present := d.Options[param]
 		if !present {
 			continue
 		}
@@ -229,7 +215,7 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 			err = api.ValidateOption(name, v)
 		}
 		if err != nil {
-			return nil, err
+			return nil, api.WrapErrorf(err, api.ErrCodeInvalidParameter, "DSN option %q", param)
 		}
 		opts = opts.With(name, v)
 	}
@@ -313,10 +299,17 @@ func ParseDSN(s string) (*DSN, error) {
 			"DSN is missing database path (expected fdbsql:///PATH)")
 	}
 
+	// url.Query drops a malformed pair (bad escape, `;`) silently; a dropped
+	// limit would leave the connection unbounded, so it is an error instead.
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return nil, api.WrapError(api.ErrCodeInvalidPath, "malformed DSN query: "+s, err)
+	}
+
 	dsn := &DSN{Path: u.Path, Options: make(map[string]string)}
 
 	// Extract reserved options that have typed fields.
-	if schema := u.Query().Get("schema"); schema != "" {
+	if schema := query.Get("schema"); schema != "" {
 		dsn.Schema = schema
 	}
 
@@ -331,7 +324,7 @@ func ParseDSN(s string) (*DSN, error) {
 
 	// Flatten query values (first value wins, matches Java's
 	// JDBCURI.getFirstValue pattern).
-	for key, values := range u.Query() {
+	for key, values := range query {
 		if len(values) == 0 {
 			dsn.Options[key] = ""
 		} else {
