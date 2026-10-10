@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_binary")
+
+# gazelle:ignore
+# Each executable contains exactly one backend, including its dependency graph.
+go_binary(
+    name = "clientbench_go",
+    srcs = [
+        "backend_go.go",
+        "main.go",
+    ],
+    pure = "on",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/client",
+        "//pkg/fdbgo/fdb",
+        "//tools/clientbench/internal/bench",
+    ],
+)
+
+go_binary(
+    name = "clientbench_cgo",
+    srcs = [
+        "backend_cgo.go",
+        "main.go",
+    ],
+    cgo = True,
+    clinkopts = ["-lfdb_c"],
+    pure = "off",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tools/clientbench/internal/bench",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+    ],
+)

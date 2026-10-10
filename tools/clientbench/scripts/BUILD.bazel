@@ -1,0 +1,12 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+sh_test(
+    name = "campaign_test",
+    srcs = ["test.sh"],
+    data = [
+        "analyze.py",
+        "r3_plan.py",
+        "run.py",
+        "test_campaign.py",
+    ],
+)
