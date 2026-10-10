@@ -983,7 +983,7 @@ func AbsolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 //
 // That repair is load-bearing for metadata Java writes: a user proto's package
 // round-trips through RecordMetaData.toProto(), and every proto under
-// fdb-record-layer-core/src/test/proto declares one.
+// fdb-record-layer-core/src/test/proto and src/testFixtures/proto declares one.
 // `test_records_tuple_fields.proto` is the ancestor-package shape: package
 // `com.apple.foundationdb.record.testTupleFields`, importing
 // `tuple_fields.proto` at `package com.apple.foundationdb.record` (an import
@@ -1107,7 +1107,7 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 	//	cannot resolve type: resolved "p.q.X.Y",
 	//	but "hidden.proto" is not imported
 	//
-	// so the divergence shows as metadata Java loads and Go rejects.
+	// so the over-exposure would reject metadata that Java loads.
 	//
 	// One traversal, not two, because the visible set CROSSES the two sources.
 	// A direct import may be globally registered while the file it publicly

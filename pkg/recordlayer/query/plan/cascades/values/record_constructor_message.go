@@ -172,7 +172,7 @@ func rowScalarToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect
 }
 
 // rowMessageToProtoValue accepts UUID bytes or proto messages, not unstamped row maps.
-// Descriptor mismatches require a field-number copy before setting the parent field.
+// Unstamped-child refusals are tracked in TODO_OLD.md (duplicate join fields and unstamped record literals).
 func rowMessageToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value, error) {
 	md := fd.Message()
 	if md == nil {
@@ -201,6 +201,7 @@ func rowMessageToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflec
 		if src.Descriptor() == md {
 			return protoreflect.ValueOfMessage(src), nil
 		}
+		// A parent field needs its own descriptor even for wire-compatible messages.
 		dst := dynamicpb.NewMessage(md)
 		if err := copyFieldsByNumber(dst, src); err != nil {
 			return protoreflect.Value{}, err

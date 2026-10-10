@@ -49,7 +49,10 @@ import "strings"
 // DIVERGENCES.md.
 
 // TypeTerminatesOrderingClaim returns true for FLOAT/DOUBLE because tuple NaN
-// ordering differs from logical ordering. It ignores scan bounds; unknown types return false.
+// ordering differs from logical ordering. It ignores scan bounds.
+//
+// Unknown layouts retain sort elimination; soundness depends on SQL columns carrying types.
+// Keep range-aware refinements here so planner and rowdiff use the same policy.
 func TypeTerminatesOrderingClaim(t Type) bool {
 	if t == nil {
 		return false
@@ -135,7 +138,7 @@ func ColumnCouldBeFloat(layout Type, name string) bool {
 }
 
 // ClaimableOrderingPrefix returns the leading name-resolved ordering prefix.
-// Producers with typed key values use ClaimableTypedKeyPrefix instead.
+// Typed keys can use ClaimableTypedKeyPrefix or TypeTerminatesOrderingClaim directly.
 func ClaimableOrderingPrefix(layout Type, names []string) int {
 	for i, name := range names {
 		if !ColumnCanExtendOrderingClaim(layout, name) {

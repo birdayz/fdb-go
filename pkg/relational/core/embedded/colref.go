@@ -61,8 +61,7 @@ func parseColRef(s string) colRef {
 	// Literal-bearing names do occur in production (`CAST('0.0' AS BIGINT)`,
 	// `COALESCE(NAME,'unknown')`), but an instrumented run over the planning
 	// corpus shows no production name whose split depends on a literal span.
-	// The cost is two shapes, both pinned as stated limits in
-	// colref_split_test.go and the yamsql corpus:
+	// The cost is two shapes, both pinned as stated limits in colref_split_test.go:
 	//
 	//	I.COUNT(CASE WHEN S=')' THEN X.Y END) -- a literal with a MATCHED paren
 	//	X.Y || '.'                            -- a literal with a dot at depth 0

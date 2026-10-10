@@ -15,8 +15,8 @@ import (
 // StructuralHash both skip it, equal-implies-same-hash still holds while two
 // comparisons that differ only there (e.g. two TEXT_CONTAINS_ALL predicates with
 // different tokenizers, which read different index data) are conflated. The
-// reflection check catches a field that is in neither list. plans.comparisonEqual
-// must fold the same fields one layer up.
+// reflection check catches a field that is in neither list. The plan layer uses
+// a separate classification, guarded by TestPlanComparisonIdentity_ClassifiesEveryField.
 var comparisonIdentityFields = map[string]string{
 	"Type":               "the operator itself",
 	"Operand":            "the right-hand comparand",

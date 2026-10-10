@@ -257,7 +257,6 @@ func evaluateCollectedStatistics(
 	// metadata-only verdicts fix the outcome outright, and reading anyway costs
 	// an FDB transaction on every opt-in plan-cache miss — one that may retry or
 	// wait on a cluster whose answer is then thrown away.
-
 	if in.HasSyntheticTypes {
 		return decideStatistics(in)
 	}

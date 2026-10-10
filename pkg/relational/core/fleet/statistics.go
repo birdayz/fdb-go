@@ -58,10 +58,12 @@ func CollectStatistics(
 	return fanOut(ctx, ks, targets, opts.Options, collectStatisticsStep(db, ks, stats, opts, load))
 }
 
-// loadMetadata lets tests exercise the production step's outcome handling
-// without requiring a cluster or catalog.
+// loadMetadata loads a target's metadata; injection lets tests exercise outcome
+// handling without requiring a cluster or catalog.
 type loadMetadata func(context.Context, Target) (*recordlayer.RecordMetaData, error)
 
+// collectStatisticsStep returns refusals as (event, nil), because fanOut turns
+// non-nil errors into failures and would overwrite the refusal outcome.
 func collectStatisticsStep(
 	db *recordlayer.FDBDatabase,
 	ks *keyspace.RelationalKeyspace,

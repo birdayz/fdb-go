@@ -12,12 +12,14 @@ import (
 	"fdb.dev/pkg/dst"
 )
 
-// ScanLimiterState shares scan/byte/time budgets across cursor legs; it is not
-// Go's statement-scoped ExecuteState memory budget. It is not concurrency-safe.
+// ScanLimiterState shares Java ExecuteState's scan/byte budgets and a transaction-anchored time limit.
+// Property copies must retain it: separate IN-join/IN-union leg budgets can overrun the transaction's limit.
 //
-// Auto-commit pages and retries receive fresh state. Explicit SQL transactions
-// share state across statements and pages, anchored to the read-version instant.
-// A nil ExecuteProperties.ScanState gives each leaf cursor private state.
+// Auto-commit pages/retries get fresh state; explicit transactions share it at the read-version instant.
+// Without ExecuteProperties.ScanState each leaf has private state.
+//
+// Concurrency: plain fields rely on the single-threaded executor (executor/package_invariant_test.go).
+// Concurrent cursors require synchronizing all fields, not just bytes.
 type ScanLimiterState struct {
 	recordsScanned int
 	bytesScanned   int64
