@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -480,4 +481,55 @@ func TestGRVProxyChangeDuringSendIsNotLost(t *testing.T) {
 		t.Fatalf("GetReadVersionRequests=%d withheld=%d, want the parked one plus one under the new list, and 1", requests, held)
 	}
 	assertGRVProxiesHealthy(t, db, addrs, failuresBefore)
+}
+
+// A lone GRV runs on its caller: cancelling it while the reply is withheld
+// returns promptly, retires the batch and blames no proxy.
+func TestGRVCancelledLoneCallerAbandonsHeldReply(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db, g, addrs := newGRVReplyGateDB(t, ctx)
+	failuresBefore := db.db.metrics.Snapshot().ClientConnectionFailures
+	g.arm(1<<30, false)
+	callerCtx, callerCancel := context.WithCancel(ctx)
+	done := startGatedGRV(db, callerCtx)
+	awaitGateSignal(t, g.heldCh, "withholding the GRV reply")
+	callerCancel()
+	select {
+	case r := <-done:
+		if !errors.Is(r.err, context.Canceled) {
+			t.Fatalf("cancelled lone GRV returned %v, want context.Canceled", r.err)
+		}
+	case <-time.After(grvProxyChangeBound):
+		t.Fatal("cancelled lone GRV kept waiting for its withheld reply")
+	}
+	b := db.db.grvBatchers[grvBatcherDefault]
+	b.mu.Lock()
+	inFlight := b.inFlight
+	b.mu.Unlock()
+	if inFlight != 0 {
+		t.Fatalf("cancelled lone GRV left %d batch in flight", inFlight)
+	}
+	assertGRVProxiesHealthy(t, db, addrs, failuresBefore)
+}
+
+// Close ends a lone GRV whose caller's own ctx never fires.
+func TestGRVCloseEndsLoneCallerHeldReply(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db, g, _ := newGRVReplyGateDB(t, ctx)
+	g.arm(1<<30, false)
+	done := startGatedGRV(db, context.Background())
+	awaitGateSignal(t, g.heldCh, "withholding the GRV reply")
+	db.Close()
+	select {
+	case r := <-done:
+		if !errors.Is(r.err, context.Canceled) {
+			t.Fatalf("lone GRV after Close returned %v, want context.Canceled", r.err)
+		}
+	case <-time.After(grvProxyChangeBound):
+		t.Fatal("Close did not end a lone GRV waiting on a withheld reply")
+	}
 }
