@@ -511,10 +511,15 @@ func (oi *OnlineIndexer) buildsByIndex() bool {
 // newHeartbeat is a heartbeat under this indexer's one identity, minted from
 // env the first time it is needed.
 func (oi *OnlineIndexer) newHeartbeat(info string, allowMutual bool, env *dst.Env) *IndexingHeartbeat {
+	return newIndexingHeartbeatWithID(oi.ensureIndexerID(env), info, resolvedLeaseLengthMs(oi.leaseLengthMs), allowMutual, env)
+}
+
+// ensureIndexerID mints this indexer's one identity from env on first use.
+func (oi *OnlineIndexer) ensureIndexerID(env *dst.Env) uuid.UUID {
 	if oi.indexerID == uuid.Nil {
 		oi.indexerID = newIndexerID(env)
 	}
-	return newIndexingHeartbeatWithID(oi.indexerID, info, resolvedLeaseLengthMs(oi.leaseLengthMs), allowMutual, env)
+	return oi.indexerID
 }
 
 // IndexBuildOutcome is what a BuildIndex call did. It is a Go extension: Java's

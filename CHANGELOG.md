@@ -32,6 +32,7 @@ project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (
 - SQL planning has no task budget by default, as in Java (was 150,000 tasks, 250,000 right-deep); the
   caller's context bounds it, and `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and
   `MAX_NUM_MATCHES_PER_RULE_CALL` opt into Java's caps (54F02 when exhausted).
+- `OnlineIndexer.MergeIndexes` holds no session, as Java's `mergeIndex`: it writes no heartbeat (which blocked Java's exclusive builders), checks no index state, and proceeds under a live peer and over a DISABLED target.
 - The Cascades planner plans about 2x faster with the same plans: memo deduplication rejects
   candidates on group signatures before comparing them, reuses published correlation snapshots
   instead of recomputing them, and allocates less (a 150,000-task planning run: 41 s to 17 s,

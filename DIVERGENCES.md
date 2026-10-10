@@ -3421,48 +3421,14 @@ Go's follow-up (`refreshFollowupHeartbeats`, `online_indexer_queue.go:441`) refu
 first transaction that sees the state, with the state check's class and message, and
 commits nothing.
 
-**A standalone `MergeIndexes` holds a session.** Java creates a heartbeat only in a build
-session's stamp step (`IndexingBase.java:457`). Its standalone merge
-(`OnlineIndexer.java:409-419`, `IndexingBase.java:1085-1096`) therefore passes the
-follow-up with no heartbeat (`IndexingBase.java:969-972`): it writes none, checks no index
-state, and proceeds under a running build.
-
-Go's `MergeIndexes` (`indexing_merger.go:174-178`) runs as a session under the indexer's
-identity, with heartbeat info "explicit index merge". That is Go's own choice, not
-something WS-C requires. WS-C makes every backend write transaction consume the heartbeat
-callback, and Java's callback over a null heartbeat does nothing, which Go could have
-ported. Go instead has the merge hold an exclusive session.
-
-Consequences, each pinned by a test in `indexing_merger_test.go`, Describe "a standalone
-MergeIndexes session" (:208):
-- Over a WRITE_ONLY target, the merge writes a live heartbeat key and clears it afterwards
-  ("writes its heartbeat over a WRITE_ONLY target for the merge and clears it", :252).
-- An EXCLUSIVE builder that starts meanwhile is refused by that key, a Java one included,
-  and so is a fresh Go mutual session.
-- A mutual builder is not refused. Java's heartbeat check under `allowMutual`
-  (MUTUAL_BY_RECORDS and SCRUB_REPAIR) only writes its own key
-  (`IndexingHeartbeat.java:88-93`, `IndexingBase.java:454-457`). Go's continued mutual
-  session skips every peer (`checkAdmission`, `indexing_heartbeat.go:123`).
-- Such a builder runs beside the merge. Any merge transaction that runs while the builder's
-  heartbeat is live has an exclusive heartbeat check, so it fails the MERGE with
-  `SynchronizedSessionLockedError`. That is the pre-commit refresh in `indexing_merger.go`
-  through `online_indexer_queue.go`. The mutual builder carries on, since its own check
-  writes only its key.
-- A VALUE target's merge is one transaction. A builder admitted after it lets that merge
-  complete, and the next merge fails ("admits a mutual builder beside the merge, and a
-  merge transaction after it fails, not the builder", :295).
-- Java's `OnlineIndexer.getIndexingHeartbeats` lists the merge's key as a session.
-- A live peer's heartbeat refuses the merge itself with `SynchronizedSessionLockedError`,
-  where Java's merge ignores it ("is refused by a live peer over a WRITE_ONLY target,
-  which Java's merge would ignore", :268).
-- A DISABLED target, disabled under the merge or before it, fails the merge with the
-  follow-up's `RecordCoreStorageError`, where Java's merge proceeds ("fails over a
-  DISABLED target, where Java's merge proceeds", :327).
-- Over a READABLE target the merge runs and writes no heartbeat, because the heartbeat
-  step skips it, as Java's does ("merges a READABLE target without a heartbeat", :338).
-
-What Java's and Go's builders do on meeting the merge's key was read from their source,
-not run.
+**`MergeIndexes` after a `BuildIndex` that left a target WRITE_ONLY holds no session.**
+Go's merge, like Java's standalone one (`IndexingBase.java:969-972`, `:1085-1096`), writes
+no heartbeat and checks no index state. Java reuses its indexer after a successful build
+(`OnlineIndexer.java:302-315`), and a build that does not mark readable keeps its heartbeat
+(`IndexingBase.java:358-359`; only `:374` drops it). A Java `mergeIndex` on that same
+`OnlineIndexer` then writes that heartbeat over each WRITE_ONLY target and refuses under a
+live exclusive peer. It never clears the key. Go's build session ends with the build, so
+its merge has no heartbeat.
 
 **A target that moved between WRITE_ONLY and WRITE_ONLY_WITH_QUEUE mid-session is
 refused.** Java does not look at the queue flag in its per-transaction state check. Go's
@@ -3481,12 +3447,9 @@ have changed:
 - the reconcile under a live peer;
 - MARK_READABLE over a non-empty queue;
 - the follow-up over a disabled target;
-- the move between WRITE_ONLY and WRITE_ONLY_WITH_QUEUE (Java keeps building);
-- the standalone merge under a live peer or over a DISABLED target.
+- the move between WRITE_ONLY and WRITE_ONLY_WITH_QUEUE (Java keeps building).
 
-The standalone merge's heartbeat is the one key Go writes that Java would not. It is a
-key in Java's own heartbeat layout, under Go's indexer identity. A Java exclusive builder
-honours it as a live session; a Java mutual builder does not.
+Go writes no key that Java would not.
 
 ### An INT long-arithmetic key at the edge of its lane answers where the record's expression overflows (RFC-257 WS-J)
 

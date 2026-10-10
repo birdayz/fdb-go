@@ -195,13 +195,10 @@ var _ = Describe("Deferred maintenance transaction contract", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
-	// A standalone MergeIndexes holds a session (DIVERGENCES.md, "OnlineIndexer
-	// session start and build catcher: where Go differs"): Java's standalone
-	// merge has no heartbeat (IndexingBase.java:969-972, :1085-1096), so it
-	// writes none, checks no state and proceeds under any peer. Go's writes its
-	// heartbeat over a WRITE_ONLY target and clears it afterwards, is refused by
-	// a live peer, fails over a DISABLED target, and skips a READABLE one.
-	Describe("a standalone MergeIndexes session", func() {
+	// A standalone MergeIndexes holds no session, as Java's merge has no
+	// heartbeat (IndexingBase.java:969-972, :1085-1096): it writes none, checks
+	// no index state and proceeds under any peer, over any target state.
+	Describe("a standalone MergeIndexes", func() {
 		type mergeCase struct {
 			ctx   context.Context
 			root  subspaceAndMeta
@@ -245,89 +242,46 @@ var _ = Describe("Deferred maintenance transaction contract", func() {
 			return oi
 		}
 
-		It("writes its heartbeat over a WRITE_ONLY target for the merge and clears it", func() {
-			c := setupMerge(IndexStateWriteOnly)
-			// After every merge transaction commits, record the heartbeats a peer
-			// (a Java builder among them) would then read.
-			var seen [][]string
-			h := &afterTransactHook{Transactor: sharedDB.transactor, after: func() {
-				seen = append(seen, heartbeats(c))
-			}}
-			oi := merger(NewFDBDatabaseWithTransactor(h, sharedDB.db), c)
-			Expect(oi.MergeIndexes(c.ctx)).To(Succeed())
-			Expect(seen).NotTo(BeEmpty(), "the merge ran no transaction")
-			Expect(seen[0]).To(Equal([]string{"explicit index merge"}),
-				"the merge's transaction committed no heartbeat of its own")
-			Expect(heartbeats(c)).To(BeEmpty(), "the merge left its heartbeat behind")
-		})
-
-		It("is refused by a live peer over a WRITE_ONLY target, which Java's merge would ignore", func() {
-			c := setupMerge(IndexStateWriteOnly)
-			peer := NewIndexingHeartbeat("PEER", 60_000, false, nil)
+		// liveHeartbeat writes hb's key for c's target in its own transaction.
+		liveHeartbeat := func(c mergeCase, hb *IndexingHeartbeat) error {
 			_, err := sharedDB.Run(c.ctx, func(rc *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(c.root.md).SetSubspace(c.root.ks).Open()
 				if err != nil {
 					return nil, err
 				}
-				return nil, peer.CheckAndUpdate(rc.Transaction(), store.subspace, c.index)
+				return nil, hb.CheckAndUpdate(rc.Transaction(), store.subspace, c.index)
 			})
-			Expect(err).NotTo(HaveOccurred())
-			oi := merger(sharedDB, c)
-			err = oi.MergeIndexes(c.ctx)
-			var lockErr *SynchronizedSessionLockedError
-			Expect(errors.As(err, &lockErr)).To(BeTrue(), "error: %v", err)
-			Expect(lockErr.ExistingInfo).To(Equal("PEER"))
-			Expect(heartbeats(c)).To(Equal([]string{"PEER"}), "the refused merge touched the peer's heartbeat or left its own")
-		})
+			return err
+		}
 
-		// A mutual builder is not refused by the merge's heartbeat: its check
-		// under allowMutual writes only its own key (IndexingHeartbeat.java:
-		// 88-93). The merge's own check is exclusive, so a merge transaction that
-		// runs while the builder's heartbeat is live fails, and the builder keeps
-		// its heartbeat. A VALUE target's merge is one transaction, so the
-		// builder is admitted after that transaction and the merge completes;
-		// the next merge transaction, the next merge's here, is the one that
-		// fails.
-		It("admits a mutual builder beside the merge, and a merge transaction after it fails, not the builder", func() {
+		It("writes no heartbeat over a WRITE_ONLY target, so an exclusive builder starts beside it", func() {
 			c := setupMerge(IndexStateWriteOnly)
-			mutual := NewIndexingHeartbeat("MUTUAL", 60_000, true, nil)
-			transactions := 0
-			var mutualErr error
-			var seenAtAdmission []string
+			builder := NewIndexingHeartbeat("BUILDER", 60_000, false, nil)
+			var seen [][]string
+			var builderErr error
 			h := &afterTransactHook{Transactor: sharedDB.transactor, after: func() {
-				transactions++
-				if transactions != 1 {
-					return
+				seen = append(seen, heartbeats(c))
+				if len(seen) == 1 {
+					builderErr = liveHeartbeat(c, builder)
 				}
-				seenAtAdmission = heartbeats(c)
-				_, mutualErr = sharedDB.Run(c.ctx, func(rc *FDBRecordContext) (any, error) {
-					store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(c.root.md).SetSubspace(c.root.ks).Open()
-					if err != nil {
-						return nil, err
-					}
-					return nil, mutual.CheckAndUpdate(rc.Transaction(), store.subspace, c.index)
-				})
 			}}
 			Expect(merger(NewFDBDatabaseWithTransactor(h, sharedDB.db), c).MergeIndexes(c.ctx)).To(Succeed())
-			Expect(transactions).To(Equal(1), "a VALUE target's merge ran another number of transactions")
-			Expect(seenAtAdmission).To(Equal([]string{"explicit index merge"}), "the builder did not start beside the merge's live heartbeat")
-			Expect(mutualErr).NotTo(HaveOccurred(), "the merge's heartbeat refused the mutual builder")
-
-			err := merger(sharedDB, c).MergeIndexes(c.ctx)
-			var lockErr *SynchronizedSessionLockedError
-			Expect(errors.As(err, &lockErr)).To(BeTrue(), "a merge transaction beside the mutual builder: %v", err)
-			Expect(lockErr.ExistingInfo).To(Equal("MUTUAL"))
-			Expect(heartbeats(c)).To(Equal([]string{"MUTUAL"}), "the failed merge touched the builder's heartbeat or left its own")
+			Expect(seen).NotTo(BeEmpty(), "the merge ran no transaction")
+			Expect(seen[0]).To(BeEmpty(), "the merge's transaction committed a heartbeat")
+			Expect(builderErr).NotTo(HaveOccurred(), "the merge refused an exclusive builder")
+			Expect(heartbeats(c)).To(Equal([]string{"BUILDER"}), "the merge touched the builder's heartbeat")
 		})
 
-		It("fails over a DISABLED target, where Java's merge proceeds", func() {
+		It("proceeds under a live exclusive peer over a WRITE_ONLY target", func() {
+			c := setupMerge(IndexStateWriteOnly)
+			Expect(liveHeartbeat(c, NewIndexingHeartbeat("PEER", 60_000, false, nil))).To(Succeed())
+			Expect(merger(sharedDB, c).MergeIndexes(c.ctx)).To(Succeed())
+			Expect(heartbeats(c)).To(Equal([]string{"PEER"}), "the merge touched the peer's heartbeat or left its own")
+		})
+
+		It("proceeds over a DISABLED target", func() {
 			c := setupMerge(IndexStateDisabled)
-			oi := merger(sharedDB, c)
-			err := oi.MergeIndexes(c.ctx)
-			var storageErr *RecordCoreStorageError
-			Expect(errors.As(err, &storageErr)).To(BeTrue(), "error: %v", err)
-			Expect(storageErr.Message).To(Equal("Unexpected index state(s)"))
-			Expect(storageErr.IndexName).To(Equal(c.index.Name))
+			Expect(merger(sharedDB, c).MergeIndexes(c.ctx)).To(Succeed())
 			Expect(heartbeats(c)).To(BeEmpty())
 		})
 
