@@ -67,20 +67,25 @@ const (
 )
 
 // peelAdmitted is the peel's admission: its work W = floor(log2(n - 1)) * n *
-// d * f is at most B. The knob factor f is a fit's KMeans work relative to the
-// default knobs' (I = 8, R = 3), floored at 1 so no knobs enlarge admission: the
-// larger of its iterations, I * (R + 1) / 32, and its objective passes per
-// vector, (R + 1) * (2I + 2) / 72, since every restart's seeding and final
-// assignment cost passes at any I. W is a pure function of the task's input.
+// max(d, peelMinDimensions) * f is at most B. The knob factor f is a fit's
+// KMeans work relative to the default knobs' (I = 8, R = 3), floored at 1 so no
+// knobs enlarge admission: the larger of its iterations, I * (R + 1) / 32, and
+// its objective passes per vector, (R + 1) * (2I + 2) / 72, since every
+// restart's seeding and final assignment cost passes at any I. W is a pure
+// function of the task's input.
 func peelAdmitted(n, d, iterations, restarts int) bool {
 	if n < 2 {
 		return false
 	}
 	runs, it := float64(restarts+1), float64(iterations)
 	knob := math.Max(math.Max(it*runs/32, runs*(2*it+2)/72), 1)
-	w := math.Floor(math.Log2(float64(n-1))) * float64(n) * float64(d) * knob
+	w := math.Floor(math.Log2(float64(n-1))) * float64(n) * float64(max(d, peelMinDimensions)) * knob
 	return w <= peelWorkBound
 }
+
+// peelMinDimensions is the least d the admission prices: below it a vector's
+// fixed cost per pass, not its d, dominates the peel's.
+const peelMinDimensions = 64
 
 // unsplittable is the rule's entry. It returns the peel's selected candidate,
 // or nil after a terminal reconcile.

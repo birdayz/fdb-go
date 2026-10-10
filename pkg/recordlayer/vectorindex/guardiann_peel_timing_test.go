@@ -23,8 +23,9 @@ import (
 // (n = 2000 at d = 768, n = 1001 at d = 2048), HALF precision, default KMeans
 // knobs, Euclidean. The
 // admission ignores the metric and RaBitQ, so W = B is also timed under cosine
-// and with RaBitQ (Euclidean and cosine), and at the edge of the knobs whose
-// restarts cost the most, I = 1, R = 31.
+// and with RaBitQ (Euclidean and cosine), at I = 1, R = 31, whose restarts cost
+// the most per unit of the knob factor, and at the d the admission floors, 64,
+// with the most restarts it admits.
 //
 // Deliberate deviation from the design, which times the peel's wall clock under
 // the suite's concurrency: the budget is the process CPU the peel uses, GC
@@ -112,6 +113,8 @@ func TestGuardiannPeelPerformanceCriterion(t *testing.T) {
 		{2000, 551, VectorMetricCosine, false, 1, 31},
 		{2000, 551, VectorMetricEuclidean, true, 1, 31},
 		{2000, 551, VectorMetricCosine, true, 1, 31},
+		{2000, 64, VectorMetricEuclidean, false, 1, 274}, // the most restarts the admission allows
+		{2000, 1, VectorMetricEuclidean, false, 1, 274},  // priced as d = 64
 	}
 	var worst time.Duration
 	for run := 0; run < 2; run++ {

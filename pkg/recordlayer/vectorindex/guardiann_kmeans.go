@@ -447,7 +447,8 @@ func (l *lloyd) objective(i int, t target) (float64, error) {
 }
 
 // objectivesTo writes every vector's objective against c into out, four
-// vectors per kernel pass where their kinds allow.
+// vectors per kernel pass where their kinds allow. Every objective error is
+// notFiniteDistance, so the order passes run in never changes a fit's error.
 func (l *lloyd) objectivesTo(c []float64, out []float64) error {
 	t := l.target(c)
 	vs := l.vectors

@@ -16,9 +16,9 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// The peel's admission edges: W = floor(log2(n - 1)) * n * d * max(I(R+1)/32,
-// (R+1)(2I+2)/72, 1) against B = 1.96e7. Lowering B, dropping the check, either
-// knob term or the floor reddens a row.
+// The peel's admission edges: W = floor(log2(n - 1)) * n * max(d, 64) *
+// max(I(R+1)/32, (R+1)(2I+2)/72, 1) against B = 1.96e7. Lowering B, dropping
+// the check, either knob term, the knob floor or the dimension floor reddens a row.
 func TestGuardiannPeelAdmission(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -37,6 +37,8 @@ func TestGuardiannPeelAdmission(t *testing.T) {
 		{2000, 4096, 1, 0, false}, // smaller knobs never enlarge admission: the floor
 		{2000, 551, 1, 31, true},  // 32 single-iteration restarts: 128 passes, f = 16/9
 		{2000, 552, 1, 31, false}, // the pass term refuses what the iteration term admits
+		{2000, 1, 1, 274, true},   // d is priced at no less than 64: the most restarts at I = 1
+		{2000, 1, 1, 275, false},  // without the floor, d = 1 would admit R = 17639
 		{2000, 4096, 8, 3, false},
 		{2, 1 << 20, 8, 3, true}, // log2(1) = 0: one pair always peels
 		{1, 4, 8, 3, false},

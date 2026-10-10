@@ -942,7 +942,8 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   early stop had hidden a 2.66 s Euclidean worst case; cosine, RaBitQ (14 s)
   and the knobs were untimed, and the admission's knob factor now counts each
   restart's seeding and final passes (I = 1, R = 31 admits d = 551 at
-  n = 2000, not 980). `guardiann_peel_fixtures_test`
+  n = 2000, not 980) and prices d at no less than 64 (at most R = 274 at
+  I = 1). `guardiann_peel_fixtures_test`
   (full lane, real FDB, HALF, no RaBitQ) splits the d = 768 n = 2000 cluster
   by a deferred drain and by an inline insert and the d = 2048 n = 1001
   cluster by a drain, every transaction in one attempt (attempt observer),
