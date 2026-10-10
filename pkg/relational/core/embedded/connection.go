@@ -463,7 +463,7 @@ func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.F
 // statements the application has not issued yet.
 //
 // opts are the options of the statement the work belongs to; an auto-commit
-// transaction is configured from them (configureTransaction) on every attempt.
+// transaction is configured from them (transactionConfigurer) on every attempt.
 func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx, opts *api.Options, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
 	if tx != nil {
 		if tx.terminated.Load() {
@@ -475,10 +475,8 @@ func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx
 	return configuredRunner{c.sess.DB, opts}.Run(ctx, fn)
 }
 
-// transactionConfigurer applies the connection-scope transaction options to a
-// new FDB transaction, as Java's RecordLayerTransactionManager builds every
+// transactionConfigurer is Java's RecordLayerTransactionManager building each
 // connection transaction's FDBRecordContextConfig from the connection options.
-// Every transaction the connection opens for its statements goes through it.
 func transactionConfigurer(opts *api.Options) recordlayer.TransactionConfigurer {
 	return func(o fdb.TransactionOptions) error {
 		// Tags reach the cluster's ratekeeper only if set before the first read.
@@ -491,7 +489,7 @@ func transactionConfigurer(opts *api.Options) recordlayer.TransactionConfigurer 
 		}
 		// FDBRecordContext: -1 (DEFAULT_TR_TIMEOUT_MILLIS) inherits the database's
 		// timeout, 0 disables it, and a positive value is the transaction's own.
-		if ms, ok := opts.Get(api.OptTransactionTimeout).(int64); ok && ms != -1 {
+		if ms := optInt64(opts, api.OptTransactionTimeout, -1); ms != -1 {
 			if err := o.SetTimeout(ms); err != nil {
 				return err
 			}
@@ -500,8 +498,8 @@ func transactionConfigurer(opts *api.Options) recordlayer.TransactionConfigurer 
 	}
 }
 
-// configuredRunner is the database as a statement of the connection runs
-// auto-commit work in it: every attempt's transaction configured from opts.
+// configuredRunner runs auto-commit work for a statement, so its transactions
+// carry the connection's timeout and tags like the statement's own.
 type configuredRunner struct {
 	db   *recordlayer.FDBDatabase
 	opts *api.Options
@@ -509,6 +507,16 @@ type configuredRunner struct {
 
 func (r configuredRunner) Run(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
 	return r.db.Run(ctx, configured(r.opts, fn))
+}
+
+func (r configuredRunner) RunRead(ctx context.Context, fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	configure := transactionConfigurer(r.opts)
+	return r.db.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
+		if err := configure(rtx.Options()); err != nil {
+			return nil, err
+		}
+		return fn(rtx)
+	})
 }
 
 // configured wraps a DB.Run body so each attempt's fresh transaction is

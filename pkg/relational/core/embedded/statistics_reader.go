@@ -287,7 +287,7 @@ func evaluateCollectedStatistics(
 	// undecodable key or value -- would be reported as "not collected", which is
 	// the one thing it is not. Only NoHeader means absent.
 	stats, readRefusal, readVersion, rErr := recordlayer.ReadStatisticsAtWithRefusal(
-		ctx, c.sess.DB, statsSubspace, storeSubspace, c.statisticsTags()...)
+		ctx, configuredRunner{c.sess.DB, c.Options()}, statsSubspace, storeSubspace)
 	ok := rErr == nil && readRefusal == recordlayer.StatisticsReadOK
 	in.ReadErr, in.Found, in.Stats, in.ReadRefusal = rErr, ok, stats, readRefusal
 	if rErr == nil && ok {
@@ -610,7 +610,7 @@ func (e *noClusterVersionError) Error() string {
 // be configured. A parameter is visible at every call site.
 //
 // Why it matters at all: statement transactions are tagged by
-// configureTransaction, and statistics work does not go through it —
+// transactionConfigurer, and statistics work does not go through it —
 // collection opens its own transaction per batch. Untagged, the
 // heaviest job in the system escapes the cluster's ratekeeper.
 func (c *EmbeddedConnection) statisticsTags() []string {

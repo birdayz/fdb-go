@@ -7,7 +7,9 @@
 package sqldriver
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"sort"
 	"strings"
@@ -115,9 +117,8 @@ var acceptedDSNParams = append(append([]string{
 	TransactionTagsParam,
 }, dsnParams(boolDSNOptions)...), dsnParams(contractDSNOptions)...)
 
-// boolDSNOptions are the boolean connection options a DSN sets by the
-// lower-cased option name, parsed strictly (parseDSNBool): a misspelled value
-// must fail rather than read as Java's lenient Boolean.parseBoolean false.
+// boolDSNOptions are parsed strictly (parseDSNBool): Java's Boolean.parseBoolean
+// would read a misspelled value as false.
 var boolDSNOptions = []api.OptionName{
 	api.OptDryRun,
 	api.OptIsolationLevelSnapshot,
@@ -127,12 +128,8 @@ var boolDSNOptions = []api.OptionName{
 	api.OptDisablePlannerRewriting,
 }
 
-// contractDSNOptions are the connection options a DSN sets by the lower-cased
-// option name (`max_rows=100`), converted and range-checked by the option's
-// contract as Java's Options.fromProperties does for connection Properties.
-// The engine plan cache's sizes and TTLs build the connector's shared plan
-// cache; the execution limits and planner knobs are connection defaults that a
-// Conn.Raw SetOption overrides until the connection returns to the pool.
+// contractDSNOptions are converted and range-checked by the option contracts,
+// as Java's Options.fromProperties does for connection Properties.
 var contractDSNOptions = []api.OptionName{
 	api.OptPlanCachePrimaryMaxEntries,
 	api.OptPlanCachePrimaryTimeToLiveMillis,
@@ -211,8 +208,17 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 		if err == nil {
 			err = api.ValidateOption(name, v)
 		}
+		if err == nil && name == api.OptTransactionTimeout && v.(int64) > math.MaxInt32 {
+			// FDB's TIMEOUT option takes [0, INT_MAX]; past it every transaction fails 2006.
+			err = api.NewErrorf(api.ErrCodeInvalidParameter, "FDB transaction timeout is at most %d ms, got %s", math.MaxInt32, raw)
+		}
 		if err != nil {
-			return nil, api.WrapErrorf(err, api.ErrCodeInvalidParameter, "DSN option %q", param)
+			msg := err.Error()
+			var apiErr *api.Error
+			if errors.As(err, &apiErr) {
+				msg = apiErr.Message
+			}
+			return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "DSN option %q: %s", param, msg)
 		}
 		opts = opts.With(name, v)
 	}
@@ -254,19 +260,17 @@ func parseDSNTags(raw string) ([]string, error) {
 	return uniq, nil
 }
 
-// parseDSNBool reads a boolean DSN parameter. A bare `?name` (empty value)
-// means true, the usual URL-flag convention; anything not recognisable as a
-// boolean is an error rather than a silent false, because silently reading a
-// misspelled security flag as "off" is the failure mode that matters.
+// parseDSNBool accepts only Java's spellings, true/false in any case; any other
+// value, which Java's parseBoolean would silently read as false, is an error.
 func parseDSNBool(name, raw string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", "1", "t", "true", "yes", "on":
+	switch {
+	case strings.EqualFold(raw, "true"):
 		return true, nil
-	case "0", "f", "false", "no", "off":
+	case strings.EqualFold(raw, "false"):
 		return false, nil
 	default:
 		return false, api.NewErrorf(api.ErrCodeInvalidParameter,
-			"DSN option %q must be a boolean, got %q", name, raw)
+			"DSN option %q must be true or false, got %q", name, raw)
 	}
 }
 
@@ -274,7 +278,8 @@ func parseDSNBool(name, raw string) (bool, error) {
 //
 // Returns a relational Error with code InvalidPath if the DSN is
 // malformed or uses an unsupported scheme. Matches Java's behavior
-// (JDBCRelationalDriver.acceptsURL + connect).
+// (JDBCRelationalDriver.acceptsURL + connect). A malformed query string is
+// InvalidParameter, like every other bad parameter.
 func ParseDSN(s string) (*DSN, error) {
 	if s == "" {
 		return nil, api.NewError(api.ErrCodeInvalidPath, "empty DSN")
@@ -300,7 +305,7 @@ func ParseDSN(s string) (*DSN, error) {
 	// limit would leave the connection unbounded, so it is an error instead.
 	query, err := url.ParseQuery(u.RawQuery)
 	if err != nil {
-		return nil, api.WrapError(api.ErrCodeInvalidPath, "malformed DSN query: "+s, err)
+		return nil, api.WrapError(api.ErrCodeInvalidParameter, "malformed DSN query", err)
 	}
 
 	dsn := &DSN{Path: u.Path, Options: make(map[string]string)}

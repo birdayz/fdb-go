@@ -3,6 +3,7 @@ package sqldriver
 import (
 	"errors"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 
@@ -115,8 +116,7 @@ func TestConnectionOptions_ExecutionLimits(t *testing.T) {
 		{"execution_time_limit", api.OptExecutionTimeLimit, "200", int64(200), append([]string{"-1", "9223372036854775808"}, notInt...)},
 		{"max_statement_memory_bytes", api.OptMaxStatementMemoryBytes, "1048576", int64(1048576), append([]string{"-1", "9223372036854775808"}, notInt...)},
 		{"transaction_timeout", api.OptTransactionTimeout, "2500", int64(2500), append([]string{"-2", "9223372036854775808"}, notInt...)},
-		{"plan_right_deep", api.OptPlanRightDeep, "true", true, []string{"maybe", "2"}},
-		{"disable_planner_rewriting", api.OptDisablePlannerRewriting, "off", false, []string{"maybe", "2"}},
+		{"transaction_timeout", api.OptTransactionTimeout, "2147483647", int64(math.MaxInt32), []string{"2147483648"}},
 	} {
 		t.Run(tc.param, func(t *testing.T) {
 			t.Parallel()
@@ -166,13 +166,70 @@ func TestConnectionOptions_ExecutionLimits(t *testing.T) {
 	}
 }
 
+// Every boolean parameter takes exactly Java's spellings, in any case; anything
+// Java's parseBoolean would silently read as false is refused with 22023.
+func TestConnectionOptions_BooleansAreStrict(t *testing.T) {
+	t.Parallel()
+	accepted := map[string]bool{"true": true, "TRUE": true, "True": true, "false": false, "FALSE": false, "fAlSe": false}
+	rejected := []string{"", "1", "0", "t", "f", "yes", "no", "on", "off", "%20true", "true%20", "ture"}
+	for _, name := range boolDSNOptions {
+		param := strings.ToLower(string(name))
+		for raw, want := range accepted {
+			c, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?" + param + "=" + raw)
+			if err != nil {
+				t.Fatalf("%s=%s: %v", param, raw, err)
+			}
+			if got := c.(*Connector).connOpts.Get(name); got != want {
+				t.Fatalf("%s=%s read as %v", param, raw, got)
+			}
+		}
+		for _, raw := range rejected {
+			_, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?" + param + "=" + raw)
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter || !strings.Contains(err.Error(), param) {
+				t.Errorf("%s=%s: got %v, want 22023 naming the parameter", param, raw, err)
+			}
+		}
+		if _, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?" + param); err == nil {
+			t.Errorf("bare ?%s accepted", param)
+		}
+	}
+}
+
+// The exported parameter names are the lower-cased option names they set.
+func TestConnectionOptions_ExportedParamNames(t *testing.T) {
+	t.Parallel()
+	for param, name := range map[string]api.OptionName{
+		DryRunParam:                       api.OptDryRun,
+		IsolationLevelSnapshotParam:       api.OptIsolationLevelSnapshot,
+		PlannerStatisticsParam:            api.OptPlannerStatistics,
+		RestrictDDLToSessionDatabaseParam: api.OptRestrictDDLToSessionDatabase,
+		TransactionTagsParam:              api.OptTransactionTags,
+	} {
+		if param != strings.ToLower(string(name)) || !slices.Contains(acceptedDSNParams, param) {
+			t.Errorf("%s does not name %s", param, name)
+		}
+	}
+}
+
+// A contract failure reads as one 22023 naming the parameter, not a nested code.
+func TestConnectionOptions_ErrorCodeNotDoubled(t *testing.T) {
+	t.Parallel()
+	_, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?max_rows=x")
+	if err == nil || strings.Count(err.Error(), "22023") != 1 || !strings.Contains(err.Error(), `"max_rows"`) {
+		t.Fatalf("got %v", err)
+	}
+}
+
 // A query string url.Query would partly drop is refused, so a malformed limit
 // can never leave the connection unbounded; duplicates keep the first value.
 func TestParseDSN_MalformedLimitIsNotDropped(t *testing.T) {
 	t.Parallel()
 	for _, query := range []string{"max_rows=%xx", "max_rows=1;transaction_timeout=2", "transaction_timeout=%"} {
-		if _, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?" + query); err == nil {
-			t.Errorf("malformed query %s silently accepted", query)
+		_, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?cluster_file=/secret&" + query)
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidParameter || strings.Contains(err.Error(), "/secret") {
+			t.Errorf("malformed query %s: got %v, want 22023 without the DSN", query, err)
 		}
 	}
 	c, err := (&Driver{}).OpenConnector("fdbsql:///FRL/db?max_rows=2&max_rows=7")
