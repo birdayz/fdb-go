@@ -28,9 +28,9 @@ go_test(
         "w2_metamorphic_test.go",
         "w3_5_plan_diversity_test.go",
         "zz_d2_correlation_pins_test.go",
-        "zz_graefe_required_pins_test.go",
         "zz_in_proj_repro_test.go",
         "zz_join_selpred_repro_test.go",
+        "zz_required_pins_test.go",
         "zz_sarg_comparand_guard_test.go",
     ],
     tags = [

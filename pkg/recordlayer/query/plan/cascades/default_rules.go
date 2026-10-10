@@ -201,30 +201,11 @@ func PlanningExplorationRules() []ExpressionRule {
 // extensions are included where the read-side architecture differs.
 //
 // A BARE `UNION ALL` is implemented by ImplementUnorderedUnionRule alone, as in
-// Java. Go also had ImplementUnionRule, emitting a second concat plan for the
-// SAME logical shape at the SAME cost — the two are both operator-neutral — so
-// which one won was decided by exploration order rather than by cost, and it
-// flipped on unrelated changes. Java has no such rule (its RecordQueryUnionPlan
-// variants require compatible comparison keys and arise from ordered/
-// distinct-union planning), and the Go rule produced a keyless concat every
-// time. THAT is the reason for the deletion, and it stands on its own.
-//
-// AN EARLIER VERSION OF THIS NOTE ALSO CLAIMED RecordQueryUnionPlan "is an
-// eager concat that DECLINES a continuation", and the executor says otherwise.
-// executeUnion is a lazy, per-branch CursorFactory chain resuming off a
-// branch-tagged ConcatContinuation. (A buffered fallback that declined to
-// resume once existed for branches whose column names could not be read off
-// the plan; every plan states its row now and RFC-242 deleted it.) On the eagerness
-// axis the deletion in fact moved the OTHER way: the surviving
-// executeUnorderedUnion opens every child cursor up front. Keeping the wrong
-// reason next to a right conclusion is how a later reader talks themselves into
-// reverting the conclusion.
-//
-// It did serve one shape alone, and only because of a second Go-only
-// divergence: ImplementUnorderedUnionRule carried a two-leg floor Java's rule
-// does not have, so a ONE-leg logical union that survived
-// UnionSingletonElimRule had no implementer. The floor is gone (see that
-// rule), which is what makes the unordered rule sufficient on its own.
+// Java, whose RecordQueryUnionPlan variants require compatible comparison keys
+// and arise only from ordered/distinct-union planning. A second keyless concat
+// implementer at the same cost would make the winner depend on exploration
+// order. ImplementUnorderedUnionRule has no two-leg floor, so it also
+// implements a one-leg union that survives UnionSingletonElimRule.
 func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),

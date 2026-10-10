@@ -119,9 +119,7 @@ func (p *RecordQueryInJoinPlan) ComputeCorrelatedTo(childCorrelations func(*expr
 
 // GetInnerQuantifier returns the live child quantifier — the single memo edge the
 // InJoin ranges over. derivationsForInJoin reads its alias to decorrelate the
-// inner against the IN-source; since RFC-184 W2 the memo holds the bare plan (no
-// physicalInJoinWrapper whose innerQuant field it used to read), this exposes the
-// same edge.
+// inner against the IN-source.
 func (p *RecordQueryInJoinPlan) GetInnerQuantifier() expressions.Quantifier {
 	return p.innerQ
 }

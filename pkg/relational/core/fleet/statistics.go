@@ -41,15 +41,8 @@ type StatisticsOptions struct {
 	Collect recordlayer.CollectOptions
 }
 
-// CollectStatistics gathers per-record-type row counts for every target,
-// one transaction-bounded scan per schema.
-//
-// A target that ABORTS — because a type crossed MaxRecordsPerType — is a
-// per-target FAILURE, not a collection. It stored nothing, so reporting it as
-// collected would put it in the summary's collected tally and tell an operator a
-// fan-out that wrote nothing had succeeded. An earlier revision of this comment
-// argued the opposite, from a time when crossing the cap skipped one type and
-// kept the rest; that behaviour is gone, and the reasoning went with it.
+// CollectStatistics gathers per-record-type row counts for every target.
+// Exceeding MaxRecordsPerType fails that target without storing partial statistics.
 func CollectStatistics(
 	ctx context.Context,
 	db *recordlayer.FDBDatabase,
@@ -65,16 +58,8 @@ func CollectStatistics(
 	return fanOut(ctx, ks, targets, opts.Options, collectStatisticsStep(db, ks, stats, opts, load))
 }
 
-// collectStatisticsStep is the per-target step CollectStatistics fans out.
-//
-// Named rather than inline so a test can drive THE PRODUCTION CLOSURE through
-// fanOut. A test that builds its own closure of the same shape verifies its own
-// copy: the defect this guards — returning a non-nil error alongside a REFUSED
-// event, which makes fanOut stamp FAILED over it — lives in the caller's return
-// statement, and a hand-written stand-in simply does not contain it.
-// loadMetadata is how the step obtains a target's metadata. Injected so a test
-// can drive THE PRODUCTION STEP — including its return statements, which is
-// where the defect this guards actually lives — without a cluster or a catalog.
+// loadMetadata lets tests exercise the production step's outcome handling
+// without requiring a cluster or catalog.
 type loadMetadata func(context.Context, Target) (*recordlayer.RecordMetaData, error)
 
 func collectStatisticsStep(

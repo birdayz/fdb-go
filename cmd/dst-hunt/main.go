@@ -300,11 +300,6 @@ func (r *recorder) writeJSON(f *os.File, v any) {
 	f.Write(append(b, '\n'))
 }
 
-// protect runs fn and converts a panic into a returned message (with stack trace). This is the
-// one deliberate panic→error boundary in dst-hunt (RFC-134 allowlisted): a seed that panics a
-// record-layer maintainer is the most severe bug the hunt can find, so a worker catches it,
-// records it as a finding, and keeps sweeping — one poisoned seed must not abort an overnight
-// unattended run. The panic is surfaced (as an Err on the recorded finding), never swallowed.
 // filterProfiles keeps profiles whose name contains any of the given substrings.
 func filterProfiles(all []hunt.Profile, subs []string) []hunt.Profile {
 	var out []hunt.Profile
@@ -319,6 +314,11 @@ func filterProfiles(all []hunt.Profile, subs []string) []hunt.Profile {
 	return out
 }
 
+// protect runs fn and converts a panic into a returned message (with stack trace). This is the
+// one deliberate panic→error boundary in dst-hunt (RFC-134 allowlisted): a seed that panics a
+// record-layer maintainer is the most severe bug the hunt can find, so a worker catches it,
+// records it as a finding, and keeps sweeping — one poisoned seed must not abort an overnight
+// unattended run. The panic is surfaced (as an Err on the recorded finding), never swallowed.
 func protect(fn func()) (msg string) {
 	defer func() {
 		if r := recover(); r != nil {

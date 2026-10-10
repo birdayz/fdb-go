@@ -44,11 +44,6 @@ func Serialize(vec []float64) []byte {
 	return buf
 }
 
-// Deserialize decodes a stored vector's bytes into float64 components. The
-// precision is self-describing (byte 0), so no external type info is needed.
-// RaBitQ-quantized vectors are not decodable here (they require the quantizer)
-// and return an error.
-//
 // Payload exposes a stored vector's raw IEEE-754 payload for zero-allocation,
 // component-at-a-time reads (e.g. computing a distance without materializing a
 // []float64). It returns the type ordinal, the payload slice (sans the leading
@@ -106,6 +101,10 @@ const (
 // component (see Payload).
 func HalfToFloat32(h uint16) float32 { return halfToFloat32(h) }
 
+// Deserialize decodes a stored vector's bytes into float64 components. The
+// precision is self-describing (byte 0), so no external type info is needed.
+// RaBitQ-quantized vectors are not decodable here (they require the quantizer)
+// and return an error.
 func Deserialize(data []byte) ([]float64, error) {
 	if len(data) < 1 {
 		return nil, fmt.Errorf("vectorcodec: empty vector data")

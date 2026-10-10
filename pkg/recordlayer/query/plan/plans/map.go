@@ -69,8 +69,7 @@ func (p *RecordQueryMapPlan) GetInner() RecordQueryPlan { return planFromQuantif
 // GetInnerQuantifier returns the live child quantifier — the single memo edge
 // the map ranges over. The PushMapThroughFetch rule matches a physical map in
 // the memo and needs its inner GROUP (GetRangesOver) and alias to re-plan around
-// it; since RFC-184 W2 the memo holds the bare plan (no physicalMapWrapper whose
-// innerQuant field it used to read), this exposes the same edge.
+// it; the memo holds the bare plan (RFC-184 W2), so this is its path to that edge.
 func (p *RecordQueryMapPlan) GetInnerQuantifier() expressions.Quantifier {
 	return p.innerQ
 }

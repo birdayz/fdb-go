@@ -187,21 +187,13 @@ func rebasePushFilterGroupByInputs(
 // falling back to a silent name match. Deciding it needs a structural identity
 // (ordinal plus DOMAIN) on both sides.
 //
-// THE STATED BLOCKER HAS EXPIRED, and the decline has NOT yet been converted.
-// This comment used to end "the reference's recorded ordinal is not usable as
-// that identity while its domain is still unknown". That is no longer true: a
-// post-aggregate reference now carries the aggregate's native output layout on
-// its FieldPath, derived from the same enumeration that names each slot, and
-// `TestPinnedAggregateReferenceStatesTheLayoutItsOrdinalIndexes` pins it in both
-// directions (unknown token, and known-but-wrong token). So the structural
-// identity this decline says it needs EXISTS.
-//
-// The decline stays for now because converting it is a change to a Cascades rule
-// and takes its own RFC and review gate — not because the identity is missing.
-// Until then this is a MISSED OPTIMIZATION and not a correctness risk: refusing
-// the rebind leaves the predicate a residual filter above the aggregate, which
-// is correct rows by the slower path. The conversion is booked; do not "fix"
-// this by taking the first match, which is the wrong-rows read described above.
+// That structural identity EXISTS: a post-aggregate reference carries the
+// aggregate's native output layout on its FieldPath, derived from the same
+// enumeration that names each slot
+// (TestPinnedAggregateReferenceStatesTheLayoutItsOrdinalIndexes), but this
+// rebind does not use it. Declining leaves a residual filter above the aggregate:
+// a missed optimization, not a correctness risk. Taking the first match instead
+// can produce the wrong rows as described above.
 func rebindGroupKeyRefToInner(keys []values.Value) func(values.Value) values.Value {
 	return func(v values.Value) values.Value {
 		if _, ok := values.AsFieldValue(v); !ok {

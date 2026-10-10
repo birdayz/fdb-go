@@ -784,20 +784,12 @@ func (c AggregateCall) Ref() ColumnRef {
 // an enum, never folded from the SQL; the OPERAND half is whatever the producer
 // minted and is not touched here.
 //
-// CONSUMERS NO LONGER ALL FOLD, and this sentence used to say they did
-// ("case-insensitively, upper-cased or via normalizeAggOutputName"). Say
-// exactly which changed, because the first attempt at this correction
-// over-claimed in the other direction:
-//
-//   - normalizeAggOutputName and normalizeAggregateBindingName stopped
-//     upper-casing under RFC-237. They now strip whitespace only.
-//   - Some consumers still apply their OWN strings.ToUpper to this result —
-//     logical_predicate.go's aggTypes map is one, and it folds symmetrically on
-//     write and read, which is a consistent key rather than a naming decision.
-//
-// So the upper-case Func is safe because it is a LITERAL, not because a fold on
-// the far side would have rescued it. That distinction is load-bearing the
-// moment a consumer compares exactly, and several now do.
+// Not every consumer folds case: normalizeAggOutputName and
+// normalizeAggregateBindingName strip whitespace only (RFC-237), and several
+// consumers compare exactly. The upper-case Func is safe because it is a
+// literal, not because a fold on the far side rescues it. (Consumers that
+// apply their own strings.ToUpper, like the aggTypes map, fold symmetrically
+// on write and read, so that is a consistent key, not a naming decision.)
 func (c AggregateCall) CanonicalName() string {
 	if c.Star {
 		return c.Func + "(*)"

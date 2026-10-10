@@ -1125,8 +1125,6 @@ func (d *Database) GetDBInfo() *DBInfo {
 	return d.db.dbInfo.Load()
 }
 
-// Close shuts down the database connection. Idempotent.
-// Cancels background goroutines, waits for them to exit, closes all connections.
 // registerBackgroundGoroutine reserves a db.wg slot for a lazily-started background goroutine (the
 // GRV-cache refresher), returning true iff it was reserved. It returns FALSE once Close() has begun, so
 // a slot is never Add()ed after Close's db.wg.Wait() is (or is about to be) waiting — which, once the
@@ -1146,6 +1144,8 @@ func (db *database) registerBackgroundGoroutine() bool {
 	return true
 }
 
+// Close shuts down the database connection. Idempotent.
+// Cancels background goroutines, waits for them to exit, closes all connections.
 func (d *Database) Close() error {
 	d.db.closeOnce.Do(func() {
 		// Set closed BEFORE cancel()/Wait() so a concurrent GRV-cache opt-in can't start the background

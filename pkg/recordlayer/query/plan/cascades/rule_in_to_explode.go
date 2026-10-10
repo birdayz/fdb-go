@@ -317,22 +317,13 @@ func (r *InComparisonToExplodeRule) onFilter(call *ExpressionRuleCall, f *expres
 	// the predicate list; the expression it yields is an alternative in the
 	// SAME memo group as `f`, and a LogicalFilterExpression's result value is a
 	// QOV over its inner quantifier's alias. Minting a fresh quantifier here
-	// therefore published an alternative whose RESULT CORRELATION differed from
-	// the group's other members, so a correlation held from OUTSIDE the group
-	// resolved against an alias this alternative does not carry, and the
-	// executor failed with `exact QOV "q$N" ... has no declared runtime
-	// binding`. Planning succeeded; only execution failed, which is why a
-	// plan-only probe of every affected shape comes back clean.
-	//
-	// The shapes that reached it, enumerated rather than characterised, since
-	// the characterisation is what was wrong before: over the 24-arm cross of
-	// LEFT/RIGHT/INNER x predicate on the left/right relation x indexed/
-	// unindexed column x duplicate/distinct IN list, exactly three failed —
-	// LEFT with an indexed column, RIGHT with an indexed column, and RIGHT with
-	// an UNINDEXED one, all reading the join clause's RIGHT-HAND relation with
-	// a duplicate IN list. NOT the null-padded side: under RIGHT JOIN that
-	// relation is the PRESERVED one. NOT always indexed either. See
-	// TestFDB_QOVBindingMinimalShape.
+	// would publish an alternative whose RESULT CORRELATION differs from the
+	// group's other members, so a correlation held from OUTSIDE the group
+	// resolves against an alias this alternative does not carry, and the
+	// executor fails with `exact QOV "q$N" ... has no declared runtime
+	// binding`. Planning succeeds; only execution fails, so a plan-only probe
+	// does not catch it. TestFDB_QOVBindingMinimalShape pins the affected
+	// shapes (a duplicate IN list on the join clause's right-hand relation).
 	//
 	// The multi-element path below is free to mint quantifiers precisely
 	// because it does NOT yield them bare: it wraps them in a SelectExpression
@@ -342,7 +333,7 @@ func (r *InComparisonToExplodeRule) onFilter(call *ExpressionRuleCall, f *expres
 	// f.GetInner().
 	//
 	// The predicates already reference f.GetInner()'s alias, so no rebase is
-	// needed either; the rebase existed only to follow the mint.
+	// needed either.
 	if eqPred, single := in.singleEquality(); single {
 		newPreds := make([]predicates.QueryPredicate, 0, len(otherPreds)+1)
 		newPreds = append(newPreds, eqPred)

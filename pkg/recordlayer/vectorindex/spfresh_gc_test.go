@@ -190,7 +190,7 @@ var _ = Describe("SPFresh GC + lease recovery", func() {
 	})
 })
 
-var _ = Describe("SPFresh GC horizon + tombstone discovery (Torvalds 094.3)", func() {
+var _ = Describe("SPFresh GC horizon + tombstone discovery (094.3)", func() {
 	ctx := context.Background()
 
 	testConfig := func() SPFreshConfig {
@@ -254,7 +254,7 @@ var _ = Describe("SPFresh GC horizon + tombstone discovery (Torvalds 094.3)", fu
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("a merge finds in-cell targets even when the global neighborhood lives elsewhere (codex 094.3 r2)", func() {
+	It("a merge finds in-cell targets even when the global neighborhood lives elsewhere (094.3)", func() {
 		config := testConfig()
 		storage := newSPFreshStorage(specSubspace().Sub("spfresh-gc").Sub("mergecell"), 1)
 		member := tuple.Tuple{int64(7)}

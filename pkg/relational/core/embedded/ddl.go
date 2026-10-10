@@ -918,13 +918,6 @@ func parseAsSelectIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, 
 	return nil
 }
 
-// windowedAggregateInTree reports whether the parse tree contains an aggregate
-// function with an OVER clause (a windowed aggregate, e.g. `SUM(v) OVER (PARTITION
-// BY g)`). General window functions are unsupported (Java has no general window
-// operator either — only the vector ROW_NUMBER QUALIFY case works). Without this
-// check the aggregate planner silently DROPS the OVER clause and computes a bare
-// aggregate, returning WRONG results (a single SUM instead of per-partition
-// window values), so the query is rejected up front.
 // rejectWindowedAggregate is the front-end pre-pass every surface that lowers a
 // parse tree into a logical plan must run. It exists as one function rather
 // than as an `if` repeated per call site because the OVER clause is destroyed
@@ -986,6 +979,13 @@ func rejectArrayAggOrderBy(node antlr.Tree) error {
 	return nil
 }
 
+// windowedAggregateInTree reports whether the parse tree contains an aggregate
+// function with an OVER clause (a windowed aggregate, e.g. `SUM(v) OVER (PARTITION
+// BY g)`). General window functions are unsupported (Java has no general window
+// operator either — only the vector ROW_NUMBER QUALIFY case works). Without this
+// check the aggregate planner silently DROPS the OVER clause and computes a bare
+// aggregate, returning WRONG results (a single SUM instead of per-partition
+// window values), so the query is rejected up front.
 func windowedAggregateInTree(node antlr.Tree) bool {
 	if node == nil {
 		return false

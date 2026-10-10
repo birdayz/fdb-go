@@ -235,7 +235,7 @@ var _ = Describe("SPFresh build + query e2e", func() {
 		Expect(builder.waveB(ctx, 999, router)).To(MatchError(ContainSubstring("wave B before wave A")))
 	})
 
-	It("flip retried after its own commit is an idempotent success, not a concurrent-build error (codex r4)", func() {
+	It("flip retried after its own commit is an idempotent success, not a concurrent-build error", func() {
 		config := testConfig(8)
 		storage := newSPFreshStorage(specSubspace().Sub("spfresh-e2e").Sub("flip-retry"), 1)
 		builder := newSPFreshBuilder(sharedDB, storage, config, "builder-1")

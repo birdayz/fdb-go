@@ -127,16 +127,11 @@ func (e *FullUnorderedScanExpression) GetCorrelatedToWithoutChildren() map[value
 // to be rediscovered from the far end.
 // TestFullUnorderedScan_MatchesAcrossRecordNames pins it.
 //
-// There is NO UnknownType wildcard, and an earlier version of this comment
-// described one at length: that the flowed type is "non-discriminating when
-// either side is UnknownType", that candidate scans "keep UnknownType", and
-// that wildcarding it is what scan-leaf subsumption needs. All three are false.
-// values.ExactTypesEqual is a strict canonical-bytes comparison with no
-// wildcard arm; candidate scans carry the candidate's exact base type; and an
-// UnknownType scan cannot be constructed at all, because
+// There is NO UnknownType wildcard. values.ExactTypesEqual is a strict
+// canonical-bytes comparison; candidate scans carry the candidate's exact base
+// type; and an UnknownType scan cannot be constructed, because
 // NewFullUnorderedScanExpression snapshots through snapshotExpressionResultType,
-// which refuses a placeholder. Structural typing on both sides replaced the
-// wildcard; the prose describing it stayed.
+// which refuses a placeholder.
 func (e *FullUnorderedScanExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
 	o, ok := other.(*FullUnorderedScanExpression)
 	if !ok {
@@ -159,19 +154,12 @@ func (e *FullUnorderedScanExpression) EqualsWithoutChildren(other RelationalExpr
 // HashCodeWithoutChildren mixes a class-discriminating constant with the
 // canonical record-type list, and deliberately does NOT mix flowedType. This
 // DIVERGES FROM JAVA, which hashes Objects.hash(recordTypes, flowedType)
-// (FullUnorderedScanExpression.java:150). Do not "align" it; that was tried.
+// (FullUnorderedScanExpression.java:150). Do not "align" it.
 //
-// An earlier version of this comment claimed the omission was "matching Java's
-// names-only scan hash". Java's scan hash is not names-only, so that was a false
-// Java citation introduced by the very commit that removed a different one —
-// worth recording, because an unchecked claim about the reference implementation
-// reads exactly like a checked one.
-//
-// Folding flowedType in, to close that divergence, REGRESSES THE PLANNER.
-// Measured at 0bf01a4fe: it reddens TestPlanShapeGolden by 13731 lines and breaks three memo
-// tests (TestDesignatedFinal_GenerationInvalidation,
+// Folding flowedType in REGRESSES THE PLANNER: TestPlanShapeGolden and the
+// memo tests (TestDesignatedFinal_GenerationInvalidation,
 // TestDesignatedFinal_NoCacheInUnfinalizedWindow,
-// TestOptimizeGroup_RewritingCoherence), all of them selecting a
+// TestOptimizeGroup_RewritingCoherence) go red, selecting a
 // LogicalSortExpression where a plain scan should win. Scan identity is the base
 // of every query tree, so changing which scans share a memo bucket changes group
 // membership and therefore winner selection.
@@ -183,17 +171,10 @@ func (e *FullUnorderedScanExpression) EqualsWithoutChildren(other RelationalExpr
 // compares the flowed type, so nothing is conflated — the two just bucket
 // together.
 //
-// An earlier version of this comment justified the exclusion differently — that
-// EqualsWithoutChildren treats an UnknownType flowedType as a wildcard, so a
-// typed query scan and an UnknownType candidate scan had to share a bucket or
-// the wildcard match would never fire. Both halves of that are false.
-// ExactTypesEqual is a strict canonical-bytes comparison with no wildcard arm,
-// and an UnknownType scan cannot be built at all: NewFullUnorderedScanExpression
-// snapshots through snapshotExpressionResultType, which refuses a placeholder
-// type ("placeholder type is not exact"), and that constructor is the only
-// writer of the field. TestFullUnorderedScan_RefusesAPlaceholderFlowedType pins
-// the refusal, so if it is ever relaxed this reasoning gets revisited rather
-// than silently inherited.
+// The exclusion does not rely on an UnknownType wildcard: there is none (see
+// EqualsWithoutChildren), and NewFullUnorderedScanExpression, the only writer
+// of the field, refuses a placeholder type
+// (TestFullUnorderedScan_RefusesAPlaceholderFlowedType).
 func (e *FullUnorderedScanExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("scan|"))

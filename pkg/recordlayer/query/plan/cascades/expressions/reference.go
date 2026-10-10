@@ -772,6 +772,26 @@ func (r *Reference) HasWinnersOrMatches() bool {
 	return r.winner != nil || len(r.partialMatchMap) > 0
 }
 
+// MarkForcedExploration records that e's next exploration runs every rule.
+func (r *Reference) MarkForcedExploration(e RelationalExpression) {
+	r = r.Canonical()
+	if r.forced == nil {
+		r.forced = make(map[RelationalExpression]struct{})
+	}
+	r.forced[e] = struct{}{}
+}
+
+// TakeForcedExploration reports whether e's exploration is forced, and
+// clears the mark: one forced exploration per arrival.
+func (r *Reference) TakeForcedExploration(e RelationalExpression) bool {
+	r = r.Canonical()
+	if _, ok := r.forced[e]; !ok {
+		return false
+	}
+	delete(r.forced, e)
+	return true
+}
+
 // Insert adds e to the equivalence class if no existing member already
 // matches. Returns true if the member was inserted, false if a duplicate
 // was found.
@@ -812,26 +832,6 @@ func (r *Reference) HasWinnersOrMatches() bool {
 // scan node info. Cross-Reference merging (RFC-037) generalises this
 // further: when an equivalent member already lives in a *different*
 // Reference, Memo.merge collapses the two groups.
-// MarkForcedExploration records that e's next exploration runs every rule.
-func (r *Reference) MarkForcedExploration(e RelationalExpression) {
-	r = r.Canonical()
-	if r.forced == nil {
-		r.forced = make(map[RelationalExpression]struct{})
-	}
-	r.forced[e] = struct{}{}
-}
-
-// TakeForcedExploration reports whether e's exploration is forced, and
-// clears the mark: one forced exploration per arrival.
-func (r *Reference) TakeForcedExploration(e RelationalExpression) bool {
-	r = r.Canonical()
-	if _, ok := r.forced[e]; !ok {
-		return false
-	}
-	delete(r.forced, e)
-	return true
-}
-
 func (r *Reference) Insert(e RelationalExpression) bool {
 	r = r.Canonical()
 	if e == nil {

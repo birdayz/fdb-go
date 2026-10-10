@@ -23,8 +23,7 @@ import (
 // SelectExpression carrying the SAME quantifier values, passed through
 // verbatim (OnMatch's sel.GetQuantifiers()).
 //
-// That verbatim pass-through is load-bearing, not incidental, and this comment
-// used to say the opposite — "quantifiers are rebuilt with new aliases". It is
+// That verbatim pass-through is load-bearing, not incidental. It is
 // what makes Reference.Insert's pointer-identity fast path hit on a re-fire,
 // which is half of why this rule needs no memory of what it has already seen.
 //
@@ -46,30 +45,28 @@ import (
 //
 // Mirrors Java's BooleanPredicateNormalizer in CNF mode with a
 // default size limit of 1,000,000.
-// TERMINATION is algebraic, not bookkept. The rule used to carry an
-// identity-keyed set of SelectExpressions it had already fired on; Java has no
-// counterpart, because its termination falls out of isInNormalForm accepting
-// the rule's OWN output, so a re-fire returns Optional.empty(). RFC-240's
-// strict normal-form test gives Go the same property —
+// TERMINATION is algebraic, not bookkept: the rule keeps no set of
+// SelectExpressions it has fired on. As in Java, isInNormalForm accepts the
+// rule's OWN output, so a re-fire declines (Java returns Optional.empty()).
+// RFC-240's strict normal-form test gives Go that property —
 // TestNormalizeCNF_IsStableOnItsOwnOutput is that assertion, and it is Java's
 // (BooleanPredicateNormalizerTest.java:262-267, "Normalized form should be
 // stable").
 //
-// Declining is only half of why the set was unnecessary; the other half is that
+// Declining is only half of why no such set is needed; the other half is that
 // a re-fire must COST nothing rather than accumulate a duplicate member. Two
 // mechanisms, in order:
 //
-//   - Reference.Insert dedups on EqualsWithoutChildren plus sameChildReferences
-//     (expressions/reference.go:654), with a SemanticEquals fallback below it
+//   - Reference.Insert dedups on EqualsWithoutChildren plus sameChildReferences,
+//     with a SemanticEquals fallback below it
 //     for the fresh-Reference case. The pointer-identity tier is the one that
 //     hits here, and only because OnMatch passes sel.GetQuantifiers() verbatim.
-//   - A deduped yield then schedules NOTHING: unified_tasks.go:492's
+//   - A deduped yield then schedules NOTHING: TransformExprTask.runRule's
 //     `if !inserted[i] { continue }` skips the follow-on exploration task. That
 //     is where the cost actually goes to zero; the dedup alone would still
 //     re-walk.
 //
-// Together they are the Go analogue of Java's memo dedup, which is what the set
-// was standing in for.
+// Together they are the Go analogue of Java's memo dedup.
 type NormalizePredicatesRule struct {
 	matcher matching.BindingMatcher
 }

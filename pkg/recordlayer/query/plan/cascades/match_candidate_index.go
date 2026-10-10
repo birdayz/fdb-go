@@ -1231,8 +1231,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// primaryKeyComponentPositions, so its entries repeat the column. The suffix
 	// is right either way, because a column already fixed by an earlier position
 	// contributes nothing to sort order — ordering by (indexKey…, a, b) equals
-	// ordering by (indexKey…, b). An earlier revision justified this by
-	// asserting the entry was trimmed, which held only for the single-type case.
+	// ordering by (indexKey…, b).
 	//
 	// A genuinely MULTI-TYPE index does not reach this reasoning at all:
 	// orderingKeyLayout fails closed when rowLayouts returns more than one, so

@@ -31,9 +31,7 @@ import (
 // Matches Java's RecordMetaData.toProto().
 //
 // EVERY field of the MetaData message is accounted for here, in one of two
-// ways, and the distinction is the point of this comment — the previous version
-// said only "Matches Java's RecordMetaData.toProto()", which read as a
-// completeness claim it did not have. Six fields were being dropped silently.
+// ways:
 //
 // MODELLED — parsed into Go structures and re-serialized from them:
 //
@@ -65,11 +63,9 @@ import (
 // bytes attached to the message they were parsed into, and ToProto builds a
 // FRESH MetaData, so nothing carries them over unless this does.
 //
-// Unknown-field preservation is also the mechanism fields 12-15 were mistakenly
-// assumed to be covered by, where it never applied for the opposite reason —
-// they are declared fields of a message this code parses, so they were never
-// unknown in the first place. Both halves of the message therefore need explicit
-// carrying, and neither gets it for free.
+// Fields 12-16 are not covered by unknown-field preservation either, for the
+// opposite reason: they are declared fields of a message this code parses, so
+// they are never unknown. Both halves of the message need explicit carrying.
 func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 	md := &gen.MetaData{}
 
@@ -247,12 +243,9 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 	//
 	// rebuildFileDescriptor opens with absolutizeFieldTypeNames over the records
 	// proto and every dependency, rewriting f.TypeName and ext.TypeName IN PLACE.
-	// The comment above claimed the rebuild already operated on a second clone; it
-	// did not -- it was handed md.Records and md.Dependencies directly, so this
-	// function mutated its CALLER's proto. That reached the wire:
-	// SaveRecordMetaData calls this and then marshals the same proto it passed in,
-	// so a descriptor carrying relative type names -- which the DDL builder emits
-	// -- was persisted absolutized.
+	// SaveRecordMetaData marshals the same proto it passes here, so mutating the
+	// caller's descriptor would persist absolutized names instead of the relative
+	// names the DDL builder emits.
 	rebuildRecords := md.Records
 	if md.Records != nil {
 		rebuildRecords = proto.Clone(md.Records).(*descriptorpb.FileDescriptorProto)
@@ -951,153 +944,56 @@ func AbsolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 // for builders that retain a Java-shaped (relative-name) proto but need a
 // protodesc-buildable clone.
 //
-// IT RESOLVES BY LEXICAL SCOPE, and it has to. Protobuf resolves a relative name
-// by walking OUTWARD from the declaring scope and taking the first match, so a
-// field or extension declared inside `Host` that names `Inner` means
-// `Host.Inner` whenever `Host` declares one -- even if a top-level `Inner` also
-// exists. Rewriting every relative name to `.pkg.` + name ignores that and
-// silently REBINDS: measured, `probe.Host.Inner` became `probe.Inner`, a
-// different message with different fields, with no error from protodesc because
-// the result is a valid name for a real type. Pinned by
-// TestAbsolutizeFieldTypeNamesPreservesLexicalScope.
+// IT RESOLVES BY LEXICAL SCOPE. Protobuf resolves a relative name by walking
+// OUTWARD from the declaring scope and taking the first match, so `Inner` named
+// inside `Host` means `Host.Inner` whenever `Host` declares one, even if a
+// top-level `Inner` also exists. Prefixing every name with `.pkg.` would
+// silently rebind it to a different, valid type with no error from protodesc.
+// Pinned by TestAbsolutizeFieldTypeNamesPreservesLexicalScope.
 //
-// A NAME NO SCOPE DECLARES FALLS BACK TO A ROOT LOOKUP -- `"." + name`, which is
+// Like protoc and Java, it resolves the FIRST COMPONENT outward and then
+// requires the rest beneath it. protodesc instead retries the WHOLE reference at
+// each enclosing scope, so leaving relative names to protodesc diverges from
+// Java on compound names. Pinned by
+// TestAbsolutizeFieldTypeNamesResolvesTheFirstComponentOutward.
+//
+// A NAME NO SCOPE DECLARES FALLS BACK TO A ROOT LOOKUP, `"." + name`, which is
 // what Java does at the same point (Descriptors.java's lookupSymbol, the
-// fall-through after the scope loop). An earlier version left such names
-// RELATIVE and the cross-engine suite failed twelve SQL scenarios; a fallback is
-// what repaired them, and it is pinned by
+// fall-through after the scope loop). Pinned by
 // TestAbsolutizeFieldTypeNamesFallsBackForNamesTheFileDoesNotDeclare.
 //
-// DO NOT DELETE THIS PASS. A review argued it should go: once
-// descriptorResolver returns the NotFound sentinel protodesc's walk works, so
-// the rewrite looks like pure risk. The argument is careful and the conclusion
-// is wrong.
-//
-// MEASURED by disabling this function outright and running the cross-engine
-// suite. A real stored schema template stops loading:
-//
-//	RFC-204 schema-template byte-goldens ... struct_uuid_vector
-//	  42F59: build file descriptor: protodesc.NewFile: proto: message field
-//	  "T.SV" cannot resolve type: unknown kind
-//
-// The sentinel fix does not cover this. The two changes repair different things
-// and both are required.
-//
-// THE MECHANISM IS A FIELD-NAME / TYPE-NAME COLLISION. `struct_uuid_vector` is
+// DO NOT DELETE THIS PASS: protodesc cannot build a field that shadows its own
+// type. RFC-204's `struct_uuid_vector` schema template is
 // `CREATE TYPE AS STRUCT SV (...) CREATE TABLE T (id BIGINT, sv SV, ...)`, so
-// message `T` carries a field named `SV` whose type is ALSO `SV`. protodesc
+// message `T` carries a field named `SV` whose type is also `SV`. protodesc
 // registers fields into the same by-name map it resolves type references
-// against (desc_init.go's makeBase), so relative `SV` from inside `T` finds
-// `T.SV` -- the FIELD -- and dies at desc_resolve.go's `case 0` with "unknown
-// kind". That error has one emitter and it is not a not-found: it fires when
-// resolution SUCCEEDS and returns something that is neither message nor enum.
+// against (desc_init.go's makeBase), so relative `SV` from inside `T` finds the
+// FIELD and fails with "unknown kind". protoc's type_name lookup skips non-type
+// symbols, and `declared` holds no fields, so this pass agrees with protoc.
+// Without it that template stops loading. Pinned by
+// TestAbsolutizationIsRequiredWhenAFieldShadowsItsOwnType.
 //
-// protoc accepts the same source, because its type_name lookup skips non-type
-// symbols and protodesc's does not. `declared` holding only messages and enums
-// is exactly why this pass agrees with protoc here. Pinned by
-// TestAbsolutizationIsRequiredWhenAFieldShadowsItsOwnType, whose control renames
-// the field and shows the unrewritten descriptor then builds fine -- relative
-// name, empty package and unset kind are each insufficient on their own, which
-// is why a first attempt at reproducing this failed and wrongly concluded the
-// mechanism was unknowable.
+// THE DEPENDENCY SEEDING CARRIES THE AGREEMENT, NOT THE FALLBACK. With a
+// complete dependency set the walk always finds the first component, so the
+// fallback is unreachable on any protoc-accepted descriptor and the root rule
+// rests on Java's authority alone. The set is INCOMPLETE where
+// `defaultExcludedDependencies` strips imports from stored metadata, which the
+// global-registry seeding below repairs (pinned by
+// TestAbsolutizeFieldTypeNamesSeesGloballyRegisteredImports).
 //
-// WHY ABSOLUTIZE AT ALL, stated correctly because the first answer here was
-// wrong: NOT because protodesc fails to walk outward. It does walk, and an
-// earlier version of this comment blamed it for a failure caused by this
-// package's own descriptorResolver returning a descriptive error instead of the
-// protoregistry.NotFound sentinel -- which protodesc compares with `!=`, so
-// anything else aborted its walk at the first candidate. That is fixed at
-// FindDescriptorByName. The real reason is a genuine divergence: protodesc
-// retries the WHOLE reference at each enclosing scope, while protoc and Java
-// resolve the FIRST COMPONENT outward and then require the rest beneath it.
-// Leaving names for protodesc would silently diverge from Java on compound
-// names -- see TestAbsolutizeFieldTypeNamesResolvesTheFirstComponentOutward.
-//
-// WHAT CARRIES THE AGREEMENT IS THE SEEDING, NOT THE FALLBACK. Two independently
-// built protoc differentials score this exact, and both also score the reason:
-//
-//	seeded walk + root fallback        0 divergences, 0 build failures
-//	seeding removed, fallback kept     every divergence in the corpus
-//	seeding kept, fallback prepends
-//	  the file's own package           0 divergences
-//
-// The third row is the one that is easy to misread, so it is written down: with a
-// COMPLETE dependency set the fallback is unreachable on any protoc-accepted
-// descriptor, because the walk always finds the first component. So the corpora
-// say nothing about root-vs-package, and cannot -- that choice is observable only
-// where the dependency set is INCOMPLETE, which is the case
-// `defaultExcludedDependencies` creates and which the global-registry seeding
-// below exists to repair. Rooting the fallback is still what Java does
-// (lookupSymbol falls through to a ROOT lookup, never to the file's own package),
-// and the package-prefix version was fatal rather than merely divergent for a
-// cross-package extendee, so it is right -- but it is right on Java's authority,
-// not on the corpora's.
-//
-// POPULATION, because a bare "0 divergences" would go stale invisibly: both
-// corpora are synthetic descriptors with COMPLETE dependency sets, generated by
-// crossing package pairs (same, ancestor, sibling, root) with a shadow on/off and
-// every write position, and scored against protoc 35.1 via `--descriptor_set_out`.
-// Neither contains an excluded-dependency shape, so neither covers the
-// global-registry path; that is pinned by
-// TestAbsolutizeFieldTypeNamesSeesGloballyRegisteredImports instead.
-//
-// WHICH PRODUCERS REACH ANY OF THIS -- an earlier revision of this comment said
-// "no producer emits a file with a package" and was wrong, having looked at one
-// producer of two:
-//
-//   - Metadata this port writes. Go's SQL layer emits a `records` file with no
-//     package but with TWO declared imports. Measured over all 14 committed
-//     schema-template goldens: `records.package` is empty in 14/14,
-//     `records.dependency` is 2 in 14/14 (`tuple_fields.proto`,
-//     `record_metadata_options.proto`), and `MetaData.dependencies` -- the
-//     EMBEDDED descriptor set, a different field -- is 0 in 14/14, because
-//     `defaultExcludedDependencies` strips exactly those two.
-//
-//     Those two numbers are the ones to keep apart: a file that DECLARES two
-//     imports whose descriptors are absent from the stored set is an INCOMPLETE
-//     dependency set, which is the shape the global-registry seeding below
-//     exists for, so the loop does EXECUTE for this producer.
-//
-//     It is not OBSERVABLE for it, though, and the difference matters. Every
-//     relative type_name across all 14 goldens is a bare name of a message
-//     declared in that same file, plus one compound `com.apple.foundationdb
-//     .record.UUID` in `struct_uuid_vector` -- and with no package on the file,
-//     a walk that stops at root and the root fallback both answer `"." + name`,
-//     so they are output-identical and the seeding changes nothing. Disabling it
-//     leaves every golden byte-identical; what reddens is
-//     TestAbsolutizeFieldTypeNamesSeesGloballyRegisteredImports, whose fixture
-//     is the PACKAGED-file-plus-bare-name shape this corpus does not contain.
-//
-//     So the seeding is load-bearing for the Java producer below, not for this
-//     one. An earlier revision of this paragraph claimed `struct_uuid_vector`
-//     resolved only because of it, which a mutation refutes -- the same
-//     carried-without-re-deriving-its-population error the rest of this comment
-//     was written to correct.
-//
-//   - Metadata Java writes, which is the whole reason the port exists. A user
-//     proto's package round-trips into stored metadata through
-//     RecordMetaData.toProto(), and ALL 95 protos under
-//     fdb-record-layer-core/src/test/proto declare one -- 79 at the top level
-//     and 16 more under `evolution/`. (An earlier revision said "79 of 95",
-//     which paired a non-recursive file count with a recursive one and
-//     presented the two as a ratio. Both counts were real; the relationship
-//     between them was not.)
-//     `test_records_tuple_fields.proto` is this file's ancestor-package shape
-//     exactly: `package com.apple.foundationdb.record.testTupleFields`,
-//     importing `tuple_fields.proto` at `package com.apple.foundationdb.record`,
-//     writing a bare `UUID` (line 31) whose target sits in the ancestor package
-//     AND whose import `defaultExcludedDependencies` strips.
-//
-// So the shapes below are Java's own protos rather than hypotheticals, and the
-// seeding is load-bearing for the JAVA producer -- a user proto carries a
-// package, which is what puts a scope on the walk's path to stop at. For this
-// port's own producer the loop executes and its output is unobservable, per the
-// measurement above; an earlier revision of this sentence claimed both, which
-// contradicted the paragraph directly above it. Pinned by
-// TestAbsolutizeFieldTypeNamesStopsAtAPackageScope and
-// TestAbsolutizeFieldTypeNamesResolvesIntoAnAncestorPackageDependency, which are
-// the only arms that separate a stopped walk from the fallback -- see their
-// shared preamble for why the obvious fixtures cannot.
+// That repair is load-bearing for metadata Java writes: a user proto's package
+// round-trips through RecordMetaData.toProto(), and every proto under
+// fdb-record-layer-core/src/test/proto declares one.
+// `test_records_tuple_fields.proto` is the ancestor-package shape: package
+// `com.apple.foundationdb.record.testTupleFields`, importing
+// `tuple_fields.proto` at `package com.apple.foundationdb.record` (an import
+// `defaultExcludedDependencies` strips), and writing a bare `UUID`. Metadata
+// this port's SQL layer writes has no package, so a walk that stops at root and
+// the root fallback answer alike and the seeding is unobservable there. Pinned
+// by TestAbsolutizeFieldTypeNamesStopsAtAPackageScope and
+// TestAbsolutizeFieldTypeNamesResolvesIntoAnAncestorPackageDependency; see
+// their shared preamble for why the obvious fixtures cannot separate a stopped
+// walk from the fallback.
 func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*descriptorpb.FileDescriptorProto) {
 	pkg := fd.GetPackage()
 	pkgPrefix := "."
@@ -1107,30 +1003,23 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 
 	// declared holds every fully-qualified name a candidate scope may resolve
 	// against: the types this file declares, the types its DEPENDENCIES declare,
-	// and every PACKAGE prefix in play.
-	//
-	// All three are needed, and each closes one way this walk used to disagree
-	// with protoc:
+	// and every PACKAGE prefix in play. All three are needed to agree with
+	// protoc:
 	//
 	//   - Dependency types. Without them a name binding into an import falls
 	//     through to the fallback, which answers a ROOT name: `UUID` inside
-	//     `package com.apple.foundationdb.record.testTupleFields` becomes
+	//     `package com.apple.foundationdb.record.testTupleFields` would become
 	//     `.UUID` where protoc walks out to
-	//     `.com.apple.foundationdb.record.UUID`. That is Java's own
-	//     test_records_tuple_fields.proto. (An earlier fallback prepended this
-	//     file's own package instead, giving
-	//     `.com.apple.foundationdb.record.testTupleFields.UUID`. Both are wrong
-	//     here, which is the point: the fix is knowing the symbols, not picking
-	//     a better guess.)
+	//     `.com.apple.foundationdb.record.UUID` (Java's own
+	//     test_records_tuple_fields.proto). No fallback rule substitutes for
+	//     knowing the symbols.
 	//   - Packages. Java's first-part lookup consults package descriptors
 	//     (Descriptors.java's AGGREGATES_ONLY). Without them the walk can never
 	//     stop at a package scope, so `probe.Inner` inside package `probe`
-	//     became `.probe.probe.Inner` instead of `.probe.Inner`.
-	//   - Both together are what makes a cross-package EXTENDEE work. Routing
-	//     `Extendee` through this walk without dependency symbols rewrote a valid
-	//     `other.Host` (imported) to `.probe.other.Host` and made the descriptor
-	//     fail to load — turning a latent divergence into a fatal one, in the
-	//     commit that added the extendee rewrite.
+	//     would become `.probe.probe.Inner` instead of `.probe.Inner`.
+	//   - Both together make a cross-package EXTENDEE work. Without dependency
+	//     symbols a valid imported `other.Host` would be rewritten to
+	//     `.probe.other.Host` and the descriptor would fail to load.
 	declared := map[string]bool{}
 	addPackage := func(p string) {
 		if p == "" {
@@ -1209,33 +1098,17 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 	// a transitively-imported file that nobody re-exports is invisible to name
 	// resolution.
 	//
-	// Seeding the whole closure therefore over-exposes symbols: an invisible
-	// file declaring `p.q.X` makes this walk stop at a scope Java never
+	// Seeding the whole closure would over-expose symbols of every kind: an
+	// invisible file declaring `p.q.X` makes this walk stop at a scope Java never
 	// considers and answer `.p.q.X.Y`, where Java climbs past and answers
-	// `.p.X.Y`.
-	//
-	// IT FAILS LOUDLY, and saying so precisely matters because the obvious
-	// guess is the opposite. Both names exist, so this looks like it should be
-	// a silent mis-binding -- but protodesc enforces the SAME visibility rule
-	// when it resolves, so the over-exposed name always points into the very
-	// file whose invisibility created the stop, and protodesc refuses it:
+	// `.p.X.Y`. That fails loudly rather than mis-binding, because protodesc
+	// enforces the same visibility rule and refuses the over-exposed name:
 	//
 	//	cannot resolve type: resolved "p.q.X.Y",
 	//	but "hidden.proto" is not imported
 	//
-	// Measured in both arrangements -- the hidden file outside the stored
-	// closure, and inside it behind a private import -- and no silent case
-	// appears to be constructible: for `.p.q.X.Y` to resolve at all, some
-	// VISIBLE file must seed the `.p.q.X` scope, and then the stop is
-	// legitimate and there is no divergence in the first place.
+	// so the divergence shows as metadata Java loads and Go rejects.
 	//
-	// So this is a real Java-parity divergence that manifests as metadata Java
-	// loads and Go rejects, which is why it was never observed in the field
-	// rather than why it was harmless.
-	//
-	// It applies to every symbol kind, not only services: messages and enums
-	// from a private transitive import were over-exposed the same way, and for
-	// longer.
 	// One traversal, not two, because the visible set CROSSES the two sources.
 	// A direct import may be globally registered while the file it publicly
 	// re-exports is a stored dependency, or the reverse; walking the stored
@@ -1324,12 +1197,9 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 				// dependencies declares matches the first component. Java does a
 				// ROOT lookup here (Descriptors.java's lookupSymbol, the
 				// fall-through after the scope loop) -- it does NOT prepend the
-				// file's own package, and neither does this.
-				//
-				// The package-prefix version was a Go invention with no Java
-				// counterpart, and it was FATAL rather than merely divergent for
-				// a cross-package extendee: `extend probe.Ext` inside package
-				// `probe` became `.probe.probe.Ext`, which exists nowhere.
+				// file's own package, and neither does this: a package prefix
+				// would turn `extend probe.Ext` inside package `probe` into
+				// `.probe.probe.Ext`, which exists nowhere.
 				//
 				// The committed differential cannot arbitrate root-vs-package --
 				// every case in it has a complete dependency set, so this branch
@@ -1360,13 +1230,11 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 	// produces `.probe.Host.A.B`, which protodesc then refuses: protoc's answer,
 	// symbol for symbol.
 	//
-	// AN EARLIER VERSION OF THIS COMMENT USED A FIELD, not a nested message, and
-	// every engine agrees on that shape -- protoc, protobuf-java, protodesc
-	// unrewritten and this pass all accept it. C++ descriptor.cc says why: for a
-	// compound name whose first part is a non-aggregate, "We found a symbol but
-	// it's not an aggregate. Continue the loop." The mechanism was real and the
-	// example was wrong, which made the paragraph unfalsifiable rather than
-	// merely imprecise.
+	// The same shape with a FIELD in place of the nested message does not need
+	// it: protoc, protobuf-java, protodesc unrewritten and this pass all accept
+	// it. C++ descriptor.cc says why: for a compound name whose first part is a
+	// non-aggregate, "We found a symbol but it's not an aggregate. Continue the
+	// loop."
 	//
 	// AND DO NOT ADD NON-TYPE SYMBOLS TO `declared` TO CHASE protoc. For a BARE
 	// shadowed extendee (`extend A` where Host declares a FIELD `A`) protoc
@@ -1376,7 +1244,7 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 	// be returned. protoc uses LOOKUP_ALL for extendee and LOOKUP_TYPES for
 	// type_name, which is where its asymmetry comes from; Java has no such
 	// asymmetry, and neither does this. Matching protoc here would move Go AWAY
-	// from Java. Measured across all three engines before it was written down.
+	// from Java.
 	absolutize := func(f *descriptorpb.FieldDescriptorProto, scope string) {
 		if abs, ok := resolveName(f.GetTypeName(), scope); ok {
 			f.TypeName = &abs
@@ -1393,13 +1261,9 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 			absolutize(f, inner)
 		}
 		// MESSAGE-SCOPED EXTENSIONS: `DescriptorProto.Extension`, the `extend`
-		// block written INSIDE a message, which proto2 allows. This walk covered
-		// fields and nested types here and extensions only at FILE level, so a
-		// relative type name in this position reached the resolver as written.
-		// It survived because no fixture could express it: every other descriptor
-		// in the corpus is built from a compiled Go file via
-		// protodesc.ToFileDescriptorProto, which emits absolute names, making
-		// absolutization a no-op on all of them.
+		// block written INSIDE a message, which proto2 allows. Fixtures built
+		// from a compiled Go file via protodesc.ToFileDescriptorProto carry
+		// absolute names, so they cannot exercise this position.
 		for _, ext := range msg.GetExtension() {
 			absolutize(ext, inner)
 		}

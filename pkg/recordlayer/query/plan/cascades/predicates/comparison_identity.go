@@ -11,16 +11,12 @@ import (
 // structural identity, named as strings so TestComparisonIdentityFoldsEveryField
 // can check this set against the struct by reflection.
 //
-// It exists because the set was wrong: StructurallyEqual folded Type, Escape and
-// Operand and ignored the other eight, so two TEXT_CONTAINS_ALL predicates
-// differing ONLY in tokenizer — which read different index data — compared equal
-// and hashed identically. StructuralHash mirrored the same three fields, so the
-// equal-implies-same-hash invariant HELD while both sides were wrong, and no
-// pairwise test could have seen it.
-//
-// The same defect was found and fixed one layer up, in plans.comparisonEqual;
-// the fix never reached here. A list checked against reflection is what stops
-// that happening a third time.
+// An omitted field is invisible to pairwise tests: if StructurallyEqual and
+// StructuralHash both skip it, equal-implies-same-hash still holds while two
+// comparisons that differ only there (e.g. two TEXT_CONTAINS_ALL predicates with
+// different tokenizers, which read different index data) are conflated. The
+// reflection check catches a field that is in neither list. plans.comparisonEqual
+// must fold the same fields one layer up.
 var comparisonIdentityFields = map[string]string{
 	"Type":               "the operator itself",
 	"Operand":            "the right-hand comparand",

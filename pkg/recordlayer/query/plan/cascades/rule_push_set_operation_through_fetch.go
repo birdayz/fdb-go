@@ -526,15 +526,10 @@ func pushSetOpThroughFetch(call *ImplementationRuleCall, p setOpPush) {
 	// pointer identity against a singleton is brittle in principle: it is a
 	// question about an instance where the intent is a question about a property.
 	//
-	// NOT because the old `== values.UnknownType` was catching the wrong set
-	// TODAY. An earlier revision of this comment claimed a nullable unknown was
-	// "a different pointer"; that is FALSE and measured false —
-	// values.UnknownType is itself declared nullable, and WithNullability returns
-	// its argument unchanged when the nullability already matches, so
-	// `WithNullability(UnknownType, true) == UnknownType` is true. The only value
-	// this predicate catches that pointer identity misses is a NON-NULLABLE
-	// unknown, which no production site currently produces. So this edit is a
-	// no-op on today's inputs and is here for the shape, not for a bug.
+	// On today's inputs it matches `== values.UnknownType`: UnknownType is
+	// itself nullable and WithNullability returns its argument unchanged when the
+	// nullability already matches. The only extra value it catches is a
+	// NON-NULLABLE unknown, which no production site currently produces.
 	resultType := p.resultType
 	if typeUnstated(resultType) {
 		resultType = pushable[0].fw.GetResultType()
