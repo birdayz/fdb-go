@@ -56,17 +56,20 @@ are separate code paths; tests cover them separately.
 ### Collation safety
 
 Go collation keys are not Java/ICU-compatible. By default, stores return
-`GoOnlyCollationError` for collated index access, validation and rebuilding;
-record writes/deletes that must maintain a collated index or count key; and
-collated primary-key evaluation. Disabled indexes do not require maintenance.
-Metadata round-trips and raw-key record reads remain available; opening an evolved
-store can refuse if it would rebuild collated keys.
+`GoOnlyCollationError` for collated index access, validation and rebuilding through
+the store/indexer APIs; single-record saves/deletes and batch saves that must
+maintain a collated index or count key; and collated primary-key evaluation.
+Disabled indexes do not require maintenance. Metadata round-trips, raw-key record
+reads and range clears remain available. Opening an evolved store can refuse when
+reconciling collated indexes or count keys, including enabling queued maintenance.
 
 Only stores that no Java process opens may opt in with
 `StoreBuilder.SetGoOnlyCollation(true)`. The option is not persisted, and it does
 not migrate existing keys. Online indexers inherit it through
-`OnlineIndexerBuilder.SetRecordStoreBuilder`. Evaluating a collation expression
-directly is not guarded by a store and still produces Go-only bytes.
+`OnlineIndexerBuilder.SetRecordStoreBuilder`. Direct expression evaluation and
+explicitly constructed low-level maintainers are outside the store guard and can
+produce Go-only bytes. The Go-only SPFresh bulk builder also uses those low-level
+maintainers; its index layout must never be shared with Java.
 
 The Java oracle pins sampled mismatches for both providers and reports the JVM
 runtime/vendor, locale-provider configuration, registry and ICU version. Matching

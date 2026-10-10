@@ -1142,21 +1142,32 @@ intentional divergence at the statement layer:
 Go rejects up front to avoid a surprise write on a misused method; the plan
 path is identical to Java, only the execute-then-throw side effect differs.
 
+## Record Layer collation — explicit Go-only keys (target ICU 78.3)
+
+`collate_jre` and `collate_icu` evaluate to `golang.org/x/text/collate` sort keys,
+not Java's JRE/ICU4J key bytes. Store operations that evaluate or access these keys
+now fail by default with `GoOnlyCollationError`, including index scans, validation,
+rebuilds, and single-record saves/deletes requiring collated index or count keys.
+Batch saves preflight every record; online builders refuse before clearing indexes.
+Collated primary-key evaluation is also refused. Metadata round-trips and raw-key
+record reads/range clears remain available. Evolved-store opens can refuse when
+reconciling collated indexes or count keys.
+
+`StoreBuilder.SetGoOnlyCollation(true)` opts a store into the x/text implementation;
+only stores never opened by Java may use it. It is not persisted and migrates no
+keys. Direct expression evaluation and explicitly constructed low-level maintainers
+are outside the store guard. The transport backend does not change this boundary.
+`conformance/collation_key_java_probe_test.go` compares sampled key bytes against
+both Java providers, reporting runtime/vendor, locale-provider configuration,
+registry and ICU version. Exact parity would require provider/version-specific
+collation engines and data, not just matching locale and strength. See
+[Collation safety](docs/compatibility.md#collation-safety).
+
 ## Pure-Go FDB client (`pkg/fdbgo`) — deliberate divergences from `libfdb_c` 7.3.77
 
 **Client option behaviour** (honored / `UnsupportedOptionError` / accepted-and-ignored) is documented
 option-by-option, with the `libfdb_c` C++ reference for each, in
 [`pkg/fdbgo/fdb/OPTIONS.md`](pkg/fdbgo/fdb/OPTIONS.md) (RFC-133).
-
-### Collation keys are not ICU's (pre-existing; target ICU 78.3)
-
-A `collate_jre` / `collate_icu` function key expression writes `golang.org/x/text/collate` (CLDR)
-sort keys (`pkg/recordlayer/collate_function_key_expression.go`). Java writes
-`java.text.CollationKey` or ICU `CollationKey.toByteArray()` bytes, and Java 4.14.2.0 moved its ICU
-module from 69.1 to 78.3, whose keys are again version-specific. Go orders and reads its own
-collated indexes correctly, but a collated index is not shared with Java: neither side can read
-the other's index entries. No ICU byte baseline is checked in; matching it would mean porting
-ICU's collation and sort-key format at 78.3.
 
 ### Client knobs (Java 4.14 #4488)
 
