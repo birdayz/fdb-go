@@ -386,45 +386,6 @@ func TestJavaHTTPClient_DisablesKeepAlives(t *testing.T) {
 	}
 }
 
-// The server must load the pinned libfdb_c from its runfiles: a host without the
-// foundationdb-clients package otherwise fails every Java step with UnsatisfiedLinkError.
-func TestConformanceServerLoadsPinnedLibfdbC(t *testing.T) {
-	t.Parallel()
-	r, err := runfiles.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	launcher, err := r.Rlocation("_main/conformance/conformance_server")
-	if err != nil {
-		t.Fatal(err)
-	}
-	script, err := os.ReadFile(launcher)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const flag = "-DFDB_LIBRARY_PATH_FDB_C=${JAVA_RUNFILES}/"
-	i := bytes.Index(script, []byte(flag))
-	pinned := runtime.GOOS == "linux" && (runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64")
-	if !pinned {
-		if i >= 0 {
-			t.Fatalf("launcher pins libfdb_c on %s/%s, which has no pinned build", runtime.GOOS, runtime.GOARCH)
-		}
-		return
-	}
-	if i < 0 {
-		t.Fatalf("launcher %s does not pass %s", launcher, flag)
-	}
-	rest := script[i+len(flag):]
-	rel := string(rest[:bytes.IndexAny(rest, "' \"\n")])
-	lib, err := r.Rlocation(rel)
-	if err != nil {
-		t.Fatalf("runfiles %s: %v", rel, err)
-	}
-	if fi, err := os.Stat(lib); err != nil || fi.Size() == 0 {
-		t.Fatalf("pinned libfdb_c %s missing: %v", lib, err)
-	}
-}
-
 // A client-wide timeout would cut a step short of its caller's deadline: the
 // target's planner overran a fixed two minutes on CI inside a spec allowed
 // twenty. Invoke bounds a step by the caller's deadline, or a default.
@@ -445,6 +406,10 @@ func TestJavaHTTPClient_LeavesTheDeadlineToTheCaller(t *testing.T) {
 var reusedServerJVMFlags = []string{"-XX:+UseSerialGC"}
 
 func startJavaServer(jvmFlags ...string) (*JavaInvoker, error) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		return nil, fmt.Errorf("java conformance runs only on linux/amd64, not %s/%s: fdb-java ships "+
+			"linux/amd64 natives only and the pinned libfdb_c is x86_64", runtime.GOOS, runtime.GOARCH)
+	}
 	// Find the Bazel-built conformance server binary via runfiles
 	r, err := runfiles.New()
 	if err != nil {

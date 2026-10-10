@@ -897,6 +897,9 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   bijection by the aliases' result-value/predicate components (3.76M
   node-equal pairs, 3.73M negative; the cost is the pair count, ~10 us each,
   ~40% GC).
+  On planner_budget_test's 6-table star chain the target takes 541965 tasks /
+  12.5 min (17 under load) against Go's 110701 / ~6 s; `//conformance:conformance_planning_cost_test`
+  ("Six-table chain planning cost", manual) pins the target's counts for both chains.
 - [x] Re-measure planner/executor stress against the actual merge-base with
   explicit SHAs and equal row populations; resolve regressions, not just timeouts.
   2026-10-06, `c116de63b` against the recorded merge-base `e48f5b49` (2 samples
