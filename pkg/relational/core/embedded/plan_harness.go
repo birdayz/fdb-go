@@ -211,20 +211,8 @@ func PlanPhysicalDMLForTestWithArgs(
 // measurement whose scope is the process rather than the caller. nil = collect
 // nothing.
 //
-// popts carries the planner options this run plans under; every caller but
-// PlanQueryForTestWithDisabledRules passes plannerOptionsFrom(nil), the
-// Java-default configuration a query that sets no options gets.
-// harnessTaskBudget backstops the drivers that plan generated SQL through this
-// harness; connection planning stays unbounded, as in Java.
-const harnessTaskBudget = 150_000
-
-func harnessPlannerOptions(popts plannerOptions) plannerOptions {
-	if popts.maxTotalTaskCount == 0 {
-		popts.maxTotalTaskCount = harnessTaskBudget
-	}
-	return popts
-}
-
+// popts carries the planner options this run plans under, before
+// harnessPlannerOptions adds the harness task backstop.
 func planPhysicalForTest(
 	sql, schemaDDL string,
 	stats properties.StatisticsProvider,
@@ -870,6 +858,7 @@ func planRecordQueryAndSubqueriesWithOptions(
 	stats properties.StatisticsProvider,
 	popts plannerOptions,
 ) (plans.RecordQueryPlan, []PlannedScalarSubquery, error) {
+	popts = harnessPlannerOptions(popts)
 	if templateName == "" {
 		templateName = defaultEmbeddedTemplate
 	}
@@ -891,7 +880,7 @@ func planRecordQueryAndSubqueriesWithOptions(
 		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, "Cascades translation failed")
 	}
 
-	planner := newCascadesPlanner(md, harnessPlannerOptions(popts), cascades.BatchAExpressionRules(), stats)
+	planner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
 	if planErr != nil {
@@ -995,4 +984,15 @@ func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan) []int {
 // NewRecordLayerResultSet before applying the query's labels.
 func ResultColumnDefsForPlan(plan plans.RecordQueryPlan) []executor.ColumnDef {
 	return resultColumns(plan)
+}
+
+// harnessTaskBudget backstops the drivers that plan generated SQL through this
+// harness; connection planning stays unbounded, as in Java.
+const harnessTaskBudget = 150_000
+
+func harnessPlannerOptions(popts plannerOptions) plannerOptions {
+	if popts.maxTotalTaskCount == 0 {
+		popts.maxTotalTaskCount = harnessTaskBudget
+	}
+	return popts
 }
