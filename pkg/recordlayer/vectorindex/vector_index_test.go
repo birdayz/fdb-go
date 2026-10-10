@@ -2465,6 +2465,50 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// Java's maintainer reads value column 0 as vector bytes on a remove as on
+	// an insert: a numeric column fails both, the delete of a record saved
+	// while the index was disabled included.
+	It("refuses a numeric vector column on save and on delete, as Java's maintainer does", func() {
+		ks := specSubspace()
+		vecIdx := recordlayer.NewVectorIndex("vec_numeric",
+			recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		run := func(fn func(*recordlayer.FDBRecordStore) error) error {
+			_, err := sharedDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				return nil, fn(store)
+			})
+			return err
+		}
+		var cce *recordlayer.ClassCastError
+		err = run(func(store *recordlayer.FDBRecordStore) error {
+			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(1), Quantity: proto.Int32(2)})
+			return err
+		})
+		Expect(errors.As(err, &cce)).To(BeTrue(), "save: %T %v", err, err)
+		Expect(run(func(store *recordlayer.FDBRecordStore) error {
+			if _, err := store.MarkIndexDisabled(vecIdx.Name); err != nil {
+				return err
+			}
+			if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(3), Quantity: proto.Int32(4)}); err != nil {
+				return err
+			}
+			_, err := store.MarkIndexWriteOnly(vecIdx.Name)
+			return err
+		})).To(Succeed())
+		err = run(func(store *recordlayer.FDBRecordStore) error {
+			_, err := store.DeleteRecord(tuple.Tuple{int64(2)})
+			return err
+		})
+		Expect(errors.As(err, &cce)).To(BeTrue(), "delete: %T %v", err, err)
+	})
+
 	It("refuses an option given under its name and its alias at build", func() {
 		vecIdx := recordlayer.NewVectorIndex("vec_price_qty",
 			recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2)
@@ -5029,7 +5073,7 @@ func withVector(o *gen.Order, fields ...string) *gen.Order {
 		}
 		vec = append(vec, v)
 	}
-	o.VectorData = serializeVector(vec)
+	o.VectorData = vectorcodec.Serialize(vec)
 	return o
 }
 

@@ -2237,7 +2237,7 @@ byte-level assertions that every narrower integer width collapses to one key,
 that a string key reaches the bytes rather than the type name, and that a bytes
 key keeps tuple type code `0x01` rather than being folded into a string.
 
-### VECTOR index metadata validation and vector read: Go validates and reads as Java's `VectorIndexValidator` and `VectorIndexMaintainer` (CLOSED — RFC-257 WS-D)
+### VECTOR index metadata validation and vector read: Go validates and reads as Java's `VectorIndexValidator` and `VectorIndexMaintainer` (CLOSED — RFC-257 WS-D; the residual differences are listed at the end)
 
 This entry replaces the current section of the same subject (cur.md:2194, "(OPEN — owner decision)"), whose "Go:" paragraph is stale.
 
@@ -2338,11 +2338,11 @@ refused, and its dimension count is mandatory. Go's 128-dimension default is gon
 GuardiANN maintainer reads it the same way (`entryVector`, `vector_index_maintainer.go`;
 `applyIndexEntry`, `vector_index_queue.go`):
 - value column 0 alone; later value columns are ignored;
-- a null column 0 is not indexed;
+- a null column 0 is not indexed; empty bytes (which Go's tuple decoder returns as a nil
+  `[]byte`) are not null and are refused;
 - a column 0 that is not bytes is a `ClassCastError` (Java's `ClassCastException`), and
   a root with no value column, empty bytes or a `VectorType` ordinal outside 0-3 an
-  `IndexOutOfBoundsError` (Java's `IndexOutOfBoundsException`). A RaBitQ ordinal fails
-  with a plain error where Java throws a bare `RuntimeException`.
+  `IndexOutOfBoundsError` (Java's `IndexOutOfBoundsException`).
 
 A remove fails where its read does, as in Java; Go's queue no longer deletes the node by
 primary key regardless. Pinned by the JVM spec "A VECTOR index reads value column 0 as
@@ -2351,10 +2351,16 @@ columns on insert and on the delete of a record saved while the index was disabl
 covering value columns. The Go-only SPFresh index keeps its own reader (`tupleToVector`),
 which also reads numeric and several value columns.
 
-**The one difference left is a linking one.** Java's validator always runs; Go's option
-half lives in `vectorindex`, so a binary that does not link it builds a plain index with
-options Java refuses, and refuses that index when it is used
-(`IndexMaintainerNotLinkedError`).
+**Residual differences.** Each is refused in both engines; what differs is the text, the
+error class, or where the refusal happens:
+- `ClassCastError`'s message is Go's own; Java's is the JDK's (`class java.lang.Long cannot
+  be cast to class [B ...`), which varies by JDK. The conformance spec compares the class.
+- A truncated payload fails with a plain Go error where Java throws a
+  `BufferUnderflowException` (`DoubleRealVector.decodeDoubleBytes`), and a RaBitQ ordinal
+  with a plain Go error where Java throws a bare `RuntimeException`.
+- Java's validator always runs; Go's option half lives in `vectorindex`, so a binary that
+  does not link it builds a plain index with options Java refuses, and refuses that index
+  when it is used (`IndexMaintainerNotLinkedError`).
 
 ---
 

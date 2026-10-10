@@ -18,6 +18,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/vectorcodec"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 )
 
@@ -830,7 +831,7 @@ func withVector(o *gen.Order, fields ...string) *gen.Order {
 		}
 		vec = append(vec, v)
 	}
-	o.VectorData = serializeVecForChaos(vec)
+	o.VectorData = vectorcodec.Serialize(vec)
 	return o
 }
 

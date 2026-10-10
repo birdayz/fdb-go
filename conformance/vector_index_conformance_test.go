@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/bazelbuild/rules_go/go/runfiles"
@@ -1813,8 +1814,7 @@ var _ = Describe("A VECTOR index reads value column 0 as Java's maintainer does"
 			}, &java)).To(Succeed())
 			// Java's VectorType lookup may throw an IndexOutOfBoundsException subclass.
 			for k, v := range java {
-				if v != "java.lang.IndexOutOfBoundsException" && len(v) > len("IndexOutOfBoundsException") &&
-					v[len(v)-len("IndexOutOfBoundsException"):] == "IndexOutOfBoundsException" {
+				if strings.HasSuffix(v, "IndexOutOfBoundsException") {
 					java[k] = "java.lang.IndexOutOfBoundsException"
 				}
 			}

@@ -136,9 +136,13 @@ func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswSto
 	return storage
 }
 
+// javaVectorTypeCount is the number of Java's VectorType constants (HALF,
+// SINGLE, DOUBLE, RABITQ), the list a vector's type ordinal indexes.
+const javaVectorTypeCount = vectorcodec.TypeRaBitQ + 1
+
 // entryVector is Java's updateIndexEntry read (VectorIndexMaintainer.java:
 // 357, :395): value column 0 as bytes (Tuple.getBytes), the rest ignored, then
-// RealVector.fromBytes. A nil vector (nil, 0, nil) is not indexed. It returns
+// RealVector.fromBytes. A null column (nil, 0, nil) is not indexed. It returns
 // the vector and its VectorType ordinal.
 func entryVector(entry recordlayer.EvaluatedIndexEntry) ([]float64, byte, error) {
 	value := entry.Value()
@@ -154,15 +158,16 @@ func entryVector(entry recordlayer.EvaluatedIndexEntry) ([]float64, byte, error)
 	default:
 		return nil, 0, &recordlayer.ClassCastError{Message: fmt.Sprintf("vector index value column 0 is %T, not bytes", v)}
 	}
-	if b == nil {
-		return nil, 0, nil
-	}
+	// Empty bytes, which Go's tuple decoder returns as a nil []byte, are not a
+	// null column: Java's vectorBytes[0] throws.
 	if len(b) == 0 {
 		return nil, 0, &recordlayer.IndexOutOfBoundsError{Message: "Index 0 out of bounds for length 0"}
 	}
 	// VectorType.values().get(ordinal), the ordinal a signed Java byte.
-	if ordinal := int8(b[0]); ordinal < 0 || ordinal > vectorcodec.TypeRaBitQ {
-		return nil, 0, &recordlayer.IndexOutOfBoundsError{Message: fmt.Sprintf("Index %d out of bounds for length 4", ordinal)}
+	if ordinal := int8(b[0]); ordinal < 0 || int(ordinal) >= javaVectorTypeCount {
+		return nil, 0, &recordlayer.IndexOutOfBoundsError{
+			Message: fmt.Sprintf("Index %d out of bounds for length %d", ordinal, javaVectorTypeCount),
+		}
 	}
 	vec, err := deserializeVector(b)
 	if err != nil {

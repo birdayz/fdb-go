@@ -78,6 +78,7 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/vectorcodec",
         "//pkg/recordlayer/vectorindex",
         "//pkg/simfdb",
         "//pkg/testcontainers/foundationdb",

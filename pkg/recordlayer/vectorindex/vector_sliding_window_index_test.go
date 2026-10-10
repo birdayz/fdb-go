@@ -20,7 +20,8 @@ import (
 
 // newWindowedVectorIndex builds a VECTOR index carrying a row-number window
 // predicate — the shape SlidingWindowIndexMaintainerFactory.isSlidingWindowIndex
-// selects. The vector is (coord_x, coord_y), so the ordering field (price) and
+// selects. The vector is vector_data, which the specs fill with (coord_x,
+// coord_y) through withVector, so the ordering field (price) and
 // the partition field (quantity) stay independent of the vector itself; a test
 // that reused one field for two roles could not tell window movement apart from
 // vector movement.

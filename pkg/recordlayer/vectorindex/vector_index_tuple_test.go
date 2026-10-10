@@ -100,6 +100,7 @@ func TestEntryVector(t *testing.T) {
 		{"a numeric column before bytes", entry(int64(1), vec), func(_ []float64, err error) bool { return errors.As(err, &cce) }},
 		{"no value column", entry(), func(_ []float64, err error) bool { return errors.As(err, &oob) }},
 		{"empty bytes", entry([]byte{}), func(_ []float64, err error) bool { return errors.As(err, &oob) }},
+		{"a nil []byte is empty bytes, not null", entry([]byte(nil)), func(_ []float64, err error) bool { return errors.As(err, &oob) }},
 		{"type ordinal 4", entry([]byte{4, 0}), func(_ []float64, err error) bool { return errors.As(err, &oob) }},
 		{"a negative type ordinal", entry([]byte{0xff, 1, 2}), func(_ []float64, err error) bool { return errors.As(err, &oob) }},
 		{"a RaBitQ ordinal", entry([]byte{3, 0}), func(_ []float64, err error) bool { return err != nil && !errors.As(err, &oob) }},
@@ -109,5 +110,13 @@ func TestEntryVector(t *testing.T) {
 		if !c.check(v, err) {
 			t.Errorf("%s: got (%v, %T %v)", c.name, v, err, err)
 		}
+	}
+	// A queued entry is packed and unpacked: empty bytes stay a refusal.
+	unpacked, err := tuple.Unpack(tuple.Tuple{[]byte{}}.Pack())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := entryVector(recordlayer.NewEvaluatedIndexEntry(tuple.Tuple{}, unpacked, tuple.Tuple{int64(1)})); !errors.As(err, &oob) {
+		t.Errorf("round-tripped empty vector bytes: got %T %v, want IndexOutOfBoundsError", err, err)
 	}
 }

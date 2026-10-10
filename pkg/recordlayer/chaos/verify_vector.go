@@ -58,11 +58,10 @@ func verifyVectorIndexes(ctx context.Context, store *recordlayer.FDBRecordStore,
 			}
 
 			for _, values := range tuples {
+				// The chaos fixtures always set a vector, so a null one is a
+				// violation too, never an entry the check silently skips.
 				vec, ok := modelVector(idx, values)
-				if ok && vec == nil {
-					continue // a null vector is not indexed
-				}
-				if !ok {
+				if !ok || vec == nil {
 					violations = append(violations, Violation{
 						Invariant:  "vector_index_convert_error",
 						PrimaryKey: rec.PrimaryKey,
