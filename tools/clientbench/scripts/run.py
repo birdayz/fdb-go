@@ -109,20 +109,44 @@ def quiescence(plan):
             "max_steal_fraction": plan["max_steal_fraction"], "passed": passed}
 
 
+def process_record(entry, comm):
+    result = {'pid': int(entry.name), 'comm': comm, 'errors': {}}
+    for name in ('stat', 'status', 'io'):
+        try:
+            result[name] = (entry / name).read_text()
+        except OSError as error:
+            result['errors'][name] = str(error)
+    return result
+
+
+def descendants(pid):
+    found, pending = set(), [pid]
+    while pending:
+        pid = pending.pop()
+        if pid in found:
+            continue
+        found.add(pid)
+        try:
+            pending.extend(int(p) for p in Path(f'/proc/{pid}/task/{pid}/children').read_text().split())
+        except OSError:
+            pass
+    return found
+
+
 def telemetry(child_pid):
     result = {"utc": utc(), "monotonic_ns": time.monotonic_ns()}
     for path in ("/proc/stat", "/proc/loadavg", "/proc/pressure/cpu", "/proc/pressure/io",
                  "/proc/pressure/memory", "/proc/meminfo", "/proc/diskstats", "/proc/net/dev"):
         result[path] = Path(path).read_text()
     processes = []
+    owned = descendants(child_pid)
     for entry in Path("/proc").iterdir():
         if not entry.name.isdecimal():
             continue
         try:
             comm = (entry / "comm").read_text().strip()
-            if comm == "fdbserver" or int(entry.name) == child_pid or comm.startswith("baseline-") or comm.startswith("candidate-"):
-                processes.append({"pid": int(entry.name), "comm": comm,
-                    **{name: (entry / name).read_text() for name in ("stat", "status", "io")}})
+            if comm == "fdbserver" or int(entry.name) in owned or comm.startswith(('baseline-', 'candidate-', 'clientbench')):
+                processes.append(process_record(entry, comm))
         except (FileNotFoundError, ProcessLookupError, PermissionError):
             pass
     result["processes"] = processes
@@ -200,7 +224,7 @@ def validate_identity(folder, run, plan, pins):
     libraries = backend['loaded_fdb_libraries_sha256']
     if backend['backend'] != ('cgo' if native else 'go') or backend['native_library'] is not native or bool(libraries) != native:
         raise ValueError('backend/native linkage assertion failed')
-    if native and 'native_library_sha256' in plan and set(libraries.values()) != {plan['native_library_sha256']}:
+    if native and set(libraries.values()) != {plan['native_library_sha256']}:
         raise ValueError('loaded native library differs from pinned library')
     if 'go_version' in plan and manifest['go_version'] != 'go' + plan['go_version'].removeprefix('go'):
         raise ValueError('Go toolchain differs from plan')
@@ -255,6 +279,31 @@ def make_schedule(plan, out):
         raise ValueError('duplicate workloads')
     if not plan['workloads'] or any(w['iterations'] <= 0 or w['warmup'] < 0 or w['workers'] <= 0 for w in plan['workloads']):
         raise ValueError('nonempty workloads with positive iterations/workers and nonnegative warmup required')
+    pinned_paths = {a['binary'] for a in plan['arms']} | set(plan.get('pinned_files', []))
+    pins = plan.get('expected_sha256')
+    if (not isinstance(pins, dict) or set(pins) != pinned_paths or
+            any(not isinstance(v, str) or not re.fullmatch(r'[0-9a-f]{64}', v) for v in pins.values())):
+        raise ValueError('complete preregistered SHA256 pins required')
+    artifact_hashes = {pins[p] for p in plan.get('pinned_files', [])}
+    if plan.get('harness_id') not in artifact_hashes:
+        raise ValueError('harness ID must identify a pinned artifact')
+    if plan.get('native_library_sha256') not in artifact_hashes:
+        raise ValueError('native library SHA256 must identify a pinned artifact')
+    templates = []
+    for arm in plan['arms']:
+        command = list(arm['command'])
+        if command.count('{binary}') != 1:
+            raise ValueError('arm command must use the pinned {binary} token once')
+        for flag, replacement in [('--prefix', '<prefix>'), ('--source-revision', '<declared-source>')]:
+            if command.count(flag) != 1 or command.index(flag) + 1 >= len(command):
+                raise ValueError('one command value required for ' + flag)
+            index = command.index(flag) + 1
+            if flag == '--source-revision' and command[index] not in ('{source_revision}', arm.get('source_revision', plan['source_commit'])):
+                raise ValueError('command source revision differs from arm declaration')
+            command[index] = replacement
+        templates.append(command)
+    if any(command != templates[0] for command in templates[1:]):
+        raise ValueError('arms must have identical benchmark options and affinity')
     for obj in [*plan['arms'], *plan['workloads']]:
         if not re.fullmatch(r'[A-Za-z0-9_-]+', obj['name']):
             raise ValueError('unsafe arm/workload name')
@@ -300,7 +349,7 @@ def execute(plan, schedule, plan_path, out, campaign_deadline):
     pinned_paths = {a["binary"] for a in plan["arms"]} | set(plan.get("pinned_files", []))
     pinned = {path: sha(path) for path in sorted(pinned_paths)}
     dump(out / "binaries.json", pinned)
-    if plan.get('expected_sha256') is not None and pinned != plan['expected_sha256']:
+    if pinned != plan['expected_sha256']:
         raise ValueError('inputs differ from preregistered SHA256 pins')
     dump(out / "controller.json", {"utc": utc(), "python": sys.version,
          "runner_sha256": sha(__file__), "argv": sys.argv,

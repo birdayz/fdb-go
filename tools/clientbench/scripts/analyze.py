@@ -17,6 +17,14 @@ import statistics
 from run import make_schedule, validate_identity, validate_raw_output
 
 
+WINDOW_CPU_SCOPE = (
+    'Window CPU is not complete-lifecycle per-transaction CPU: the Apple binding releases native transactions/futures '
+    'through Go GC finalizers, which enqueue further network-thread teardown. Warmup cleanup can enter the window '
+    'and late measured-transaction cleanup can fall after it. The size/direction of that unequal deferred-cleanup '
+    'effect is unmeasured; GC counts do not establish that all native cleanup completed.'
+)
+
+
 def quantile(values, p):
     if not math.isfinite(p) or not 0 < p <= 1:
         raise ValueError("quantile probability must be finite in (0, 1]")
@@ -86,15 +94,23 @@ def write_tables(out, per_run, comparisons):
         text.append(f'|{r["workload"]}|{r["arm"]}|{r["runs"]}|{r["transactions"]}|' +
                     '|'.join(f'{r[m]/1000:.3f}' for m in times) +
                     f'|{r["go_alloc_bytes_per_op"]:.3f}|{r["go_mallocs_per_op"]:.3f}|{r["go_gc_cycles"]}|\n')
-    text.append('\n|Workload|Ratio|Metric|Paired GM|Nominal 95% block-bootstrap CI|Pairs <1|\n|---|---|---|---:|---|---:|\n')
+    text.append('\n|Workload|Ratio|Metric|Paired GM|Nominal 95% block-bootstrap CI|Pairs <1|Numerator Go GC cycles|Denominator Go GC cycles|\n|---|---|---|---:|---|---:|---:|---:|\n')
     for r in comparisons:
         text.append(f'|{r["workload"]}|{r["numerator"]}/{r["denominator"]}|{r["metric"]}|{r["ratio"]:.6f}|'
-                    f'[{r["ci95_low"]:.6f}, {r["ci95_high"]:.6f}]|{r["pairs_below_one"]}/{r["blocks"]}|\n')
+                    f'[{r["ci95_low"]:.6f}, {r["ci95_high"]:.6f}]|{r["pairs_below_one"]}/{r["blocks"]}|'
+                    f'{r["numerator_go_gc_cycles"]}|{r["denominator_go_gc_cycles"]}|\n')
     text.append('\nExploratory same-host result, not a noninferiority, global-native or capacity claim. '
                 'Bootstrap resamples paired run blocks, not individual operations. Independence and CI coverage '
                 'are not established on a continuously running server; no multiplicity correction. '
                 'analysis.json includes order/dependence diagnostics, raw-file hashes and any CPU-component ratios '
                 'omitted because a counter was zero.\n')
+    text.append('\n' + WINDOW_CPU_SCOPE + '\n')
+    if any(r['workload'] in ('set100', 'batchset50', 'batchset50x1000') for r in per_run):
+        text.append('\nThe imported master590145 baseline omits C++ causal-read-risky on write-only commit GRVs '
+                    '(NativeAPI.actor.cpp:6577-6578 versus client/transaction.go:1980-1985,3398-3411). '
+                    'Without it the server waits for updateLastCommit (GrvProxyServer.actor.cpp:647-648). '
+                    'Identify whether each tested revision retains this pre-existing difference; results measure '
+                    'the actual implementations, not algorithmically identical clients.\n')
     (out / 'TABLES.md').write_text(''.join(text))
     for filename, rows in [('absolute.csv', absolute), ('paired.csv', comparisons)]:
         with (out / filename).open('w', newline='') as f:
@@ -137,7 +153,7 @@ def main():
     if normalized_schedule(schedule) != normalized_schedule(expected_schedule):
         raise ValueError('schedule differs from counterbalanced plan')
     pins = json.loads((out / 'binaries.json').read_text())
-    if complete['binaries'] != pins or (plan.get('expected_sha256') is not None and plan['expected_sha256'] != pins):
+    if complete['binaries'] != pins or plan['expected_sha256'] != pins:
         raise ValueError('input identities differ from the completed campaign')
     if len({run["run_id"] for run in schedule}) != len(schedule):
         raise ValueError("duplicate run IDs")
@@ -263,6 +279,8 @@ def main():
                 half = len(pairs) // 2
                 s.update(workload=workload, numerator=numerator,
                          denominator=args.denominator, metric=metric,
+                         numerator_go_gc_cycles=sum(stats[(workload, b, numerator)]['go_gc_cycles'] for b in range(plan['blocks'])),
+                         denominator_go_gc_cycles=sum(stats[(workload, b, args.denominator)]['go_gc_cycles'] for b in range(plan['blocks'])),
                          ratio_gt_1_means="numerator slower",
                          first_half_ratio=math.exp(statistics.mean(math.log(a / b) for a, b in pairs[:half])),
                          second_half_ratio=math.exp(statistics.mean(math.log(a / b) for a, b in pairs[half:])))
@@ -273,6 +291,7 @@ def main():
               for (w, a), v in sorted(all_latencies.items())]
     report = {"valid_zero_error_campaign": not issues, "issues": issues,
               "inference": "Geometric mean of paired run-level statistics (NOT ratio of pooled quantiles or medians). CPU is the measured-phase getrusage user+system delta per transaction. Go memory/GC excludes the native C++ heap; RSS is process-lifetime high water. Native counters are unobserved. Nominal 95% percentile bootstrap over run-block replicates; statistical independence is not established on a continuously running server. Circular moving-block bootstrap length3, lag1 and order effects are sensitivity diagnostics, not a guarantee of CI coverage. One guest/server configuration, not independent physical hosts. Pooled quantiles are descriptive only. No multiplicity correction.",
+              "window_cpu_scope": WINDOW_CPU_SCOPE,
               "bootstrap_seed": args.seed, "bootstrap_resamples": args.resamples,
               "plan_sha256": digest(out / "plan.json"), "raw_sha256": hashes,
               "per_run": per_run, "pooled_descriptive": pooled,

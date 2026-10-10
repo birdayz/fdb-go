@@ -127,7 +127,7 @@ python3 "$scripts/analyze.py" "$campaign/timed" --denominator cgo
 
 The plan generator chooses a fresh random campaign namespace; its fixed width
 preserves the key lengths. It hashes every pinned input at registration. The
-runner rejects changed hashes before execution, rechecks them afterward, kills
+runner requires complete preregistered hashes, rejects changes before execution, rechecks them afterward, kills
 only its own process group on timeout/failure, and refuses an existing output
 directory. Its own campaign cap is also enforced; the outer `timeout` bounds
 cleanup. A plan contains executable argv lists: **do not run untrusted plans**.
@@ -137,8 +137,15 @@ builder's CPU groups. The runner affinity must be changed correspondingly in
 the shell command. Go/CGo options and workload shape must remain identical.
 For more arms/workloads, explicitly freeze an edited plan: block count must be
 a multiple of `factorial(arms)`, include CGo, use unique equal-length prefixes,
-and preserve source identities and hashes. The R3 budget is only for its
-specified two-arm workload; do not apply it silently to a larger campaign.
+and preserve declared source identities and hashes. All arm commands must have
+identical affinity/options, except the pinned binary, prefix and declared source
+revision. The harness ID must match an explicitly pinned archive. Source revision
+is an operator declaration, recorded and crosschecked but **not independently
+verified against the binary**; Bazel does not embed a VCS stamp here. Preserve the
+clean-tree source archives and build procedure to audit that relationship.
+The R3 budget is only for its specified two-arm workload; do not apply it silently
+to a larger campaign. Telemetry follows the launched process's descendants and
+retains accessible server statistics even when owner-only `/proc/PID/io` is denied.
 
 ## Results and analysis
 
@@ -159,8 +166,25 @@ separately and covers the **whole process** (setup, warmup and validation includ
 as do its context-switch counts; do not relabel them phase-only. Neither GNU
 time nor `perf task-clock` is interchangeable with this measured-phase metric.
 
+Window CPU is **not complete-lifecycle per-transaction CPU**. The Apple binding
+releases native transactions/futures through Go GC finalizers (7.3.77 binding
+`database.go:102-106`, `futures.go:93`), then transaction teardown is queued on the
+network thread (`fdb_c.cpp:921-926`, `ThreadSafeTransaction.cpp:402-406`). Warmup
+cleanup can enter the window; late measured-transaction cleanup can fall after it.
+The unequal deferred-cleanup effect is unmeasured. Paired tables include both
+arms' Go GC cycles beside CPU ratios; these counts do not prove native cleanup
+completed. Do not present window CPU as native full-cost or capacity evidence.
+
+The imported master590145 baseline also omits C++'s causal-read-risky flag on
+write-only commit GRVs (`NativeAPI.actor.cpp:6577-6578`, versus Go
+`client/transaction.go:830,1980-1985,3398-3411`). Without it, the server waits for
+`updateLastCommit` (`GrvProxyServer.actor.cpp:647-648`). Check whether each tested
+revision retains this pre-existing difference before attributing `set100` or
+`batchset50*` results; the harness measures actual implementations, not identical
+algorithms. This tool does not silently correct client semantics.
+
 All raw phases, sample indices/counts/errors/checks, persistence success,
-source/harness/binary identities, native linkage and Go GRV evidence must validate
+declared source consistency, pinned harness/binary identities, native linkage and Go GRV evidence must validate
 before the analyzer emits a successful report. `ABORTED.json`, incomplete counts
 or missing `complete.json` mean diagnostic data, not a clean performance result.
 Keep all artifacts, including failures. Once finished, seal them, for example:

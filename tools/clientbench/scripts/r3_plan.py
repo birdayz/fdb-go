@@ -71,6 +71,8 @@ def make_plan(args):
     if len({a['binary'] for a in plan['arms']}) != 2:
         raise ValueError('Go and CGo must use different binaries')
     plan['expected_sha256'] = {p: digest(p) for p in sorted(pinned)}
+    if args.harness_id not in {plan['expected_sha256'][str(Path(p).resolve())] for p in args.pin}:
+        raise ValueError('harness-id must match an explicitly pinned harness archive')
     return plan
 
 

@@ -23,12 +23,12 @@ class CampaignTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        for name in ['go', 'cgo', 'cluster', 'native', 'server']:
+        for name in ['go', 'cgo', 'cluster', 'native', 'server', 'harness']:
             (self.root / name).write_text(name)
         self.args = argparse.Namespace(go_binary=self.root / 'go', cgo_binary=self.root / 'cgo',
                                       cluster_file=self.root / 'cluster', native_library=self.root / 'native',
                                       server_binary=self.root / 'server', source_revision='a' * 40,
-                                      harness_id='b' * 64, campaign_id='c' * 29, pin=[],
+                                      harness_id=r3_plan.digest(self.root / 'harness'), campaign_id='c' * 29, pin=[self.root / 'harness'],
                                       housekeeping_cpus='0-1', server_cpus='2-7', client_cpus='8-15')
         self.plan = r3_plan.make_plan(self.args)
 
@@ -75,6 +75,59 @@ class CampaignTest(unittest.TestCase):
             setattr(args, field, value)
             with self.subTest(field=field), self.assertRaises(ValueError):
                 r3_plan.make_plan(args)
+
+    def test_required_pins_and_identical_arm_options(self):
+        for kind in ['missing_pins', 'missing_native', 'missing_binary', 'wrong_harness', 'affinity', 'timeout', 'retries']:
+            with self.subTest(kind=kind):
+                plan = copy.deepcopy(self.plan)
+                if kind == 'missing_pins':
+                    del plan['expected_sha256']
+                elif kind == 'missing_native':
+                    del plan['native_library_sha256']
+                elif kind == 'missing_binary':
+                    del plan['expected_sha256'][plan['arms'][0]['binary']]
+                elif kind == 'wrong_harness':
+                    plan['harness_id'] = '0' * 64
+                else:
+                    flag, value = {'affinity': ('--cpu-list', '8-9'), 'timeout': ('--transaction-timeout-ms', '1'),
+                                   'retries': ('--retry-limit', '0')}[kind]
+                    command = plan['arms'][0]['command']
+                    command[command.index(flag) + 1] = value
+                with self.assertRaises(ValueError):
+                    run.make_schedule(plan, self.root / 'out')
+        args = copy.copy(self.args)
+        args.harness_id = '0' * 64
+        with self.assertRaises(ValueError):
+            r3_plan.make_plan(args)
+        plan = copy.deepcopy(self.plan)
+        plan['arms'][0]['source_revision'] = 'd' * 40
+        command = plan['arms'][0]['command']
+        command[command.index('--source-revision') + 1] = 'd' * 40
+        self.assertEqual(len(run.make_schedule(plan, self.root / 'out')), 12)
+
+    def test_telemetry_captures_descendants_and_partial_process_data(self):
+        code = 'import os,time;print(os.getpid(),flush=True);time.sleep(30)'
+        process = subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE, text=True)
+        try:
+            pid = int(process.stdout.readline())
+            records = run.telemetry(os.getpid())['processes']
+            child = next((p for p in records if p['pid'] == pid), None)
+            self.assertIsNotNone(child, 'the benchmark descendant is not the GNU time PID')
+            self.assertIn('stat', child)
+            self.assertIn('status', child)
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+            process.stdout.close()
+        proc = self.root / '12345'
+        proc.mkdir()
+        (proc / 'stat').write_text('world-readable stat')
+        (proc / 'status').write_text('world-readable status')
+        (proc / 'io').mkdir()
+        record = run.process_record(proc, 'fdbserver')
+        self.assertEqual(record['stat'], 'world-readable stat')
+        self.assertEqual(record['status'], 'world-readable status')
+        self.assertIn('io', record['errors'])
 
     def test_schedule_only_refuses_overwrite(self):
         plan_path = self.root / 'plan.json'
@@ -173,6 +226,12 @@ class CampaignTest(unittest.TestCase):
         self.assertAlmostEqual(ratios['mean_ns']['ratio'], math.sqrt(2))
         self.assertAlmostEqual(ratios['process_cpu_ns_per_op']['ratio'], .75)
         self.assertEqual(ratios['process_cpu_ns_per_op']['pairs_below_one'], 6)
+        self.assertEqual(ratios['process_cpu_ns_per_op']['numerator_go_gc_cycles'], 6)
+        self.assertEqual(ratios['process_cpu_ns_per_op']['denominator_go_gc_cycles'], 6)
+        self.assertIn('not complete-lifecycle', report['window_cpu_scope'])
+        with (out / 'paired.csv').open() as f:
+            self.assertEqual(next(csv.DictReader(f))['numerator_go_gc_cycles'], '6')
+        self.assertIn('causal-read-risky', (out / 'TABLES.md').read_text())
         with (out / 'absolute.csv').open() as f:
             absolute = {r['arm']: r for r in csv.DictReader(f)}
         self.assertEqual(float(absolute['go']['mean_ns']), 135000)
