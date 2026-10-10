@@ -65,7 +65,7 @@ func plannerTestDataAccessPlan() plans.RecordQueryPlan {
 // each Reference's exploratory members with the pruned final winner).
 // Rule tests use it to assert on the full set of explored alternatives.
 //
-// Returns (tasksRun, converged); converged=false means MaxTasks was hit
+// Returns (tasksRun, converged); converged=false means testTaskBound was hit
 // (a non-termination signal, same contract as Plan's ErrPlannerCapHit).
 func exploreRewriting(p *Planner, rootRef *expressions.Reference) (int, bool) {
 	if rootRef == nil {
@@ -85,7 +85,7 @@ func exploreRewriting(p *Planner, rootRef *expressions.Reference) (int, bool) {
 	p.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: rootRef})
 	p.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: rootRef})
 	for len(p.stack) > 0 {
-		if p.tasksRun >= p.MaxTasks {
+		if p.tasksRun >= testTaskBound(p) {
 			return p.tasksRun, false
 		}
 		p.pop().Run(plannerTestContext(), p)
@@ -217,6 +217,15 @@ func TestPlanner_Plan_FullPipeline(t *testing.T) {
 	}
 }
 
+// testTaskBound is MaxTasks, or the hand-driven loops' non-termination guard
+// when the planner leaves it unbounded as Java does.
+func testTaskBound(p *Planner) int {
+	if p.MaxTasks > 0 {
+		return p.MaxTasks
+	}
+	return 100_000
+}
+
 // TestPlanner_Plan_MaxTasksHit pins the Plan method's error when
 // the task stack hits MaxTasks.
 func TestPlanner_Plan_MaxTasksHit(t *testing.T) {
@@ -253,6 +262,95 @@ func TestPlanner_Plan_MaxTasksHit(t *testing.T) {
 	if err.Error() != ErrPlannerCapHit.Error() {
 		t.Fatalf("message = %q, want the sentinel's %q", err.Error(), ErrPlannerCapHit.Error())
 	}
+}
+
+// TestPlanner_BudgetBoundariesMatchJava pins CascadesPlanner's guard order:
+// the task bound N runs N+1 tasks, 0 is unbounded, the queue bound follows each task.
+func TestPlanner_BudgetBoundariesMatchJava(t *testing.T) {
+	t.Parallel()
+	var last *Planner
+	plan := func(ctx context.Context, maxTasks, maxQueue int, observe func(*Planner)) (int, error) {
+		p := NewPlanner(DefaultExpressionRules(), nil)
+		last = p
+		p.MaxTasks, p.MaxTaskQueueSize = maxTasks, maxQueue
+		if observe != nil {
+			p.WithTaskObserver(func(Task) { observe(p) })
+		}
+		_, tasks, err := p.PlanWithContext(ctx, expressions.InitialOf(plannerTestScan("T")))
+		return tasks, err
+	}
+	// queueAfter[k] is the stack size once task k+1 has run.
+	var queueAfter []int
+	total, err := plan(context.Background(), 0, 0, func(p *Planner) {
+		if p.tasksRun > 0 {
+			queueAfter = append(queueAfter, len(p.stack)+1)
+		}
+	})
+	if err != nil {
+		t.Fatalf("unbounded plan: %v", err)
+	}
+	if total < 4 || len(queueAfter) != total-1 {
+		t.Fatalf("fixture ran %d tasks with %d queue samples, too few to probe the bounds", total, len(queueAfter))
+	}
+	for _, bound := range []int{1, total - 2} {
+		tasks, err := plan(context.Background(), bound, 0, nil)
+		var budget *PlannerBudgetExceededError
+		if !errors.As(err, &budget) || !errors.Is(err, ErrPlannerCapHit) {
+			t.Fatalf("MaxTasks=%d of %d: err=%v, want the task cap", bound, total, err)
+		}
+		if tasks != bound+1 || budget.Observed != bound+1 || budget.Limit != bound {
+			t.Fatalf("MaxTasks=%d: ran %d, observed %d, limit %d; want %d run and observed",
+				bound, tasks, budget.Observed, budget.Limit, bound+1)
+		}
+	}
+	if tasks, err := plan(context.Background(), total-1, 0, nil); err != nil || tasks != total {
+		t.Fatalf("MaxTasks=%d: tasks=%d err=%v, want the full %d-task plan", total-1, tasks, err, total)
+	}
+
+	// Task k first grows the queue past every earlier size. With MaxTasks=k-1
+	// both bounds trip after task k; Java reports the queue.
+	k, peak := 0, queueAfter[0]
+	for i := 1; i < len(queueAfter); i++ {
+		if queueAfter[i] > peak {
+			k = i + 1
+			break
+		}
+		peak = max(peak, queueAfter[i])
+	}
+	if k == 0 {
+		t.Fatalf("queue never grew past its first size %v", queueAfter)
+	}
+	tasks, err := plan(context.Background(), k-1, peak, nil)
+	var budget *PlannerBudgetExceededError
+	if !errors.As(err, &budget) || !errors.Is(err, ErrPlannerQueueCapHit) || tasks != k ||
+		budget.Limit != peak || budget.Observed != queueAfter[k-1] {
+		t.Fatalf("MaxTasks=%d MaxTaskQueueSize=%d: tasks=%d err=%v, want the queue cap after task %d",
+			k-1, peak, tasks, err, k)
+	}
+
+	// A cancel during the task that overflows the queue reports the cancel.
+	if queueAfter[0] <= 1 {
+		t.Fatalf("first task leaves %d queued, want more than 1", queueAfter[0])
+	}
+	tasks, err = plan(canceledAfterFirstTask{Context: context.Background(), p: &last}, 0, 1, nil)
+	if !errors.Is(err, context.Canceled) || tasks != 1 || len(last.stack) <= 1 {
+		t.Fatalf("canceled run: tasks=%d queued=%d err=%v, want context.Canceled over an overflowing queue",
+			tasks, len(last.stack), err)
+	}
+}
+
+// canceledAfterFirstTask lets the first task run uncanceled and reports the
+// cancel at the planner's next check, the post-Run one.
+type canceledAfterFirstTask struct {
+	context.Context
+	p **Planner
+}
+
+func (c canceledAfterFirstTask) Err() error {
+	if (*c.p).tasksRun >= 1 {
+		return context.Canceled
+	}
+	return nil
 }
 
 // TestPlanner_BestMember_StampedAfterPlan pins that Plan's OPTIMIZE

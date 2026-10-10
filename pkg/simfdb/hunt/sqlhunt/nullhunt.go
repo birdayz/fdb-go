@@ -203,7 +203,7 @@ func nlNewHarness(seed uint64) (*nlHarness, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(nlDBPath)+"?cluster_file="+key+"&schema=S")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(nlDBPath)+"?cluster_file="+key+"&schema=S&max_total_task_count=150000")
 	if err != nil {
 		h.close()
 		return nil, fmt.Errorf("open db: %w", err)

@@ -106,8 +106,8 @@ const (
 	// default false — Java-identical (Options.Name.PLAN_RIGHT_DEEP, whose
 	// default is false and whose JOIN_RIGHT_DEEP_MASK reads unset ⇒ false).
 	// Setting it is an opt-in trade: bushy plans are excluded, so a wide star
-	// join that would otherwise exhaust the planner's task budget converges,
-	// at the cost of possibly missing the cheapest shape.
+	// join whose bushy search would run long converges quickly, at the cost of
+	// possibly missing the cheapest shape.
 	OptPlanRightDeep OptionName = "PLAN_RIGHT_DEEP"
 	// OptVectorIndexEnginePreference is Java's VECTOR_INDEX_ENGINE_PREFERENCE:
 	// which engine the planner favors when an HNSW and a GuardiANN index can
@@ -196,6 +196,12 @@ const (
 	// option above it stays out of defaultOptionValues so the default option set
 	// remains byte-identical to Java's.
 	OptTransactionTags OptionName = "TRANSACTION_TAGS"
+
+	// The Cascades planner budgets of Java's RecordQueryPlannerConfiguration.
+	// Java's SQL layer exposes none; unset or 0 is unbounded, as in Java.
+	OptMaxTaskQueueSize         OptionName = "MAX_TASK_QUEUE_SIZE"
+	OptMaxTotalTaskCount        OptionName = "MAX_TOTAL_TASK_COUNT"
+	OptMaxNumMatchesPerRuleCall OptionName = "MAX_NUM_MATCHES_PER_RULE_CALL"
 )
 
 // IndexFetchMethod mirrors Java's Options.IndexFetchMethod enum.

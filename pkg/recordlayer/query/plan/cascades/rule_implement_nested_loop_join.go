@@ -1652,9 +1652,7 @@ func normalizeMaterializedJoinPrograms(
 				"materialized join %s result selected layout: %w", leg.label, layoutErr,
 			)
 		}
-		if _, targetErr := values.NewQuantifiedObjectValue(
-			leg.alias, values.PhysicalCarrierType(layout),
-		); targetErr != nil {
+		if _, targetErr := values.NewPhysicalCarrierQOV(leg.alias, layout); targetErr != nil {
 			return nil, nil, fmt.Errorf(
 				"materialized join %s exact binding: %w", leg.label, targetErr,
 			)
@@ -2269,11 +2267,7 @@ func buildCorrelatedFlatMapPlan(
 	// the whole concat keyed by the box's rightmost leaf, so a qualified read
 	// lands in the first leg. Measured on `FOA FULL OUTER FOB`: `FOB.K` read
 	// FOA's K.
-	physicalOuterType := values.PhysicalCarrierType(outerLayout)
-	if layoutBearing := values.PhysicalFlowedRecordTypeOf(outerLayout.Carrier()); layoutBearing != nil {
-		physicalOuterType = layoutBearing
-	}
-	physicalOuter, err := values.NewQuantifiedObjectValue(outerCorr, physicalOuterType)
+	physicalOuter, err := values.NewPhysicalCarrierQOV(outerCorr, outerLayout)
 	if err != nil {
 		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 	}
@@ -2301,8 +2295,7 @@ func buildCorrelatedFlatMapPlan(
 	if err != nil {
 		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 	}
-	physicalInnerType := values.PhysicalCarrierType(innerLayout)
-	physicalInner, err := values.NewQuantifiedObjectValue(innerCorr, physicalInnerType)
+	physicalInner, err := values.NewPhysicalCarrierQOV(innerCorr, innerLayout)
 	if err != nil {
 		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 	}
@@ -2361,7 +2354,7 @@ func buildCorrelatedFlatMapPlan(
 	// nullable.
 	innerPredsTarget := physicalInner
 	if innerNullOnEmpty && joinType != plans.JoinLeftOuter && !innerStrictSingle {
-		innerPredsTarget, err = values.NewQuantifiedObjectValue(innerCorr, values.WithNullability(physicalInnerType, true))
+		innerPredsTarget, err = values.NewQuantifiedObjectValue(innerCorr, values.WithNullability(values.PhysicalCarrierType(innerLayout), true))
 		if err != nil {
 			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 		}
@@ -2979,9 +2972,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelectFrom(
 		call.Fail(err)
 		return
 	}
-	physicalOuter, err := values.NewQuantifiedObjectValue(
-		outerCorr, values.PhysicalCarrierType(outerLayout),
-	)
+	physicalOuter, err := values.NewPhysicalCarrierQOV(outerCorr, outerLayout)
 	if err != nil {
 		call.Fail(err)
 		return

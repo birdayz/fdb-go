@@ -112,7 +112,7 @@ func Capture(s Scenario) (string, error) {
 		}
 	}
 
-	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key+"&schema=S")
+	db, err := sql.Open("fdbsql", "fdbsql://"+strings.ToUpper(dbPath)+"?cluster_file="+key+"&schema=S&max_total_task_count=150000")
 	if err != nil {
 		return "", fmt.Errorf("open db: %w", err)
 	}

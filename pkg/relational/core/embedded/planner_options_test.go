@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/recordlayer"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
@@ -22,7 +23,14 @@ import (
 // resolved plannerOptions), returning the winning physical plan and the task
 // count. It exists so the option plumbing can be exercised without a live
 // store: everything from plannerOptionsFrom onward is the production code.
-func planWithOptions(t *testing.T, sql, schemaDDL string, opts *api.Options) (plans.RecordQueryPlan, int, error) {
+func planWithOptions(t testing.TB, sql, schemaDDL string, opts *api.Options) (plans.RecordQueryPlan, int, error) {
+	t.Helper()
+	return planWithOptionsDeadline(t, 0, sql, schemaDDL, opts)
+}
+
+// planWithOptionsDeadline arms a positive planTimeout only once setup is done,
+// so the deadline bounds the planner and nothing else.
+func planWithOptionsDeadline(t testing.TB, planTimeout time.Duration, sql, schemaDDL string, opts *api.Options) (plans.RecordQueryPlan, int, error) {
 	t.Helper()
 	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
 	if err != nil {
@@ -48,7 +56,13 @@ func planWithOptions(t *testing.T, sql, schemaDDL string, opts *api.Options) (pl
 	}
 
 	planner := newCascadesPlanner(md, plannerOptionsFrom(opts), cascades.BatchAExpressionRules(), nil)
-	best, tasks, planErr := planner.PlanWithContext(context.Background(), ref)
+	ctx := context.Background()
+	if planTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, planTimeout)
+		defer cancel()
+	}
+	best, tasks, planErr := planner.PlanWithContext(ctx, ref)
 	if planErr != nil {
 		return nil, tasks, planErr
 	}
@@ -112,29 +126,32 @@ CREATE TABLE S4 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
 CREATE TABLE S5 (id BIGINT, hid BIGINT, PRIMARY KEY (id))
 CREATE TABLE S6 (id BIGINT, hid BIGINT, PRIMARY KEY (id))`
 
-// sixSpokeStarSQL is the hub+6 all-live star, the narrowest all-live star that
-// exhausts the embedded planner task budget at default settings (hub+5
-// converges in ~130k of 150k tasks).
+// sixSpokeStarSQL is the hub+6 all-live star, whose bushy search is far wider
+// than its right-deep one.
 const sixSpokeStarSQL = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id, S6.id " +
 	"FROM H, S1, S2, S3, S4, S5, S6 " +
 	"WHERE H.id = S1.hid AND H.id = S2.hid AND H.id = S3.hid AND H.id = S4.hid AND H.id = S5.hid AND H.id = S6.hid"
 
-// TestPlannerOptions_PlanRightDeep pins PLAN_RIGHT_DEEP end to end from
-// api.Options to the join enumeration, on the shape CQ-9 named: an all-live
-// star that exhausts the planning budget at DEFAULT settings — in Java too,
-// whose PLAN_RIGHT_DEEP also defaults to false — and converges once the
-// caller opts in.
+// TestPlannerOptions_PlanRightDeep: under one task budget the bushy hub+6 star
+// exhausts it and the PLAN_RIGHT_DEEP search converges.
 func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 	t.Parallel()
 
-	_, tasks, err := planWithOptions(t, sixSpokeStarSQL, starJoinDDL, nil)
+	const budget = 20_000
+	withBudget := func(rightDeep *bool) *api.Options {
+		b := api.NewOptionsBuilder().Set(api.OptMaxTotalTaskCount, budget)
+		if rightDeep != nil {
+			b.Set(api.OptPlanRightDeep, *rightDeep)
+		}
+		return b.Build()
+	}
+	_, tasks, err := planWithOptions(t, sixSpokeStarSQL, starJoinDDL, withBudget(nil))
 	if !errors.Is(err, cascades.ErrPlannerCapHit) {
-		t.Fatalf("hub+6 star at default options: err=%v (tasks=%d), want the task cap — "+
-			"if the budget now covers this shape, widen the star rather than weakening the test",
-			err, tasks)
+		t.Fatalf("hub+6 bushy star: err=%v (tasks=%d), want the %d-task budget hit", err, tasks, budget)
 	}
 
-	rightDeep := api.NewOptionsBuilder().Set(api.OptPlanRightDeep, true).Build()
+	on, off := true, false
+	rightDeep := withBudget(&on)
 	plan, rdTasks, rdErr := planWithOptions(t, sixSpokeStarSQL, starJoinDDL, rightDeep)
 	if rdErr != nil {
 		t.Fatalf("hub+6 star with PLAN_RIGHT_DEEP: %v (tasks=%d) — the option is not reaching "+
@@ -143,9 +160,7 @@ func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 	if plan == nil {
 		t.Fatal("PLAN_RIGHT_DEEP converged but produced no plan")
 	}
-	if rdTasks >= embeddedRightDeepPlannerMaxTasks {
-		t.Fatalf("PLAN_RIGHT_DEEP tasks=%d is not under the %d cap", rdTasks, embeddedRightDeepPlannerMaxTasks)
-	}
+
 	tables := make(map[string]bool)
 	var visit func(plans.RecordQueryPlan)
 	visit = func(node plans.RecordQueryPlan) {
@@ -176,17 +191,16 @@ func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 			"baseline, %.0f%% now) — re-measure and decide the tier, do not widen this. Below it: "+
 			"re-baseline if the search genuinely shrank, but first check the star is still all-live.",
 			rdTasks, rightDeepObservedTasks, rightDeepObservedTasks-rdTol, rightDeepObservedTasks+rdTol,
-			embeddedRightDeepPlannerMaxTasks,
-			100*float64(rightDeepObservedTasks)/float64(embeddedRightDeepPlannerMaxTasks),
-			100*float64(rdTasks)/float64(embeddedRightDeepPlannerMaxTasks))
+			budget,
+			100*float64(rightDeepObservedTasks)/float64(budget),
+			100*float64(rdTasks)/float64(budget))
 	}
-	t.Logf("hub+6 star: default CAPS; PLAN_RIGHT_DEEP converges in %d tasks (%.0f%% of the %d ceiling)",
-		rdTasks, 100*float64(rdTasks)/float64(embeddedRightDeepPlannerMaxTasks), embeddedRightDeepPlannerMaxTasks)
+	t.Logf("hub+6 star: bushy CAPS; PLAN_RIGHT_DEEP converges in %d tasks (%.0f%% of the %d ceiling)",
+		rdTasks, 100*float64(rdTasks)/float64(budget), budget)
 
 	// Explicit false must behave exactly like unset — the default is
 	// Java-identical and setting it must not be a way to change it.
-	if _, _, offErr := planWithOptions(t, sixSpokeStarSQL, starJoinDDL,
-		api.NewOptionsBuilder().Set(api.OptPlanRightDeep, false).Build()); !errors.Is(offErr, cascades.ErrPlannerCapHit) {
+	if _, _, offErr := planWithOptions(t, sixSpokeStarSQL, starJoinDDL, withBudget(&off)); !errors.Is(offErr, cascades.ErrPlannerCapHit) {
 		t.Fatalf("PLAN_RIGHT_DEEP=false: err=%v, want the same cap the unset default hits", offErr)
 	}
 }

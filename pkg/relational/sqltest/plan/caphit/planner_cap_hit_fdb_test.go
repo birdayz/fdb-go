@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
@@ -42,10 +44,20 @@ func capHitDB(t *testing.T, tag string) *sql.DB {
 	return db
 }
 
+// budgetConn pins a connection with an explicit task budget; Java's SQL layer
+// sets none, so planning is unbounded unless a connection configures one.
+func budgetConn(t *testing.T, db *sql.DB) *sql.Conn {
+	t.Helper()
+	return testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		if err := ec.SetOption(api.OptMaxTotalTaskCount, 2_000); err != nil {
+			t.Fatalf("SetOption: %v", err)
+		}
+	})
+}
+
 // sevenWayJoinExists is a WHERE-existential over a seven-way self-join. Join
 // enumeration over seven legs, each with five access paths, exceeds the
-// planning budget before the memo converges; six legs still plan, so this is
-// the cap tripping rather than an unplannable shape.
+// configured budget before the memo converges.
 //
 // It is deliberately EXISTS rather than `id IN (SELECT ...)`: the IN form fails
 // DML translation before planning ever starts, which would test nothing here.
@@ -64,7 +76,7 @@ const sevenWayJoinExists = "EXISTS (SELECT 1 FROM " +
 // 0AF00 message while the SELECT callsite discarded the error entirely, so one
 // planner failure produced two different diagnostics depending on statement
 // kind. Both now route through the shared classifier, and this pins the DML half
-// end to end against a real store, with no injected cap and no seam. DELETE and
+// end to end against a real store, with the budget set on the connection. DELETE and
 // UPDATE are both covered because they reach the planner through different
 // logical builders.
 func TestFDB_PlannerCapHit_DMLPathSQLSTATE(t *testing.T) {
@@ -80,8 +92,8 @@ func TestFDB_PlannerCapHit_DMLPathSQLSTATE(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			db := capHitDB(t, "dml_"+tc.name)
-			_, err := db.ExecContext(context.Background(), tc.sql)
+			conn := budgetConn(t, capHitDB(t, "dml_"+tc.name))
+			_, err := conn.ExecContext(context.Background(), tc.sql)
 			testkit.AssertPlannerCapHit(t, err)
 		})
 	}
@@ -95,9 +107,9 @@ func TestFDB_PlannerCapHit_DMLPathSQLSTATE(t *testing.T) {
 func TestFDB_PlannerCapHit_SelectPathSQLSTATE(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := capHitDB(t, "select")
+	conn := budgetConn(t, capHitDB(t, "select"))
 
-	rows, err := db.QueryContext(ctx,
+	rows, err := conn.QueryContext(ctx,
 		"SELECT a.id FROM ORDERS a, ORDERS b, ORDERS c, ORDERS d, ORDERS e, ORDERS f, ORDERS g "+
 			"WHERE a.id = b.id AND b.id = c.id AND c.id = d.id AND d.id = e.id AND e.id = f.id AND f.id = g.id")
 	if rows != nil {

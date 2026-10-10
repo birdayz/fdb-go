@@ -93,6 +93,9 @@ var optionContracts = map[OptionName]optionContract{
 	OptPlannerStatistics:            boolOption(),
 	OptRestrictDDLToSessionDatabase: boolOption(),
 	OptTransactionTags:              {kind: optionStrings},
+	OptMaxTaskQueueSize:             intOption(0, math.MaxInt32),
+	OptMaxTotalTaskCount:            intOption(0, math.MaxInt32),
+	OptMaxNumMatchesPerRuleCall:     intOption(0, math.MaxInt32),
 }
 
 // OptionFromString is the value name's contract parses from s, Java's
