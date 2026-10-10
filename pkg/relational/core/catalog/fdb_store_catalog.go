@@ -8,11 +8,15 @@
 package catalog
 
 import (
+	"errors"
+
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
@@ -195,6 +199,17 @@ func (c *RecordLayerStoreCatalog) SchemaTemplateCatalog() api.SchemaTemplateCata
 	return c.templateCatalog
 }
 
+// storeError is Java's ExceptionUtil.toRelationalException over a catalog store
+// failure: an FDB transaction timeout is 53F00, everything else XX000.
+func storeError(err error, msg string) *api.Error {
+	var fe fdb.Error
+	var we *wire.FDBError
+	if (errors.As(err, &fe) && fe.Code == 1031) || (errors.As(err, &we) && we.Code == 1031) {
+		return api.WrapErrorf(err, api.ErrCodeTransactionTimeout, "%s", msg)
+	}
+	return api.WrapErrorf(err, api.ErrCodeInternalError, "%s", msg)
+}
+
 // openStore opens (or creates) the catalog record store on this txn.
 // All CRUD calls go through here; matches Java's
 // RecordLayerStoreUtils.openRecordStore.
@@ -209,7 +224,7 @@ func (c *RecordLayerStoreCatalog) openStore(txn api.Transaction) (*recordlayer.F
 		SetMetaDataProvider(c.catalogMD).
 		CreateOrOpen()
 	if err != nil {
-		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "open catalog store")
+		return nil, storeError(err, "open catalog store")
 	}
 	return store, nil
 }
@@ -340,7 +355,7 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 		TEMPLATE_VERSION: proto.Int32(int32(tmpl.Version())),
 	}
 	if _, err := store.SaveRecord(rec); err != nil {
-		return api.WrapErrorf(err, api.ErrCodeInternalError, "save schema")
+		return storeError(err, "save schema")
 	}
 	return nil
 }
@@ -431,7 +446,7 @@ func (c *RecordLayerStoreCatalog) CreateDatabase(txn api.Transaction, dbURI stri
 func createDatabaseOnStore(store *recordlayer.FDBRecordStore, dbURI string) error {
 	rec := &gen.Databases{DATABASE_ID: proto.String(dbURI)}
 	if _, err := store.SaveRecord(rec); err != nil {
-		return api.WrapErrorf(err, api.ErrCodeInternalError, "save database")
+		return storeError(err, "save database")
 	}
 	return nil
 }
