@@ -4,6 +4,7 @@ package conformance_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -733,5 +734,105 @@ var _ = Describe("TEXT Index Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(javaEntries).To(BeEmpty())
 		})
+	})
+})
+
+var _ = Describe("Default TEXT tokenizer over non-Latin scripts", func() {
+	tokenize := func(texts []string) (goTokens, javaTokens [][]string) {
+		textsJSON, err := json.Marshal(texts)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(NewJavaInvoker().InvokeAs(context.Background(), "tokenizeDefault", map[string]any{
+			"textsJson": string(textsJSON),
+		}, &javaTokens)).To(Succeed())
+		Expect(javaTokens).To(HaveLen(len(texts)))
+		for i, text := range texts {
+			tokens, err := recordlayer.DefaultTextTokenizerInstance().TokenizeToList(text, 0, recordlayer.TokenizerModeIndex)
+			Expect(err).NotTo(HaveOccurred())
+			goTokens = append(goTokens, tokens)
+			if len(goTokens[i]) == 0 {
+				goTokens[i] = nil
+			}
+			if len(javaTokens[i]) == 0 {
+				javaTokens[i] = nil
+			}
+		}
+		return goTokens, javaTokens
+	}
+
+	It("matches Java where both segment words alike", func() {
+		texts := []string{
+			"ΟΔΟΣ ΣΟΦΟΣ Σ ΣΑ ΑΣ. ΑΣ'Σ",
+			"Ὀδυσσεύς",
+			"𐐔𐐯𐑅𐐨𐑉𐐯𐐻 𐐔",
+			"𠀀𠀁 𠀂",
+			"𞤀𞤁𞤂",
+			"한국어 문장입니다",
+			"مرحبا بالعالم",
+			"שלום עולם",
+			"नमस्ते दुनिया",
+			"হ্যালো",
+			"தமிழ்",
+			"Привет мир ЁЖ",
+			"İstanbul ıi I",
+			"Straße STRASSE ß",
+			"ﬁnance ﬂ ǅ ǆ",
+			"ＡＢＣ１２３ ｶﾀｶﾅ",
+			"e.g. U.S.A. 3.14 1,000 1.2.3 a.b",
+			"don't O'Neil l'homme rock'n'roll",
+			"user@example.com http://x.y/z?a=b",
+			"😀 👍🏽 👨\u200d👩\u200d👧 🇩🇪 a😀b",
+			"𝐀𝐁𝐂 𝟙𝟚",
+			"Ⅻ ⅻ ℃",
+			"café naïve coöperate",
+			"עִבְרִית",
+			"ǰ ŉ ΐ ﬀ",
+			"ꙮ ᏣᎳᎩ ⴀ Ⴀ",
+			"Α1Σ ΑΣ1 1Σ Σ1 ΑΣΑ ΑΣ\u0301 Α\u0301Σ",
+			"ΑΣ\u00adΣ Α\u00adΣ \u0345Σ",
+			"Σ\u0301 ΣΣ ΣΣΣ ὈΣ ἈΣ",
+			"AΣ aΣ ǅΣ ꭜΣ ΑΣ\u200dΣ",
+			"a𐐔 𐐔a 𐒠1 1𐒠 𐒠 𝟙",
+			"ΘΕΟΣ, ΚΑΙ ΣΥ; ΛΟΓΟΣ!",
+		}
+		goTokens, javaTokens := tokenize(texts)
+		for i, text := range texts {
+			Expect(goTokens[i]).To(Equal(javaTokens[i]), text)
+		}
+	})
+
+	// Java's JDK word BreakIterator and Go's UAX #29 segmentation split these
+	// differently; pinned so a change on either side is noticed.
+	It("pins the measured word-segmentation differences", func() {
+		cases := []struct {
+			text   string
+			java   []string
+			goWant []string
+		}{
+			{"東京都に住んでいます", []string{"東京都", "に", "住", "んています"}, []string{"東", "京", "都", "に", "住", "ん", "て", "い", "ま", "す"}},
+			{"私はカタカナとひらがなを使う", []string{"私", "は", "カタカナ", "とひらかなを", "使", "う"}, []string{"私", "は", "カタカナ", "と", "ひ", "ら", "か", "な", "を", "使", "う"}},
+			{"ภาษาไทยง่ายนิดเดียว", []string{"ภาษาไทยงายนดเดยว"}, []string{"ภ", "า", "ษ", "า", "ไ", "ท", "ย", "ง", "า", "ย", "น", "ด", "เ", "ด", "ย", "ว"}},
+			{"ພາສາລາວ", []string{"ພາສາລາວ"}, []string{"ພ", "າ", "ສ", "າ", "ລ", "າ", "ວ"}},
+			{"ខ្ញុំស្រលាញ់", []string{"ខញសរលញ"}, []string{"ខ", "ញ", "ស", "រ", "ល", "ញ"}},
+			{"မြန်မာ", []string{"မနမ"}, []string{"မ", "န", "မ"}},
+			{"中华人民共和国", []string{"中华人民共和国"}, []string{"中", "华", "人", "民", "共", "和", "国"}},
+			{"foo_bar __init__ a_1 _", []string{"foo_bar", "init", "a", "1"}, []string{"foo_bar", "__init__", "a_1"}},
+			{"#hashtag @mention $100 50% 9am", []string{"hashtag", "mention", "$100", "50%", "9am"}, []string{"hashtag", "mention", "100", "50", "9am"}},
+			{"a\u200bb a\u200cb a\u200db", []string{"a\u200bb", "a\u200cb", "a\u200db"}, []string{"a", "b", "a\u200cb", "a\u200db"}},
+			{"ℌℍ ℵ ① ⑴ ¹²³ ½", []string{"hh", "א", "1", "(1)", "123", "1⁄2"}, []string{"hh", "א", "1", "(1)", "1", "2", "3", "1⁄2"}},
+			{"x:y a:b 12:30", []string{"x", "y", "a", "b", "12", "30"}, []string{"x:y", "a:b", "12", "30"}},
+			{"can't’ it’s ‘quoted’", []string{"can't", "it", "s", "quoted"}, []string{"can't", "it’s", "quoted"}},
+			{"3a a3 3.a a.3", []string{"3a", "a3", "3", "a", "a", ".3"}, []string{"3a", "a3", "3", "a", "a", "3"}},
+			{"x𠀀 𠀀x 𐐔\u0301", []string{"x𠀀", "𠀀x"}, []string{"x", "x"}},
+			{"ΑΣ_Σ ΑΣ_ ΑΣ.Σ ΑΣ:Σ ΑΣ'", []string{"ασ_ς", "ας", "ασ.ς", "ας", "σ", "ας"}, []string{"ασ_ς", "ας_", "ασ.ς", "ασ:ς", "ας"}},
+		}
+		texts := make([]string, len(cases))
+		for i, tc := range cases {
+			texts[i] = tc.text
+		}
+		goTokens, javaTokens := tokenize(texts)
+		for i, tc := range cases {
+			Expect(javaTokens[i]).To(Equal(tc.java), tc.text)
+			Expect(goTokens[i]).To(Equal(tc.goWant), tc.text)
+		}
 	})
 })

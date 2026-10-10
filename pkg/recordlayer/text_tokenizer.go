@@ -147,8 +147,8 @@ func (t *DefaultTextTokenizer) MaxVersion() int {
 // Tokenize returns an iterator over tokens from the input text.
 // Returns an error if the version is out of bounds.
 // The tokenization process:
-//  1. Segment text into words using Unicode word boundary rules
-//     (matching Java's BreakIterator.getWordInstance(Locale.ROOT))
+//  1. Segment text into words using UAX #29 word boundaries (Java's
+//     BreakIterator.getWordInstance(Locale.ROOT) differs; docs/compatibility.md)
 //  2. NFKD normalize each segment
 //  3. Filter segments that don't contain any letter or digit
 //  4. Lowercase and strip combining marks (\p{M})
@@ -169,8 +169,8 @@ func (t *DefaultTextTokenizer) TokenizeToList(text string, version int, mode Tok
 	return defaultTokenizeToList(t, text, version, mode)
 }
 
-// breakIteratorWrapper wraps word segmentation to produce tokens matching
-// Java's BreakIterator.getWordInstance(Locale.ROOT) behavior.
+// breakIteratorWrapper turns word segments into tokens as Java's
+// DefaultTextTokenizer.BreakIteratorWrapper does.
 type breakIteratorWrapper struct {
 	segments []string
 	pos      int
@@ -201,7 +201,7 @@ func (b *breakIteratorWrapper) HasNext() bool {
 		}
 
 		// Lowercase then strip combining marks (Unicode category M).
-		token := stripMarks(strings.ToLower(normalized))
+		token := stripMarks(lowerWord(normalized))
 		b.next = &token
 		return true
 	}
@@ -217,14 +217,51 @@ func (b *breakIteratorWrapper) Next() string {
 	panic("no more tokens")
 }
 
-// hasLetterOrDigit returns true if s contains at least one Unicode letter or digit.
+// hasLetterOrDigit reports whether s has a letter or digit in the Basic
+// Multilingual Plane: Java tests UTF-16 chars, and a surrogate is neither.
 func hasLetterOrDigit(s string) bool {
 	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+		if r <= 0xFFFF && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
 			return true
 		}
 	}
 	return false
+}
+
+// lowerWord lowercases a word as Java's toLowerCase(Locale.ROOT) does: a
+// capital sigma with a cased letter before it in the word and none after it
+// becomes final ς.
+func lowerWord(s string) string {
+	if !strings.ContainsRune(s, 'Σ') {
+		return strings.ToLower(s)
+	}
+	runes := []rune(s)
+	first, last := -1, -1
+	for i, r := range runes {
+		if isCased(r) {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i, r := range runes {
+		if r == 'Σ' && first < i && i == last {
+			r = 'ς'
+		} else {
+			r = unicode.ToLower(r)
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// isCased is Unicode's Cased property.
+func isCased(r rune) bool {
+	return unicode.IsUpper(r) || unicode.IsLower(r) || unicode.IsTitle(r) ||
+		unicode.In(r, unicode.Other_Lowercase, unicode.Other_Uppercase)
 }
 
 // stripMarks removes all Unicode combining marks (category M: Mn, Mc, Me)
@@ -240,8 +277,9 @@ func stripMarks(s string) string {
 	return b.String()
 }
 
-// wordSegments splits text into word segments using UAX #29 Unicode Text Segmentation,
-// matching Java's BreakIterator.getWordInstance(Locale.ROOT).
+// wordSegments splits text into word segments using UAX #29 Unicode Text Segmentation.
+// Java's BreakIterator.getWordInstance(Locale.ROOT) differs for unspaced scripts
+// and some connectors (pinned in conformance/text_index_conformance_test.go).
 //
 // Uses github.com/rivo/uniseg which implements the full UAX #29 word boundary algorithm,
 // including proper handling of:
