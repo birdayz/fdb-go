@@ -2333,8 +2333,9 @@ Java's (`Metric::valueOf`, the four constants' names only), its `Config` bounds 
 refused, and its dimension count is mandatory. Go's 128-dimension default is gone.
 
 A root with no value column (`KeyWithValue(Concat(quantity, vector_data), 2)`) builds in
-both engines; both refuse its writes (Java's `getValue().getBytes(0)` has no column,
-Go's `splitPrefixAndVector` errors). Pinned by the structure spec's row.
+both engines (the structure spec's row pins the build verdict). Both refuse its
+inserts; Java's `getValue().getBytes(0)` also fails its deletes, which Go's queue
+tolerates on remove (`vector_index_queue.go:77-80`), as it does undecodable vectors.
 
 **What is open:** the vector's spelling at write. Java's maintainer reads the vector as
 `indexEntry.getValue().getBytes(0)` (`VectorIndexMaintainer.java:357`): the first value
