@@ -11,6 +11,11 @@ decide() {
   [ "$1" = true ] || echo "::notice::wire-type oracle skipped: $2"
   exit 0
 }
+# The gate itself is broken: run the oracle, and say so where a reviewer sees it.
+broken() {
+  echo "::warning::wire-type oracle scope gate broken, running in full: $1"
+  decide true "$1: full run"
+}
 [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || decide true "${GITHUB_EVENT_NAME:-unknown} event: full run"
 
 # A PR checkout is its merge into the base (fetch-depth: 2), so parent 1 is the base tip.
@@ -38,14 +43,14 @@ targets='//cmd/fdb-diff-oracle:fdb-diff-oracle_test + //cmd/fdb-diff-oracle:diff
 if ! bazelisk query --config=ci "kind('source file', deps($targets)) + buildfiles(deps($targets))" \
   --output=label >"$tmp/labels" 2>"$tmp/err"; then
   tail -n 20 "$tmp/err"
-  decide true "bazel query failed: full run"
+  broken "bazel query failed"
 fi
 # //pkg/a:b/c.go is pkg/a/b/c.go; external labels are covered by the pins above.
 sed -n 's|^//\([^:]*\):|\1/|p' "$tmp/labels" | sed 's|^/||' >"$tmp/files"
 sed -n 's|^//\([^:][^:]*\):.*|\1|p' "$tmp/labels" | sort -u >"$tmp/pkgs"
 # The oracle, its Go wire types and its C++ build: missing any means the query was misread.
 for p in cmd/fdb-diff-oracle pkg/fdbgo/wire/types cmd/fdb-schema-extract; do
-  grep -qxF -e "$p" "$tmp/pkgs" || decide true "query did not return oracle package $p: full run"
+  grep -qxF -e "$p" "$tmp/pkgs" || broken "query did not return oracle package $p"
 done
 
 owner() { # nearest enclosing Bazel package; "" is the root

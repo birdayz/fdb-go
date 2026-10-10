@@ -288,9 +288,8 @@ jobs:
         timeout-minutes: 2
         run: infra/reap-leaked-containers.sh
 
-      # A PR that changes nothing the oracle is built from cannot change its result, and master
-      # runs it on every push run that completes. Skipping spares such PRs a cold C++ build
-      # (782-840s measured).
+      # A PR that changes nothing the oracle is built from cannot change its result; master runs
+      # it on every push. Skipping saves 9-30s warm, or a 13-14 min C++ build on a cache miss.
       - name: Does this change reach the oracle?
         id: scope
         run: infra/wire-oracle-scope.sh
