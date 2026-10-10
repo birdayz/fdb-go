@@ -38,6 +38,14 @@ const (
 // WriteFrame writes a framed message to w.
 // If tls is true, the checksum is omitted.
 func WriteFrame(w io.Writer, token UID, body []byte, tls bool) error {
+	bufp, frame := encodeFrame(token, body, tls)
+	_, err := w.Write(frame)
+	putFrame(bufp, frame)
+	return err
+}
+
+// encodeFrame builds the frame in a pooled buffer; putFrame returns it.
+func encodeFrame(token UID, body []byte, tls bool) (*[]byte, []byte) {
 	payloadLen := 16 + len(body) // token + body
 	headerSize := packetLenWidth
 	if !tls {
@@ -76,10 +84,12 @@ func WriteFrame(w io.Writer, token UID, body []byte, tls bool) error {
 		binary.LittleEndian.PutUint64(buf[off:], checksum)
 	}
 
-	_, err := w.Write(buf)
-	*bufp = buf[:0] // reset length, keep capacity
+	return bufp, buf
+}
+
+func putFrame(bufp *[]byte, frame []byte) {
+	*bufp = frame[:0] // reset length, keep capacity
 	writeFramePool.Put(bufp)
-	return err
 }
 
 // FrameReader reads framed messages with a persistent header buffer to avoid

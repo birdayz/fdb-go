@@ -4,6 +4,9 @@ go_library(
     name = "transport",
     srcs = [
         "conn.go",
+        "direct_write.go",
+        "direct_write_other.go",
+        "direct_write_unix.go",
         "framing.go",
         "handshake.go",
         "wellknown.go",
@@ -22,6 +25,7 @@ go_library(
 go_test(
     name = "transport_test",
     srcs = [
+        "conn_direct_write_test.go",
         "conn_handshake_timeout_test.go",
         "conn_lifecycle_test.go",
         "conn_monitor_pacing_test.go",

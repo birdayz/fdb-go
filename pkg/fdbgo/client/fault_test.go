@@ -844,16 +844,11 @@ func TestPipelinedGet_Resolve_TimeoutRetries(t *testing.T) {
 // fails, the request never reached the server, so the arm marks the connection
 // bad (handleConnError) and re-drives through the full getValue path.
 //
-// The flush error is driven through a REAL conn deterministically (a write-fault
-// wrapper would race the writeLoop's unconditional auto-flush, which clears
-// hasDirty so Conn.Flush() short-circuits to nil): a conn dialed to the storage
-// server, then Close()d (joins the loops) and SendFrameDeferred'd — which sets
-// hasDirty=true UNCONDITIONALLY (conn.go:464) before its own ctx-done return — so
-// Resolve()'s Flush() sees hasDirty=true + cancelled ctx + an exited writeLoop and
-// returns errConnClosed (conn.go:485/495), a faithful flush error (a conn torn
-// down between the deferred send and the flush). resolveFull then re-dials a clean
-// conn (the pool self-heals on a closed entry, database.go:375-378) and returns
-// the value.
+// The flush error is driven through a REAL conn deterministically: a conn dialed
+// to the storage server, then Close()d (joins the loops), so Resolve()'s flush
+// finds a dead connection and returns errConnClosed — a faithful flush error (a
+// conn torn down between the deferred send and the flush). resolveFull then
+// re-dials a clean conn (the pool self-heals on a closed entry) and returns the value.
 //
 // Revert-proof: with the flush-error arm removed, the ignored flush error falls
 // through to the select, whose replyCh never fires and whose timer is set far
@@ -886,7 +881,7 @@ func TestPipelinedGet_Resolve_FlushErrorRetries(t *testing.T) {
 		t.Fatalf("dial %s: %v", addr, err)
 	}
 	conn.Close()                                                   // joins the loops; ctx cancelled; IsClosed
-	_ = conn.SendFrameDeferred(transport.UID{First: 1}, []byte{0}) // sets hasDirty=true on the closed conn
+	_ = conn.SendFrameDeferred(transport.UID{First: 1}, []byte{0}) // a deferred send the flush follows
 
 	p := &PendingGet{
 		key:         key,

@@ -53,8 +53,8 @@ func TestWriteContextCancellationBeforeEnqueue(t *testing.T) {
 	if enqueued, err := conn.SendFrameDeferredContext(ctx, UID{First: 1}, []byte("body")); enqueued || !errors.Is(err, context.Canceled) {
 		t.Fatalf("pre-enqueue deferred cancellation=(%v, %v), want false, context.Canceled", enqueued, err)
 	}
-	if conn.hasDirty.Load() {
-		t.Fatal("failed deferred enqueue marked connection dirty")
+	if conn.queued.Load() != 0 {
+		t.Fatal("failed deferred enqueue left a frame counted as queued")
 	}
 }
 

@@ -137,7 +137,6 @@ type Conn struct {
 	conn           net.Conn
 	useTLS         bool
 	wbuf           *bufio.Writer // owned exclusively by writeLoop
-	hasDirty       atomic.Bool   // true when wbuf has unflushed data
 	writeCh        chan writeReq // channel-based write loop for coalescing
 	writeAdmission sync.RWMutex
 	writeClosed    bool // protected by writeAdmission
@@ -183,6 +182,19 @@ type Conn struct {
 	// 300-second timeout rather than failing an assertion. A timeout is not a
 	// regression test, so the rate is asserted directly.
 	monitorCycles atomic.Int64
+
+	// writeMu orders socket writes between writeLoop and direct writers; queued
+	// counts frames handed to writeLoop and not yet flushed.
+	writeMu sync.Mutex
+	queued  atomic.Int64
+	// raw is set for plaintext TCP only: a direct write needs a non-blocking
+	// socket write, so a full socket never holds its caller past its ctx.
+	raw       *rawWriter
+	tail      []byte        // unwritten end of a direct write, under writeMu
+	tailFrame []byte        // the whole frame tail ends, pooled once written
+	tailBuf   *[]byte       // tailFrame's pool handle
+	tailKick  chan struct{} // wakes writeLoop to finish tail
+	tails     atomic.Int64  // partial direct writes, so tests can tell a tail occurred
 
 	// Debug tracing (set before first use).
 	debugFrames bool
@@ -433,6 +445,10 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		//	init( CONNECTION_MONITOR_TIMEOUT,   isSimulated ? 1.50 : 2.0 );
 		monitorLoopInterval: 1 * time.Second,
 		monitorTimeout:      2 * time.Second,
+		tailKick:            make(chan struct{}, 1),
+	}
+	if tlsConfig == nil {
+		c.raw = newRawWriter(netConn)
 	}
 	// Apply test-only knobs BEFORE any loop goroutine starts (no data race).
 	for _, o := range opts {
@@ -565,19 +581,19 @@ func putReplyChannelImpl(ch chan Response) {
 	replyChanPool.Put(ch)
 }
 
-// SendFrame writes a raw frame and flushes. Blocks until the frame is written
-// to the TCP socket (or returns error). For single-frame RPCs where we
-// immediately wait for the response.
+// SendFrame writes a raw frame and flushes. Returns once the frame is written, or
+// once writeLoop holds whatever a full socket refused, ahead of every later frame.
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	if c.debugFrames {
 		fmt.Fprintf(c.debugWriter, "[send %s] token=%016x:%016x bodyLen=%d\n", c.conn.RemoteAddr(),
 			destToken.First, destToken.Second, len(body))
 	}
 	LogSend(destToken, body)
+	if direct, err := c.tryWriteDirect(destToken, body); direct {
+		return err
+	}
 	errCh := errChanPool.Get().(chan error)
-	select {
-	case c.writeCh <- writeReq{token: destToken, body: body, errCh: errCh}:
-	case <-c.ctx.Done():
+	if !c.enqueue(writeReq{token: destToken, body: body, errCh: errCh}, nil) {
 		errChanPool.Put(errCh)
 		return errConnClosed
 	}
@@ -601,26 +617,21 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 // send N frames, then call Flush() (or let the write loop auto-flush).
 func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 	LogSend(destToken, body)
-	c.hasDirty.Store(true) // mark dirty so Flush() knows to synchronize
-	select {
-	case c.writeCh <- writeReq{token: destToken, body: body}:
-		return nil
-	case <-c.ctx.Done():
+	if !c.enqueue(writeReq{token: destToken, body: body}, nil) {
 		return errConnClosed
 	}
+	return nil
 }
 
-// Flush ensures all pending frames are flushed to the TCP socket.
-// For the write-loop architecture, this sends a synchronous flush marker
-// through the write channel and waits for acknowledgment.
+// Flush ensures all pending frames are flushed to the TCP socket. With nothing
+// queued every earlier frame is already written; otherwise it sends a flush
+// marker through the write channel and waits for acknowledgment.
 func (c *Conn) Flush() error {
-	if !c.hasDirty.Load() {
+	if c.queued.Load() == 0 && c.ctx.Err() == nil {
 		return nil
 	}
 	errCh := errChanPool.Get().(chan error)
-	select {
-	case c.writeCh <- writeReq{errCh: errCh}: // empty token+body = flush-only request
-	case <-c.ctx.Done():
+	if !c.enqueue(writeReq{errCh: errCh}, nil) { // empty token+body = flush-only request
 		errChanPool.Put(errCh)
 		return errConnClosed
 	}
@@ -628,7 +639,6 @@ func (c *Conn) Flush() error {
 	// errCh is not pooled on the ctx.Done path (stale-value hazard).
 	select {
 	case err := <-errCh:
-		c.hasDirty.Store(false)
 		errChanPool.Put(errCh)
 		return err
 	case <-c.ctx.Done():
@@ -643,7 +653,8 @@ func (c *Conn) Flush() error {
 // one flush (one write() syscall).
 //
 // This matches C++ FlowTransport's connectionWriter actor which yields to
-// let senders enqueue, then flushes everything at once.
+// let senders enqueue, then flushes everything at once. It holds writeMu from
+// its first write to the flush, so direct writers never interleave a batch.
 func (c *Conn) writeLoop() {
 	defer c.loopWG.Done()
 	var owned []*writeCompletion
@@ -654,10 +665,13 @@ func (c *Conn) writeLoop() {
 	var errChans []chan<- error
 
 	for {
-		// Wait for first frame.
+		// Wait for first frame, or for the tail of a direct write.
 		var req writeReq
+		first := false
 		select {
 		case req = <-c.writeCh:
+			first = true
+		case <-c.tailKick:
 		case <-c.ctx.Done():
 			return
 		}
@@ -667,13 +681,29 @@ func (c *Conn) writeLoop() {
 		if req.owned != nil {
 			owned = append(owned, req.owned)
 		}
-		// Process first frame.
+		c.writeMu.Lock()
+		var batched int64
 		var writeErr error
-		if req.token != (UID{}) || req.body != nil {
-			writeErr = WriteFrame(c.wbuf, req.token, req.body, c.useTLS)
+		// A direct write's unwritten end precedes every frame queued after it.
+		if c.tail != nil {
+			_, writeErr = c.wbuf.Write(c.tail)
+			putFrame(c.tailBuf, c.tailFrame) // wbuf has copied or written it
+			c.tail, c.tailFrame, c.tailBuf = nil, nil, nil
+			batched++
 		}
-		if req.errCh != nil {
-			errChans = append(errChans, req.errCh)
+		// Process first frame.
+		if first {
+			batched++
+			if writeErr == nil && (req.token != (UID{}) || req.body != nil) {
+				writeErr = WriteFrame(c.wbuf, req.token, req.body, c.useTLS)
+			}
+			if req.errCh != nil {
+				errChans = append(errChans, req.errCh)
+			}
+		}
+		if batched == 0 { // a kick whose tail an earlier batch already wrote
+			c.writeMu.Unlock()
+			continue
 		}
 
 		// Drain all queued frames without blocking (natural coalescing).
@@ -681,6 +711,7 @@ func (c *Conn) writeLoop() {
 		for draining && writeErr == nil {
 			select {
 			case req = <-c.writeCh:
+				batched++
 				if req.owned != nil {
 					owned = append(owned, req.owned)
 				}
@@ -699,16 +730,19 @@ func (c *Conn) writeLoop() {
 		if writeErr == nil {
 			writeErr = c.wbuf.Flush()
 		}
-		c.hasDirty.Store(false)
+		if writeErr != nil {
+			// Fail under writeMu so no direct write can follow a torn frame.
+			writeErr = codedConnClosed(writeErr)
+			c.failConnection(writeErr)
+		}
+		c.queued.Add(-batched)
+		c.writeMu.Unlock()
 
 		// Notify all waiting senders. A write error means the frame may or may
 		// not have reached the peer before the socket died — code it as the
 		// request_maybe_delivered teardown (C++ has no synchronous send errors
 		// at all; a failed send there surfaces only as the disconnect signal →
 		// request_maybe_delivered, fdbrpc.h:794-799).
-		if writeErr != nil {
-			writeErr = codedConnClosed(writeErr)
-		}
 		for _, ch := range errChans {
 			ch <- writeErr
 		}
@@ -719,10 +753,8 @@ func (c *Conn) writeLoop() {
 		}
 		owned = owned[:0]
 		if writeErr != nil {
-			// The socket writer is terminal after any frame/flush failure. Cancel
-			// connection admission, fail replies, then let the deferred ownership
-			// finalizer drain requests that arrived outside this failed batch.
-			c.failConnection(writeErr)
+			// The socket writer is terminal after any frame/flush failure; the
+			// deferred ownership finalizer drains requests outside this batch.
 			return
 		}
 	}
@@ -959,11 +991,8 @@ func (c *Conn) handlePing(body []byte) {
 	replyBody := buildVoidReply()
 
 	// Send ping reply through the write loop. Fire-and-forget (no errCh).
-	select {
-	case c.writeCh <- writeReq{token: replyToken, body: replyBody}:
-	default:
-		// Write channel full — drop ping reply. Server will retry.
-	}
+	// A full write channel drops the ping reply; the server will retry.
+	c.tryEnqueue(writeReq{token: replyToken, body: replyBody})
 }
 
 // extractPingReplyToken extracts the reply UID from a PingRequest FlatBuffers body.
@@ -1174,9 +1203,7 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
 	replyToken, replyCh, replyHandle := c.PrepareReply()
 	pingEP := WellKnownToken(WLTokenPingPacket)
 	body := BuildPingRequest(replyToken)
-	select {
-	case c.writeCh <- writeReq{token: pingEP, body: body}:
-	default:
+	if !c.tryEnqueue(writeReq{token: pingEP, body: body}) {
 		// writeCh is saturated — we could not send the PING. Return a nil
 		// channel, NOT a closed one. A closed channel makes the monitor's
 		// `case <-replyCh` fire immediately and falsely conclude "connection
