@@ -112,9 +112,8 @@ go_test(
     ],
 )
 
-# The GuardiANN peel's performance criterion (ws-d-design.md): a timing gate,
-# CPU-only, run in the full lane so its maximum is measured under the suite's
-# concurrency.
+# The GuardiANN peel's performance criterion (ws-d-design.md): a CPU-time
+# gate, kept out of the fast lane for its two-minute run.
 # gazelle:exclude guardiann_peel_timing_test.go
 go_test(
     name = "guardiann_peel_timing_test",
