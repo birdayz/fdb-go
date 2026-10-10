@@ -9,6 +9,7 @@ package catalog
 
 import (
 	"errors"
+	"fmt"
 
 	"google.golang.org/protobuf/proto"
 
@@ -190,13 +191,14 @@ func (c *RecordLayerStoreCatalog) SchemaTemplateCatalog() api.SchemaTemplateCata
 	return c.templateCatalog
 }
 
-// storeError is Java's ExceptionUtil.toRelationalException over a catalog store
-// failure: an FDB transaction timeout is 53F00, everything else XX000.
-func storeError(err error, msg string) *api.Error {
+// storeError leaves an FDB-coded failure unconverted so the connection's
+// translateFDBError maps it (1031 53F00, 1007 40001, ...); anything else is
+// XX000, where Java's ExceptionUtil falls back to XXXXX (UNKNOWN).
+func storeError(err error, msg string) error {
 	var fe fdb.Error
 	var we *wire.FDBError
-	if (errors.As(err, &fe) && fe.Code == 1031) || (errors.As(err, &we) && we.Code == 1031) {
-		return api.WrapErrorf(err, api.ErrCodeTransactionTimeout, "%s", msg)
+	if errors.As(err, &fe) || errors.As(err, &we) {
+		return fmt.Errorf("%s: %w", msg, err)
 	}
 	return api.WrapErrorf(err, api.ErrCodeInternalError, "%s", msg)
 }

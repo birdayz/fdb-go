@@ -980,6 +980,9 @@ Go supports these SQL features that Java rejects. Removing them would be a user-
 | Direct-API insert of a bare `UUID ARRAY` | `RecordTypeTable.toDynamicMessage` (4.14.2.0) converts a UUID attribute (#4243) but its repeated-field path calls `addRepeatedField` with the unconverted `java.util.UUID`, which protobuf refuses for the UUID message field (read from source, not measured) | Each element is written as the two-word UUID message (`embedded/direct_access.go` `directFieldValue`); UUIDs inside structs in an array match Java |
 | `MAX_STATEMENT_MEMORY_BYTES` option (DSN `max_statement_memory_bytes`) | No such option | Statement-wide byte budget for in-memory buffering (RFC-130); a breach is 54F01 |
 | `TRANSACTION_TAGS` option (DSN `transaction_tags`) | No such option | FDB transaction tags on every connection transaction, for ratekeeper throttling |
+| `MAX_TOTAL_TASK_COUNT` option (DSN `max_total_task_count`) | No such option; Java's planner cap exists but its SQL layer never sets it | Bounds Cascades planning tasks; exhaustion is 54F02 |
+| `MAX_TASK_QUEUE_SIZE` option (DSN `max_task_queue_size`) | No such option; Java's planner cap exists but its SQL layer never sets it | Bounds the Cascades task queue; exhaustion is 54F02 |
+| `MAX_NUM_MATCHES_PER_RULE_CALL` option (DSN `max_num_matches_per_rule_call`) | No such option; Java's planner cap exists but its SQL layer never sets it | Bounds matches per rule call; exhaustion is 54F02 |
 
 Go-only plan types: `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryValuesPlan`, `RecordQueryNestedLoopJoinPlan`. `RecordQueryMergeSortUnionPlan` is Go's collapsed ordered-union counterpart, not a semantic extension; its `removeDuplicates=false` mode is an extension. Go also has a keyless concat shape named `RecordQueryUnionPlan`; Java's same-named class is keyed and ordered, so the Go shape—not the class name—is the extension.
 

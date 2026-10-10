@@ -146,6 +146,9 @@ func TestConnectionOptions_ExecutionLimits(t *testing.T) {
 		{"max_statement_memory_bytes", api.OptMaxStatementMemoryBytes, "1048576", int64(1048576), append([]string{"-1", "9223372036854775808"}, notInt...)},
 		{"transaction_timeout", api.OptTransactionTimeout, "2500", int64(2500), append([]string{"-2", "9223372036854775808"}, notInt...)},
 		{"transaction_timeout", api.OptTransactionTimeout, "2147483647", int64(math.MaxInt32), []string{"2147483648"}},
+		{"max_total_task_count", api.OptMaxTotalTaskCount, "150000", 150000, append([]string{"-1", "2147483648"}, notInt...)},
+		{"max_task_queue_size", api.OptMaxTaskQueueSize, "7", 7, append([]string{"-1", "2147483648"}, notInt...)},
+		{"max_num_matches_per_rule_call", api.OptMaxNumMatchesPerRuleCall, "0", 0, append([]string{"-1", "2147483648"}, notInt...)},
 	} {
 		t.Run(tc.param, func(t *testing.T) {
 			t.Parallel()

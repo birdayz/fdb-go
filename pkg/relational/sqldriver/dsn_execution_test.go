@@ -300,6 +300,49 @@ func TestDSN_TransactionOptionsReachEveryTransaction(t *testing.T) {
 	}
 }
 
+// An FDB error in a catalog store operation reaches the statement through the
+// connection's one FDB-error mapper, with Go's codes for it.
+func TestDSN_CatalogStoreFDBErrorsAreTranslated(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		code   int32
+		want   api.ErrorCode
+		tooOld bool
+	}{
+		{1007, api.ErrCodeSerializationFailure, true},
+		{1025, api.ErrCodeTransactionInactive, false},
+	} {
+		t.Run(fmt.Sprint(tc.code), func(t *testing.T) {
+			t.Parallel()
+			db, rec := openLimitsDB(t, "")
+			db.SetMaxOpenConns(1)
+			ctx := context.Background()
+			if _, err := db.ExecContext(ctx, "CREATE SCHEMA /FRL/simdb/warm WITH TEMPLATE tmpl"); err != nil {
+				t.Fatal(err)
+			}
+			rec.failGets.Store(tc.code)
+			_, err := db.ExecContext(ctx, "CREATE SCHEMA /FRL/simdb/x WITH TEMPLATE tmpl")
+			rec.failGets.Store(0)
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != tc.want || api.IsTransactionTimeLimit(err) != tc.tooOld ||
+				!fromCatalogStore(err) {
+				t.Fatalf("got %v, want %s from the catalog store (too-old marker %v)", err, tc.want, tc.tooOld)
+			}
+		})
+	}
+}
+
+// fromCatalogStore reports whether err's chain passes through the catalog's
+// store-operation wrap (the too-old marker does not render its cause).
+func fromCatalogStore(err error) bool {
+	for ; err != nil; err = errors.Unwrap(err) {
+		if strings.HasPrefix(err.Error(), "open catalog store: ") {
+			return true
+		}
+	}
+	return false
+}
+
 // txOptionRecorder records the timeout and tag options set on every
 // transaction the wrapped SimFDB creates, which SimFDB itself ignores.
 type txOptionRecorder struct {
@@ -307,6 +350,8 @@ type txOptionRecorder struct {
 	mu    sync.Mutex
 	txs   *[]*recordedTx
 	reads atomic.Int32 // read-only transactions created while capturing
+	// failGets, when non-zero, is the FDB code every transactional Get fails with.
+	failGets atomic.Int32
 }
 
 type recordedTx struct {
@@ -339,7 +384,7 @@ func (r *txOptionRecorder) capture(fn func()) []*recordedTx {
 }
 
 func (r *txOptionRecorder) wrap(tx fdb.WritableTransaction) fdb.WritableTransaction {
-	return recordingTx{WritableTransaction: tx, rec: r.record(false)}
+	return recordingTx{WritableTransaction: tx, rec: r.record(false), fail: &r.failGets}
 }
 
 func (r *txOptionRecorder) record(read bool) *recordedTx {
@@ -384,8 +429,25 @@ func (r *txOptionRecorder) CreateWritableTransaction() (fdb.WritableTransaction,
 
 type recordingTx struct {
 	fdb.WritableTransaction
-	rec *recordedTx
+	rec  *recordedTx
+	fail *atomic.Int32
 }
+
+func (t recordingTx) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
+	f := t.WritableTransaction.Get(key)
+	if code := t.fail.Load(); code != 0 {
+		return failedGet{FutureByteSlice: f, err: fdb.Error{Code: int(code)}}
+	}
+	return f
+}
+
+type failedGet struct {
+	fdb.FutureByteSlice
+	err error
+}
+
+func (f failedGet) Get() ([]byte, error) { return nil, f.err }
+func (f failedGet) MustGet() []byte      { panic(f.err) }
 
 func (t recordingTx) Options() fdb.TransactionOptions {
 	return recordingOptions{TransactionOptions: t.WritableTransaction.Options(), rec: t.rec}
