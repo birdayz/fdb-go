@@ -1915,6 +1915,11 @@ var _ = Describe("A VECTOR index's structure is validated as Java validates it",
 		{"a root that is not KeyWithValue", root(recordlayer.Field("vector_data"))},
 		{"a fan-out", root(recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.FanOut("tags"), recordlayer.Field("vector_data")), 1))},
 		{"a well-formed partitioned root", root(recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 1))},
+		// A collation delegates createsDuplicates to its argument: no fan-out.
+		{"a collated partition column", root(recordlayer.KeyWithValue(recordlayer.Concat(
+			recordlayer.FunctionExpr(recordlayer.CollateFuncJRE, recordlayer.Nest("flower", recordlayer.Field("type"))),
+			recordlayer.Field("vector_data")), 1))},
+		{"a root with no value column", root(recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("quantity"), recordlayer.Field("vector_data")), 2))},
 	} {
 		for _, windowed := range []bool{false, true} {
 			It(fmt.Sprintf("%s (windowed %t)", c.name, windowed), func() {

@@ -463,10 +463,11 @@ func NewTimeWindowLeaderboardIndex(name string, rootExpression KeyExpression) *I
 	}
 }
 
-// NewVectorIndex creates a VECTOR index backed by an HNSW graph.
-// The root expression identifies the vector field to index. numDimensions specifies
-// the vector dimensionality. Supports EUCLIDEAN, COSINE, and INNER_PRODUCT metrics.
-// Matches Java's new Index(name, rootExpression, IndexTypes.VECTOR).
+// NewVectorIndex creates a VECTOR index backed by an HNSW graph. The root must
+// be a KeyWithValue: key columns partition the index, and the first value
+// column is the vector. numDimensions is the mandatory hnswNumDimensions; the
+// metric (hnswMetric) is one of Java's four Metric constant names. Matches
+// Java's new Index(name, rootExpression, IndexTypes.VECTOR).
 func NewVectorIndex(name string, rootExpression KeyExpression, numDimensions int) *Index {
 	idx := &Index{
 		Name:           name,

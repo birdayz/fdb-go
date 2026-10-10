@@ -2265,9 +2265,9 @@ declared one. The maintainer now reads options the way Java does (see below).
 with its classes and texts. The OPTION half is `validateVectorIndexOptionsAtBuild`
 (`vector_index_validation.go:29`). For a windowed index `validateIndex` runs both
 after `validateSlidingWindowIndex`, as Java's `SlidingWindowIndexValidator` ends with
-the delegate (`index_validator.go:477-487`); for a plain VECTOR index
-`validateIndexType` runs the structure and then the option half
-(`index_validator.go:491-505`). A binary that does not link `vectorindex` checks the
+the delegate (`index_validator.go:477-488`). For a plain VECTOR index
+`validateIndexType` runs the structure (`index_validator.go:148`) and `validateIndex`
+then runs the option half (`index_validator.go:491-505`). A binary that does not link `vectorindex` checks the
 structure but not the options of a plain index, and refuses it at use. The maintainer
 refuses a root that is not a `KeyWithValueExpression` with Java's
 `RecordCoreException` text, "structure of vector index is not supported"
@@ -2332,13 +2332,18 @@ A plain index's options are read at build as a windowed index's are: its metric 
 Java's (`Metric::valueOf`, the four constants' names only), its `Config` bounds are
 refused, and its dimension count is mandatory. Go's 128-dimension default is gone.
 
+A root with no value column (`KeyWithValue(Concat(quantity, vector_data), 2)`) builds in
+both engines; both refuse its writes (Java's `getValue().getBytes(0)` has no column,
+Go's `splitPrefixAndVector` errors). Pinned by the structure spec's row.
+
 **What is open:** the vector's spelling at write. Java's maintainer reads the vector as
-`indexEntry.getValue().getBytes(0)` (`VectorIndexMaintainer.java:357`), a serialized
-vector in one bytes column. Go's `tupleToVector` (`vector_index_maintainer.go`) also
-assembles a vector from numeric value columns, as the Go suites' `KeyWithValue(
-Concat(price, quantity), 0)` roots do; Java builds that metadata and refuses its
-writes. Closing it means refusing numeric value columns at write and moving those
-suites to bytes vectors.
+`indexEntry.getValue().getBytes(0)` (`VectorIndexMaintainer.java:357`): the first value
+column alone, a serialized vector in bytes. Go's `tupleToVector`
+(`vector_index_maintainer.go:241`) joins every value column, and also assembles a vector
+from numeric columns, as the Go suites' `KeyWithValue(Concat(price, quantity), 0)` roots
+do; Java builds that metadata and refuses its writes, and reads only the first column of
+a root with covering value columns. Closing it means reading the first value column as
+a bytes vector at write and moving those suites to bytes vectors.
 
 ---
 

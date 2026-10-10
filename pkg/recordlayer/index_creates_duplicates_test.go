@@ -38,6 +38,14 @@ func TestIndex_CreatesDuplicates(t *testing.T) {
 	if !groupFanOut.CreatesDuplicates() {
 		t.Fatal("VALUE index whose grouping key fans out MUST create duplicates (whole-key delegation)")
 	}
+	// CollateFunctionKeyExpression.createsDuplicates delegates to its argument.
+	collated := &Index{Name: "idx_collated", Type: IndexTypeValue, RootExpression: FunctionExpr(CollateFuncJRE, Field("name"))}
+	if collated.CreatesDuplicates() {
+		t.Fatal("a collation over a scalar field must NOT create duplicates")
+	}
+	if !(&Index{Name: "idx_collated_fan", Type: IndexTypeValue, RootExpression: FunctionExpr(CollateFuncJRE, FanOut("tags"))}).CreatesDuplicates() {
+		t.Fatal("a collation over a fan-out MUST create duplicates")
+	}
 	groupScalar := &Index{Name: "idx_grp_scalar", Type: IndexTypeValue, RootExpression: GroupBy(Field("total"), Field("region"))}
 	if groupScalar.CreatesDuplicates() {
 		t.Fatal("VALUE index over scalar grouping keys must NOT create duplicates")

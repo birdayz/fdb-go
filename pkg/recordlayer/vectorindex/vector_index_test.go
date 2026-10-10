@@ -2456,6 +2456,13 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			Expect(errors.As(err, &mde)).To(BeTrue(), "%s: %T %v", c.name, err, err)
 			Expect(mde.Message).To(Equal(c.text), c.name)
 		}
+		// A collation is no fan-out: Java's createsDuplicates delegates to its argument.
+		collated := recordlayer.NewVectorIndex("vec_collated", kwv(recordlayer.FunctionExpr(recordlayer.CollateFuncJRE,
+			recordlayer.Nest("flower", recordlayer.Field("type")))), 4)
+		builder := baseMetaData()
+		builder.AddIndex("Order", collated)
+		_, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("refuses an option given under its name and its alias at build", func() {
@@ -2474,7 +2481,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 	It("save records with int fields, SearchVectorIndex returns nearest", func() {
 		ks := specSubspace()
 
-		// Create a VECTOR index on (price, quantity) as a 2D vector.
+		// A VECTOR index whose value columns (price, quantity) are a 2D vector.
 		vecIdx := recordlayer.NewVectorIndex("vec_price_qty", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)
@@ -3862,7 +3869,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 	It("non-KWV index (no prefix) still works via backward-compatible APIs", func() {
 		ks := specSubspace()
 
-		// Non-grouped vector index: Concat(Field("price"), Field("quantity")) as 2D vector.
+		// Non-grouped vector index: no key columns, value columns (price, quantity) as a 2D vector.
 		vecIdx := recordlayer.NewVectorIndex("vec_noprefix", recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0), 2)
 		builder := baseMetaData()
 		builder.AddIndex("Order", vecIdx)

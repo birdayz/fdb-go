@@ -232,7 +232,8 @@ func hnswConfigChecks(c HNSWConfig, useRaBitQ bool, raBitQNumExBits int) error {
 }
 
 // parseHNSWConfig is the configuration the VECTOR maintainer builds its graph
-// with: readHNSWOptions, and the RaBitQ quantizer when it is enabled. Java's Config admits 1 to 15 extra bits and its RaBitQuantizer 1 to 8
+// with: readHNSWOptions, and the RaBitQuantizer when it is enabled. Java's
+// Config admits 1 to 15 extra bits and its RaBitQuantizer 1 to 8
 // (RaBitQuantizer.java:76, TIGHT_START's length); Java constructs the quantizer
 // only when an operation first quantizes, so a count of 9 to 15 is refused
 // there (hnswGraph.raBitQuantizerAdmits), never here: the index is built, and

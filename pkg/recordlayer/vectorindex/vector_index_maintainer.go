@@ -33,6 +33,8 @@ import (
 // where grouped key expressions produce per-prefix HNSW graphs.
 type vectorIndexMaintainer struct {
 	recordlayer.StandardIndexMaintainer
+	// root is the index's KeyWithValue root: key columns are the partition
+	// prefix, value columns the vector (Java's getKeyWithValueExpression).
 	root         *recordlayer.KeyWithValueExpression
 	hnswSubspace subspace.Subspace
 	hnswConfig   HNSWConfig
@@ -140,7 +142,7 @@ func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswSto
 func (m *vectorIndexMaintainer) splitPrefixAndVector(entry recordlayer.EvaluatedIndexEntry) (prefix tuple.Tuple, vector []float64, err error) {
 	if len(entry.Value()) == 0 {
 		// Java reads value.getBytes(0), which throws for a root with no value column.
-		return nil, nil, fmt.Errorf("vector index %q: entry has no vector column after the split point", m.Index().Name)
+		return entry.Key(), nil, fmt.Errorf("vector index %q: entry has no vector column after the split point", m.Index().Name)
 	}
 	vec, verr := tupleToVector(entry.Value())
 	return entry.Key(), vec, verr
@@ -1013,31 +1015,6 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 	return vResults, nil
 }
 
-// CanDeleteWhere is Java's VectorIndexMaintainer.canDeleteWhere (:358-363):
-// beyond the delegate's own alignment check it requires
-// `evaluated.size() <= getKeyWithValueExpression(root).getColumnSize()`, and
-// KeyWithValueExpression.getColumnSize() is the SPLIT POINT — the number of
-// key columns, not the whole expression's width.
-//
-// That bound is the one the store-level alignment check cannot supply. It
-// normalises a KeyWithValue to its FULL inner key (prefix columns AND vector
-// columns), so a prefix reaching into the vector columns aligns positionally
-// and is accepted — while getSubspaceForPrefix then addresses a subspace one
-// level deeper than any graph that exists. The clear hits nothing, returns
-// success, and the deleted records' HNSW nodes stay queryable.
-func (m *vectorIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
-	keyColumns := m.root.ColumnSize()
-	if len(prefix) > keyColumns {
-		return fmt.Errorf(
-			"vector index %q: deleteWhere prefix has %d columns but the index has %d key column(s); "+
-				"a longer prefix names a graph that does not exist, so the clear would silently "+
-				"leave the deleted records' HNSW nodes in place",
-			m.Index().Name, len(prefix), keyColumns,
-		)
-	}
-	return nil
-}
-
 // DeleteWhere clears all HNSW graph data at or BELOW the given prefix.
 // An empty prefix clears every graph in the index.
 //
@@ -1052,6 +1029,9 @@ func (m *vectorIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 // VectorIndexMaintainer.deleteWhere and clears
 // Range.startsWith(indexSubspace.pack(prefix)) — everything under the packed
 // prefix, descendants included.
+//
+// The prefix bound is the inherited CanDeleteWhere: a KeyWithValue's column
+// size is its split point, the bound Java's canDeleteWhere (:358-363) adds.
 func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	// Backstop for direct callers — Java's Verify.verify inside deleteWhere
 	// (:366-369). DeleteRecordsWhere asks CanDeleteWhere before it clears.
